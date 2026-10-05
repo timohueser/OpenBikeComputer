@@ -16,8 +16,9 @@ upload, and it asks nothing before it acts. Every guard below answers that.
 
 A key is the object's full key inside the bucket, the way a listing prints it. A published
 cell, preview or index carries the digest of its bytes in its name.
-`run_rclone` is the one seam the tests replace, so every command reaches it through this
-module and not through a name bound at import time.
+`rm` reads, uploads and deletes through the R2 client, `obc data r2`, which also writes
+`removed.jsonl`. `r2_client` is the one seam its tests replace. The planner and the reference
+ingest reach the bucket through `bucket_remote` and `run_rclone`, the seam their tests replace.
 """
 
 import argparse
@@ -60,6 +61,10 @@ BAND_INDEX = re.compile(r"(?:\A|/)cells/[^/]+/index\.[^/]+\.json\Z")
 
 #: What the owner has to run after a catalogue object goes, before a rider downloads again.
 REPUBLISH = "obc bake publish --target r2"
+
+#: The R2 client of host/obc-data, run from this checkout.
+CLIENT = ["cargo", "run", "--quiet", "--locked", "--manifest-path",
+          str(Path(__file__).resolve().parent.parent / "Cargo.toml"), "-p", "obc-data", "--", "r2"]
 
 
 class Refuse(Exception):
@@ -143,6 +148,34 @@ def run_rclone(argv: list[str], env: dict[str, str], capture: bool = False) -> s
         raise Refuse(f"rclone {argv[0]} failed with status {exc.returncode}") from exc
 
 
+def r2_client(args: list[str], capture: bool = False) -> str:
+    """Run `obc data r2 ARGS`, the R2 client. The one seam the tests of `rm` replace."""
+
+    try:
+        done = subprocess.run([*CLIENT, *args], check=True, stdout=subprocess.PIPE if capture else None,
+                              text=True)
+        return done.stdout if capture else ""
+    except FileNotFoundError as exc:
+        raise Refuse("cargo is not on PATH; `obc r2` runs the R2 client of host/obc-data") from exc
+    except subprocess.CalledProcessError as exc:
+        raise Refuse(f"obc data r2 {args[0]} failed with status {exc.returncode}") from exc
+
+
+def objects(args: list[str]) -> list[dict]:
+    """The objects that `obc data r2 list|stat … --json` names."""
+
+    return json.loads(r2_client([*args, "--json"], capture=True))["objects"]
+
+
+def fetch_present(key: str, into: Path) -> Path | None:
+    """One object out of the bucket, or None when the bucket does not hold it."""
+
+    if not objects(["stat", key]):
+        return None
+    r2_client(["get", key, str(into)])
+    return into
+
+
 def fetch_optional(remote: Remote, key: str, into: Path) -> Path | None:
     """One named object out of the bucket, or None when the bucket does not hold it.
 
@@ -158,23 +191,16 @@ def fetch_optional(remote: Remote, key: str, into: Path) -> Path | None:
     return into
 
 
-def listed_under(remote: Remote, prefix: str) -> list[str]:
+def listed_under(prefix: str) -> list[str]:
     """Every object key under one prefix, from the live listing."""
 
-    rows = run_rclone(["lsjson", f"{remote.path}/{prefix}", "--recursive", "--files-only"],
-                      remote.env, capture=True)
-    return sorted(f"{prefix}/{row['Path']}" for row in json.loads(rows or "[]"))
+    return sorted(row["key"] for row in objects(["list", prefix]))
 
 
-def live_facts(remote: Remote, staging: Path, keys: list[str]) -> dict[str, Target]:
+def live_facts(keys: list[str]) -> dict[str, Target]:
     """Size and last-modified for exactly these keys. A key absent from R2 is absent here."""
 
-    listing = staging / "wanted.txt"
-    listing.write_text("".join(f"{key}\n" for key in keys), encoding="utf-8")
-    rows = run_rclone(["lsjson", remote.path, "--recursive", "--files-only",
-                       "--files-from", str(listing)], remote.env, capture=True)
-    return {row["Path"]: Target(row["Path"], row.get("Size", 0), row.get("ModTime", ""))
-            for row in json.loads(rows or "[]")}
+    return {row["key"]: Target(row["key"], row["bytes"], row["modified"]) for row in objects(["stat", *keys])}
 
 
 def checked_prefix(text: str) -> str:
@@ -246,17 +272,17 @@ def keys_in(key: str, path: Path, base: str | None) -> set[str]:
     return {found for found in (key_of(text, base) for text in strings(document)) if found}
 
 
-def fetch_catalogue(remote: Remote, key: str, into: Path) -> Path:
+def fetch_catalogue(key: str, into: Path) -> Path:
     """One catalogue document, or a refusal. Protection never runs on a missing document."""
 
-    if fetch_optional(remote, key, into) is None:
+    if fetch_present(key, into) is None:
         raise Refuse(f"{key} is not in the bucket, and it is how `rm` knows which objects a "
                      "rider still downloads; pass --no-catalog to delete without it, which "
                      "then needs --i-mean-it on every key")
     return into
 
 
-def named_objects(remote: Remote, staging: Path) -> set[str]:
+def named_objects(staging: Path) -> set[str]:
     """Every bucket key the live catalogue names: the root, and the cells behind it.
 
     A cell is named only in its band's `cells/<band>/index.<sha>.json`; the root carries
@@ -265,9 +291,9 @@ def named_objects(remote: Remote, staging: Path) -> set[str]:
 
     base = maps_base()
     root = catalog_key()
-    named = keys_in(root, fetch_catalogue(remote, root, staging / "catalog.json"), base)
+    named = keys_in(root, fetch_catalogue(root, staging / "catalog.json"), base)
     for index in sorted(key for key in named if BAND_INDEX.search(key)):
-        named |= keys_in(index, fetch_catalogue(remote, index, staging / "band.json"), base)
+        named |= keys_in(index, fetch_catalogue(index, staging / "band.json"), base)
     return named
 
 
@@ -347,29 +373,30 @@ def removal_lines(targets: list[Target], reason: str, who: str, when: str) -> st
     }, sort_keys=True) + "\n" for target in targets)
 
 
-def resolve(remote: Remote, args) -> list[str]:
+def resolve(args) -> list[str]:
     """The keys a removal names. Exact keys, or one prefix listed; never both, never wider."""
 
     if bool(args.key) == bool(args.prefix):
         raise Refuse("name objects by key, or one folder with --prefix; "
                      "`rm` takes one form and widens neither")
     if args.prefix:
-        return listed_under(remote, checked_prefix(args.prefix))
+        return listed_under(checked_prefix(args.prefix))
     keys = sorted({key.strip("/") for key in args.key})
     if not all(keys):
         raise Refuse("an empty key is the bucket root, which is never a target")
     return keys
 
 
-def unname_tiles(remote: Remote, staging: Path, tiles: list[str]) -> None:
+def unname_tiles(staging: Path, tiles: list[str]) -> None:
     """Rewrite the reference index without these tiles, and send it before the objects go.
 
     A crash after this leaves a tile no index names, which nothing asks for, instead of an
-    index entry with no tile behind it, which every baker would fetch and fail on.
+    index entry with no tile behind it, which every baker would fetch and fail on. Nothing is
+    deleted yet, so the removal log has nothing to record.
     """
 
     key = f"{archive_prefix()}/index.json"
-    if fetch_optional(remote, key, staging / "index.json") is None:
+    if fetch_present(key, staging / "index.json") is None:
         raise Refuse(f"{key} is not on R2, so the tiles cannot be unnamed before they go")
     path = staging / "index.json"
     index = json.loads(path.read_text(encoding="utf-8"))
@@ -377,15 +404,15 @@ def unname_tiles(remote: Remote, staging: Path, tiles: list[str]) -> None:
         raise Refuse("the reference index on R2 is not this contract, so `rm` refuses to rewrite it")
     path.write_text(json.dumps(prune_index(index, tiles), indent=2, sort_keys=True,
                                ensure_ascii=False) + "\n", encoding="utf-8")
-    run_rclone(["copyto", str(path), f"{remote.path}/{key}"], remote.env)
+    r2_client(["put", str(path), key])
 
 
 def append_log(remote: Remote, staging: Path, targets: list[Target], reason: str) -> None:
-    """Append this removal to the bucket's history, before anything else changes.
+    """Append this removal to the bucket's history, before anything is deleted.
 
-    It goes first because it is the only thing that survives every later step: once the
-    reference index is rewritten the digests are gone, and once an object is deleted its
-    size is. A line for a removal that then failed is a smaller loss than no line at all.
+    The planner's finalize writes its removals here; `rm` goes through the R2 client, which
+    writes the same lines. Once an object is deleted its size is gone, and a line for a
+    removal that then failed is a smaller loss than no line at all.
     """
 
     log = staging / REMOVAL_LOG
@@ -399,16 +426,15 @@ def append_log(remote: Remote, staging: Path, targets: list[Target], reason: str
 def command_rm(args) -> int:
     """Delete named objects from the bucket. It plans and stops unless `--apply` says so."""
 
-    remote = bucket_remote()
     with tempfile.TemporaryDirectory() as directory:
         staging = Path(directory)
-        keys = resolve(remote, args)
+        keys = resolve(args)
         if not keys:
             raise Refuse("that names no object in the bucket, so there is nothing to delete")
         if len(keys) > RM_CAP:
             raise Refuse(f"{len(keys)} objects is over the {RM_CAP} one `rm` takes; name a "
                          "narrower prefix, or publish the tree again instead of deleting")
-        found = live_facts(remote, staging, keys)
+        found = live_facts(keys)
         missing = [key for key in keys if key not in found]
         if missing:
             raise Refuse(f"the bucket does not hold {', '.join(missing[:5])}; nothing was "
@@ -417,10 +443,10 @@ def command_rm(args) -> int:
         tiles = sorted(tile for tile in (reference_tile(key) for key in keys) if tile)
         catalogued = [key for key in keys if inside_catalog(key) is not None]
 
-        named = named_objects(remote, staging) if catalogued and not args.no_catalog else set()
+        named = named_objects(staging) if catalogued and not args.no_catalog else set()
         blocked = {key: why for key in keys if (why := protection(key, named))}
 
-        print(f"{remote.path}: {len(keys)} object(s) to delete — key, bytes, modified")
+        print(f"{len(keys)} object(s) to delete — key, bytes, modified")
         for target in targets:
             print(f"  {target.key}  {target.bytes}  {target.modified}")
         for key, why in blocked.items():
@@ -454,13 +480,10 @@ def command_rm(args) -> int:
             raise Refuse(f'--confirm must repeat this plan\'s "{expected}"; it says '
                          f'"{args.confirm or ""}", so the plan is not the one that was reviewed')
 
-        append_log(remote, staging, targets, args.reason)
         if tiles:
-            unname_tiles(remote, staging, tiles)
-        for key in keys:
-            run_rclone(["deletefile", f"{remote.path}/{key}"], remote.env)
+            unname_tiles(staging, tiles)
+        r2_client(["delete", *keys, "--reason", args.reason, "--yes"])
 
-    print(f"deleted {len(keys)} object(s) from {remote.path}; {REMOVAL_LOG} holds the record")
     if catalogued:
         print(f"the live catalogue still names them — publish the tree now: {REPUBLISH}")
     return 0

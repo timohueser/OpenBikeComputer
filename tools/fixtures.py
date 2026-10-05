@@ -597,53 +597,20 @@ def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -
     with tempfile.TemporaryDirectory(prefix="obc-fixture-publish-") as scratch:
         extract_package_archive(archive, Path(scratch), args.package)
     public_url = urljoin(catalog.base_url, package["archive"])
-    required = (
-        "OBC_FIXTURE_R2_BUCKET",
-        "OBC_FIXTURE_R2_ACCESS_KEY_ID",
-        "OBC_FIXTURE_R2_SECRET_ACCESS_KEY",
-    )
-    missing = [name for name in required if not os.environ.get(name)]
-    endpoint = os.environ.get("OBC_FIXTURE_R2_ENDPOINT")
-    account = os.environ.get("OBC_FIXTURE_R2_ACCOUNT_ID")
-    if not endpoint and not account:
-        missing.append("OBC_FIXTURE_R2_ENDPOINT or OBC_FIXTURE_R2_ACCOUNT_ID")
-    if missing:
-        raise FixtureError("missing publish configuration: " + ", ".join(missing))
-    if shutil.which("rclone") is None:
-        raise FixtureError("rclone is required to publish fixture packages")
-    endpoint = endpoint or f"https://{account}.r2.cloudflarestorage.com"
     prefix = urlparse(catalog.base_url).path.strip("/")
     key = "/".join(part for part in (prefix, package["archive"]) if part)
-    remote = f"obcfixtures:{os.environ['OBC_FIXTURE_R2_BUCKET']}/{key}"
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "RCLONE_CONFIG_OBCFIXTURES_TYPE": "s3",
-            "RCLONE_CONFIG_OBCFIXTURES_PROVIDER": "Cloudflare",
-            "RCLONE_CONFIG_OBCFIXTURES_REGION": "auto",
-            "RCLONE_CONFIG_OBCFIXTURES_ENDPOINT": endpoint,
-            "RCLONE_CONFIG_OBCFIXTURES_ACCESS_KEY_ID": os.environ["OBC_FIXTURE_R2_ACCESS_KEY_ID"],
-            "RCLONE_CONFIG_OBCFIXTURES_SECRET_ACCESS_KEY": os.environ["OBC_FIXTURE_R2_SECRET_ACCESS_KEY"],
-            "RCLONE_CONFIG_OBCFIXTURES_NO_CHECK_BUCKET": "true",
-        }
-    )
     print(f"uploading {args.package} -> {key}", file=sys.stderr)
+    # The R2 client reads the `OBC_FIXTURE_R2_*` credential and verifies the upload.
     result = subprocess.run(
         [
-            "rclone",
-            "copyto",
-            "--no-traverse",
-            "--immutable",
-            "--header-upload",
-            "Cache-Control: public, max-age=31536000, immutable",
-            str(archive),
-            remote,
+            "cargo", "run", "--quiet", "--locked", "--manifest-path", str(repo_root() / "Cargo.toml"),
+            "-p", "obc-data", "--", "r2", "--fixtures", "put", "--immutable",
+            "--cache-control", "public, max-age=31536000, immutable", str(archive), key,
         ],
-        env=environment,
         check=False,
     )
     if result.returncode:
-        raise FixtureError(f"rclone failed while publishing {args.package}")
+        raise FixtureError(f"the R2 client failed while publishing {args.package}")
     _verify_public_object(public_url, actual_bytes, actual_digest)
     print(f"✓ {args.package} uploaded and verified through {catalog.base_url}")
 
