@@ -23,6 +23,11 @@ Two obligations live outside this file, because their artifacts are built elsewh
   [ODbL](https://www.openstreetmap.org/copyright); terrain is Copernicus GLO-30. Both
   credits ship on the device (Settings ▸ System ▸ About) and in every published catalog.
 
+One crate is not GPL-3.0: `host/obc-data` is MIT OR Apache-2.0 and depends on no GPL
+crate, which the `deny` CI job checks. Data steps that call the GPL map tools belong in a
+separate GPL-3.0-only crate, and an `obc-data` binary that links them is GPL-3.0-only as a
+whole.
+
 GEOS deserves a line, because deny.toml's note about it predates the current tree:
 `geos-src` declares MIT for the *wrapper* while the C++ sources it carries are
 **LGPL-2.1**, and that obligation follows whatever links them. Today nothing
