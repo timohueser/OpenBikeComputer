@@ -585,9 +585,11 @@ with `<product>/`.
 
 A product gives its steps for an environment, its regions and the store. When the step list
 depends on a snapshot that the store does not have, such as the `.poly` of a region, the product
-names those fetches instead. `plan` and `build` fetch them and then ask the product once more. A
-fetch that fails, fails the command with its own code, `fetch_failed` or `blocked`. A product that
-names fetches the second time, or a step name without `<product>/`, fails the command with
+names those fetches instead. `plan` and `build` fetch them and then ask the product again, as
+long as each round names only new fetches: a fetched file can name the next fetch, such as the
+`.poly` that gives the box of a capture. A fetch that fails, fails the command with its own code,
+`fetch_failed` or `blocked`. A product that names a fetch it named before, that still names
+fetches after 8 rounds, or a step name without `<product>/`, fails the command with
 `failed` and a fix that points at the code of the product. A product that has no steps for the
 environment, such as for a kind of region that it does not read, is blocked: `plan` lists it in
 `blocked` with the reason, and the other products plan without it. `build` builds the groups of
