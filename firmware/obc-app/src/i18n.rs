@@ -22,7 +22,7 @@ const _: () = assert!(
 
 /// The translation for `m` in `lang`. The `Language` discriminants match TABLE's column order and
 /// every `Msg` maps to a populated row, so the index never panics.
-#[inline]
+#[inline(never)]
 pub const fn t(m: Msg, lang: Language) -> &'static str {
     TABLE[m as usize][lang as usize]
 }
