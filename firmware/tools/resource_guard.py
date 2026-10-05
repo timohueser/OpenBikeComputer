@@ -610,7 +610,7 @@ def extract_resource_table(elf: Path) -> dict[str, int]:
         output = Path(directory) / "resources.bin"
         try:
             subprocess.run(
-                [str(objcopy), f"--dump-section={RESOURCE_SECTION}={output}", str(elf)],
+                [str(objcopy), f"--dump-section={RESOURCE_SECTION}={output}", str(elf), str(Path(directory) / "report.elf")],
                 check=True,
                 text=True,
                 capture_output=True,
