@@ -426,6 +426,16 @@ impl ShardRunner for OsmiumRunner {
 }
 
 impl OsmiumRunner {
+    /// The first line of `osmium --version`.
+    pub fn version(&self) -> Result<String, String> {
+        let out = Command::new(&self.binary).arg("--version").output();
+        let out = out.map_err(|e| format!("{} --version: {e}", self.binary.display()))?;
+        if !out.status.success() {
+            return Err(format!("{} --version failed with {}", self.binary.display(), out.status));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string())
+    }
+
     /// Write `base` with `diffs` applied to `out`, in passes of [`DIFFS_PER_PASS`] diffs. A pass
     /// writes a `.part` file, so `out` exists only when it is whole. With `delete_base`, `base`
     /// goes when the first pass is done.

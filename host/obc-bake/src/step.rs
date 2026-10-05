@@ -20,7 +20,7 @@ fn name(leaf: LeafId) -> String {
 }
 
 /// The option `leaves` names each leaf as `[i, j]`. The step reads the one file of its snapshots,
-/// and writes [`leaf_pbf`] for each leaf.
+/// and writes [`leaf_pbf`] for each leaf. Its metrics name the Osmium version.
 pub fn osm(request: &Request) -> Result<(), String> {
     let leaves = request.options["leaves"].as_array().ok_or("option `leaves` is not a list")?;
     let leaves = leaves.iter().map(|leaf| match leaf.as_array().map(Vec::as_slice) {
@@ -36,7 +36,11 @@ pub fn osm(request: &Request) -> Result<(), String> {
         leaves.iter().map(|&leaf| ExtractRequest { output: name(leaf), bbox: leaf.extract_bbox() }).collect();
     // Osmium writes its config beside the extracts, which is not part of the layer.
     let dir = request.output.with_file_name("extract");
-    OsmiumRunner::default().split(extract, &dir, &requests, &Progress::silent())?;
+    let osmium = OsmiumRunner::default();
+    // The key holds no Osmium version, so the metrics name the one that made the bytes.
+    let metrics = serde_json::json!({"osmium": osmium.version()?});
+    std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))?;
+    osmium.split(extract, &dir, &requests, &Progress::silent())?;
     let osm = request.output.join("osm");
     std::fs::create_dir(&osm).map_err(|e| format!("{}: {e}", osm.display()))?;
     for leaf in leaves {
