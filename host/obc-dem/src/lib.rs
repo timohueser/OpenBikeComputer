@@ -64,6 +64,8 @@ pub mod fetch;
 pub mod geotiff;
 #[cfg(feature = "geotiff")]
 pub mod reference;
+#[cfg(all(feature = "geotiff", feature = "fetch"))]
+pub mod step;
 pub mod surface;
 
 /// A geographic box in integer microdegrees — the unit every OBC coordinate is in, so the box that

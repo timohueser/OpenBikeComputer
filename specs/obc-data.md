@@ -545,7 +545,7 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 
 ### Products
 
-A product is a set of steps that makes one release, such as `planner` or `device-maps`. The
+A product is a set of steps that makes one release, such as `planner` or `maps`. The
 `obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
 commands of `host/obc-data`. The `obc-data-plumbing` binary of `host/obc-data` has the same
 commands without products, for scripts that fetch or use R2. Each layer name of a product starts
@@ -570,6 +570,20 @@ its own `--only` selects. It refuses the file, with exit status 3, before it fet
 
 When the store has the layer of every step of a product after the run, `build` writes the
 release of that product.
+
+#### `maps`
+
+The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
+outline of the region touches. The outline of a `box` region is its box; the outline of a
+`geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
+steps for a `polygon` region yet. The environment pins `copernicus-glo-30`, and `geofabrik-poly`
+when the region has a Geofabrik area.
+
+| Layer | Reads | Options | Files |
+| --- | --- | --- | --- |
+| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the squares of its cells reach | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
+
+`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
 ### Releases
 

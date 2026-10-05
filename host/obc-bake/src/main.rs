@@ -508,23 +508,12 @@ fn ensure_dem_sources(
     Ok(dir)
 }
 
-/// Surface bounds also sample the cell's north/east edge. Keep those edges inclusive;
-/// `fetch_tiles` adds the source-post interpolation padding beyond this box.
+/// The source box of the terrain cells the coverages select.
 fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8) -> Result<obc_dem::BboxUdeg, String> {
     let log2 = u32::from(cell_log2);
     obc_pack::grid::CellId::new(log2, 0, 0)?;
-    let (min_lon, min_lat, max_lon, max_lat) = coverages
-        .iter()
-        .flat_map(|coverage| coverage.cells(log2))
-        .map(|cell| cell.square())
-        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
-        .ok_or("no region resolved to a terrain cell")?;
-    Ok(obc_dem::BboxUdeg {
-        min_lat: min_lat.clamp(-90_000_000, 90_000_000) as i32,
-        min_lon: min_lon.clamp(-180_000_000, 180_000_000) as i32,
-        max_lat: max_lat.clamp(-90_000_000, 90_000_000) as i32,
-        max_lon: max_lon.clamp(-180_000_000, 180_000_000) as i32,
-    })
+    obc_bake::terrain::source_bbox(coverages.iter().flat_map(|coverage| coverage.cells(log2)))
+        .ok_or_else(|| "no region resolved to a terrain cell".into())
 }
 
 /// What the terrain stage's reference archive gives this run, in one line per source.

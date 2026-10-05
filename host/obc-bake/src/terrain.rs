@@ -279,7 +279,6 @@ pub struct ShortReference {
 /// function is right there, and a subprocess would put a flat naming scheme between this stage and
 /// the catalog's `<i>/<j>.obcd` layout for no gain.
 pub struct DemCutter {
-    sources: PathBuf,
     mosaic: obc_dem::geotiff::DemMosaic,
     /// A local mirror of the reference archive, or `None` for a Copernicus-only bake.
     reference: Option<obc_dem::reference::ReferenceArchive>,
@@ -292,7 +291,7 @@ impl DemCutter {
     pub fn open(sources: &Path, reference: Option<&Path>) -> Result<DemCutter, String> {
         let mosaic = obc_dem::geotiff::DemMosaic::open_dir(sources)?;
         let reference = reference.map(obc_dem::reference::ReferenceArchive::open).transpose()?;
-        Ok(DemCutter { sources: sources.to_path_buf(), mosaic, reference })
+        Ok(DemCutter { mosaic, reference })
     }
 
     /// Source tiles opened.
@@ -315,25 +314,17 @@ impl DemCutter {
 
 impl TerrainCutter for DemCutter {
     fn recipe(&self) -> String {
-        // The tile set is not in the recipe: the cells it produces are, through their digests, and
-        // a source directory that grew a tile outside the coverage must not re-bake the world. The
-        // reference root is not in it either — the archive's content reaches the key per cell,
-        // through the digests of the tiles that cell reads, so moving a mirror to another directory
-        // is not a re-bake. The crest rule is in it: the rule is as much an input to a baked sample
-        // as the tiles it reads.
-        format!(
-            "obc-dem surface-v3 crest-v{} tiles={} from={}",
-            obc_dem::crest::CREST_RULE_VERSION,
-            self.mosaic.len(),
-            self.sources.display()
-        )
+        // Neither the tile set nor the source directory is in the recipe: a directory that grew a
+        // tile outside the coverage, or moved, must not re-bake the world. The reference root is
+        // not in it either — the archive's content reaches the key per cell, through the digests of
+        // the tiles that cell reads. The crest rule is in it: the rule is as much an input to a
+        // baked sample as the tiles it reads.
+        format!("obc-dem surface-v3 crest-v{}", obc_dem::crest::CREST_RULE_VERSION)
     }
 
     fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String> {
-        // One lift map per cell, from `obc-dem`'s own rule, composed into the height by `obc-dem`'s
-        // own sampler: this cell must be the same surface `obc-dem bake --reference` produces for
-        // the same square.
-        let lift = obc_dem::bake::cell_lift(&self.mosaic, ci, cj, posting_log2, cell_log2, self.reference.as_ref())?;
+        let (block, lift) =
+            obc_dem::bake::published_cell(&self.mosaic, ci, cj, posting_log2, cell_log2, self.reference.as_ref())?;
         let reference_sources = lift.map.as_ref().map(|map| map.sources().to_vec()).unwrap_or_default();
         // The window goes with the shortfall, because the bakery has to be able to say which box to
         // mirror and only the rule knows how far past the cell it reads.
@@ -345,8 +336,6 @@ impl TerrainCutter for DemCutter {
                 window_udeg: (w.lat_lo, w.lon_lo, w.lat_hi, w.lon_hi),
             }
         });
-        let height = obc_dem::bake::lifted_sampler(&self.mosaic, lift.map.as_ref());
-        let block = obc_dem::surface::bake_cell(ci, cj, posting_log2, cell_log2, height)?;
         Ok(TerrainCell { block, reference_sources, short_reference })
     }
 
@@ -791,6 +780,22 @@ fn paths(out: &Path, cell: CellId) -> (PathBuf, PathBuf, PathBuf) {
 fn indices(cell: CellId) -> Result<(u32, u32), String> {
     let to_u32 = |v: i64| u32::try_from(v).map_err(|_| format!("terrain cell `{cell}` is off the world grid"));
     Ok((to_u32(cell.i)?, to_u32(cell.j)?))
+}
+
+/// The box whose GLO-30 tiles the bake of `cells` reads: their squares, edges inclusive, because a
+/// surface also samples the north and east edge of a cell. `obc_dem::fetch::tiles_for` adds the
+/// interpolation pad. `None` for no cell.
+pub fn source_bbox(cells: impl IntoIterator<Item = CellId>) -> Option<obc_dem::BboxUdeg> {
+    let (min_lon, min_lat, max_lon, max_lat) = cells
+        .into_iter()
+        .map(|cell| cell.square())
+        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))?;
+    Some(obc_dem::BboxUdeg {
+        min_lat: min_lat.clamp(-90_000_000, 90_000_000) as i32,
+        min_lon: min_lon.clamp(-180_000_000, 180_000_000) as i32,
+        max_lat: max_lat.clamp(-90_000_000, 90_000_000) as i32,
+        max_lon: max_lon.clamp(-180_000_000, 180_000_000) as i32,
+    })
 }
 
 fn read_current(
