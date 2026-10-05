@@ -2,7 +2,7 @@
 # Re-pack the simulator map fixtures (Grimsel, Monaco or Freiburg) from
 # their PINNED sources and extract bboxes. This script is the single source of
 # truth for map-fixture provenance — see README.md next to it before changing
-# anything here.
+# anything here. The bboxes are box regions in data/regions/.
 #
 # The one rule: NEVER derive an extract bbox from an existing fixture's header.
 # The packer's header bbox is computed from the packed content and is always a
@@ -46,9 +46,13 @@ PRESET="$REPO_ROOT/builder/presets/schema.json"
 mkdir -p "$BUILD_DIR/sim-grimsel/routes" "$BUILD_DIR/sim-grimsel/tracks" "$BUILD_DIR/sim-monaco/tracks" \
     "$BUILD_DIR/sim-freiburg"
 
+box() { # box <region> [--lat-first]: the box of a data/regions/ box region
+    python3 "$REPO_ROOT/tools/data_registry.py" box "$@"
+}
+
 # --- Pinned provenance (canonical — do not derive from fixture headers) -----
 GRIMSEL_SOURCE_URL="https://download.geofabrik.de/europe/switzerland-latest.osm.pbf"
-GRIMSEL_BBOX="8.15034,46.48261,8.46007,46.72070" # Grimsel Pass region (lon,lat,lon,lat)
+GRIMSEL_BBOX="$(box grimsel)" # Grimsel Pass region (lon,lat,lon,lat)
 # grimsel-demo: the landing-page live-demo map (epic #624 S4, #629). A tight
 # corridor hand-picked around the `grimsel-climb.gpx` track (which spans
 # 8.291,46.561 -> 8.340,46.654), padded ~2 km each side so the demo tours have
@@ -56,14 +60,14 @@ GRIMSEL_BBOX="8.15034,46.48261,8.46007,46.72070" # Grimsel Pass region (lon,lat,
 # reroute plans a real route to the nearest Lodging). NOT a shared test fixture —
 # shipped in the wasm only; shrinks the payload ~5x vs the full grimsel.obcm.
 # Canonical + hand-picked — do NOT self-source from the grimsel-demo header.
-GRIMSEL_DEMO_BBOX="8.26,46.54,8.37,46.67" # Grimsel climb corridor, demo-only
+GRIMSEL_DEMO_BBOX="$(box grimsel-demo)" # Grimsel climb corridor, demo-only
 MONACO_SOURCE_URL="https://download.geofabrik.de/europe/monaco-latest.osm.pbf"
-MONACO_BBOX="7.39,43.71,7.47,43.77" # Monaco principality, tight
+MONACO_BBOX="$(box monaco)" # Monaco principality, tight
 # freiburg: the settlement-density fixture. A Rhine-plain box from Freiburg
 # north to Emmendingen — one city, its towns, and the villages and hamlets
 # between them. Canonical + hand-picked, like every box above.
 FREIBURG_SOURCE_URL="https://download.geofabrik.de/europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
-FREIBURG_BBOX="7.77,47.97,7.93,48.14" # Freiburg to Emmendingen (lon,lat,lon,lat)
+FREIBURG_BBOX="$(box freiburg)" # Freiburg to Emmendingen (lon,lat,lon,lat)
 # -----------------------------------------------------------------------------
 
 WORK="$(mktemp -d)"
@@ -142,7 +146,8 @@ do_grimsel_demo() {
     local native="$BUILD_DIR/grimsel-demo-native.obcd"
     local surface="${OBC_DEMO_SURFACE:-$BUILD_DIR/grimsel-demo-surface.obcd}"
     # Wider than the ride corridor: Peak View needs the surrounding skyline.
-    local terrain_bbox="46.3,7.9,46.95,8.75"
+    local terrain_bbox
+    terrain_bbox="$(box grimsel-skyline --lat-first)"
     # Terrain keeps its own revision track, so a map re-pack embeds the surface it already has.
     # Baking runs only when that file is absent.
     if [[ ! -f "$surface" ]]; then
@@ -244,8 +249,8 @@ do_freiburg() {
 #
 # With no dem_dir the GLO-30 tiles are downloaded (~44 MB each, two of them) into
 # a temp dir; pass a directory to reuse a local cache.
-GRIMSEL_TERRAIN_BBOX="46.48261,8.15034,46.72070,8.46007"  # = GRIMSEL_BBOX, lat first
-TENINGEN_TERRAIN_BBOX="48.119,7.798,48.141,7.830"        # = the teningen-preview crop
+GRIMSEL_TERRAIN_BBOX="$(box grimsel --lat-first)"
+TENINGEN_TERRAIN_BBOX="$(box teningen --lat-first)" # the teningen-preview crop
 
 do_terrain() {
     local dem="${1:-$WORK/dem}"

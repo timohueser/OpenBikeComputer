@@ -53,6 +53,23 @@ Rules:
 - `r2_copy = true` needs `redistribute = true`, because R2 is public.
 - A credential has `env` or `file`, not both.
 
+`attribution` is the one copy of a credit. Every product that carries a credit takes it from
+here:
+
+| Product | Credit |
+| --- | --- |
+| Device-map catalog `source` and `LICENSE.txt` | `attribution`, `licence` and `licence_url` of `osm-planet` |
+| Device-map catalog `terrain.attribution` | The source whose id is the terrain `dataset_id` |
+| Device-map catalog `landmarks.attribution` | `wikipedia`, then `commons` |
+| Planner `attribution`, routing and search | `<attribution>; <licence>` of `osm-planet` |
+| Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
+| Planner climate and snow layers | `era5-land`; `modis-snow` and `hansen-gfc`, or `hr-wsi` |
+
+Rust code reads the file that the build embeds (`obc_data::sources::attribution`). Python
+reads it through `tools/data_registry.py`. The device About page is the exception: the
+firmware cannot read the file, so it keeps the text as a constant, and a test compares the
+constant with this file.
+
 ### `data/env/<environment>.toml`
 
 `[pins]` maps a source id to the version that the environment is built from. Each pin names
@@ -80,6 +97,17 @@ outside −90…90.
 A `geofabrik` region is the Geofabrik area whose path is the region id, for example
 `europe/germany/baden-wuerttemberg`. A union resolves to the regions in it that are not
 unions. A union that contains itself, or names a region that does not exist, is refused.
+
+The bakes read this directory:
+
+| Reader | Regions |
+| --- | --- |
+| `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout |
+| Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/` |
+| `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
+
+`tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
+every other kind, so Python and shell never resolve a union or a Geofabrik area.
 
 ## State of a source
 

@@ -156,12 +156,12 @@ pub(crate) fn add_contours(
          {} m clamp",
         cfg.simplify_m
     ));
-    // The credit is a licence obligation and travels with the data, never retyped: it is one `const`
-    // in `obc-elevation`, and this is where a `.obcm` starts carrying GLO-30-derived geometry.
+    // The credit is a licence obligation and travels with the data, never retyped: it comes from
+    // data/sources.toml, and this is where a `.obcm` starts carrying GLO-30-derived geometry.
     progress.log(format!(
         "  contours derived from {}: {}",
         obc_elevation::SOURCE_DATASET,
-        obc_elevation::COPERNICUS_ATTRIBUTION
+        obc_data::sources::attribution("copernicus-glo-30")
     ));
     Ok(())
 }

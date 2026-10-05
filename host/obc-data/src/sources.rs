@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -297,6 +298,20 @@ impl Registry {
     }
 }
 
+/// A source of the `data/sources.toml` that this build embeds. A product that carries a credit
+/// takes it here, so the text has one home. Ids are constants in code: an unknown id panics.
+pub fn embedded(id: &str) -> &'static Source {
+    static SOURCES: LazyLock<Vec<Source>> = LazyLock::new(|| {
+        parse_sources(include_str!("../../../data/sources.toml")).expect("data/sources.toml is valid")
+    });
+    SOURCES.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no source `{id}` in data/sources.toml"))
+}
+
+/// The credit of an embedded source, as the product must show it.
+pub fn attribution(id: &str) -> &'static str {
+    embedded(id).attribution.as_deref().unwrap_or_else(|| panic!("source `{id}` has no attribution"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -432,5 +447,6 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let registry = Registry::load(&root).unwrap();
         assert!(registry.sources.iter().any(|s| s.id == "osm-planet"));
+        assert_eq!(embedded("osm-planet"), registry.sources.iter().find(|s| s.id == "osm-planet").unwrap());
     }
 }

@@ -2,11 +2,11 @@
 //! Website and desktop consumers only select, download, and assemble these cells;
 //! raw OSM processing stays here as maintainer tooling.
 //!
-//! A bake takes named Geofabrik regions from [`regions.toml`](../regions.toml), the
+//! A bake takes the Geofabrik regions of `data/regions/` ([`regions`]), the
 //! checked-in schema and skins, and writes one self-contained publish tree:
 //!
 //! ```text
-//! regions.toml ─┐
+//! data/regions ─┐
 //!               ├─▶ bake ──▶ <tree>/cells/<band>/<i>/<j>.obcm (+ sidecar)
 //! <id>.poly ────┘                    <tree>/regions/<id>/{region.json, boundary.poly}
 //!                                    <tree>/{schema.json, skins/<id>.json}
@@ -16,7 +16,7 @@
 //!                                     └─▶ publish ──▶ cells first, root last
 //! ```
 //!
-//! With no positional ids, `bake` processes every entry in `regions.toml`; positional
+//! With no positional ids, `bake` processes every Geofabrik region; positional
 //! ids select a subset. The output tree is the interface between the long-running,
 //! resumable bake and the credentialed publish command.
 //!

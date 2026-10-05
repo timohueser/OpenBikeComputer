@@ -1,7 +1,7 @@
 //! `obc-bake` CLI — flags in, [`obc_bake`] out.
 //!
 //! ```text
-//! obc-bake regions [--regions FILE]
+//! obc-bake regions [--regions DIR]
 //! obc-bake bake --out TREE --base-url URL [REGION…] [--skin ID]… [flags]
 //! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--generated-at TS] [--dry-run]
 //! obc-bake verify TREE [--sample N]
@@ -28,8 +28,8 @@ usage:
   obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
       Compile pinned article and image captures offline for the map content stage.
 
-  obc-bake regions [--regions FILE]
-      List the curated regions this binary would bake.
+  obc-bake regions [--regions DIR]
+      List the Geofabrik regions in data/regions/: the regions a bake can select.
 
   obc-bake bake [REGION…] [flags]
       Bake selected regions into the shared cell tree and generate its catalog.
@@ -40,7 +40,7 @@ usage:
         --skin ID            skin to publish (repeatable; default: all skins/)
         --generated-at TS    pin the catalog's generated_at
         --base-url URL       catalog object base (default: /obc-bake while staging)
-        --regions FILE       curated region list
+        --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
         --source SOURCE      Geofabrik base/directory, or planet PBF URL/file with --all
         --cache DIR          extract download cache
@@ -87,7 +87,7 @@ usage:
                                 of tiles for is REFUSED, with the --bbox to mirror: it
                                 would be lifted on one side of a coverage edge only.
         --allow-short-reference publish such cells anyway, and warn
-        --regions FILE          curated region list
+        --regions DIR           region files (default: data/regions/ of the repository)
         --base-url URL          catalog object base
         --generated-at TS       pin the catalog's generated_at
         --cache DIR             extract/poly download cache
@@ -100,7 +100,7 @@ usage:
       cell, and a schema bump never re-compiles a landmark artifact.
         --out TREE           output tree (default: ./obc-bake)
         --cache DIR          extract/poly download cache; also holds the raw captures
-        --regions FILE       curated region list
+        --regions DIR        region files (default: data/regions/ of the repository)
         --source SOURCE      Geofabrik base or directory (for the .poly files)
         --force              re-compile even when unchanged
         --no-capture         never call the capture tool; compile what the cache holds
@@ -211,7 +211,7 @@ fn run_regions(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The curated list narrowed by positional ids, or all of it.
+/// The Geofabrik regions narrowed by positional ids, or all of them.
 fn select_regions(
     all: Vec<obc_bake::regions::Region>,
     wanted: &[String],
@@ -221,7 +221,7 @@ fn select_regions(
     }
     for want in wanted {
         if !all.iter().any(|r| &r.id == want) {
-            return Err(format!("`{want}` is not in the curated region list — add it there first"));
+            return Err(format!("`{want}` is not a Geofabrik region in data/regions/ — add it there first"));
         }
     }
     Ok(all.into_iter().filter(|r| wanted.contains(&r.id)).collect())
@@ -319,7 +319,7 @@ fn run_cell_bake(
                 posting_log2: obc_dem::bake::V1_POSTING_LOG2,
                 cell_log2: obc_dem::bake::V1_CELL_LOG2,
                 revision: 1,
-                attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
+                attribution: obc_data::sources::attribution("copernicus-glo-30").to_string(),
                 references: Vec::new(),
             }
         };
@@ -345,7 +345,7 @@ fn run_cell_bake(
         .run(&obc_pack::progress::Progress::stdout())?;
         print!("{}", summary.render());
         // The credit is a licence obligation, printed wherever the dataset was used.
-        println!("{}\n", obc_elevation::COPERNICUS_ATTRIBUTION);
+        println!("{}\n", obc_data::sources::attribution("copernicus-glo-30"));
     }
 
     let cutter = obc_bake::cells::ObcCutter {
@@ -579,9 +579,9 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
         posting_log2: log2("posting-log2", obc_dem::bake::V1_POSTING_LOG2)?,
         cell_log2: log2("cell-log2", obc_dem::bake::V1_CELL_LOG2)?,
         revision: number("terrain-revision", 1)?,
-        // The credit is a licence obligation and is never retyped here: it comes from the one
-        // `const` in `obc-elevation`, travels into the catalog, and a consumer reads it from there.
-        attribution: obc_elevation::COPERNICUS_ATTRIBUTION.to_string(),
+        // The credit is a licence obligation and is never retyped here: it comes from
+        // data/sources.toml, travels into the catalog, and a consumer reads it from there.
+        attribution: obc_data::sources::attribution("copernicus-glo-30").to_string(),
         // Filled from the archive by the run itself: the wording lives in its `index.json`, and a
         // credit an operator could retype here is one that can go stale.
         references: Vec::new(),
@@ -626,7 +626,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
     };
     // Unconditional, and before the `?`: the credit is a licence obligation of the data that was
     // just written, so it cannot be something only a fully successful catalog pass gets to print.
-    println!("\n{}", obc_elevation::COPERNICUS_ATTRIBUTION);
+    println!("\n{}", obc_data::sources::attribution("copernicus-glo-30"));
     finished
 }
 

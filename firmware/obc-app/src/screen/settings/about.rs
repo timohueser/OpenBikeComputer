@@ -23,12 +23,13 @@ const PITCH: i32 = 22;
 const START_PAD: i32 = 16;
 /// Room under the last line. A Label cell is 24 px, which is 2 px more than [`PITCH`].
 const BOTTOM_PAD: i32 = 14;
-/// The OSMF requested credit, pre-wrapped. Legal formulas are not translated.
+/// The OSMF requested credit, pre-wrapped. Legal formulas are not translated. A test compares the
+/// first two lines with the `osm-planet` credit in data/sources.toml.
 const OSM_LINES: &[&str] =
     &["\u{00a9} OpenStreetMap", "contributors", "Open Database", "License (ODbL)", "openstreetmap", ".org/copyright"];
 
-/// `obc_elevation::COPERNICUS_ATTRIBUTION`, pre-wrapped. A test re-joins the lines with single
-/// spaces and compares them with that constant, so the wording cannot drift.
+/// The `copernicus-glo-30` credit of data/sources.toml, pre-wrapped. The licence requires the exact
+/// notice. A test re-joins the lines with single spaces and compares them with the registry.
 const COPERNICUS_LINES: &[&str] = &[
     "produced using",
     "Copernicus",
@@ -159,15 +160,10 @@ mod tests {
     }
 
     #[test]
-    fn copernicus_wording_matches_obc_elevation() {
-        let mut joined = std::string::String::new();
-        for (i, line) in COPERNICUS_LINES.iter().enumerate() {
-            if i > 0 {
-                joined.push(' ');
-            }
-            joined.push_str(line);
-        }
-        assert_eq!(joined, obc_elevation::COPERNICUS_ATTRIBUTION);
+    fn the_credits_are_the_registry_wording() {
+        use obc_data::sources::attribution;
+        assert_eq!(COPERNICUS_LINES.join(" "), attribution("copernicus-glo-30"));
+        assert_eq!(OSM_LINES[..2].join(" "), attribution("osm-planet"));
     }
 
     #[test]

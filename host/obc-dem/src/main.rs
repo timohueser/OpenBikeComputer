@@ -7,13 +7,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use obc_data::sources::attribution;
 use obc_dem::bake::{bake_cells, bake_shard, BakeParams, BakeReport, CellDone, V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::REPORT_M;
 use obc_dem::fetch::{fetch_tiles, Fetched};
 use obc_dem::geotiff::DemMosaic;
 use obc_dem::reference::ReferenceArchive;
 use obc_dem::BboxUdeg;
-use obc_elevation::{COPERNICUS_ATTRIBUTION, SOURCE_DATASET};
+use obc_elevation::SOURCE_DATASET;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -117,7 +118,7 @@ fn fetch(args: &[String]) -> Result<(), String> {
         Fetched::Absent => println!("  {} — no object on the mirror (ocean or outside coverage)", tile.file_name()),
     })?;
     println!("{} tile(s) in {}", paths.len(), out.display());
-    println!("\n{SOURCE_DATASET}: {COPERNICUS_ATTRIBUTION}");
+    println!("\n{SOURCE_DATASET}: {}", attribution("copernicus-glo-30"));
     Ok(())
 }
 
@@ -187,7 +188,7 @@ fn bake(args: &[String]) -> Result<(), String> {
         _ => unreachable!("checked above"),
     };
     summarise(&report);
-    println!("\n{SOURCE_DATASET}: {COPERNICUS_ATTRIBUTION}");
+    println!("\n{SOURCE_DATASET}: {}", attribution("copernicus-glo-30"));
     if reference.is_some() {
         println!("\nThe reference DEM keeps its own attribution, which must travel with this container.");
         println!("host/obc-dem/reference/README.md holds the wording for each source.");

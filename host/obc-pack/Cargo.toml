@@ -29,6 +29,8 @@ obc-map-scene = { path = "../../firmware/obc-map-scene" }
 # runs, so a climb-aware route costs the number the rider is later shown. Never a DEM library —
 # rasters are `obc-dem`'s business, one step earlier in the pipeline.
 obc-elevation = { path = "../../firmware/obc-elevation" }
+# The data registry: the credits the catalog and the contour log carry come from data/sources.toml.
+obc-data = { path = "../obc-data" }
 # The Copernicus credit and the dataset name, for the contours this crate traces out of
 # GLO-30-derived terrain (#1094): the licence obligation travels with the data and the wording has
 # exactly one copy in the repo. Two `&str` consts and nothing else — `default-features = false`

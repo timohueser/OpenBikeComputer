@@ -1,22 +1,15 @@
-//! The curated region list: what the bakery bakes.
-//!
-//! The list itself is [`regions.toml`](../regions.toml), compiled into the binary with
-//! `include_str!` so an `obc-bake` copied onto a build box carries the list it is supposed to bake,
-//! and overridable with `--regions <file>`.
+//! The regions the bakery bakes: every Geofabrik region in `data/regions/`.
 //!
 //! A region's `id` does double duty: it is the catalog's `region_id` and the Geofabrik path the
 //! extract is downloaded from. One string rather than two, because the two can only ever disagree
-//! by mistake — a separate `geofabrik = …` field would let a region be published under an id whose
-//! extract came from somewhere else.
+//! by mistake.
 
-use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
-/// The list as it is checked in.
-pub const BUILTIN_REGIONS_TOML: &str = include_str!("../regions.toml");
+use obc_data::regions::{Area, Regions};
 
-/// One curated region.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// One Geofabrik region.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
     /// Slash-separated Geofabrik path, e.g. `europe/germany/bayern`. Also the catalog's `region_id`
     /// and the selection-metadata path in the bake tree.
@@ -55,63 +48,31 @@ impl Region {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RegionsDoc {
-    regions: Vec<Region>,
+/// The Geofabrik regions in `dir`, a directory laid out like `data/regions/`, or in the
+/// `data/regions/` of the repository above the current directory. A box, polygon or union region
+/// has no Geofabrik extract, so the bakery leaves it out.
+pub fn load(dir: Option<&Path>) -> Result<Vec<Region>, String> {
+    let dir = match dir {
+        Some(dir) => dir.to_path_buf(),
+        None => repository_regions()?,
+    };
+    let regions = Regions::load_dir(&dir)?;
+    let list: Vec<Region> = regions
+        .iter()
+        .filter(|r| r.area == Area::Geofabrik)
+        .map(|r| Region { id: r.id.clone(), name: r.name.clone() })
+        .collect();
+    if list.is_empty() {
+        return Err(format!("{}: no Geofabrik region — nothing to bake", dir.display()));
+    }
+    Ok(list)
 }
 
-/// Parse and validate a region list.
-///
-/// Validation is deliberately strict and happens before any byte is downloaded: an id the catalog
-/// generator would later reject must fail in a second, not four hours into a bake.
-pub fn parse(toml_text: &str) -> Result<Vec<Region>, String> {
-    let doc: RegionsDoc = toml::from_str(toml_text).map_err(|e| format!("region list: {e}"))?;
-    if doc.regions.is_empty() {
-        return Err("region list: `regions` is empty — nothing to bake".into());
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    for r in &doc.regions {
-        validate_id(&r.id)?;
-        if r.name.trim().is_empty() {
-            return Err(format!("region `{}`: name is empty", r.id));
-        }
-        if !seen.insert(r.id.as_str()) {
-            return Err(format!("region `{}` is listed twice", r.id));
-        }
-    }
-    Ok(doc.regions)
-}
-
-/// Load the built-in list, or one from a file.
-pub fn load(path: Option<&std::path::Path>) -> Result<Vec<Region>, String> {
-    match path {
-        None => parse(BUILTIN_REGIONS_TOML),
-        Some(p) => {
-            let text = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
-            parse(&text).map_err(|e| format!("{}: {e}", p.display()))
-        }
-    }
-}
-
-/// The catalog's id rules: slash-separated lowercase kebab-case segments. The catalog generator
-/// enforces the same rules on the tree it walks; checking here means the failure names the region
-/// list line, not a directory.
-fn validate_id(id: &str) -> Result<(), String> {
-    if id.is_empty() {
-        return Err("region id is empty".into());
-    }
-    for segment in id.split('/') {
-        let ok = !segment.is_empty()
-            && !segment.starts_with('-')
-            && !segment.ends_with('-')
-            && !segment.contains("--")
-            && segment.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-        if !ok {
-            return Err(format!("region id `{id}`: segment `{segment}` is not lowercase kebab-case"));
-        }
-    }
-    Ok(())
+fn repository_regions() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let root = obc_data::find_root(&cwd)
+        .ok_or("no data/sources.toml above the current directory: run inside the repository or pass --regions DIR")?;
+    Ok(root.join("data/regions"))
 }
 
 #[cfg(test)]
@@ -120,12 +81,14 @@ mod tests {
 
     #[test]
     fn the_checked_in_list_is_the_curated_dach_coverage() {
-        let regions = parse(BUILTIN_REGIONS_TOML).expect("the shipped region list parses");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/regions");
+        let regions = load(Some(&root)).expect("the checked-in regions load");
         let ids: Vec<&str> = regions.iter().map(|r| r.id.as_str()).collect();
 
         assert!(ids.contains(&"europe/germany"));
         assert!(ids.contains(&"europe/austria"));
         assert!(ids.contains(&"europe/switzerland"));
+        assert!(!ids.contains(&"grimsel"), "a box region has no Geofabrik extract");
 
         assert!(ids.contains(&"europe/germany/baden-wuerttemberg/freiburg-regbez"));
         let regbez =
@@ -144,26 +107,5 @@ mod tests {
             "https://download.geofabrik.de/europe/germany/bayern-latest.osm.pbf"
         );
         assert_eq!(r.cache_name(), "europe_germany_bayern-latest.osm.pbf");
-    }
-
-    #[test]
-    fn ids_the_catalog_would_reject_are_rejected_here() {
-        for bad in ["Europe/Germany", "europe//germany", "europe/germany_bayern", "europe/-bayern", ""] {
-            let toml = format!("regions = [ {{ id = \"{bad}\", name = \"x\" }} ]");
-            assert!(parse(&toml).is_err(), "`{bad}` must not be accepted");
-        }
-    }
-
-    #[test]
-    fn a_duplicate_region_is_an_error_not_a_double_bake() {
-        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\" }, \
-                    { id = \"europe/austria\", name = \"Österreich\" } ]";
-        assert!(parse(toml).unwrap_err().contains("listed twice"));
-    }
-
-    #[test]
-    fn an_unknown_key_in_the_list_is_a_typo_not_metadata() {
-        let toml = "regions = [ { id = \"europe/austria\", name = \"Austria\", styel = \"x\" } ]";
-        assert!(parse(toml).is_err(), "a misspelled key must fail rather than silently bake everything");
     }
 }

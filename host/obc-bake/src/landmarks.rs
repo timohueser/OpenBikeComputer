@@ -1,7 +1,7 @@
 //! The landmark stage: a region's coverage polygon in, its compiled landmark artifact out.
 //!
 //! ```text
-//! regions.toml ──▶ .poly ──▶ coverage ──▶ boundary.geojson
+//! data/regions ──▶ .poly ──▶ coverage ──▶ boundary.geojson
 //!                .osm.pbf ──▶ wikidata tags ──▶ candidates.json
 //!                                              │
 //!           policy.json + content-languages ───┤

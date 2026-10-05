@@ -14,8 +14,8 @@ its files are immutable.
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
 | `profiles` | Sorted routing profile IDs |
-| `attribution` | OSM source credit and licence |
-| `terrain_attribution` | Elevation source credits |
+| `attribution` | OSM source credit and licence: `<attribution>; <licence>` of `osm-planet` in `data/sources.toml` |
+| `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
 | `sources` | Recipe hash, source identities, tool identities, and input provenance |
 | `device_catalog_source` | Original device catalogue URL |

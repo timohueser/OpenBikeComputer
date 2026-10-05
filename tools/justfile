@@ -333,7 +333,7 @@ planner *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/planner.py" "$@"
 
-# Bake the published cell catalog. `obc bake` processes every regions.toml entry;
+# Bake the published cell catalog. `obc bake` processes every Geofabrik region in data/regions/;
 # positional ids narrow it (`obc bake europe/austria --force`). Output goes to
 # $OBC_BAKE_TREE (default ~/obc-bake). `verify` and `publish` use that same tree
 # automatically, while an explicit tree remains available as their first argument:

@@ -25,12 +25,6 @@
     "touring/less-climbing",
     "touring/shorter"
   ],
-  "bounds": [
-    9.55,
-    46.3,
-    10.25,
-    46.7
-  ],
   "osm": {
     "url": "https://maps.openbikecomputer.com/planner/sources/8dd69b7627a528cbb14cc31fa4f22f3592e109f0153055df5cd8a62c5d970a17.osm.pbf",
     "sha256": "8dd69b7627a528cbb14cc31fa4f22f3592e109f0153055df5cd8a62c5d970a17"

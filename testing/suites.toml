@@ -14,10 +14,11 @@ schema = 2
 
 # ── Cargo packages with facts Cargo cannot derive ───────────────────────────
 
-# The vector files are a contract, not a dependency: a codec consumer never imports them.
+# The vector files are a contract, not a dependency: a codec consumer never imports them. The About
+# credits are tested against data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
 name = "obc-app"
-triggers = ["specs/vectors/**"]
+triggers = ["specs/vectors/**", "data/sources.toml"]
 
 # The captured planner export is under `fixtures/`, which already selects every unit that declares
 # fixture inputs. Its SwiftPM duplicate is not, and only this suite holds the two identical.
@@ -73,10 +74,10 @@ name = "obc-sim"
 triggers = ["fixtures/catalog.toml"]
 
 # Both compile the shipped preset in with `include_str!` and own the guard that fails when the
-# skin-preview fixture no longer matches it; no Cargo edge carries that.
+# skin-preview fixture no longer matches it; obc-bake also reads data/regions/. No Cargo edge carries that.
 [[package]]
 name = "obc-bake"
-triggers = ["builder/presets/**", "host/obc-bake/regions.toml"]
+triggers = ["builder/presets/**", "data/regions/**"]
 
 # Its tests load the checked-in registry and regions; no Cargo edge carries that.
 [[package]]
@@ -242,8 +243,10 @@ triggers = [
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
-  # The planner tools read their pinned versions from it.
+  # The planner tools read their pinned versions, credits and region boxes from them.
   "data/env/live.toml",
+  "data/sources.toml",
+  "data/regions/**",
   "testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",

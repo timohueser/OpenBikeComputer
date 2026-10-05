@@ -19,7 +19,7 @@ description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / 
 # because the `obc-dem` binary is both.
 [features]
 default = ["dem"]
-dem = ["geotiff", "fetch"]
+dem = ["geotiff", "fetch", "dep:obc-data"]
 geotiff = ["dep:tiff", "dep:serde_json"]
 fetch = ["dep:ureq"]
 external-fixtures = []
@@ -27,7 +27,7 @@ external-fixtures = []
 [[bin]]
 name = "obc-dem"
 path = "src/main.rs"
-required-features = ["geotiff", "fetch"]
+required-features = ["dem"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
@@ -55,6 +55,8 @@ serde_json = { version = "1", optional = true }
 # the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
 # stays the last native dependency in the tree, and this crate has none at all).
 ureq = { version = "3", optional = true }
+# `dem` only: the binary prints the Copernicus credit from data/sources.toml.
+obc-data = { path = "../obc-data", optional = true }
 
 [dev-dependencies]
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
