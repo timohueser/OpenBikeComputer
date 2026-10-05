@@ -1,11 +1,12 @@
 //! `obc data`: read the sources and the regions, fetch sources into the store, plan and build the
-//! releases of the products, and show runs. Read commands change nothing in `data/`. Without a
-//! command, a terminal gets the TUI.
+//! releases of the products, show what is live, and show runs. Read commands change nothing in
+//! `data/`. Without a command, a terminal gets the TUI.
 
 mod api;
 mod build_cli;
 mod r2_cli;
 mod runs_cli;
+mod status_cli;
 mod tui;
 
 use std::io::IsTerminal;
@@ -19,11 +20,12 @@ use serde::Serialize;
 use crate::fetch::http::Http;
 use crate::fetch::upstream::{self, Upstream};
 use crate::fetch::{self, osm, Request};
+use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::sources::{self, FetchKind, Kind, Refresh, Registry, Source, State, VersionScheme};
 use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
-use api::{print_json, Code, Error};
+use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions and pins")]
@@ -31,13 +33,15 @@ struct Cli {
     /// Write JSON to standard output, also when the command fails.
     #[arg(long, global = true)]
     json: bool,
-    /// Without a command: the TUI in a terminal, else what `sources` writes.
+    /// Without a command: the TUI in a terminal, else what `status` writes.
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// What is live: the release of each product, the state of its layers, and what needs attention.
+    Status(status_cli::StatusArgs),
     /// Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state.
     Sources {
         /// Check upstream now, not from a check of the last hour.
@@ -73,36 +77,17 @@ enum Command {
     Build(build_cli::BuildArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
-    /// The local store.
-    Store {
-        #[command(subcommand)]
-        action: StoreAction,
-    },
-    /// Delete what nothing uses.
-    Gc {
-        #[command(subcommand)]
-        what: GcWhat,
+    /// Clean the local store: delete what no live release, pin or fixture reaches, and move the
+    /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
+    Clean {
+        #[arg(long)]
+        apply: bool,
+        /// Do not ask. Required without a terminal.
+        #[arg(long, requires = "apply")]
+        yes: bool,
     },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
-}
-
-#[derive(Subcommand)]
-enum StoreAction {
-    /// Move the cache directories of the older bake tools into the store. Shows the plan; `--apply` moves.
-    Import {
-        #[arg(long)]
-        apply: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum GcWhat {
-    /// The objects and snapshot records that no environment, pin or fixture reaches. Shows the plan; `--apply` deletes.
-    Store {
-        #[arg(long)]
-        apply: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -128,19 +113,21 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
     };
     let json = cli.json;
     match run(cli, products) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => error.report(json),
     }
 }
 
-fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
+fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let Some(command) = cli.command else {
-        let root = root()?;
-        return if terminal && !json { tui::run(&root) } else { print_sources(&registry(&root)?, false, json) };
+    let command = match cli.command {
+        None if terminal && !json => return tui::run(&root()?, products).map(|()| ExitCode::SUCCESS),
+        None => return status_cli::status(&root()?, products, false, json),
+        Some(command) => command,
     };
-    match command {
+    let done = match command {
+        Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&registry(&root()?)?, check_now, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
@@ -174,82 +161,147 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Build(args) => build_cli::build(&root()?, products, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
-        Command::Store { action: StoreAction::Import { apply } } => store_import(apply, json),
-        Command::Gc { what: GcWhat::Store { apply } } => gc_store(&root()?, apply, json),
+        Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),
+    };
+    done.map(|()| ExitCode::SUCCESS)
+}
+
+/// What `clean` removes from the store and moves into it, or removed and moved.
+#[derive(Debug, Default, Clone, Serialize, JsonSchema)]
+struct CleanPlan {
+    /// The snapshot records and the objects that nothing reaches, and what stays.
+    store: gc::Plan,
+    /// The cache directories of the older bake tools.
+    import: import::Plan,
+}
+
+impl CleanPlan {
+    fn is_empty(&self) -> bool {
+        let moves = self.import.dirs.iter().any(|dir| dir.files > 0);
+        self.store.snapshots.is_empty() && self.store.objects.is_empty() && !moves
+    }
+
+    /// The one question before a clean.
+    fn question(&self) -> String {
+        let removes = match (self.store.objects.len(), self.store.snapshots.len()) {
+            (0, 0) => None,
+            (0, 1) => Some("1 record".into()),
+            (0, records) => Some(format!("{records} records")),
+            _ => Some(bytes(self.store.remove_bytes)),
+        };
+        let moves = self.import.dirs.iter().any(|dir| dir.files > 0).then(|| bytes(self.import.bytes));
+        // A process that writes an old cache while it moves can change an object.
+        const STOP: &str = "Stop the bakes, the planner and every fetch first.";
+        match (removes, moves) {
+            (Some(removes), Some(moves)) => {
+                format!("Remove {removes} from the local store and move {moves} of old caches into it? {STOP}")
+            }
+            (Some(removes), None) => format!("Remove {removes} from the local store?"),
+            (None, Some(moves)) => format!("Move {moves} of old caches into the local store? {STOP}"),
+            (None, None) => "Nothing to clean.".into(),
+        }
     }
 }
 
-fn store_import(apply: bool, json: bool) -> Result<(), Error> {
+fn remote() -> Result<Remote, Error> {
+    Remote::from_env().map_err(|e| Code::Blocked.error(e))
+}
+
+/// What is live now.
+fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<Live, Error> {
+    Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
+}
+
+/// The roots of a collection: the live releases, and the checkout at `root`.
+fn roots(root: &Path, products: &[&dyn Product], store: &Store) -> Result<gc::Roots, Error> {
+    let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
+    roots.add_live(&read_live(&remote()?, &registry(root)?, products, store)?);
+    Ok(roots)
+}
+
+fn old_dirs() -> Result<Vec<std::path::PathBuf>, Error> {
     let home = std::env::var_os("HOME").ok_or_else(|| Code::Usage.error("HOME is not set"))?;
-    let (store, dirs) = (Store::open()?, import::old_dirs(Path::new(&home)));
-    let plan = if apply { import::apply(&store, &dirs)? } else { import::plan(&store, &dirs)? };
-    if json {
-        return print_json(&plan);
-    }
-    let home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.into());
-    let short =
-        |dir: &Path| dir.strip_prefix(&home).map_or(dir.display().to_string(), |dir| format!("~/{}", dir.display()));
-    println!("{} INTO {}", if apply { "MOVED" } else { "MOVE" }, store.root().display());
-    let mut table = Vec::new();
-    for dir in &plan.dirs {
-        let size = if dir.present { format!("{} files", dir.files) } else { "not present".into() };
-        table.push(vec![format!("  {}", short(&dir.dir)), size, bytes(dir.bytes)]);
-    }
-    print_table(&table);
-    println!("{} in; duplicates are kept once; the store grows by {}.", bytes(plan.bytes), bytes(plan.new_bytes));
-    let left: Vec<_> = plan.dirs.iter().flat_map(|dir| &dir.left).collect();
-    if !left.is_empty() {
-        println!("{}", if apply { "THESE STAY:" } else { "THESE STAY AFTER --apply:" });
-        left.iter().for_each(|path| println!("  {}", short(path)));
-    }
-    if !apply {
-        println!(
-            "`--apply` moves the files and deletes the directories that are then empty. Stop the bakes, the planner"
-        );
-        println!("and every fetch first. The older bake tools then fetch and build again.");
-    }
-    Ok(())
+    Ok(import::old_dirs(Path::new(&home)))
 }
 
-/// The plan of `gc store`.
-fn collect(root: &Path, store: &Store) -> Result<gc::Plan, Error> {
-    let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    Ok(gc::plan(store, &roots)?)
+/// The plan of `clean`.
+fn clean_plan(root: &Path, products: &[&dyn Product], store: &Store) -> Result<CleanPlan, Error> {
+    let roots = roots(root, products, store)?;
+    Ok(CleanPlan { store: gc::plan(store, &roots)?, import: import::plan(store, &old_dirs()?)? })
 }
 
-/// `gc store --apply`: what it deleted. With `confirmed`, only when that is still the plan.
-fn clean(root: &Path, store: &Store, confirmed: Option<&gc::Plan>) -> Result<gc::Plan, Error> {
-    let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
+/// Delete what nothing reaches, only when that is still `confirmed`; then move the old cache
+/// directories in.
+fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::Plan) -> Result<CleanPlan, Error> {
+    let roots = roots(root, products, store)?;
+    let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
             .error("a fetch, a build or an import uses the store; nothing was deleted")
-            .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
-    })
+            .fix("Run `obc data clean --apply` again when the fetch, the build or the import ends.")
+    })?;
+    Ok(CleanPlan { store: removed, import: import::apply(store, &old_dirs()?)? })
 }
 
-fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
+fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
-    let plan = if apply { clean(root, &store, None)? } else { collect(root, &store)? };
-    if json {
+    let plan = clean_plan(root, products, &store)?;
+    if json && !apply {
         return print_json(&plan);
     }
-    println!(
-        "Roots: the pins of {}/data/env/*.toml, its fixtures and planner recipes, the import records, and the newest record of each source and request.",
-        root.display()
-    );
-    println!("{} {}", if apply { "REMOVED FROM" } else { "REMOVE FROM" }, store.root().display());
-    plan.snapshots.iter().for_each(|snapshot| println!("  snapshot {snapshot}"));
-    plan.objects.iter().for_each(|(sha256, size)| println!("  object {sha256}  {}", bytes(*size)));
-    println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
-    println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
-    let kept =
-        plan.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
-    print_table(&kept.collect::<Vec<_>>());
+    let text = clean_text(&store, &plan);
+    // With `--json`, the output is what the clean did.
+    if json {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
+    }
     if !apply {
-        println!("`--apply` deletes them. It refuses to start while a fetch, a build or an import runs.");
+        if !plan.is_empty() {
+            println!("`--apply` asks once, then cleans.");
+        }
+        return Ok(());
+    }
+    if plan.is_empty() {
+        return if json { print_json(&plan) } else { Ok(()) };
+    }
+    confirm(&plan.question(), yes)?;
+    let done = clean(root, products, &store, &plan.store)?;
+    if json {
+        return print_json(&done);
+    }
+    let left: Vec<_> = done.import.dirs.iter().flat_map(|dir| &dir.left).collect();
+    println!("Removed {} from the store; moved {} into it.", bytes(done.store.remove_bytes), bytes(done.import.bytes));
+    if !left.is_empty() {
+        println!("THESE STAY:");
+        left.iter().for_each(|path| println!("  {}", path.display()));
     }
     Ok(())
+}
+
+fn clean_text(store: &Store, plan: &CleanPlan) -> String {
+    if plan.is_empty() {
+        return "Nothing to clean.\n".into();
+    }
+    let (gc, mut text) = (&plan.store, String::new());
+    text += &format!("REMOVE FROM {}\n", store.root().display());
+    gc.snapshots.iter().for_each(|snapshot| text += &format!("  snapshot {snapshot}\n"));
+    gc.objects.iter().for_each(|(sha256, size)| text += &format!("  object {sha256}  {}\n", bytes(*size)));
+    text +=
+        &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(gc.remove_bytes));
+    text += &format!("KEEP {}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
+    let kept =
+        gc.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
+    text += &table(&kept.collect::<Vec<_>>());
+    let moved: Vec<_> = plan.import.dirs.iter().filter(|dir| dir.files > 0).collect();
+    if !moved.is_empty() {
+        text += &format!("MOVE INTO {}\n", store.root().display());
+        let rows = moved
+            .iter()
+            .map(|dir| vec![format!("  {}", dir.dir.display()), format!("{} files", dir.files), bytes(dir.bytes)]);
+        text += &table(&rows.collect::<Vec<_>>());
+    }
+    text
 }
 
 fn bytes(bytes: u64) -> String {

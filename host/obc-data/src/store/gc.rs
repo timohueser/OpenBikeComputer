@@ -1,5 +1,5 @@
-//! `obc data gc store`: delete the objects and the snapshot records that no environment, pin or
-//! fixture reaches. Receipts and import records stay: they are history.
+//! The collection of `obc data clean`: delete the objects and the snapshot records that no live
+//! release, pin or fixture reaches. Receipts and import records stay: they are history.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -11,13 +11,17 @@ use serde::Serialize;
 
 use super::{read_records, sorted, Requested, Snapshot, Store};
 use crate::engine::{self, InputKind};
+use crate::live::Live;
 
-/// What the repository pins.
+/// What live and the repository keep.
 #[derive(Debug, Default)]
 pub struct Roots {
     /// `(source, version)` from `[pins]` of every `data/env/*.toml`, with the environments.
     pub pins: BTreeMap<(String, String), Vec<String>>,
-    /// Each SHA-256 that a pin, a fixture or a planner region recipe names, with which of them.
+    /// `(source, version)` that a layer of a live release read, with the products.
+    pub live: BTreeMap<(String, String), Vec<String>>,
+    /// Each SHA-256 that a live layer, a pin, a fixture or a planner region recipe names, with
+    /// which of them.
     pub sha256s: BTreeMap<String, &'static str>,
 }
 
@@ -52,6 +56,22 @@ impl Roots {
         Ok(roots)
     }
 
+    /// Add the files and the snapshots of each layer of the live releases.
+    pub fn add_live(&mut self, live: &Live) {
+        for product in &live.products {
+            let Some((_, release)) = &product.release else { continue };
+            for layer in &release.layers {
+                self.name(layer.files.iter().map(|file| file.sha256.clone()), "live release");
+                for (source, read) in &layer.snapshots {
+                    let products = self.live.entry((source.clone(), read.version.clone())).or_default();
+                    if !products.contains(&product.product) {
+                        products.push(product.product.clone());
+                    }
+                }
+            }
+        }
+    }
+
     /// Record `why` for each SHA-256 that no other root named first.
     fn name(&mut self, sha256s: impl Iterator<Item = String>, why: &'static str) {
         sha256s.for_each(|sha256| {
@@ -60,7 +80,7 @@ impl Roots {
     }
 }
 
-/// What `gc store` deletes, or deleted, and what stays.
+/// What `clean` deletes from the store, or deleted, and what stays.
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "GcPlan")]
 pub struct Plan {
@@ -85,14 +105,15 @@ pub struct Kept {
     pub entry: String,
     /// The size of its files.
     pub bytes: u64,
-    /// `pin of ENV, …`, `newest of the source`, `newest of a request`, `inputs kept`, `pin`,
-    /// `fixture`, `planner recipe` or `import record`.
+    /// `live PRODUCT, …`, `pin of ENV, …`, `newest of the source`, `newest of a request`,
+    /// `inputs kept`, `live release`, `pin`, `fixture`, `planner recipe` or `import record`.
     pub because: Vec<String>,
 }
 
-/// What a collection deletes. A snapshot record is reached when a pin names it, or when it is the
-/// newest record of its source or of a request. An object is reached when a pin, a fixture, a planner recipe or an
-/// import record names it, or a reached record or layer has it. A layer is reached when each input
+/// What a collection deletes. A snapshot record is reached when a live layer read it, when a pin
+/// names it, or when it is the newest record of its source or of a request. An object is reached
+/// when a live layer, a pin, a fixture, a planner recipe or an import record names it, or a
+/// reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
 /// its source, and a layer input whose digest is of a reached layer.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
@@ -142,10 +163,11 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     for snapshot in &snapshots {
         let (source, version) = (&snapshot.source, &snapshot.version);
         let key = (source.clone(), version.clone());
+        let live = roots.live.get(&key).map(|products| format!("live {}", products.join(", ")));
         let pinned = roots.pins.get(&key).map(|envs| format!("pin of {}", envs.join(", ")));
         let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
         let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
-        let because: Vec<String> = [pinned, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        let because: Vec<String> = [live, pinned, newest_of_source, newest_of_request].into_iter().flatten().collect();
         if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
@@ -211,14 +233,13 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
 }
 
 /// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store. With `confirmed`, a plan that removes anything else deletes nothing.
-pub fn apply(store: &Store, roots: &Roots, confirmed: Option<&Plan>) -> Result<Option<Plan>, String> {
+/// an import holds the store. A plan that removes anything but `confirmed` deletes nothing.
+pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
         return Ok(None);
     };
     let plan = plan(store, roots)?;
-    if confirmed.is_some_and(|confirmed| (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects))
-    {
+    if (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects) {
         return Err("the store changed after the plan; nothing was deleted".into());
     }
     for snapshot in &plan.snapshots {
@@ -461,12 +482,12 @@ mod tests {
         );
 
         let using = store.using().unwrap();
-        assert!(apply(&store, &roots, None).unwrap().is_none(), "a running fetch stops a collection");
+        assert!(apply(&store, &roots, &plan).unwrap().is_none(), "a running fetch stops a collection");
         drop(using);
         let older = Plan { objects: plan.objects[1..].to_vec(), ..plan.clone() };
-        assert!(apply(&store, &roots, Some(&older)).is_err(), "a plan that is not the plan of now deletes nothing");
+        assert!(apply(&store, &roots, &older).is_err(), "a plan that is not the plan of now deletes nothing");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_some());
-        let applied = apply(&store, &roots, Some(&plan)).unwrap().unwrap();
+        let applied = apply(&store, &roots, &plan).unwrap().unwrap();
         assert_eq!(applied.objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
         assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");
@@ -474,5 +495,28 @@ mod tests {
         assert!(store.layer("stale").unwrap().is_some(), "a receipt is history and stays");
         let again = super::plan(&store, &roots).unwrap();
         assert!(again.snapshots.is_empty() && again.objects.is_empty());
+    }
+
+    #[test]
+    fn a_collection_keeps_the_layers_and_the_snapshots_of_the_live_releases() {
+        use crate::live::{tests::release, Live, LiveProduct};
+        let scratch = Scratch::new("gc-live");
+        let store = Store::at(scratch.0.join("store"));
+        snapshot(&store, "land", "2026-10-01", "2026-10-01", &[("land.zip", b"land live")]);
+        snapshot(&store, "land", "2026-10-02", "2026-10-02", &[("land.zip", b"land new")]);
+        // A layer file whose receipt the store does not have.
+        object(&store, b"layer");
+        let release = Some((String::new(), release(b"layer")));
+        let product = LiveProduct { product: "test".into(), prefix: "test-catalog".into(), release };
+        let mut roots = Roots::default();
+        roots.add_live(&Live { products: vec![product], ..Live::default() });
+
+        let plan = plan(&store, &roots).unwrap();
+        assert!(plan.snapshots.is_empty() && plan.objects.is_empty(), "{plan:?}");
+        let kept: Vec<String> = plan.kept.iter().map(|k| format!("{}: {}", k.entry, k.because.join(" · "))).collect();
+        assert_eq!(
+            kept,
+            ["land@2026-10-01: live test", "land@2026-10-02: newest of the source", "1 object: live release"]
+        );
     }
 }

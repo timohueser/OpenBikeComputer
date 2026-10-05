@@ -1,8 +1,7 @@
-//! `obc data store import`: move the cache directories of the older bake tools into the store.
+//! The import of `obc data clean`: move the cache directories of the older bake tools into the store.
 //! Each file becomes an object, so the same bytes in two directories become one object. An
 //! import record keeps the old path of each file.
 
-use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -18,18 +17,16 @@ use crate::date;
 pub const OLD_DIRS: [&str; 5] =
     [".cache/obcm", ".cache/obc/planner", ".cache/openbikecomputer", "obc-bake", "obc-reference"];
 
-/// What `store import` moves, or moved, and what stays.
-#[derive(Debug, Default, Serialize, JsonSchema)]
+/// What `clean` moves into the store, or moved, and what stays.
+#[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "ImportPlan")]
 pub struct Plan {
     pub dirs: Vec<DirPlan>,
     /// The size of every file.
     pub bytes: u64,
-    /// How much the store grows: the size of each content that is not an object yet, once.
-    pub new_bytes: u64,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(rename = "ImportDir")]
 pub struct DirPlan {
     /// The directory, without symbolic links when it is present.
@@ -59,20 +56,13 @@ pub fn old_dirs(home: &Path) -> Vec<PathBuf> {
     OLD_DIRS.iter().map(|dir| home.join(dir)).collect()
 }
 
-/// What an import of `dirs` moves, and how much the store grows. It hashes every file and
-/// changes nothing.
+/// What an import of `dirs` moves: the files and the size of each directory. It hashes nothing
+/// and changes nothing.
 pub fn plan(store: &Store, dirs: &[PathBuf]) -> Result<Plan, String> {
     let store_root = store_root(store)?;
     let mut plan = Plan::default();
-    let mut seen = HashSet::new();
     for dir in dirs {
-        let (dir_plan, files) = scan(dir, &store_root)?;
-        for (path, _) in files {
-            let (sha256, size) = hash_file(&path)?;
-            if seen.insert(sha256.clone()) && !store.object(&sha256).is_file() {
-                plan.new_bytes += size;
-            }
-        }
+        let (dir_plan, _) = scan(dir, &store_root)?;
         plan.bytes += dir_plan.bytes;
         plan.dirs.push(dir_plan);
     }
@@ -108,10 +98,7 @@ pub fn apply(store: &Store, dirs: &[PathBuf]) -> Result<Plan, String> {
                 record.write_all(text.as_bytes()).and_then(|()| record.sync_data()).map_err(|e| e.to_string())
             };
             match move_in(store, &store_root, &path, &mut write_line)? {
-                Moved::Yes { size, new } => {
-                    dir_plan.bytes += size;
-                    plan.new_bytes += if new { size } else { 0 };
-                }
+                Moved::Yes(size) => dir_plan.bytes += size,
                 Moved::No(stays) => {
                     dir_plan.files -= 1;
                     dir_plan.left.push(stays);
@@ -167,8 +154,8 @@ fn stat(path: &Path) -> Result<(u64, SystemTime), String> {
 }
 
 enum Moved {
-    /// The size, and whether the object is new.
-    Yes { size: u64, new: bool },
+    /// Its size.
+    Yes(u64),
     /// The file changed while it was read; this path holds it now.
     No(PathBuf),
 }
@@ -199,7 +186,7 @@ fn move_in(
         let object = store.object(&sha256);
         if object.is_file() {
             fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
-            return Ok(Moved::Yes { size, new: false });
+            return Ok(Moved::Yes(size));
         }
         create_parent(&object)?;
         rename(file, &object)?;
@@ -220,7 +207,7 @@ fn move_in(
         let mut permissions = fs::metadata(&object).map_err(|e| format!("{}: {e}", object.display()))?.permissions();
         permissions.set_readonly(true);
         fs::set_permissions(&object, permissions).map_err(|e| format!("{}: {e}", object.display()))?;
-        return Ok(Moved::Yes { size, new: true });
+        return Ok(Moved::Yes(size));
     }
     let part = store.partial(&format!("import-{}", std::process::id()));
     create_parent(&part)?;
@@ -230,11 +217,10 @@ fn move_in(
         let _ = fs::remove_file(&part);
         return Ok(Moved::No(file.to_path_buf()));
     }
-    let new = !store.object(&sha256).is_file();
     store.insert(&part, &sha256)?;
     record(&sha256, size)?;
     fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    Ok(Moved::Yes { size, new })
+    Ok(Moved::Yes(size))
 }
 
 #[cfg(unix)]
@@ -359,15 +345,11 @@ mod tests {
         let plan = plan(&store, &dirs).unwrap();
         assert_eq!(plan.dirs.iter().map(|dir| dir.files).collect::<Vec<_>>(), [1, 1, 1, 1, 0]);
         assert!(!plan.dirs[4].present, "~/obc-reference is not there");
-        assert_eq!(
-            (plan.bytes, plan.new_bytes),
-            (6 + 6 + 12 + 4, 6 + 4),
-            "a duplicate and a stored content are not new"
-        );
+        assert_eq!(plan.bytes, 6 + 6 + 12 + 4);
         assert!(home.join("obc-bake/cells/1.obcm").is_file(), "a plan moves nothing");
 
         let applied = apply(&store, &dirs).unwrap();
-        assert_eq!((applied.bytes, applied.new_bytes), (plan.bytes, plan.new_bytes));
+        assert_eq!(applied.bytes, plan.bytes);
         for bytes in [&b"monaco"[..], b"cell", b"in the store"] {
             assert!(store.object(&sha256_hex(bytes)).is_file());
         }
@@ -391,7 +373,7 @@ mod tests {
         assert!(record(&store).contains(&cell));
 
         let again = super::plan(&store, &dirs).unwrap();
-        assert_eq!((again.bytes, again.new_bytes), (0, 0), "the store is not imported into itself");
+        assert_eq!(again.bytes, 0, "the store is not imported into itself, and a link is no file");
     }
 
     /// A home behind a symbolic link, and a store that does not exist yet: the store is still
