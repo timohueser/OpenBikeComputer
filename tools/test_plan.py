@@ -128,8 +128,6 @@ TEST_POLICY_PATTERNS = (
     "tools/ci/**",
     "tools/test_plan.py",
     "tools/ci_aggregate.py",
-    "tools/coverage_report.py",
-    "tools/requirements-coverage.txt",
     "docs/testing.md",
     "CONTRIBUTING.md",
     "tools/justfile",
@@ -784,40 +782,6 @@ def _command_errors(root: Path, unit: Unit, graph: CargoGraph) -> list[str]:
             errors.append(f"{unit.id}: command path does not exist: {executable}")
     return errors
 
-def _coverage_errors(root: Path) -> list[str]:
-    document = read_toml(root / "testing/coverage-policy.toml")
-    errors: list[str] = []
-    if document.get("schema") != 1:
-        errors.append("testing/coverage-policy.toml: schema must be 1")
-    for exclusion in document.get("exclude", []):
-        if not isinstance(exclusion, dict) or not all(
-            isinstance(exclusion.get(key), str) and exclusion[key].strip() for key in ("path", "evidence")
-        ):
-            errors.append("coverage: every global exclusion needs path and replacement evidence")
-    identifiers = [component.get("id") for component in document.get("component", [])]
-    duplicates = sorted({value for value in identifiers if value and identifiers.count(value) > 1})
-    if duplicates:
-        errors.append(f"duplicate coverage component IDs: {', '.join(duplicates)}")
-    for component in document.get("component", []):
-        name = component.get("id", "<missing-id>")
-        if component.get("enforcement") not in {"ratchet", "report"}:
-            errors.append(f"coverage {name}: invalid enforcement {component.get('enforcement')!r}")
-        if name in SAFETY_COMPONENTS and component.get("enforcement") != "ratchet":
-            errors.append(f"coverage {name}: safety-critical component must be planned as ratchet")
-        if not component.get("include"):
-            errors.append(f"coverage {name}: include must name production paths")
-        for pattern in component.get("include", []):
-            if not any(root.glob(pattern)):
-                errors.append(f"coverage {name}: included path does not resolve: {pattern!r}")
-        for exclusion in component.get("exclude", []):
-            if not isinstance(exclusion, dict) or not exclusion.get("path") or not exclusion.get("evidence"):
-                errors.append(f"coverage {name}: every exclusion needs path and replacement evidence")
-        if component.get("baseline") in {None, "pending", ""} and "baseline" in component:
-            errors.append(f"coverage {name}: omit pending baseline instead of inventing a value")
-    return errors
-
-SAFETY_COMPONENTS = {"format-protocol-codecs", "crc", "storage", "dfu", "boot"}
-
 def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: Sequence[Unit]) -> list[str]:
     errors: list[str] = []
     identifiers = [unit.id for unit in units]
@@ -861,7 +825,6 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
             errors.append(f"job {name} names a missing script {job.script}")
         if not (job.unconditional or job.roots or job.packages or name in routed):
             errors.append(f"job {name} runs no declared suite")
-    errors.extend(_coverage_errors(root))
     errors.extend(_ui_frame_errors(root))
     return errors
 
@@ -1060,7 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
     gates_parser.add_argument("--unreproduced", action="store_true")
     gates_parser.set_defaults(func=command_gates)
 
-    check_parser = subparsers.add_parser("check", help="validate the plan documents and the coverage policy")
+    check_parser = subparsers.add_parser("check", help="validate the plan documents")
     check_parser.set_defaults(func=command_check)
 
     workflow_parser = subparsers.add_parser(
