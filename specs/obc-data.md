@@ -643,7 +643,9 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 Live is the release that the pointer of each product names on R2. Each product has one prefix:
 `cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`. Live
 owns the prefix of each product that has a live release, and `inputs` once any release is live;
-a product with nothing live owns no prefix, so nothing under it is ever a leftover.
+a product with nothing live owns no prefix, so nothing under it is ever a leftover. The shared
+`inputs` is owned once any release is live, so an input copy that only a product with nothing live
+would use is a leftover.
 
 | Key | Holds |
 | --- | --- |

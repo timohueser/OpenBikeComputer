@@ -247,7 +247,7 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
 
 impl Step {
     /// The names of the layers it reads.
-    fn layers(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn layers(&self) -> impl Iterator<Item = &str> {
         self.inputs.iter().filter_map(|input| match input {
             Input::Layer(name) => Some(name.as_str()),
             Input::Snapshot { .. } => None,

@@ -1,7 +1,7 @@
 //! `obc data status`: what is live, the state of its layers, and what needs attention. `--check`
 //! also lists the prefixes that live owns on R2.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -12,6 +12,7 @@ use serde::Serialize;
 use super::build_cli::{check_layers, fetcher, load, product_steps, Loaded};
 use super::{bytes, cells, old_dirs, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
 use crate::engine::state::{self, Environment};
+use crate::engine::Step;
 use crate::fetch::http::Http;
 use crate::live::{Check, Remote};
 use crate::product::{Product, Wanted};
@@ -162,7 +163,8 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
 }
 
 /// The state of each layer of `live`, by product. `Err` with the reason for a product when a
-/// fetch that its step list needs fails: the rest of `status` does not need its steps.
+/// fetch that its step list needs fails, or when it reads a layer of such a product: the rest of
+/// `status` does not need its steps.
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -172,12 +174,12 @@ fn layer_states(
     mut fetch: impl FnMut(&Wanted) -> Result<(), Error>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
     check_layers(products, &loaded.env)?;
-    let (mut steps, mut found) = (Vec::new(), BTreeMap::new());
+    let (mut listed, mut found) = (Vec::new(), BTreeMap::new());
     for product in products {
         match product_steps(*product, &loaded.env, &loaded.regions, store, &mut fetch) {
-            Ok(listed) => {
+            Ok(steps) => {
                 found.insert(product.name().to_string(), Ok(Vec::new()));
-                steps.extend(listed);
+                listed.push((product.name().to_string(), steps));
             }
             Err(e) if matches!(e.code, Code::FetchFailed | Code::Blocked) => {
                 let reason = format!("a fetch that the step list needs failed: {}", e.message);
@@ -186,6 +188,11 @@ fn layer_states(
             Err(e) => return Err(e),
         }
     }
+    while let Some((name, reason)) = reads_unknown(&listed, &found) {
+        listed.retain(|(product, _)| *product != name);
+        found.insert(name, Err(reason));
+    }
+    let steps: Vec<Step> = listed.into_iter().flat_map(|(_, steps)| steps).collect();
     for layer in state::state(store, root, &steps, environment)? {
         let product = layer.layer.split('/').next().unwrap_or_default().to_string();
         if let Some(Ok(layers)) = found.get_mut(&product) {
@@ -193,6 +200,19 @@ fn layer_states(
         }
     }
     Ok(found)
+}
+
+/// A listed product that reads a layer of a product whose layers are unknown, with that reason.
+fn reads_unknown(
+    listed: &[(String, Vec<Step>)],
+    found: &BTreeMap<String, Result<Vec<LayerStatus>, String>>,
+) -> Option<(String, String)> {
+    let made: HashSet<&str> = listed.iter().flat_map(|(_, steps)| steps).map(|step| step.name.as_str()).collect();
+    listed.iter().find_map(|(product, steps)| {
+        let missing = steps.iter().flat_map(Step::layers).find(|layer| !made.contains(layer))?;
+        let owner = missing.split('/').next().unwrap_or_default();
+        Some((product.clone(), found.get(owner)?.as_ref().err()?.clone()))
+    })
 }
 
 fn print_status(status: &Status) {
@@ -261,7 +281,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::engine::Step;
+    use crate::engine::tests::step;
+    use crate::engine::{Code as StepCode, Input, Run};
     use crate::env::Env;
     use crate::product::Unplanned;
     use crate::regions::Regions;
@@ -294,8 +315,23 @@ mod tests {
         }
     }
 
+    /// A product whose step reads a layer of `test`.
+    struct Reading;
+
+    impl Product for Reading {
+        fn name(&self) -> &'static str {
+            "reading"
+        }
+
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
+            let code = StepCode { paths: Vec::new(), crates: Vec::new() };
+            let run = Run::Command(vec!["true".into()]);
+            Ok(vec![step("reading/one", vec![Input::Layer("test/one".into())], code, "out", run)])
+        }
+    }
+
     #[test]
-    fn a_failed_fetch_makes_only_the_layers_of_its_product_unknown() {
+    fn a_failed_fetch_makes_its_product_and_the_products_that_read_it_unknown() {
         let scratch = Scratch::new("status-unreachable");
         let store = Store::at(scratch.0.join("store"));
         let env = Env { name: "live".into(), region: "monaco".into(), layers: Vec::new(), pins: BTreeMap::new() };
@@ -303,11 +339,12 @@ mod tests {
         let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
         let states = |code: Code| {
             let fetch = |_: &Wanted| Err(code.error("GET https://example.org/index: unreachable"));
-            layer_states(&scratch.0, &store, &[&Fetching, &Listed], &loaded, &environment, fetch)
+            layer_states(&scratch.0, &store, &[&Fetching, &Listed, &Reading], &loaded, &environment, fetch)
         };
         let found = states(Code::FetchFailed).unwrap();
         let reason = "a fetch that the step list needs failed: GET https://example.org/index: unreachable";
         assert_eq!(found["test"], Err(reason.to_string()));
+        assert_eq!(found["reading"], Err(reason.to_string()), "it reads a layer of `test`");
         assert_eq!(found["listed"], Ok(Vec::new()));
         assert!(states(Code::Failed).is_err(), "only a failed fetch is unknown layers");
     }
