@@ -3,6 +3,7 @@ pub mod blocks;
 pub mod catalog;
 pub mod connectivity;
 pub mod cost;
+pub mod country;
 pub mod landmarks;
 pub mod layout;
 #[cfg(feature = "obc-terrain")]

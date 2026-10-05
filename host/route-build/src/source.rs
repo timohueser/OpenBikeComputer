@@ -1,5 +1,6 @@
 //! The source OSM model and the tag rules that the import, the overlay index and the route
 //! catalog share. No source object enters the routing package.
+use crate::country::Country;
 use route_engine::closures::{Closure, Kind};
 use route_engine::model::{Point, BIKE, FOOT, PUSH};
 use std::collections::BTreeMap;
@@ -38,9 +39,10 @@ pub fn granted(value: &str) -> bool {
     classify(value) == Access::Open
 }
 
-/// German road classes and default access, before explicit tags and one-way rules.
-pub fn highway_access(highway: &str) -> Option<(u8, u8)> {
-    Some(match highway {
+/// Road class and default access, before explicit tags and one-way rules. The modes are the
+/// worldwide defaults, unless the way's country differs.
+pub fn highway_access(highway: &str, country: Country) -> Option<(u8, u8)> {
+    let (class, modes) = match highway {
         "cycleway" => (0, BIKE),
         "residential" | "living_street" | "unclassified" | "service" | "tertiary" | "tertiary_link" => {
             (1, BIKE | FOOT | PUSH)
@@ -53,7 +55,8 @@ pub fn highway_access(highway: &str) -> Option<(u8, u8)> {
         "bridleway" => (4, 0),
         "steps" => (5, FOOT | PUSH),
         _ => return None,
-    })
+    };
+    Some((class, country.defaults(highway).unwrap_or(modes)))
 }
 
 pub fn inherited<'a>(get: &impl Fn(&str) -> Option<&'a str>, mode: &str, direction: &str) -> Option<&'a str> {
@@ -66,8 +69,9 @@ pub fn inherited<'a>(get: &impl Fn(&str) -> Option<&'a str>, mode: &str, directi
     result
 }
 
-/// Cycle lanes use German (right-hand traffic) defaults; explicit directions follow the OSM way.
-pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool) -> bool {
+/// Whether a cycle lane runs in the travel direction. A lane on a two-way road without a direction
+/// runs with the traffic on its side of the road.
+pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool, left_hand: bool) -> bool {
     let oneway = get("oneway").unwrap_or(if get("junction") == Some("roundabout") { "yes" } else { "no" });
     let road_direction = match oneway {
         "yes" | "1" | "true" => Some(false),
@@ -98,8 +102,8 @@ pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool) -> bo
             None if value.starts_with("opposite") => reversed != road_direction.unwrap_or(false),
             None => road_direction.map_or(
                 match *key {
-                    "cycleway:left" => reversed,
-                    "cycleway:right" => !reversed,
+                    "cycleway:left" => reversed != left_hand,
+                    "cycleway:right" => reversed == left_hand,
                     _ => true,
                 },
                 |direction| reversed == direction,
@@ -108,7 +112,7 @@ pub fn cycleway<'a>(get: impl Fn(&str) -> Option<&'a str>, reversed: bool) -> bo
     })
 }
 
-/// Pushing follows pedestrian access in the supported German region, unless explicitly restricted.
+/// Pushing follows pedestrian access, unless explicitly restricted.
 /// With `routing`, an uncertain value opens its mode, and the route reports it as a closure.
 pub fn access<'a>(get: impl Fn(&str) -> Option<&'a str>, defaults: u8, direction: &str, routing: bool) -> u8 {
     let opens = |value: &str| match classify(value) {
@@ -285,6 +289,13 @@ pub struct Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lane_without_a_direction_runs_with_the_traffic_on_its_side() {
+        let get = |key: &str| (key == "cycleway:left").then_some("lane");
+        assert_eq!([false, true].map(|reversed| cycleway(get, reversed, false)), [false, true]);
+        assert_eq!([false, true].map(|reversed| cycleway(get, reversed, true)), [true, false]);
+    }
 
     #[test]
     fn only_no_closes_and_every_other_restriction_becomes_a_closure() {

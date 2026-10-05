@@ -1,5 +1,5 @@
 //! Streaming regional OSM import.
-use crate::{source, Graph};
+use crate::{country::Country, source, Graph};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
 use route_engine::closures::{Closure, Kind};
 use route_engine::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
@@ -55,19 +55,20 @@ fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
     source::access(|key| tag(tags, key), defaults, direction, true)
 }
 
-fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
+fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attributes> {
     if tags.contains("area", "yes") {
         count(counts, "excluded area ways");
         return None;
     }
     let ferry = tags.contains("route", "ferry");
     let highway = tag(tags, "highway").unwrap_or("");
-    let (class, defaults) = if ferry { (6, BIKE | FOOT | PUSH) } else { source::highway_access(highway)? };
+    let (class, defaults) = if ferry { (6, BIKE | FOOT | PUSH) } else { source::highway_access(highway, country)? };
     let mut modes = [access(tags, defaults, "forward"), access(tags, defaults, "backward")];
     let oneway = tag(tags, "oneway").unwrap_or(if tags.contains("junction", "roundabout") { "yes" } else { "no" });
+    // A lane on a one-way road follows the road, so the side of traffic does not matter.
     let opposite = match oneway {
-        "yes" | "1" | "true" => source::cycleway(|key| tag(tags, key), true),
-        "-1" | "reverse" => source::cycleway(|key| tag(tags, key), false),
+        "yes" | "1" | "true" => source::cycleway(|key| tag(tags, key), true, false),
+        "-1" | "reverse" => source::cycleway(|key| tag(tags, key), false, false),
         _ => false,
     };
     let bike_oneway = tag(tags, "oneway:bicycle").unwrap_or(if opposite { "no" } else { oneway });
@@ -237,10 +238,7 @@ fn tags_foot_restriction(tags: &Tags) -> bool {
 }
 
 /// Bounds are [west, south, east, north]. Missing or outside nodes break ways.
-pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Graph, String> {
-    if country != "DE" {
-        return Err("The importer currently supports German access defaults; use --country DE with German data".into());
-    }
+pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     if paths.is_empty()
         || bounds.iter().any(|v| !v.is_finite())
         || bounds[0] >= bounds[2]
@@ -253,7 +251,7 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
         return Err("Provide input files and nonempty [west,south,east,north] bounds".into());
     }
     let mut counts = Counts::new();
-    let mut ways = HashMap::new();
+    let mut highways = Vec::new();
     let mut relations = HashMap::new();
     let mut preserved = source::Data::default();
     for path in paths {
@@ -268,16 +266,9 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
                         count(&mut counts, "duplicate input ways");
                         continue;
                     }
-                    preserved.ways.insert(
-                        id.0,
-                        source::Way { id: id.0, nodes: nodes.iter().map(|n| n.0).collect(), tags: copy_tags(&tags) },
-                    );
-                    if let Some(attributes) = attributes(&tags, &mut counts) {
-                        ways.insert(
-                            id.0,
-                            RawWay { id: id.0, nodes: nodes.into_iter().map(|n| n.0).collect(), attributes, tags },
-                        );
-                    }
+                    let nodes: Vec<_> = nodes.into_iter().map(|n| n.0).collect();
+                    preserved.ways.insert(id.0, source::Way { id: id.0, nodes: nodes.clone(), tags: copy_tags(&tags) });
+                    highways.push((id.0, nodes, tags));
                 }
                 OsmObj::Relation(relation) => {
                     relations.entry(relation.id.0).or_insert(relation);
@@ -286,11 +277,6 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
             }
         }
     }
-    let mut rules = Vec::new();
-    for relation in relations.values() {
-        relation_rules(relation, &mut ways, &mut rules, &mut counts);
-    }
-    ways.retain(|_, w| w.attributes.access != [0, 0]);
     let mut needed = HashMap::<i64, u32>::new();
     for way in preserved.ways.values() {
         for id in &way.nodes {
@@ -326,6 +312,20 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], country: &str) -> Result<Grap
         }
     }
     counts.insert("outside bounds or missing referenced nodes", needed.len() - nodes.len());
+    let mut ways = HashMap::new();
+    for (id, way_nodes, tags) in highways {
+        // A way takes the country of its first retained node.
+        let country =
+            way_nodes.iter().find_map(|id| nodes.get(id)).map_or_else(Country::default, |n| Country::at(n.point));
+        if let Some(attributes) = attributes(&tags, country, &mut counts) {
+            ways.insert(id, RawWay { id, nodes: way_nodes, attributes, tags });
+        }
+    }
+    let mut rules = Vec::new();
+    for relation in relations.values() {
+        relation_rules(relation, &mut ways, &mut rules, &mut counts);
+    }
+    ways.retain(|_, w| w.attributes.access != [0, 0]);
     preserved.ways.retain(|_, way| way.nodes.iter().any(|id| nodes.contains_key(id)));
     preserve_relations(&mut preserved, relations, &nodes);
     let mut graph = build_graph(ways, nodes, needed, rules, counts)?;
@@ -493,7 +493,7 @@ fn build_graph(
     counts.insert("roads with unknown surface", graph.roads.iter().filter(|r| r.surface == Surface::Unknown).count());
     graph.warnings = counts.into_iter().filter(|(_, n)| *n != 0).map(|(label, n)| format!("{label}: {n}")).collect();
     graph.warnings.push("No DEM applied; elevation is unknown and climbing costs are not validated".into());
-    graph.warnings.push("German access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling".into());
+    graph.warnings.push("Country access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling".into());
     if graph.roads.is_empty() {
         return Err("No routable roads within input bounds".into());
     }
@@ -562,6 +562,11 @@ mod tests {
     use super::*;
     use osmpbfreader::{NodeId, Ref, RelationId, WayId};
     use route_engine::model::Profile;
+
+    /// Tests use the worldwide defaults.
+    fn attributes(tags: &Tags, counts: &mut Counts) -> Option<Attributes> {
+        super::attributes(tags, Country::default(), counts)
+    }
 
     fn tags(values: &[(&str, &str)]) -> Tags {
         values.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()

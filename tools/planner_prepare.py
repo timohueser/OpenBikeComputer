@@ -13,8 +13,6 @@ def recipe(path):
     document = json.loads(path.read_text())
     if document["format"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document["region"]):
         raise ValueError("Invalid region recipe")
-    if document["access"] != "DE":
-        raise ValueError("Routing has German access defaults. Add and verify each country's access policy before extending coverage.")
     if not document["countries"] or any(not re.fullmatch(r"[A-Z]{2}", code) for code in document["countries"]):
         raise ValueError("Name the region's countries as ISO codes")
     try:

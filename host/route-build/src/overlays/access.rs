@@ -1,4 +1,5 @@
 //! Map access uses the importer's mode rules, without treating every one-way road as closed.
+use crate::country::Country;
 use crate::source::{self, Access, Way};
 use route_engine::{
     closures::Kind,
@@ -7,13 +8,13 @@ use route_engine::{
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-pub fn feature(way: &Way) -> Option<Value> {
+pub fn feature(way: &Way, country: Country) -> Option<Value> {
     let get = |key: &str| way.tags.get(key).map(String::as_str);
     if get("area") == Some("yes") {
         return None;
     }
     let construction = get("highway") == Some("construction");
-    let defaults = if construction { 0 } else { source::highway_access(get("highway")?)?.1 };
+    let defaults = if construction { 0 } else { source::highway_access(get("highway")?, country)?.1 };
     let conditional = source::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     let directions = ["forward", "backward"];
     // The router's modes; the strict modes also close every mode that an access value doubts.
@@ -78,6 +79,10 @@ pub fn feature(way: &Way) -> Option<Value> {
 mod tests {
     use super::*;
     use crate::source::Tags;
+    /// Tests use the worldwide defaults.
+    fn feature(way: &Way) -> Option<Value> {
+        super::feature(way, Country::default())
+    }
     fn way(pairs: &[(&str, &str)]) -> Way {
         let mut tags: Tags = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         tags.entry("highway".into()).or_insert("path".into());

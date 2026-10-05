@@ -1,5 +1,6 @@
 //! OSM preferences adapted from BRouter fastbike, trekking and gravel (see LICENSE.brouter).
-use crate::source::Tags;
+use crate::country::Country;
+use crate::source::{self, Tags};
 use route_engine::{
     cost::CostBasis,
     model::{Road, RoadBike},
@@ -43,7 +44,8 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
     let rough = matches!(smoothness, "bad" | "very_bad" | "horrible" | "very_horrible" | "impassable");
     let unpaved = !(paved || matches!(surface, "fine_gravel" | "cobblestone") || smoothness == "intermediate")
         && (explicit_unpaved || rough);
-    let cycleway = crate::source::cycleway(|key| tags.get(key).map(String::as_str), road.reversed);
+    let get = |key: &str| tags.get(key).map(String::as_str);
+    let cycleway = source::cycleway(get, road.reversed, Country::at(road.shape[0]).left_hand());
     let designated = tag(tags, "bicycle") == "designated" || tag(tags, "bicycle_road") == "yes";
     let mut factor: f64 = match highway {
         "trunk" | "trunk_link" => 10.0,

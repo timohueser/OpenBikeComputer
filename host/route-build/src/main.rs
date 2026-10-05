@@ -13,8 +13,6 @@ struct Args {
     output: PathBuf,
     #[arg(long)]
     region: String,
-    #[arg(long)]
-    country: String,
     /// West,south,east,north in degrees. Routes are exact within this clipped graph.
     #[arg(long, allow_hyphen_values = true)]
     bounds: String,
@@ -71,7 +69,7 @@ fn run(args: Args) -> Result<(), String> {
         identities.push(format!("{:x}", hash.finalize()));
     }
     eprintln!("Importing {}", args.region);
-    let graph = route_build::osm::import(&args.inputs, bounds, &args.country)?;
+    let graph = route_build::osm::import(&args.inputs, bounds)?;
     #[cfg(feature = "obc-terrain")]
     let graph = if args.dem.is_some() || args.reference.is_some() {
         let mut graph = graph;
