@@ -127,25 +127,41 @@ async fn read_catalogs(
     flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
     facts: &mut obc_app::device_core::ExternalFacts,
-) -> Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError> {
+    #[cfg(has_nav)] nav: Option<&mut crate::arena::NavGuard>,
+) -> Option<Result<obc_app::device_core::StoreRevision, obc_app::catalog_state::CatalogError>> {
     use obc_app::catalog_state::CatalogError;
+    if !crate::arena::catalog_available() {
+        return None;
+    }
     app.begin_catalog_refresh();
-    metadata_call(crate::flat_store::Request::ReconcileMetadata).await.map_err(catalog_metadata_error)?;
+    if let Err(error) = metadata_call(crate::flat_store::Request::ReconcileMetadata).await {
+        return Some(Err(catalog_metadata_error(error)));
+    }
     let start = crate::flat_store::catalog_scope(flat);
-    let routes_loaded = crate::flat_store::load_routes(flat, app);
-    let trips_loaded = crate::flat_store::load_trips(flat, app);
+    let (routes_loaded, trips_loaded) = {
+        let mut catalogs = crate::arena::claim_catalogs(
+            #[cfg(has_nav)]
+            nav,
+        )?;
+        (
+            crate::flat_store::load_routes(flat, app, &mut catalogs),
+            crate::flat_store::load_trips(flat, app, &mut catalogs),
+        )
+    };
     let rides_loaded = crate::flat_store::load_rides(flat, app);
     if routes_loaded && trips_loaded {
         note_catalog_uploads(app, facts);
     }
     if !routes_loaded || !trips_loaded || !rides_loaded {
-        return Err(CatalogError::Unreadable);
+        return Some(Err(CatalogError::Unreadable));
     }
-    crate::flat_store::load_metadata(flat, app).map_err(catalog_metadata_error)?;
+    if let Err(error) = crate::flat_store::load_metadata(flat, app) {
+        return Some(Err(catalog_metadata_error(error)));
+    }
     if start != crate::flat_store::catalog_scope(flat) {
-        return Err(CatalogError::Stale);
+        return Some(Err(CatalogError::Stale));
     }
-    Ok(start)
+    Some(Ok(start))
 }
 
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds: the
@@ -563,10 +579,13 @@ impl RideExec {
         self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
     }
 
-    /// Whether a store round trip is outstanding. A committed removal wakes the loop, but an
-    /// `existed: false` answer and a refused commit move no sequence and raise no wake.
+    /// A card round trip or busy catalog loan takes the short cadence so the current owner progresses.
     fn polling_store(&self) -> bool {
         self.catalog.is_some()
+            || (matches!(
+                self.effects.catalog.as_ref(),
+                Some(obc_app::catalog_state::CatalogEffect::ReadCatalog { .. })
+            ) && !crate::arena::catalog_available())
     }
 
     /// Hand one outcome to its domain's slot.
@@ -1164,30 +1183,48 @@ pub(crate) async fn run_app(
                     }
                     // Rebuild the flat route, trip and ride identities and remap the app's held
                     // indices by durable object id.
-                    CatalogEffect::ReadCatalog { token } => {
+                    CatalogEffect::ReadCatalog { token } if app.catalog_effect_current(&effect) => {
                         let old_source = crate::flat_store::route_source_key();
-                        let read = read_catalogs(flat, app, &mut exec.facts).await;
-                        let active = app.active_route_index();
-                        crate::flat_store::reconcile_route(flat, active.and_then(|i| app.route_ids().get(i).copied()));
-                        if read.is_ok() && old_source.is_some() && crate::flat_store::route_source_key() == old_source {
-                            prev_active = active;
-                            if route_index_valid {
-                                index_route = active;
+                        let read = read_catalogs(
+                            flat,
+                            app,
+                            &mut exec.facts,
+                            #[cfg(has_nav)]
+                            nav_guard.as_mut(),
+                        )
+                        .await;
+                        if let Some(read) = read {
+                            let active = app.active_route_index();
+                            crate::flat_store::reconcile_route(
+                                flat,
+                                active.and_then(|i| app.route_ids().get(i).copied()),
+                            );
+                            if read.is_ok()
+                                && old_source.is_some()
+                                && crate::flat_store::route_source_key() == old_source
+                            {
+                                prev_active = active;
+                                if route_index_valid {
+                                    index_route = active;
+                                }
+                            } else {
+                                prev_active = None;
+                                index_route = None;
+                                route_index_valid = false;
                             }
-                        } else {
-                            prev_active = None;
-                            index_route = None;
-                            route_index_valid = false;
-                        }
 
-                        // A partial read is answered `Unreadable`, and the domain re-offers the read
-                        // from there, once per pass.
-                        let outcome = match read {
-                            Ok(scope) => CatalogOutcome::CatalogRead { token, scope: Some(scope) },
-                            Err(error) => CatalogOutcome::Failed { token, error },
-                        };
-                        RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
+                            // A partial read is answered `Unreadable`, and the domain re-offers the read
+                            // from there, once per pass.
+                            let outcome = match read {
+                                Ok(scope) => CatalogOutcome::CatalogRead { token, scope: Some(scope) },
+                                Err(error) => CatalogOutcome::Failed { token, error },
+                            };
+                            RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
+                        } else {
+                            exec.effects.catalog.try_put(effect).unwrap();
+                        }
                     }
+                    CatalogEffect::ReadCatalog { .. } => {}
                     // The rider's removal of a route, a ride, or one step of a trip cascade, on the
                     // answering writer path. The effect is namespace-free, so the store resolves the
                     // head at that id and reports whether it was there. A full request queue is not
@@ -1628,7 +1665,9 @@ pub(crate) async fn run_app(
                                             );
                                             continue;
                                         }
-                                        crate::flat_store::load_routes(flat, app);
+                                        if let Some(mut catalogs) = crate::arena::claim_catalogs(nav_guard.as_mut()) {
+                                            crate::flat_store::load_routes(flat, app, &mut catalogs);
+                                        }
                                     } else {
                                         RideExec::deliver(
                                             &mut exec.outcomes.navigator,
@@ -1991,7 +2030,11 @@ pub(crate) async fn run_app(
                                                                 .ok();
                                                         }
                                                     }
-                                                    crate::flat_store::load_routes(flat, app);
+                                                    if let Some(mut catalogs) =
+                                                        crate::arena::claim_catalogs(Some(&mut *guard))
+                                                    {
+                                                        crate::flat_store::load_routes(flat, app, &mut catalogs);
+                                                    }
                                                     if app.assistant_review_context().is_none() {
                                                         let _ = crate::flat_store::reconcile_route(flat, Some(id));
                                                     }
@@ -2567,11 +2610,17 @@ pub(crate) async fn run_app(
                 }
             }
             exec.needs = derived_needs;
+            let deferred_catalog = exec.effects.catalog.take().filter(|effect| app.catalog_effect_current(effect));
             debug_assert!(
                 !exec.effects.has_pending(),
                 "every staged effect is served in this frame's store phase before the next plan lands"
             );
             exec.effects = effects;
+            if exec.effects.catalog.is_empty() {
+                if let Some(effect) = deferred_catalog {
+                    exec.effects.catalog.try_put(effect).unwrap();
+                }
+            }
 
             // The BLE acting half: what the pass just decided, out to the radio plane. Both of these
             // key on state this frame's gestures produced, so they read the app after the pass.

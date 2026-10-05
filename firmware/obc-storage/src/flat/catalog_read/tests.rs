@@ -9,7 +9,7 @@ struct Head {
     revision: Revision,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Routes {
     summaries: Vec<RouteSummary>,
     ids: Vec<u64>,
@@ -18,7 +18,7 @@ struct Routes {
     temporary: u64,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Trips {
     metas: Vec<TripMeta>,
     ids: Vec<u64>,
@@ -99,6 +99,45 @@ fn original_trips<D: BlockDevice>(store: &FlatStore<D>) -> Result<Trips, ()> {
     Ok(trips)
 }
 
+fn current_routes<D: BlockDevice>(store: &FlatStore<D>) -> Result<Routes, ()> {
+    let mut routes = Routes::default();
+    super::scan(
+        store,
+        ObjectKind::Route,
+        &mut heapless::Vec::<super::Head, 64>::new(),
+        &mut |head, accepted, source| {
+            let (summary, flags) = RouteSummary::read_with_flags(source)?;
+            let index = routes.summaries.len();
+            if obc_formats::obcr::disposable_navigation(flags) {
+                routes.temporary |= 1 << index;
+            }
+            let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+            if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
+                routes.internal |= 1 << index;
+            }
+            if candidate && !accepted {
+                routes.candidates |= 1 << index;
+            }
+            routes.summaries.push(summary);
+            routes.ids.push(head.id.0);
+            Ok(())
+        },
+    )
+    .map_err(|_| ())?;
+    Ok(routes)
+}
+
+fn current_trips<D: BlockDevice>(store: &FlatStore<D>) -> Result<Trips, ()> {
+    let mut trips = Trips::default();
+    super::scan(store, ObjectKind::Trip, &mut heapless::Vec::<super::Head, 16>::new(), &mut |head, _, source| {
+        trips.metas.push(TripMeta::read(source)?);
+        trips.ids.push(head.id.0);
+        Ok(())
+    })
+    .map_err(|_| ())?;
+    Ok(trips)
+}
+
 #[derive(Default)]
 struct Sink(Vec<u8>);
 impl ByteSink for Sink {
@@ -163,6 +202,7 @@ fn captured_loaders_choose_newest_decode_and_compact_masks() {
     let store = FlatStore::initialize(&disk, StoreId([0x47; 16])).unwrap();
     populate(&store, 76, 20);
     let routes = original_routes(&store).unwrap();
+    assert_eq!(current_routes(&store), Ok(routes.clone()));
     assert_eq!(routes.ids.len(), 63);
     assert_eq!(routes.ids[0], 76);
     assert_eq!(routes.ids[1], 74);
@@ -171,6 +211,7 @@ fn captured_loaders_choose_newest_decode_and_compact_masks() {
     assert_eq!(routes.temporary & 7, 0);
     assert_eq!(routes.internal & 7, 7);
     let trips = original_trips(&store).unwrap();
+    assert_eq!(current_trips(&store), Ok(trips.clone()));
     assert_eq!(trips.ids.len(), 15);
     assert_eq!(trips.metas[0].key, 20);
     assert_eq!(trips.metas[14].key, 5);
@@ -193,6 +234,9 @@ fn captured_loaders_release_handles_after_every_media_read_refusal() {
         let routes = original_routes(&store);
         let trips = original_trips(&store);
         assert!(faults.fired(), "read refusal {skip}/{reads}");
+        faults.fault_after(MediaOp::Read, skip);
+        assert_eq!((current_routes(&store), current_trips(&store)), (routes.clone(), trips.clone()));
+        assert!(faults.fired(), "streamed read refusal {skip}/{reads}");
         let mut published_routes = Routes { ids: std::vec![999], ..Default::default() };
         let mut published_trips = Trips { ids: std::vec![999], ..Default::default() };
         if let Ok(routes) = routes {

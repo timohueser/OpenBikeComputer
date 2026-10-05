@@ -1673,68 +1673,54 @@ fn retain_newest<const N: usize>(entries: &mut heapless::Vec<CatalogHead, N>, en
     let _ = entries.insert(at, entry);
 }
 
-/// Rebuild the Route menu from one bounded catalog snapshot. The newest `MAX_ROUTES` ids win, so a
-/// fresh upload remains visible even on a benchmark card carrying hundreds of old ladder objects.
+/// Catalog projections live only for the synchronous scan that publishes them.
+pub(crate) struct CatalogScratch {
+    pub(crate) route_heads: heapless::Vec<obc_storage::flat::catalog_read::Head, { obc_app::MAX_ROUTES }>,
+    pub(crate) routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }>,
+    pub(crate) route_ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }>,
+    pub(crate) trip_heads: heapless::Vec<obc_storage::flat::catalog_read::Head, { obc_app::MAX_TRIPS }>,
+    pub(crate) trips: heapless::Vec<obc_route::TripMeta, { obc_app::MAX_TRIPS }>,
+    pub(crate) trip_ids: heapless::Vec<u64, { obc_app::MAX_TRIPS }>,
+}
+
+/// Publish a complete route snapshot. Newest ids win; a media failure keeps the prior menu.
 #[inline(never)]
-pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut heads: heapless::Vec<CatalogHead, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
-    for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
-        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
-    }
-    if !store.entries_ok() {
-        defmt::warn!("flat: route catalog listing failed — keeping the prior menu snapshot");
-        return false;
-    }
-
-    let mut accepted = 0u64;
-    for meta in store.entries().filter(|meta| meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)) {
-        if let Some(index) = heads.iter().position(|head| head.id == meta.id && head.revision == meta.revision) {
-            accepted |= 1 << index;
-        }
-    }
-    if !store.entries_ok() {
-        return false;
-    }
-
-    let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
-    let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
+pub(crate) fn load_routes(
+    store: &'static FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+    stage: &mut CatalogScratch,
+) -> bool {
+    stage.routes.clear();
+    stage.route_ids.clear();
     let mut candidates = 0u64;
     let mut internal_routes = 0u64;
     let mut temporary_routes = 0u64;
-    for (index, entry) in heads.into_iter().enumerate() {
-        match store
-            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_flags(source))
-        {
-            Ok(Ok((summary, flags))) => {
-                if obc_formats::obcr::disposable_navigation(flags) {
-                    temporary_routes |= 1 << routes.len();
-                }
-                let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
-                if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
-                    internal_routes |= 1 << routes.len();
-                }
-                if candidate && accepted & (1 << index) == 0 {
-                    candidates |= 1 << routes.len();
-                }
-                let _ = routes.push(summary);
-                let _ = ids.push(entry.id.0);
+    let result = obc_storage::flat::catalog_read::scan(
+        store,
+        ObjectKind::Route,
+        &mut stage.route_heads,
+        &mut |head, accepted, source| {
+            let (summary, flags) = obc_route::RouteSummary::read_with_flags(source)?;
+            if obc_formats::obcr::disposable_navigation(flags) {
+                temporary_routes |= 1 << stage.routes.len();
             }
-            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
-                defmt::warn!(
-                    "flat: route object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
-                    entry.id.0,
-                    entry.revision.0
-                );
-                return false;
+            let candidate = flags & obc_formats::obcr::FLAG_ASSISTANT_CANDIDATE != 0;
+            if candidate || flags & (obc_formats::obcr::FLAG_BUILT_DAY | obc_formats::obcr::FLAG_TEMPORARY) != 0 {
+                internal_routes |= 1 << stage.routes.len();
             }
-            Ok(Err(_)) => defmt::warn!(
-                "flat: route object {=u64} revision {=u64} is malformed — omitted from menu",
-                entry.id.0,
-                entry.revision.0
-            ),
-        }
+            if candidate && !accepted {
+                candidates |= 1 << stage.routes.len();
+            }
+            let _ = stage.routes.push(summary);
+            let _ = stage.route_ids.push(head.id.0);
+            Ok(())
+        },
+    );
+    if result.is_err() {
+        defmt::warn!("flat: route catalog read failed — keeping the prior menu snapshot");
+        return false;
     }
-    app.set_routes_with_ids(&routes, &ids);
+    app.set_routes_with_ids(&stage.routes, &stage.route_ids);
     app.set_internal_routes(internal_routes);
     app.set_temporary_routes(temporary_routes);
     app.set_unaccepted_routes(candidates);
@@ -1743,48 +1729,36 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
             app.offer_assistant_checkpoint(catalog_scope(store).store, checkpoint);
         }
     }
-    defmt::info!("flat: Route menu loaded {=usize} route(s)", routes.len());
+    defmt::info!("flat: Route menu loaded {=usize} route(s)", stage.routes.len());
     true
 }
 
-/// Decode the newest bounded trip objects and resolve their full-width stage `ObjectId`s against
-/// the route snapshot already fed to the app.
+/// Resolve the newest bounded trips against the route snapshot already published to the app.
 #[inline(never)]
-pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut heads: heapless::Vec<CatalogHead, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
-    for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Trip) {
-        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
-    }
-    if !store.entries_ok() {
-        defmt::warn!("flat: trip catalog listing failed — keeping the prior menu snapshot");
+pub(crate) fn load_trips(
+    store: &'static FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+    stage: &mut CatalogScratch,
+) -> bool {
+    stage.trips.clear();
+    stage.trip_ids.clear();
+    let result = obc_storage::flat::catalog_read::scan(
+        store,
+        ObjectKind::Trip,
+        &mut stage.trip_heads,
+        &mut |head, _, source| {
+            let meta = obc_route::TripMeta::read(source)?;
+            let _ = stage.trips.push(meta);
+            let _ = stage.trip_ids.push(head.id.0);
+            Ok(())
+        },
+    );
+    if result.is_err() {
+        defmt::warn!("flat: trip catalog read failed — keeping the prior menu snapshot");
         return false;
     }
-
-    let mut metas: heapless::Vec<obc_route::TripMeta, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
-    let mut ids: heapless::Vec<u64, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
-    for entry in heads {
-        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::TripMeta::read(source)) {
-            Ok(Ok(meta)) => {
-                let _ = metas.push(meta);
-                let _ = ids.push(entry.id.0);
-            }
-            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
-                defmt::warn!(
-                    "flat: trip object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
-                    entry.id.0,
-                    entry.revision.0
-                );
-                return false;
-            }
-            Ok(Err(_)) => defmt::warn!(
-                "flat: trip object {=u64} revision {=u64} is malformed — omitted from menu",
-                entry.id.0,
-                entry.revision.0
-            ),
-        }
-    }
     let mut inputs: heapless::Vec<obc_app::TripInput<'_>, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
-    for (id, meta) in ids.iter().copied().zip(metas.iter()) {
+    for (id, meta) in stage.trip_ids.iter().copied().zip(stage.trips.iter()) {
         let _ = inputs.push(obc_app::TripInput {
             id,
             key: meta.key,

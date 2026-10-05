@@ -321,6 +321,95 @@ pub(crate) fn claim_render() -> Result<RenderGuard, ArenaError> {
     Ok(RenderGuard { _not_send: PhantomData })
 }
 
+const CATALOG_ALIGN: usize = core::mem::align_of::<crate::flat_store::CatalogScratch>();
+const CATALOG_OFFSET: usize = {
+    #[cfg(has_nav)]
+    let used = {
+        let nav = core::mem::size_of::<NavArm>();
+        let detour = core::mem::size_of::<DetourArm>();
+        let visit = core::mem::size_of::<VisitArm>();
+        let larger = if nav > detour { nav } else { detour };
+        if larger > visit {
+            larger
+        } else {
+            visit
+        }
+    };
+    #[cfg(not(has_nav))]
+    let used = 0;
+    used.div_ceil(CATALOG_ALIGN) * CATALOG_ALIGN
+};
+const _: () = assert!(
+    CATALOG_ALIGN <= core::mem::align_of::<ScratchArena>()
+        && CATALOG_OFFSET.is_multiple_of(CATALOG_ALIGN)
+        && CATALOG_OFFSET + core::mem::size_of::<crate::flat_store::CatalogScratch>() <= ARENA_BYTES
+);
+
+/// A synchronous catalog stage: a disjoint nav tail, or an exclusively owned render block.
+pub(crate) struct CatalogLoan<'a> {
+    render: Option<RenderGuard>,
+    _nav: PhantomData<&'a mut ()>,
+}
+
+impl Deref for CatalogLoan<'_> {
+    type Target = crate::flat_store::CatalogScratch;
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the loan owns the render guard or exclusively borrows NavGuard. The aligned
+        // tail begins after every live nav variant, and claim_catalogs initializes the full stage.
+        unsafe { &*arena_ptr().cast::<u8>().add(CATALOG_OFFSET).cast::<Self::Target>() }
+    }
+}
+impl DerefMut for CatalogLoan<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the mutable loan borrow is the only reference to its stage.
+        unsafe { &mut *arena_ptr().cast::<u8>().add(CATALOG_OFFSET).cast::<Self::Target>() }
+    }
+}
+impl Drop for CatalogLoan<'_> {
+    fn drop(&mut self) {
+        // SAFETY: all stage fields are initialized, and no reference survives the loan.
+        unsafe {
+            core::ptr::drop_in_place(
+                arena_ptr().cast::<u8>().add(CATALOG_OFFSET).cast::<crate::flat_store::CatalogScratch>(),
+            );
+            if self.render.is_some() {
+                obc_render::RenderScratch::init_zeroed(arena_ptr().cast());
+            }
+        }
+    }
+}
+
+pub(crate) fn catalog_available() -> bool {
+    matches!(owner(), ArenaOwner::None | ArenaOwner::Nav)
+}
+
+pub(crate) fn claim_catalogs<'a>(#[cfg(has_nav)] nav: Option<&'a mut NavGuard>) -> Option<CatalogLoan<'a>> {
+    #[cfg(has_nav)]
+    let nav_held = nav.is_some();
+    #[cfg(not(has_nav))]
+    let nav_held = false;
+    let render = if nav_held {
+        None
+    } else {
+        if owner() != ArenaOwner::None {
+            return None;
+        }
+        Some(claim_render().ok()?)
+    };
+    let loan = CatalogLoan { render, _nav: PhantomData };
+    // SAFETY: the loan holds the exclusive owner. Every vector is initialized before Deref.
+    unsafe {
+        let slot = arena_ptr().cast::<u8>().add(CATALOG_OFFSET).cast::<crate::flat_store::CatalogScratch>();
+        core::ptr::addr_of_mut!((*slot).route_heads).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).routes).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).route_ids).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).trip_heads).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).trips).write(heapless::Vec::new());
+        core::ptr::addr_of_mut!((*slot).trip_ids).write(heapless::Vec::new());
+    }
+    Some(loan)
+}
+
 /// The nav arm, held for a whole search and so for many ride-loop passes: the A* table, the tile
 /// cache and the planner must all survive from one bounded step to the next. The ride loop keeps
 /// this guard in its own state, and the Recalculating freeze is what keeps render claims away
