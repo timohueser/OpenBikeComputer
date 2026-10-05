@@ -142,9 +142,12 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
+| `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
+| `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
+| `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
-| `locks/` | One lock file per key |
+| `locks/` | One lock file per key and per run |
 
 Rules:
 
@@ -296,16 +299,17 @@ The store keeps its answer, or its failure, for one hour.
 
 ## Layers
 
-A step makes one layer from snapshots, the layers of other steps and options. The engine builds
-the steps in dependency order. It builds a step only when the store has no receipt for the key
-of the step, or when an object of that receipt is missing.
+A step makes one layer from snapshots, the layers of other steps and options. A
+[plan](#plan) lists the steps to build, and a [run](#runs) builds them in dependency order. The
+engine builds a step only when the store has no receipt for the key of the step, or when an
+object of that receipt is missing.
 
 A step declares:
 
 | Field | Meaning |
 | --- | --- |
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
-| `inputs` | Snapshots, as `source`, `version` and `files`: the names of the files that the step reads, or none for every file. The layers of other steps, by name |
+| `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, by name |
 | `options` | A JSON object |
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
@@ -392,10 +396,102 @@ A step that needs a package or a tool finds it installed, or reads it as a snaps
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the process when the step raised it, else `null` |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
+
+### Plan
+
+A plan lists what a run fetches and builds. It is a JSON object, `{"groups": [...]}`. The engine
+looks at the steps in dependency order:
+
+- A snapshot input needs a fetch when the store cannot give the files that it reads: no record
+  of a fetch with its `params`, no record of the version, no selected file in it, or no object of
+  a selected file.
+- A step needs a build when a snapshot that it reads needs a fetch, when a layer that it reads
+  needs a build, or when the store has no layer for its key.
+- The plan does not list the other steps: the store has their layers.
+
+A group is one change. Two builds are in the same group when one reads the layer of the other.
+Thus a run of one group never needs a build of another group. Two groups can need the same
+fetch. `--only GROUP,…` selects groups by their `id`. An `id` names a group only in the plan that
+it comes from.
+
+| Key | Value |
+| --- | --- |
+| `id` | The step of the first build of the group, in dependency order |
+| `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
+| `builds` | In dependency order: `step`, `key` (`null` while the step waits for a fetch or another build) and `estimate` |
+
+The estimate of a build is `wall_ms`, `bytes_out` and `peak_rss_bytes` of the newest receipt, by
+`built`, of the same step with the same options. Without one, it is the newest receipt of the
+step, or `null` when the store has none. The `bytes` of a fetch is the size of its files in the
+record of the version. When that record does not list them all, it is the size in the record of
+another version that lists them all, the last in byte order. Without `files`, the files are those
+that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
+fetches a version with the same `params` once, with the files of every group that needs it.
+
+### Runs
+
+A run fetches the fetches of a plan, one after another, with the fetchers of [Fetch](#fetch).
+Then it builds the builds of the plan. A layer that a planned step reads, and that the plan does
+not build, must be in the store. A planned key that is not the key of the step now fails the run
+with "the plan is outdated; plan again".
+
+- A step starts when the layers that it reads are built.
+- At most one step per core runs at a time.
+- At most one Rust step runs at a time: its CPU time and peak are those of the whole process.
+  Command steps run in parallel.
+- The sum of the estimated peaks (`peak_rss_bytes` of the estimate) of the steps that run at the
+  same time is not more than the physical memory of the machine. A step without an estimated
+  peak counts as the whole memory. A step whose estimate is more than the memory runs alone.
+- After a fetch fails, no step starts. After a step fails, no other step starts, and the steps
+  that run finish. The layers that the run built stay in the store, so the next plan does not
+  list them: a new run continues after the failed step.
+
+The id of a run is its start time in UTC, `YYYY-MM-DD-HHMMSS`, with `-2`, `-3` and so on when
+another run has that id. The process that holds the lock `run-<id>` is the process that runs the
+run. A run without a `finished` event whose lock is free has failed. A command that gets
+`--detach` must start a child process that creates the run and gives its id back; no command has
+`--detach` yet.
+
+`runs/<id>.jsonl` has one JSON object per line. The key `event` gives its kind:
+
+| `event` | Keys |
+| --- | --- |
+| `started` | `command`, and `at` (`YYYY-MM-DDTHH:MM:SSZ`) |
+| `fetch_started` | `source`, `version` and `params` |
+| `fetch_finished` | `source`, `version`, `params`, `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
+| `fetch_failed` | `source`, `version`, `params` and `error` |
+| `step_started` | `step` |
+| `step_finished` | `step`, `reused` and `receipt` |
+| `step_failed` | `step` and `error` |
+| `finished` | `ok`, `error` (`null` when `ok`) and `wall_ms` |
+
+### State of a layer
+
+The engine computes the state of each layer when it is asked, and stores nothing. It compares
+the step with the layer that live has: its receipt, and the version and `params` of each source
+that it was built from. Apply gives them from the live manifests. The state of a source is as in
+[State of a source](#state-of-a-source).
+
+| State | When | Reason |
+| --- | --- | --- |
+| `not applied` | Live has no layer of the step | `missing in live` |
+| `not applied` | The options are not the options of the live layer | `options` |
+| `not applied` | The step reads a source that the live layer read, with another version or other `params` (in any order), or the store has the files that it reads and their digest is not the one that the live layer read | `SOURCE@VERSION not in live`, and ` (not fetched)` when the store does not have the files |
+| `code changed` | The inputs (kind and name), the command or the outputs are not those of the live layer | `inputs`, `command` or `outputs` |
+| `code changed` | The code hash is not the one of the live layer | The first code file that changed, and `and N more`. The declared code when the store has no `code/<hash>.json` of the live layer |
+| `input changed` | A layer that the step reads is `not applied`, `code changed` or `input changed`, or its live layer is not the one that the live layer of the step read | The name of that layer |
+| `stale` | A source that the step reads is `stale` | `SOURCE: ` and the reason of the source |
+| `blocked` | A source that the step reads is `blocked` | `SOURCE: ` and the reason of the source |
+| `ok` | Otherwise | `null` |
+
+When more than one row applies, the first row gives the state. In JSON, a state is `ok`,
+`stale`, `code_changed`, `input_changed`, `not_applied` or `blocked`. Each layer also has `live`
+(the key of the live layer, or `null`), `reads` (`kind`, `name`, and `version` for a snapshot),
+`code` (`paths` and `crates`), `code_hash` and `users` (the layers that read it).
 
 ## Commands
 
@@ -406,6 +502,9 @@ A step that needs a package or a tool finds it installed, or reads it as a snaps
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
+| `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
+| `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
+| `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
 
 `--json` writes one JSON document to standard output:
 
@@ -418,11 +517,22 @@ A step that needs a package or a tool finds it installed, or reads it as a snaps
   kind names. A `box` is an object with `west`, `south`, `east` and `north`.
 - `region show`: the region item, and `leaves` (the region ids it resolves to) and
   `bounds` (a box or `null`).
+- `runs`: `{"runs": [...]}`. Each item has `id`, `command`, `started`, `outcome` (`running`,
+  `ok` or `failed`), `wall_ms` (`null` until the run finishes), `bytes_fetched` (the size of
+  the files of its fetches) and `bytes_built` (the size of the layers that it built, not of the
+  layers that it reused). A run file that cannot be read is listed as `failed`, or `running`
+  while its lock is held.
+- `runs RUN`: the item of the run, and `error`, `fetches` and `steps`, in the order they
+  started. Each fetch has `source`, `version`, `params`, `bytes`, `wall_ms` and `error`. Each
+  step has `step`, `reused`, `receipt` (`null` while it runs or when it failed), `error`,
+  `users` (the steps of the run that read its layer) and `last_wall_ms` (its `wall_ms` in the
+  newest earlier run that built it, or `null`).
+- `runs RUN --follow`: one event per line, as in `runs/<id>.jsonl`.
 
 A command that fails writes the reason to standard error. The exit status is 0 when the command
 succeeds, 1 when a file under `data/` is not valid or a fetch fails, and 2 for a usage error,
-which includes an unknown region id, an unknown source id and a missing or invalid environment
-name.
+which includes an unknown region id, an unknown source id, an unknown or malformed run id and a
+missing or invalid environment name. `runs RUN --follow` exits with 1 when the run failed.
 
 ## R2 client
 
