@@ -108,8 +108,8 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     if Command::new("uv").arg("--version").output().is_err() {
         // CI installs uv, so there a missing uv is a failure, not a skip.
-        assert!(std::env::var_os("CI").is_none(), "uv is absent: CI must test the Python step planner/overlays");
-        eprintln!("uv is absent: the Python step planner/overlays is not tested");
+        assert!(std::env::var_os("CI").is_none(), "uv is absent: CI must test the Python steps");
+        eprintln!("uv is absent: the Python steps are not tested");
         return;
     }
     // Machine setup, which a set-up machine has done: the step itself runs offline.
@@ -124,10 +124,26 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         (&metrics("planner/search/records")["pois"], &metrics("planner/search/records")["addresses"]),
         (&3.into(), &4.into())
     );
+    let database = |step: &str| {
+        let receipt = &built.iter().find(|built| built.receipt.step == step).unwrap().receipt;
+        assert!(receipt.metrics["sqlite"].is_string(), "{step} names the SQLite version");
+        rusqlite::Connection::open(store.object(&receipt.files[0].sha256)).unwrap()
+    };
+    let bakery: (String, String) = database("planner/search/pois")
+        .query_row("SELECT kind, source FROM places WHERE name = 'Bäckerei'", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(bakery, ("bakery".to_string(), "n10".to_string()));
+    let house: (String, String) = database("planner/search/addresses")
+        .query_row("SELECT house, source FROM addresses", [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap();
+    assert_eq!(house, ("3".to_string(), "n13".to_string()));
     // The bakery and the drinking water; the village is no rider place.
     assert_eq!(metrics("planner/places")["places"], 2);
     let overlays = &built.iter().find(|built| built.receipt.step == "planner/overlays").unwrap().receipt;
-    assert_eq!(overlays.command.as_ref().unwrap()[..4], ["uv", "run", "--locked", "--offline"]);
+    assert_eq!(
+        overlays.command.as_ref().unwrap()[..6],
+        ["env", "PYTHONHASHSEED=0", "uv", "run", "--locked", "--offline"]
+    );
     let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
     assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");

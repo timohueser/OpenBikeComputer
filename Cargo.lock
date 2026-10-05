@@ -3552,6 +3552,7 @@ dependencies = [
  "obc-search-bake",
  "route-build",
  "route-engine",
+ "rusqlite",
  "serde",
  "serde_json",
  "toml",

@@ -1,6 +1,7 @@
 """Build searchable regional SQLite files from a enriched OSM search dump."""
 import argparse
 import io
+import sqlite3
 import sys
 import time
 import re
@@ -135,6 +136,8 @@ def step():
           [country.lower() for country in options['countries']], ZoneInfo(options['time_zone']),
           options['attribution'])
     (output / 'regions.geojson').unlink()
+    # The key holds no SQLite version, so the metrics record it.
+    step_request.metrics(request, {'sqlite': sqlite3.sqlite_version})
 
 
 if __name__ == '__main__':

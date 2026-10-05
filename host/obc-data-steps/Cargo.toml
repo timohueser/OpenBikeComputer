@@ -37,6 +37,8 @@ obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
 obc-formats = { path = "../../firmware/obc-formats" }
 route-engine = { path = "../route-engine" }
+# Reads the search databases of the planner build test.
+rusqlite = { version = "0.38", features = ["bundled"] }
 
 [[test]]
 name = "terrain_fixture"

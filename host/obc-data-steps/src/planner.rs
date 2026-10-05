@@ -206,8 +206,8 @@ impl Product for Planner {
         );
         // One search database per component: the POIs and the addresses.
         let search = |component: &str| {
-            let module = format!("{component}.py");
-            let files = ["build.py", "writer.py", "storage.py", "index.py", &module];
+            // writer.py imports pois.py or addresses.py by the component.
+            let files = ["build.py", "writer.py", "storage.py", "index.py", "pois.py", "addresses.py"];
             let data = ["schema.sql", "indexes.sql", "web/address-terms.json"];
             let files: Vec<String> = files.iter().chain(&data).map(|file| format!("{SEARCH}/{file}")).collect();
             let files: Vec<&str> = files.iter().map(String::as_str).chain(RECORDS).collect();
@@ -314,7 +314,8 @@ fn snapshot(
 /// A Python step: `entry`, a `tools.*` module or a script, with the argument `--step`, under `uv
 /// run` with the packages of `group` of `pyproject.toml`. `files` is its code besides [`PYTHON`]:
 /// each Python file that it imports, and each file that it reads from the repository. A credit
-/// that it writes comes in its options, so `data/sources.toml` is no code of it.
+/// that it writes comes in its options, so `data/sources.toml` is no code of it. The hash seed is
+/// fixed, so the order of a set never reaches the bytes of a layer.
 fn python(
     name: &str,
     inputs: Vec<Input>,
@@ -323,7 +324,8 @@ fn python(
     files: &[&str],
     outputs: &[&str],
 ) -> Step {
-    let mut argv: Vec<String> = ["uv", "run", "--locked", "--offline"].map(String::from).into();
+    let mut argv: Vec<String> =
+        ["env", "PYTHONHASHSEED=0", "uv", "run", "--locked", "--offline"].map(String::from).into();
     argv.extend(group.into_iter().flat_map(|group| ["--group".to_string(), group.to_string()]));
     argv.push("python".into());
     if !entry.ends_with(".py") {
@@ -522,10 +524,16 @@ mod tests {
         assert_eq!(with.groups.len(), without.groups.len() + 1);
     }
 
-    /// The `tools/*.py` files that the Python file `path` imports, except in `main()`: the old command
-    /// line, which no step runs.
-    fn imports(path: &Path) -> Vec<String> {
-        let text = std::fs::read_to_string(path).unwrap();
+    /// The Python files of the repository that the Python file `file` imports, except in `main()`:
+    /// the old command line, which no step runs. They are `tools/*.py` modules, and modules beside
+    /// `file`, which a script imports by name, also in a function.
+    fn imports(file: &str) -> Vec<String> {
+        let text = std::fs::read_to_string(root().join(file)).unwrap();
+        let dir = Path::new(file).parent().unwrap();
+        let sibling = |name: &str| {
+            let path = dir.join(format!("{name}.py"));
+            root().join(&path).is_file().then(|| path.to_str().unwrap().to_string())
+        };
         let mut found = Vec::new();
         let mut lines = text.lines();
         let mut in_main = false;
@@ -547,13 +555,15 @@ mod tests {
                 found.push(module(rest));
             } else if let Some(rest) = line.strip_prefix("import tools.") {
                 found.push(module(rest));
+            } else if let Some(rest) = line.strip_prefix("from ").or(line.strip_prefix("import ")) {
+                found.extend(sibling(rest.split([' ', ',', '.']).next().unwrap_or_default()));
             }
         }
         found
     }
 
     #[test]
-    fn a_python_step_declares_each_tools_module_that_it_imports() {
+    fn a_python_step_declares_each_module_that_it_imports() {
         let temp = temp("planner-python");
         let store = store(&temp, &["2026-10-01"]);
         let steps = Planner.steps(&env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap();
@@ -569,7 +579,7 @@ mod tests {
             let (mut pending, mut seen) = (vec![entry], BTreeSet::new());
             while let Some(file) = pending.pop() {
                 if seen.insert(file.clone()) {
-                    pending.extend(imports(&root().join(&file)));
+                    pending.extend(imports(&file));
                 }
             }
             // `tools/planner_maps.py` reads the pins of data/env/live.toml when it is imported.
