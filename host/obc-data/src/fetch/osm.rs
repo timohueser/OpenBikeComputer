@@ -62,12 +62,14 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
         return Err(format!("source `{}`: from={} is after the version {version}", source.id, date::format(from)));
     }
     // A diff and its state never change, so a file in the record of any version serves this one.
-    let known: Vec<FileRecord> = store
+    let mut known: Vec<FileRecord> = store
         .snapshots(&source.id)?
         .into_iter()
         .flat_map(|snapshot| snapshot.files)
         .filter(|file| store.object(&file.sha256).is_file())
         .collect();
+    known.sort_by(|a, b| a.url.cmp(&b.url));
+    known.dedup_by(|a, b| a.url == b.url);
     let file = |url: &str| -> Result<FileRecord, String> {
         match known.iter().find(|file| file.url == url) {
             Some(file) => {
@@ -90,10 +92,18 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
                     date::format(newest_day)
                 ));
             }
+            // A probe records nothing, so a failed fetch leaves no record and a wrong guess none
+            // in the record of `E`.
             let day_of = |sequence| {
-                let state = file(&url(sequence, ".state.txt"))?;
-                let text = std::fs::read_to_string(store.object(&state.sha256)).map_err(|e| e.to_string())?;
-                Ok(parse_state(&text, &state.url)?.1)
+                let url = url(sequence, ".state.txt");
+                let state = match known.iter().find(|file| file.url == url) {
+                    Some(file) => parse_state(
+                        &std::fs::read_to_string(store.object(&file.sha256)).map_err(|e| e.to_string())?,
+                        &url,
+                    ),
+                    None => state(http, &url),
+                };
+                Ok(state?.1)
             };
             let first = sequence(directory, (newest, newest_day), from, day_of)?;
             first..=sequence(directory, (newest, newest_day), day, day_of)?
@@ -107,8 +117,8 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
     Ok(Snapshot { source: source.id.clone(), version, files })
 }
 
-/// The sequences of `from` and `day` from the states in `known`, when `known` has the diff and
-/// the state of every sequence between them.
+/// The sequences of `from` and `day` from the states in `known`, when each day has one sequence
+/// there and `known` has the diff and the state of every sequence between them.
 fn stored(
     store: &Store,
     directory: &str,
@@ -121,7 +131,10 @@ fn stored(
         .filter(|file| file.url.starts_with(directory) && file.url.ends_with(".state.txt"))
         .filter_map(|file| parse_state(&std::fs::read_to_string(store.object(&file.sha256)).ok()?, &file.url).ok())
         .collect();
-    let sequence = |of: i64| days.iter().find(|(_, got)| *got == of).map(|(sequence, _)| *sequence);
+    let sequence = |of: i64| match days.iter().filter(|(_, got)| *got == of).collect::<Vec<_>>()[..] {
+        [(sequence, _)] => Some(*sequence),
+        _ => None,
+    };
     let (first, last) = (sequence(from)?, sequence(day)?);
     let has = |url: String| known.iter().any(|file| file.url == url);
     (first + 1..=last)
@@ -164,7 +177,7 @@ fn hint(error: String) -> String {
 
 /// The sequence of the daily diff of `day`. It follows from the newest sequence when the
 /// replication has one diff per day; when its state names another day, the difference moves it
-/// once more.
+/// once more. A day with two diffs has no sequence.
 fn sequence(
     replication: &str,
     (newest, newest_day): (u64, i64),
@@ -178,7 +191,16 @@ fn sequence(
         }
         let got = day_of(guess as u64)?;
         if got == day {
-            return Ok(guess as u64);
+            let guess = guess as u64;
+            // The day grows with the sequence, so a second diff of the day is a neighbour.
+            for neighbour in
+                [guess.checked_sub(1), Some(guess + 1).filter(|&next| next <= newest)].into_iter().flatten()
+            {
+                if day_of(neighbour)? == day {
+                    return Err(format!("{replication}: two daily diffs of {}", date::format(day)));
+                }
+            }
+            return Ok(guess);
         }
         guess += day - got;
     }

@@ -172,7 +172,7 @@ fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
 }
 
 /// Add `files` to the snapshot record of the version. A version names one set of bytes, so a
-/// record that has a URL or a name with other bytes is an error.
+/// record that has a URL with other bytes is an error; a name names one URL.
 fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<(), String> {
     let _lock = store.lock(&snapshot_lock(source, version))?;
     match merge(store, source, version, files)? {
@@ -196,12 +196,14 @@ fn merge(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Re
     });
     let before = snapshot.files.len();
     for file in files {
-        let same = |old: &&FileRecord| old.url == file.url || old.name == file.name;
-        if let Some(old) = snapshot.files.iter().find(same).filter(|old| old.sha256 != file.sha256) {
+        if let Some(old) = snapshot.file(&file.url).filter(|old| old.sha256 != file.sha256) {
             return Err(format!(
-                "{source}@{version}: {} ({}) has the SHA-256 {}, but the record has {} for {}",
-                file.url, file.name, file.sha256, old.sha256, old.url
+                "{source}@{version}: {} now has the SHA-256 {}, but the record has {}",
+                file.url, file.sha256, old.sha256
             ));
+        }
+        if let Some(old) = snapshot.files.iter().find(|old| old.name == file.name && old.url != file.url) {
+            return Err(format!("{source}@{version}: the name {} is of {} and {}", file.name, old.url, file.url));
         }
         if snapshot.file(&file.url).is_none() {
             snapshot.files.push(file.clone());
@@ -571,6 +573,7 @@ mod tests {
         assert!(log.lock().unwrap().is_empty());
         let err = get("2026-10-01", from("2026-09-28")).unwrap_err();
         assert!(err.contains("no daily diff of 2026-10-01"), "{err}");
+        assert_eq!(store.snapshot(&diffs.id, "2026-10-01").unwrap(), None, "a probe records nothing");
         let err = get("2026-10-03", from("2026-10-03")).unwrap_err();
         assert!(err.contains("the newest daily diff is of 2026-10-02"), "{err}");
         let downloaded = |log: &Log| {
@@ -585,6 +588,30 @@ mod tests {
         assert_eq!(changes(&get("2026-09-30", from("2026-09-29")).unwrap()), ["000/005/131.osc.gz"]);
         assert_eq!(get("2026-09-30", from("2026-09-30")).unwrap().files.len(), 1, "only the state of the base");
         assert_eq!(log.lock().unwrap().len(), asked);
+    }
+
+    #[test]
+    fn a_day_with_two_diffs_is_no_base_and_no_version() {
+        let (diffs, _log) = replication(&[
+            (5127, "2026-09-26"),
+            (5128, "2026-09-27"),
+            (5129, "2026-09-28"),
+            (5130, "2026-09-28"),
+            (5131, "2026-09-29"),
+        ]);
+        let scratch = Scratch::new("twice");
+        let store = Store::at(&scratch.0);
+        let get = |version: &str, base: &str| {
+            fetch(&store, &quick(), &Request { source: &diffs, version: Some(version.into()), params: from(base) })
+        };
+        let twice = |result: Result<Snapshot, String>| result.unwrap_err().contains("two daily diffs of 2026-09-28");
+        assert!(twice(get("2026-09-29", "2026-09-28")));
+        assert!(twice(get("2026-09-28", "2026-09-27")));
+        assert_eq!(store.snapshot(&diffs.id, "2026-09-29").unwrap(), None);
+        // Between the base and the version, a day may have two diffs; the stored states then still
+        // refuse that day as a base.
+        assert_eq!(changes(&get("2026-09-29", "2026-09-27").unwrap()).len(), 3);
+        assert!(twice(get("2026-09-29", "2026-09-28")));
     }
 
     #[test]
@@ -634,8 +661,8 @@ mod tests {
             retrieved: String::new(),
         };
         record(&store, "land", "v1", &[file("https://h/1/a.tif", "aa")]).unwrap();
-        let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "bb")]).unwrap_err();
-        assert!(err.contains("the record has aa for https://h/1/a.tif"), "{err}");
+        let err = record(&store, "land", "v1", &[file("https://h/2/a.tif", "aa")]).unwrap_err();
+        assert!(err.contains("the name a.tif is of https://h/1/a.tif and https://h/2/a.tif"), "{err}");
     }
 
     #[test]
