@@ -12,6 +12,7 @@
 //! semantic-grid code.
 
 use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::ops::{Index, IndexMut};
 
 use geos::{Geom as _, Geometry};
 use obc_map_scene::M_PER_DEG;
@@ -147,6 +148,14 @@ impl Grid {
         y * self.cols + x
     }
 
+    fn on_frame(&self, (x, y): (f64, f64)) -> bool {
+        let epsilon = self.cols.max(self.rows) as f64 * self.cell_m * 1e-10;
+        (x - self.left).abs() <= epsilon
+            || (x - (self.left + self.cols as f64 * self.cell_m)).abs() <= epsilon
+            || (y - self.bottom).abs() <= epsilon
+            || (y - self.top()).abs() <= epsilon
+    }
+
     fn cell_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
         let ix = ((x - self.left) / self.cell_m).floor() as isize;
         let iy = ((self.top() - y) / self.cell_m).floor() as isize;
@@ -154,7 +163,7 @@ impl Grid {
     }
 }
 
-/// The previous (finer) rung's categorical result, used as the prototype's 35% soft anchor.
+/// The finer rung's categorical result supplies the 35% soft anchor.
 #[derive(Clone)]
 pub struct SemanticLabels {
     grid: Grid,
@@ -251,8 +260,81 @@ struct Source<'a> {
     bounds: (f64, f64, f64, f64),
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Support([u8; CLASSES]);
+
+const BASE_SUPPORT: Support = Support([64, 0, 0, 0, 0, 0, 0]);
+
+struct Raster<T> {
+    cols: usize,
+    rows: usize,
+    tile_cols: usize,
+    tiles: Vec<Option<Box<[T]>>>,
+    default: T,
+}
+
+impl<T: Copy> Raster<T> {
+    fn new(cols: usize, rows: usize, default: T) -> Self {
+        let tile_cols = cols.div_ceil(RASTER_TILE_CELLS);
+        Self { cols, rows, tile_cols, tiles: vec![None; tile_cols * rows.div_ceil(RASTER_TILE_CELLS)], default }
+    }
+
+    fn len(&self) -> usize {
+        self.cols * self.rows
+    }
+
+    fn location(&self, index: usize) -> (usize, usize) {
+        let (x, y) = (index % self.cols, index / self.cols);
+        (
+            y / RASTER_TILE_CELLS * self.tile_cols + x / RASTER_TILE_CELLS,
+            y % RASTER_TILE_CELLS * RASTER_TILE_CELLS + x % RASTER_TILE_CELLS,
+        )
+    }
+
+    fn bounds(&self) -> Option<(usize, usize, usize, usize)> {
+        self.tiles
+            .iter()
+            .enumerate()
+            .filter(|(_, tile)| tile.is_some())
+            .map(|(index, _)| {
+                let x = index % self.tile_cols * RASTER_TILE_CELLS;
+                let y = index / self.tile_cols * RASTER_TILE_CELLS;
+                (x, y, (x + RASTER_TILE_CELLS).min(self.cols), (y + RASTER_TILE_CELLS).min(self.rows))
+            })
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    }
+
+    fn dense(&self) -> Vec<T> {
+        let mut out = vec![self.default; self.len()];
+        for (index, tile) in self.tiles.iter().enumerate() {
+            let Some(tile) = tile else { continue };
+            let x = index % self.tile_cols * RASTER_TILE_CELLS;
+            let y = index / self.tile_cols * RASTER_TILE_CELLS;
+            let width = (self.cols - x).min(RASTER_TILE_CELLS);
+            for row in 0..(self.rows - y).min(RASTER_TILE_CELLS) {
+                out[(y + row) * self.cols + x..(y + row) * self.cols + x + width]
+                    .copy_from_slice(&tile[row * RASTER_TILE_CELLS..row * RASTER_TILE_CELLS + width]);
+            }
+        }
+        out
+    }
+}
+
+impl<T: Copy> Index<usize> for Raster<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        let (tile, offset) = self.location(index);
+        self.tiles[tile].as_ref().map_or(&self.default, |values| &values[offset])
+    }
+}
+
+impl<T: Copy> IndexMut<usize> for Raster<T> {
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        let (tile, offset) = self.location(index);
+        &mut self.tiles[tile]
+            .get_or_insert_with(|| vec![self.default; RASTER_TILE_CELLS * RASTER_TILE_CELLS].into_boxed_slice())[offset]
+    }
+}
 
 /// Build one faithful semantic rung.  `features` may contain lines and unrelated polygons; only
 /// classified polygons are sampled, and only the replacement thematic/water polygons are returned.
@@ -305,7 +387,7 @@ pub fn build_semantic_lod(
         rows: grid.rows * CELL_PX,
         cell_m: mpp,
     };
-    let water_labels: Vec<u8> = water.into_iter().map(u8::from).collect();
+    let water_labels = water.dense();
     let mut water_polys: Vec<Geom> = vectorize_classes(&water_labels, &water_grid, 2)?
         .into_iter()
         .filter_map(|(class, geom)| (class == 1).then_some(geom))
@@ -323,20 +405,10 @@ pub fn build_semantic_lod(
 
     let mut emitted_m = Vec::new();
     for (class, geom) in smoothed {
-        if class == SemanticClass::Base as u8 {
-            continue;
-        }
-        let class = match class {
-            1 => SemanticClass::Farmland,
-            2 => SemanticClass::Grass,
-            3 => SemanticClass::Forest,
-            4 => SemanticClass::Urban,
-            5 => SemanticClass::Rock,
-            6 => SemanticClass::Ice,
-            _ => continue,
-        };
-        if let Some(style_id) = scheme.style_for(class) {
-            emitted_m.push((style_id, geom));
+        if class != SemanticClass::Base as u8 {
+            if let Some(style_id) = scheme.output_style[class as usize] {
+                emitted_m.push((style_id, geom));
+            }
         }
     }
     if let Some(style_id) = scheme.style_for(SemanticClass::Water) {
@@ -355,7 +427,9 @@ pub fn build_semantic_lod(
         .sum();
     let features = emitted_m
         .into_iter()
-        .map(|(style, geom)| (style, map_coords(geom, |x, y| projection.unproject(x, y))))
+        .map(|(style, geom)| {
+            (style, map_rings(&geom, |ring| ring.iter().map(|&(x, y)| projection.unproject(x, y)).collect()))
+        })
         .collect();
     let stats = SemanticStats {
         source_polygons: sources.len(),
@@ -374,7 +448,7 @@ fn raster_support(
     grid: &Grid,
     projection: Projection,
     progress: &Progress,
-) -> Result<(Vec<Support>, Vec<bool>), String> {
+) -> Result<(Raster<Support>, Raster<u8>), String> {
     let tile_cols = grid.cols.div_ceil(RASTER_TILE_CELLS);
     let tile_rows = grid.rows.div_ceil(RASTER_TILE_CELLS);
     let mut members = vec![Vec::<usize>::new(); tile_cols * tile_rows];
@@ -403,24 +477,33 @@ fn raster_support(
         }
     }
 
-    let mut support = vec![Support::default(); grid.cols * grid.rows];
+    let mut support = Raster::new(grid.cols, grid.rows, BASE_SUPPORT);
     let water_cols = grid.cols * CELL_PX;
-    let mut water = vec![false; water_cols * grid.rows * CELL_PX];
+    let mut water = Raster::new(water_cols, grid.rows * CELL_PX, 0);
     for ty in 0..tile_rows {
         progress.check()?;
         for tx in 0..tile_cols {
+            let tile_members = &members[ty * tile_cols + tx];
+            if tile_members.is_empty() {
+                continue;
+            }
             let cell_x0 = tx * RASTER_TILE_CELLS;
             let cell_y0 = ty * RASTER_TILE_CELLS;
             let cells_w = (grid.cols - cell_x0).min(RASTER_TILE_CELLS);
             let cells_h = (grid.rows - cell_y0).min(RASTER_TILE_CELLS);
             let width = cells_w * SUBSAMPLES;
             let height = cells_h * SUBSAMPLES;
-            let mut labels = vec![0u8; width * height];
-            let mut water_hi = vec![0u8; width * height];
+            let mut samples = [vec![0u8; width * height], vec![0u8; width * height]];
             let tile_left = grid.left + cell_x0 as f64 * grid.cell_m;
             let tile_top = grid.top() - cell_y0 as f64 * grid.cell_m;
-            let sub_m = grid.cell_m / SUBSAMPLES as f64;
-            let tile_members = &members[ty * tile_cols + tx];
+            let sampling = Sampling {
+                projection,
+                left: tile_left,
+                top: tile_top,
+                step: grid.cell_m / SUBSAMPLES as f64,
+                width,
+                height,
+            };
             for class in [
                 SemanticClass::Farmland,
                 SemanticClass::Grass,
@@ -428,28 +511,18 @@ fn raster_support(
                 SemanticClass::Urban,
                 SemanticClass::Rock,
                 SemanticClass::Ice,
+                SemanticClass::Water,
             ] {
                 for &index in tile_members {
                     let source = &sources[index];
                     if source.class == class {
-                        raster_geom(
+                        let water = class == SemanticClass::Water;
+                        sampling.paint(
                             source.geom,
-                            projection,
-                            tile_left,
-                            tile_top,
-                            sub_m,
-                            width,
-                            height,
-                            &mut labels,
-                            class as u8,
+                            &mut samples[usize::from(water)],
+                            if water { 1 } else { class as u8 },
                         );
                     }
-                }
-            }
-            for &index in tile_members {
-                let source = &sources[index];
-                if source.class == SemanticClass::Water {
-                    raster_geom(source.geom, projection, tile_left, tile_top, sub_m, width, height, &mut water_hi, 1);
                 }
             }
 
@@ -459,10 +532,12 @@ fn raster_support(
                     for sy in 0..SUBSAMPLES {
                         let row = (cy * SUBSAMPLES + sy) * width + cx * SUBSAMPLES;
                         for sx in 0..SUBSAMPLES {
-                            counts[labels[row + sx] as usize] += 1;
+                            counts[samples[0][row + sx] as usize] += 1;
                         }
                     }
-                    support[grid.index(cell_x0 + cx, cell_y0 + cy)] = Support(counts);
+                    if Support(counts) != BASE_SUPPORT {
+                        support[grid.index(cell_x0 + cx, cell_y0 + cy)] = Support(counts);
+                    }
                     for py in 0..CELL_PX {
                         for px in 0..CELL_PX {
                             let mut wet = 0usize;
@@ -471,13 +546,15 @@ fn raster_support(
                                     + cx * SUBSAMPLES
                                     + px * SOURCE_SCALE;
                                 for sx in 0..SOURCE_SCALE {
-                                    wet += usize::from(water_hi[row + sx] != 0);
+                                    wet += usize::from(samples[1][row + sx] != 0);
                                 }
                             }
-                            // Prototype threshold: mean >= 0.18 over sixteen samples => at least 3.
+                            // Mean >= 0.18 over sixteen samples requires at least three wet samples.
                             let gx = (cell_x0 + cx) * CELL_PX + px;
                             let gy = (cell_y0 + cy) * CELL_PX + py;
-                            water[gy * water_cols + gx] = wet >= 3;
+                            if wet >= 3 {
+                                water[gy * water_cols + gx] = 1;
+                            }
                         }
                     }
                 }
@@ -487,92 +564,73 @@ fn raster_support(
     Ok((support, water))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn raster_geom(
-    geom: &Geom,
+struct Sampling {
     projection: Projection,
-    tile_left: f64,
-    tile_top: f64,
-    sub_m: f64,
+    left: f64,
+    top: f64,
+    step: f64,
     width: usize,
     height: usize,
-    target: &mut [u8],
-    value: u8,
-) {
-    match geom {
-        Geom::Polygon { exterior, interiors } => {
-            raster_polygon(exterior, interiors, projection, tile_left, tile_top, sub_m, width, height, target, value);
-        }
-        Geom::Multi(parts) => {
-            for part in parts {
-                raster_geom(part, projection, tile_left, tile_top, sub_m, width, height, target, value);
-            }
-        }
-        _ => {}
-    }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn raster_polygon(
-    exterior: &[(f64, f64)],
-    interiors: &[Vec<(f64, f64)>],
-    projection: Projection,
-    tile_left: f64,
-    tile_top: f64,
-    sub_m: f64,
-    width: usize,
-    height: usize,
-    target: &mut [u8],
-    value: u8,
-) {
-    if exterior.len() < 3 {
-        return;
-    }
-    let rings: Vec<Vec<(f64, f64)>> = std::iter::once(exterior)
-        .chain(interiors.iter().map(Vec::as_slice))
-        .filter(|ring| ring.len() >= 3)
-        .map(|ring| {
-            ring.iter()
-                .map(|&(lon, lat)| {
-                    let (x, y) = projection.project(lon, lat);
-                    ((x - tile_left) / sub_m, (tile_top - y) / sub_m)
-                })
-                .collect()
-        })
-        .collect();
-    let min_y = rings.iter().flatten().map(|p| p.1).fold(f64::INFINITY, f64::min);
-    let max_y = rings.iter().flatten().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-    let row0 = (min_y - 0.5).ceil().max(0.0) as usize;
-    let row1 = (max_y - 0.5).ceil().max(0.0).min(height as f64) as usize;
-    let mut crossings = Vec::with_capacity(rings.iter().map(Vec::len).sum());
-    for row in row0..row1 {
-        let scan_y = row as f64 + 0.5;
-        crossings.clear();
-        for points in &rings {
-            for i in 0..points.len() {
-                let a = points[i];
-                let b = points[(i + 1) % points.len()];
-                if (a.1 <= scan_y && scan_y < b.1) || (b.1 <= scan_y && scan_y < a.1) {
-                    crossings.push(a.0 + (scan_y - a.1) * (b.0 - a.0) / (b.1 - a.1));
+impl Sampling {
+    fn paint(&self, geom: &Geom, target: &mut [u8], value: u8) {
+        let Geom::Polygon { exterior, interiors } = geom else {
+            if let Geom::Multi(parts) = geom {
+                for part in parts {
+                    self.paint(part, target, value);
+                }
+            }
+            return;
+        };
+        if exterior.len() < 3 {
+            return;
+        }
+        let rings: Vec<Vec<(f64, f64)>> = std::iter::once(exterior.as_slice())
+            .chain(interiors.iter().map(Vec::as_slice))
+            .filter(|ring| ring.len() >= 3)
+            .map(|ring| {
+                ring.iter()
+                    .map(|&(lon, lat)| {
+                        let (x, y) = self.projection.project(lon, lat);
+                        ((x - self.left) / self.step, (self.top - y) / self.step)
+                    })
+                    .collect()
+            })
+            .collect();
+        let min_y = rings.iter().flatten().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let max_y = rings.iter().flatten().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        let row0 = (min_y - 0.5).ceil().max(0.0) as usize;
+        let row1 = (max_y - 0.5).ceil().max(0.0).min(self.height as f64) as usize;
+        let mut crossings = Vec::with_capacity(rings.iter().map(Vec::len).sum());
+        for row in row0..row1 {
+            let scan_y = row as f64 + 0.5;
+            crossings.clear();
+            for points in &rings {
+                for i in 0..points.len() {
+                    let a = points[i];
+                    let b = points[(i + 1) % points.len()];
+                    if (a.1 <= scan_y && scan_y < b.1) || (b.1 <= scan_y && scan_y < a.1) {
+                        crossings.push(a.0 + (scan_y - a.1) * (b.0 - a.0) / (b.1 - a.1));
+                    }
+                }
+            }
+            crossings.sort_by(f64::total_cmp);
+            for pair in crossings.as_chunks::<2>().0 {
+                let x0 = (pair[0] - 0.5).ceil().max(0.0) as usize;
+                let x1 = (pair[1] - 0.5).ceil().max(0.0).min(self.width as f64) as usize;
+                if x0 < x1 {
+                    target[row * self.width + x0..row * self.width + x1].fill(value);
                 }
             }
         }
-        crossings.sort_by(f64::total_cmp);
-        for pair in crossings.as_chunks::<2>().0 {
-            let x0 = (pair[0] - 0.5).ceil().max(0.0) as usize;
-            let x1 = (pair[1] - 0.5).ceil().max(0.0).min(width as f64) as usize;
-            if x0 < x1 {
-                target[row * width + x0..row * width + x1].fill(value);
-            }
-        }
     }
 }
 
-#[derive(Clone)]
 struct Window {
-    target: [f64; CLASSES],
-    counts: [f64; CLASSES],
-    valid: bool,
+    target: [u16; CLASSES],
+    counts: [u8; CLASSES],
+    area: u8,
 }
 
 struct WindowLayout {
@@ -583,10 +641,17 @@ struct WindowLayout {
     base: usize,
 }
 
-fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabels>) -> Vec<u8> {
+fn adaptive_labels(support: &Raster<Support>, grid: &Grid, prior: Option<&SemanticLabels>) -> Vec<u8> {
     let mut labels = vec![0u8; support.len()];
-    for y in 0..grid.rows {
-        for x in 0..grid.cols {
+    let Some((x0, y0, x1, y1)) = support.bounds() else { return labels };
+    // The 35% prior cannot change an initial label with 64 Base samples. Quotas can introduce
+    // a class only in windows touching support; elsewhere a change needs a changed neighbour.
+    // Each parity sweep extends that reach by one cell.
+    let halo = WINDOW_CELLS + 2 * ICM_PASSES;
+    let (x0, y0, x1, y1) =
+        (x0.saturating_sub(halo), y0.saturating_sub(halo), (x1 + halo).min(grid.cols), (y1 + halo).min(grid.rows));
+    for y in y0..y1 {
+        for x in x0..x1 {
             let i = grid.index(x, y);
             let prior_class = prior_class_at(prior, grid, x, y);
             let mut best = 0usize;
@@ -603,36 +668,37 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
     }
 
     let mut layouts = Vec::new();
-    let mut windows = Vec::new();
+    let mut windows = HashMap::new();
+    let mut window_base = 0;
     for (oy, ox) in [(0, 0), (0, WINDOW_HALF), (WINDOW_HALF, 0), (WINDOW_HALF, WINDOW_HALF)] {
         let nx = grid.cols.saturating_sub(ox).div_ceil(WINDOW_CELLS);
         let ny = grid.rows.saturating_sub(oy).div_ceil(WINDOW_CELLS);
-        let base = windows.len();
-        windows
-            .resize(windows.len() + nx * ny, Window { target: [0.0; CLASSES], counts: [0.0; CLASSES], valid: false });
+        let base = window_base;
+        window_base += nx * ny;
         layouts.push(WindowLayout { ox, oy, nx, ny, base });
     }
     for layout in &layouts {
         for by in 0..layout.ny {
             for bx in 0..layout.nx {
-                let x0 = layout.ox + bx * WINDOW_CELLS;
-                let y0 = layout.oy + by * WINDOW_CELLS;
-                let x1 = (x0 + WINDOW_CELLS).min(grid.cols);
-                let y1 = (y0 + WINDOW_CELLS).min(grid.rows);
-                let index = layout.base + by * layout.nx + bx;
-                if (x1 - x0) * (y1 - y0) < 16 {
+                let wx0 = layout.ox + bx * WINDOW_CELLS;
+                let wy0 = layout.oy + by * WINDOW_CELLS;
+                let wx1 = (wx0 + WINDOW_CELLS).min(grid.cols);
+                let wy1 = (wy0 + WINDOW_CELLS).min(grid.rows);
+                if wx0 >= x1 || wx1 <= x0 || wy0 >= y1 || wy1 <= y0 || (wx1 - wx0) * (wy1 - wy0) < 16 {
                     continue;
                 }
-                windows[index].valid = true;
-                for y in y0..y1 {
-                    for x in x0..x1 {
+                let mut window =
+                    Window { target: [0; CLASSES], counts: [0; CLASSES], area: ((wx1 - wx0) * (wy1 - wy0)) as u8 };
+                for y in wy0..wy1 {
+                    for x in wx0..wx1 {
                         let i = grid.index(x, y);
                         for class in 0..CLASSES {
-                            windows[index].target[class] += support[i].0[class] as f64 / 64.0;
+                            window.target[class] += u16::from(support[i].0[class]);
                         }
-                        windows[index].counts[labels[i] as usize] += 1.0;
+                        window.counts[labels[i] as usize] += 1;
                     }
                 }
+                windows.insert(layout.base + by * layout.nx + bx, window);
             }
         }
     }
@@ -640,8 +706,9 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
     for _ in 0..ICM_PASSES {
         let mut changed = 0usize;
         for parity in 0..2 {
-            for y in 0..grid.rows {
-                for x in (((parity as isize - y as isize) & 1) as usize..grid.cols).step_by(2) {
+            for y in y0..y1 {
+                let start = x0 + ((parity as isize - y as isize - x0 as isize) & 1) as usize;
+                for x in (start..x1).step_by(2) {
                     let i = grid.index(x, y);
                     let old = labels[i] as usize;
                     let mut neighbours = [u8::MAX; 4];
@@ -694,14 +761,13 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
                         delta += BOUNDARY_WEIGHT * (after_edges as f64 - before_edges as f64);
                         for &wi in &memberships {
                             let Some(wi) = wi else { continue };
-                            let w = &windows[wi];
-                            let before =
-                                (w.counts[old] - w.target[old]).powi(2) + (w.counts[new] - w.target[new]).powi(2);
-                            let after = (w.counts[old] - 1.0 - w.target[old]).powi(2)
-                                + (w.counts[new] + 1.0 - w.target[new]).powi(2);
-                            let target_sum: f64 = w.target.iter().sum();
-                            delta += QUOTA_WEIGHT * (after - before) / target_sum.max(1.0);
-                            if w.target[old] >= 0.8 && w.counts[old] <= 1.0 {
+                            let w = &windows[&wi];
+                            // Targets are exact multiples of 1/64, and each window has at most
+                            // 100 cells. The squared-error difference is exact in binary arithmetic.
+                            let old_error = w.counts[old] as f64 - w.target[old] as f64 / 64.0;
+                            let new_error = w.counts[new] as f64 - w.target[new] as f64 / 64.0;
+                            delta += QUOTA_WEIGHT * (2.0 * (new_error - old_error) + 2.0) / f64::from(w.area);
+                            if w.target[old] >= 52 && w.counts[old] <= 1 {
                                 delta += RARE_PENALTY;
                             }
                         }
@@ -713,8 +779,9 @@ fn adaptive_labels(support: &[Support], grid: &Grid, prior: Option<&SemanticLabe
                     if best != old {
                         labels[i] = best as u8;
                         for wi in memberships.into_iter().flatten() {
-                            windows[wi].counts[old] -= 1.0;
-                            windows[wi].counts[best] += 1.0;
+                            let window = windows.get_mut(&wi).expect("active cell window");
+                            window.counts[old] -= 1;
+                            window.counts[best] += 1;
                         }
                         changed += 1;
                     }
@@ -744,7 +811,7 @@ fn evidence(support: Support, class: usize, prior: Option<u8>) -> f64 {
     }
 }
 
-fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &[Window]) -> [Option<usize>; 4] {
+fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &HashMap<usize, Window>) -> [Option<usize>; 4] {
     let mut out = [None; 4];
     for (slot, layout) in layouts.iter().enumerate() {
         if x < layout.ox || y < layout.oy {
@@ -754,7 +821,7 @@ fn memberships(x: usize, y: usize, layouts: &[WindowLayout], windows: &[Window])
         let by = (y - layout.oy) / WINDOW_CELLS;
         if bx < layout.nx && by < layout.ny {
             let index = layout.base + by * layout.nx + bx;
-            if windows[index].valid {
+            if windows.contains_key(&index) {
                 out[slot] = Some(index);
             }
         }
@@ -770,63 +837,45 @@ fn vectorize_classes(labels: &[u8], grid: &Grid, classes: usize) -> Result<Vec<(
     if labels.len() != grid.cols * grid.rows {
         return Err("semantic label grid has the wrong size".into());
     }
-    let mut horizontal = vec![false; (grid.rows + 1) * grid.cols];
-    let mut vertical = vec![false; grid.rows * (grid.cols + 1)];
-    for y in 0..=grid.rows {
-        for x in 0..grid.cols {
-            horizontal[y * grid.cols + x] =
-                y == 0 || y == grid.rows || labels[(y - 1) * grid.cols + x] != labels[y * grid.cols + x];
-        }
-    }
-    for y in 0..grid.rows {
-        for x in 0..=grid.cols {
-            vertical[y * (grid.cols + 1) + x] =
-                x == 0 || x == grid.cols || labels[y * grid.cols + x - 1] != labels[y * grid.cols + x];
-        }
-    }
+    let boundary = |horizontal: bool, along, across| {
+        let (length, count) = if horizontal { (grid.cols, grid.rows) } else { (grid.rows, grid.cols) };
+        debug_assert!(along < length);
+        across == 0
+            || across == count
+            || if horizontal {
+                labels[grid.index(along, across - 1)] != labels[grid.index(along, across)]
+            } else {
+                labels[grid.index(across - 1, along)] != labels[grid.index(across, along)]
+            }
+    };
+    let point = |horizontal: bool, along, across| {
+        let (x, y) = if horizontal { (along, across) } else { (across, along) };
+        (grid.left + x as f64 * grid.cell_m, grid.top() - y as f64 * grid.cell_m)
+    };
     let mut lines = Vec::new();
-    for y in 0..=grid.rows {
-        let mut x = 0usize;
-        while x < grid.cols {
-            if !horizontal[y * grid.cols + x] {
-                x += 1;
-                continue;
-            }
-            let start = x;
-            x += 1;
-            while x < grid.cols && horizontal[y * grid.cols + x] {
-                let junction = (y > 0 && vertical[(y - 1) * (grid.cols + 1) + x])
-                    || (y < grid.rows && vertical[y * (grid.cols + 1) + x]);
-                if junction {
-                    break;
+    // GEOS receives horizontal runs in row order, then vertical runs in column order.
+    for horizontal in [true, false] {
+        let (length, count) = if horizontal { (grid.cols, grid.rows) } else { (grid.rows, grid.cols) };
+        for across in 0..=count {
+            let mut along = 0;
+            while along < length {
+                if !boundary(horizontal, along, across) {
+                    along += 1;
+                    continue;
                 }
-                x += 1;
-            }
-            let yy = grid.top() - y as f64 * grid.cell_m;
-            let coords = [(grid.left + start as f64 * grid.cell_m, yy), (grid.left + x as f64 * grid.cell_m, yy)];
-            lines.push(Geometry::create_line_string(ring_to_coordseq(&coords)).map_err(|e| e.to_string())?);
-        }
-    }
-    for x in 0..=grid.cols {
-        let mut y = 0usize;
-        while y < grid.rows {
-            if !vertical[y * (grid.cols + 1) + x] {
-                y += 1;
-                continue;
-            }
-            let start = y;
-            y += 1;
-            while y < grid.rows && vertical[y * (grid.cols + 1) + x] {
-                let junction =
-                    (x > 0 && horizontal[y * grid.cols + x - 1]) || (x < grid.cols && horizontal[y * grid.cols + x]);
-                if junction {
-                    break;
+                let start = along;
+                along += 1;
+                while along < length && boundary(horizontal, along, across) {
+                    if (across > 0 && boundary(!horizontal, across - 1, along))
+                        || (across < count && boundary(!horizontal, across, along))
+                    {
+                        break;
+                    }
+                    along += 1;
                 }
-                y += 1;
+                let coords = [point(horizontal, start, across), point(horizontal, along, across)];
+                lines.push(Geometry::create_line_string(ring_to_coordseq(&coords)).map_err(|e| e.to_string())?);
             }
-            let xx = grid.left + x as f64 * grid.cell_m;
-            let coords = [(xx, grid.top() - start as f64 * grid.cell_m), (xx, grid.top() - y as f64 * grid.cell_m)];
-            lines.push(Geometry::create_line_string(ring_to_coordseq(&coords)).map_err(|e| e.to_string())?);
         }
     }
     let polygonized = Geometry::polygonize(&lines).map_err(|e| format!("semantic polygonize: {e}"))?;
@@ -849,18 +898,13 @@ fn vectorize_classes(labels: &[u8], grid: &Grid, classes: usize) -> Result<Vec<(
 
 fn simplify_owned_coverage(polys: &[(u8, Geom)], tolerance: f64) -> Result<Vec<(u8, Geom)>, String> {
     let refs: Vec<&Geom> = polys.iter().map(|(_, geom)| geom).collect();
-    // `vectorize_classes` polygonizes one shared line network, so its faces are a coverage by
-    // construction. Validating that dense, unsimplified grid here made a country-scale bake spend
-    // minutes intersecting millions of redundant collinear segments, so the audit runs in test and
-    // debug builds and production relies on the construction invariant.
+    // The shared raster edge network constructs a coverage. Debug builds audit that invariant.
     #[cfg(debug_assertions)]
     if !coverage_is_valid(&refs, 0.0) {
         return Err("semantic vectorization did not form a valid coverage".into());
     }
     let simplified = coverage_simplify_vw(&refs, tolerance, false).ok_or("semantic coverage VW failed")?;
-    // GEOSCoverageSimplifyVW preserves the input coverage by contract. That contract is audited in
-    // test and debug builds rather than by making every bake re-run GEOS's global segment
-    // intersection machinery over the complete extract.
+    // GEOS preserves the coverage; debug builds audit its result.
     #[cfg(debug_assertions)]
     {
         let refs: Vec<&Geom> = simplified.iter().collect();
@@ -918,13 +962,14 @@ type PointKey = (u64, u64);
 #[derive(Debug, Clone)]
 struct SharedVertex {
     original: (f64, f64),
-    current: (f64, f64),
+    point: (f64, f64),
     neighbours: Vec<PointKey>,
+    active: bool,
+    revision: u32,
 }
 
 fn point_key((x, y): (f64, f64)) -> PointKey {
-    // GEOS can turn +0 into -0 while preserving the same coordinate. Canonicalize the only two
-    // distinct bit patterns that compare equal as floats; every other finite coordinate is exact.
+    // Signed zero is the only equal finite float with distinct bit patterns.
     (if x == 0.0 { 0 } else { x.to_bits() }, if y == 0.0 { 0 } else { y.to_bits() })
 }
 
@@ -944,11 +989,23 @@ fn insert_ring_graph(ring: &[(f64, f64)], graph: &mut HashMap<PointKey, SharedVe
         }
         let ak = point_key(a);
         let bk = point_key(b);
-        let av = graph.entry(ak).or_insert_with(|| SharedVertex { original: a, current: a, neighbours: Vec::new() });
+        let av = graph.entry(ak).or_insert_with(|| SharedVertex {
+            original: a,
+            point: a,
+            neighbours: Vec::new(),
+            active: true,
+            revision: 0,
+        });
         if !av.neighbours.contains(&bk) {
             av.neighbours.push(bk);
         }
-        let bv = graph.entry(bk).or_insert_with(|| SharedVertex { original: b, current: b, neighbours: Vec::new() });
+        let bv = graph.entry(bk).or_insert_with(|| SharedVertex {
+            original: b,
+            point: b,
+            neighbours: Vec::new(),
+            active: true,
+            revision: 0,
+        });
         if !bv.neighbours.contains(&ak) {
             bv.neighbours.push(ak);
         }
@@ -972,17 +1029,13 @@ fn insert_geom_graph(geom: &Geom, graph: &mut HashMap<PointKey, SharedVertex>) {
     }
 }
 
-fn map_shared_geom(geom: &Geom, graph: &HashMap<PointKey, SharedVertex>) -> Geom {
+fn map_rings(geom: &Geom, map: impl Fn(&[(f64, f64)]) -> Vec<(f64, f64)> + Copy) -> Geom {
     match geom {
-        Geom::Line(points) => Geom::Line(points.iter().map(|&point| graph[&point_key(point)].current).collect()),
-        Geom::Polygon { exterior, interiors } => Geom::Polygon {
-            exterior: exterior.iter().map(|&point| graph[&point_key(point)].current).collect(),
-            interiors: interiors
-                .iter()
-                .map(|ring| ring.iter().map(|&point| graph[&point_key(point)].current).collect())
-                .collect(),
-        },
-        Geom::Multi(parts) => Geom::Multi(parts.iter().map(|part| map_shared_geom(part, graph)).collect()),
+        Geom::Line(points) => Geom::Line(map(points)),
+        Geom::Polygon { exterior, interiors } => {
+            Geom::Polygon { exterior: map(exterior), interiors: interiors.iter().map(|ring| map(ring)).collect() }
+        }
+        Geom::Multi(parts) => Geom::Multi(parts.iter().map(|part| map_rings(part, map)).collect()),
         Geom::Empty => Geom::Empty,
     }
 }
@@ -1004,14 +1057,6 @@ impl Ord for OrdF64 {
     }
 }
 
-#[derive(Debug, Clone)]
-struct SimplifyVertex {
-    point: (f64, f64),
-    neighbours: Vec<PointKey>,
-    active: bool,
-    revision: u32,
-}
-
 fn collect_ring_keys(geom: &Geom, rings: &mut Vec<Vec<PointKey>>) {
     match geom {
         Geom::Polygon { exterior, interiors } => {
@@ -1029,7 +1074,7 @@ fn collect_ring_keys(geom: &Geom, rings: &mut Vec<Vec<PointKey>>) {
     }
 }
 
-fn simplified_ring(ring: &[(f64, f64)], graph: &HashMap<PointKey, SimplifyVertex>) -> Vec<(f64, f64)> {
+fn simplified_ring(ring: &[(f64, f64)], graph: &HashMap<PointKey, SharedVertex>) -> Vec<(f64, f64)> {
     let closed = ring.len() > 1 && ring.first() == ring.last();
     let mut out: Vec<_> =
         ring_vertices(ring).iter().copied().filter(|&point| graph[&point_key(point)].active).collect();
@@ -1039,19 +1084,7 @@ fn simplified_ring(ring: &[(f64, f64)], graph: &HashMap<PointKey, SimplifyVertex
     out
 }
 
-fn map_simplified_geom(geom: &Geom, graph: &HashMap<PointKey, SimplifyVertex>) -> Geom {
-    match geom {
-        Geom::Polygon { exterior, interiors } => Geom::Polygon {
-            exterior: simplified_ring(exterior, graph),
-            interiors: interiors.iter().map(|ring| simplified_ring(ring, graph)).collect(),
-        },
-        Geom::Multi(parts) => Geom::Multi(parts.iter().map(|part| map_simplified_geom(part, graph)).collect()),
-        Geom::Line(points) => Geom::Line(simplified_ring(points, graph)),
-        Geom::Empty => Geom::Empty,
-    }
-}
-
-fn vertex_error(graph: &HashMap<PointKey, SimplifyVertex>, key: PointKey) -> Option<f64> {
+fn vertex_error(graph: &HashMap<PointKey, SharedVertex>, key: PointKey) -> Option<f64> {
     let vertex = graph.get(&key)?;
     if !vertex.active || vertex.neighbours.len() != 2 {
         return None;
@@ -1150,8 +1183,8 @@ struct SegmentIndex {
 impl SegmentIndex {
     const BUCKET_CELLS: usize = 8;
 
-    fn new(graph: &HashMap<PointKey, SimplifyVertex>, grid: &Grid) -> Self {
-        let mut index = Self {
+    fn empty(grid: &Grid) -> Self {
+        Self {
             bucket_m: grid.cell_m * Self::BUCKET_CELLS as f64,
             bucket_cols: grid.cols.div_ceil(Self::BUCKET_CELLS).max(1),
             bucket_rows: grid.rows.div_ceil(Self::BUCKET_CELLS).max(1),
@@ -1165,7 +1198,11 @@ impl SegmentIndex {
             segments: Vec::new(),
             seen: Vec::new(),
             stamp: 0,
-        };
+        }
+    }
+
+    fn new(graph: &HashMap<PointKey, SharedVertex>, grid: &Grid) -> Self {
+        let mut index = Self::empty(grid);
         for (&a_key, vertex) in graph {
             for &b_key in &vertex.neighbours {
                 if a_key < b_key {
@@ -1212,7 +1249,7 @@ impl SegmentIndex {
         &mut self,
         candidate: PlanarSegment,
         removed: PointKey,
-        graph: &HashMap<PointKey, SimplifyVertex>,
+        graph: &HashMap<PointKey, SharedVertex>,
     ) -> bool {
         self.stamp = self.stamp.wrapping_add(1).max(1);
         if self.stamp == 1 {
@@ -1249,23 +1286,8 @@ impl SegmentIndex {
 /// planar. Check that directly with a coarse uniform index: every unique edge is compared only to
 /// edges whose bounding boxes touch the same eight-cell bucket. This catches chord crossings,
 /// T-junctions, and overlaps without GEOS rebuilding and cross-validating every polygon pair.
-fn shared_graph_is_planar(graph: &HashMap<PointKey, SimplifyVertex>, grid: &Grid) -> bool {
-    let mut index = SegmentIndex {
-        bucket_m: grid.cell_m * SegmentIndex::BUCKET_CELLS as f64,
-        bucket_cols: grid.cols.div_ceil(SegmentIndex::BUCKET_CELLS).max(1),
-        bucket_rows: grid.rows.div_ceil(SegmentIndex::BUCKET_CELLS).max(1),
-        left: grid.left,
-        bottom: grid.bottom,
-        epsilon: grid.cell_m * grid.cell_m * 1e-10,
-        buckets: vec![
-            Vec::new();
-            grid.cols.div_ceil(SegmentIndex::BUCKET_CELLS).max(1)
-                * grid.rows.div_ceil(SegmentIndex::BUCKET_CELLS).max(1)
-        ],
-        segments: Vec::new(),
-        seen: Vec::new(),
-        stamp: 0,
-    };
+fn shared_graph_is_planar(graph: &HashMap<PointKey, SharedVertex>, grid: &Grid) -> bool {
+    let mut index = SegmentIndex::empty(grid);
     for (&a_key, vertex) in graph {
         if !vertex.active {
             continue;
@@ -1313,35 +1335,12 @@ fn simplify_shared_coverage(source: &[(u8, Geom)], grid: &Grid, tolerance: f64) 
         }
     }
 
-    let epsilon = (grid.cols.max(grid.rows) as f64 * grid.cell_m) * 1e-10;
-    let right = grid.left + grid.cols as f64 * grid.cell_m;
-    let top = grid.top();
-    let on_frame = |(x, y): (f64, f64)| {
-        (x - grid.left).abs() <= epsilon
-            || (x - right).abs() <= epsilon
-            || (y - grid.bottom).abs() <= epsilon
-            || (y - top).abs() <= epsilon
-    };
-
-    let mut graph: HashMap<_, _> = shared
-        .iter()
-        .map(|(&key, vertex)| {
-            (
-                key,
-                SimplifyVertex {
-                    point: vertex.original,
-                    neighbours: vertex.neighbours.clone(),
-                    active: true,
-                    revision: 0,
-                },
-            )
-        })
-        .collect();
+    let mut graph = shared;
     let mut edge_index = SegmentIndex::new(&graph, grid);
     let mut ring_counts: Vec<_> = rings.iter().map(Vec::len).collect();
     let mut heap = BinaryHeap::new();
     for (&key, vertex) in &graph {
-        if vertex.neighbours.len() == 2 && !on_frame(vertex.point) {
+        if vertex.neighbours.len() == 2 && !grid.on_frame(vertex.point) {
             if let Some(error) = vertex_error(&graph, key) {
                 heap.push(std::cmp::Reverse((OrdF64(error), key, vertex.revision)));
             }
@@ -1383,7 +1382,7 @@ fn simplify_shared_coverage(source: &[(u8, Geom)], grid: &Grid, tolerance: f64) 
         for neighbour in [a, b] {
             let node = graph.get_mut(&neighbour).expect("updated neighbour exists");
             node.revision = node.revision.wrapping_add(1);
-            if node.neighbours.len() == 2 && !on_frame(node.point) {
+            if node.neighbours.len() == 2 && !grid.on_frame(node.point) {
                 let revision = node.revision;
                 if let Some(error) = vertex_error(&graph, neighbour) {
                     heap.push(std::cmp::Reverse((OrdF64(error), neighbour, revision)));
@@ -1393,7 +1392,8 @@ fn simplify_shared_coverage(source: &[(u8, Geom)], grid: &Grid, tolerance: f64) 
     }
 
     let planar = shared_graph_is_planar(&graph, grid);
-    let simplified: Vec<_> = source.iter().map(|(class, geom)| (*class, map_simplified_geom(geom, &graph))).collect();
+    let simplified: Vec<_> =
+        source.iter().map(|(class, geom)| (*class, map_rings(geom, |ring| simplified_ring(ring, &graph)))).collect();
     #[cfg(debug_assertions)]
     if planar {
         let refs: Vec<_> = simplified.iter().map(|(_, geom)| geom).collect();
@@ -1419,15 +1419,6 @@ fn smooth_coverage(source: Vec<(u8, Geom)>, grid: &Grid, limit: f64) -> Result<(
         insert_geom_graph(geom, &mut graph);
     }
     let shared_edges = graph.values().map(|vertex| vertex.neighbours.len()).sum::<usize>() / 2;
-    let epsilon = (grid.cols.max(grid.rows) as f64 * grid.cell_m) * 1e-10;
-    let right = grid.left + grid.cols as f64 * grid.cell_m;
-    let top = grid.top();
-    let on_frame = |(x, y): (f64, f64)| {
-        (x - grid.left).abs() <= epsilon
-            || (x - right).abs() <= epsilon
-            || (y - grid.bottom).abs() <= epsilon
-            || (y - top).abs() <= epsilon
-    };
 
     // The source is already a valid shared coverage, so the Laplacian update runs directly on its
     // unique vertex graph. That preserves both copies of every edge and keeps each class attached to
@@ -1435,22 +1426,22 @@ fn smooth_coverage(source: Vec<(u8, Geom)>, grid: &Grid, limit: f64) -> Result<(
     for attempt in 0..4 {
         let attempt_limit = limit * 0.5f64.powi(attempt as i32);
         for vertex in graph.values_mut() {
-            vertex.current = vertex.original;
+            vertex.point = vertex.original;
         }
         for _ in 0..SMOOTH_PASSES {
-            let current: HashMap<_, _> = graph.iter().map(|(&key, vertex)| (key, vertex.current)).collect();
+            let current: HashMap<_, _> = graph.iter().map(|(&key, vertex)| (key, vertex.point)).collect();
             for vertex in graph.values_mut() {
                 // Degree != 2 is a chain endpoint or junction. Moving it would detach incident
                 // chains; frame vertices likewise define the exact coverage extent.
-                if vertex.neighbours.len() != 2 || on_frame(vertex.original) {
+                if vertex.neighbours.len() != 2 || grid.on_frame(vertex.original) {
                     continue;
                 }
                 let prev = current[&vertex.neighbours[0]];
                 let following = current[&vertex.neighbours[1]];
                 let target = ((prev.0 + following.0) * 0.5, (prev.1 + following.1) * 0.5);
                 let mut candidate = (
-                    vertex.current.0 + SMOOTH_STEP * (target.0 - vertex.current.0),
-                    vertex.current.1 + SMOOTH_STEP * (target.1 - vertex.current.1),
+                    vertex.point.0 + SMOOTH_STEP * (target.0 - vertex.point.0),
+                    vertex.point.1 + SMOOTH_STEP * (target.1 - vertex.point.1),
                 );
                 let displacement = (candidate.0 - vertex.original.0, candidate.1 - vertex.original.1);
                 let length = displacement.0.hypot(displacement.1);
@@ -1460,10 +1451,15 @@ fn smooth_coverage(source: Vec<(u8, Geom)>, grid: &Grid, limit: f64) -> Result<(
                         vertex.original.1 + displacement.1 * attempt_limit / length,
                     );
                 }
-                vertex.current = candidate;
+                vertex.point = candidate;
             }
         }
-        let moved: Vec<_> = source.iter().map(|(class, geom)| (*class, map_shared_geom(geom, &graph))).collect();
+        let moved: Vec<_> = source
+            .iter()
+            .map(|(class, geom)| {
+                (*class, map_rings(geom, |ring| ring.iter().map(|&point| graph[&point_key(point)].point).collect()))
+            })
+            .collect();
         if moved.iter().all(|(_, geom)| polygonal_geom_is_valid(geom)) {
             return Ok((moved, SmoothStats { faces: source.len(), shared_edges, retries: attempt }));
         }
@@ -1475,14 +1471,14 @@ fn smooth_coverage(source: Vec<(u8, Geom)>, grid: &Grid, limit: f64) -> Result<(
     Ok((source, SmoothStats { faces, shared_edges, retries: 4 }))
 }
 
-fn remove_tiny_water_components(mask: &mut [bool], width: usize, height: usize, min_pixels: usize) {
+fn remove_tiny_water_components(mask: &mut Raster<u8>, width: usize, height: usize, min_pixels: usize) {
     if mask.len() != width * height {
         return;
     }
-    let mut seen = vec![false; mask.len()];
+    let mut seen = Raster::new(width, height, false);
     let mut queue = VecDeque::new();
     for start in 0..mask.len() {
-        if !mask[start] || seen[start] {
+        if mask[start] == 0 || seen[start] {
             continue;
         }
         seen[start] = true;
@@ -1495,7 +1491,7 @@ fn remove_tiny_water_components(mask: &mut [bool], width: usize, height: usize, 
             for ny in y.saturating_sub(1)..=(y + 1).min(height - 1) {
                 for nx in x.saturating_sub(1)..=(x + 1).min(width - 1) {
                     let ni = ny * width + nx;
-                    if mask[ni] && !seen[ni] {
+                    if mask[ni] != 0 && !seen[ni] {
                         seen[ni] = true;
                         queue.push_back(ni);
                     }
@@ -1504,21 +1500,9 @@ fn remove_tiny_water_components(mask: &mut [bool], width: usize, height: usize, 
         }
         if members.len() < min_pixels {
             for index in members {
-                mask[index] = false;
+                mask[index] = 0;
             }
         }
-    }
-}
-
-fn map_coords(geom: Geom, mut f: impl FnMut(f64, f64) -> (f64, f64) + Copy) -> Geom {
-    match geom {
-        Geom::Line(points) => Geom::Line(points.into_iter().map(|(x, y)| f(x, y)).collect()),
-        Geom::Polygon { exterior, interiors } => Geom::Polygon {
-            exterior: exterior.into_iter().map(|(x, y)| f(x, y)).collect(),
-            interiors: interiors.into_iter().map(|ring| ring.into_iter().map(|(x, y)| f(x, y)).collect()).collect(),
-        },
-        Geom::Multi(parts) => Geom::Multi(parts.into_iter().map(|part| map_coords(part, f)).collect()),
-        Geom::Empty => Geom::Empty,
     }
 }
 
@@ -1574,7 +1558,7 @@ mod tests {
     #[test]
     fn conservation_keeps_a_rare_supported_class() {
         let grid = Grid { left: 0.0, bottom: 0.0, cols: 10, rows: 10, cell_m: 2.0 };
-        let mut support = vec![Support([64, 0, 0, 0, 0, 0, 0]); 100];
+        let mut support = Raster::new(10, 10, BASE_SUPPORT);
         support[grid.index(5, 5)] = Support([12, 0, 0, 52, 0, 0, 0]);
         let labels = adaptive_labels(&support, &grid, None);
         assert!(labels.contains(&(SemanticClass::Forest as u8)));
@@ -1589,13 +1573,14 @@ mod tests {
             interiors: vec![vec![(3.0, 3.0), (5.0, 3.0), (5.0, 5.0), (3.0, 5.0)]],
         };
 
+        let sampling = Sampling { projection, left: 0.0, top: 8.0, step: 1.0, width: 8, height: 8 };
         let mut hole_only = [0u8; 8 * 8];
-        raster_geom(&with_hole, projection, 0.0, 8.0, 1.0, 8, 8, &mut hole_only, 1);
+        sampling.paint(&with_hole, &mut hole_only, 1);
         assert_eq!(hole_only[4 * 8 + 4], 0, "a standalone polygon keeps its hole");
 
         let mut overlap = [0u8; 8 * 8];
-        raster_geom(&solid, projection, 0.0, 8.0, 1.0, 8, 8, &mut overlap, 1);
-        raster_geom(&with_hole, projection, 0.0, 8.0, 1.0, 8, 8, &mut overlap, 1);
+        sampling.paint(&solid, &mut overlap, 1);
+        sampling.paint(&with_hole, &mut overlap, 1);
         assert_eq!(overlap[4 * 8 + 4], 1, "a later polygon's hole cannot erase an earlier polygon");
     }
 
@@ -1712,13 +1697,16 @@ mod tests {
 
     #[test]
     fn tiny_water_is_removed_without_moving_larger_components() {
-        let mut water = vec![false; 8 * 4];
-        water[1] = true;
+        let mut water = Raster::new(8, 4, 0);
+        water[1] = 1;
         for (x, y) in [(4, 1), (5, 1), (5, 2)] {
-            water[y * 8 + x] = true;
+            water[y * 8 + x] = 1;
         }
         remove_tiny_water_components(&mut water, 8, 4, 3);
-        assert!(!water[1], "the isolated sub-pixel pond is removed");
-        assert!(water[12] && water[13] && water[21], "the larger component stays in place");
+        assert_eq!(water[1], 0, "the isolated sub-pixel pond is removed");
+        assert!([12, 13, 21].into_iter().all(|i| water[i] == 1), "the larger component stays in place");
     }
 }
+
+#[cfg(test)]
+mod golden;
