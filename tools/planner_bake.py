@@ -75,8 +75,7 @@ def build_places(stage, basemap):
 def build_assets(stage):
     with open_url(maps.ASSETS_URL, timeout=120) as response:
         maps.install_assets(response.read(), stage / "assets")
-    with open_url(maps.SPRITES_LICENSE_URL, timeout=30) as response:
-        (stage / "assets/sprites/LICENSE.txt").write_bytes(response.read())
+    (stage / "assets/sprites/LICENSE.txt").write_bytes(data_registry.fetch("tangrams-icons")[0].read_bytes())
 
 
 def terrain_coverage(config):
@@ -215,7 +214,7 @@ def specifications(config, prepared=None):
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
-    add("assets", build_assets, {"assets": maps.ASSETS_URL, "license": maps.SPRITES_LICENSE_URL}, paths=[maps.ROOT / "tools/planner_maps.py"])
+    add("assets", build_assets, {"assets": maps.ASSETS_URL, "tangrams-icons": maps.PINS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
         if name in config:

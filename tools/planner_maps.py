@@ -25,7 +25,6 @@ RUNNING, STOPPING = set(), threading.Event()
 PINS = tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"]
 ASSETS_REV = PINS["protomaps-assets"]
 ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{ASSETS_REV}"
-SPRITES_LICENSE_URL = "https://raw.githubusercontent.com/tangrams/icons/92510779634f4a006c61ea70e50cb8c52c765a81/LICENSE.md"
 
 
 def bounds(value):

@@ -565,7 +565,20 @@ licence = "OFL-1.1 AND MIT"
 licence_url = "https://github.com/protomaps/basemaps-assets"
 obligations = "Keep the OFL text with the fonts and the MIT notice with the sprites"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps-assets/zip/{version}" }
-hosts = ["api.github.com", "raw.githubusercontent.com"]
+hosts = ["api.github.com"]
+version = "commit"
+refresh = "manual"
+redistribute = true
+
+# The MIT notice of the Mapzen icons, which ships with the sprites of `protomaps-assets`.
+[[source]]
+id = "tangrams-icons"
+kind = "asset"
+licence = "MIT"
+licence_url = "https://github.com/tangrams/icons"
+obligations = "Keep the MIT notice with the sprites"
+fetch = { kind = "github", url = "https://raw.githubusercontent.com/tangrams/icons/{version}/LICENSE.md" }
+hosts = ["api.github.com"]
 version = "commit"
 refresh = "manual"
 redistribute = true
