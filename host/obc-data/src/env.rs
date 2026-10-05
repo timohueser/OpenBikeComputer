@@ -56,9 +56,9 @@ mod tests {
         let regions = regions.unwrap();
         let parse = |text: &str| Env::parse("test", text, &sources, &regions);
 
-        let env = parse("region = \"monaco\"\nlayers = [\"climate\"]\n[pins]\nphoton = \"1.3.0\"\n").unwrap();
+        let env = parse("region = \"monaco\"\nlayers = [\"climate\"]\n[pins]\nplanetiler = \"0.9.0\"\n").unwrap();
         assert_eq!((env.region.as_str(), env.layers.as_slice()), ("monaco", &["climate".to_string()][..]));
-        assert_eq!(env.pins["photon"], "1.3.0");
+        assert_eq!(env.pins["planetiler"], "0.9.0");
 
         assert_eq!(parse("[pins]\n").unwrap_err(), "it names no `region`");
         assert_eq!(parse("region = \"atlantis\"\n").unwrap_err(), "region `atlantis` is not a file in data/regions/");
