@@ -25,7 +25,6 @@
 //! every cell of the band reads it, and only that band's levels are resident. Cells within a band
 //! are cut in parallel; nothing in a cell's bytes depends on which thread produced it.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -34,23 +33,22 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use obc_formats::obcm::VERSION as OBCM_VERSION;
-use obc_map_scene::M_PER_DEG;
 
 use crate::config::Config;
-use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_preserve_simplify, Bounds, Geom};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
 };
 use crate::ingest::{Bbox, Ingested};
-use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with};
 use crate::nav::{self, CutRun, JunctionKey, NavGraph, RoutableWay};
 use crate::poi::Poi;
 use crate::progress::{PackError, Phase, Progress};
-use crate::quadtree::build_lod_with;
-use crate::semantic::{build_semantic_levels, SemanticClass, SemanticScheme};
+use crate::semantic::build_semantic_levels;
 use crate::serialize::{serialize_lods_streaming, validate_chunk_size, Node};
 use crate::terrain::TerrainSet;
 use obc_elevation::{ElevationSource, NullElevation};
+
+mod memo;
+use memo::{merge_key, prepare_lod, LodSet, PreparedSemantic};
 
 /// Filename of the cutter's provenance sidecar, written **last** (see [`cut_ingested`]).
 pub const MANIFEST_NAME: &str = "cells.json";
@@ -314,14 +312,22 @@ pub fn cut_ingested(
     };
     let mut artifacts: Vec<CellArtifact> = Vec::new();
 
-    for band in &opts.bands.bands {
-        if !opts.only_bands.is_empty() && !opts.only_bands.contains(&band.id) {
-            continue;
+    let bands: Vec<_> = opts
+        .bands
+        .bands
+        .iter()
+        .filter(|band| opts.only_bands.is_empty() || opts.only_bands.contains(&band.id))
+        .map(|band| (band, select_cells(band, extract, &opts.select)))
+        .filter(|(_, cells)| !cells.is_empty())
+        .collect();
+    let mut last_band = HashMap::new();
+    for (index, (band, _)) in bands.iter().enumerate() {
+        for &lod in &band.lods {
+            last_band.insert(merge_key(ing, config, lod, &semantic_scheme), index);
         }
-        let cells = select_cells(band, extract, &opts.select);
-        if cells.is_empty() {
-            continue;
-        }
+    }
+    let mut merged_sets = HashMap::new();
+    for (index, (band, cells)) in bands.into_iter().enumerate() {
         progress.stage(
             Phase::Quadtree,
             format!("Cutting band {} (2^{} µdeg): {} cell(s)...", band.id, band.cell_log2, cells.len()),
@@ -338,10 +344,12 @@ pub fn cut_ingested(
                     l,
                     band.cell_log2,
                     PreparedSemantic { features: semantic_levels[l].as_deref(), scheme: &semantic_scheme },
+                    &mut merged_sets,
                     progress,
                 )
             })
             .collect();
+        merged_sets.retain(|key, _| last_band[key] > index);
         let nav_cut = if band.has_nav() { Some(prepare_nav(ways, band.cell_log2, progress)?) } else { None };
         let poi_cells = if band.has_poi() { bucket_pois(&ing.pois, band.cell_log2) } else { HashMap::new() };
         progress.check()?;
@@ -440,211 +448,6 @@ fn select_cells(band: &Band, extract: UBox, select: &[CellId]) -> Vec<CellId> {
     cells.sort_unstable();
     cells.dedup();
     cells
-}
-
-/// One ladder level, prepared once per band: the merged features that reach it, their bounds, and a
-/// bucket index from cell to candidate features.
-struct LodSet<'a> {
-    lod: usize,
-    feats: Vec<(u8, Cow<'a, Geom>)>,
-    /// Parallel to `feats`: the semantic coverage already simplified this feature, so
-    /// [`LodSet::cell_tree`] must not simplify it again (that would move the shared boundaries
-    /// the coverage glued). All `false` unless the tier is semantic.
-    presimplified: Vec<bool>,
-    /// `(i, j)` → indices into `feats`. Membership is decided on **inclusive** bounds, so a feature
-    /// reaching a seam line is a candidate on both sides and the two cells clip identical geometry.
-    buckets: HashMap<(i64, i64), Vec<u32>>,
-    /// Simplify tolerance, degrees (`0.0` ⇒ none).
-    tol: f64,
-    /// Line-only simplify tolerance, degrees (`0.0` ⇒ none).
-    line_tol: f64,
-    /// The m/px the footprint cull measures at, `None` ⇒ no cull for this level.
-    cull_mpp: Option<f64>,
-    min_area_px: f64,
-    cell_log2: u32,
-}
-
-struct PreparedSemantic<'a, 's> {
-    features: Option<&'a [(u8, Geom)]>,
-    scheme: &'s SemanticScheme,
-}
-
-/// Build a level's feature set exactly as [`crate::pipeline`] does — `min_lod` filter, then the
-/// optional fill-dissolve and line-stitch passes, plus a semantic tier's prebuilt coverage — and
-/// index it by cell.
-///
-/// All of them run here, over the whole extract, and not per cell; see the module docs. The ordinary
-/// per-feature simplify does not, because it must run on the geometry a cell clips. The semantic
-/// coverage is the exception: it is simplified as one global coverage, which is stronger than
-/// per-cell simplify, so its features are marked in `presimplified` and [`LodSet::cell_tree`] leaves
-/// them alone.
-fn prepare_lod<'a>(
-    ing: &'a Ingested,
-    config: &Config,
-    lod: usize,
-    cell_log2: u32,
-    semantic: PreparedSemantic<'a, '_>,
-    progress: &Progress,
-) -> LodSet<'a> {
-    let l = &config.lods[lod];
-    // `Geom::bounds` panics on an empty geometry, and a merge pass can hand one back, so empties are
-    // dropped here — exactly where `build_lod_with` drops them on the whole-extract path.
-    let mut feats: Vec<(u8, Cow<'a, Geom>)> = ing
-        .features
-        .iter()
-        .filter(|f| f.min_lod <= lod && !f.geom.is_empty())
-        .filter(|f| {
-            !(l.semantic_coverage
-                && matches!(f.geom, Geom::Polygon { .. } | Geom::Multi(_))
-                && matches!(
-                    semantic.scheme.class_of(f.style_id),
-                    Some(
-                        SemanticClass::Farmland
-                            | SemanticClass::Grass
-                            | SemanticClass::Forest
-                            | SemanticClass::Urban
-                            | SemanticClass::Rock
-                            | SemanticClass::Ice
-                            | SemanticClass::Water
-                    )
-                ))
-        })
-        .map(|f| (f.style_id, Cow::Borrowed(&f.geom)))
-        .collect();
-    let tol = if l.simplify_m > 0.0 { l.simplify_m / M_PER_DEG } else { 0.0 };
-    let line_tol = if l.line_simplify_m > 0.0 { l.line_simplify_m / M_PER_DEG } else { 0.0 };
-    // A semantic tier skips `merge_fills`, exactly as [`crate::pipeline`] does.
-    let want_merge_fills = config.merge_fills && !l.semantic_coverage;
-    if want_merge_fills || config.merge_lines {
-        let styles = config.styles();
-        let mut owned: Vec<(u8, Geom)> = feats.into_iter().map(|(s, g)| (s, g.into_owned())).collect();
-        if want_merge_fills {
-            let (merged, m) = merge_fills_with(owned, &merge_classes(&styles), progress);
-            crate::pipeline::report_merge(progress, m, "fill polygon", "into");
-            owned = merged;
-        }
-        if config.merge_lines {
-            let line_classes = merge_line_classes(&styles);
-            let (merged, m) = if l.merge_line_trails {
-                merge_line_trails_with(owned, &line_classes, progress)
-            } else {
-                merge_lines_with(owned, &line_classes, progress)
-            };
-            crate::pipeline::report_merge(progress, m, "line fragment", "into");
-            owned = merged;
-        }
-        feats = owned.into_iter().filter(|(_, g)| !g.is_empty()).map(|(s, g)| (s, Cow::Owned(g))).collect();
-    }
-    let mut presimplified = vec![false; feats.len()];
-
-    if l.semantic_coverage {
-        let semantic_features = semantic.features.expect("every configured semantic rung is prebuilt");
-        feats.reserve(semantic_features.len());
-        presimplified.reserve(semantic_features.len());
-        for (style_id, geom) in semantic_features {
-            if !geom.is_empty() {
-                feats.push((*style_id, Cow::Borrowed(geom)));
-                presimplified.push(true);
-            }
-        }
-    }
-
-    // Keep the full land base through merge and coverage construction, then omit it at the same
-    // final boundary as the monolithic packer. The cell's renderer clear is land now, so indexing
-    // and clipping these faces would only recreate thousands of redundant per-cell vertices.
-    if let Some(land_id) = config.implicit_land_style_id() {
-        let filtered = feats.into_iter().zip(presimplified).filter(|((style_id, _), _)| *style_id != land_id);
-        (feats, presimplified) = filtered.unzip();
-    }
-
-    let bounds: Vec<Bounds> = feats.iter().map(|(_, g)| g.bounds()).collect();
-    let mut buckets: HashMap<(i64, i64), Vec<u32>> = HashMap::new();
-    for (k, b) in bounds.iter().enumerate() {
-        for cell in cells_intersecting(cell_log2, bounds_to_udeg(*b)) {
-            buckets.entry((cell.i, cell.j)).or_default().push(k as u32);
-        }
-    }
-    // The cull's reference scale is the next-finer tier's `max_mpp`; the finest tier is never culled
-    // (a drop there would erase the feature at every zoom).
-    let cull_mpp = (l.min_area_px > 0.0).then(|| config.lods.get(lod + 1).and_then(|n| n.max_mpp)).flatten();
-    LodSet { lod, feats, presimplified, buckets, tol, line_tol, cull_mpp, min_area_px: l.min_area_px, cell_log2 }
-}
-
-/// Degree bounds → µdeg, widened outward so a candidate is never missed to a rounding step.
-fn bounds_to_udeg(b: Bounds) -> UBox {
-    ((b.0 * 1e6).floor() as i64, (b.1 * 1e6).floor() as i64, (b.2 * 1e6).ceil() as i64, (b.3 * 1e6).ceil() as i64)
-}
-
-impl LodSet<'_> {
-    /// This level's quadtree for one cell: simplify, clip at the exact cell edge, cull the clipped
-    /// geometry, then build the tree over the cell square.
-    fn cell_tree(&self, cell: CellId, chunk_size: usize, progress: &Progress) -> Node {
-        debug_assert_eq!(cell.log2, self.cell_log2);
-        let square = cell.square();
-        let dbox = (square.0 as f64 / 1e6, square.1 as f64 / 1e6, square.2 as f64 / 1e6, square.3 as f64 / 1e6);
-        let candidates = self.buckets.get(&(cell.i, cell.j)).map(Vec::as_slice).unwrap_or(&[]);
-        let mut out: Vec<(u8, Geom)> = Vec::new();
-        for &k in candidates {
-            let (style_id, geom) = &self.feats[k as usize];
-            let tolerance = if geom.is_lineal() { self.line_tol } else { self.tol };
-            let simplified = if tolerance > 0.0 && !self.presimplified[k as usize] {
-                topology_preserve_simplify(geom, tolerance)
-            } else {
-                geom.as_ref().clone()
-            };
-            if simplified.is_empty() {
-                continue;
-            }
-            let b = simplified.bounds();
-            let clipped = if b.0 >= dbox.0 && b.2 <= dbox.2 && b.1 >= dbox.1 && b.3 <= dbox.3 {
-                simplified // wholly inside: no clip, no vertex touched
-            } else if b.2 < dbox.0 || b.0 > dbox.2 || b.3 < dbox.1 || b.1 > dbox.3 {
-                continue; // a bounds-only candidate that the simplify moved out of reach
-            } else {
-                clip_to_box(&simplified, square)
-            };
-            // A semantic coverage feature has its minimum face size already; culling the clipped
-            // result would re-open gaps the coverage closed. The hole trim still runs, at the same
-            // threshold as everywhere else.
-            let from_coverage = self.presimplified[k as usize];
-            flatten_culled(*style_id, clipped, self.cull_mpp, self.min_area_px, from_coverage, &mut out);
-        }
-        build_lod_with(out, square, chunk_size, progress)
-    }
-}
-
-/// Append `geom`'s simple parts to `out`, dropping the ones the sub-pixel footprint cull rejects and
-/// trimming sub-pixel holes from the survivors — the pipeline's cull, applied to clipped geometry.
-///
-/// `from_coverage` skips the footprint cull entirely. A semantic coverage polygon clipped by a cell
-/// edge can come out as a hairline strip along the seam, far under `min_area_px`, and dropping it
-/// would open a backdrop sliver at the cell boundary, where the neighbouring cell still paints its
-/// half.
-fn flatten_culled(
-    style_id: u8,
-    geom: Geom,
-    cull_mpp: Option<f64>,
-    min_area_px: f64,
-    from_coverage: bool,
-    out: &mut Vec<(u8, Geom)>,
-) {
-    match geom {
-        Geom::Empty => {}
-        Geom::Multi(parts) => {
-            for p in parts {
-                flatten_culled(style_id, p, cull_mpp, min_area_px, from_coverage, out);
-            }
-        }
-        mut simple => {
-            if let Some(mpp) = cull_mpp {
-                if !from_coverage && footprint_below(&simple, mpp, min_area_px) {
-                    return;
-                }
-                strip_small_holes(&mut simple, mpp, min_area_px);
-            }
-            out.push((style_id, simple));
-        }
-    }
 }
 
 /// Bucket POIs by the one cell whose half-open square contains them. Indices into `pois`, in input
@@ -1164,49 +967,9 @@ pub fn artifact_path(out_dir: &Path, artifact: &CellArtifact) -> PathBuf {
 mod tests {
     use super::*;
     use crate::grid::{on_grid_line, GRID_ORIGIN};
-    use crate::ingest::IngestFeature;
 
     const LOG2: u32 = 18;
     const S: i64 = 1 << LOG2;
-
-    #[test]
-    fn land_backdrop_is_kept_for_preparation_then_removed_from_cell_geometry() {
-        let config = Config::parse(
-            r#"{
-                "features":{"natural":{
-                    "sea":{"z_index":1,"color":"0x001f"},
-                    "land":{"z_index":0,"color":"0xffff"}
-                }}
-            }"#,
-        )
-        .unwrap();
-        let polygon = |style_id| IngestFeature {
-            style_id,
-            min_lod: 0,
-            geom: Geom::Polygon {
-                exterior: vec![(0.0, 0.0), (0.1, 0.0), (0.1, 0.1), (0.0, 0.1), (0.0, 0.0)],
-                interiors: Vec::new(),
-            },
-        };
-        let ing = Ingested {
-            landmark_links: Vec::new(),
-            features: vec![polygon(2), polygon(1)], // land first, explicit sea second
-            coastlines: Vec::new(),
-            pois: Vec::new(),
-            nav_graph: NavGraph::default(),
-        };
-        let semantic_scheme = config.semantic_scheme();
-        let set = prepare_lod(
-            &ing,
-            &config,
-            0,
-            LOG2,
-            PreparedSemantic { features: None, scheme: &semantic_scheme },
-            &Progress::silent(),
-        );
-        assert_eq!(set.feats.iter().map(|(style_id, _)| *style_id).collect::<Vec<_>>(), [1]);
-        assert_eq!(set.presimplified.len(), set.feats.len(), "parallel preparation metadata stays aligned");
-    }
 
     /// A coordinate on the `2^18` grid: cell (i, j)'s min corner plus offsets, as `(lon, lat)`.
     fn at(i: i64, j: i64, dlat: i64, dlon: i64) -> (i32, i32) {
