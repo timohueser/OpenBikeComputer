@@ -73,13 +73,15 @@ invisible feature. The facet has equal lower and upper bounds. The query also
 checks each mode's minimum zoom. A cutout retains every referenced geometry,
 attribute, and route.
 
-`places.pmtiles` holds the rider places of the basemap. It has gzip MVT tiles
-at zoom 11 only, with extent 4096 and one `pois` layer. Each feature is one
-point with the basemap feature ID and the basemap `kind`, `name`, and `name:en`
-properties. The kinds are the `kinds` keys of the web planner's
-[place categories](../builder/app/src/lib/planner/poi-kinds.json). The bake reads
-the basemap's deepest zoom. Each place occurs once, in the tile that contains it.
-A tile with no places is absent.
+`places.pmtiles` holds rider places from the POI search database. It has gzip MVT
+at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
+`kind` and `name`. String properties `lon` and `lat` retain the search coordinates
+without tile quantization. The feature ID is `(type << 44) | osm_id`, where type
+is 1 for nodes, 2 for ways, and 3 for relations. OSM IDs are positive and below
+2^44. Categories are defined in the
+[place categories](../builder/app/src/lib/planner/poi-kinds.json).
+Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
+except that an empty archive contains one empty tile at the southwest bound.
 
 `overlays.pmtiles` holds the route networks and access restrictions of the
 overlay index. It has gzip MVT tiles from zoom 6 to 14, with extent 4096. Its

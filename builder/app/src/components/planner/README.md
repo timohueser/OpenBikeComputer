@@ -11,10 +11,8 @@ Authenticate `gh` for the query model release. Set the R2 credential in
 `tools/obc.local`. The [region recipe](../../../../../tools/planner-regions/baden-wuerttemberg-switzerland.json)
 pins the OSM extract, map, elevation, and data-layer inputs, and routing profiles.
 
-Map and search builders need Linux, Java 21, Maven, PostgreSQL 17,
-PostGIS 3, osm2pgsql 2, zstd, and `nominatim-db==5.3.2`.
-Add PostgreSQL's binaries to `PATH`. Run as a normal user.
-Allow temporary database space; builders use every core.
+The basemap builder needs Java 21 and Maven. The Rust search baker reads the same
+OSM snapshot as routing and maps. It needs no database import. Builders use every core.
 
 ```sh
 obc planner prepare --data-dir /srv/planner/bw-source --reference /srv/obc-reference
@@ -32,11 +30,10 @@ package, model readiness, CORS, tiles, search, and a real route. It updates
 `grid` builds reusable cells in a fresh directory. Publish and deploy one release
 at a time.
 
-`prepare` accepts `--osm PATH` for a local copy of the pinned extract. On macOS,
-use `--inputs DIRECTORY` to supply verified Linux builder outputs:
-`basemap.pmtiles`, `search.jsonl.zst`, and `inputs.json`. This manifest names the
-OSM hash, bounds, tool versions, and output hashes. Map preparation and routing
-still use the local elevation readers.
+`prepare` accepts `--osm PATH` for a local copy of the pinned extract.
+Use `--inputs DIRECTORY` to supply a prepared `basemap.pmtiles` and `inputs.json`.
+The manifest names the OSM hash, bounds, tool versions, and output hashes.
+Search always builds from the verified OSM input.
 
 The VPS needs Caddy, Python, `/root/.cargo/bin/cargo`, and Node 24+
 at `/usr/local/bin/node`. Services bind to loopback under
@@ -78,7 +75,7 @@ obc planner grid --input-release /srv/planner/bw-source-next --data-dir /srv/pla
 Publish and deploy `bw-next`. Repeat `--component` for:
 `pois`, `addresses`, `basemap`, `places`, `terrain`, `routing`, `overlays`,
 `assets`, `model`, or data layers. Routing updates include overlays;
-basemap updates include places. Elevation changes select terrain,
+POI updates include place tiles. Elevation changes select terrain,
 routing, and overlays. Tile encoding changes reuse routing.
 
 `plan` and `prepare --dry-run` read no large artifacts and download nothing.
@@ -87,8 +84,8 @@ one OSM snapshot. Preparation and grid publication share `--source-cache`
 (default `~/.cache/obc/planner/sources`). `obc planner inventory` reports
 component sizes and measured costs. Completed components and cells resume.
 
-POI changes reuse addresses and unrelated grid objects. Nominatim and routing
-construction remain regional. Remote releases can upload identical objects
+POI transforms reuse addresses and unrelated grid objects. Search enrichment and
+routing construction remain regional. Remote releases can upload identical objects
 under distinct prefixes.
 
 Preparation accepts only `DE` access defaults. Add and verify other rules first.
