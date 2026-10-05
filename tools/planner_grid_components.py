@@ -174,7 +174,9 @@ def publish(source, routing, output, cache=None):
         "routing_source": graph["source"], "map_blocks": map_blocks, "cells": geographic, "shared": shared,
         "files": dict(files), "zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM}
     metadata("offline/catalog.json", catalog)
-    document = {**catalog["release"], "routing_package": files["routing/blocks.json"]["sha256"], "source_files": {},
+    # Publication uploads the source mirror and finalization keeps the mirror that the active release names.
+    for name in release["source_files"]: preparation.link(source / name, output / name)
+    document = {**catalog["release"], "routing_package": files["routing/blocks.json"]["sha256"], "source_files": release["source_files"],
         "grid": {"format": 2, "zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM}, "files": files,
         "sources": {**release["sources"], "grid_components": receipts}}
     offline.atomic_write(output / "release.json", runtime.encoded(document))
