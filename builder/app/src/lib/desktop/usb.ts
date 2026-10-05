@@ -20,9 +20,9 @@
  *   `DeviceLink.vendorIn` and the connect flow publishes `info: null` rather than a fabricated
  *   firmware revision.
  *
- * A map is not sent from disk. Every stream record must be framed by the protocol client, and the
- * Rust `usb_send_file` command writes raw file bytes with no framing at all, so the desktop app
- * sends a map exactly the way the browser does: a picked `File` through the webview.
+ * A map is not sent from disk. Every stream record must be framed by the protocol client, which is
+ * TypeScript, so the desktop app sends a map exactly the way the browser does: a picked `File`
+ * through the webview.
  */
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "../usb/pipe";

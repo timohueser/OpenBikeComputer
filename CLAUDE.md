@@ -19,7 +19,7 @@ The goal for this codebase is to make this a robust and extendable open source m
 
 The layout table is in [README.md](README.md#repository-layout). The root Cargo workspace holds
 the `firmware/`, `host/` and `apps/` crates. Keep device-reachable dependencies in `firmware/`.
-The nRF54L board image, the bootloader and the Tauri desktop app are standalone Cargo roots; build
+The nRF54L board image, the bootloader, the Tauri desktop app and the sensor simulator are standalone Cargo roots; build
 and test them from their own directories. The nearest README has the surface's setup;
 `companion-ios/CLAUDE.md` is the iOS on-ramp.
 
@@ -68,15 +68,14 @@ Every durable artifact answers one question. If it answers two, it is in the wro
 | README | how do I build, run and flash this, and what will bite me? | next to the code |
 | Rule | what must we not break? | the guard that enforces it, with `GOVERNS` and `RULE`, or one sentence here |
 | Requirement | what must it do for a rider? | the verification console |
-| Record | what happened, measured how? | the pull request, and `CHANGELOG.md` generated from it |
+| Record | what happened, measured how? | the pull request; GitHub generates the release notes from it |
 
 There is no other home. A design study, an experiment log, a measurement, a version history or a
 "what we tried" belongs in the pull request that did it. Do not create a notes, evidence, scratch
 or plans file; GitHub issues are the plan and git history is the archive.
 
 A date, an issue or pull-request number, or a measurement from a past build is the signature of a
-record. It does not appear in a contract, a guide, a README, a guard or a comment. The changelog
-is generated (`obc changelog --update`); never write it by hand.
+record. It does not appear in a contract, a guide, a README, a guard or a comment.
 
 A rule is a check or it is one sentence in this file. A number in a gate says where it came from:
 measured on a named build, or chosen by the owner for a stated reason. `obc governs PATH` lists

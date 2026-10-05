@@ -25,7 +25,6 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import test_exceptions
 
 # One row per CI job.  `roots` and `packages` say which Cargo packages a job
 # compiles; nothing else in this file restates Cargo.
@@ -849,9 +848,6 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
         if unit.package and unit.package not in graph.packages:
             errors.append(f"{unit.id}: names an unknown Cargo package {unit.package}")
     for suite in document.get("suite", []):
-        for name in test_exceptions.EXCEPTION_FIELDS:
-            if name in suite:
-                errors.extend(test_exceptions.block_errors(f"{suite['id']}.{name}", suite[name]))
         package = graph.packages.get(suite.get("package", ""))
         if package is None:
             continue

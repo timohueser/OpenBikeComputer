@@ -1,12 +1,7 @@
 __pycache__/
 *.pyc
 *.obcm
-# ...except the style presets' demo maps (B2, #899). They must ship in-repo: they are what
-# a preset card on the hosted site renders, and baking one wants libGEOS, a 600 MB OSM
-# extract and minutes of CPU — none of which belongs in a static-site deploy. Regenerate
-# with builder/bake-previews.sh; the sizes are in previews.json beside them.
-!builder/app/public/preview/*.obcm
-# ...and the wasm assembly bridge's cell fixture (P4b, #1034), ~9 KB of baked OBCA cells. It must
+# ...except the wasm assembly bridge's cell fixture (P4b, #1034), ~9 KB of baked OBCA cells. It must
 # ship in-repo: it is the input half of the pin that says the browser's assembly is byte-identical
 # to the native CLI's, asserted from both Rust and Node, and cutting it wants libGEOS. Regenerate
 # with the two commands in apps/obc-web-assemble/tests/fixture.rs.
