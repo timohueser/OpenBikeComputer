@@ -35,6 +35,7 @@ link resolves to a real page and heading id (the cross-page `#anchor` audit CI r
 import datetime
 import html
 import json
+import os
 import re
 import shutil
 import sys
