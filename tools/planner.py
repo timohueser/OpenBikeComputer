@@ -14,7 +14,7 @@ import sys
 import time
 from urllib.request import urlopen
 
-if not __package__:  # `obc planner` and the Deploy site workflow run this file as a script.
+if not __package__:  # `obc planner` runs this file as a script.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools import planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
 from tools import planner_release as releases
@@ -158,14 +158,9 @@ def grid(args):
         raise ValueError(f"grid step failed with exit status {error.returncode}") from None
 
 
-def site_config(args):
-    if not args.output: raise ValueError("Provide --output for site-config")
-    releases.site_config(args.catalog, args.output)
-
-
 COMMANDS = {"serve": serve, "setup": setup, "verify": verify_local, "prepare": planner_bake.prepare,
             "plan": planner_bake.prepare, "inventory": inventory, "grid": grid, "publish": releases.publish,
-            "deploy": planner_deploy.deploy, "finalize": planner_cleanup.finalize, "site-config": site_config}
+            "deploy": planner_deploy.deploy, "finalize": planner_cleanup.finalize}
 
 
 def main(argv=None):
@@ -196,12 +191,10 @@ def main(argv=None):
     parser.add_argument("--site-origin", default="https://openbikecomputer.com")
     parser.add_argument("--host", default=os.environ.get("OBC_PLANNER_HOST"), help="VPS for deploy and finalize: USER@HOST")
     parser.add_argument("--apply", action="store_true", help="Upload, install, or remove what the command previews")
-    parser.add_argument("--catalog", default=os.environ.get("OBC_PLANNER_CATALOG_URL", "https://maps.openbikecomputer.com/planner/catalog.json"))
-    parser.add_argument("--output", type=Path, help="Output environment file for site-config")
     args = parser.parse_args(argv)
     args.recipe = args.recipe or RECIPES / f"{args.region}.json"
     args.data_dir = args.data_dir or Path(os.environ.get("OBC_PLANNER_DATA", Path.home() / ".cache/obc/planner")) / args.region
-    for name in ["data_dir", "input_release", "recipe", "source_cache", "osm", "inputs", "dem_dir", "reference", "output"]:
+    for name in ["data_dir", "input_release", "recipe", "source_cache", "osm", "inputs", "dem_dir", "reference"]:
         value = getattr(args, name)
         if value is not None: setattr(args, name, value.expanduser().resolve())
     args.dry_run = args.dry_run or args.command == "plan"

@@ -238,6 +238,11 @@ export class PlanSession {
         return this.lastSave;
     }
 
+    /** Waits for the last save; true when it and every save before it succeeded. */
+    saved(): Promise<boolean> {
+        return this.lastSave.then(() => !this.saveError, () => false);
+    }
+
     /** Saves the versions of the plan; a failed save keeps the versions it had. */
     async saveVersions(versions: Version[]): Promise<void> {
         this.busy = true;

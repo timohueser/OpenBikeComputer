@@ -2,7 +2,6 @@
 
 import argparse
 import hashlib
-from io import BytesIO
 import json
 from pathlib import Path
 import subprocess
@@ -84,14 +83,14 @@ class CleanupTests(unittest.TestCase):
                     with self.assertRaises(ValueError): cleanup.plan(self.remote, current)
                 self.rows, self.raw = old_rows, old_raw
 
-    def test_site_must_carry_the_active_release(self):
-        for active in [True, False]:
-            code = json.dumps(json.dumps(self.active)) if active else "old release"
-            with patch.object(cleanup, "open_url", side_effect=[
-                    BytesIO(b'<script type="module" src="./assets/planner.js"></script>'), BytesIO(code.encode())]):
-                if active: cleanup.verify_site(self.active, "https://site.example")
+    def test_public_catalogue_must_serve_the_active_release(self):
+        for active in [self.active, {**self.active, "id": "b" * 64}]:
+            with patch.object(cleanup, "read_url", return_value={**self.current, "active": active}) as read:
+                if active == self.active: cleanup.verify_public_catalogue(self.active, "https://maps.example")
                 else:
-                    with self.assertRaisesRegex(ValueError, "Deploy site"): cleanup.verify_site(self.active, "https://site.example")
+                    with self.assertRaisesRegex(ValueError, "does not serve the active release"):
+                        cleanup.verify_public_catalogue(self.active, "https://maps.example")
+                read.assert_called_once_with("https://maps.example/planner/catalog.json")
 
     def test_apply_rechecks_catalog_and_deletes_only_planned_objects(self):
         stale = [r2.Target(key, 100, "2000-01-01T00:00:00Z") for key in [
@@ -101,7 +100,7 @@ class CleanupTests(unittest.TestCase):
             with self.subTest(changed=changed), patch.object(r2, "bucket_remote", return_value=self.remote), \
                  patch.object(cleanup, "catalog", side_effect=[self.current, {**self.current, "active": {}} if changed else self.current, self.current]), \
                  patch.object(cleanup, "plan", side_effect=[(self.document, stale), (self.document, [])]), \
-                 patch.object(cleanup.deploy, "verify_services"), patch.object(cleanup, "verify_site"), \
+                 patch.object(cleanup.deploy, "verify_services"), patch.object(cleanup, "verify_public_catalogue"), \
                  patch.object(cleanup.deploy, "retire") as retire, \
                  patch.object(r2, "append_log") as log, patch.object(cleanup.deploy, "activate") as activate:
                 removed = []
