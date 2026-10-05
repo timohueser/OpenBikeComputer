@@ -6,8 +6,8 @@ upload fact it produces, while transient reads must keep the prior snapshot and 
 
 The board drains no `HostCommand`s: the rescan is `CatalogEffect::ReadCatalog`'s body
 (`read_catalogs`), the delivery is `note_catalog_uploads` writing `ExternalFacts` for the *next*
-pass, and a partial read is answered `Failed { Unreadable }` so that `CatalogMachine` re-offers the
-read — the executor keeps no retry of its own.
+pass. A partial read is answered `Failed { Unreadable }` so that `CatalogMachine` re-offers the
+read. Busy arena admission retains only the current pending read.
 """
 
 from pathlib import Path
@@ -16,6 +16,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3]
 FLAT_STORE = (ROOT / "firmware/obc-fw-nrf54l/src/flat_store.rs").read_text()
 RIDE = (ROOT / "firmware/obc-fw-nrf54l/src/ride.rs").read_text()
+CATALOG_READ = (ROOT / "firmware/obc-storage/src/flat/catalog_read.rs").read_text()
 
 def body(source: str, start: str, end: str | None) -> str:
     """Return one deliberately delimited production section."""
@@ -45,8 +46,8 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("replaced: upload.replaced()", delivery)
 
         rescan = body(RIDE, "fn read_catalogs", "/// A `no_std`")
-        routes = rescan.index("load_routes(flat, app)")
-        trips = rescan.index("load_trips(flat, app)")
+        routes = rescan.index("load_routes(flat, app, &mut catalogs)")
+        trips = rescan.index("load_trips(flat, app, &mut catalogs)")
         events = rescan.index("note_catalog_uploads(app, facts)")
         self.assertLess(routes, trips)
         self.assertLess(trips, events, "typed upload ids must resolve against the newly-fed snapshots")
@@ -68,26 +69,30 @@ class Fs7BoardCompositionTests(unittest.TestCase):
             ("pub(crate) fn load_trips", "app.set_trips"),
         ):
             section = body(FLAT_STORE, loader, "///" if loader.endswith("load_routes") else None)
-            transient = section.index("Ok(Err(obc_formats::io::Error::Io)) | Err(_)")
+            transient = section.index("if result.is_err()")
             abort = section.index("return false", transient)
             update = section.index(setter)
             self.assertLess(abort, update, "a retryable read must not publish a partial replacement snapshot")
-            self.assertIn("Ok(Err(_))", section, "definitively malformed objects remain omittable")
+            self.assertLess(section.index("catalog_read::scan("), transient)
+
+        self.assertIn("Ok(Err(Error::Io)) => return Err(StoreError::Media)", CATALOG_READ)
+        self.assertIn("Err(error) => return Err(error)", CATALOG_READ)
+        self.assertIn("Ok(_) => {}", CATALOG_READ, "definitively malformed objects remain omittable")
 
         rescan = body(RIDE, "fn read_catalogs", "/// A `no_std`")
         stages = [
             "app.begin_catalog_refresh()",
             "Request::ReconcileMetadata",
             "let start = crate::flat_store::catalog_scope(flat)",
-            "load_routes(flat, app)",
-            "load_trips(flat, app)",
+            "load_routes(flat, app, &mut catalogs)",
+            "load_trips(flat, app, &mut catalogs)",
             "load_rides(flat, app)",
             "if !routes_loaded || !trips_loaded || !rides_loaded",
-            "return Err(CatalogError::Unreadable)",
-            "load_metadata(flat, app).map_err(catalog_metadata_error)?",
+            "return Some(Err(CatalogError::Unreadable))",
+            "load_metadata(flat, app)",
             "if start != crate::flat_store::catalog_scope(flat)",
-            "return Err(CatalogError::Stale)",
-            "Ok(start)",
+            "return Some(Err(CatalogError::Stale))",
+            "Some(Ok(start))",
         ]
         for previous, following in zip(stages, stages[1:]):
             self.assertLess(
@@ -98,7 +103,7 @@ class Fs7BoardCompositionTests(unittest.TestCase):
 
         # The executor returns the captured scope or the actual failure. Retry remains owned by
         # CatalogState; a removal does not compose a second rescan beside its outcome.
-        served = body(RIDE, "if let Some(effect) = exec.effects.catalog.take() {", "// The in-flight removal")
+        served = body(RIDE, "if let Some(effect) = exec.effects.catalog.take()", "// The in-flight removal")
         self.assertIn("Ok(scope) => CatalogOutcome::CatalogRead { token, scope: Some(scope) }", served)
         self.assertIn("Err(error) => CatalogOutcome::Failed { token, error }", served)
         self.assertNotIn("read_catalogs", served.split("CatalogEffect::RemoveObject", 1)[1])
@@ -111,9 +116,20 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertNotIn("DisplayName", head)
         self.assertNotIn("EntryMeta", head)
 
-        for loader in ("pub(crate) fn load_routes", "pub(crate) fn load_trips"):
+        scan_head = body(CATALOG_READ, "pub struct Head", "impl Head")
+        self.assertIn("id: ObjectId", scan_head)
+        self.assertIn("revision: Revision", scan_head)
+        self.assertNotIn("DisplayName", scan_head)
+        self.assertNotIn("EntryMeta", scan_head)
+        scratch = body(FLAT_STORE, "pub(crate) struct CatalogScratch", "/// Publish a complete route snapshot")
+        self.assertNotIn("EntryMeta", scratch)
+        for loader, heads, capacity in (
+            ("pub(crate) fn load_routes", "route_heads", "MAX_ROUTES"),
+            ("pub(crate) fn load_trips", "trip_heads", "MAX_TRIPS"),
+        ):
             section = body(FLAT_STORE, loader, "///" if loader.endswith("load_routes") else None)
-            self.assertIn("heapless::Vec<CatalogHead", section)
+            self.assertIn(f"{heads}: [obc_storage::flat::catalog_read::Head; obc_app::{capacity}]", scratch)
+            self.assertIn(f"&mut stage.{heads}", section)
             self.assertNotIn(
                 "heapless::Vec<EntryMeta",
                 section,
