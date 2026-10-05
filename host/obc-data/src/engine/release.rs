@@ -71,7 +71,7 @@ impl Layer {
 
 impl Release {
     /// The manifest as compact JSON with the keys of each object in byte order.
-    fn canonical(&self) -> Vec<u8> {
+    pub(crate) fn canonical(&self) -> Vec<u8> {
         let value = serde_json::to_value(self).expect("a release serializes");
         serde_json::to_vec(&sorted(value)).expect("JSON values serialize")
     }

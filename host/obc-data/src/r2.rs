@@ -170,6 +170,14 @@ impl Bucket {
         self.checked(&["copyto".into(), self.path(key), file.display().to_string()]).map(drop)
     }
 
+    /// The bytes of `key`, or `None` when the bucket does not hold it.
+    pub fn read(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        if !self.stat(&[key.to_string()])?.contains_key(key) {
+            return Ok(None);
+        }
+        Ok(Some(self.checked(&["cat".into(), self.path(key)])?.stdout))
+    }
+
     /// Upload `file` to `key`. rclone skips an object that already holds the same checksum.
     pub fn put(&self, file: &Path, key: &str, upload: &Upload) -> Result<Put, String> {
         check_key(key)?;

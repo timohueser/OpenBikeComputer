@@ -149,7 +149,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::cli::{build_cli, r2_cli, runs_cli};
+    use crate::cli::{build_cli, r2_cli, runs_cli, status_cli};
     use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
@@ -163,8 +163,8 @@ mod tests {
             schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
             schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
-            schema("`store import`", generator.subschema_for::<crate::store::import::Plan>()),
-            schema("`gc store`", generator.subschema_for::<crate::store::gc::Plan>()),
+            schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
+            schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
             schema("`build`", generator.subschema_for::<build_cli::Built>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),

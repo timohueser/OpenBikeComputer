@@ -30,6 +30,10 @@ impl Product for Maps {
         "maps"
     }
 
+    fn prefix(&self) -> &'static str {
+        "cell-catalog"
+    }
+
     fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
