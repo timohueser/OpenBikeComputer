@@ -428,7 +428,7 @@ fn run_planet_bake(
     let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     // Held until the bake has read the planet: the sharder below reads it too.
-    let _planet = obc_bake::planet::lock_cache(&cache)?;
+    let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
     let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &runner, &progress)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {

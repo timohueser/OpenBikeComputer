@@ -67,11 +67,16 @@ pub fn check_pinned(spec: Option<&str>) -> Result<(), String> {
 
 /// The lock of `<cache>/planet`. A run holds it while it updates and reads the planet there, so a
 /// second run waits instead of deleting a file in use.
-pub fn lock_cache(cache: &Path) -> Result<std::fs::File, String> {
+pub fn lock_cache(cache: &Path, progress: &Progress) -> Result<std::fs::File, String> {
     std::fs::create_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
     let path = cache.join("planet.lock");
     let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path);
     let file = file.map_err(|e| format!("{}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => return Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => progress.log(format!("waiting for {}", path.display())),
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("lock {}: {e}", path.display())),
+    }
     file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
     Ok(file)
 }
@@ -141,48 +146,67 @@ fn update(
         return Ok((planet.to_path_buf(), from.to_string(), None));
     }
     let start = start.ok_or("the `osm-replication` record has no state that its diffs start from")?;
-    let end = osmium.replication_timestamp(planet)?;
-    if end < start {
-        return Err(format!(
-            "invalid data: the `osm-planet` planet of {from} ends at {end}, but the `osm-replication` diffs \
-             start at {start}, so the changes between are missing. Pin a planet that ends at or after the \
-             start of its daily diff: `obc data refresh osm-planet --env live`"
-        ));
-    }
+    check_gap(from, &osmium.replication_timestamp(planet)?, &start)?;
     let to = replication.snapshot.version.clone();
     let path = dir.join(format!("planet-{from}+{to}.osm.pbf"));
     let applied = Replication { from: from.to_string(), to: to.clone(), diffs: diffs.len() };
-    if path.is_file() {
-        progress.log(format!("Reusing the planet of {from} with the diffs up to {to}"));
-        return Ok((path, to, Some(applied)));
-    }
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut files = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         files.push(entry.map_err(|e| format!("{}: {e}", dir.display()))?.path());
     }
-    let prefix = format!("planet-{from}+");
-    let day_of = |path: &Path| {
-        let name = path.file_name()?.to_str()?;
-        name.strip_prefix(&prefix)?.strip_suffix(".osm.pbf").filter(|day| *day < to.as_str()).map(str::to_string)
-    };
-    let earlier = files.iter().filter_map(|path| Some((day_of(path)?, path))).max();
-    // Stale `.part` files and every result that is not the start go before the first pass.
-    for file in &files {
-        if earlier.as_ref().is_none_or(|(_, kept)| file != *kept) {
-            std::fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let plan = plan(&files, from, &to, &diffs);
+    for file in &plan.stale {
+        std::fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    match plan.start {
+        Some((_, day)) if day == to => progress.log(format!("Reusing the planet of {from} with the diffs up to {to}")),
+        Some((base, day)) => {
+            progress.log(format!("Updating the planet of {from} with the diffs up to {day}"));
+            osmium.apply_changes(base, true, &plan.diffs, &path, progress)?;
         }
+        None => osmium.apply_changes(planet, false, &plan.diffs, &path, progress)?,
     }
-    let (base, owned, day) = match &earlier {
-        Some((day, path)) => (path.as_path(), true, day.as_str()),
-        None => (planet, false, ""),
-    };
-    let newer: Vec<&Path> = diffs.iter().filter(|(_, of)| of.as_str() > day).map(|(diff, _)| *diff).collect();
-    if owned {
-        progress.log(format!("Updating the planet of {from} with the diffs up to {day}"));
-    }
-    osmium.apply_changes(base, owned, &newer, &path, progress)?;
     Ok((path, to, Some(applied)))
+}
+
+/// Refuse a planet that ends, at `end`, before the state that the first diff starts from: the
+/// changes between would be missing. Overlap is fine, because a diff applies over newer data.
+fn check_gap(from: &str, end: &str, start: &str) -> Result<(), String> {
+    if end >= start {
+        return Ok(());
+    }
+    Err(format!(
+        "invalid data: the `osm-planet` planet of {from} ends at {end}, but the `osm-replication` diffs \
+         start at {start}, so the changes between are missing. Pin a planet that ends at or after the \
+         start of its daily diff: `obc data refresh osm-planet --env live`"
+    ))
+}
+
+/// What an update to `planet-<from>+<to>.osm.pbf` does with the `files` of its folder.
+#[derive(Debug, PartialEq, Eq)]
+struct Plan<'a> {
+    /// The newest result from the same planet up to `to`, and its day; `None` starts from the
+    /// planet. A start of the day `to` is the result itself.
+    start: Option<(&'a Path, &'a str)>,
+    /// The diffs after the day of the start.
+    diffs: Vec<&'a Path>,
+    /// Every other file: older or newer results, results of another planet and `.part` files.
+    stale: Vec<&'a Path>,
+}
+
+/// `diffs` holds each diff with the day of its state, in order.
+fn plan<'a>(files: &'a [PathBuf], from: &str, to: &str, diffs: &[(&'a Path, String)]) -> Plan<'a> {
+    let prefix = format!("planet-{from}+");
+    let day_of = |path: &'a Path| -> Option<&'a str> {
+        let day = path.file_name()?.to_str()?.strip_prefix(prefix.as_str())?.strip_suffix(".osm.pbf")?;
+        (day <= to).then_some(day)
+    };
+    let start = files.iter().filter_map(|path| Some((path.as_path(), day_of(path)?))).max_by_key(|(_, day)| *day);
+    let stale = files.iter().map(PathBuf::as_path).filter(|path| start.is_none_or(|(kept, _)| path != &kept)).collect();
+    let after = start.map_or("", |(_, day)| day);
+    let diffs = diffs.iter().filter(|(_, day)| day.as_str() > after).map(|(diff, _)| *diff).collect();
+    Plan { start, diffs, stale }
 }
 
 /// The `timestamp` of an Osmosis replication `state.txt`, which escapes each `:`.
@@ -1444,6 +1468,51 @@ mod tests {
             std::fs::read_dir(dir.join("planet")).unwrap().map(|entry| entry.unwrap().file_name()).collect();
         assert_eq!(left, ["applied.osm.pbf"], "no pass leaves a part file");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_update_starts_from_the_newest_result_of_the_same_planet() {
+        let files = |names: &[&str]| names.iter().map(|name| PathBuf::from("planet").join(name)).collect::<Vec<_>>();
+        let (d2, d3, d4) = (Path::new("d2"), Path::new("d3"), Path::new("d4"));
+        let diffs = [(d2, "2026-08-02".to_string()), (d3, "2026-08-03".into()), (d4, "2026-08-04".into())];
+        let path = |name: &str| PathBuf::from("planet").join(name);
+        let run = |names: &[&str], to: &str| {
+            let files = files(names);
+            // The record of `to` holds the diffs up to `to`.
+            let diffs: Vec<_> = diffs.iter().filter(|(_, day)| day.as_str() <= to).cloned().collect();
+            let plan = plan(&files, "2026-08-01", to, &diffs);
+            let start = plan.start.map(|(path, day)| (path.to_path_buf(), day.to_string()));
+            let stale: Vec<PathBuf> = plan.stale.iter().map(|path| path.to_path_buf()).collect();
+            (start, plan.diffs.clone().into_iter().map(Path::to_path_buf).collect::<Vec<_>>(), stale)
+        };
+
+        // No earlier result: every diff applies to the planet.
+        assert_eq!(run(&[], "2026-08-04"), (None, vec![d2.into(), d3.into(), d4.into()], vec![]));
+        // An earlier result is the start; only the newer diffs apply. A stale part, an older result
+        // and a result of another planet go.
+        let names =
+            ["planet-2026-08-01+2026-08-02.osm.pbf", "planet-2026-08-01+2026-08-03.osm.pbf", "x.osm.pbf.0.part"];
+        let other = "planet-2026-07-25+2026-08-03.osm.pbf";
+        assert_eq!(
+            run(&[names[0], names[1], names[2], other], "2026-08-04"),
+            (
+                Some((path(names[1]), "2026-08-03".into())),
+                vec![d4.into()],
+                vec![path(names[0]), path(names[2]), path(other)]
+            )
+        );
+        // The result of `to` is there: nothing applies.
+        assert_eq!(run(&[names[1]], "2026-08-03"), (Some((path(names[1]), "2026-08-03".into())), vec![], vec![]));
+        // The pin moved back: a newer result goes and the planet is the start.
+        assert_eq!(run(&[names[1]], "2026-08-02"), (None, vec![d2.into()], vec![path(names[1])]));
+    }
+
+    #[test]
+    fn a_planet_that_ends_before_the_first_diff_is_refused() {
+        assert!(check_gap("2026-09-28", "2026-09-28T00:00:04Z", "2026-09-28T00:00:00Z").is_ok());
+        assert!(check_gap("2026-09-28", "2026-09-28T00:00:00Z", "2026-09-28T00:00:00Z").is_ok());
+        let error = check_gap("2026-09-28", "2026-09-27T23:59:59Z", "2026-09-28T00:00:00Z").unwrap_err();
+        assert!(error.contains("invalid data") && error.contains("obc data refresh osm-planet"), "{error}");
     }
 
     #[test]
