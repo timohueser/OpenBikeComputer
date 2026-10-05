@@ -57,19 +57,25 @@ impl Row {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let row = Self {
+        let row = Self::from_bytes(bytes);
+        if !row.valid()
+            || bytes[32..34] != (ObjectKind::Ride as u16).to_le_bytes()
+            || bytes[34..].iter().any(|&v| v != 0)
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(row)
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
             id: ObjectId(u64::from_le_bytes(bytes[0..8].try_into().unwrap())),
             revision: Revision(u64::from_le_bytes(bytes[8..16].try_into().unwrap())),
             payload_len: u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
             payload_crc: u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
             timestamp: u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
-            kind: ObjectKind::decode(u16::from_le_bytes(bytes[32..34].try_into().unwrap()))
-                .map_err(|_| Error::Invalid)?,
-        };
-        if !row.valid() || bytes[34..].iter().any(|&v| v != 0) {
-            return Err(Error::Invalid);
+            kind: ObjectKind::Ride,
         }
-        Ok(row)
     }
 
     fn encode(self, bytes: &mut [u8]) {
@@ -122,7 +128,7 @@ impl<'a> Image<'a> {
         StoreId(self.buffer[16..32].try_into().unwrap())
     }
     pub fn rows(&self) -> impl Iterator<Item = Row> + '_ {
-        self.bytes()[HEADER_LEN..self.rows_end()].as_chunks::<ROW_LEN>().0.iter().map(|b| Row::decode(b).unwrap())
+        self.bytes()[HEADER_LEN..self.rows_end()].as_chunks::<ROW_LEN>().0.iter().map(|b| Row::from_bytes(b))
     }
 
     fn rows_end(&self) -> usize {
@@ -138,6 +144,7 @@ impl<'a> Image<'a> {
     }
 
     /// The trip progress records, in write order.
+    #[cfg(test)]
     pub fn progress(&self) -> impl Iterator<Item = TripProgress> + '_ {
         let records = self.bytes()[self.progress_start()..].as_chunks::<RECORD_LEN>().0;
         records.iter().map(|b| TripProgress::decode(b).unwrap())
@@ -188,19 +195,24 @@ impl<'a> Image<'a> {
         if !row.valid() {
             return Err(Error::Invalid);
         }
-        let index = self.rows().position(|r| r.id >= row.id).unwrap_or(self.rows().count());
+        let count = self.rows().count();
+        let mut index = 0;
+        while index < count {
+            let at = HEADER_LEN + index * ROW_LEN;
+            if u64::from_le_bytes(self.buffer[at..at + 8].try_into().unwrap()) >= row.id.0 {
+                break;
+            }
+            index += 1;
+        }
         let at = HEADER_LEN + index * ROW_LEN;
-        let existing = self.rows().nth(index).filter(|r| r.id == row.id);
-        let count = self.rows().filter(|r| r.kind == row.kind).count()
-            + usize::from(existing.is_none_or(|old| old.kind != row.kind));
-        let capacity = MAX_RIDES;
-        if count > capacity || (existing.is_none() && self.len + ROW_LEN > self.buffer.len()) {
+        let existing = index < count && u64::from_le_bytes(self.buffer[at..at + 8].try_into().unwrap()) == row.id.0;
+        if !existing && (count == MAX_RIDES || self.len + ROW_LEN > self.buffer.len()) {
             return Err(Error::Capacity);
         }
-        if existing.is_none() {
+        if !existing {
             self.buffer.copy_within(at..self.len, at + ROW_LEN);
             self.len += ROW_LEN;
-            self.update_count(self.rows().count() + 1);
+            self.update_count(count + 1);
         }
         row.encode(&mut self.buffer[at..at + ROW_LEN]);
         Ok(())
@@ -215,15 +227,7 @@ impl<'a> Image<'a> {
         if self.store_id() != store.store_id() {
             return Err(Error::WrongStore);
         }
-        let mut keep = [false; MAX_RIDES];
-        for entry in store.entries() {
-            for (index, row) in self.rows().enumerate() {
-                keep[index] |= row.matches(entry);
-            }
-        }
-        if !store.entries_ok() {
-            return Err(Error::Store(StoreError::Media));
-        }
+        let (keep, _) = scan_rows(store, self, None)?;
         let old_len = self.len;
         let rows_end = self.rows_end();
         let mut dest = HEADER_LEN;
@@ -239,6 +243,38 @@ impl<'a> Image<'a> {
         self.update_count((dest - HEADER_LEN) / ROW_LEN);
         Ok(self.len != old_len)
     }
+}
+
+#[inline(never)]
+fn scan_rows<D: BlockDevice>(
+    store: &FlatStore<D>,
+    image: &Image<'_>,
+    target: Option<&EntryMeta>,
+) -> Result<([bool; MAX_RIDES], bool), Error> {
+    let mut found = [false; MAX_RIDES];
+    let mut present = false;
+    let rows = image.bytes()[HEADER_LEN..image.rows_end()].as_chunks::<ROW_LEN>().0;
+    let mut i = 0;
+    for entry in store.entries() {
+        while i < rows.len() && u64::from_le_bytes(rows[i][..8].try_into().unwrap()) < entry.id.0 {
+            i += 1;
+        }
+        if i < rows.len() {
+            let bytes = &rows[i];
+            let matched = entry.kind == ObjectKind::Ride
+                && entry.flags == EntryFlags::NONE
+                && u64::from_le_bytes(bytes[..8].try_into().unwrap()) == entry.id.0
+                && u64::from_le_bytes(bytes[8..16].try_into().unwrap()) == entry.revision.0
+                && u64::from_le_bytes(bytes[16..24].try_into().unwrap()) == entry.payload_len
+                && u32::from_le_bytes(bytes[24..28].try_into().unwrap()) == entry.payload_crc;
+            found[i] |= matched;
+            present |= matched && target == Some(&entry);
+        }
+    }
+    if !store.entries_ok() {
+        return Err(Error::Store(StoreError::Media));
+    }
+    Ok((found, present))
 }
 
 fn check_mode<D: BlockDevice>(store: &FlatStore<D>) -> Result<(), Error> {
@@ -284,20 +320,8 @@ fn publish_image<D: BlockDevice>(
     if singleton(store)? != head {
         return Err(Error::Stale);
     }
-    let mut target_present = false;
-    let mut found = [false; MAX_RIDES];
-    for entry in store.entries() {
-        target_present |= Some(entry) == target && entry.flags == EntryFlags::NONE;
-        for (index, row) in image.rows().enumerate() {
-            found[index] |= row.matches(entry);
-        }
-    }
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
-    }
-    if found.iter().take(image.rows().count()).any(|&v| !v)
-        || target.is_some_and(|target| !target_present || !image.rows().any(|row| row.matches(target)))
-    {
+    let (found, target_present) = scan_rows(store, image, target.as_ref())?;
+    if found.iter().take(image.rows().count()).any(|&v| !v) || (target.is_some() && !target_present) {
         return Err(Error::Stale);
     }
     let accepted = if checkpoint_edit {
@@ -652,8 +676,11 @@ fn record_progress(image: &mut Image<'_>, new: TripProgress, stored: &dyn Fn(u64
     let start = image.progress_start();
     let mut encoded = new.encode();
     if new.last_finished.is_none() {
-        if let Some(record) = image.progress().find(|record| record.key == new.key) {
-            encoded = record.encode();
+        for record in image.bytes()[start..].as_chunks::<RECORD_LEN>().0 {
+            if u64::from_le_bytes(record[..8].try_into().unwrap()) == new.key {
+                encoded = *record;
+                break;
+            }
         }
     }
     if new.key == 0 {
