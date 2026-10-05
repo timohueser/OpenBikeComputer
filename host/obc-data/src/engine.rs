@@ -6,6 +6,7 @@
 mod code;
 pub mod plan;
 mod process;
+pub mod release;
 pub mod runs;
 pub mod state;
 
@@ -30,6 +31,8 @@ pub struct Step {
     pub code: Code,
     /// Paths in the output directory: a file, or a directory whose every file is part of the layer.
     pub outputs: Vec<String>,
+    /// The ids of the `kind = "tool"` sources that the step runs from PATH. They are not in the key.
+    pub tools: Vec<String>,
     pub run: Run,
 }
 
@@ -295,6 +298,50 @@ fn select<'a>(snapshot: &'a Snapshot, selected: &'a [String]) -> (Vec<&'a FileRe
     let files = snapshot.files.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)).collect();
     let missing = selected.iter().filter(|name| !snapshot.files.iter().any(|file| &file.name == *name));
     (files, missing.map(String::as_str).collect())
+}
+
+/// The object of each file that a snapshot input with these fields reads, by file name, or `None`
+/// while the store lacks one. A product reads a file that its step list depends on this way.
+pub fn snapshot_files(
+    store: &Store,
+    source: &str,
+    version: &str,
+    params: &[(String, String)],
+    files: &[String],
+) -> Result<Option<BTreeMap<String, PathBuf>>, String> {
+    Ok(match selection(store, source, version, params, files)? {
+        Selection::Present(files) => {
+            Some(files.into_iter().map(|file| (file.name, store.object(&file.sha256))).collect())
+        }
+        Selection::Lacks(_) => None,
+    })
+}
+
+/// Link each file of `files` (a path such as `layer/a.pbf`, and its object) into the new directory
+/// `dir`, for a tool that reads a directory. `dir` must not be in the output of the step; the
+/// directory beside it, `request.output.with_file_name("view")`, goes when the step ends.
+pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+    fs::create_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for (name, object) in files {
+        if name.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+            return Err(format!("{name} is not a relative path"));
+        }
+        let link = dir.join(name);
+        fs::create_dir_all(link.parent().expect("a joined path has a parent"))
+            .map_err(|e| format!("{}: {e}", link.display()))?;
+        symlink(object, &link).map_err(|e| format!("{}: {e}", link.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(object, link)
+}
+
+#[cfg(not(unix))]
+fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(object, link)
 }
 
 /// The receipt of `step` before it runs, with its key, and its request. `layers` holds the
@@ -630,7 +677,15 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     pub(crate) fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
-        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run }
+        Step {
+            name: name.into(),
+            inputs,
+            options: json!({}),
+            code,
+            outputs: vec![output.into()],
+            tools: Vec::new(),
+            run,
+        }
     }
 
     pub(crate) fn steps_crate() -> Code {
@@ -804,6 +859,18 @@ mod x;
         write(&scratch.0.join("gen/deep.bin"), "2\n");
         assert_ne!(hash(&[]), changed, "a file that a module file includes is code");
         assert_ne!(hash(&["Cargo.lock"]), hash(&[]));
+    }
+
+    #[test]
+    fn a_view_links_each_file_to_its_object() {
+        let scratch = Scratch::new("engine-view");
+        let object = scratch.0.join("object");
+        write(&object, "tile");
+        let files = BTreeMap::from([("tiles/a.pbf".to_string(), object.clone())]);
+        view(&files, &scratch.0.join("view")).unwrap();
+        assert_eq!(fs::read_link(scratch.0.join("view/tiles/a.pbf")).unwrap(), object);
+        let outside = BTreeMap::from([("../a.pbf".to_string(), object)]);
+        assert_eq!(view(&outside, &scratch.0.join("other")).unwrap_err(), "../a.pbf is not a relative path");
     }
 
     #[test]

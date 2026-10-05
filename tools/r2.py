@@ -64,7 +64,7 @@ REPUBLISH = "obc bake publish --target r2"
 
 #: The R2 client of host/obc-data, run from this checkout.
 CLIENT = ["cargo", "run", "--quiet", "--locked", "--manifest-path",
-          str(Path(__file__).resolve().parent.parent / "Cargo.toml"), "-p", "obc-data", "--", "r2"]
+          str(Path(__file__).resolve().parent.parent / "Cargo.toml"), "-p", "obc-data-steps", "--", "r2"]
 
 
 class Refuse(Exception):

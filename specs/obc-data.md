@@ -82,9 +82,16 @@ docs and the map builder.
 
 ### `data/env/<environment>.toml`
 
-`[pins]` maps a source id to the version that the environment is built from. Each pin names
-a source of `data/sources.toml`. A pin of a source with `version = "date"` is a `YYYY-MM-DD`
-date. `obc data sources` reads `data/env/live.toml`, and the file must exist.
+The environment name is lowercase kebab-case.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `region` | string | The region of both products: a region id of `data/regions/`. `plan` and `build` refuse a file without it |
+| `layers` | array of strings | The optional layers that are on, each once. Each is an optional layer of a product |
+| `[pins]` | table | A source id to the version that the environment is built from |
+
+Each pin names a source of `data/sources.toml`. A pin of a source with `version = "date"` is a
+`YYYY-MM-DD` date. `obc data sources` reads `data/env/live.toml`, and the file must exist.
 
 ### `data/regions/<id>.toml`
 
@@ -142,6 +149,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
+| `releases/<product>/<id>.json` | The manifest of a release, see [Releases](#releases) |
 | `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
@@ -367,6 +375,7 @@ A step declares:
 | `options` | A JSON object |
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
+| `tools` | The ids of `kind = "tool"` sources that the step runs. Each is an executable file of that name on PATH |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
 
 ### Keys
@@ -406,11 +415,11 @@ An input layer enters a key with its digest, not with its key. A rebuild that gi
 files gives the same digest, so the keys of the layers that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
-A key holds no version of an installed tool, such as the Python interpreter or Java. The first
-Python step that ships adds a `uv.lock`; from then on, a Python step runs with
-`uv run --locked` and declares `uv.lock` as code. A Rust step runs the code of
-the running binary, but its code hash comes from the files in the repository root. `obc data`
-runs with `cargo run` in the checkout that it reads, so the two are the same sources.
+A key holds no version of an installed tool, such as the Python interpreter or Java, and not
+the `tools` of the step. The first Python step that ships adds a `uv.lock`; from then on, a
+Python step runs with `uv run --locked` and declares `uv.lock` as code. A Rust step runs the
+code of the running binary, but its code hash comes from the files in the repository root.
+`obc data` runs with `cargo run` in the checkout that it reads, so the two are the same sources.
 
 ### The step contract
 
@@ -436,6 +445,11 @@ when the step ends, also when it fails. A failed step writes no receipt.
 A step reads only its inputs: the snapshots, the layers and the options in its request. A step
 does not use the network; fetchers are the only network users. The engine does not enforce this.
 A step that needs a package or a tool finds it installed, or reads it as a snapshot.
+
+For a tool that reads a directory, `engine::view` in Rust and `view` of `tools/step_request.py`
+in Python make a new directory with one symbolic link per file of an input, to its object. A
+step makes it beside `output`, in `partial/layer-<key>/`, which the engine removes when the step
+ends.
 
 ### Receipt
 
@@ -475,6 +489,7 @@ it comes from.
 | Key | Value |
 | --- | --- |
 | `id` | The step of the first build of the group, in dependency order |
+| `blocked` | `TOOL is not on PATH` for the first tool of a build that is not on PATH, or `null` |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
 | `builds` | In dependency order: `step`, `key` (`null` while the step waits for a fetch or another build) and `estimate` |
 
@@ -523,12 +538,42 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 | `step_failed` | `step` and `error` |
 | `finished` | `ok`, `error` (`null` when `ok`) and `wall_ms` |
 
+### Products
+
+A product is a set of steps that makes one release, such as `planner` or `device-maps`. The
+`obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
+commands of `host/obc-data`. Each layer name of a product starts with `<product>/`.
+
+A product gives its steps for an environment, its regions and the store. When the step list
+depends on a snapshot that the store does not have, such as the `.poly` of a region, the product
+names those fetches instead. `plan` and `build` fetch them and then ask the product once more. A
+product that names fetches the second time fails the command.
+
+`plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
+`region` and `layers` of the environment. `build ENV --plan FILE` builds the groups of that file.
+It refuses the file, with exit status 3, when the environment or a group differs from the plan of
+now, apart from `estimate` and `bytes`. `build` refuses a `blocked` group. When the store has the
+layer of every step of a product after the run, `build` writes the release of that product.
+
+### Releases
+
+`releases/<product>/<id>.json` is the manifest of a release: `{"product", "layers"}`, as the
+compact output of `serde_json` with the keys of each object in byte order. The id is the
+SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
+the same layers make the same release. `layers` is sorted by `step`, and each layer has:
+
+| Key | Meaning |
+| --- | --- |
+| `step`, `key`, `inputs`, `options`, `code`, `command`, `outputs`, `digest`, `files` | As in the [receipt](#receipt) |
+| `snapshots` | `{source: {"version", "params"}}`: the version and the `NAME=VALUE` of each snapshot that the layer read |
+
+The objects of a release are the `files` of its layers.
+
 ### State of a layer
 
 The engine computes the state of each layer when it is asked, and stores nothing. It compares
-the step with the layer that live has: its receipt, and the version and `params` of each source
-that it was built from. Apply gives them from the live manifests. The state of a source is as in
-[State of a source](#state-of-a-source).
+the step with the layer that live has: a layer of a live release manifest. The state of a source
+is as in [State of a source](#state-of-a-source).
 
 | State | When | Reason |
 | --- | --- | --- |
@@ -558,6 +603,8 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 | `obc data gc store [--apply] [--json]` | Its roots, the snapshot records and the objects that nothing reaches, and what stays. `--apply` deletes them and lists them |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
+| `obc data plan ENV [--only GROUP,…] [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products) |
+| `obc data build ENV [--only GROUP,…] [--plan FILE] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built. It uploads nothing |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
@@ -635,8 +682,8 @@ sets the exit status. The message tells what failed, and the fix tells what to d
 | 0 | The command succeeded |
 | 1 | A check found problems, or the command failed: a file is not valid; a fetch, R2, a run or the store failed; or the person did not agree |
 | 2 | Usage: an argument is not valid, or a command that changes live did not get consent |
-| 3 | The plan is outdated: live or the steps changed after the plan was made. Plan again |
-| 4 | Blocked: a credential is missing |
+| 3 | The plan is outdated: live, the steps or the store changed after the plan was made. Plan again |
+| 4 | Blocked: a credential or a tool is missing |
 | 5 | Verify failed: the bytes in a target are not the bytes that the command wrote |
 
 A command that changes live shows its plan and asks in a terminal. Without a terminal, it needs
@@ -653,11 +700,12 @@ another command must run first. | Correct the command. `obc data --help` lists t
 | `not_confirmed` | 1 | The person did not answer yes. | Nothing changed. Run the command again when you want the change. |
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
-| `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. | Set the credential that the message or `obc data sources` names, then run again. |
+| `blocked` | 4 | A credential or a tool is missing: a fetch failed without the credential of its source,
+the R2 variables are not set, or a tool that a build runs is not on PATH. | Set the credential or install the tool that the message names, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
 | `verify_failed` | 5 | After an upload, the object in the bucket is not the file. | Upload the file again. |
-| `run_failed` | 1 | The run that `runs RUN --follow` shows failed. | `obc data runs RUN` shows the step that failed and its error. |
+| `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
+| `plan_outdated` | 3 | The plan file is not the plan of now: live, the steps or the store changed after it was made. | Make the plan again with `obc data plan ENV --json`, read it, and pass the new file. |
 | `failed` | 1 | The store or the file system failed. | Correct the file or the directory that the message names, then run again. |
 
 ## JSON schemas
@@ -674,6 +722,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `region show` | `RegionDetail` |
 | `store import` | `ImportPlan` |
 | `gc store` | `GcPlan` |
+| `plan` | `EnvPlan` |
+| `build` | `Built` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
@@ -713,6 +763,73 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Built": {
+      "description": "What a build did.",
+      "properties": {
+        "layers": {
+          "description": "The layers of the run, in dependency order.",
+          "items": {
+            "$ref": "#/$defs/BuiltLayer"
+          },
+          "type": "array"
+        },
+        "releases": {
+          "description": "The release of each product whose every layer is built.",
+          "items": {
+            "$ref": "#/$defs/BuiltRelease"
+          },
+          "type": "array"
+        },
+        "run": {
+          "description": "`None` when there was nothing to fetch or build.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "run",
+        "layers",
+        "releases"
+      ],
+      "type": "object"
+    },
+    "BuiltLayer": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "reused": {
+          "type": "boolean"
+        },
+        "step": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "key",
+        "reused"
+      ],
+      "type": "object"
+    },
+    "BuiltRelease": {
+      "properties": {
+        "id": {
+          "description": "The SHA-256 of `releases/<product>/<id>.json` in the store.",
+          "type": "string"
+        },
+        "product": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "product",
+        "id"
+      ],
+      "type": "object"
+    },
     "Code": {
       "description": "The kind of an error. It sets the exit status and the fix.",
       "oneOf": [
@@ -743,7 +860,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set.",
+          "description": "A credential or a tool is missing: a fetch failed without the credential of its source,\nthe R2 variables are not set, or a tool that a build runs is not on PATH.",
           "type": "string"
         },
         {
@@ -758,7 +875,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "run_failed",
-          "description": "The run that `runs RUN --follow` shows failed.",
+          "description": "A run failed: the build, or the run that `runs RUN --follow` shows.",
+          "type": "string"
+        },
+        {
+          "const": "plan_outdated",
+          "description": "The plan file is not the plan of now: live, the steps or the store changed after it was made.",
           "type": "string"
         },
         {
@@ -874,6 +996,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "EnvPlan": {
+      "additionalProperties": false,
+      "description": "What a build of an environment would fetch and build.",
+      "properties": {
+        "env": {
+          "type": "string"
+        },
+        "groups": {
+          "items": {
+            "$ref": "#/$defs/PlanGroup"
+          },
+          "type": "array"
+        },
+        "layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "env",
+        "region",
+        "layers",
+        "groups"
+      ],
+      "type": "object"
+    },
     "Error": {
       "description": "Why a command failed, and what to do about it.",
       "properties": {
@@ -891,6 +1044,35 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "code",
         "message",
         "fix"
+      ],
+      "type": "object"
+    },
+    "Estimate": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peak_rss_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wall_ms",
+        "bytes_out",
+        "peak_rss_bytes"
       ],
       "type": "object"
     },
@@ -1517,6 +1699,125 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "PlanBuild": {
+      "additionalProperties": false,
+      "properties": {
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Estimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "description": "`None` until the layers and snapshots that it reads are in the store.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "key",
+        "estimate"
+      ],
+      "type": "object"
+    },
+    "PlanFetch": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "description": "The size of these files in a snapshot record of the source, or `None`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "files": {
+          "description": "The names of the files that the store lacks, or none when the store cannot name them: then\nthe fetch gets every file that it gives.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "params",
+        "files",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "PlanGroup": {
+      "additionalProperties": false,
+      "description": "One change: builds that read each other's layers, and the fetches that they need. A group\nnever needs a build of another group, so each can be selected alone. Two groups can need the\nsame fetch.",
+      "properties": {
+        "blocked": {
+          "description": "Why a run cannot build it on this machine: a tool that a build runs is not on PATH.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "builds": {
+          "description": "In dependency order.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
+        "fetches": {
+          "items": {
+            "$ref": "#/$defs/PlanFetch"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "The step of its first build. It names the group only in the plan that it comes from.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "blocked",
+        "fetches",
+        "builds"
+      ],
+      "type": "object"
     },
     "Receipt": {
       "additionalProperties": false,

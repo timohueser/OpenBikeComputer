@@ -603,7 +603,7 @@ def command_publish(catalog: Catalog, _store: Store, args: argparse.Namespace) -
     result = subprocess.run(
         [
             "cargo", "run", "--quiet", "--locked", "--manifest-path", str(repo_root() / "Cargo.toml"),
-            "-p", "obc-data", "--", "r2", "--fixtures", "put", "--immutable",
+            "-p", "obc-data-steps", "--", "r2", "--fixtures", "put", "--immutable",
             "--cache-control", "public, max-age=31536000, immutable", str(archive), key,
         ],
         check=False,

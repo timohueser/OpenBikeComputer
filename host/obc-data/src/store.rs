@@ -203,6 +203,11 @@ impl Store {
         write_record(&path, files)
     }
 
+    /// The manifest of a release.
+    pub fn release(&self, product: &str, id: &str) -> PathBuf {
+        self.root.join("releases").join(product).join(format!("{id}.json"))
+    }
+
     /// The events of a run, one JSON object per line.
     pub fn run(&self, id: &str) -> PathBuf {
         self.root.join("runs").join(format!("{id}.jsonl"))

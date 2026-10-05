@@ -3,12 +3,13 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{order, prepare, reusable, select, selection, Codes, Input, Receipt, Selection, Step};
 use crate::store::{sorted, Store};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub groups: Vec<Group>,
@@ -17,18 +18,22 @@ pub struct Plan {
 /// One change: builds that read each other's layers, and the fetches that they need. A group
 /// never needs a build of another group, so each can be selected alone. Two groups can need the
 /// same fetch.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "PlanGroup")]
 pub struct Group {
     /// The step of its first build. It names the group only in the plan that it comes from.
     pub id: String,
+    /// Why a run cannot build it on this machine: a tool that a build runs is not on PATH.
+    pub blocked: Option<String>,
     pub fetches: Vec<Fetch>,
     /// In dependency order.
     pub builds: Vec<Build>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "PlanFetch")]
 pub struct Fetch {
     pub source: String,
     pub version: String,
@@ -40,8 +45,9 @@ pub struct Fetch {
     pub bytes: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "PlanBuild")]
 pub struct Build {
     pub step: String,
     /// `None` until the layers and snapshots that it reads are in the store.
@@ -49,7 +55,7 @@ pub struct Build {
     pub estimate: Option<Estimate>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Estimate {
     pub wall_ms: u64,
@@ -92,12 +98,15 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
     }
     let mut groups: Vec<Group> = Vec::new();
     let mut group_of: HashMap<usize, usize> = HashMap::new();
-    for (i, (_, build, fetches)) in builds.iter().enumerate() {
+    for (i, (step, build, fetches)) in builds.iter().enumerate() {
         let g = *group_of.entry(find(&mut parent, i)).or_insert_with(|| {
-            groups.push(Group { id: build.step.clone(), fetches: Vec::new(), builds: Vec::new() });
+            groups.push(Group { id: build.step.clone(), blocked: None, fetches: Vec::new(), builds: Vec::new() });
             groups.len() - 1
         });
         groups[g].builds.push(build.clone());
+        if let Some(tool) = step.tools.iter().find(|tool| !on_path(tool)) {
+            groups[g].blocked.get_or_insert(format!("{tool} is not on PATH"));
+        }
         for fetch in fetches {
             add_fetch(&mut groups[g].fetches, fetch);
         }
@@ -108,7 +117,38 @@ pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> 
     Ok(Plan { groups })
 }
 
+/// Whether a directory of PATH has an executable file named `tool`.
+fn on_path(tool: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).any(|dir| executable(&dir.join(tool)))
+}
+
+#[cfg(unix)]
+fn executable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    file.metadata().is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn executable(file: &Path) -> bool {
+    file.with_extension("exe").is_file()
+}
+
 impl Plan {
+    /// Whether a run of `self` does the same work as a run of `other`: the same groups, fetches,
+    /// keys and blocks. Estimates and fetch sizes may differ.
+    pub fn same_work(&self, other: &Plan) -> bool {
+        let work = |plan: &Plan| {
+            let mut plan = plan.clone();
+            for group in &mut plan.groups {
+                group.fetches.iter_mut().for_each(|fetch| fetch.bytes = None);
+                group.builds.iter_mut().for_each(|build| build.estimate = None);
+            }
+            plan
+        };
+        work(self) == work(other)
+    }
+
     /// The plan with only the groups `ids` names.
     pub fn only(&self, ids: &[String]) -> Result<Plan, String> {
         if let Some(id) = ids.iter().find(|id| !self.groups.iter().any(|group| &group.id == *id)) {
@@ -242,6 +282,20 @@ mod tests {
     fn outline<'a>(plan: &'a Plan) -> Vec<(&'a str, Vec<&'a str>)> {
         let outline = |group: &'a Group| (group.id.as_str(), group.builds.iter().map(|b| b.step.as_str()).collect());
         plan.groups.iter().map(outline).collect()
+    }
+
+    #[test]
+    fn a_tool_that_is_not_on_path_blocks_its_group_and_is_not_in_the_key() {
+        let fixture = fixture("plan-tool");
+        let before = fixture.plan(&steps("1")).unwrap();
+        let mut tooled = steps("1");
+        tooled[1].tools = vec!["obc-no-such-tool".into()];
+        let plan = fixture.plan(&tooled).unwrap();
+        let blocked: Vec<Option<&str>> = plan.groups.iter().map(|group| group.blocked.as_deref()).collect();
+        assert_eq!(blocked, [Some("obc-no-such-tool is not on PATH"), None]);
+        assert!(!plan.same_work(&before), "a block is work");
+        let keys = |plan: &Plan| plan.builds().map(|build| build.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&plan), keys(&before));
     }
 
     #[test]

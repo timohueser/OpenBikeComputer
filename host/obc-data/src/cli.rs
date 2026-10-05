@@ -1,7 +1,8 @@
-//! `obc data`: read the sources and the regions, fetch sources into the store, and show runs. Read
-//! commands change nothing in `data/`.
+//! `obc data`: read the sources and the regions, fetch sources into the store, plan and build the
+//! releases of the products, and show runs. Read commands change nothing in `data/`.
 
 mod api;
+mod build_cli;
 mod r2_cli;
 mod runs_cli;
 
@@ -12,13 +13,14 @@ use clap::{Parser, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use crate::fetch::http::Http;
+use crate::fetch::upstream::{self, Upstream};
+use crate::fetch::{self, osm, Request};
+use crate::product::Product;
+use crate::regions::{Area, Bbox, Region, Regions};
+use crate::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
+use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
 use api::{print_json, Code, Error};
-use obc_data::fetch::http::Http;
-use obc_data::fetch::upstream::{self, Upstream};
-use obc_data::fetch::{self, osm, Request};
-use obc_data::regions::{Area, Bbox, Region, Regions};
-use obc_data::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
-use obc_data::store::{self, gc, import, FileRecord, Snapshot, Store};
 
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions and pins")]
@@ -54,6 +56,11 @@ enum Command {
         #[command(subcommand)]
         action: Option<RegionAction>,
     },
+    /// What a build of the environment would fetch and build, in groups that are independent.
+    Plan(build_cli::PlanArgs),
+    /// Fetch and build the environment into the store, and write the release of each product
+    /// whose every layer is built. Nothing uploads.
+    Build(build_cli::BuildArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
     /// The local store.
@@ -96,7 +103,8 @@ enum RegionAction {
     Show { id: String },
 }
 
-fn main() -> ExitCode {
+/// Run `obc data` with the products whose steps this binary links.
+pub fn main(products: &[&dyn Product]) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -109,13 +117,13 @@ fn main() -> ExitCode {
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli) {
+    match run(cli, products) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => error.report(json),
     }
 }
 
-fn run(cli: Cli) -> Result<(), Error> {
+fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
     let json = cli.json;
     match cli.command {
         Command::Sources => print_sources(&registry(&root()?)?, json),
@@ -140,6 +148,8 @@ fn run(cli: Cli) -> Result<(), Error> {
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
+        Command::Build(args) => build_cli::build(&root()?, products, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Store { action: StoreAction::Import { apply } } => store_import(apply, json),
         Command::Gc { what: GcWhat::Store { apply } } => gc_store(&root()?, apply, json),
@@ -216,7 +226,7 @@ fn bytes(bytes: u64) -> String {
 
 fn root() -> Result<std::path::PathBuf, Error> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    obc_data::find_root(&cwd).ok_or_else(|| Code::Usage.error("no data/sources.toml above the current directory"))
+    crate::find_root(&cwd).ok_or_else(|| Code::Usage.error("no data/sources.toml above the current directory"))
 }
 
 fn registry(root: &Path) -> Result<Registry, Error> {
@@ -251,7 +261,7 @@ fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot
 fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Error> {
     let registry = registry(root)?;
     let source = find(&registry, id)?;
-    if !obc_data::is_kebab(env) {
+    if !crate::is_kebab(env) {
         return Err(Code::Usage.error(format!("`{env}` is not an environment name")));
     }
     let path = root.join("data/env").join(format!("{env}.toml"));
@@ -331,7 +341,7 @@ struct SourceRow<'a> {
 }
 
 fn print_sources(registry: &Registry, json: bool) -> Result<(), Error> {
-    let today = obc_data::date::today();
+    let today = crate::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
     let (store, http) = (Store::open()?, Http::new());

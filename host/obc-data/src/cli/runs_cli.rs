@@ -4,10 +4,10 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use obc_data::engine::runs::{self, Details, Event, Outcome, Summary};
-use obc_data::store::Store;
+use crate::engine::runs::{self, Details, Event, Outcome, Summary};
+use crate::store::Store;
 
-use crate::{cells, print_json, print_table, Code, Error};
+use super::{cells, print_json, print_table, Code, Error};
 
 #[derive(Args)]
 pub struct Runs {
@@ -173,7 +173,7 @@ fn mark(outcome: Outcome) -> &'static str {
     }
 }
 
-fn duration(ms: u64) -> String {
+pub(super) fn duration(ms: u64) -> String {
     let seconds = ms / 1000;
     match seconds {
         0 => format!("{ms} ms"),
@@ -183,7 +183,7 @@ fn duration(ms: u64) -> String {
     }
 }
 
-fn bytes(n: u64) -> String {
+pub(super) fn bytes(n: u64) -> String {
     match n {
         0..1_000 => format!("{n} B"),
         1_000..1_000_000 => format!("{:.1} kB", n as f64 / 1e3),

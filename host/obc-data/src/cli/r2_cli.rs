@@ -6,10 +6,10 @@ use clap::{Args, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use obc_data::r2::{Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
+use crate::r2::{Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
 
-use crate::api::confirm;
-use crate::{cells, print_json, table, Code, Error};
+use super::api::confirm;
+use super::{cells, print_json, table, Code, Error};
 
 #[derive(Args)]
 pub struct R2 {

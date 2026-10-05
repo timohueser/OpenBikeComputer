@@ -84,6 +84,11 @@ triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
 name = "obc-data"
 triggers = ["data/**"]
 
+# Its tests plan the checked-in live environment.
+[[package]]
+name = "obc-data-steps"
+triggers = ["data/**"]
+
 [[package]]
 name = "obc-skin-preview"
 triggers = ["builder/presets/**"]

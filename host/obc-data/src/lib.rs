@@ -1,10 +1,14 @@
-//! The data registry: every external source a bake uses, every region, and the pins of an
-//! environment; the store and the fetchers that fill it; and the engine that builds layers from
-//! it. `specs/obc-data.md` is the contract for the files this crate reads and writes.
+//! The data registry: every external source a bake uses, every region, and the environments;
+//! the store and the fetchers that fill it; the engine that builds layers and releases from it;
+//! and the `obc data` commands. `specs/obc-data.md` is the contract for the files this crate reads
+//! and writes.
 
+pub mod cli;
 pub mod date;
 pub mod engine;
+pub mod env;
 pub mod fetch;
+pub mod product;
 pub mod r2;
 pub mod regions;
 pub mod sources;
