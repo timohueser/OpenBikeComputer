@@ -654,16 +654,15 @@ fn edit<D: BlockDevice>(store: &FlatStore<D>, edit: Edit<'_>) -> Result<u32, Err
 #[inline(never)]
 fn record_progress(image: &mut Image<'_>, new: TripProgress, stored: &dyn Fn(u64) -> bool) -> Result<(), Error> {
     let start = image.progress_start();
-    let existing = (new.last_finished.is_none())
-        .then(|| {
-            image.bytes()[start..]
-                .as_chunks::<RECORD_LEN>()
-                .0
-                .iter()
-                .find(|record| u64::from_le_bytes(record[..8].try_into().unwrap()) == new.key)
-        })
-        .flatten();
-    let encoded = existing.copied().unwrap_or_else(|| new.encode());
+    let mut encoded = new.encode();
+    if new.last_finished.is_none() {
+        for record in image.bytes()[start..].as_chunks::<RECORD_LEN>().0 {
+            if u64::from_le_bytes(record[..8].try_into().unwrap()) == new.key {
+                encoded = *record;
+                break;
+            }
+        }
+    }
     if new.key == 0 {
         return Err(Error::Invalid);
     }
