@@ -3,14 +3,13 @@ import type { ExpressionSpecification, StyleSpecification, LayerSpecification } 
 import { categoryIds, placeCategories, poiKinds, type PlaceCategory } from "./poi-kinds";
 import type { BasemapConfig } from "../map/basemap-config";
 import type { PlannerConfig } from "./config";
-import { releaseUrl } from "./release";
 
 /** The Terrarium terrain tiles: their pixel size and deepest zoom. */
 export const DEM_TILE = 512, DEM_MAX_ZOOM = 12;
 
 const basemapSource = (url: string) => ({
     type: "vector",
-    url: releaseUrl(url),
+    url,
     attribution: '<a href="https://openstreetmap.org/copyright">© OpenStreetMap contributors</a> · <a href="https://protomaps.com">Protomaps</a>',
 } as const);
 
@@ -157,8 +156,8 @@ function flavor(dark: boolean): Flavor {
 export function basemapStyle(theme: "light" | "dark", config: BasemapConfig): StyleSpecification {
     return {
         version: 8,
-        glyphs: releaseUrl(config.glyphs),
-        sprite: releaseUrl(`${config.sprites}/${theme}`),
+        glyphs: config.glyphs,
+        sprite: `${config.sprites}/${theme}`,
         sources: { basemap: basemapSource(config.basemap) },
         layers: baseLayers(theme === "dark").filter((layer) => layer.id !== "pois"),
     };
@@ -234,8 +233,8 @@ export function mapStyle(theme: "light" | "dark", config: PlannerConfig, demUrl:
     });
     return {
         version: 8,
-        glyphs: releaseUrl(config.glyphs),
-        sprite: releaseUrl(`${config.sprites}/${theme}`),
+        glyphs: config.glyphs,
+        sprite: `${config.sprites}/${theme}`,
         sources: {
             basemap: basemapSource(config.basemap),
             terrain: { type: "raster-dem", tiles: [demUrl], bounds: config.bounds, tileSize: DEM_TILE, encoding: "terrarium", maxzoom: DEM_MAX_ZOOM, attribution: config.terrain_attribution },

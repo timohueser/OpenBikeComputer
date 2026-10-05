@@ -1,7 +1,10 @@
 <script module lang="ts">
     import { terrainRetry, terrainSource } from '../../lib/planner/map-terrain';
     import { config } from '../../lib/planner/map-data';
+    import { releaseProtocol, releaseUrl } from '../../lib/planner/release';
     const terrain = terrainSource(config.terrain);
+    // MapLibre loads the release objects of the style through `releaseProtocol`.
+    const styleConfig = { ...config, basemap: releaseUrl(config.basemap), glyphs: releaseUrl(config.glyphs), sprites: releaseUrl(config.sprites) };
 </script>
 
 <script lang="ts">
@@ -14,7 +17,6 @@
     import mlcontour from "maplibre-contour";
     import "maplibre-gl/dist/maplibre-gl.css";
     import { mapStyle, poiFilter } from "../../lib/planner/map-style";
-    import { releaseProtocol } from "../../lib/planner/release";
     import { mapIcon } from "../../lib/planner/map-icons";
     import { categoryIds, placeCategories, type PlaceCategory } from "../../lib/planner/poi-kinds";
     import { poiPlace } from "../../lib/planner/place-index";
@@ -437,7 +439,7 @@
         insertDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-insert-dot" }) });
         hoverDot = new maplibregl.Marker({ element: Object.assign(document.createElement("div"), { className: "planner-hover-dot" }) });
         try {
-            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, config, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
+            map = new maplibregl.Map({ container, center, zoom, maxBounds: config.bounds, style: mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, contourUrl), attributionControl: false, maxPitch: 0, renderWorldCopies: false });
             signedLayer = new SignedRoutesLayer(map);
             overlayLayer = new RouteOverlays(map, config.overlays, (message, retry = false) => { overlayStatus = message; overlayRetry = retry; });
             fitInitialRoute();
@@ -542,7 +544,7 @@
         if (!map || !ready || appliedTheme === theme) return;
         appliedTheme = theme;
         ready = false;
-        map.setStyle(mapStyle(theme, config, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
+        map.setStyle(mapStyle(theme, styleConfig, dem.sharedDemProtocolUrl, dem.contourProtocolUrl({ thresholds: { 10: [200, 1000], 11: [100, 500], 13: [50, 250], 14: [20, 100] }, contourLayer: "contours", elevationKey: "ele", levelKey: "level" })));
     });
     $effect(() => {
         coordinates;

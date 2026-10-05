@@ -8,6 +8,8 @@ public actor RouteCatalog {
     private var bounds: [Double]
     private let transport: Transport
     private let active: @Sendable () async throws -> PlannerRelease
+    /// The catalogue read that the cells of one switch share.
+    private var reading: Task<PlannerRelease, Error>?
     /// The cells of an offline grid selection: only routes that lie wholly inside them match. Else nil.
     public nonisolated let covered: Set<String>?
 
@@ -26,13 +28,20 @@ public actor RouteCatalog {
     /// A covered cell without a file is an error, not a cell with no routes.
     public func loadCell(_ id: String) async throws -> [CatalogRecord]? {
         guard covered?.contains(id) ?? Self.covers(bounds, id) else { return nil }
-        do { return try await file(source.replacingOccurrences(of: "{cell}", with: id)) } catch is Gone {
+        let tried = source
+        do { return try await file(tried.replacingOccurrences(of: "{cell}", with: id)) } catch is Gone {
             // Release objects are immutable, so a 404 means that a catalogue switch removed the release:
             // the catalogue is read again, once, and the cell loads from the new active release.
+            // Cells load in parallel, so another cell can have moved to the new release already.
             guard covered == nil else { throw PlannerFailure.unavailable }
-            let release = try await active()
-            guard let routes = release.routes, routes != source else { throw PlannerFailure.unavailable }
-            source = routes; bounds = release.bounds
+            if source == tried {
+                let read = reading ?? Task { [active] in try await active() }
+                reading = read
+                defer { reading = nil }
+                let release = try await read.value
+                guard let routes = release.routes, routes != tried else { throw PlannerFailure.unavailable }
+                if source == tried { source = routes; bounds = release.bounds }
+            }
             guard Self.covers(bounds, id) else { return nil }
             do { return try await file(source.replacingOccurrences(of: "{cell}", with: id)) } catch is Gone { throw PlannerFailure.unavailable }
         }

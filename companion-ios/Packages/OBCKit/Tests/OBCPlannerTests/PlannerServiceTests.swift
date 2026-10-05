@@ -188,7 +188,7 @@ struct PlannerServiceTests {
         #expect(await sent.values.map { String(decoding: $0, as: UTF8.self) } == ["https://planner.test/catalog.json",
             "https://planner.test/a/manifest.json", "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
     }
-    /// A route catalog cell that answers 404 loads from the new active release.
+    /// Route catalog cells that answer 404 load from the new active release, after one catalogue read.
     @Test func aRemovedReleaseLoadsItsRouteCellFromTheNewRelease() async throws {
         func release(_ id: String) -> PlannerRelease {
             let host = URL(string: "https://planner.test/\(id)")!
@@ -196,12 +196,16 @@ struct PlannerServiceTests {
                                   glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: host, routing: host,
                                   manifest: host, overlays: host, routes: "https://planner.test/\(id)/{cell}.json")
         }
-        let next = release("b")
+        let next = release("b"), reads = Bodies()
         let catalog = try #require(RouteCatalog(release: release("a"), transport: { request in
             let status = request.url!.absoluteString.hasPrefix("https://planner.test/a/") ? 404 : 200
             return (Data(#"{"format": 1, "routes": []}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
-        }, active: { next }))
-        #expect(try await catalog.loadCell("9-267-178")?.count == 0)
+        }, active: { await reads.append(Data()); return next }))
+        async let first = catalog.loadCell("9-267-178")
+        async let second = catalog.loadCell("9-268-178")
+        #expect(try await first?.count == 0)
+        #expect(try await second?.count == 0)
+        #expect(await reads.values.count == 1)
     }
     /// A line over the service's 200 km cap fails before any request.
     @Test func aTooLongLineFailsWithoutARequest() async throws {
