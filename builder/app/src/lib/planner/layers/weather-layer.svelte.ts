@@ -160,7 +160,7 @@ class WeatherLayer implements DataLayer<Samples> {
         this.labelled = view;
         const places = mapPlaces([
             ...map.querySourceFeatures('basemap', { sourceLayer: 'places', filter: ['==', ['get', 'kind'], 'locality'] }),
-            ...map.querySourceFeatures('basemap', { sourceLayer: 'pois', filter: ['==', ['get', 'kind'], 'peak'] }),
+            ...map.querySourceFeatures('places', { sourceLayer: 'pois', filter: ['==', ['get', 'kind'], 'summit'] }),
         ] as BasemapFeature[]);
         const week = weekOf(date);
         const values = variable === 'rain'

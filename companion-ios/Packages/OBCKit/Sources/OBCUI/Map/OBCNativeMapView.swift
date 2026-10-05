@@ -167,6 +167,8 @@ final class OBCNativeMapView: MLNMapView {
         data["sprite"] = release.sprites + (dark ? "/dark" : "/light")
         var sources = data["sources"] as! [String: [String: Any]]
         sources["basemap"]?["url"] = release.basemap.absoluteString
+        sources["places"]?["url"] = release.places.absoluteString
+        sources["places"]?["attribution"] = release.attribution ?? ""
         // A release without a land cover credit drops that part of the credit line.
         let landcover = release.landcover_attribution.map { ($0, "__LANDCOVER_ATTRIBUTION__") } ?? ("", " · __LANDCOVER_ATTRIBUTION__")
         let credit = (sources["basemap"]?["attribution"] as? String)?

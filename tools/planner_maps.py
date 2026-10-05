@@ -132,9 +132,9 @@ def compact_archive(source, destination, region, terrain=False, recompress=True)
         *([] if recompress else ["--no-recompress"]), cwd=ROOT)
 
 
-def places_archive(basemap, destination):
+def places_archive(pois, destination):
     run("uv", "run", "--with-requirements", ROOT / "tools/requirements-planner-maps.txt",
-        "python", "-m", "tools.planner_places", basemap, destination, cwd=ROOT)
+        "python", "-m", "tools.planner_places", pois, destination, cwd=ROOT)
 
 
 def overlays_archive(index, destination):
