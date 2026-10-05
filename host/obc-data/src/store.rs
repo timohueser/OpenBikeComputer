@@ -2,6 +2,9 @@
 //! which objects are which source version, the receipts that say which objects are which layer,
 //! and the events of each run. `specs/obc-data.md` describes the layout.
 
+pub mod gc;
+pub mod import;
+
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
@@ -45,6 +48,8 @@ impl Snapshot {
 pub struct Store {
     root: PathBuf,
 }
+
+const STORE_LOCK: &str = "store";
 
 /// Held while it lives; the operating system releases it when the process ends.
 pub struct Lock(#[allow(dead_code)] File);
@@ -111,6 +116,19 @@ impl Store {
         }
     }
 
+    /// The shared lock that a fetch, a build or an import holds while it adds objects and their
+    /// records. A collection waits for no holder: it refuses to start.
+    pub fn using(&self) -> Result<Lock, String> {
+        let (file, path) = self.lock_file(STORE_LOCK)?;
+        file.lock_shared().map_err(|e| format!("lock {}: {e}", path.display()))?;
+        Ok(Lock(file))
+    }
+
+    /// The store alone, for a collection, or `None` while a fetch, a build or an import runs.
+    pub fn try_alone(&self) -> Result<Option<Lock>, String> {
+        self.try_lock(STORE_LOCK)
+    }
+
     fn lock_file(&self, key: &str) -> Result<(File, PathBuf), String> {
         let name: String =
             key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
@@ -120,7 +138,7 @@ impl Store {
         Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
     }
 
-    fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
+    pub(crate) fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
         self.root.join("snapshots").join(source).join(format!("{version}.json"))
     }
 

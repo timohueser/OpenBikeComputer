@@ -156,6 +156,8 @@ mod tests {
             schema("`fetch`, `refresh`", generator.subschema_for::<crate::Fetched>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::RegionList>()),
             schema("`region show`", generator.subschema_for::<crate::RegionDetail>()),
+            schema("`store import`", generator.subschema_for::<obc_data::store::import::Plan>()),
+            schema("`gc store`", generator.subschema_for::<obc_data::store::gc::Plan>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN`", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),

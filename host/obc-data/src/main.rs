@@ -18,7 +18,7 @@ use obc_data::fetch::upstream::{self, Upstream};
 use obc_data::fetch::{self, osm, Request};
 use obc_data::regions::{Area, Bbox, Region, Regions};
 use obc_data::sources::{self, FetchKind, Kind, Registry, Source, State, VersionScheme};
-use obc_data::store::{self, FileRecord, Snapshot, Store};
+use obc_data::store::{self, gc, import, FileRecord, Snapshot, Store};
 
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions and pins")]
@@ -56,8 +56,36 @@ enum Command {
     },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
+    /// The local store.
+    Store {
+        #[command(subcommand)]
+        action: StoreAction,
+    },
+    /// Delete what nothing uses.
+    Gc {
+        #[command(subcommand)]
+        what: GcWhat,
+    },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
+}
+
+#[derive(Subcommand)]
+enum StoreAction {
+    /// Move the cache directories of the older bake tools into the store. Shows the plan; `--apply` moves.
+    Import {
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GcWhat {
+    /// The objects and snapshot records that no environment, pin or fixture reaches. Shows the plan; `--apply` deletes.
+    Store {
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -113,7 +141,76 @@ fn run(cli: Cli) -> Result<(), Error> {
             }
         }
         Command::Runs(runs) => runs_cli::run(runs, json),
+        Command::Store { action: StoreAction::Import { apply } } => store_import(apply, json),
+        Command::Gc { what: GcWhat::Store { apply } } => gc_store(&root()?, apply, json),
         Command::R2(r2) => r2_cli::run(r2, json),
+    }
+}
+
+fn store_import(apply: bool, json: bool) -> Result<(), Error> {
+    let home = std::env::var_os("HOME").ok_or_else(|| Code::Usage.error("HOME is not set"))?;
+    let (store, dirs) = (Store::open()?, import::old_dirs(Path::new(&home)));
+    let plan = if apply { import::apply(&store, &dirs)? } else { import::plan(&store, &dirs)? };
+    if json {
+        return print_json(&plan);
+    }
+    let home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.into());
+    let short =
+        |dir: &Path| dir.strip_prefix(&home).map_or(dir.display().to_string(), |dir| format!("~/{}", dir.display()));
+    println!("{} INTO {}", if apply { "MOVED" } else { "MOVE" }, store.root().display());
+    let mut table = Vec::new();
+    for dir in &plan.dirs {
+        let size = if dir.present { format!("{} files", dir.files) } else { "not present".into() };
+        table.push(vec![format!("  {}", short(&dir.dir)), size, bytes(dir.bytes)]);
+    }
+    print_table(&table);
+    println!("{} in; duplicates are kept once; the store grows by {}.", bytes(plan.bytes), bytes(plan.new_bytes));
+    let left: Vec<_> = plan.dirs.iter().flat_map(|dir| &dir.left).collect();
+    if !left.is_empty() {
+        println!("{}", if apply { "THESE STAY:" } else { "THESE STAY AFTER --apply:" });
+        left.iter().for_each(|path| println!("  {}", short(path)));
+    }
+    if !apply {
+        println!(
+            "`--apply` moves the files and deletes the directories that are then empty. Stop the bakes, the planner"
+        );
+        println!("and every fetch first. The older bake tools then fetch and build again.");
+    }
+    Ok(())
+}
+
+fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
+    let (store, roots) = (Store::open()?, gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?);
+    let plan = match apply {
+        false => gc::plan(&store, &roots)?,
+        true => gc::apply(&store, &roots)?.ok_or_else(|| {
+            Code::Usage
+                .error("a fetch, a build or an import uses the store; nothing was deleted")
+                .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
+        })?,
+    };
+    if json {
+        return print_json(&plan);
+    }
+    println!(
+        "Roots: the pins of {}/data/env/*.toml, its fixtures and planner recipes, the import records, and the newest record of each source and request.",
+        root.display()
+    );
+    println!("{} {}", if apply { "REMOVED FROM" } else { "REMOVE FROM" }, store.root().display());
+    plan.snapshots.iter().for_each(|snapshot| println!("  snapshot {snapshot}"));
+    plan.objects.iter().for_each(|(sha256, size)| println!("  object {sha256}  {}", bytes(*size)));
+    println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
+    println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
+    if !apply {
+        println!("`--apply` deletes them. It refuses to start while a fetch, a build or an import runs.");
+    }
+    Ok(())
+}
+
+fn bytes(bytes: u64) -> String {
+    match bytes {
+        0..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
+        _ => format!("{:.1} GB", bytes as f64 / 1e9),
     }
 }
 

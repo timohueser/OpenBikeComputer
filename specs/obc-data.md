@@ -146,6 +146,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
+| `imports/<YYYYMMDDTHHMMSSZ>.jsonl` | The import record of one `obc data store import --apply`, see [Import and collection](#import-and-collection) |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
 | `locks/` | One lock file per key and per run |
 
@@ -157,6 +158,8 @@ Rules:
   rename.
 - One process at a time downloads a URL, one process at a time writes a snapshot record, and one
   process at a time builds a layer key.
+- A fetch, a run of the engine and an import hold the store lock (`locks/store.lock`) shared. A
+  collection holds it alone.
 
 A snapshot record is a JSON object:
 
@@ -176,6 +179,57 @@ record has for another URL fails the fetch.
 A version is one or more segments joined by `/`. A segment has letters, digits, `.`, `_`, `+`
 and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` date, and a
 `digest` version is 64 lowercase hex digits.
+
+### Import and collection
+
+`obc data store import` moves the cache directories of the older bake tools into the store:
+`~/.cache/obcm`, `~/.cache/obc/planner`, `~/.cache/openbikecomputer`, `~/obc-bake` and
+`~/obc-reference`. Each regular file becomes an object, so the same bytes are one object.
+
+- The command resolves symbolic links in the path of the store and of each directory. The store
+  and the files below it stay where they are, also when the store is in one of these
+  directories. A directory inside the store is refused.
+- Without `--apply`, the command hashes every file and changes nothing. It lists what stays:
+  symbolic links and other entries that are not regular files. It does not follow a link.
+- With `--apply`, one import runs at a time, and it holds the store lock shared. For each file,
+  it checks the size and the modification time before and after it reads the file. On the file
+  system of the store, it hashes the file in place and renames it into `objects/`, or deletes it
+  when the object exists. On another file system, it copies the file to `partial/import-<pid>`,
+  hashes the copy, makes it an object and deletes the file. A file that changed stays where it is.
+  When it changed after the rename, it goes back to its path, or, when a new file has that path,
+  beside it as `<name>.changed-<pid>`. The import starts by deleting the copies that a stopped
+  import left.
+- Before a file moves, the import adds its line to the import record and writes it to the disk.
+  A line of a file that then stays is only one more root of a collection. After the files, the
+  import deletes each directory that is empty, and a symbolic link whose target it deleted. What
+  it did not move stays, and the command lists it. An import that stops keeps its record; the next
+  import moves the rest.
+- A process that writes a file after the last check can change an object. Stop the bakes, the
+  planner and every fetch before `--apply`.
+
+The import record has one JSON object per line: `dir` (without symbolic links), `path` (below
+`dir`, with `/`), `size` and `sha256`.
+
+`obc data gc store` deletes what no environment, pin or fixture reaches. Its roots are the files
+of the checkout that it runs in, and the store:
+
+- A snapshot record is reached when `[pins]` of a `data/env/*.toml` file names its source and
+  version. The newest record of each source, by the latest `retrieved` of its files, is also
+  reached: a bake without a pin reads it, and a source whose upstream gives only its newest file
+  cannot give it again. So is the newest version of each request record (`requests/`), by the
+  latest `retrieved` of its files, such as the extract of each Geofabrik area.
+- An object is reached when a reached snapshot record or a reached layer has it, or when its
+  SHA-256 is in a pin, `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
+  planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import
+  record releases its objects.
+- A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
+  digest of all the files, or of one file, of a reached record of its source, and a layer input
+  whose digest is the digest of a reached layer.
+
+Without `--apply`, the command lists what it deletes and changes nothing. With `--apply`, it
+takes the store lock alone, or refuses to start while a fetch, a build or an import holds it.
+Then it deletes each snapshot record and each object that is not reached, and lists them.
+Receipts, import records and upstream checks stay.
 
 ## Fetch
 
@@ -500,6 +554,8 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 | `obc data sources [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state. Rows are in kind order: data, then assets, then tools |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
 | `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
+| `obc data store import [--apply] [--json]` | The old cache directories, their files and sizes, and how much the store grows. `--apply` moves them into the store |
+| `obc data gc store [--apply] [--json]` | Its roots, the snapshot records and the objects that nothing reaches, and what stays. `--apply` deletes them and lists them |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
@@ -616,6 +672,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `fetch`, `refresh` | `Fetched` |
 | `region`, `region list` | `RegionList` |
 | `region show` | `RegionDetail` |
+| `store import` | `ImportPlan` |
+| `gc store` | `GcPlan` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
@@ -1206,6 +1264,128 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "sha256",
         "retrieved",
         "path"
+      ],
+      "type": "object"
+    },
+    "GcPlan": {
+      "description": "What `gc store` deletes, or deleted, and what stays.",
+      "properties": {
+        "keep_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep_objects": {
+          "description": "The objects that stay, and their size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objects": {
+          "description": "SHA-256 and size of each object that nothing reaches.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "remove_bytes": {
+          "description": "The size of `objects`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshots": {
+          "description": "`source@version` of each snapshot record that nothing reaches.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "snapshots",
+        "objects",
+        "remove_bytes",
+        "keep_objects",
+        "keep_bytes"
+      ],
+      "type": "object"
+    },
+    "ImportDir": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dir": {
+          "description": "The directory, without symbolic links when it is present.",
+          "type": "string"
+        },
+        "files": {
+          "description": "The regular files that it moves, or moved, and their size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "left": {
+          "description": "What stays in the directory: symbolic links and other entries that are not regular files,\nand after an import each file that changed while it was read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "present": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dir",
+        "present",
+        "files",
+        "bytes",
+        "left"
+      ],
+      "type": "object"
+    },
+    "ImportPlan": {
+      "description": "What `store import` moves, or moved, and what stays.",
+      "properties": {
+        "bytes": {
+          "description": "The size of every file.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dirs": {
+          "items": {
+            "$ref": "#/$defs/ImportDir"
+          },
+          "type": "array"
+        },
+        "new_bytes": {
+          "description": "How much the store grows: the size of each content that is not an object yet, once.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dirs",
+        "bytes",
+        "new_bytes"
       ],
       "type": "object"
     },
