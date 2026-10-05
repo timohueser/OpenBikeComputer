@@ -3,7 +3,7 @@ use super::{
     input::Input,
 };
 use flate2::read::GzDecoder;
-use geo::{BoundingRect, Geometry, Intersects, Point, Polygon};
+use geo::{Area, BoundingRect, Geometry, Intersects, Point, Polygon};
 use rstar::RTree;
 use std::{
     fs::File,
@@ -15,6 +15,7 @@ struct Country {
     code: String,
     area: f64,
     geometry: Geometry,
+    current: bool,
 }
 
 pub struct Countries {
@@ -124,11 +125,37 @@ impl Countries {
                     use rstar::Envelope;
                     b.intersects(&envelope(&geometry))
                 }) {
-                    entries.push(Country { code: columns[0].into(), area: columns[1].parse()?, geometry });
+                    entries.push(Country {
+                        code: columns[0].into(),
+                        area: columns[1].parse()?,
+                        geometry,
+                        current: false,
+                    });
                 }
             }
             if entries.is_empty() {
                 return Err("Country grid does not cover the input".into());
+            }
+        }
+        for f in &input.features {
+            if f.tag("boundary") != "administrative"
+                || f.tag("admin_level") != "2"
+                || !matches!(f.source, osmpbfreader::OsmId::Relation(_))
+                || !matches!(f.geometry, Geometry::Polygon(_) | Geometry::MultiPolygon(_))
+            {
+                continue;
+            }
+            let code = ["ISO3166-1:alpha2", "ISO3166-1"]
+                .into_iter()
+                .map(|key| f.tag(key))
+                .find(|code| code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()));
+            if let Some(code) = code {
+                entries.push(Country {
+                    code: code.to_ascii_lowercase(),
+                    area: f.geometry.unsigned_area(),
+                    geometry: f.geometry.clone(),
+                    current: true,
+                });
             }
         }
         let tree = RTree::bulk_load(
@@ -138,18 +165,44 @@ impl Countries {
     }
 
     pub fn at(&self, p: Point) -> Option<&str> {
-        self.tree
+        let matches: Vec<_> = self
+            .tree
             .locate_in_envelope_intersecting(&super::geometry::expanded(p, 0.))
             .map(|e| &self.entries[e.index])
             .filter(|c| c.geometry.intersects(&p))
+            .collect();
+        let current: std::collections::BTreeSet<_> =
+            matches.iter().filter(|c| c.current).map(|c| c.code.as_str()).collect();
+        if current.len() == 1 {
+            return current.into_iter().next();
+        }
+        matches
+            .iter()
+            .filter(|c| !c.current && (current.is_empty() || current.contains(c.code.as_str())))
             .min_by(|a, b| a.area.total_cmp(&b.area).then(a.code.cmp(&b.code)))
             .map(|c| c.code.as_str())
+            .or_else(|| current.into_iter().next())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn current_country_boundaries_precede_the_fallback_grid() {
+        let geometry: Geometry =
+            Polygon::new(coordinates([[0., 0.], [1., 0.], [1., 1.], [0., 1.], [0., 0.]]), vec![]).into();
+        let entries = vec![
+            Country { code: "old".into(), area: 0.5, geometry: geometry.clone(), current: false },
+            Country { code: "new".into(), area: 1., geometry: geometry.clone(), current: true },
+        ];
+        let tree = RTree::bulk_load(
+            entries.iter().enumerate().map(|(index, c)| Entry { index, envelope: envelope(&c.geometry) }).collect(),
+        );
+        let countries = Countries { entries, tree };
+        assert_eq!(countries.at(Point::new(0.5, 0.5)), Some("new"));
+        assert_eq!(countries.at(Point::new(2., 2.)), None);
+    }
     #[test]
     fn country_grid_accepts_multipolygons_and_empty_areas_but_rejects_truncated_rows() {
         let mut area = vec![1];

@@ -81,6 +81,9 @@ pub fn ranges(source: OsmId, line: &LineString, tags: &Tags, endpoints: &[(usize
             continue;
         }
         let mut inherited = tags.clone();
+        if !tags.contains_key("addr:street") && !tags.contains_key("addr:place") {
+            inherited.insert("_inherited".into(), "yes".into());
+        }
         for (_, value) in [("addr:postcode", at.get("addr:postcode")), ("addr:postcode", bt.get("addr:postcode"))] {
             if let Some(code) = value {
                 inherited.insert("addr:postcode".into(), code.clone());

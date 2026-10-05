@@ -87,7 +87,7 @@ pub fn bake(
             if !f.road() && houses.is_empty() {
                 continue;
             }
-            let a = index.address(i);
+            let (a, country) = index.address(i);
             if !f.road() && a.get("street").is_none_or(|s| s.is_empty()) {
                 continue;
             }
@@ -110,7 +110,7 @@ pub fn bake(
                 .collect();
             let mut record = json!({"object_type":object_type,"object_id":object_id,"osm_key":if f.road() { "highway" } else { "building" },
                 "osm_value":if f.road() { f.tag("highway") } else { "yes" },"address_type":if f.road() { "street" } else { "house" },
-                "country_code":countries[i],"centroid":[p.x(),p.y()],"bbox":[extent.lower()[0],extent.lower()[1],extent.upper()[0],extent.upper()[1]],
+                "country_code":country,"centroid":[p.x(),p.y()],"bbox":[extent.lower()[0],extent.lower()[1],extent.upper()[0],extent.upper()[1]],
                 "name":name,"address":a,"postcode":a.get("postcode").map(|s| s.as_str()).unwrap_or(""),"importance":0.05});
             if houses.is_empty() {
                 serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[record]}))?;

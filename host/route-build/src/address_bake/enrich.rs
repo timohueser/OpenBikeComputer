@@ -183,7 +183,11 @@ impl<'a> Index<'a> {
         for (index, f) in input.features.iter().enumerate() {
             let (search, rank) = ranks[index];
             let mut extent = envelope(&f.geometry);
-            if (4..26).contains(&rank) && !f.name().is_empty() && !linked_nodes.contains(&index) {
+            if (4..26).contains(&rank)
+                && !f.name().is_empty()
+                && !linked_nodes.contains(&index)
+                && matches!(f.geometry, Geometry::Point(_) | Geometry::Polygon(_) | Geometry::MultiPolygon(_))
+            {
                 if matches!(f.geometry, Geometry::Point(_)) {
                     extent = fuzzy_area(centers[index], search);
                 }
@@ -205,18 +209,21 @@ impl<'a> Index<'a> {
                 }
             }
             if search == 30
-                && f.address_tags()
+                && ["addr:housenumber", "addr:street", "addr:place"].iter().any(|key| !f.tag(key).is_empty())
                 && matches!(f.geometry, Geometry::Polygon(_) | Geometry::MultiPolygon(_))
             {
                 buildings.push(Entry { index, envelope: extent });
             }
-            if f.road() && !f.name().is_empty() {
+            if f.road() && (!f.name().is_empty() || !f.tag("ref").is_empty()) {
                 roads.push(Entry { index, envelope: extent });
-                for (key, name) in f
-                    .tags
-                    .iter()
-                    .filter(|(k, _)| k.as_str() == "name" || k.starts_with("name:") || k.as_str() == "alt_name")
-                {
+                for (key, name) in f.tags.iter().filter(|(k, _)| {
+                    k.as_str() == "name"
+                        || k.starts_with("name:")
+                        || matches!(
+                            k.as_str(),
+                            "alt_name" | "official_name" | "short_name" | "loc_name" | "int_name" | "ref"
+                        )
+                }) {
                     let _ = key;
                     for alias in name.split(';') {
                         named_roads.entry(normalized(alias)).or_default().push(index);
@@ -283,7 +290,7 @@ impl<'a> Index<'a> {
             if !f.road() {
                 context.insert(part(result.ranks[i].1).into(), f.name().into());
             }
-            overlay(&mut context, &f.tags);
+            result.overlay(&mut context, &f.tags, countries[i]);
             result.road_contexts.insert(i, context);
         }
         result
@@ -295,7 +302,9 @@ impl<'a> Index<'a> {
 
     pub fn tags(&self, i: usize) -> &Tags {
         let f = &self.input.features[i];
-        if !f.tags.keys().any(|k| k.starts_with("addr:") && k.as_str() != "addr:housename")
+        if self.ranks[i].0 == 30
+            && f.tags.contains_key("_poi")
+            && !f.tags.keys().any(|k| k.starts_with("addr:") && k.as_str() != "addr:housename")
             && matches!(f.source, OsmId::Node(_))
         {
             let p = self.centers[i];
@@ -316,6 +325,17 @@ impl<'a> Index<'a> {
     }
 
     fn parent(&self, i: usize, tags: &Tags) -> Option<usize> {
+        // The source import has no country partitions. A parent may cross a border.
+        let japanese_place = (self.countries[i] == "jp")
+            .then(|| {
+                ["addr:quarter", "addr:neighbourhood"]
+                    .into_iter()
+                    .filter_map(|key| tags.get(key))
+                    .map(|s| s.as_str())
+                    .collect::<String>()
+            })
+            .filter(|s| !s.is_empty());
+        let place = japanese_place.as_deref().or_else(|| tags.get("addr:place").map(|s| s.as_str()));
         let bbox = super::geometry::bounds_geometry(&self.input.features[i].geometry);
         let extent = envelope(&bbox);
         let expand = |radius: f64| {
@@ -328,7 +348,7 @@ impl<'a> Index<'a> {
             if let Some(parent) = streets
                 .iter()
                 .filter_map(|s| self.sources.get(s).copied())
-                .filter(|&j| self.input.features[j].road() && self.countries[i] == self.countries[j])
+                .filter(|&j| self.input.features[j].road())
                 .min_by(|&a, &b| self.road_distance(a, &bbox).total_cmp(&self.road_distance(b, &bbox)).then(a.cmp(&b)))
             {
                 return Some(parent);
@@ -336,40 +356,32 @@ impl<'a> Index<'a> {
         }
         if let Some(name) = tags.get("addr:street") {
             if let Some(roads) = self.named_roads.get(&normalized(name)) {
-                if let Some(parent) = roads
-                    .locate_in_envelope_intersecting(&expand(0.015))
-                    .filter(|e| self.countries[i] == self.countries[e.index])
-                    .min_by(|a, b| {
-                        self.road_distance(a.index, &bbox)
-                            .total_cmp(&self.road_distance(b.index, &bbox))
-                            .then(a.index.cmp(&b.index))
-                    })
-                {
+                if let Some(parent) = roads.locate_in_envelope_intersecting(&expand(0.015)).min_by(|a, b| {
+                    self.road_distance(a.index, &bbox)
+                        .total_cmp(&self.road_distance(b.index, &bbox))
+                        .then(a.index.cmp(&b.index))
+                }) {
                     return Some(parent.index);
                 }
             }
         }
-        if let Some(places) = tags.get("addr:place").and_then(|name| self.named_places.get(&normalized(name))) {
-            if let Some(parent) = places
-                .locate_in_envelope_intersecting(&expand(0.04))
-                .filter(|e| self.countries[i] == self.countries[e.index])
-                .min_by(|a, b| {
-                    self.road_distance(a.index, &bbox)
-                        .total_cmp(&self.road_distance(b.index, &bbox))
-                        .then(a.index.cmp(&b.index))
-                })
-            {
+        if let Some(places) = place.and_then(|name| self.named_places.get(&normalized(name))) {
+            if let Some(parent) = places.locate_in_envelope_intersecting(&expand(0.04)).min_by(|a, b| {
+                self.road_distance(a.index, &bbox)
+                    .total_cmp(&self.road_distance(b.index, &bbox))
+                    .then(a.index.cmp(&b.index))
+            }) {
                 return Some(parent.index);
             }
         }
-        if tags.contains_key("addr:place")
+        if (place.is_some() && !tags.contains_key("addr:street"))
             || (extent.upper()[0] - extent.lower()[0]) * (extent.upper()[1] - extent.lower()[1]) >= 0.005
         {
             let p = center(&bbox);
             return self
                 .areas
                 .locate_in_envelope_intersecting(&expanded(p, 0.))
-                .filter(|e| (5..26).contains(&self.ranks[e.index].1) && self.countries[i] == self.countries[e.index])
+                .filter(|e| (5..26).contains(&self.ranks[e.index].1))
                 .filter(|e| self.prepared_areas.get(&e.index).is_some_and(|a| a.contains(p)))
                 .max_by_key(|e| self.ranks[e.index].1)
                 .map(|e| e.index);
@@ -386,7 +398,6 @@ impl<'a> Index<'a> {
                     let nearest = self
                         .roads
                         .locate_in_envelope_intersecting(&expand(radius))
-                        .filter(|e| self.countries[e.index] == self.countries[i])
                         .filter(|e| Euclidean.distance(&self.input.features[e.index].geometry, line) <= radius)
                         .map(|e| {
                             (
@@ -411,7 +422,6 @@ impl<'a> Index<'a> {
             let nearest = self
                 .roads
                 .locate_in_envelope_intersecting(&expand(radius))
-                .filter(|e| self.countries[e.index] == self.countries[i])
                 .map(|e| (e.index, self.road_distance(e.index, &bbox)))
                 .filter(|(_, d)| *d <= radius * radius)
                 .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
@@ -440,12 +450,19 @@ impl<'a> Index<'a> {
             .filter(|e| e.index != i && self.countries[e.index] == self.countries[i])
             .filter(|e| self.ranks[e.index].1 < maxrank)
             .filter(|e| {
-                matches!(self.input.features[e.index].geometry, Geometry::Point(_))
-                    || self
-                        .prepared_areas
+                if matches!(self.input.features[e.index].geometry, Geometry::Point(_)) {
+                    let area = e.envelope;
+                    geo::Rect::new(
+                        geo::Coord { x: area.lower()[0], y: area.lower()[1] },
+                        geo::Coord { x: area.upper()[0], y: area.upper()[1] },
+                    )
+                    .intersects(geometry)
+                } else {
+                    self.prepared_areas
                         .get(&e.index)
                         .map(|a| a.intersects(geometry))
                         .unwrap_or_else(|| self.input.features[e.index].geometry.intersects(geometry))
+                }
             })
             .map(|e| {
                 let item = &self.input.features[e.index];
@@ -531,17 +548,19 @@ impl<'a> Index<'a> {
         a
     }
 
-    pub fn address(&self, i: usize) -> Address {
-        let f = &self.input.features[i];
+    pub fn address(&self, i: usize) -> (Address, &'a str) {
         let tags = self.tags(i);
-        let parent = if f.road() { None } else { self.parent(i, tags) };
+        let parent = if self.ranks[i].0 <= 27 { None } else { self.parent(i, tags) };
+        let country = self.countries[parent.unwrap_or(i)];
         let mut a = self.road_contexts.get(&parent.unwrap_or(i)).cloned().unwrap_or_else(|| self.context(i, true));
         if let Some(parent) = parent {
-            a.insert("street".into(), self.input.features[parent].name().into());
-            overlay(&mut a, &self.input.features[parent].tags);
+            if (26..29).contains(&self.ranks[parent].1) {
+                a.insert("street".into(), self.input.features[parent].name().into());
+            }
+            self.overlay(&mut a, &self.input.features[parent].tags, self.countries[parent]);
         }
-        overlay(&mut a, tags);
-        if !a.contains_key("postcode") {
+        self.overlay(&mut a, tags, self.countries[i]);
+        if !a.contains_key("postcode") && self.ranks[i].0 > 27 {
             if let Some(postcode) = self.postcodes.lookup(&self.centers[i].into(), self.countries[i]) {
                 a.insert("postcode".into(), postcode.into());
             }
@@ -554,16 +573,32 @@ impl<'a> Index<'a> {
                 a.insert("street".into(), place.to_string());
             }
         }
-        if let Some(block) = tags.get("addr:block_number") {
-            a.insert("street".into(), block.to_string());
+        if !tags.contains_key("addr:street") {
+            if let Some(block) = tags.get("addr:block_number") {
+                a.insert("street".into(), block.to_string());
+            }
         }
-        a
+        (a, country)
+    }
+
+    fn overlay(&self, a: &mut Address, tags: &Tags, country: &str) {
+        overlay(a, tags);
+        if let Some(code) = self.policy.postcode(tags.get("addr:postcode").map(|s| s.as_str()).unwrap_or(""), country) {
+            a.insert("postcode".into(), code);
+        }
     }
 }
 
 fn overlay(a: &mut Address, tags: &Tags) {
+    // Interpolation endpoint tags select a parent; only the way owns output tags.
+    if tags.contains_key("_inherited") {
+        return;
+    }
     for (key, value) in tags.iter() {
         if let Some(key) = key.strip_prefix("addr:") {
+            if key == "postcode" {
+                continue;
+            }
             let key = match key {
                 "province" => "state",
                 "suburb" => "district",
@@ -628,11 +663,155 @@ mod tests {
     use osmpbfreader::{NodeId, WayId};
 
     fn feature(id: i64, g: Geometry, tags: &[(&str, &str)]) -> Feature {
+        let mut tags: Tags = tags.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+        if super::super::input::poi(&tags) {
+            tags.insert("_poi".into(), "yes".into());
+        }
         Feature {
             source: if matches!(g, Geometry::Point(_)) { OsmId::Node(NodeId(id)) } else { OsmId::Way(WayId(id)) },
             geometry: g,
-            tags: tags.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
+            tags,
         }
+    }
+
+    fn input(features: Vec<Feature>) -> Input {
+        Input { features, associated: BTreeMap::new(), labels: BTreeMap::new(), incomplete_geometries: 0, nodes: 0 }
+    }
+
+    fn area() -> Geometry {
+        geo::Rect::new(geo::Coord { x: 8., y: 48. }, geo::Coord { x: 8.01, y: 48.01 }).to_polygon().into()
+    }
+
+    #[test]
+    fn inheritance_requires_a_house_address_and_an_eligible_poi() {
+        let input = input(vec![
+            feature(1, area(), &[("addr:country", "DE"), ("addr:postcode", "12345")]),
+            feature(
+                2,
+                area(),
+                &[("shop", "mall"), ("landuse", "retail"), ("addr:housenumber", "12"), ("addr:street", "Main")],
+            ),
+            feature(3, Point::new(8.005, 48.005).into(), &[("amenity", "bench")]),
+            feature(4, Point::new(8.005, 48.005).into(), &[("highway", "crossing")]),
+            feature(5, Point::new(8.005, 48.005).into(), &[("place", "city"), ("name", "City")]),
+            feature(6, Point::new(8.005, 48.005).into(), &[("amenity", "cafe"), ("addr:housenumber", "14")]),
+        ]);
+        let policy = super::super::policy::Policy::test_policy();
+        let countries = vec!["de"; input.features.len()];
+        let index = Index::new(&input, &countries, &policy);
+        assert_eq!(house_numbers(index.tags(2)), ["12"]);
+        assert!(house_numbers(index.tags(3)).is_empty());
+        assert!(house_numbers(index.tags(4)).is_empty());
+        assert_eq!(house_numbers(index.tags(5)), ["14"]);
+    }
+
+    #[test]
+    fn street_references_cross_borders_and_invalid_postcodes_do_not_override_the_parent() {
+        let input = input(vec![
+            feature(
+                1,
+                coordinates([[8., 48.], [8.01, 48.]]).into(),
+                &[("highway", "residential"), ("ref", "D 12"), ("addr:city", "Parent city"), ("addr:postcode", "1234")],
+            ),
+            feature(
+                2,
+                coordinates([[8., 48.001], [8.01, 48.001]]).into(),
+                &[("highway", "residential"), ("name", "Nearby")],
+            ),
+            feature(
+                3,
+                Point::new(8.005, 48.0011).into(),
+                &[("addr:housenumber", "1"), ("addr:street", "D12"), ("addr:postcode", "invalid")],
+            ),
+        ]);
+        let policy = super::super::policy::Policy::test_policy();
+        let index = Index::new(&input, &["ch", "de", "de"], &policy);
+        let (address, country) = index.address(2);
+        assert_eq!(country, "ch");
+        assert_eq!(address["street"], "D12");
+        assert_eq!(address["city"], "Parent city");
+        assert_eq!(address["postcode"], "1234");
+    }
+
+    #[test]
+    fn boundary_lines_and_nonintersecting_place_extents_do_not_assign_cities() {
+        let input = input(vec![
+            feature(
+                1,
+                coordinates([[8., 48.], [8.01, 48.]]).into(),
+                &[("boundary", "administrative"), ("admin_level", "8"), ("name", "Border")],
+            ),
+            feature(2, Point::new(8., 48.).into(), &[("place", "city"), ("name", "City")]),
+            feature(3, coordinates([[8., 48.], [8.01, 48.]]).into(), &[("highway", "residential"), ("name", "Main")]),
+            feature(
+                4,
+                coordinates([[7., 47.], [7., 49.], [9., 49.]]).into(),
+                &[("highway", "residential"), ("name", "Distant")],
+            ),
+        ]);
+        let policy = super::super::policy::Policy::test_policy();
+        let index = Index::new(&input, &["de"; 4], &policy);
+        assert_eq!(index.address(2).0["city"], "City");
+        assert!(!index.address(3).0.contains_key("city"));
+    }
+
+    #[test]
+    fn japanese_blocks_use_place_context_and_explicit_streets_keep_their_names() {
+        let input = input(vec![
+            feature(1, area(), &[("place", "city"), ("name", "中央町"), ("addr:postcode", "123-4567")]),
+            feature(
+                2,
+                coordinates([[8., 48.005], [8.01, 48.005]]).into(),
+                &[("highway", "residential"), ("name", "Main"), ("addr:postcode", "987-6543")],
+            ),
+            feature(
+                3,
+                Point::new(8.005, 48.0051).into(),
+                &[("addr:quarter", "中央町"), ("addr:block_number", "4"), ("addr:housenumber", "12")],
+            ),
+            feature(
+                4,
+                Point::new(8.005, 48.0051).into(),
+                &[
+                    ("addr:quarter", "中央町"),
+                    ("addr:block_number", "4"),
+                    ("addr:housenumber", "12"),
+                    ("addr:street", "Main"),
+                ],
+            ),
+        ]);
+        let policy = super::super::policy::Policy::test_policy();
+        let index = Index::new(&input, &["jp"; 4], &policy);
+        let block = index.address(2).0;
+        assert_eq!(block["street"], "4");
+        assert_eq!(block["postcode"], "123-4567");
+        let street = index.address(3).0;
+        assert_eq!(street["street"], "Main");
+        assert_eq!(street["postcode"], "987-6543");
+    }
+
+    #[test]
+    fn interpolation_uses_the_parent_street_name_after_matching_an_endpoint_alias() {
+        let input = input(vec![
+            feature(
+                1,
+                coordinates([[8., 48.], [8.01, 48.]]).into(),
+                &[("highway", "residential"), ("name", "Current name"), ("alt_name", "Old name")],
+            ),
+            feature(
+                2,
+                coordinates([[8., 48.001], [8.01, 48.001]]).into(),
+                &[
+                    ("_interpolation_range", "2:8"),
+                    ("_inherited", "yes"),
+                    ("addr:street", "Old name"),
+                    ("addr:housenumber", "2;4;6;8"),
+                ],
+            ),
+        ]);
+        let policy = super::super::policy::Policy::test_policy();
+        let index = Index::new(&input, &["de"; 2], &policy);
+        assert_eq!(index.address(1).0["street"], "Current name");
     }
     #[test]
     fn addresses_use_street_context_then_explicit_tags_and_building_inheritance() {
@@ -674,10 +853,10 @@ mod tests {
         let countries = vec!["de"; input.features.len()];
         let policy = super::super::policy::Policy::test_policy();
         let index = Index::new(&input, &countries, &policy);
-        assert_eq!(index.address(3).get("city").unwrap(), "Postal City");
+        assert_eq!(index.address(3).0.get("city").unwrap(), "Postal City");
         assert_eq!(house_numbers(index.tags(3)), ["12", "14"]);
-        assert_eq!(index.address(3).get("street").unwrap(), "Main");
-        assert_eq!(index.address(4).get("street").unwrap(), "Farm");
+        assert_eq!(index.address(3).0.get("street").unwrap(), "Main");
+        assert_eq!(index.address(4).0.get("street").unwrap(), "Farm");
         assert_eq!(house_numbers(index.tags(4)), ["16"]);
         assert!(house_numbers(index.tags(5)).is_empty());
     }
@@ -714,7 +893,7 @@ mod tests {
         let countries = vec!["de"; input.features.len()];
         let policy = super::super::policy::Policy::test_policy();
         let index = Index::new(&input, &countries, &policy);
-        let a = index.address(4);
+        let a = index.address(4).0;
         assert_eq!(a.get("street").unwrap(), "Associated");
         assert_eq!(a.get("city").unwrap(), "Boundary");
     }
@@ -740,9 +919,9 @@ mod tests {
         let countries = vec!["us", "us", "us", "de"];
         let policy = super::super::policy::Policy::test_policy();
         let index = Index::new(&input, &countries, &policy);
-        assert_eq!(index.address(0).get("postcode").unwrap(), "80481");
-        assert_eq!(index.address(1).get("postcode").unwrap(), "80481");
-        assert!(!index.address(2).contains_key("postcode"));
-        assert!(!index.address(3).contains_key("postcode"));
+        assert_eq!(index.address(0).0.get("postcode").unwrap(), "80481");
+        assert_eq!(index.address(1).0.get("postcode").unwrap(), "80481");
+        assert!(!index.address(2).0.contains_key("postcode"));
+        assert!(!index.address(3).0.contains_key("postcode"));
     }
 }

@@ -82,10 +82,32 @@ impl Policy {
         let class = if feature.tag("boundary") == "administrative" {
             Some("boundary")
         } else {
-            ["place", "highway", "landuse", "boundary"].into_iter().find(|k| !feature.tag(k).is_empty())
+            [
+                "place",
+                "highway",
+                "amenity",
+                "shop",
+                "tourism",
+                "office",
+                "craft",
+                "boundary",
+                "leisure",
+                "natural",
+                "water",
+                "waterway",
+                "mountain_pass",
+                "historic",
+                "landuse",
+            ]
+            .into_iter()
+            .find(|k| !feature.tag(k).is_empty())
         };
         let Some(class) = class else { return (30, 30) };
         if class == "highway" && matches!(feature.source, osmpbfreader::OsmId::Node(_)) {
+            return (30, 30);
+        }
+        if class == "landuse" && !matches!(feature.geometry, geo::Geometry::Polygon(_) | geo::Geometry::MultiPolygon(_))
+        {
             return (30, 30);
         }
         let value = if class == "boundary" && feature.tag(class) == "administrative" {

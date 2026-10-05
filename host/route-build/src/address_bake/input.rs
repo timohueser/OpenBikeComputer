@@ -24,6 +24,7 @@ impl Feature {
     }
     pub fn road(&self) -> bool {
         matches!(self.source, OsmId::Way(_))
+            && !(self.tag("highway") == "footway" && matches!(self.tag("footway"), "sidewalk" | "crossing" | "link"))
             && (!self.name().is_empty()
                 || matches!(
                     self.tag("highway"),
@@ -62,7 +63,6 @@ impl Feature {
                     | "motorway"
                     | "pedestrian"
                     | "road"
-                    | "construction"
             )
     }
     pub fn address_tags(&self) -> bool {
@@ -70,35 +70,54 @@ impl Feature {
     }
 }
 
+pub fn poi(tags: &Tags) -> bool {
+    let named = tags.keys().any(|k| k.as_str() == "name" || k.starts_with("name:"));
+    tags.iter().any(|(key, value)| match (key.as_str(), value.as_str()) {
+        (_, "no") => false,
+        ("amenity", "parking_space" | "parking_entrance" | "waste_disposal" | "hunting_stand") => false,
+        (
+            "highway",
+            "turning_circle" | "mini_roundabout" | "noexit" | "crossing" | "give_way" | "stop" | "turning_loop"
+            | "passing_place",
+        ) => false,
+        ("highway", "street_lamp" | "traffic_signals") => named,
+        ("emergency", "yes" | "fire_hydrant")
+        | ("healthcare" | "historic" | "military" | "tourism", "yes")
+        | ("aerialway", "pylon") => false,
+        ("tourism", "information") => !tags.contains_key("information"),
+        ("information", "yes" | "route_marker" | "trail_blaze") => false,
+        ("information", _) => tags.get("tourism").is_some_and(|v| v == "information"),
+        ("leisure", "nature_reserve" | "swimming_pool" | "garden" | "common") => named,
+        (
+            "railway",
+            "rail" | "abandoned" | "disused" | "razed" | "level_crossing" | "switch" | "signal" | "buffer_stop",
+        ) => false,
+        ("railway" | "building" | "natural" | "waterway", _) => named,
+        (
+            "amenity" | "shop" | "tourism" | "craft" | "office" | "emergency" | "historic" | "leisure" | "club"
+            | "military" | "healthcare" | "aerialway" | "aeroway" | "highway" | "place" | "mountain_pass",
+            _,
+        ) => true,
+        ("man_made", "pier" | "tower" | "bridge" | "water_tower" | "lighthouse" | "watermill" | "tunnel") => true,
+        ("man_made", "works" | "dyke" | "adit") => named,
+        ("addr:housename", name) => !name.trim().is_empty(),
+        _ => false,
+    })
+}
+
 fn wanted(tags: &Tags) -> bool {
     tags.keys().any(|k| k.starts_with("addr:"))
         || ["postal_code", "postcode", "tiger:zip_left", "tiger:zip_right"].iter().any(|k| tags.contains_key(*k))
-        || [
-            "amenity",
-            "shop",
-            "tourism",
-            "craft",
-            "office",
-            "emergency",
-            "historic",
-            "leisure",
-            "club",
-            "military",
-            "healthcare",
-            "aerialway",
-            "aeroway",
-        ]
-        .iter()
-        .any(|k| tags.contains_key(*k))
-        || tags.get("man_made").is_some_and(|v| {
-            matches!(v.as_str(), "pier" | "tower" | "bridge" | "water_tower" | "lighthouse" | "watermill" | "tunnel")
-        })
+        || poi(tags)
         || tags.contains_key("name")
         || tags.contains_key("highway")
         || tags.get("boundary").is_some_and(|v| v == "postal_code")
 }
 
 fn address_tags(mut tags: Tags) -> Tags {
+    if poi(&tags) {
+        tags.insert("_poi".into(), "yes".into());
+    }
     if let Some(code) = ["postal_code", "postcode", "addr:postcode", "tiger:zip_left", "tiger:zip_right"]
         .into_iter()
         .find_map(|key| tags.get(key).filter(|value| !value.is_empty()).cloned())
@@ -128,6 +147,22 @@ fn address_tags(mut tags: Tags) -> Tags {
                         | "postal_code"
                         | "landuse"
                         | "capital"
+                        | "ISO3166-1"
+                        | "ISO3166-1:alpha2"
+                        | "ref"
+                        | "footway"
+                        | "_poi"
+                        | "leisure"
+                        | "natural"
+                        | "water"
+                        | "waterway"
+                        | "mountain_pass"
+                        | "historic"
+                        | "amenity"
+                        | "shop"
+                        | "tourism"
+                        | "office"
+                        | "craft"
                 )
         })
         .collect()
@@ -278,6 +313,22 @@ pub fn read(path: &Path) -> Result<Input, Box<dyn std::error::Error>> {
             input.incomplete_geometries += 1;
         }
     }
+    // A place node may also be a POI that inherits a building address.
+    let pois: Vec<_> = input
+        .features
+        .iter()
+        .filter(|f| {
+            matches!(f.source, OsmId::Node(_))
+                && !f.tag("place").is_empty()
+                && ["amenity", "shop", "tourism", "office", "craft"].iter().any(|key| !f.tag(key).is_empty())
+        })
+        .map(|f| {
+            let mut tags = f.tags.clone();
+            tags.remove("place");
+            Feature { source: f.source, tags, geometry: f.geometry.clone() }
+        })
+        .collect();
+    input.features.extend(pois);
     input.features.sort_by_key(|f| f.source);
     let buildings = RTree::bulk_load(
         input
