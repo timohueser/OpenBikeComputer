@@ -33,7 +33,7 @@ The Python suites need `pip install -r tools/requirements-test.txt --group plann
 | --- | --- |
 | `ordinary` | the change selects it (the default for every Rust package) |
 | `required` | it runs whenever one of its CI jobs starts |
-| `manual` | its own command only: generators, probes, captured-source checks, the weekly suites |
+| `manual` | its own command only: generators, probes, captured-source checks, iOS application tests |
 | `live` | it contacts a live service; its own command only |
 
 Selection is per suite, never per test function. A binary that mixes ordinary work with
