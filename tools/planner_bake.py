@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 
-from . import data_registry, planner_components as components, planner_maps as maps, planner_sources as sources
+from . import data_registry, planner_assets, planner_components as components, planner_maps as maps, planner_sources as sources
 from . import planner_prepare as preparation, planner_release as releases
 from .planner_runtime import open_url
 
@@ -68,7 +68,7 @@ def build_places(stage, pois, config):
 
 def build_assets(stage):
     with open_url(maps.ASSETS_URL, timeout=120) as response:
-        maps.install_assets(response.read(), stage / "assets")
+        planner_assets.install_assets(response.read(), stage / "assets")
     (stage / "assets/sprites/LICENSE.txt").write_bytes(data_registry.fetch("tangrams-icons")[0].read_bytes())
 
 
@@ -193,7 +193,7 @@ def specifications(config, prepared=None):
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "uv.lock"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
@@ -204,7 +204,7 @@ def specifications(config, prepared=None):
     add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "uv.lock")])
+        ("tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/step_request.py", "tools/data_registry.py", "uv.lock")])
     add("assets", build_assets, {"assets": maps.ASSETS_URL, "tangrams-icons": maps.PINS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py", maps.ROOT / "tools/planner_assets.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:

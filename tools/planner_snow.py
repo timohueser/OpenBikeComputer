@@ -31,7 +31,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_geo as geo, step_request
+from . import planner_geo as geo, step_request
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
@@ -224,8 +224,8 @@ def canopy_tiles(bounds):
             for lon in range(math.floor(west / 10) * 10, math.ceil(east / 10) * 10, 10)]
 
 
-def canopy_cover(z, x, y):
-    """Mean tree canopy cover in percent of each pixel of tile z/x/y, in the year 2000."""
+def canopy_cover(z, x, y, version):
+    """Mean tree canopy cover in percent of each pixel of tile z/x/y, in the year 2000, from Hansen GFC `version`."""
     import rasterio
     from rasterio.transform import from_bounds
     from rasterio.warp import Resampling, reproject, transform_bounds
@@ -235,7 +235,7 @@ def canopy_cover(z, x, y):
     cover = np.zeros((TILE, TILE), np.float32)
     target = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", *bounds), TILE, TILE)
     for name in canopy_tiles(bounds):
-        with rasterio.open(CANOPY.format(data_registry.pin("hansen-gfc"), name)) as src:
+        with rasterio.open(CANOPY.format(version, name)) as src:
             window = window_from_bounds(*bounds, src.transform).intersection(Window(0, 0, src.width, src.height))
             window = window.round_offsets().round_lengths()
             reproject(src.read(1, window=window).astype(np.float32), cover, src_transform=src.window_transform(window),
@@ -261,8 +261,9 @@ def overpass_trails(bounds):
             time.sleep(60 * (attempt + 1))
 
 
-def bake(source, first_season, seasons, name, bounds, output, credit, workers=4):
-    """Write the archive with the attribution `credit`; return the tile count.
+def bake(source, first_season, seasons, name, bounds, output, credit, canopy=None, workers=4):
+    """Write the archive with the attribution `credit`; return the tile count. With the Hansen GFC version
+    `canopy`, dense tree canopy is no data.
 
     `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile. The chunks
     bake in `workers` threads: numpy, zlib and GDAL release the GIL. CDSE S3 allows 4 connections per user.
@@ -293,8 +294,8 @@ def bake(source, first_season, seasons, name, bounds, output, credit, workers=4)
             lon_c, lat_c = tile_lonlat(z, x, y)
             outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
             body[:, :, outside] = NO_DATA
-            if SOURCES[name]["canopy"]:
-                body[:, :, canopy_cover(z, x, y) > DENSE_CANOPY_PERCENT] = NO_DATA
+            if canopy:
+                body[:, :, canopy_cover(z, x, y, canopy) > DENSE_CANOPY_PERCENT] = NO_DATA
         else:
             children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy, planes, grid) for dx in (0, 1) for dy in (0, 1)}
             body = parent(children, seasons, SOURCES[name]["smooth"])
@@ -576,14 +577,10 @@ def step():
     step_request.metrics(request, {"tiles": count})
 
 
-def credit(name):
-    """The attribution of a bake from source `name` of SOURCES."""
-    if name == "nasa-modis":
-        return f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
-    return data_registry.attribution("hr-wsi", year=dt.date.today().year)
-
-
 def main():
+    # The step gets its credit in its options, so only this command line reads the registry.
+    from . import data_registry
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
     parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
@@ -614,7 +611,12 @@ def main():
         planes, grid = nasa_planes(bounds, args.first_season, args.last_season)
         seasons = range(args.first_season, args.first_season + planes.shape[0])
         source = lambda chunk: (planes, grid)
-    count = bake(source, seasons.start, len(seasons), args.source, bounds, output, credit(args.source))
+    if SOURCES[args.source]["canopy"]:
+        credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
+        canopy = data_registry.pin("hansen-gfc")
+    else:
+        credit, canopy = data_registry.attribution("hr-wsi", year=dt.date.today().year), None
+    count = bake(source, seasons.start, len(seasons), args.source, bounds, output, credit, canopy)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
                       "total_s": round(time.monotonic() - start)}))
 

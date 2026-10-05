@@ -14,7 +14,6 @@ import threading
 import time
 import tomllib
 
-from .planner_assets import install_assets
 from .planner_geo import bounds, mercator, tile_bounds
 
 ROOT = Path(__file__).resolve().parents[1]

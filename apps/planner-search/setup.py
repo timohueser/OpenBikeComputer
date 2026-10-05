@@ -31,7 +31,7 @@ def verify(path, expected):
     with path.open('rb') as stream:
         actual = hashlib.file_digest(stream, 'sha256').hexdigest()
     if actual != expected:
-        raise SystemExit(f'Checksum mismatch: {path}. Remove this download and try again.')
+        raise SystemExit(f'{path}: SHA-256 {actual}, not the pinned {expected}')
 
 
 def install_model(archive, data):

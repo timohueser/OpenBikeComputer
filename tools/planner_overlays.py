@@ -10,7 +10,7 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from . import data_registry, planner_geo as geo, planner_mvt as mvt, step_request
+from . import planner_geo as geo, planner_mvt as mvt, step_request
 
 LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
@@ -210,6 +210,9 @@ def step():
 
 
 def main():
+    # The step gets its credit in its options, so only this command line reads the registry.
+    from . import data_registry
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("index", type=Path, help="routing/overlays.sqlite")
     parser.add_argument("output", type=Path)

@@ -148,7 +148,7 @@ impl Product for Planner {
             vec![Input::Layer(routing.name.clone())],
             json!({"attribution": attribution("osm-planet")}),
             ("tools.planner_overlays", Some("planner-maps")),
-            &["tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/data_registry.py"],
+            &["tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py"],
             "overlays.pmtiles",
         );
         let assets = python(
@@ -179,10 +179,10 @@ impl Product for Planner {
             steps.push(python(
                 "planner/climate",
                 vec![snapshot(env, store, "era5-land", params, &mut wanted)?],
-                // `{year}` is the last of the ten years.
+                // `{year}` is the year after the ten years.
                 json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land")}),
                 ("tools.planner_climate", Some("planner-climate")),
-                &["tools/planner_climate.py", "tools/planner_geo.py", "tools/data_registry.py"],
+                &["tools/planner_climate.py", "tools/planner_geo.py"],
                 "climate.pmtiles",
             ));
         }
@@ -198,7 +198,7 @@ impl Product for Planner {
                 vec![snow],
                 json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": attribution("hr-wsi")}),
                 ("tools.planner_snow", Some("planner-snow")),
-                &["tools/planner_snow.py", "tools/planner_geo.py", "tools/data_registry.py"],
+                &["tools/planner_snow.py", "tools/planner_geo.py"],
                 "snow.pmtiles",
             ));
         }
@@ -439,12 +439,20 @@ mod tests {
         assert_eq!(with.groups.len(), without.groups.len() + 1);
     }
 
-    /// The `tools/*.py` files that the Python file `path` imports.
+    /// The `tools/*.py` files that the Python file `path` imports, but in `main()`: the old command
+    /// line, which no step runs.
     fn imports(path: &Path) -> Vec<String> {
         let text = std::fs::read_to_string(path).unwrap();
         let mut found = Vec::new();
         let mut lines = text.lines();
+        let mut in_main = false;
         while let Some(line) = lines.next() {
+            if !line.is_empty() && !line.starts_with([' ', '#']) {
+                in_main = line.starts_with("def main(");
+            }
+            if in_main {
+                continue;
+            }
             let mut line = line.trim().to_string();
             while line.contains('(') && !line.contains(')') {
                 line += lines.next().unwrap_or(")");

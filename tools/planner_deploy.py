@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import Request
 from urllib.parse import urlsplit
 
-from . import planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
+from . import planner_geo as geo, planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
 from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url
 
 RELEASES = "/opt/obc-planner/releases"
@@ -218,7 +218,7 @@ def verify_services(active, document, origin):
     for layer, url in active["layers"].items():
         if not read_url(url).get(DATA_LAYERS[layer]): raise ValueError(f"Data layer {layer} is absent")
     probe = document["probe"]
-    x, y = map(int, maps.mercator(*probe["points"][0], 12))
+    x, y = map(int, geo.mercator(*probe["points"][0], 12))
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["sprites"] + "/light@2x.json", active["sprites"] + "/light@2x.png",

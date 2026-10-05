@@ -27,7 +27,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_geo as geo, step_request
+from . import planner_geo as geo, step_request
 
 YEARS = 10
 WEEKS = 52
@@ -536,6 +536,9 @@ def step():
 
 
 def main():
+    # The step gets its credit in its options, so only this command line reads the registry.
+    from . import data_registry
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: the recipe in tools/planner-regions, the box in data/regions/ and the default output folder")
     parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
