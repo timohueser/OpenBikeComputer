@@ -9,13 +9,15 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::build_cli::{check_layers, fetcher, load, product_steps, Loaded};
+use super::build_cli::{check_layers, fetcher, load, product_steps};
 use super::{bytes, cells, old_dirs, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
 use crate::engine::state::{self, Environment};
 use crate::engine::Step;
+use crate::env::Env;
 use crate::fetch::http::Http;
 use crate::live::{Check, Remote};
 use crate::product::{Product, Wanted};
+use crate::regions::Regions;
 use crate::sources::{self, State};
 use crate::store::{import, Store};
 
@@ -95,22 +97,23 @@ impl AttentionKind {
 }
 
 pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -> Result<ExitCode, Error> {
-    let (store, registry, loaded) = (Store::open()?, registry(root)?, load(root, "live")?);
+    let (store, registry, mut loaded) = (Store::open()?, registry(root)?, load(root, "live")?);
     let remote = remote()?;
     if check && matches!(remote, Remote::Public(_)) {
         let error = Code::Blocked.error("`--check` lists R2, and a listing needs `OBC_R2_BUCKET` and its key");
         return Err(error);
     }
     let live = read_live(&remote, &registry, products, &store)?;
-    let rows = source_rows(&registry, false)?;
+    loaded.env.live = live.versions();
+    let rows = source_rows(&registry, &loaded.env.live, false)?;
     let statuses = rows.iter().map(|row| {
         let status = sources::Status { state: row.state, reason: row.reason.clone(), age_days: row.age_days };
         (row.source.id.clone(), status)
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let http = Http::new();
-    let mut layers =
-        layer_states(root, &store, products, &loaded, &environment, fetcher(&store, &http, &loaded.sources))?;
+    let fetch = fetcher(&store, &http, &loaded.sources, &loaded.env);
+    let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     let products = live.products.iter().map(|product| {
         let release = product.release.as_ref().map(|(id, _)| id.clone());
@@ -169,14 +172,15 @@ fn layer_states(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
-    loaded: &Loaded,
+    env: &mut Env,
+    regions: &Regions,
     environment: &Environment,
-    mut fetch: impl FnMut(&Wanted) -> Result<(), Error>,
+    mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
-    check_layers(products, &loaded.env)?;
+    check_layers(products, env)?;
     let (mut listed, mut found) = (Vec::new(), BTreeMap::new());
     for product in products {
-        match product_steps(*product, &loaded.env, &loaded.regions, store, &mut fetch) {
+        match product_steps(*product, env, regions, store, &mut fetch) {
             Ok(steps) => {
                 found.insert(product.name().to_string(), Ok(Vec::new()));
                 listed.push((product.name().to_string(), steps));
@@ -283,9 +287,7 @@ mod tests {
     use super::*;
     use crate::engine::tests::step;
     use crate::engine::{Code as StepCode, Input, Run};
-    use crate::env::Env;
     use crate::product::Unplanned;
-    use crate::regions::Regions;
     use crate::store::tests::Scratch;
 
     /// A product whose step list always needs a fetch.
@@ -334,12 +336,13 @@ mod tests {
     fn a_failed_fetch_makes_its_product_and_the_products_that_read_it_unknown() {
         let scratch = Scratch::new("status-unreachable");
         let store = Store::at(scratch.0.join("store"));
-        let env = Env { name: "live".into(), region: "monaco".into(), layers: Vec::new(), pins: BTreeMap::new() };
-        let loaded = Loaded { env, sources: Vec::new(), regions: Regions::new(Vec::new()).unwrap() };
+        let regions = Regions::new(Vec::new()).unwrap();
         let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
         let states = |code: Code| {
             let fetch = |_: &Wanted| Err(code.error("GET https://example.org/index: unreachable"));
-            layer_states(&scratch.0, &store, &[&Fetching, &Listed, &Reading], &loaded, &environment, fetch)
+            let mut env = Env { name: "live".into(), region: "monaco".into(), ..Env::default() };
+            let products: &[&dyn Product] = &[&Fetching, &Listed, &Reading];
+            layer_states(&scratch.0, &store, products, &mut env, &regions, &environment, fetch)
         };
         let found = states(Code::FetchFailed).unwrap();
         let reason = "a fetch that the step list needs failed: GET https://example.org/index: unreachable";

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use obc_bake::coverage::Coverage;
 use obc_data::engine::{Code, Input, Run, Step};
 use obc_data::env::Env;
-use obc_data::product::{read, Product, Unplanned, Wanted};
+use obc_data::product::{read, version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Bbox, Regions};
 use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
@@ -34,19 +34,19 @@ impl Product for Maps {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-        let (Some(outlines), Some(tile_list)) = (outlines, tile_list) else {
+        // The version of the tiles: the fetch of a tile is in the plan of the step that reads it.
+        let glo30 = version(env, store, GLO30, &[]).map_err(invalid)?.map_err(|fetch| wanted.push(fetch)).ok();
+        let (Some(outlines), Some(tile_list), Some(glo30)) = (outlines, tile_list, glo30) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let glo30 =
-            env.version(GLO30).ok_or_else(|| invalid(format!("data/env/{}.toml pins no `{GLO30}`", env.name)))?;
         let cells: BTreeSet<CellId> = outlines.iter().flat_map(|outline| outline.cells(V1_CELL_LOG2.into())).collect();
         let mut leaves: BTreeMap<(i64, i64), Vec<CellId>> = BTreeMap::new();
         let shift = LEAF_LOG2 - u32::from(V1_CELL_LOG2);
         for cell in cells {
             leaves.entry((cell.i >> shift, cell.j >> shift)).or_default().push(cell);
         }
-        Ok(leaves.into_iter().map(|(leaf, cells)| terrain(leaf, &cells, &land, glo30)).collect())
+        Ok(leaves.into_iter().map(|(leaf, cells)| terrain(leaf, &cells, &land, &glo30)).collect())
     }
 }
 
@@ -164,8 +164,8 @@ mod tests {
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
     fn grimsel(glo30: &str) -> (Env, Regions) {
-        let pins = BTreeMap::from([(GLO30.to_string(), glo30.to_string()), (TILE_LIST.to_string(), "1".to_string())]);
-        let env = Env { name: "test".into(), region: "grimsel".into(), layers: Vec::new(), pins };
+        let live = BTreeMap::from([(GLO30.to_string(), glo30.to_string()), (TILE_LIST.to_string(), "1".to_string())]);
+        let env = Env { name: "test".into(), region: "grimsel".into(), live, ..Env::default() };
         (env, Regions::load(&root()).unwrap())
     }
 

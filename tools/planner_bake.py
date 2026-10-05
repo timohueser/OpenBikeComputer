@@ -67,9 +67,10 @@ def build_places(stage, pois, config):
 
 
 def build_assets(stage):
-    with open_url(maps.ASSETS_URL, timeout=120) as response:
+    with open_url(sources.ASSETS_URL, timeout=120) as response:
         maps.install_assets(response.read(), stage / "assets")
-    (stage / "assets/sprites/LICENSE.txt").write_bytes(data_registry.fetch("tangrams-icons")[0].read_bytes())
+    icons = data_registry.fetch(f"tangrams-icons@{sources.VERSIONS['tangrams-icons']}")[0]
+    (stage / "assets/sprites/LICENSE.txt").write_bytes(icons.read_bytes())
 
 
 def terrain_coverage(config):
@@ -177,11 +178,11 @@ def specifications(config, prepared=None):
     supplied = json.loads((prepared / "inputs.json").read_bytes()) if prepared else None
     if supplied and (supplied["osm_sha256"] != osm or supplied["bounds"] != bounds):
         raise ValueError("Prepared inputs do not match the region recipe")
-    # A pin read from data/env/live.toml is in no hashed path, so it is an input of the component it changes.
+    # A source version is an input of the component it changes, so the key changes with it.
     add("source-basemap", source_basemap, {"osm": osm, "protomaps": sources.PROTOMAPS, "archive": sources.PROTO_SHA,
-                                           "planetiler": maps.PINS["planetiler"]},
+                                           "planetiler": sources.VERSIONS["planetiler"]},
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
-    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": maps.PINS["nominatim-country-data"]}, {"country": config["countries"][0]},
+    add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": sources.VERSIONS["nominatim-country-data"]}, {"country": config["countries"][0]},
         paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py"], functions=[sources.search_dump, sources.download])
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
     add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
@@ -207,13 +208,13 @@ def specifications(config, prepared=None):
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_overlays.py", "tools/requirements-planner-maps.txt")])
-    add("assets", build_assets, {"assets": maps.ASSETS_URL, "tangrams-icons": maps.PINS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py"])
+    add("assets", build_assets, {"assets": sources.ASSETS_URL, "tangrams-icons": sources.VERSIONS["tangrams-icons"]}, paths=[maps.ROOT / "tools/planner_maps.py"])
     add("model", build_model, {}, paths=[SEARCH / "setup.py", SEARCH / "query/artifacts.py", SEARCH / "query/schema.py"])
     for name in releases.DATA_LAYERS:
         if name in config:
             paths = [maps.ROOT / f"tools/planner_{name}.py", maps.ROOT / f"tools/requirements-planner-{name}.txt"]
             if name == "sun": paths.extend(maps.ROOT / path for path in ("tools/planner_sun_horizons.py", "tools/planner_map_archive.py"))
-            inputs = {"hansen-gfc": maps.PINS["hansen-gfc"]} if name == "snow" else {}
+            inputs = {"hansen-gfc": sources.VERSIONS["hansen-gfc"]} if name == "snow" else {}
             inputs.update(credits(*layer_credits(config, name)))
             add(name, build_layer, inputs, layer_options(config, name), dependencies=["terrain"] if name == "sun" else [], paths=paths)
     return result

@@ -31,7 +31,7 @@ import urllib.request
 
 import numpy as np
 
-from . import data_registry, planner_maps as maps
+from . import data_registry, planner_maps as maps, planner_sources as sources
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
@@ -44,7 +44,7 @@ SOURCES = {
     "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
                           "attribution": data_registry.attribution("hr-wsi", year=dt.date.today().year)},
 }
-CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(maps.PINS["hansen-gfc"])
+CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{{}}.tif".format(sources.VERSIONS["hansen-gfc"])
 # The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
 DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"

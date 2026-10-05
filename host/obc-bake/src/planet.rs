@@ -3,8 +3,8 @@
 //! The packer intentionally retains the styled content it is about to cut. A
 //! planet PBF therefore cannot be handed to it directly. This module uses Osmium's
 //! reference-complete `smart` extraction in a binary hierarchy and yields
-//! grid-aligned leaves; the bakery ingests one leaf at a time. The planet is the
-//! `osm-planet` pin from the store with the daily diffs of `osm-replication`
+//! grid-aligned leaves; the bakery ingests one leaf at a time. The planet is a
+//! PBF file, or the newest `osm-planet` with the daily diffs of `osm-replication`
 //! applied, and only leaves whose canonical extracted bytes changed are
 //! re-ingested.
 
@@ -56,13 +56,15 @@ pub struct Replication {
     pub diffs: usize,
 }
 
-/// Fail before any download when the planet of `--all` comes from the store and `osm-planet` has
-/// no pin.
-pub fn check_pinned(spec: Option<&str>) -> Result<(), String> {
-    if spec.is_some() || obc_data::sources::Registry::live()?.pins.contains_key("osm-planet") {
-        return Ok(());
+/// Fail before any download when `--all` names no planet file: no environment names an
+/// `osm-planet` version for the store to give.
+pub fn check_planet(spec: Option<&str>) -> Result<(), String> {
+    match spec {
+        Some(_) => Ok(()),
+        None => {
+            Err("`--all` reads no `osm-planet` version from the store: pass a planet PBF file with --source".into())
+        }
     }
-    Err("`osm-planet` has no pin in data/env/live.toml: pin it with `obc data refresh osm-planet --env live`".into())
 }
 
 /// The lock of `<cache>/planet`. A run holds it while it updates and reads the planet there, so a
@@ -81,8 +83,8 @@ pub fn lock_cache(cache: &Path, progress: &Progress) -> Result<std::fs::File, St
     Ok(file)
 }
 
-/// The planet of `--all`: the PBF file that `spec` names, or else the `osm-planet` pin from the
-/// store with the `osm-replication` diffs applied. The caller holds [`lock_cache`].
+/// The planet of `--all`: the PBF file that `spec` names, or else the newest `osm-planet` with the
+/// `osm-replication` diffs applied. The caller holds [`lock_cache`].
 pub fn resolve_planet(
     spec: Option<&str>,
     cache: &Path,
@@ -1503,7 +1505,7 @@ mod tests {
         );
         // The result of `to` is there: nothing applies.
         assert_eq!(run(&[names[1]], "2026-08-03"), (Some((path(names[1]), "2026-08-03".into())), vec![], vec![]));
-        // The pin moved back: a newer result goes and the planet is the start.
+        // The diffs moved back: a newer result goes and the planet is the start.
         assert_eq!(run(&[names[1]], "2026-08-02"), (None, vec![d2.into()], vec![path(names[1])]));
     }
 

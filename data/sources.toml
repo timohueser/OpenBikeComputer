@@ -17,7 +17,7 @@ version = "date"
 refresh = 90
 redistribute = true
 
-# The daily diffs after the `osm-planet` pin of the environment.
+# The daily diffs after the `osm-planet` version that a step reads.
 [[source]]
 id = "osm-replication"
 kind = "data"

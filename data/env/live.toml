@@ -1,19 +1,7 @@
-# The live environment. `[pins]` names the version of each source that live is built from.
-# The planner tools read the pins they use. The digests of their other downloads stay next to that code.
+# The live environment: what live contains. It names no versions: the live release manifests record
+# the version of each source, and `obc data plan live --move SOURCE[@VERSION]` moves one.
 
 # Both products build this region: a file in data/regions/.
 region = "europe/germany/baden-wuerttemberg"
 # The optional planner layers that are on.
 layers = []
-
-[pins]
-hansen-gfc = "v1.11"
-natural-earth = "b9e2e7b3d5c2c59593f6eafc19be2ba87fb04788a90c57ccd6cf32a587b6ecc3"
-daylight-landcover = "46536607dd51665fd2a8b0f2912084a5d95680f4f0f9a31873248d85fcebc199"
-protomaps-assets = "028c18f713baecad011301ff7a69acc39bcc2ae7"
-tangrams-icons = "92510779634f4a006c61ea70e50cb8c52c765a81"
-planetiler = "0.10.2"
-protomaps-basemaps = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
-nominatim-country-data = "5.3.2"
-copernicus-glo-30 = "2022-05-09"
-copernicus-glo-30-tiles = "2022-05-09"

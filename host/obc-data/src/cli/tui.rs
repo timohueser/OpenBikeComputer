@@ -1,6 +1,6 @@
 //! The TUI of `obc data`. Each screen shows what a command writes with `--json`, and the bar
-//! names that command. Each change goes through the function of its command: `refresh`, `policy`
-//! and `clean --apply`.
+//! names that command. Each change goes through the function of its command: `policy` and
+//! `clean --apply`.
 
 use std::io::Stdout;
 use std::path::Path;
@@ -24,7 +24,9 @@ use crate::sources::{Kind, Refresh, State, VersionScheme};
 use crate::store::{gc, import, Store};
 
 use super::runs_cli::{bytes, duration, mark, step_cells};
-use super::{clean, clean_plan, policy, refresh, registry, row_text, source_rows, widths, CleanPlan, Error, SourceRow};
+use super::{
+    clean, clean_plan, live_versions, policy, registry, row_text, source_rows, widths, CleanPlan, Error, SourceRow,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -42,7 +44,6 @@ const SCREENS: [(char, &str, Screen); 3] =
 enum Overlay {
     Help,
     Attribution,
-    Pin,
     Policy,
     Clean,
 }
@@ -56,7 +57,6 @@ enum Action {
     Open(Overlay),
     /// `enter` on a policy of Policy.
     Choose,
-    Refresh,
     CheckNow,
     /// The question before a clean.
     Ask,
@@ -70,8 +70,6 @@ enum Action {
 enum Effect {
     None,
     Quit,
-    /// `obc data refresh SOURCE`.
-    Refresh(String),
     /// `obc data policy SOURCE REFRESH`.
     Policy(String, Refresh),
     /// `obc data sources --check-now`.
@@ -93,7 +91,6 @@ struct Binding {
 fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'static str)] {
     match screen {
         Screen::Sources => &[
-            (KeyCode::Enter, Action::Open(Overlay::Pin), "enter", "pin"),
             (KeyCode::Char('e'), Action::Open(Overlay::Policy), "e", "policy"),
             (KeyCode::Char('R'), Action::CheckNow, "R", "check upstream"),
             (KeyCode::Char('L'), Action::Open(Overlay::Attribution), "L", "attribution"),
@@ -114,6 +111,8 @@ struct App {
     screen: Screen,
     overlay: Option<Overlay>,
     sources: Vec<SourceRow>,
+    /// Source id to the version that the live releases read.
+    live: std::collections::BTreeMap<String, String>,
     /// Sources shows a check of upstream from now, not from the last hour.
     checked_now: bool,
     /// The check of upstream runs.
@@ -157,7 +156,9 @@ static NO_PLAN: CleanPlan = CleanPlan {
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
     let store = Store::open()?;
-    let mut app = App::new(source_rows(&registry(root)?, false)?, list_runs(&store)?);
+    let live = live_versions(root, products, &store)?;
+    let mut app = App::new(source_rows(&registry(root)?, &live, false)?, list_runs(&store)?);
+    app.live = live;
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
@@ -181,7 +182,8 @@ fn run_loop(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App
             effect = match event::read().map_err(io)? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key.code),
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                    app.click(mouse.column, mouse.row)
+                    app.click(mouse.column, mouse.row);
+                    Effect::None
                 }
                 _ => Effect::None,
             };
@@ -200,15 +202,6 @@ fn run_loop(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App
         let result = match effect {
             Effect::None => continue,
             Effect::Quit => return Ok(()),
-            Effect::Refresh(id) => {
-                // The fetch writes its progress to the terminal.
-                stop();
-                let result = refresh(root, &id, &[], "live", false);
-                *tui = start()?;
-                discard_keys()?;
-                let reloaded = app.reload(root, false);
-                result.and(reloaded)
-            }
             Effect::Policy(id, refresh) => {
                 let result = policy(root, &id, refresh).map(drop);
                 let reloaded = app.reload(root, false);
@@ -278,6 +271,7 @@ impl App {
             screen: Screen::Sources,
             overlay: None,
             sources,
+            live: Default::default(),
             checked_now: false,
             checking: false,
             store: None,
@@ -295,7 +289,7 @@ impl App {
 
     /// Read the sources again; with `check_now`, after a check of upstream now.
     fn reload(&mut self, root: &Path, check_now: bool) -> Result<(), Error> {
-        self.sources = source_rows(&registry(root)?, check_now)?;
+        self.sources = source_rows(&registry(root)?, &self.live, check_now)?;
         self.checked_now = check_now;
         Ok(())
     }
@@ -326,12 +320,6 @@ impl App {
         self.runs.get(self.run).map(|run| run.summary.id.as_str())
     }
 
-    /// The newest upstream version of the selected source, when it is not the pin.
-    fn newer(&self) -> Option<&str> {
-        let row = self.sources.get(self.source)?;
-        row.upstream.as_deref().filter(|&upstream| row.pin.as_deref() != Some(upstream))
-    }
-
     /// Whether `enter` in Policy chooses another policy.
     fn chooses(&self) -> bool {
         let row = self.sources.get(self.source);
@@ -360,9 +348,6 @@ impl App {
         ];
         match self.overlay {
             Some(overlay) => {
-                if overlay == Overlay::Pin && self.newer().is_some() {
-                    keys.push(bar(KeyCode::Enter, Action::Refresh, "enter", "refresh"));
-                }
                 if self.chooses() {
                     keys.push(bar(KeyCode::Enter, Action::Choose, "enter", "choose"));
                 }
@@ -423,10 +408,6 @@ impl App {
                 self.overlay = None;
                 return Effect::Policy(self.sources[self.source].source.id.clone(), Refresh::ALL[self.choice]);
             }
-            Action::Refresh => {
-                self.overlay = None;
-                return Effect::Refresh(self.sources[self.source].source.id.clone());
-            }
             Action::CheckNow => return Effect::CheckNow,
             Action::Ask => self.asking = true,
             Action::Clean => {
@@ -440,23 +421,17 @@ impl App {
         Effect::None
     }
 
-    /// A click on a tab shows its screen. A click on a row selects it; a second click is `enter`.
-    fn click(&mut self, x: u16, y: u16) -> Effect {
+    /// A click on a tab shows its screen. A click on a row selects it.
+    fn click(&mut self, x: u16, y: u16) {
         let hit = self.hits.iter().find(|(area, _)| area.contains(Position { x, y })).map(|&(_, hit)| hit);
         match hit {
             Some(Hit::Screen(screen)) => {
                 self.overlay = None;
                 self.screen = screen;
             }
-            Some(Hit::Row(row)) if self.overlay.is_none() => {
-                if *self.selected() == row {
-                    return self.key(KeyCode::Enter);
-                }
-                *self.selected() = row;
-            }
+            Some(Hit::Row(row)) if self.overlay.is_none() => *self.selected() = row,
             _ => {}
         }
-        Effect::None
     }
 
     /// The command that shows the same, or does the same.
@@ -465,8 +440,6 @@ impl App {
         match (self.overlay, self.screen) {
             (Some(Overlay::Help), _) => "obc data --help".into(),
             (Some(Overlay::Attribution), _) => "obc data sources --json".into(),
-            (Some(Overlay::Pin), _) if self.newer().is_some() => format!("obc data refresh {id}"),
-            (Some(Overlay::Pin), _) => "obc data sources --json".into(),
             (Some(Overlay::Policy), _) => match Refresh::ALL[self.choice] {
                 Refresh::Days(days) => format!("obc data policy {id} {days}"),
                 Refresh::Manual => format!("obc data policy {id} manual"),
@@ -506,7 +479,7 @@ impl App {
     }
 
     fn draw_sources(&mut self, frame: &mut Frame, area: Rect) {
-        let header = ["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "AGE", "POLICY", "STATE"];
+        let header = ["SOURCE", "LICENCE", "R2 COPY", "LIVE", "AGE", "POLICY", "STATE"];
         let mut table = vec![header.map(String::from).to_vec()];
         table.extend(self.sources.iter().map(SourceRow::cells));
         let widths = widths(&table);
@@ -615,7 +588,6 @@ impl App {
         let (title, lines) = match overlay {
             Overlay::Help => (" HELP ".to_string(), help()),
             Overlay::Attribution => (" ATTRIBUTION ".into(), attribution(&self.sources)),
-            Overlay::Pin => (format!(" PIN · {id} "), pin(&self.sources[self.source], self.newer())),
             Overlay::Policy => (format!(" POLICY · {id} "), self.policy_lines()),
             Overlay::Clean => (" CLEAN ".into(), self.clean_lines()),
         };
@@ -722,24 +694,6 @@ fn steps_lines(run: &Details) -> Vec<Line<'static>> {
     lines
 }
 
-fn pin(row: &SourceRow, newer: Option<&str>) -> Vec<Line<'static>> {
-    let mut versions: Vec<(String, String)> =
-        row.snapshots.iter().map(|snapshot| (snapshot.version.clone(), bytes(snapshot.bytes))).collect();
-    if let Some(pin) = row.pin.clone().filter(|pin| !versions.iter().any(|(version, _)| version == pin)) {
-        versions.push((pin, "—".into()));
-    }
-    let width = versions.iter().map(|(version, _)| version.len()).chain(newer.map(str::len)).max().unwrap_or(0);
-    let mut lines: Vec<Line> = versions
-        .into_iter()
-        .map(|(version, size)| {
-            let mark = if row.pin.as_deref() == Some(&version) { "●" } else { " " };
-            Line::from(format!("{mark} {version:<width$}  {size}"))
-        })
-        .collect();
-    lines.extend(newer.map(|newer| Line::from(format!("  {newer:<width$}  upstream")).reversed()));
-    lines
-}
-
 /// Each attribution of a data source or an asset, with the sources that carry it.
 fn attribution(sources: &[SourceRow]) -> Vec<Line<'static>> {
     let mut credits: Vec<(&str, Vec<&str>)> = Vec::new();
@@ -773,7 +727,6 @@ fn help() -> Vec<Line<'static>> {
             lines.push(line(name, keys.join(" · ")));
         }
     }
-    lines.push(line("Pin", "enter refresh".into()));
     lines.push(line("Policy", "enter choose".into()));
     lines.push(line("Clean", "a clean, then y".into()));
     lines
@@ -811,7 +764,7 @@ mod tests {
 
     fn app() -> App {
         let sources = parse_sources(SOURCES).unwrap().into_iter().map(|source| SourceRow {
-            pin: Some(if source.kind == Kind::Tool { "0.10.2" } else { "2024-01-02" }.into()),
+            live: Some(if source.kind == Kind::Tool { "0.10.2" } else { "2024-01-02" }.into()),
             upstream: (source.kind == Kind::Data).then(|| "2024-01-09".into()),
             age_days: None,
             state: State::Ok,
@@ -835,7 +788,7 @@ mod tests {
         };
         let mut app = App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")]);
         let store = gc::Plan {
-            kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: vec!["pin of live".into()] }],
+            kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: vec!["live maps".into()] }],
             snapshots: vec!["osm@2023-12-01".into()],
             objects: vec![("ab".repeat(32), 1_000_000)],
             remove_bytes: 1_000_000,
@@ -858,7 +811,7 @@ mod tests {
     #[test]
     fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
         let mut states = vec![app(), App::new(Vec::new(), Vec::new()), App { source: 1, ..app() }];
-        for overlay in [Overlay::Help, Overlay::Attribution, Overlay::Pin, Overlay::Policy, Overlay::Clean] {
+        for overlay in [Overlay::Help, Overlay::Attribution, Overlay::Policy, Overlay::Clean] {
             states.push(opened(overlay, 0, 0));
             states.push(opened(overlay, 1, 1));
         }
@@ -881,15 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_a_newer_upstream_version_refreshes_the_source() {
-        let mut app = opened(Overlay::Pin, 0, 0);
-        assert_eq!(app.command(), "obc data refresh osm");
-        assert_eq!(app.key(KeyCode::Enter), Effect::Refresh("osm".into()));
-        let mut tool = opened(Overlay::Pin, 1, 0);
-        assert_eq!(tool.key(KeyCode::Enter), Effect::None);
-    }
-
-    #[test]
     fn enter_in_policy_sets_another_policy_of_a_date_source() {
         let mut app = app();
         assert_eq!(app.key(KeyCode::Char('e')), Effect::None);
@@ -899,7 +843,7 @@ mod tests {
         assert_eq!(app.key(KeyCode::Enter), Effect::Policy("osm".into(), Refresh::Days(30)));
         let mut tool = App { source: 1, ..app };
         tool.key(KeyCode::Char('e'));
-        assert_eq!(tool.overlay, None, "a release pin has no age");
+        assert_eq!(tool.overlay, None, "a release version has no age");
     }
 
     #[test]
@@ -923,7 +867,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_selects_a_row_and_a_second_click_opens_its_pin() {
+    fn a_click_selects_a_row_or_shows_a_screen() {
         let mut app = app();
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         let mut click = |app: &mut App, hit: Hit| {
@@ -931,10 +875,8 @@ mod tests {
             let (area, _) = *app.hits.iter().find(|(_, drawn)| *drawn == hit).unwrap();
             app.click(area.x, area.y)
         };
-        assert_eq!(click(&mut app, Hit::Row(1)), Effect::None);
+        click(&mut app, Hit::Row(1));
         assert_eq!(view(&app), (Screen::Sources, None, [1, 0, 0, 0], false));
-        assert_eq!(click(&mut app, Hit::Row(1)), Effect::None);
-        assert_eq!(app.overlay, Some(Overlay::Pin));
         click(&mut app, Hit::Screen(Screen::Store));
         assert_eq!((app.screen, app.overlay), (Screen::Store, None));
     }

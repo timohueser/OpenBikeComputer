@@ -1,6 +1,6 @@
-//! `data/sources.toml`, the pins of `data/env/live.toml`, and the state of each source.
+//! `data/sources.toml` and the state of each source.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -44,16 +44,16 @@ pub struct Fetch {
     pub kind: FetchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Only for `osm`: the source whose pin is the base day, `from=`.
+    /// Only for `osm`: the source whose version is the base day, `from=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
 }
 
-/// How upstream names a version, and so what a pin of the source looks like.
+/// How upstream names a version, and so what a version of the source looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum VersionScheme {
-    /// `YYYY-MM-DD`: the only scheme that gives a pin an age.
+    /// `YYYY-MM-DD`: the only scheme that gives a version an age.
     Date,
     Release,
     Commit,
@@ -61,12 +61,12 @@ pub enum VersionScheme {
     Digest,
 }
 
-/// How old a pin may get before the source is stale.
+/// How old the live version may get before the source is stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
 pub enum Refresh {
     Days(u16),
-    /// Never stale: a person moves the pin.
+    /// Never stale: only `--move` moves the source.
     Manual,
 }
 
@@ -122,7 +122,7 @@ impl JsonSchema for Refresh {
         let values: Vec<serde_json::Value> =
             Refresh::ALL.iter().map(|refresh| serde_json::to_value(refresh).expect("a policy serializes")).collect();
         schemars::json_schema!({
-            "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
+            "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale.",
             "enum": values
         })
     }
@@ -222,7 +222,7 @@ impl Source {
             return fail(&format!("`{bad}` in `hosts` is not a host name"));
         }
         if matches!(self.refresh, Refresh::Days(_)) && self.version != VersionScheme::Date {
-            return fail("a refresh in days needs `version = \"date\"`: only a date pin has an age");
+            return fail("a refresh in days needs `version = \"date\"`: only a date version has an age");
         }
         if self.r2_copy && !self.redistribute {
             return fail("`r2_copy` needs `redistribute`: R2 is public");
@@ -306,47 +306,15 @@ pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
     Ok(file.source)
 }
 
-/// An environment file. `crate::env` checks `region` and `layers`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvFile {
-    pub(crate) region: Option<String>,
-    #[serde(default)]
-    pub(crate) layers: Vec<String>,
-    #[serde(default)]
-    pub(crate) pins: BTreeMap<String, String>,
-}
-
-/// Parse an environment file and check its `[pins]`.
-pub(crate) fn parse_env(text: &str, sources: &[Source]) -> Result<EnvFile, String> {
-    let file: EnvFile = toml::from_str(text).map_err(|e| e.to_string())?;
-    for (id, pin) in &file.pins {
-        let source = sources.iter().find(|s| &s.id == id).ok_or_else(|| format!("pin `{id}` names no source"))?;
-        if source.version == VersionScheme::Date && date::parse(pin).is_none() {
-            return Err(format!("pin `{id}` = `{pin}` is not a YYYY-MM-DD date"));
-        }
-    }
-    Ok(file)
-}
-
-/// Parse the `[pins]` of an environment file: source id to version.
-pub fn parse_pins(text: &str, sources: &[Source]) -> Result<BTreeMap<String, String>, String> {
-    parse_env(text, sources).map(|file| file.pins)
-}
-
-/// The sources and the live pins of the repository at `root`.
+/// The sources of the repository at `root`.
 pub struct Registry {
     pub sources: Vec<Source>,
-    pub pins: BTreeMap<String, String>,
 }
 
 impl Registry {
     pub fn load(root: &Path) -> Result<Self, String> {
         let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
-        let sources = parse_sources(&read(&root.join("data/sources.toml"))?)?;
-        let pins = parse_pins(&read(&root.join("data/env/live.toml"))?, &sources)
-            .map_err(|e| format!("data/env/live.toml: {e}"))?;
-        Ok(Self { sources, pins })
+        Ok(Self { sources: parse_sources(&read(&root.join("data/sources.toml"))?)? })
     }
 
     /// The registry of the repository above the current directory, or else above the running
@@ -401,36 +369,8 @@ impl std::fmt::Display for State {
 pub struct Status {
     pub state: State,
     pub reason: Option<String>,
-    /// Days since the pin's date; only a date pin has one.
+    /// Days since the date of the live version; only a date version has one.
     pub age_days: Option<i64>,
-}
-
-/// `text`, an environment file, with `id = "version"` in its `[pins]`: the pin replaced, or added
-/// after the last pin. Comments and the order of the other lines stay.
-pub fn set_pin(text: &str, id: &str, version: &str) -> String {
-    let pin = format!("{id} = \"{version}\"");
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let header = |line: &str| {
-        line.trim().strip_prefix("[pins]").is_some_and(|rest| rest.trim().is_empty() || rest.trim().starts_with('#'))
-    };
-    match lines.iter().position(|line| header(line)) {
-        None => lines.extend([String::new(), "[pins]".into(), pin]),
-        Some(table) => {
-            let end = lines[table + 1..]
-                .iter()
-                .position(|l| l.trim_start().starts_with('['))
-                .map_or(lines.len(), |i| table + 1 + i);
-            let key = |line: &str| line.split_once('=').map(|(key, _)| key.trim().to_string());
-            match (table + 1..end).find(|&i| key(&lines[i]).as_deref() == Some(id)) {
-                Some(i) => lines[i] = pin,
-                None => {
-                    let last = (table + 1..end).rev().find(|&i| key(&lines[i]).is_some()).unwrap_or(table);
-                    lines.insert(last + 1, pin);
-                }
-            }
-        }
-    }
-    join(text, lines)
 }
 
 /// `text`, `data/sources.toml`, with the `refresh` of source `id` replaced. Comments and the other
@@ -456,34 +396,35 @@ pub fn set_refresh(text: &str, id: &str, refresh: Refresh) -> Result<String, Str
 }
 
 /// `lines` with the line end of `text`.
-fn join(text: &str, lines: Vec<String>) -> String {
+pub(crate) fn join(text: &str, lines: Vec<String>) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     lines.join(newline) + newline
 }
 
-/// The state of `source` at `today`, from its pin, the newest upstream version, its policy, its
-/// licence and its credential. A pin is stale when upstream has a newer version, or when it is
-/// before `base`, the pin of the source that `fetch.from` names.
+/// The state of `source` at `today`, from `live`, the version that live reads, the newest upstream
+/// version, its policy, its licence and its credential. The live version is stale when upstream has
+/// a newer version, or when it is before `base`, the live version of the source that `fetch.from`
+/// names.
 pub fn status(
     source: &Source,
-    pin: Option<&str>,
+    live: Option<&str>,
     base: Option<&str>,
     upstream: &Upstream,
     today: i64,
     credential_present: bool,
 ) -> Status {
-    let age_days = pin.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
+    let age_days = live.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
     } else if let Some(credential) = source.credential.as_ref().filter(|_| !credential_present) {
         (State::Blocked, Some(format!("credential missing: {}", credential.describe())))
-    } else if let Some(base) = base.filter(|&base| pin.is_some_and(|pin| pin < base)) {
+    } else if let Some(base) = base.filter(|&base| live.is_some_and(|live| live < base)) {
         let from = source.fetch.from.as_deref().unwrap_or_default();
-        (State::Stale, Some(format!("before the `{from}` pin {base}")))
+        (State::Stale, Some(format!("before `{from}` {base} of live")))
     } else {
         match (source.refresh, age_days) {
             (Refresh::Days(max), Some(age)) if age > i64::from(max) => match upstream {
-                Upstream::Newest(newest) if Some(newest.as_str()) > pin => {
+                Upstream::Newest(newest) if Some(newest.as_str()) > live => {
                     (State::Stale, Some(format!("{age} d > {max} d, upstream {newest}")))
                 }
                 Upstream::Newest(_) => (State::Ok, None),
@@ -555,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
+    fn a_live_version_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
         let newer = Upstream::Newest("2024-01-09".into());
         let fresh = status(&osm(), Some("2024-01-03"), None, &newer, today, true);
@@ -576,7 +517,7 @@ mod tests {
         let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today, true);
         assert_eq!(
             (behind.state, behind.reason.as_deref()),
-            (State::Stale, Some("before the `osm-planet` pin 2024-01-09"))
+            (State::Stale, Some("before `osm-planet` 2024-01-09 of live"))
         );
         assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today, true).state, State::Ok);
     }
@@ -614,26 +555,6 @@ mod tests {
         let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
         let blocked = status(&keyed, None, None, &Upstream::CannotCheck, today, false);
         assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Blocked, Some("credential missing: KEY")));
-    }
-
-    #[test]
-    fn a_pin_names_a_source_and_a_date_source_pins_a_date() {
-        let sources = [osm()];
-        assert!(parse_pins("[pins]\nosm = \"2024-01-01\"\n", &sources).is_ok());
-        assert!(parse_pins("[pins]\nosm = \"latest\"\n", &sources).unwrap_err().contains("not a YYYY-MM-DD"));
-        assert!(parse_pins("[pins]\nland = \"2024-01-01\"\n", &sources).unwrap_err().contains("names no source"));
-    }
-
-    #[test]
-    fn a_pin_is_replaced_or_added_to_the_pins_table() {
-        let text = "# live\n[pins]\nosm = \"2024-01-01\"\nland = \"2024-01-01\"\n\n[other]\nx = 1\n";
-        let replaced = set_pin(text, "osm", "2024-02-01");
-        assert_eq!(replaced, text.replace("osm = \"2024-01-01\"", "osm = \"2024-02-01\""));
-        let added = set_pin(text, "qrank", "2024-02-01");
-        assert!(added.contains("land = \"2024-01-01\"\nqrank = \"2024-02-01\"\n\n[other]"), "{added}");
-        assert_eq!(set_pin("# empty\n", "osm", "2024-02-01"), "# empty\n\n[pins]\nosm = \"2024-02-01\"\n");
-        let windows = "[pins] # live\r\nosm = \"2024-01-01\"\r\n";
-        assert_eq!(set_pin(windows, "osm", "2024-02-01"), "[pins] # live\r\nosm = \"2024-02-01\"\r\n");
     }
 
     #[test]

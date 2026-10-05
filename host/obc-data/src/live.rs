@@ -129,6 +129,12 @@ impl Live {
         reads.map(|(source, read)| (source.clone(), read.version.clone())).collect()
     }
 
+    /// Source id to the version that the live layers read: the newest, when two layers read two.
+    pub fn versions(&self) -> BTreeMap<String, String> {
+        // The set is in order, so the newest version of a source comes last and stays.
+        self.snapshots().into_iter().collect()
+    }
+
     /// The keys that live uses, with their size: `None` for a pointer, which changes, and for a
     /// record of an input copy.
     pub fn expected(&self) -> BTreeMap<String, Option<u64>> {

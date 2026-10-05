@@ -1,4 +1,4 @@
-//! Calendar dates as days since 1970-01-01, and UTC times: a pin's age, a retrieval time, an HTTP date.
+//! Calendar dates as days since 1970-01-01, and UTC times: the age of a version, a retrieval time, an HTTP date.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

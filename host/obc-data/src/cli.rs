@@ -4,11 +4,13 @@
 
 mod api;
 mod build_cli;
+mod edit_cli;
 mod r2_cli;
 mod runs_cli;
 mod status_cli;
 mod tui;
 
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
@@ -19,16 +21,16 @@ use serde::Serialize;
 
 use crate::fetch::http::Http;
 use crate::fetch::upstream::{self, Upstream};
-use crate::fetch::{self, osm, Request};
+use crate::fetch::{self, Request};
 use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::sources::{self, FetchKind, Kind, Refresh, Registry, Source, State, VersionScheme};
+use crate::sources::{self, Kind, Refresh, Registry, Source, State, VersionScheme};
 use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
 use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
-#[command(name = "obc data", about = "Data sources, regions and pins")]
+#[command(name = "obc data", about = "Data sources, regions, environments and releases")]
 struct Cli {
     /// Write JSON to standard output, also when the command fails.
     #[arg(long, global = true)]
@@ -42,7 +44,8 @@ struct Cli {
 enum Command {
     /// What is live: the release of each product, the state of its layers, and what needs attention.
     Status(status_cli::StatusArgs),
-    /// Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state.
+    /// Every source with licence, R2 copy, live version, newest upstream version, age, policy and
+    /// state.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
@@ -50,26 +53,29 @@ enum Command {
     },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
-        /// SOURCE or SOURCE@VERSION. Without a version: the live pin, or else upstream's newest file.
+        /// SOURCE or SOURCE@VERSION. Without a version: upstream's newest file.
         target: String,
         /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
         params: Vec<String>,
     },
-    /// Fetch the newest upstream version of a source and pin it in an environment.
-    Refresh {
-        source: String,
-        /// NAME=VALUE for each `{name}` in the URL of the source.
-        params: Vec<String>,
-        #[arg(long, default_value = "live")]
-        env: String,
-    },
-    /// Set how old the pin of a source may get before it is stale: 7, 30, 90, 365 or manual.
+    /// Set how old the live version of a source may get before it is stale: 7, 30, 90, 365 or
+    /// manual. A manual source moves only with `--move`.
     Policy { source: String, refresh: Refresh },
-    /// The regions in data/regions/.
+    /// The regions in data/regions/. With ENV ID: set the region of data/env/ENV.toml.
+    #[command(args_conflicts_with_subcommands = true)]
     Region {
         #[command(subcommand)]
         action: Option<RegionAction>,
+        /// The environment whose region to set.
+        #[arg(requires = "id")]
+        env: Option<String>,
+        /// The region id.
+        id: Option<String>,
     },
+    /// Switch an optional layer of data/env/ENV.toml on or off.
+    Layer { env: String, layer: String, switch: edit_cli::Switch },
+    /// Restore data/env/ENV.toml to its committed version: the edits that are not applied go.
+    Undo { env: String },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
     /// Fetch and build the environment into the store, and write the release of each product
@@ -77,7 +83,7 @@ enum Command {
     Build(build_cli::BuildArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
-    /// Clean the local store: delete what no live release, pin or fixture reaches, and move the
+    /// Clean the local store: delete what no live release or fixture reaches, and move the
     /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
     Clean {
         #[arg(long)]
@@ -128,7 +134,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
     };
     let done = match command {
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
-        Command::Sources { check_now } => print_sources(&registry(&root()?)?, check_now, json),
+        Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
             let (id, version) = match target.split_once('@') {
@@ -136,13 +142,10 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 None => (target.as_str(), None),
             };
             let source = find(&registry, id)?;
-            let version = version.or_else(|| registry.pins.get(id).cloned());
             let store = Store::open()?;
-            let params = osm::with_base(source, &registry.pins, parse_params(&params)?).map_err(not_the_base)?;
-            let request = Request { source, version, params };
+            let request = Request { source, version, params: parse_params(&params)? };
             print_snapshot(&store, &fetched(source, fetch::fetch(&store, &Http::new(), &request))?, json)
         }
-        Command::Refresh { source, params, env } => refresh(&root()?, &source, &params, &env, json),
         Command::Policy { source, refresh } => {
             let source = policy(&root()?, &source, refresh)?;
             eprintln!("obc data: the policy of {} is {refresh} in data/sources.toml", source.id);
@@ -151,13 +154,16 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             }
             Ok(())
         }
-        Command::Region { action } => {
+        Command::Region { env: Some(env), id: Some(id), .. } => edit_cli::region(&root()?, products, &env, &id, json),
+        Command::Region { action, .. } => {
             let regions = Regions::load(&root()?).map_err(|e| Code::InvalidData.error(e))?;
             match action {
                 None | Some(RegionAction::List) => print_regions(&regions, json),
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
+        Command::Layer { env, layer, switch } => edit_cli::layer(&root()?, products, &env, &layer, switch, json),
+        Command::Undo { env } => edit_cli::undo(&root()?, &env, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Build(args) => build_cli::build(&root()?, products, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
@@ -211,6 +217,11 @@ fn remote() -> Result<Remote, Error> {
 /// What is live now.
 fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<Live, Error> {
     Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
+}
+
+/// Source id to the version that the live releases read.
+fn live_versions(root: &Path, products: &[&dyn Product], store: &Store) -> Result<BTreeMap<String, String>, Error> {
+    Ok(read_live(&remote()?, &registry(root)?, products, store)?.versions())
 }
 
 /// The roots of a collection: the live releases, and the checkout at `root`.
@@ -334,53 +345,10 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
-/// `osm::with_base` refuses a `from=` that is not the pin of the base source.
-fn not_the_base(message: String) -> Error {
-    Code::Usage.error(message).fix("Leave out `from=`: the fetch takes the pin of the base source.")
-}
-
 /// A fetch that fails while the credential of its source is not on this machine is blocked.
 fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
     let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
     result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
-}
-
-fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Error> {
-    let registry = registry(root)?;
-    let source = find(&registry, id)?;
-    if !crate::is_kebab(env) {
-        return Err(Code::Usage.error(format!("`{env}` is not an environment name")));
-    }
-    let path = root.join("data/env").join(format!("{env}.toml"));
-    let text = std::fs::read_to_string(&path).map_err(|e| Code::Usage.error(format!("{}: {e}", path.display())))?;
-    let invalid = |e| Code::InvalidData.error(format!("{}: {e}", path.display()));
-    let pins = sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
-    let params = osm::with_base(source, &pins, parse_params(params)?).map_err(not_the_base)?;
-    let (store, http) = (Store::open()?, Http::new());
-    let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
-    // The `geofabrik` fetcher finds the newest day of a URL with `{yymmdd}` itself.
-    let named = source.fetch.url.as_deref().is_some_and(|url| {
-        url.contains("{version}") || (source.fetch.kind == FetchKind::Http && url.contains("{yymmdd}"))
-    });
-    if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
-        let message = format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand");
-        return Err(Code::FetchFailed.error(message));
-    }
-    // The diffs of a source that starts at this pin end at its own pin, so they cannot start after it.
-    if let Some(version) = &version {
-        let starts_here = registry.sources.iter().filter(|s| s.fetch.from.as_deref() == Some(id));
-        let mut pinned = starts_here.filter_map(|s| Some((&s.id, pins.get(&s.id)?)));
-        if let Some((diffs, pin)) = pinned.find(|(_, pin)| version > *pin) {
-            let message = format!("`{id}` {version} is after the `{diffs}` pin {pin}");
-            return Err(Code::Usage.error(message).fix(format!("Refresh `{diffs}` first.")));
-        }
-    }
-    let snapshot = fetched(source, fetch::fetch(&store, &http, &Request { source, version, params }))?;
-    let text = sources::set_pin(&text, id, &snapshot.version);
-    sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
-    store::write_atomic(&path, text.as_bytes())?;
-    eprintln!("obc data: pinned {id} = \"{}\" in data/env/{env}.toml", snapshot.version);
-    print_snapshot(&store, &snapshot, json)
 }
 
 /// Set the `refresh` of `id` in `data/sources.toml`.
@@ -426,12 +394,13 @@ struct Sources<'a> {
     sources: &'a [SourceRow],
 }
 
-/// A source of `data/sources.toml` with its live pin, its snapshots and its state.
+/// A source of `data/sources.toml` with its live version, its snapshots and its state.
 #[derive(Clone, Serialize, JsonSchema)]
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
-    pin: Option<String>,
+    /// The version that the live releases read.
+    live: Option<String>,
     /// The newest upstream version.
     upstream: Option<String>,
     age_days: Option<i64>,
@@ -450,7 +419,7 @@ struct Stored {
 }
 
 impl SourceRow {
-    /// The pin or another version, short enough for a table.
+    /// A version, short enough for a table.
     fn short(&self, version: Option<&str>) -> String {
         version.map_or("—".into(), |version| match self.source.version {
             VersionScheme::Commit | VersionScheme::Digest => version.chars().take(12).collect(),
@@ -458,7 +427,7 @@ impl SourceRow {
         })
     }
 
-    /// Source, licence, R2 copy, live pin, age, policy and state.
+    /// Source, licence, R2 copy, live version, age, policy and state.
     fn cells(&self) -> Vec<String> {
         let s = &self.source;
         let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
@@ -466,7 +435,7 @@ impl SourceRow {
             s.id.clone(),
             s.licence.clone().unwrap_or_else(|| none.into()),
             if s.r2_copy { "yes" } else { "no" }.into(),
-            self.short(self.pin.as_deref()),
+            self.short(self.live.as_deref()),
             self.age_days.map_or("—".into(), |age| format!("{age} d")),
             s.refresh.to_string(),
             self.state.to_string(),
@@ -474,8 +443,9 @@ impl SourceRow {
     }
 }
 
-/// Every source in kind order, with its state from the newest upstream version.
-fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, Error> {
+/// Every source in kind order, with `live`, the version that the live releases read, and its state
+/// from the newest upstream version.
+fn source_rows(registry: &Registry, live: &BTreeMap<String, String>, check_now: bool) -> Result<Vec<SourceRow>, Error> {
     let max_age = if check_now { 0 } else { upstream::CACHE };
     let today = crate::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
@@ -490,10 +460,10 @@ fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, E
         .into_iter()
         .zip(&newest)
         .map(|(source, upstream)| {
-            let pin = registry.pins.get(&source.id).map(String::as_str);
-            let base = source.fetch.from.as_ref().and_then(|from| registry.pins.get(from)).map(String::as_str);
+            let version = live.get(&source.id).map(String::as_str);
+            let base = source.fetch.from.as_ref().and_then(|from| live.get(from)).map(String::as_str);
             let present = source.credential.as_ref().is_none_or(|c| c.present());
-            let status = sources::status(source, pin, base, upstream, today, present);
+            let status = sources::status(source, version, base, upstream, today, present);
             let mut snapshots = store.snapshots(&source.id)?;
             // `retrieved` is `YYYY-MM-DDTHH:MM:SSZ`, so it sorts as text.
             snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
@@ -503,7 +473,7 @@ fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, E
                 .collect();
             Ok(SourceRow {
                 source: source.clone(),
-                pin: pin.map(str::to_string),
+                live: version.map(str::to_string),
                 upstream: upstream.version().map(str::to_string),
                 age_days: status.age_days,
                 state: status.state,
@@ -514,12 +484,13 @@ fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, E
         .collect()
 }
 
-fn print_sources(registry: &Registry, check_now: bool, json: bool) -> Result<(), Error> {
-    let rows = source_rows(registry, check_now)?;
+fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: bool) -> Result<(), Error> {
+    let live = live_versions(root, products, &Store::open()?)?;
+    let rows = source_rows(&registry(root)?, &live, check_now)?;
     if json {
         return print_json(&Sources { sources: &rows });
     }
-    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "UPSTREAM", "AGE", "POLICY", "STATE"])];
+    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;
     for row in &rows {
         let s = &row.source;
@@ -660,7 +631,6 @@ redistribute = true
         let scratch = Scratch::new("cli-policy");
         let root = scratch.0.join("repository");
         write(&root.join("data/sources.toml"), SOURCES);
-        write(&root.join("data/env/live.toml"), "[pins]\n");
         let sources = || std::fs::read_to_string(root.join("data/sources.toml")).unwrap();
         let refused = policy(&root, "planetiler", Refresh::Days(30)).unwrap_err();
         assert!(refused.message.contains("needs `version = \"date\"`"), "{}", refused.message);

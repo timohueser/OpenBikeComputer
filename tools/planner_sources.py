@@ -10,9 +10,19 @@ import tempfile
 from . import data_registry, planner_maps as maps
 from .planner_runtime import digest, open_url
 
-PROTOMAPS = maps.PINS["protomaps-basemaps"]
+# The source versions that this planner bake reads. `obc data` takes them from the live release.
+VERSIONS = {
+    "hansen-gfc": "v1.11",
+    "protomaps-assets": "028c18f713baecad011301ff7a69acc39bcc2ae7",
+    "tangrams-icons": "92510779634f4a006c61ea70e50cb8c52c765a81",
+    "planetiler": "0.10.2",
+    "protomaps-basemaps": "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123",
+    "nominatim-country-data": "5.3.2",
+}
+ASSETS_URL = f"https://codeload.github.com/protomaps/basemaps-assets/zip/{VERSIONS['protomaps-assets']}"
+PROTOMAPS = VERSIONS["protomaps-basemaps"]
 PROTO_SHA = "f89ff8ee6aff13baf60c83b5e98d3811ddb946cc1089d437c435885395764696"
-COUNTRY_DATA_VERSION = maps.PINS["nominatim-country-data"]
+COUNTRY_DATA_VERSION = VERSIONS["nominatim-country-data"]
 COUNTRY_DATA_URL = data_registry.SOURCES["nominatim-country-data"]["fetch"]["url"].format(version=COUNTRY_DATA_VERSION)
 COUNTRY_DATA_SHA = "c5e1c4bd27f52a48843a5fe204a1a7b5f4d4d2911880e65721b4c900b13227e5"
 
@@ -50,7 +60,7 @@ def basemap(osm, output, bounds, cache, auxiliary=None):
     maps.run("java", "-Xmx6g", "-jar", jar, "--download", f"--osm-path={osm}",
              f"--output={output}", "--bounds=" + ",".join(map(str, bounds)),
              "--maxzoom=14", f"--threads={os.cpu_count()}", cwd=source / "tiles")
-    return {"protomaps_commit": PROTOMAPS, "planetiler": maps.PINS["planetiler"],
+    return {"protomaps_commit": PROTOMAPS, "planetiler": VERSIONS["planetiler"],
             "auxiliary": {p.name: {"sha256": digest(p), "bytes": p.stat().st_size}
                           for p in sorted(directory.iterdir()) if p.is_file()}}
 

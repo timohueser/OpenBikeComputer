@@ -424,7 +424,7 @@ fn run_planet_bake(
     // unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
-    obc_bake::planet::check_pinned(flags.get("source"))?;
+    obc_bake::planet::check_planet(flags.get("source"))?;
     let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     // Held until the bake has read the planet: the sharder below reads it too.

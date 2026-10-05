@@ -1,12 +1,9 @@
-//! The `obc data` binary: what a command writes and its exit status. A temporary directory stands
-//! in for the store.
+//! The `obc data` binary: what a command writes and its exit status. Temporary directories stand in
+//! for the store and for R2.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use obc_data::env::Env;
-use obc_data::regions::Regions;
-use obc_data::sources::Registry;
 use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
 
 struct Temp(PathBuf);
@@ -26,12 +23,17 @@ impl Drop for Temp {
     }
 }
 
-/// `obc data ARGS` in the repository, with the store in `temp`.
+/// `obc data ARGS` in the repository, with the store in `temp` and an empty bucket: nothing is
+/// live.
 fn obc_data(temp: &Temp, args: &[&str]) -> Output {
+    let bucket = temp.0.join("bucket");
+    std::fs::create_dir_all(&bucket).unwrap();
     Command::new(env!("CARGO_BIN_EXE_obc-data"))
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env("OBC_DATA_STORE", temp.0.join("store"))
+        .env("OBC_R2_LOCAL_DIR", bucket)
+        .env_remove("OBC_R2_BUCKET")
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -51,19 +53,14 @@ fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, Stri
 }
 
 /// The store of `temp`, with what the step list of live reads, so the plan needs no network: the
-/// `.poly` of the live region, unpinned, is a box around Freiburg.
+/// `.poly` of the live region is a box around Freiburg.
 fn with_live_outline(temp: &Temp) {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let (sources, regions) = (Registry::load(&root).unwrap().sources, Regions::load(&root).unwrap());
-    let live = Env::load(&root, "live", &sources, &regions).unwrap();
-    assert_eq!(live.version("geofabrik-poly"), None);
     let store = Store::at(temp.0.join("store"));
     let poly = "box\n1\n   7.77 47.97\n   7.93 47.97\n   7.93 48.14\n   7.77 48.14\n   7.77 47.97\nEND\nEND\n";
     let area = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
     fetched(&store, "geofabrik-poly", "2026-10-05", area, "europe/germany/baden-wuerttemberg.poly", poly);
     let tiles = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
-    let version = live.version("copernicus-glo-30-tiles").unwrap();
-    fetched(&store, "copernicus-glo-30-tiles", version, Vec::new(), "tileList.txt", tiles);
+    fetched(&store, "copernicus-glo-30-tiles", "2022-05-09", Vec::new(), "tileList.txt", tiles);
 }
 
 #[test]
@@ -71,9 +68,15 @@ fn a_plan_of_live_builds_the_terrain_of_each_leaf_and_a_build_refuses_another_pl
     let temp = Temp::new("plan");
     with_live_outline(&temp);
     let out = obc_data(&temp, &["plan", "live", "--json"]);
+    assert_eq!(out.status.code(), Some(4), "nothing live and nothing stored names the manual GLO-30 tiles");
+    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(error["error"]["fix"], "Plan with `--move copernicus-glo-30@VERSION`.");
+
+    let out = obc_data(&temp, &["plan", "live", "--move", "copernicus-glo-30@2022-05-09", "--json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let mut plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(plan["env"], "live");
+    assert_eq!(plan["moves"], serde_json::json!({"copernicus-glo-30": "2022-05-09"}));
     let ids: Vec<&str> = plan["groups"].as_array().unwrap().iter().map(|group| group["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["maps/terrain/0037-0032"]);
     assert_eq!(plan["groups"][0]["fetches"][0]["source"], "copernicus-glo-30");
