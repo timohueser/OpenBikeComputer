@@ -599,6 +599,35 @@ fn encoded_progress_updates_keep_the_bound_record_rules() {
 }
 
 #[test]
+fn a_late_stream_failure_invalidates_the_census_and_releases_its_handle() {
+    let disk = SparseDisk::blank(BLOCKS, 12);
+    let device = FaultOnce::new(&disk);
+    let store = FlatStore::initialize(&device, CARD).unwrap();
+    let rides: Vec<_> =
+        (0..super::super::store::MAX_OPEN_OBJECTS).map(|_| publish(&store, ObjectKind::Ride, b"ride")).collect();
+    let mut bytes = [0; MAX_LEN];
+    let mut image = Image::empty(CARD, &mut bytes).unwrap();
+    for id in 1..=MAX_RIDES as u64 {
+        image.set(Row { id: ObjectId(id), ..row(rides[0]) }).unwrap();
+    }
+    publish(&store, ObjectKind::Metadata, image.bytes());
+    let mut tentative = Vec::new();
+    let result = census(&store, |row| {
+        tentative.push(row);
+        if tentative.len() == 1 {
+            store.device().fault_next(MediaOp::Read);
+        }
+    });
+    assert_eq!(result, Err(Error::Store(StoreError::Media)));
+    assert!(!tentative.is_empty() && tentative.len() < MAX_RIDES);
+    assert!(store.device().fired());
+    let handles: Vec<_> = rides.iter().map(|ride| store.open(ride.id, Some(ride.revision)).unwrap()).collect();
+    for handle in handles {
+        store.close(handle);
+    }
+}
+
+#[test]
 fn progress_records_survive_row_and_checkpoint_edits_and_a_remount() {
     let disk = SparseDisk::blank(BLOCKS, 1);
     let store = FlatStore::initialize(&disk, CARD).unwrap();

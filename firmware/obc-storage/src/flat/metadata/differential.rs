@@ -29,7 +29,7 @@ struct Outcome {
 }
 
 // Cuts name writes and barriers, not reads: streaming changes the read command count.
-fn script(old: bool, cut: Option<(usize, When)>) -> Outcome {
+fn script(cut: Option<(usize, When)>) -> Outcome {
     let disk = SparseDisk::blank(200_000, 9);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
     let route = publish(&store, ObjectKind::Route, b"route");
@@ -43,14 +43,13 @@ fn script(old: bool, cut: Option<(usize, When)>) -> Outcome {
     let mut results = Vec::new();
     macro_rules! call {
         ($name:ident($($arg:expr),*)) => {
-            if old { format!("{:?}", legacy::$name($($arg),*)) }
-            else { format!("{:?}", super::$name($($arg),*)) }
+            format!("{:?}", super::$name($($arg),*))
         };
     }
     if let Some((ordinal, when)) = cut {
         let mut op = start;
         // Recover operation indices from the successful trace for this implementation.
-        let trace = trace_script(old);
+        let trace = trace_script();
         for (index, kind, _) in trace {
             if kind != MediaOp::Read {
                 if op == start + ordinal as u32 {
@@ -95,30 +94,18 @@ fn script(old: bool, cut: Option<(usize, When)>) -> Outcome {
     let reopened = FlatStore::mount(&disk);
     results.push(call!(read_checkpoint(&reopened)));
     let mut rows = Vec::new();
-    let result = if old {
-        legacy::census(&reopened, |row| rows.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
-    } else {
-        census(&reopened, |row| rows.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
-    };
+    let result = census(&reopened, |row| rows.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"));
     results.push(format!("{result:?}:{rows:?}"));
     let mut progress = Vec::new();
-    let result = if old {
-        legacy::read_progress(&reopened, |record| progress.push(record)).map_err(|e| format!("{e:?}"))
-    } else {
-        read_progress(&reopened, |record| progress.push(record)).map_err(|e| format!("{e:?}"))
-    };
+    let result = read_progress(&reopened, |record| progress.push(record)).map_err(|e| format!("{e:?}"));
     results.push(format!("{result:?}:{progress:?}"));
     let mut retained = Vec::new();
-    let result = if old {
-        legacy::read_rows(&reopened, |row| retained.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
-    } else {
-        read_rows(&reopened, |row| retained.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"))
-    };
+    let result = read_rows(&reopened, |row| retained.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"));
     results.push(format!("{result:?}:{retained:?}"));
     Outcome { results, image, writes }
 }
 
-fn trace_script(old: bool) -> Vec<(u32, MediaOp, u64)> {
+fn trace_script() -> Vec<(u32, MediaOp, u64)> {
     let disk = SparseDisk::blank(200_000, 9);
     let store = FlatStore::initialize(&disk, CARD).unwrap();
     let route = publish(&store, ObjectKind::Route, b"route");
@@ -131,7 +118,7 @@ fn trace_script(old: bool) -> Vec<(u32, MediaOp, u64)> {
     };
     macro_rules! run {
         ($name:ident($($arg:expr),*)) => {
-            if old { legacy::$name($($arg),*).unwrap(); } else { super::$name($($arg),*).unwrap(); }
+            super::$name($($arg),*).unwrap();
         };
     }
     run!(archive_ride(&store, CARD, ride.id, ride.revision, ride.payload_len, ride.payload_crc));
@@ -165,18 +152,16 @@ fn fingerprint(crc: &mut obc_crc::Crc32, outcome: &Outcome) {
 }
 
 #[test]
-fn same_scripts_and_every_write_cut_keep_exact_card_bytes_and_errors() {
+fn operation_scripts_and_every_write_cut_match_the_card_oracle() {
     let mut crc = obc_crc::Crc32::new();
     let mut cases = 0;
     let mut compare = |cut| {
-        let old = script(true, cut);
-        let new = script(false, cut);
-        assert_eq!(old, new, "cut {cut:?}");
+        let new = script(cut);
         fingerprint(&mut crc, &new);
         cases += 1;
     };
     compare(None);
-    let trace = trace_script(true);
+    let trace = trace_script();
     for (ordinal, (_, kind, width)) in trace.into_iter().filter(|(_, kind, _)| *kind != MediaOp::Read).enumerate() {
         for when in EVERY_WHEN {
             compare(Some((ordinal, when)));
@@ -189,35 +174,16 @@ fn same_scripts_and_every_write_cut_keep_exact_card_bytes_and_errors() {
             }
         }
     }
-    std::println!("metadata differential cases={cases} fingerprint={:08x}", crc.finalize());
-}
-
-#[test]
-fn operation_script_cost() {
-    let backend = std::env::var("RW13_MEASURE").ok();
-    for old in [true, false] {
-        if backend.as_deref().is_some_and(|name| (name == "legacy") != old) {
-            continue;
-        }
-        let start = std::time::Instant::now();
-        for _ in 0..200 {
-            std::hint::black_box(script(old, None));
-        }
-        std::println!(
-            "metadata backend={} scripts=200 elapsed_us={}",
-            if old { "legacy" } else { "new" },
-            start.elapsed().as_micros()
-        );
-    }
+    assert_eq!((cases, crc.finalize()), (229, 0xe1fc040d));
 }
 
 #[test]
 fn malformed_trailing_records_never_expose_an_earlier_row() {
     let mut bytes = [0; MAX_LEN];
-    let mut image = legacy::Image::empty(CARD, &mut bytes).unwrap();
+    let mut image = Image::empty(CARD, &mut bytes).unwrap();
     for id in 1..=MAX_RIDES as u64 {
         image
-            .set(legacy::Row {
+            .set(Row {
                 id: ObjectId(id),
                 revision: Revision(1),
                 payload_len: 4,
@@ -234,16 +200,14 @@ fn malformed_trailing_records_never_expose_an_earlier_row() {
     for offset in [0, 4, 6, 8, 10, 12, 14, last_row + 32, last_row + 34, valid.len() - RECORD_LEN] {
         let mut malformed = valid.clone();
         malformed[offset] = 0;
-        if offset == last_row + 34 {
+        if matches!(offset, 12 | 14) || offset == last_row + 34 {
             malformed[offset] = 1;
         }
         let disk = SparseDisk::blank(200_000, 11);
         let store = FlatStore::initialize(&disk, CARD).unwrap();
         publish(&store, ObjectKind::Metadata, &malformed);
-        let mut old = Vec::new();
-        let mut new = Vec::new();
-        let old_result = legacy::census(&store, |row| old.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"));
-        let new_result = census(&store, |row| new.push(format!("{row:?}"))).map_err(|e| format!("{e:?}"));
-        assert_eq!((old_result, old), (new_result, new), "offset {offset}");
+        let mut rows = Vec::new();
+        assert_eq!(census(&store, |row| rows.push(row)), Err(Error::Invalid), "offset {offset}");
+        assert!(rows.is_empty(), "offset {offset}");
     }
 }
