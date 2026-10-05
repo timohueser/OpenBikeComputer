@@ -113,8 +113,8 @@ fn link(tile: &TileId, path: &Path) -> Result<Fetched, String> {
     let fetched = match obc_data::fetch::live(SOURCE, None, vec![("tile".into(), tile.stem())]) {
         Ok(fetched) => fetched,
         // The square has no tile, which is a fact about the world rather than a failure.
-        Err(error) if error.ends_with("HTTP 404") => return Ok(Fetched::Absent),
-        Err(error) => return Err(error),
+        Err(obc_data::fetch::LiveError::NotFound(_)) => return Ok(Fetched::Absent),
+        Err(error) => return Err(error.into()),
     };
     let object = &fetched.paths[0];
     // A hard link costs no space; another file system needs a copy.

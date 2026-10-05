@@ -24,10 +24,8 @@ impl Region {
         self.id.split('/').collect()
     }
 
-    /// The extract URL under `base`, which is Geofabrik in production and a local directory or
-    /// `file://` root in tests.
-    /// Cache filename for the downloaded extract: the id flattened, so `europe/germany/bayern` and
-    /// a hypothetical `europe/bayern` cannot collide.
+    /// The file name of the extract in a flat directory of extracts: the id flattened, so
+    /// `europe/germany/bayern` and a hypothetical `europe/bayern` cannot collide.
     pub fn cache_name(&self) -> String {
         format!("{}-latest.osm.pbf", self.id.replace('/', "_"))
     }
@@ -90,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn an_extract_url_is_the_id_plus_latest() {
+    fn a_flat_extract_name_is_the_flattened_id_plus_latest() {
         let r = Region { id: "europe/germany/bayern".into(), name: "Bayern".into() };
         assert_eq!(r.cache_name(), "europe_germany_bayern-latest.osm.pbf");
     }

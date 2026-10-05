@@ -80,7 +80,9 @@ store_path() { # store_path SOURCE [NAME=VALUE...]: the store path of the source
 
 repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     local name="$1" src="$2" bbox="$3" terrain="${4:-}"
-    local extra=(--land "$(store_path land-polygons)")
+    local land
+    land="$(store_path land-polygons)"
+    local extra=(--land "$land")
     # A map with a committed terrain sidecar is packed WITH it, so the fixture
     # carries real §8.3 ascent and (preset v6, #1094/#1095/#1104) the traced E3
     # contours. The sidecar itself never changes here — this script's `terrain`

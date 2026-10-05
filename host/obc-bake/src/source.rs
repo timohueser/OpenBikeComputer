@@ -55,7 +55,7 @@ pub struct GeofabrikExtracts;
 
 impl GeofabrikExtracts {
     fn get(source: &str, region: &Region) -> Result<obc_data::fetch::Fetched, String> {
-        obc_data::fetch::live(source, None, vec![("area".into(), region.id.clone())])
+        obc_data::fetch::live(source, None, vec![("area".into(), region.id.clone())]).map_err(String::from)
     }
 }
 

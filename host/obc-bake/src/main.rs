@@ -498,17 +498,16 @@ fn ensure_dem_sources(
     let bbox = terrain_source_bbox(&coverages, cell_log2)?;
     let dir = cache.join("dem");
     println!("Fetching GLO-30 tiles for the curated coverage into {}...", dir.display());
-    let mut downloaded = 0u64;
-    let mut cached = 0usize;
+    let (mut cached, mut linked) = (0usize, 0usize);
     let paths = obc_dem::fetch::fetch_tiles(bbox, &dir, |tile, outcome| match outcome {
         obc_dem::fetch::Fetched::Cached => cached += 1,
-        obc_dem::fetch::Fetched::Stored(len) => {
-            downloaded += len;
-            println!("  {} ({:.1} MB)", tile.file_name(), *len as f64 / 1e6);
+        obc_dem::fetch::Fetched::Stored(_) => {
+            linked += 1;
+            println!("  {}", tile.file_name());
         }
         obc_dem::fetch::Fetched::Absent => {}
     })?;
-    println!("{} tile(s) present ({cached} cached, {:.1} MB fetched)", paths.len(), downloaded as f64 / 1e6);
+    println!("{} tile(s) present ({cached} already there, {linked} linked from the store)", paths.len());
     Ok(dir)
 }
 

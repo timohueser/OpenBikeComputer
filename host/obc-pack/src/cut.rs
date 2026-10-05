@@ -120,8 +120,8 @@ pub struct CutOptions {
     pub chunk_size: Option<usize>,
     /// Skip land generation even when the config has a land style.
     pub no_land: bool,
-    /// The `land-polygons-split-3857.zip` a bake took from the store. Absent, the dataset is
-    /// downloaded on first use.
+    /// The `land-polygons-split-3857.zip` of the store. Absent, the store fetches the source
+    /// `land-polygons` when a map needs land.
     pub land: Option<PathBuf>,
     /// Crop the sources to this box during ingest.
     pub bbox: Option<Bbox>,

@@ -1,16 +1,13 @@
 //! Fetching bytes over HTTPS, and unpacking a `.zip`, in process, with no `curl` and no `unzip`.
 //!
-//! Shelling out is not available to an engine inside a shipped desktop app: `curl` is not on every
-//! Windows box and `unzip` is on essentially none of them. Doing it in process also buys three
-//! things a subprocess could not give. Cancellation: the token is checked every chunk and every
-//! archive entry, where a `Command::status()` blocks until the child exits. Progress: the percentage
+//! `unzip` is on essentially no Windows box, and doing it in process buys three things a
+//! subprocess could not give. Cancellation: the token is checked every chunk and every archive
+//! entry, where a `Command::status()` blocks until the child exits. Progress: the percentage
 //! arrives through [`Progress`] like every other stage, instead of a meter on a stderr nobody sees.
 //! Zip-slip safety: [`ZipFile::enclosed_name`] refuses a hostile `../../etc/whatever` entry.
 //!
-//! It is also the only downloader in the tree — the desktop app delegates here — so there is one
-//! retry policy, one `.part`-then-rename rule, and one cancellation contract.
-//!
-//! [`ZipFile::enclosed_name`]: zip::read::ZipFile::enclosed_name
+//! Bake data comes from the store of `obc-data`. The downloads here are the planet of
+//! `obc bake --all` and the live catalog that the guard reads.
 //!
 //! [`ZipFile::enclosed_name`]: zip::read::ZipFile::enclosed_name
 

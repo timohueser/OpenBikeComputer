@@ -138,7 +138,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
         Command::Fetch { target, params, json } => {
             let (id, version) = target.split_once('@').map_or((target.as_str(), None), |(id, v)| (id, Some(v)));
             find(&Registry::load(&root()?)?, id)?;
-            let fetched = fetch::live(id, version, parse_params(&params)?)?;
+            let fetched = fetch::live(id, version, parse_params(&params)?).map_err(String::from)?;
             print_snapshot(&fetched.snapshot, &fetched.paths, json)
         }
         Command::Refresh { source, params, env, json } => refresh(&root()?, &source, &params, &env, json),

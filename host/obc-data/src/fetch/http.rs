@@ -34,6 +34,12 @@ const BODY: Duration = Duration::from_secs(15 * 60);
 /// The longest time a HEAD request or a small document may take.
 const SMALL: Duration = Duration::from_secs(15);
 
+/// Whether an error of this module is an HTTP 404: upstream has no such file. Every status error
+/// here ends with `HTTP <status>`.
+pub fn not_found(error: &str) -> bool {
+    error.ends_with("HTTP 404")
+}
+
 pub struct Http {
     agent: ureq::Agent,
     backoff: Duration,
@@ -63,7 +69,7 @@ impl Http {
         Self { agent: config.into(), backoff }
     }
 
-    /// The `Last-Modified` day of `url`, after redirects.
+    /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
     pub fn modified(&self, url: &str) -> Result<Option<String>, String> {
         let request = self.agent.head(url).config().timeout_global(Some(SMALL)).build();
         let response = request.call().map_err(|e| format!("HEAD {url}: {e}"))?;

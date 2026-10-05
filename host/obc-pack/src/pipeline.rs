@@ -39,8 +39,8 @@ pub struct PackOptions {
     pub chunk_size: Option<usize>,
     /// Skip land generation even when the config has a land style.
     pub no_land: bool,
-    /// The `land-polygons-split-3857.zip` a bake took from the store. Absent, the dataset is
-    /// downloaded on first use.
+    /// The `land-polygons-split-3857.zip` of the store. Absent, the store fetches the source
+    /// `land-polygons` when a map needs land.
     pub land: Option<PathBuf>,
     /// Print the classified POI list. It writes to stdout directly rather than through the progress
     /// sink, because a host with a log pane has no use for a few thousand POI lines.
