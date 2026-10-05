@@ -43,6 +43,7 @@ it. Each route has these fields:
 | `legs` | `{"from_index", "to_index", "start", "end", "totals"}` for each pair of request points |
 | `snap_truncated` | `true` when the service dropped road candidates for a request point |
 | `totals` | `distance_m`, `ascent_m`, `seconds`, `surface_m`, `unknown_elevation_m` and `pushing_m`, all integers |
+| `via` | Only on a `corridor` route: a `[longitude, latitude]` pair in degrees. A request with the points start, `via` and finish, and the other fields unchanged, gives the same line |
 
 ### Deltas
 
@@ -73,7 +74,6 @@ every edge. A client accepts a channel that it does not know.
 | `pushing` | `true` where the rider must push the bicycle |
 | `closures` | `null`, or a list of possible closures, each `{"kind", "condition"}` |
 | `sac_scale` | The OSM `sac_scale` as an integer from `0` (`strolling`) through `1` (`hiking`, T1) to `6` (`difficult_alpine_hiking`, T6), or `null` when the way has none |
-| `mtb_scale` | The OSM `mtb:scale` as an integer from `0` (S0) to `6` (S6), or `null` when the way has no grade from 0 to 6; `2+` and `1-` count as their digit |
 
 The router blocks a mode only for the access value `no`; `dismount` blocks
 riding only. It uses an edge that is possibly closed for the mode that the route
@@ -124,7 +124,7 @@ sum of the leg totals is the route total. Only `seconds` can differ, by up to
 
 Coordinates are exact: the routing engine stores microdegrees. Heights are
 within 0.05 m of the engine value. Elapsed and total seconds are within 0.5 s.
-The [vector](vectors/route-answer.json) gives one route before and after
+The [vector](vectors/route-answer.json) gives two routes before and after
 encoding. The encoder test and each decoder test read it.
 
 ## Compression

@@ -90,7 +90,7 @@ function routing(value: unknown, trip: Trip): boolean {
     return Object.entries(edges).every(([channel, values]) => Array.isArray(values) && values.length === coordinates.length - 1
         && values.every(v => v === null || (channel === 'surfaces' ? ['Unknown', 'Paved', 'Compacted', 'Gravel', 'Dirt', 'Rough'].includes(v)
             : channel === 'pushing' ? typeof v === 'boolean'
-            : channel === 'sac_scale' || channel === 'mtb_scale' ? integer(v, 0, 6)
+            : channel === 'sac_scale' ? integer(v, 0, 6)
             : channel === 'closures' ? Array.isArray(v) && v.every(c => record(c) && typeof c.kind === 'string' && closures.includes(c.kind) && typeof c.condition === 'string') : true)));
 }
 

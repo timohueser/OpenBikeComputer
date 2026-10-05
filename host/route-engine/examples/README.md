@@ -13,7 +13,7 @@ python3 tools/planner_bench.py audit RELEASE_DIRECTORY
 
 The native runner records complete route time, object reads, costs, geometry
 and metadata fingerprints, and failures. It runs each case with a fresh router
-and then with the same router. The operating system file cache stays uncontrolled.
+and then with the same router, which reuses its last primary route. The operating system file cache stays uncontrolled.
 The optional final arguments set iterations and the routing memory budget in
 MiB; without one, the package's default budget applies. Timing excludes
 JSON serialization. Append `retained` to keep one router and change the first

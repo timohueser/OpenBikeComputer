@@ -1,15 +1,17 @@
 use crate::{
-    answer::Edges,
+    closures::Closure,
     data::RoutingData,
-    model::{Pace, Point, Road, Totals, BIKE, NO_ELEVATION, PUSH},
+    geometry,
+    model::{Pace, Point, Profile, Surface, Totals, BIKE, NO_ELEVATION, PUSH},
+    package::digest,
     search::{Query, Seed, Workspace},
-    snap::{self, Candidate, Policy},
+    snap::{self, Candidate, Policy, Position},
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     /// Longitude, latitude. The order is never changed by the engine.
@@ -39,20 +41,44 @@ pub struct Response {
     pub routes: Vec<Route>,
 }
 
+/// The part of a road that a path uses, between two fractions of its length.
 #[derive(Clone, Debug)]
-pub struct Slice {
+struct Slice {
+    road: u32,
+    from: f64,
+    to: f64,
+}
+
+/// The part of a route on one road, from `from` to `to`, fractions of the road's length. Its edges
+/// end at the points after the `end` of the piece before it, up to its own `end`; each has the
+/// facts of the road.
+#[derive(Clone, Debug)]
+pub struct Piece {
     pub road: u32,
     pub from: f64,
     pub to: f64,
+    /// The index of the last point of the piece in `Route::points`.
+    pub end: usize,
+    pub surface: Surface,
+    /// The mode of the route on the road.
+    pub mode: u8,
+    /// The possible closures for that mode.
+    pub closures: Option<Vec<Closure>>,
+    pub sac_scale: Option<u8>,
+    pub mtb_scale: Option<u8>,
 }
+
 #[derive(Clone, Debug)]
 pub struct Leg {
-    pub start_attachment: Candidate,
+    /// The road positions where the leg starts and ends.
+    pub start: Position,
+    pub end: Position,
     pub from_index: usize,
     pub to_index: usize,
     pub totals: Totals,
-    pub roads: Vec<Slice>,
+    pub pieces: Vec<Piece>,
 }
+
 /// Serialize a route only through `answer`, the wire shape.
 #[derive(Clone, Debug)]
 pub struct Route {
@@ -61,16 +87,28 @@ pub struct Route {
     pub package: String,
     pub profile: String,
     pub cost: u64,
-    pub geometry: Vec<[f64; 2]>,
-    pub elevation: Vec<Option<f32>>,
-    /// The facts of each edge from geometry[i] to geometry[i + 1].
-    pub edges: Edges,
-    /// Cumulative moving seconds at each geometry vertex.
+    pub points: Vec<Point>,
+    /// Cumulative moving seconds at each point.
     pub elapsed: Vec<f64>,
     pub legs: Vec<Leg>,
-    pub attachments: Vec<Candidate>,
     pub snap_truncated: bool,
-    pub totals: Totals,
+    /// The middle request point of a corridor alternative: a request through the start, this point
+    /// and the finish gives the same line.
+    pub via: Option<[f64; 2]>,
+}
+
+impl Route {
+    pub fn pieces(&self) -> impl Iterator<Item = &Piece> {
+        self.legs.iter().flat_map(|leg| &leg.pieces)
+    }
+
+    pub fn totals(&self) -> Totals {
+        let mut totals = Totals::default();
+        for leg in &self.legs {
+            totals.add(&leg.totals);
+        }
+        totals
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -88,17 +126,11 @@ impl Default for Control<'_> {
     }
 }
 
-#[derive(Clone)]
-struct Path {
-    roads: Vec<Slice>,
-}
-
-#[derive(Clone)]
 struct Choice {
     source: usize,
     target: usize,
     cost: u64,
-    path: Path,
+    roads: Vec<Slice>,
 }
 
 #[derive(Default)]
@@ -111,8 +143,9 @@ pub struct Router<P> {
     pub(crate) package: P,
     workspace: Workspace,
     metric: String,
-    paths: VecDeque<(String, Choice)>,
-    cached_roads: usize,
+    /// The last primary route, by its request without the alternatives flags: the web asks for the
+    /// alternatives of a route right after the route.
+    primary: Option<(Request, Route)>,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
@@ -122,26 +155,27 @@ impl<P: RoutingData> Router<P> {
         &self.package
     }
 
-    pub fn snap(&mut self, point: Point, profile: &str, policy: Policy) -> Result<snap::Candidates> {
-        self.package.snap(point, profile, policy)
-    }
-
     pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
         package.set_memory_budget(memory_budget_bytes);
-        Self {
-            package,
-            workspace: Workspace::default(),
-            metric: String::new(),
-            paths: VecDeque::new(),
-            cached_roads: 0,
-            snaps: VecDeque::new(),
-        }
+        Self { package, workspace: Workspace::default(), metric: String::new(), primary: None, snaps: VecDeque::new() }
     }
 
     /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
     /// without a path means the points are truly disconnected and the client plans around it.
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
         self.route_counted(request, control, &mut 0)
+    }
+
+    /// The primary route of `request`, from the last primary route when only the alternatives
+    /// flags differ.
+    pub(crate) fn primary(&mut self, request: &Request, control: &Control<'_>, queries: &mut usize) -> Result<Route> {
+        let key = Request { alternatives: false, alternatives_only: false, ..request.clone() };
+        let route = match self.primary.take().filter(|(cached, _)| *cached == key) {
+            Some((_, route)) => route,
+            None => self.route_counted(request, control, queries)?,
+        };
+        self.primary = Some((key, route.clone()));
+        Ok(route)
     }
 
     /// Routes after `queries` attachment queries of the same request, and adds the queries of
@@ -224,7 +258,7 @@ impl<P: RoutingData> Router<P> {
         }
         // A candidate is shared by both adjacent legs. The dynamic program preserves its direction.
         let mut costs = vec![0u64; candidates[0].len()];
-        let mut stages = Vec::<Vec<Option<(usize, usize, Path)>>>::new();
+        let mut stages = Vec::<Vec<Option<(usize, usize, Vec<Slice>)>>>::new();
         for (stage_index, pair) in candidates.windows(2).enumerate() {
             let mut next = vec![u64::MAX; pair[1].len()];
             let mut paths = vec![None; pair[1].len()];
@@ -266,14 +300,14 @@ impl<P: RoutingData> Router<P> {
                     return Err(Error::Limit);
                 }
                 if let Some(found) = self.leg_batch(&starts, &ends, control)? {
-                    work.witnesses = work.witnesses.saturating_add(found.path.roads.len());
+                    work.witnesses = work.witnesses.saturating_add(found.roads.len());
                     if work.witnesses > control.max_geometry {
                         return Err(Error::Limit);
                     }
                     let j = found.target;
                     if found.cost < next[j] {
                         next[j] = found.cost;
-                        paths[j] = Some((previous[found.source], found.source, found.path));
+                        paths[j] = Some((previous[found.source], found.source, found.roads));
                     }
                 }
             }
@@ -284,87 +318,126 @@ impl<P: RoutingData> Router<P> {
             stages.push(paths);
         }
         let (mut selected, &cost) = costs.iter().enumerate().min_by_key(|(_, cost)| *cost).ok_or(Error::NoPath)?;
-        let mut attachments = vec![candidates.last().unwrap()[selected].clone()];
+        // Each leg departs from its start candidate and arrives at the candidate that the next leg
+        // continues from; they differ only at a turnaround.
         let mut paths = Vec::new();
         for (index, stage) in stages.into_iter().enumerate().rev() {
-            let (previous, source, path) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath)?;
-            attachments.push(candidates[index][previous].clone());
+            let end = candidates[index + 1][selected].position;
+            let (previous, source, roads) = stage.into_iter().nth(selected).flatten().ok_or(Error::NoPath)?;
+            paths.push((&candidates[index][source], end, roads));
             selected = previous;
-            paths.push((candidates[index][source].clone(), path));
         }
         paths.reverse();
-        attachments.reverse();
-        let mut route = Route {
-            id: String::new(),
+        let (points, elapsed, legs) = self.line(request, &profile, control, &paths)?;
+        let mut identity = request.profile.as_bytes().to_vec();
+        identity.push(0);
+        for point in &points {
+            identity.extend(point.lon.to_le_bytes());
+            identity.extend(point.lat.to_le_bytes());
+        }
+        Ok(Route {
+            id: digest(&identity),
             reason: "primary",
             package: self.package.identity().to_owned(),
             profile: request.profile.clone(),
             cost,
-            geometry: Vec::new(),
-            elevation: Vec::new(),
-            edges: Edges::default(),
-            elapsed: Vec::new(),
-            legs: Vec::new(),
-            attachments,
+            points,
+            elapsed,
+            legs,
             snap_truncated: truncated,
-            totals: Totals::default(),
-        };
+            via: None,
+        })
+    }
+
+    /// The points, moving seconds and legs of the chosen paths. Each path is a leg from its start
+    /// candidate to its end position.
+    fn line(
+        &self,
+        request: &Request,
+        profile: &Profile,
+        control: &Control<'_>,
+        paths: &[(&Candidate, Position, Vec<Slice>)],
+    ) -> Result<(Vec<Point>, Vec<f64>, Vec<Leg>)> {
         let closures = self.package.closures()?;
-        for (start_attachment, path) in paths {
-            let from_index = route.geometry.len().saturating_sub(1);
+        let mut points: Vec<Point> = Vec::new();
+        let mut elapsed = Vec::new();
+        let mut legs = Vec::with_capacity(paths.len());
+        for &(start, end, ref roads) in paths {
+            let from_index = points.len().saturating_sub(1);
             let mut totals = Totals::default();
-            for slice in &path.roads {
+            let mut pieces = Vec::with_capacity(roads.len());
+            for slice in roads {
                 if (control.cancelled)() {
                     return Err(Error::Cancelled);
                 }
-                let road = trim(self.package.road(slice.road)?, slice.from, slice.to);
-                let mode = profile.mode(&road);
-                let closure = closures.closing(slice.road, mode);
-                totals.add(&road, &request.pace, &profile);
-                route.totals.add(&road, &request.pace, &profile);
-                let mut seconds = *route.elapsed.last().unwrap_or(&0.0);
-                for (index, point) in road.shape.iter().enumerate() {
+                let (shape, total, mut piece) = self.package.with_road(slice.road, |road| {
+                    let along = geometry::cumulative(&road.shape);
+                    let total = along[along.len() - 1];
+                    let piece = Piece {
+                        road: slice.road,
+                        from: slice.from,
+                        to: slice.to,
+                        end: 0,
+                        surface: road.surface,
+                        mode: profile.mode(road),
+                        closures: None,
+                        sac_scale: road.hiking_difficulty,
+                        mtb_scale: road.mtb_scale(),
+                    };
+                    (geometry::cut(&road.shape, &along, slice.from * total, slice.to * total), total, piece)
+                })?;
+                piece.closures = closures.closing(slice.road, piece.mode);
+                let length = (total * (slice.to - slice.from)).round() as u64;
+                totals.distance_m += length;
+                totals.surface_m[piece.surface as usize] += length;
+                if piece.mode == PUSH {
+                    totals.pushing_m += length;
+                }
+                if shape.iter().any(|p| p.elevation == NO_ELEVATION) {
+                    totals.unknown_elevation_m += length;
+                }
+                let (mut ascent, mut descent) = (0.0f64, 0.0f64);
+                let mut seconds = elapsed.last().copied().unwrap_or(0.0);
+                for (index, &point) in shape.iter().enumerate() {
                     if index > 0 {
-                        seconds +=
-                            request.pace.segment_seconds(road.shape[index - 1], *point, mode != BIKE, profile.mtb_pace);
+                        let before = shape[index - 1];
+                        let step = request.pace.segment_seconds(before, point, piece.mode != BIKE, profile.mtb_pace);
+                        seconds += step;
+                        totals.seconds += step;
+                        if before.elevation != NO_ELEVATION && point.elevation != NO_ELEVATION {
+                            let rise = point.elevation as f64 - before.elevation as f64;
+                            ascent += rise.max(0.0);
+                            descent += (-rise).max(0.0);
+                        }
                     }
-                    let coordinate = [point.lon as f64 * 1e-6, point.lat as f64 * 1e-6];
-                    if route.geometry.last() == Some(&coordinate) {
+                    if points.last().is_some_and(|p| p.lat == point.lat && p.lon == point.lon) {
                         continue;
                     }
-                    if route.geometry.len() >= control.max_geometry {
+                    if points.len() >= control.max_geometry {
                         return Err(Error::Limit);
                     }
-                    if !route.geometry.is_empty() {
-                        route.edges.push("surfaces", road.surface);
-                        route.edges.push("pushing", mode == PUSH);
-                        route.edges.push("closures", &closure);
-                        route.edges.push("sac_scale", road.hiking_difficulty);
-                        route.edges.push("mtb_scale", road.mtb_scale());
-                    }
-                    route.geometry.push(coordinate);
-                    route.elapsed.push(seconds);
-                    route.elevation.push((point.elevation != NO_ELEVATION).then_some(point.elevation));
+                    points.push(point);
+                    elapsed.push(seconds);
                 }
+                totals.ascent_m += ascent.round() as u64;
+                totals.descent_m += descent.round() as u64;
+                piece.end = points.len() - 1;
+                pieces.push(piece);
             }
-            route.legs.push(Leg {
-                start_attachment,
+            legs.push(Leg {
+                start: start.position,
+                end,
                 from_index,
-                to_index: route.geometry.len().saturating_sub(1),
+                to_index: points.len().saturating_sub(1),
                 totals,
-                roads: path.roads,
+                pieces,
             });
         }
-        if route.geometry.is_empty() {
-            let point = route.attachments[0].projected;
-            route.geometry.push([point.lon as f64 * 1e-6, point.lat as f64 * 1e-6]);
-            route.elapsed.push(0.0);
-            route.elevation.push((point.elevation != NO_ELEVATION).then_some(point.elevation));
+        if points.is_empty() {
+            points.push(paths[0].0.projected);
+            elapsed.push(0.0);
         }
-        route.id = crate::package::digest(
-            &serde_json::to_vec(&(&route.profile, &route.geometry)).map_err(|e| Error::InvalidData(e.to_string()))?,
-        );
-        Ok(route)
+        Ok((points, elapsed, legs))
     }
 
     fn leg_batch(
@@ -375,21 +448,6 @@ impl<P: RoutingData> Router<P> {
     ) -> Result<Option<Choice>> {
         if (control.cancelled)() {
             return Err(Error::Cancelled);
-        }
-        let key = format!(
-            "{}:{:?}:{:?}",
-            self.metric,
-            sources
-                .iter()
-                .map(|(i, c, cost)| (*i, c.position.road, c.position.fraction.to_bits(), *cost))
-                .collect::<Vec<_>>(),
-            targets.iter().map(|(i, c)| (*i, c.position.road, c.position.fraction.to_bits())).collect::<Vec<_>>()
-        );
-        if let Some(index) = self.paths.iter().position(|(id, _)| id == &key) {
-            let entry = self.paths.remove(index).unwrap();
-            let result = entry.1.clone();
-            self.paths.push_back(entry);
-            return Ok(Some(result));
         }
         let mut starts = Vec::new();
         let mut source_prefixes = Vec::new();
@@ -432,13 +490,11 @@ impl<P: RoutingData> Router<P> {
                             source: source_index,
                             target: index,
                             cost: total,
-                            path: Path {
-                                roads: vec![Slice {
-                                    road: to.position.road,
-                                    from: from.position.fraction,
-                                    to: to.position.fraction,
-                                }],
-                            },
+                            roads: vec![Slice {
+                                road: to.position.road,
+                                from: from.position.fraction,
+                                to: to.position.fraction,
+                            }],
                         });
                     }
                 }
@@ -469,63 +525,9 @@ impl<P: RoutingData> Router<P> {
                 roads[0].from = from.position.fraction;
                 roads.push(Slice { road: to.position.road, from: 0.0, to: to.position.fraction });
                 roads.retain(|r| r.from < r.to);
-                best = Some(Choice { source, target, cost: found.cost, path: Path { roads } });
-            }
-        }
-        if let Some(found) = &best {
-            if found.path.roads.len() <= 65_536 {
-                while self.paths.len() >= 256 || self.cached_roads + found.path.roads.len() > 65_536 {
-                    if let Some((_, old)) = self.paths.pop_front() {
-                        self.cached_roads -= old.path.roads.len();
-                    }
-                }
-                self.cached_roads += found.path.roads.len();
-                self.paths.push_back((key, found.clone()));
+                best = Some(Choice { source, target, cost: found.cost, roads });
             }
         }
         Ok(best)
     }
-}
-
-fn trim(mut road: Road, from: f64, to: f64) -> Road {
-    let lengths: Vec<_> = road.shape.windows(2).map(|p| p[0].distance(p[1])).collect();
-    let total: f64 = lengths.iter().sum();
-    let mut shape = Vec::new();
-    let mut before = 0.0;
-    for (pair, length) in road.shape.windows(2).zip(lengths) {
-        if length > 0.0 && before + length >= from * total && before <= to * total {
-            for fraction in
-                [((from * total - before) / length).clamp(0.0, 1.0), ((to * total - before) / length).clamp(0.0, 1.0)]
-            {
-                let point = Point {
-                    lat: (pair[0].lat as f64 + (pair[1].lat as f64 - pair[0].lat as f64) * fraction).round() as i32,
-                    lon: (pair[0].lon as f64 + (pair[1].lon as f64 - pair[0].lon as f64) * fraction).round() as i32,
-                    elevation: if pair.iter().any(|p| p.elevation == NO_ELEVATION) {
-                        NO_ELEVATION
-                    } else {
-                        (pair[0].elevation as f64 + (pair[1].elevation as f64 - pair[0].elevation as f64) * fraction)
-                            .clamp(-500.0, 9000.0) as f32
-                    },
-                };
-                if shape.last().is_none_or(|p: &Point| p.lat != point.lat || p.lon != point.lon) {
-                    shape.push(point);
-                }
-            }
-        }
-        before += length;
-    }
-    road.shape = shape;
-    road.length_m = (total * (to - from)).round() as u32;
-    let mut ascent = 0.0f64;
-    let mut descent = 0.0f64;
-    for pair in road.shape.windows(2) {
-        if pair.iter().all(|p| p.elevation != NO_ELEVATION) {
-            let difference = pair[1].elevation as f64 - pair[0].elevation as f64;
-            ascent += difference.max(0.0);
-            descent += (-difference).max(0.0);
-        }
-    }
-    road.ascent_m = ascent.round() as u32;
-    road.descent_m = descent.round() as u32;
-    road
 }

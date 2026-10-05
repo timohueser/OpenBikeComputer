@@ -1,3 +1,4 @@
+use crate::geometry::METRES_PER_UDEG;
 use serde::{Deserialize, Serialize};
 
 pub type Cost = u64;
@@ -6,7 +7,7 @@ pub const FOOT: u8 = 2;
 pub const PUSH: u8 = 4;
 pub const NO_ELEVATION: f32 = f32::MIN;
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Point {
     pub lat: i32,
     pub lon: i32,
@@ -15,9 +16,9 @@ pub struct Point {
 
 impl Point {
     pub fn distance(self, other: Self) -> f64 {
-        let y = (other.lat as f64 - self.lat as f64) * 0.111195;
+        let y = (other.lat as f64 - self.lat as f64) * METRES_PER_UDEG;
         let x = (other.lon as f64 - self.lon as f64)
-            * 0.111195
+            * METRES_PER_UDEG
             * ((self.lat as f64 + other.lat as f64) * 0.5e-6).to_radians().cos();
         x.hypot(y)
     }
@@ -223,7 +224,7 @@ impl Profile {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pace {
     pub cycling_kmh: f64,
     pub walking_kmh: f64,
@@ -246,11 +247,6 @@ impl Pace {
             return Err("Pace requires cycling 1–80 km/h, walking 0.5–15 km/h and multiplier 0.25–4".into());
         }
         Ok(())
-    }
-
-    pub fn seconds(&self, road: &Road, profile: &Profile) -> f64 {
-        let walk = profile.mode(road) != BIKE;
-        road.shape.windows(2).map(|p| self.segment_seconds(p[0], p[1], walk, profile.mtb_pace)).sum()
     }
 
     pub fn segment_seconds(&self, from: Point, to: Point, walk: bool, mtb: bool) -> f64 {
@@ -282,18 +278,16 @@ pub struct Totals {
 }
 
 impl Totals {
-    pub fn add(&mut self, road: &Road, pace: &Pace, profile: &Profile) {
-        self.distance_m += road.length_m as u64;
-        self.ascent_m += road.ascent_m as u64;
-        self.descent_m += road.descent_m as u64;
-        self.seconds += pace.seconds(road, profile);
-        self.surface_m[road.surface as usize] += road.length_m as u64;
-        if road.shape.iter().any(|p| p.elevation == NO_ELEVATION) {
-            self.unknown_elevation_m += road.length_m as u64;
+    pub fn add(&mut self, other: &Self) {
+        self.distance_m += other.distance_m;
+        self.ascent_m += other.ascent_m;
+        self.descent_m += other.descent_m;
+        self.seconds += other.seconds;
+        for (metres, other) in self.surface_m.iter_mut().zip(other.surface_m) {
+            *metres += other;
         }
-        if profile.mode(road) == PUSH {
-            self.pushing_m += road.length_m as u64;
-        }
+        self.unknown_elevation_m += other.unknown_elevation_m;
+        self.pushing_m += other.pushing_m;
     }
 }
 

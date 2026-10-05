@@ -18,7 +18,7 @@ struct RouteAnswerTests {
             let totals: Totals
         }
         struct Answer: Decodable { let routes: [RouteAnswer] }
-        let route: Source
+        let routes: [Source]
         let answer: Answer
     }
 
@@ -32,19 +32,21 @@ struct RouteAnswerTests {
             .deletingLastPathComponent()  // repository root
             .appendingPathComponent("specs/vectors/route-answer.json")
         let vector = try JSONDecoder().decode(Vector.self, from: Data(contentsOf: url))
-        let route = try #require(vector.answer.routes.first), source = vector.route
-        #expect(route.package == source.package && route.profile == source.profile)
-        #expect(route.coordinates.count == source.geometry.count)
-        #expect(zip(route.coordinates, source.geometry).allSatisfy {
-            abs($0.longitude - $1[0]) < 1e-9 && abs($0.latitude - $1[1]) < 1e-9
-        })
-        #expect(route.elevation.map { $0 == nil } == source.elevation.map { $0 == nil })
-        #expect(zip(route.elevation, source.elevation).allSatisfy { abs(($0 ?? 0) - ($1 ?? 0)) <= 0.05 + 1e-9 })
-        #expect(zip(route.elapsed, source.elapsed).allSatisfy { abs($0 - $1) <= 0.5 })
-        #expect(route.legs.map { [$0.from_index, $0.to_index] } == source.legs.map { [$0.from_index, $0.to_index] })
-        for (totals, expected) in zip([route.totals] + route.legs.map(\.totals), [source.totals] + source.legs.map(\.totals)) {
-            #expect(totals.distance_m == expected.distance_m && totals.ascent_m == expected.ascent_m)
-            #expect(abs(totals.seconds - expected.seconds) <= 0.5)
+        #expect(vector.answer.routes.count == vector.routes.count)
+        for (route, source) in zip(vector.answer.routes, vector.routes) {
+            #expect(route.package == source.package && route.profile == source.profile)
+            #expect(route.coordinates.count == source.geometry.count)
+            #expect(zip(route.coordinates, source.geometry).allSatisfy {
+                abs($0.longitude - $1[0]) < 1e-9 && abs($0.latitude - $1[1]) < 1e-9
+            })
+            #expect(route.elevation.map { $0 == nil } == source.elevation.map { $0 == nil })
+            #expect(zip(route.elevation, source.elevation).allSatisfy { abs(($0 ?? 0) - ($1 ?? 0)) <= 0.05 + 1e-9 })
+            #expect(zip(route.elapsed, source.elapsed).allSatisfy { abs($0 - $1) <= 0.5 })
+            #expect(route.legs.map { [$0.from_index, $0.to_index] } == source.legs.map { [$0.from_index, $0.to_index] })
+            for (totals, expected) in zip([route.totals] + route.legs.map(\.totals), [source.totals] + source.legs.map(\.totals)) {
+                #expect(totals.distance_m == expected.distance_m && totals.ascent_m == expected.ascent_m)
+                #expect(abs(totals.seconds - expected.seconds) <= 0.5)
+            }
         }
     }
 }

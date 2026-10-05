@@ -43,11 +43,12 @@ cargo run --release -p route-engine --example query -- /data/freiburg < request.
 | `data` | One selection of a package: snapping, prepared profiles, the memory estimate |
 | `blocks` | Grid selections: compact road ids and the union graph |
 | `snap` | Nearest accessible directed road attachments |
+| `geometry` | Nearest points of segments, points along lines, road page columns |
 | `cost` | Prepared road costs and partial-road prefixes |
 | `base` | Shared road-state topology and exact profile cost columns |
 | `search` | Exact bidirectional search with optional feasible potentials |
 | `landmarks` | Compressed junction bounds and the potential of each request |
-| `router` | Ordered points, direction continuity, geometry and totals |
+| `router` | Ordered points, direction continuity, route pieces and leg totals |
 | `answer` | The wire answer of [the route API](../../specs/route-api.md) |
 | `directory` | Native packed storage and `open` |
 
@@ -102,8 +103,9 @@ evicted profile a router still holds counts, and comes back without a load. A
 cold load never blocks the other routers' reads. `routing_bytes` is one router's
 own blocks plus the shared data.
 
-The router retains up to 256 leg choices with at most 65,536 road slices and
-32 snap results. The geometry cache has a 32 MiB ceiling. A decoded page is at
+The router retains its last primary route and 32 snap results. A request that
+differs from the last one only in its alternatives flags reuses that route and
+spends no queries on it. The geometry cache has a 32 MiB ceiling. A decoded page is at
 most 8 MiB. Default request limits are 64 points, 8,192 batched attachment
 queries, and 250,000 geometry vertices. `Control` can lower these limits, cap
 the search queues, and supply a cancellation callback. These are service budgets.
