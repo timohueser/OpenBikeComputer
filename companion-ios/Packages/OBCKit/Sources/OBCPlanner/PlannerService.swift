@@ -162,7 +162,8 @@ extension PlannerDataSource {
     }
 }
 
-/// Pins every request in a planning session to the release that supplies its map.
+/// Sends the requests of a planning session to one release. When a catalogue switch removes it, the requests
+/// move to the new active release.
 public actor PlannerService: PlannerDataSource {
     public static let shared = PlannerService()
     private let catalogURL: URL
@@ -208,14 +209,21 @@ public actor PlannerService: PlannerDataSource {
 
     /// Release objects are immutable, so a 404 means that a catalogue switch removed the release. The catalogue is read
     /// again, once, and the request repeats with the new active release.
+    /// A newer cached active release replaces `release` before the first request.
     private func onActive<T>(_ release: PlannerRelease, _ body: (PlannerRelease) async throws -> T) async throws -> T {
-        do { return try await body(release) } catch is ReleaseGone {
+        let first = fixedRelease == nil ? cached?.release ?? release : release
+        do { return try await body(first) } catch is ReleaseGone {
             guard fixedRelease == nil else { throw PlannerFailure.unavailable }
-            cached = nil
-            let active = try await self.release()
-            guard active.id != release.id else { throw PlannerFailure.unavailable }
+            let active = try await reloadedRelease()
+            guard active.id != first.id else { throw PlannerFailure.unavailable }
             do { return try await body(active) } catch is ReleaseGone { throw PlannerFailure.unavailable }
         }
+    }
+
+    /// The active release, read again from the catalogue.
+    public func reloadedRelease() async throws -> PlannerRelease {
+        cached = nil
+        return try await release()
     }
 
     public func release() async throws -> PlannerRelease {
@@ -224,8 +232,12 @@ public actor PlannerService: PlannerDataSource {
         if let loading { return try await loading.value }
         let task = Task { [transport, catalogURL] in
             struct Catalog: Decodable { let format: Int; let active: PlannerRelease }
+            var request = URLRequest(url: catalogURL)
+            request.timeoutInterval = 25
+            // A CDN can give the catalogue a browser cache lifetime longer than its own.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
             let data: Data
-            do { data = try await Self.get(catalogURL, transport: transport) } catch is ReleaseGone { throw PlannerFailure.unavailable }
+            do { data = try await Self.send(request, transport: transport) } catch is ReleaseGone { throw PlannerFailure.unavailable }
             let catalog = try Self.decode(Catalog.self, data: data)
             let r = catalog.active
             guard catalog.format == 1, r.id.count == 64, r.id.allSatisfy({ $0.isHexDigit && $0.isASCII }), r.bounds.count == 4,
