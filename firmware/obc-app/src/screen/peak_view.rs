@@ -9,7 +9,7 @@ use embedded_graphics::prelude::Point;
 use obc_render::{rect, text::Font, text::TextAlign, Surface};
 
 use crate::input::Gesture;
-use crate::peak_view::{runtime::Status, PeakViewProfile};
+use crate::peak_view::{runtime::Status, PeakViewPeak, PeakViewProfile};
 use crate::Msg;
 
 use super::vocab::spinner::Spinner;
@@ -248,13 +248,40 @@ fn bearing_x(bearing: u16, center: u16, w: i32, fov: i32) -> Option<i32> {
     (delta.abs() <= fov / 2).then_some((delta + fov / 2) * (w - 1) / fov)
 }
 
-fn visible_indices(profile: &PeakViewProfile, heading: u16) -> heapless::Vec<usize, 64> {
-    let mut indices: heapless::Vec<_, 64> =
-        (0..profile.peaks.len()).filter(|i| peak_is_visible(profile, *i, heading)).collect();
-    indices.sort_unstable_by_key(|i| {
-        let peak = &profile.peaks[*i];
-        (bearing_delta_q4(peak.azimuth_q4, heading), peak.distance_m, peak.lat, peak.lon)
+fn collect_visible(profile: &PeakViewProfile, heading: u16) -> heapless::Vec<usize, 64> {
+    (0..profile.peaks.len()).filter(|i| peak_is_visible(profile, *i, heading)).collect()
+}
+
+// SAFETY: every index must refer to `peaks`. Sorting only permutes those indices.
+#[inline(never)]
+unsafe fn sort_indices(indices: &mut [usize], peaks: &[PeakViewPeak], heading: Option<u16>) {
+    indices.sort_unstable_by_key(|&i| {
+        let peak = unsafe { peaks.get_unchecked(i) };
+        let primary = match heading {
+            // The delta is in [-720, 719]; this offset preserves order and equality.
+            Some(heading) => (bearing_delta_q4(peak.azimuth_q4, heading) + HALF_Q4) as u32,
+            None => u32::MAX - peak.score,
+        };
+        (primary, peak.distance_m, peak.lat, peak.lon)
     });
+}
+
+fn visible_indices(profile: &PeakViewProfile, heading: u16) -> heapless::Vec<usize, 64> {
+    let mut indices = collect_visible(profile, heading);
+    if indices.len() < 2 {
+        return indices;
+    }
+    // Core's small-sort path avoids the shared comparator's mode branch.
+    if indices.len() <= 20 {
+        indices.sort_unstable_by_key(|&i| {
+            // SAFETY: collection uses indices from this immutable peak slice.
+            let peak = unsafe { profile.peaks.get_unchecked(i) };
+            (bearing_delta_q4(peak.azimuth_q4, heading), peak.distance_m, peak.lat, peak.lon)
+        });
+    } else {
+        // SAFETY: collection uses indices from this immutable peak slice.
+        unsafe { sort_indices(&mut indices, profile.peaks, Some(heading)) };
+    }
     indices
 }
 
@@ -308,11 +335,28 @@ fn angle_y(profile: &PeakViewProfile, angle_q4: i16, bottom: i32) -> i32 {
 
 /// Show every name that fits. Apparent elevation breaks collisions; selection does not rearrange labels.
 fn annotation_indices(profile: &PeakViewProfile, heading: u16, w: i32) -> heapless::Vec<usize, 64> {
-    let mut indices = visible_indices(profile, heading);
-    indices.sort_unstable_by_key(|i| {
-        let peak = &profile.peaks[*i];
-        (core::cmp::Reverse(peak.score), peak.distance_m, peak.lat, peak.lon)
-    });
+    let mut indices = collect_visible(profile, heading);
+    if indices.len() < 2 {
+        return indices;
+    }
+    if indices.len() <= 20 {
+        indices.sort_unstable_by_key(|&i| {
+            // SAFETY: collection uses indices from this immutable peak slice.
+            let peak = unsafe { profile.peaks.get_unchecked(i) };
+            (bearing_delta_q4(peak.azimuth_q4, heading), peak.distance_m, peak.lat, peak.lon)
+        });
+        indices.sort_unstable_by_key(|&i| {
+            // SAFETY: the first sort only permutes valid indices.
+            let peak = unsafe { profile.peaks.get_unchecked(i) };
+            (core::cmp::Reverse(peak.score), peak.distance_m, peak.lat, peak.lon)
+        });
+    } else {
+        // SAFETY: collection uses this peak slice; both sorts only permute its indices.
+        unsafe {
+            sort_indices(&mut indices, profile.peaks, Some(heading));
+            sort_indices(&mut indices, profile.peaks, None);
+        }
+    }
     let x = |i: usize| {
         bearing_x(profile.peaks[i].azimuth_q4, heading, w, profile.horizontal_fov_q4())
             .unwrap_or(0)
@@ -510,6 +554,47 @@ mod tests {
         vertical_span_q4: 28,
         peaks: &STACKED_PEAKS,
     };
+
+    #[test]
+    fn sparse_source_indices_preserve_bearing_and_annotation_order() {
+        for len in 0..=64 {
+            for tied in [false, true] {
+                let mut peaks = [PeakViewPeak::EMPTY; 128];
+                for (i, peak) in peaks[64..64 + len].iter_mut().enumerate() {
+                    *peak = PeakViewPeak {
+                        visible: true,
+                        azimuth_q4: if tied { 1440 } else { (i * 23) as u16 },
+                        score: if tied { u32::MAX } else { (i % 4) as u32 },
+                        distance_m: 1000,
+                        lat: if tied { i32::MIN } else { i as i32 },
+                        lon: i32::MAX,
+                        ..PeakViewPeak::EMPTY
+                    };
+                }
+                let profile = PeakViewProfile { peaks: &peaks, fov_q4: 1440, ..PROFILE };
+                for heading in [0, 720, 1439, u16::MAX] {
+                    let mut expected: heapless::Vec<_, 64> = (64..64 + len).collect();
+                    expected.sort_unstable_by_key(|&i| {
+                        let peak = &peaks[i];
+                        (bearing_delta_q4(peak.azimuth_q4, heading), peak.distance_m, peak.lat, peak.lon)
+                    });
+                    assert_eq!(visible_indices(&profile, heading), expected);
+                    expected.sort_unstable_by_key(|&i| {
+                        let peak = &peaks[i];
+                        (core::cmp::Reverse(peak.score), peak.distance_m, peak.lat, peak.lon)
+                    });
+                    let mut retained = heapless::Vec::<_, 64>::new();
+                    let x = |i: usize| bearing_x(peaks[i].azimuth_q4, heading, 240, 1440).unwrap().clamp(6, 234);
+                    for i in expected {
+                        if retained.iter().all(|&old| (x(i) - x(old)).abs() >= 15) {
+                            retained.push(i).unwrap();
+                        }
+                    }
+                    assert_eq!(annotation_indices(&profile, heading, 240), retained);
+                }
+            }
+        }
+    }
 
     #[test]
     fn opening_uses_an_available_fix_before_the_runtime_starts() {
