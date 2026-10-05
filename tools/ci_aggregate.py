@@ -44,7 +44,11 @@ def _job_result(needs: Mapping[str, Any], job: str) -> str:
     if not isinstance(value, Mapping):
         return "missing"
     result = value.get("result")
-    return str(result) if result else "missing"
+    if not result:
+        return "missing"
+    result = str(result)
+    # Unknown terminal states must fail the gate.
+    return result if result in {"success", "failure", "cancelled", "skipped"} else "failure"
 
 
 def _blocked_upstream(
@@ -137,7 +141,7 @@ def evaluate(
         sorted(
             job
             for job, value in needs.items()
-            if isinstance(value, Mapping) and value.get("result") in {"failure", "cancelled"}
+            if isinstance(value, Mapping) and _job_result(needs, job) in {"failure", "cancelled"}
         )
     )
     return AggregateResult(tuple(suites), global_failures)
