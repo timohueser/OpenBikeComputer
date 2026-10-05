@@ -79,7 +79,7 @@ record. It does not appear in a contract, a guide, a README, a guard or a commen
 
 A rule is a check or it is one sentence in this file. A number in a gate says where it came from:
 measured on a named build, or chosen by the owner for a stated reason. `obc governs PATH` lists
-every guard, suite, contract, coverage component and budget that reaches a file. `obc prose
+every guard, suite, contract and budget that reaches a file. `obc prose
 --check` budgets guide pages, READMEs, guard docstrings and this file; an over-budget file must
 not grow.
 
