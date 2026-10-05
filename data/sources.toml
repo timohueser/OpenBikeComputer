@@ -468,6 +468,7 @@ hosts = ["confluence.ecmwf.int"]
 version = "date"
 refresh = 365
 redistribute = true
+credential = { file = "~/.cdsapirc" }
 
 [[source]]
 id = "modis-snow"
