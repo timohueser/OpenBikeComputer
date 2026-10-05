@@ -76,12 +76,13 @@ pub(crate) fn fill_polygon_edges<D, L>(
         if a.xi == a.xj && b.xi == b.xj && a.yi.min(a.yj) == b.yi.min(b.yj) && a.yi.max(a.yj) == b.yi.max(b.yj) {
             let left = i32::from(a.xi.min(b.xi)).max(0);
             let right = i32::from(a.xi.max(b.xi)).min(w - 1);
+            let top = ymin.max(i32::from(a.yi.min(a.yj)));
             let bottom = ymax.min(i32::from(a.yi.max(a.yj)) - 1);
-            if left <= right && ymin <= bottom {
+            if left <= right && top <= bottom {
                 let _ = target.fill_solid(
                     &Rectangle::new(
-                        Point::new(left, ymin),
-                        Size::new((right - left + 1) as u32, (bottom - ymin + 1) as u32),
+                        Point::new(left, top),
+                        Size::new((right - left + 1) as u32, (bottom - top + 1) as u32),
                     ),
                     color,
                 );
@@ -475,29 +476,33 @@ mod tests {
     fn packed_rectangles_keep_clipping_holes_and_collapsed_widths() {
         use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor, prelude::*};
         for (left, right) in [(-20, 90), (3, 3), (-30, -20), (64, 65)] {
-            for hole in [false, true] {
-                let mut points = std::vec![
-                    Point::new(left, -30),
-                    Point::new(right, -30),
-                    Point::new(right, 100),
-                    Point::new(left, 100)
-                ];
-                let mut rings = std::vec![4u16];
-                if hole {
-                    points.extend([Point::new(12, 12), Point::new(44, 12), Point::new(44, 44), Point::new(12, 44)]);
-                    rings.push(4);
+            for (top, bottom) in [(-30, 100), (10, 20), (70, 100)] {
+                for hole in [false, true] {
+                    let mut points = std::vec![
+                        Point::new(left, top),
+                        Point::new(right, top),
+                        Point::new(right, bottom),
+                        Point::new(left, bottom)
+                    ];
+                    let mut rings = std::vec![4u16];
+                    if hole {
+                        points.extend([Point::new(12, 12), Point::new(44, 12), Point::new(44, 44), Point::new(12, 44)]);
+                        rings.push(4);
+                    }
+                    points.extend([Point::new(10, 0), Point::new(20, 0), Point::new(30, 0)]);
+                    rings.push(3);
+                    let packed: std::vec::Vec<_> =
+                        points.iter().map(|p| ScreenPoint::checked((p.x, p.y)).unwrap()).collect();
+                    let mut expected = MockDisplay::<BinaryColor>::new();
+                    let mut actual = MockDisplay::<BinaryColor>::new();
+                    expected.set_allow_overdraw(true);
+                    actual.set_allow_overdraw(true);
+                    let mut xs = Vec::new();
+                    let mut edges = Vec::new();
+                    fill_polygon(&mut expected, &points, &rings, BinaryColor::On, 64, 64, &mut xs);
+                    fill_polygon_edges(&mut actual, &packed, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
+                    assert_eq!(actual, expected);
                 }
-                let packed: std::vec::Vec<_> =
-                    points.iter().map(|p| ScreenPoint::checked((p.x, p.y)).unwrap()).collect();
-                let mut expected = MockDisplay::<BinaryColor>::new();
-                let mut actual = MockDisplay::<BinaryColor>::new();
-                expected.set_allow_overdraw(true);
-                actual.set_allow_overdraw(true);
-                let mut xs = Vec::new();
-                let mut edges = Vec::new();
-                fill_polygon(&mut expected, &points, &rings, BinaryColor::On, 64, 64, &mut xs);
-                fill_polygon_edges(&mut actual, &packed, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
-                assert_eq!(actual, expected);
             }
         }
     }
