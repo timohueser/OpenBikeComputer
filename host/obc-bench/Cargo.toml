@@ -3,7 +3,7 @@ name = "obc-bench"
 version = "0.1.0"
 edition = "2021"
 publish = false # host-only bench harness — never shipped or published
-description = "Host render benchmark harness + CI pixel-hash and read-counter golden gate over the real obc-reader → obc-render pipeline (issues #327, #1467)"
+description = "Host render benchmark harness + CI pixel-hash and read-counter golden gate over the real obc-reader → obc-render pipeline"
 
 [features]
 nav-metrics = ["obc-reader/nav-metrics"]

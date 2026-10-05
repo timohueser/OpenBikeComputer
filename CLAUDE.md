@@ -19,7 +19,7 @@ The goal for this codebase is to make this a robust and extendable open source m
 
 The layout table is in [README.md](README.md#repository-layout). The root Cargo workspace holds
 the `firmware/`, `host/` and `apps/` crates. Keep device-reachable dependencies in `firmware/`.
-The nRF54L board image, the bootloader and the Tauri desktop app are standalone Cargo roots; build
+The nRF54L board image, the bootloader, the Tauri desktop app and the sensor simulator are standalone Cargo roots; build
 and test them from their own directories. The nearest README has the surface's setup;
 `companion-ios/CLAUDE.md` is the iOS on-ramp.
 

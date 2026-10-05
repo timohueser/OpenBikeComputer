@@ -3,7 +3,7 @@ name = "obc-boot"
 version = "0.1.0"
 edition = "2021"
 publish = false # board bootloader — not published to crates.io
-description = "obc-boot — the 32 KB nRF54L bootloader (SD-staged DFU, epic #615). Reads the BOOT_STATE RRAM page, decides via obc-dfu, and jumps to the app at 0x8000. S2 (#617) has no install logic yet; S3 (#618) adds the verify → flash → trial → rollback engine."
+description = "obc-boot — the 32 KB nRF54L bootloader (SD-staged DFU). Reads the BOOT_STATE RRAM page, decides via obc-dfu, installs a verified update with trial and rollback, and jumps to the app at 0x8000."
 
 # Standalone crate with its own (empty) workspace table so the firmware/ host
 # workspace — which builds its members for the host target — ignores this crate.

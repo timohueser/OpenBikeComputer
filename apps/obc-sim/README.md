@@ -7,9 +7,10 @@ controls are deliberately not duplicated as startup flags.
 
 ```sh
 sudo apt-get install libasound2-dev   # Linux only: ALSA headers for cue playback
+obc sim                               # build and open the Grimsel Pass demo scenario
 cargo build -p obc-sim --release
-target/release/obc-sim freiburg.obcm
-target/release/obc-sim freiburg.obcm --png frame.png
+target/release/obc-sim map.obcm       # any packed map
+target/release/obc-sim map.obcm --png frame.png
 ```
 
 The window plays cues on the default audio device.

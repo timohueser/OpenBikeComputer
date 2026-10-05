@@ -1,8 +1,7 @@
 # Single source of truth for the Rust toolchain, shared by CI and local dev so the
 # rustfmt/clippy versions always agree. rustup discovers this by walking up from the cwd,
-# so it covers *both* cargo roots — the firmware/ workspace and the workspace-excluded
-# firmware/obc-fw-nrf54l board crate (which has its own .cargo/config.toml that only
-# selects a default build target; the two don't conflict).
+# so it covers every cargo root: the root workspace and the standalone roots under it (their
+# .cargo/config.toml files only select a default build target; the two don't conflict).
 #
 # Tracks latest stable (no pinned version), so a new Rust can tighten a clippy lint and
 # turn a previously-green PR red — fix the lint when that happens. The targets below are

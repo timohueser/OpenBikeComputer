@@ -5,15 +5,13 @@
 #
 # The generated OBCCompanion.xcodeproj is gitignored — `xcodegen generate` is
 # a required first step after cloning. Edit this file, never the pbxproj.
-# Policy rationale: companion-ios/CLAUDE.md.
 
 name: OBCCompanion
 
 # project.local.yml carries your personal signing team id — tracked with an
 # empty default (so a fresh clone still builds for the simulator) but meant
 # to be edited locally and marked skip-worktree so `xcodegen generate` never
-# wipes it and it never shows up as a git diff. See companion-ios/CLAUDE.md
-# → Signing.
+# wipes it and it never shows up as a git diff. The steps are in that file.
 include:
   - project.local.yml
 

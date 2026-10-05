@@ -3,7 +3,7 @@ name = "obc-web-demo"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal firmware crate — not published to crates.io
-description = "The landing page's thin wasm host (epic #624, S6): the shared firmware crates + a JS-driven frame loop behind a small obc_demo_* wasm-bindgen surface. No egui/winit/wgpu — JS owns the rAF loop and the canvas, Rust owns the truth."
+description = "The landing page's thin wasm host: the shared firmware crates + a JS-driven frame loop behind a small obc_demo_* wasm-bindgen surface. No egui/winit/wgpu — JS owns the rAF loop and the canvas, Rust owns the truth."
 
 [dependencies]
 # `alloc` gives us `MapCache::new_boxed` — a zeroed heap allocation with no giant stack temporary

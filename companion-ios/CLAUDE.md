@@ -2,7 +2,7 @@
 
 An on-ramp. The canonical wire contract is
 [`../specs/obc-ble-interface-spec.md`](../specs/obc-ble-interface-spec.md);
-[`OBCProtocol.md`](OBCProtocol.md) records the iOS-facing mappings and deltas.
+[`OBCProtocol.md`](OBCProtocol.md) records the iOS-facing mappings.
 
 The app imports planned routes, pushes them to the device, and syncs recorded rides back.
 
@@ -48,7 +48,8 @@ swift test --disable-keychain --disable-netrc
 CI runs the package tests plus Debug and Release simulator builds. For a simulator, generate the
 project and use the `OBCCompanion` scheme. `obc ios-companion` builds Release with real Bluetooth
 and installs it on the paired iPhone; `obc ios-device` does the same for the `OBCDevice` shell.
-Personal signing belongs in the gitignored `project.local.yml`.
+Personal signing belongs in `project.local.yml`: it is tracked with an empty team id, and its
+header says how to keep your edit out of git.
 
 ## Mock and captures
 
