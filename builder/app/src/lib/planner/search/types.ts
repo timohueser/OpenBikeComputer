@@ -46,21 +46,21 @@ export interface SearchAnswer {
     hasMore?: boolean; canRetry?: boolean; area?: string; note?: string; notice?: string; region?: string;
 }
 export type SearchState = { loading: boolean; error: string; answer: SearchAnswer | null };
-export async function placeDetails(source: string, coordinate: Coordinate, region: string, signal: AbortSignal): Promise<SearchPlace | undefined> {
+export async function placeDetails(source: string, coordinate: Coordinate, signal: AbortSignal): Promise<SearchPlace | undefined> {
     const [lon, lat] = coordinate;
     const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: '', source, region, view: [lon - .01, lat - .01, lon + .01, lat + .01] }) });
+        body: JSON.stringify({ q: '', source, view: [lon - .01, lat - .01, lon + .01, lat + .01] }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Place details are unavailable.');
     return result.results?.find((place: SearchPlace) => place.source === source);
 }
 /** The route is simplified and its segments are found here, at most once per route (see `searchLine` and `routeSegments`),
  * and never on a route change alone. */
-export async function searchPlaces(q: string, context: SearchContext, region: string, limit: number, signal: AbortSignal, request?: QueryRequest): Promise<SearchAnswer> {
+export async function searchPlaces(q: string, context: SearchContext, limit: number, signal: AbortSignal, request?: QueryRequest): Promise<SearchAnswer> {
     const { coordinates, km, seconds, line, ...plan } = context.plan;
     const segments = line && routeSegments(line);
     const response = await fetch(`${SEARCH_URL}/query`, { method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...context, plan: { ...plan, ...searchLine(coordinates, km, seconds), segments }, q, region, limit, submitted: true, request }) });
+        body: JSON.stringify({ ...context, plan: { ...plan, ...searchLine(coordinates, km, seconds), segments }, q, limit, request }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Search failed. Try again.');
     return result;

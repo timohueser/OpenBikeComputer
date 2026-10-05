@@ -33,7 +33,7 @@ test('free-form addresses retain house precision and label fallback',()=>{
 });
 test('SQL-looking input stays data',()=>{
   assert.doesNotThrow(()=>search(db,{q:'" OR 1=1; DROP TABLE places --',view}));
-  assert.equal(db.all('SELECT count(*) n FROM places')[0].n,records.length);
+  assert.equal(conn.prepare('SELECT count(*) n FROM places').get().n,records.length);
 });
 test('ordinary place names and categories do not depend on word count',()=>{
   assert.equal(simpleRequest('bakery').type,'places');

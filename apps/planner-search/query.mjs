@@ -6,14 +6,13 @@ import { localQuery } from './local-query.mjs';
 export async function answerQuery(db, input, parser, hours) {
   if (input.source) {
     const now = input.now === undefined ? Date.now() : Date.parse(input.now);
-    const results = db.all('SELECT p.* FROM places p WHERE p.source = ? LIMIT 1', [input.source], {bounds: input.view});
+    const results = db.rows({sql: 'SELECT p.* FROM {c}.places p WHERE p.source = ?', params: [input.source], limit: 1, bounds: input.view});
     return {type:'places', request:{type:'place',name:input.q}, results:results.map(place=>({
       ...place, precision:'place', distance:0, hoursStatus:hours.currentOpening(place,now),
     }))};
   }
   let canRetry = false;
-  const local = !input.request && input.submitted && input.q.length <= 80
-    ? localQuery(db, input.q) : null;
+  const local = !input.request && input.q.length <= 80 ? localQuery(db, input.q) : null;
   let ordinary;
   let request = input.request || local || simpleRequest(input.q),
     notice = '',
@@ -22,7 +21,6 @@ export async function answerQuery(db, input, parser, hours) {
   if (
     !input.request &&
     !local &&
-    input.submitted &&
     request.type === 'place' &&
     input.q.length <= 80
   ) {
@@ -46,7 +44,7 @@ export async function answerQuery(db, input, parser, hours) {
         notice = `${unsupported ? 'The query model returned an unsupported request.' : error.message} Showing ordinary place search.`;
       }
     }
-  } else if (!input.request && input.submitted && input.q.length > 80)
+  } else if (!input.request && input.q.length > 80)
     notice =
       'Smart requests use at most 80 characters. Showing ordinary place search.';
   // A cuisine shows as its own filter, which the rider can remove.

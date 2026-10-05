@@ -12,20 +12,23 @@ func runSearchBenchmark(root: URL, hoursOnly: Bool = false) -> [String: Any] {
         guard databaseHash == reference?["databaseSha256"] as? String else {
             throw NSError(domain: "SearchBenchmark", code: 6, userInfo: [NSLocalizedDescriptionKey: "Reference database hash differs"])
         }
-        let database = try PlannerSearchDatabase(databaseURL)
+        let database = try PlannerSearchDatabase(files: [databaseURL])
         guard let context = JSContext() else { throw NSError(domain: "SearchBenchmark", code: 3) }
         var exception: String?
         context.exceptionHandler = { _, error in exception = error?.toString() }
-        let all: @convention(block) (String, String) -> String = { database.all($0, $1) }
+        let groups: @convention(block) () -> String = { database.groups() }
+        let run: @convention(block) (Int, String, String) -> String = { database.run($0, $1, $2) }
         let digest: @convention(block) (String) -> String = { SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined() }
         let clock: @convention(block) () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }
-        context.setObject(all, forKeyedSubscript: "plannerSQL" as NSString)
+        context.setObject(groups, forKeyedSubscript: "plannerGroups" as NSString)
+        context.setObject(run, forKeyedSubscript: "plannerRun" as NSString)
         context.setObject(digest, forKeyedSubscript: "plannerDigest" as NSString)
         context.setObject(clock, forKeyedSubscript: "plannerNow" as NSString)
         context.evaluateScript("globalThis.performance = {now: plannerNow};")
         context.evaluateScript(try String(contentsOf: root.appendingPathComponent("\(prefix)-benchmark.js"), encoding: .utf8))
         let started = ProcessInfo.processInfo.systemUptime
-        let value = context.evaluateScript("JSON.stringify(PlannerSearchBenchmark.run(plannerSQL, plannerDigest))")
+        let value = context.evaluateScript(
+            "JSON.stringify(PlannerSearchBenchmark.run({groups: plannerGroups, run: plannerRun}, plannerDigest))")
         if let exception { return ["error": exception] }
         guard let text = value?.toString(), var report = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               let samples = report["samples"] as? [[String: Any]] else { throw NSError(domain: "SearchBenchmark", code: 4) }

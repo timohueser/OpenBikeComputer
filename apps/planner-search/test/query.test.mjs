@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {DatabaseSync} from 'node:sqlite';
 import {database} from './database.mjs';
 import {answerQuery} from '../query.mjs';
 import {validateRequest,validateInput} from '../validation.mjs';
@@ -8,7 +9,7 @@ import {searchRuntime} from '../runtime.mjs';
 import {nativeSearch} from '../native.mjs';
 import {openingHours} from '../hours.mjs';
 const {db}=database();
-const input={q:'Kandel',view:[7.8,47.9,7.95,48.05],submitted:true};
+const input={q:'Kandel',view:[7.8,47.9,7.95,48.05]};
 const never={parse(){throw new Error('Model must not run');}};
 const hours=openingHours('Europe/Berlin');
 
@@ -25,27 +26,24 @@ test('shared runtime supplies one clock and explicit calendar capability for fil
   assert.deepEqual(result.results[0].hoursStatus,{state:'open'});
 });
 
-test('native JSON capabilities preserve complete replies, metadata and reverse labels', async()=>{
-  const fixture=database();
-  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('schema','5');
-  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('time_zone','"Europe/Berlin"');
-  fixture.conn.prepare('INSERT INTO metadata VALUES (?,?)').run('attribution',JSON.stringify(['OSM contributors']));
-  const native=nativeSearch({region:'test',
-    all:(sql,bind)=>JSON.stringify({rows:fixture.db.all(sql,JSON.parse(bind))})});
-  const answer=await native.request('query',{...input,q:'reverse this route',now:'2026-09-28T10:00:00Z'});
+test('native JSON capabilities preserve complete replies, metadata and errors', async()=>{
+  const fixture=database(), connection=new DatabaseSync(':memory:');
+  connection.prepare('ATTACH DATABASE ? AS c0').run(fixture.file);
+  const groups=()=>JSON.stringify([['c0']]);
+  const native=nativeSearch({groups,
+    run:(_group,sql,params)=>JSON.stringify({rows:connection.prepare(sql).all(...JSON.parse(params))})});
+  const answer=await native.query({...input,q:'reverse this route',now:'2026-09-28T10:00:00Z'});
   assert.match(answer.notice,/structured request/);assert.equal(answer.canRetry,true);
-  assert.equal(answer.region,'test');assert.deepEqual(answer.attribution,['OSM contributors']);
+  assert.deepEqual(answer.attribution,['OSM contributors']);
   fixture.conn.exec("UPDATE place_records SET website='https://bakery.example',phone='+49 123',description='Bread and coffee.' WHERE source='n1'");
-  const details=await native.request('query',{...input,q:'',source:'n1'});
+  const details=await native.query({...input,q:'',source:'n1'});
   assert.equal(details.notice,undefined);
   assert.equal(details.results[0].website,'https://bakery.example');
   assert.equal(details.results[0].phone,'+49 123');
   assert.equal(details.results[0].description,'Bread and coffee.');
   for(const source of ['n1 OR 1=1','poi-1',4,'w0'])assert.throws(()=>validateInput({...input,source}));
-  assert.deepEqual(await native.request('reverse',{coordinate:[7.854,48.01]}),{label:'Habsburgerstraße 10, Freiburg'});
-  await assert.rejects(native.request('query',{...input,region:'missing'}),/does not cover/);
-  await assert.rejects(native.request('reverse',{region:'missing',coordinate:[7.854,48.01]}),/does not cover/);
-  fixture.conn.close();
+  assert.throws(()=>nativeSearch({groups,run:()=>JSON.stringify({error:'Cannot read cell'})}),/Cannot read cell/);
+  connection.close();fixture.db.close();fixture.conn.close();
 });
 
 test('exact names and typed chip edits bypass the model, sentences invoke it',async()=>{

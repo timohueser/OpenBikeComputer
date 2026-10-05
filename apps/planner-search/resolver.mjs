@@ -240,14 +240,16 @@ function categoryRows(db, kinds, bounds, focus, limit = 2001) {
   const x = focus[0],
     y = focus[1],
     cos = Math.cos((y * Math.PI) / 180) ** 2;
-  return db.all(
-    `SELECT p.* FROM spatial s JOIN places p ON p.id=s.id
+  return db.places([{
+    sql: `SELECT p.id,(p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?) AS _distance,p.source
+    FROM {c}.spatial s JOIN {c}.place_records p ON p.id=s.id
     WHERE s.east>=? AND s.north>=? AND s.west<=? AND s.south<=?
-    AND p.kind IN (${kinds.map(() => '?').join(',')})
-    ORDER BY (p.lon-?)*(p.lon-?)*?+(p.lat-?)*(p.lat-?), p.source LIMIT ${limit}`,
-    [...bounds, ...kinds, x, x, cos, y, y],
-    {bounds},
-  );
+    AND p.kind IN (${kinds.map(() => '?').join(',')})`,
+    params: [x, x, cos, y, y, ...bounds, ...kinds],
+    order: ['_distance', 'source'],
+    limit,
+    bounds,
+  }]);
 }
 // `all` adds every sorted match with its route position for internal callers.
 export function findPlaces(db, request, context, { all = false } = {}) {

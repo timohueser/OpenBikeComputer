@@ -42,7 +42,7 @@
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { MAP_BOUNDS, PLACES_URL, ROUTES_URL } from '../../lib/planner/map-data';
     import { coordinateName } from '../../lib/planner/point-names';
-    import { HOSTED_SEARCH, SEARCH_REGIONS, REGION_NAME } from '../../lib/planner/search/config';
+    import { HOSTED_SEARCH, REGION_NAME } from '../../lib/planner/search/config';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { searchPlaces, placeDetails, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
@@ -144,7 +144,6 @@
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
-    let searchRegion = $state(SEARCH_REGIONS[0]);
     let overnightPlaces = $state<Place[]>([]);
     let overnightNote = $state('');
     let message = $state(`Plan a ride in ${REGION_NAME}`);
@@ -255,11 +254,11 @@
     const selectedPlace = $derived((mapPlace?.id === selectedId ? mapPlace : undefined) ?? visiblePlaces.find(p => p.id === selectedId) ?? corridor.find(p => p.id === selectedId));
     let detailsError = $state('');
     $effect(() => {
-        const id = selectedId, region = searchRegion, place = mapPlace;
+        const id = selectedId, place = mapPlace;
         detailsError = '';
         if (!id || !/^[nwr][1-9]\d*$/.test(id) || place?.id !== id || place.detailsLoaded) return;
         const abort = new AbortController();
-        placeDetails(id, place.coordinate, region, abort.signal).then(details => {
+        placeDetails(id, place.coordinate, abort.signal).then(details => {
             if (abort.signal.aborted) return;
             mapPlace = { ...place, detailsLoaded: true, ...(details ? { website: details.website, phone: details.phone,
                 description: details.description || place.description, openingHours: details.opening_hours,
@@ -361,10 +360,10 @@
     // A query runs again when anything it sends other than the map view changes.
     $effect(() => { void [searchPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
-    // Answers per plan, so switching days or region back does not search again.
-    const overnightAnswers = new WeakMap<object, Map<string, { places: Place[]; note: string }>>();
+    // Answers per plan, so switching days back does not search again.
+    const overnightAnswers = new WeakMap<object, Map<number, { places: Place[]; note: string }>>();
     $effect(() => {
-        const plan = searchPlan!, region = searchRegion, day = dayLabels[night];
+        const plan = searchPlan!, day = dayLabels[night];
         if (!overnightContext || !day) {
             // Candidates stay while the replacement route is calculated.
             if (!hasEndpoints || currentRoute) overnightPlaces = [];
@@ -372,17 +371,17 @@
         }
         let answers = overnightAnswers.get(plan);
         if (!answers) overnightAnswers.set(plan, answers = new Map());
-        const key = `${region}:${day}`, known = answers.get(key);
+        const known = answers.get(day);
         if (known) { overnightPlaces = known.places; overnightNote = known.note; return; }
         overnightPlaces = [];
         const abort = new AbortController();
         overnightNote = 'Loading nearby overnight places…';
         // The day end and the radius set the area, so the map view does not change the answer.
-        untrack(() => searchPlaces('sleep', { view: viewBounds, plan }, region, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } })).then(answer => {
+        untrack(() => searchPlaces('sleep', { view: viewBounds, plan }, 6, abort.signal, { type: 'places', what: ['sleep'], where: { day, part: 'end' }, radius: { value: 5, unit: 'km' } })).then(answer => {
             if (abort.signal.aborted) return;
             overnightPlaces = (answer.results ?? []).map(asPlace);
             overnightNote = answer.type === 'unresolved' ? answer.note ?? '' : overnightPlaces.length ? '' : 'No mapped overnight places within 5 km. Search a wider area or pick on the map.';
-            if (answer.type === 'places') answers.set(key, { places: overnightPlaces, note: overnightNote });
+            if (answer.type === 'places') answers.set(day, { places: overnightPlaces, note: overnightNote });
         }).catch(() => { if (!abort.signal.aborted) overnightNote = 'Overnight search is unavailable. Retry or pick on the map.'; });
         return () => abort.abort();
     });
@@ -422,7 +421,7 @@
     }
 
     function nameVisits(trip: Trip) {
-        trip.points.filter(point => point.autoLabel).forEach(point => void session.nameVisit(point, searchRegion));
+        trip.points.filter(point => point.autoLabel).forEach(point => void session.nameVisit(point));
     }
 
     async function openLibrary() {
@@ -776,7 +775,7 @@
         selectedId = point.id;
         if (kind !== 'via') reveal(point.id, dayOf(point.coordinate));
         if (autoCenter) map?.centerOn(point.coordinate);
-        void session.nameVisit(point, searchRegion);
+        void session.nameVisit(point);
     }
 
     function addVisit(place: Place) {
@@ -792,7 +791,7 @@
         session.movePoint(id, coordinate);
         afterEdit('Point moved');
         const point = trip.points.find(p => p.id === id);
-        if (point) void session.nameVisit(point, searchRegion);
+        if (point) void session.nameVisit(point);
     }
 
     function removePoint() {
@@ -849,7 +848,7 @@
             anchor: kind === 'detour' ? nearestOnLine(coordinates, point.coordinate).at : undefined });
         commit(next, 'Point type updated');
         selectedId = id;
-        void session.nameVisit(next.points.find(p => p.id === id)!, searchRegion);
+        void session.nameVisit(next.points.find(p => p.id === id)!);
     }
 
     function changeTrip(change: Partial<Trip>, description: string) {
@@ -972,14 +971,14 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:region={searchRegion} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
+            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { clearSelection(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
             {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
             {#if routesOpen}
                 <SignedRoutes {finder} activity={bike} {theme} onClose={closeRoutes} onPlan={planSignedRoute} {placeName}
                     current={hasEndpoints && total > 0 ? { title: planTitle(trip), km: view.summary.distance } : null}
-                    findPlaces={(text, signal) => searchPlaces(text, searchContext, searchRegion, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
+                    findPlaces={(text, signal) => searchPlaces(text, searchContext, 6, signal).then(answer => routesPlaces(answer.results ?? [], text))} />
             {:else if searching}
                 <div class="pane-scroll">
                     <QueryResults routes={ROUTES_URL ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}

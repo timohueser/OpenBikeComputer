@@ -1,13 +1,13 @@
 <script lang="ts">
     import { onDestroy, untrack } from 'svelte';
     import PlannerIcon from './PlannerIcon.svelte';
-    import { HOSTED_SEARCH, REGION_NAME, SEARCH_REGIONS, regionName } from '../../lib/planner/search/config';
+    import { HOSTED_SEARCH, REGION_NAME } from '../../lib/planner/search/config';
     import QueryChip from './QueryChip.svelte';
     import type { Coordinate } from '../../lib/planner/geo';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, region = $bindable(SEARCH_REGIONS[0]), revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
-        text?: string; region?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onDate, onPointing }: {
+        text?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
         revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => void; onSample: () => void; onDate: (date: string) => void; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
@@ -23,7 +23,6 @@
     const movedView = $derived(usesView && !!searchState.answer && viewRevision !== searchedView);
     let limit = 6;
     let settings = $state(false);
-    const regions = SEARCH_REGIONS;
     let activeFilter = $state<string | null>(null);
     const days = $derived(context.plan.days.filter(d => !d.rest).map(d => d.number));
     const fields = $derived(Object.entries(request ?? {}).filter(([key]) => !['type','ignored','via_source'].includes(key)));
@@ -43,7 +42,7 @@
         onSearch(); searchedView = viewRevision;
         searchState = { loading: true, error: '', answer: searchState.answer };
         try {
-            const answer = await searchPlaces(input, searchContext, region, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
+            const answer = await searchPlaces(input, searchContext, limit, signal, parsed ? $state.snapshot(parsed) : undefined);
             if (id !== serial) return;
             request = answer.request; searchState = { loading: false, error: '', answer };
             if (framePending && answer.type === 'places' && answer.results?.length) onResults?.(answer.results.map(p => [p.lon, p.lat]));
@@ -121,11 +120,10 @@
     <button type="button" class="data-button" aria-expanded={settings} onclick={() => settings = !settings}>{REGION_NAME} · {HOSTED_SEARCH ? 'online' : 'local data'}<PlannerIcon name="down" size={12} /></button>
     {#if settings}
         <div class="settings">
-            <label>Search coverage<select bind:value={region} onchange={() => { if (text.trim()) run(20); }}>{#each regions as id}<option value={id}>{regionName(id)}</option>{/each}</select></label>
             <label>Trip start date<input type="date" value={context.startDate ?? ''} onchange={e => onDate(e.currentTarget.value)} /></label>
             <button type="button" onclick={onLocation}>{context.here ? 'Update my location' : 'Use my location'}</button>
             <button type="button" onclick={onSample}>Load Black Forest test route</button>
-            <p class="note">{HOSTED_SEARCH ? `Maps, routing, and search cover ${REGION_NAME}.` : 'Search uses the selected local package. Map tiles have their own coverage.'}</p>
+            <p class="note">{HOSTED_SEARCH ? `Maps, routing, and search cover ${REGION_NAME}.` : 'Search uses the local package. Map tiles have their own coverage.'}</p>
         </div>
     {/if}
 </div>
@@ -141,7 +139,7 @@
     input::selection { color: var(--panel); background: var(--ink); }
     .edited input:not(:focus) { color: var(--ink-soft); }
     button { font: inherit; color: inherit; cursor: pointer; }
-    button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
     .clear { border: 0; background: transparent; width: 28px; height: 32px; padding: 0; display: grid; place-items: center; flex: none; }
     .search-view { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 36px; margin-top: 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--parchment-2); color: var(--ink); font-size: 13px; }
     .search-view:disabled { opacity: .6; cursor: wait; }
@@ -151,6 +149,6 @@
     .data-button { display: flex; align-items: center; gap: 5px; padding: 8px 0 0; min-height: 32px; border: 0; background: transparent; font-size: 11px; color: var(--ink-soft); }
     .settings { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; font-size: 13px; }
     label { display: flex; flex-direction: column; gap: 4px; }
-    .settings :is(input, select, button) { border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--panel); min-height: 36px; padding: 6px; font: inherit; }
+    .settings :is(input, button) { border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--panel); min-height: 36px; padding: 6px; font: inherit; }
     @media (max-width: 700px) { .query-input input { font-size: 16px; } }
 </style>

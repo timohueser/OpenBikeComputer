@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 final class PlannerSearchConnection {
-    var connection: OpaquePointer?
+    private var connection: OpaquePointer?
     private var statements: [String: OpaquePointer] = [:]
 
     init(_ path: String, memory: Bool = false) throws {
@@ -92,15 +92,17 @@ final class PlannerSearchConnection {
     }
 
     private var jsonQueries: [String: String] = [:]
+    /// SQLite encodes the result rows. A statement without result columns returns no rows.
     func json(_ sql: String, _ values: [Any]) throws -> String {
         let query: String
         if let existing = jsonQueries[sql] {
             query = existing
         } else {
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK else { throw databaseError() }
-            let names = (0..<sqlite3_column_count(statement)).map { String(cString: sqlite3_column_name(statement, $0)) }
-            sqlite3_finalize(statement)
+            let names = try columns(sql)
+            if names.isEmpty {
+                _ = try rows(sql, values)
+                return "{\"rows\":[]}"
+            }
             let fields = names.map {
                 "'" + $0.replacingOccurrences(of: "'", with: "''") + "',r.\"" + $0.replacingOccurrences(of: "\"", with: "\"\"")
                     + "\""
@@ -113,7 +115,7 @@ final class PlannerSearchConnection {
         guard let payload = rows.first?["payload"] as? String else { throw databaseError() }
         return "{\"rows\":" + payload + "}"
     }
-    func columns(_ sql: String) throws -> [String] {
+    private func columns(_ sql: String) throws -> [String] {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK else { throw databaseError() }
         defer { sqlite3_finalize(statement) }

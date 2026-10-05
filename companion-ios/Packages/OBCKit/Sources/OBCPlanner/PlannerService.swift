@@ -392,8 +392,8 @@ public actor PlannerService: PlannerDataSource {
         } else { queryRequest["where"] = ["scope": "view"] }
         if kinds.isEmpty { queryRequest.removeValue(forKey: "where") }
         if let radiusMeters, !kinds.isEmpty { queryRequest["radius"] = ["value": radiusMeters / 1000, "unit": "km"] }
-        var body: [String: Any] = ["q": text, "region": release.region, "view": view ?? release.bounds,
-                                  "plan": context, "limit": 100, "submitted": true, "request": queryRequest]
+        var body: [String: Any] = ["q": text, "view": view ?? release.bounds, "plan": context, "limit": 100,
+                                  "request": queryRequest]
         if let source = query.source { body["source"] = source }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         struct Response: Decodable { let results: [PlannerPlace] }

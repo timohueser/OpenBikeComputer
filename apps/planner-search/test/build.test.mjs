@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {answerQuery} from '../query.mjs';
 import {openRegion} from '../installation.mjs';
+import {openCells} from '../cells.mjs';
 import {search} from '../web/engine.mjs';
 import {reverseAddress} from '../web/reverse.mjs';
 import {openingHours} from '../hours.mjs';
@@ -34,12 +35,12 @@ test('the POI builder retains contact aliases and descriptions for named and unn
     {object_id:3,osm_key:'tourism',osm_value:'camp_site',extra:{'description:en':'Small tents only.\nAsk at the farm.','description:de':'Nur kleine Zelte.'}},
     {object_id:4,osm_key:'amenity',osm_value:'drinking_water',extra:{}},
   ].map(p=>({object_type:'N',centroid:[8,48],...p}));
-  let connection;
+  let connection,db;
   try {
     connection=writePlaces(directory,records);
-    const db={all:(sql,params=[])=>connection.prepare(sql).all(...params)};
-    assert.equal(JSON.parse(db.all("SELECT value FROM metadata WHERE key='schema'")[0].value),5);
-    const rows=db.all('SELECT website,phone,description FROM places ORDER BY id').map(row=>({...row}));
+    db=openCells([join(directory,'test.sqlite')]);
+    assert.equal(db.metadata.schema,5);
+    const rows=connection.prepare('SELECT website,phone,description FROM places ORDER BY id').all().map(row=>({...row}));
     assert.deepEqual(rows,[
       {website:'https://hotel.example',phone:'+49 123',description:'Tents welcome.'},
       {website:'water.example',phone:'+33 456',description:'Petite source avec robinet.'},
@@ -52,7 +53,7 @@ test('the POI builder retains contact aliases and descriptions for named and unn
     assert.equal(result.results[0].description,rows[1].description);
     assert.equal(result.results[0].source,'n2');
     assert.equal((await answerQuery(db,{source:'n99',q:''},{},hours)).results.length,0);
-  } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
+  } finally {db?.close();connection?.close();rmSync(directory,{recursive:true,force:true});}
 });
 
 test('Swiss places keep the German canton name that selects cantonal holidays',()=>{
@@ -100,7 +101,7 @@ for component,output in outputs.items():
  writer.finish({'bounds':[7,47,9,49],'osm_sha256':'a'*64})
 `,new URL('..',import.meta.url).pathname,directory]);
     installed=openRegion(directory,'test');
-    const places=installed.db.all('SELECT p.* FROM places p');
+    const places=installed.db.rows({sql:'SELECT p.* FROM {c}.places p'});
     assert.equal(places.filter(p=>p.kind==='city').length,1);
     assert.equal(places.filter(p=>p.kind==='street').length,1);
     assert.equal(new Set(places.map(p=>p.id)).size,4);
@@ -108,7 +109,6 @@ for component,output in outputs.items():
     for(const p of places)assert.ok(Number.isSafeInteger(p.id)&&p.id>0);
     assert.ok(places.find(p=>p.kind==='street').id>2**52);
     assert.ok(places.find(p=>p.kind==='hotel').id<2**52);
-    assert.equal(installed.metadata.counts.address,2);
     assert.equal(search(installed.db,{q:'Hotel View',view:[7,47,9,49]}).results[0].description,'Tents welcome.');
     const reverse=reverseAddress(installed.db,[8,48]);
     assert.equal(reverse,'Main Street 12, Testville');
@@ -117,18 +117,17 @@ for component,output in outputs.items():
       mkdirSync(join(directory,'tiles',component),{recursive:true});
       copyFileSync(join(directory,component,'test.sqlite'),join(directory,'tiles',component,'9-267-177.sqlite'));
     }
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,metadata:installed.metadata,cells}));
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells}));
     grid=openRegion(directory,'test');
-    assert.equal(grid.db.all('SELECT p.* FROM places p').length,4);
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,metadata:installed.metadata,
-      cells:[{...cells[0],files:cells[0].files.slice(0,1)}]}));
+    assert.equal(grid.db.rows({sql:'SELECT p.* FROM {c}.places p'}).length,4);
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells:[{...cells[0],files:cells[0].files.slice(0,1)}]}));
     assert.throws(()=>openRegion(directory,'test'),/Invalid search grid files/);
-    cells[0].files[0]='../pois/test.sqlite';
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,metadata:installed.metadata,cells}));
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells:[{...cells[0],files:['../pois/test.sqlite',cells[0].files[1]]}]}));
     assert.throws(()=>openRegion(directory,'test'),/Invalid search grid files/);
-    cells[0].files[0]='tiles/pois/9-267-177.sqlite';
-    const metadata={...installed.metadata,osm_sha256:'b'.repeat(64)};
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,metadata,cells}));
-    assert.throws(()=>openRegion(directory,'test'),/incompatible provenance/);
-  } finally {installed?.close();grid?.close();rmSync(directory,{recursive:true,force:true})}
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells}));
+    const copy=new DatabaseSync(join(directory,'tiles/addresses/9-267-177.sqlite'));
+    copy.prepare("UPDATE metadata SET value=? WHERE key='osm_sha256'").run(JSON.stringify('b'.repeat(64)));
+    copy.close();
+    assert.throws(()=>openRegion(directory,'test'),/one OSM source/);
+  } finally {installed?.db.close();grid?.db.close();rmSync(directory,{recursive:true,force:true})}
 });

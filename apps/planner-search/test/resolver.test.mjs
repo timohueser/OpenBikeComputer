@@ -82,7 +82,7 @@ test('time positions require a monotone time profile, and end offsets run backwa
 });
 test('malformed or unbounded API data is rejected before retrieval',()=>{
   validateInput(context);
-  for(const extra of [{view:[0,0,1,Infinity]},{region:'../../data'},{request:{type:'places',what:[]}},{plan:{...context.plan,coordinates:[[NaN,0]]}},{plan:{...context.plan,km:[0]}},{request:{type:'route',to:{kind:'unknown-kind'}}}])assert.throws(()=>validateInput({...context,...extra}));
+  for(const extra of [{view:[0,0,1,Infinity]},{request:{type:'places',what:[]}},{plan:{...context.plan,coordinates:[[NaN,0]]}},{plan:{...context.plan,km:[0]}},{request:{type:'route',to:{kind:'unknown-kind'}}}])assert.throws(()=>validateInput({...context,...extra}));
 });
 
 test('every day ends resolve separately and riding-time splits use the supplied profile',()=>{
