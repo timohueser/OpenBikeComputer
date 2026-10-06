@@ -81,13 +81,13 @@ mod tests {
         let root = &scratch.0;
         let project = |alpha: &str, beta: &str, gamma: &str| {
             write(&root.join("pyproject.toml"), &format!(
-                "[project]\nname = \"identity-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[dependency-groups]\nselected = [\"alpha=={alpha}\"]\ntests = [\"beta=={beta}\"]\n[tool.uv]\npackage = false\ndefault-groups = []\n"
+                "[project]\nname = \"identity-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[dependency-groups]\nselected = [\"alpha=={alpha}\"]\ntests = [\"beta=={beta}\"]\n[tool.uv]\npackage = false\ndefault-groups = []\n[[tool.uv.index]]\nurl = \"https://example.org/simple\"\ndefault = true\n"
             ));
             let mut lock = format!(
                 "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n[[package]]\nname = \"identity-fixture\"\nversion = \"0\"\nsource = {{ virtual = \".\" }}\n[package.dev-dependencies]\nselected = [{{ name = \"alpha\" }}]\ntests = [{{ name = \"beta\" }}]\n[package.metadata.requires-dev]\nselected = [{{ name = \"alpha\", specifier = \"=={alpha}\" }}]\ntests = [{{ name = \"beta\", specifier = \"=={beta}\" }}]\n"
             );
             for (name, version) in [("alpha", alpha), ("beta", beta), ("gamma", gamma)] {
-                lock += &format!("[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = {{ registry = \"https://pypi.org/simple\" }}\n");
+                lock += &format!("[[package]]\nname = \"{name}\"\nversion = \"{version}\"\nsource = {{ registry = \"https://example.org/simple\" }}\n");
                 if name == "alpha" {
                     lock += "dependencies = [{ name = \"gamma\" }]\n";
                 }
