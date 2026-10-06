@@ -501,7 +501,7 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_ios_suites_require_their_own_inputs(self) -> None:
         unrelated = [
-            "docs/testing.md", "CONTRIBUTING.md", "tools/justfile", "tools/ci/test.sh",
+            "docs/testing.md", "CONTRIBUTING.md", "tools/justfile", "tools/ci/test.sh", "rustfmt.toml",
             ".config/nextest.toml", "testing/suites.toml", "testing/coverage-policy.toml",
             ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
             "host/route-build/src/lib.rs", "apps/route-server/src/main.rs", "apps/route-server/src/http.rs",
@@ -523,6 +523,8 @@ class ShippedPlanTests(unittest.TestCase):
             ("firmware/obc-app/i18n/en.toml", {"ci.ios-device-build"}),
             ("apps/planner-search/runtime.mjs", {"ci.ios-app-build", "ci.ios-release-build"}),
             ("apps/planner-search/query/lexicon/kinds.json", {"ci.ios-app-build", "ci.ios-release-build"}),
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build"})
+              for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", ".cargo/config", "rust-toolchain.toml")],
         ]:
             with self.subTest(path=path):
                 selected = plan.select(self.units, self.graph, [path]).selected
