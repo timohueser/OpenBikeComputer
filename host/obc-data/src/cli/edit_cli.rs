@@ -142,7 +142,10 @@ mod tests {
         let root = scratch.0.join("repository");
         write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
         for region in ["monaco", "europe/andorra"] {
-            write(&root.join(format!("data/regions/{region}.toml")), "name = \"A region\"\nkind = \"geofabrik\"\n");
+            write(
+                &root.join(format!("data/regions/{region}.toml")),
+                "name = \"A region\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n",
+            );
         }
         write(&root.join("data/env/live.toml"), LIVE);
         let file = || std::fs::read_to_string(root.join("data/env/live.toml")).unwrap();

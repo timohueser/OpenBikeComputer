@@ -1304,7 +1304,10 @@ pub(crate) mod tests {
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         let http = Http::loopback(&actual);
         let moves = ["index@1".into()];
@@ -1380,7 +1383,10 @@ pub(crate) mod tests {
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         let mut run = Run::create(&fixture.store, "prepare live").unwrap();
         let id = run.id().to_string();
@@ -1648,7 +1654,10 @@ pub(crate) mod tests {
         let fixture = fixture("cli-versions");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         let http = Http::new();
         let build = |plan: Option<PathBuf>| {
@@ -1672,7 +1681,10 @@ pub(crate) mod tests {
         let fixture = fixture("cli-build");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         fixture.fetched("index", "index.txt", b"index\n");
         let http = Http::new();
@@ -1732,7 +1744,10 @@ pub(crate) mod tests {
         let fixture = fixture("cli-partial");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), SOURCES);
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         let preview =
             planned(&root, &fixture.store, &Http::new(), None, &[&Partial], "live", &[], Basis::Moves(&[]), false)
@@ -1774,7 +1789,10 @@ pub(crate) mod tests {
         let fixture = fixture("cli-blocked");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         fixture.fetched("index", "index.txt", b"index\n");
         let (http, products): (_, [&dyn Product; 2]) = (Http::new(), [&Indexed, &Refused]);
@@ -1865,7 +1883,10 @@ pub(crate) mod tests {
         let fixture = fixture(name);
         let root = fixture.root();
         write(&root.join("data/sources.toml"), SOURCES);
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         fixture.fetched_version("head", "2020-01-01", "head.txt", b"head\n");
         std::fs::create_dir_all(fixture.scratch.0.join("bucket")).unwrap();
@@ -1966,7 +1987,10 @@ pub(crate) mod tests {
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
         assert_eq!((ids, plan.moves.len()), (vec!["code:test/join", "repair"], 0), "no move");
 
-        write(&fixture.root().join("data/regions/andorra.toml"), "name = \"Andorra\"\nkind = \"geofabrik\"\n");
+        write(
+            &fixture.root().join("data/regions/andorra.toml"),
+            "name = \"Andorra\"\nkind = \"geofabrik\"\nareas = [\"andorra\"]\n",
+        );
         write(&fixture.root().join("data/env/live.toml"), "region = \"andorra\"\n");
         let edit = Edit::Region { product: "test".into(), from: Some("monaco".into()), to: "andorra".into() };
         assert_eq!(live_plan(&fixture, &remote, &[]).unwrap().edits, [edit], "no layer reads the region");

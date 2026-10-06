@@ -1,2 +1,3 @@
 name = "Regierungsbezirk Tübingen"
 kind = "geofabrik"
+areas = ["europe/germany/baden-wuerttemberg/tuebingen-regbez"]

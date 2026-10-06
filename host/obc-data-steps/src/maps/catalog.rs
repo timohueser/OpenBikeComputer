@@ -12,6 +12,7 @@ pub const LAYER: &str = "maps/catalog";
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     env: &Env,
+    region: &obc_data::regions::Region,
     store: &Store,
     outlines: &[Coverage],
     listed: &[Step],
@@ -21,8 +22,10 @@ pub fn step(
     body: &str,
 ) -> Result<Step, Unplanned> {
     let areas = obc_data::regions::geofabrik::parse(body.as_bytes()).map_err(Unplanned::Failed)?;
-    if !areas.contains_key(&env.region) {
-        return Err(Unplanned::Invalid(format!("Geofabrik index has no area `{}`", env.region)));
+    let source_area =
+        region.source_area().ok_or_else(|| Unplanned::Invalid("catalog requires one source area".into()))?;
+    if !areas.contains_key(source_area) {
+        return Err(Unplanned::Invalid(format!("Geofabrik index has no area `{source_area}`")));
     }
     let source_coverage = Coverage::union(&outlines.iter().collect::<Vec<_>>())
         .ok_or("cannot union source coverage")
@@ -39,14 +42,14 @@ pub fn step(
         available.insert(band.id, cells);
     }
     let terrain_available = source_coverage.cells(V1_CELL_LOG2.into());
-    let params = [("area".into(), env.region.clone())];
+    let params = [("area".into(), source_area.to_string())];
     let poly_version = version_of_poly(env, store, &params)?;
     let (_, digest) = file(env, store, POLY, &poly_version, &params)?;
     let primary_poly = std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
     let mut picks = Vec::new();
     let bbox = source_coverage.bbox();
     for area in areas.values() {
-        if area.id != env.region
+        if area.id != source_area
             && (area.bounds.east * 1e6 < bbox.0 as f64
                 || area.bounds.west * 1e6 > bbox.2 as f64
                 || area.bounds.north * 1e6 < bbox.1 as f64
@@ -54,7 +57,7 @@ pub fn step(
         {
             continue;
         }
-        let poly = if area.id == env.region { primary_poly.clone() } else { poly(area) };
+        let poly = if area.id == source_area { primary_poly.clone() } else { poly(area) };
         let outline = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
         // Candidate selections are admitted only when every band and terrain cell is built.
         let mut cells = BTreeMap::new();
@@ -86,6 +89,18 @@ pub fn step(
             terrain: terrain.into_iter().map(|id| id.to_string()).collect(),
         });
     }
+    if source_area != env.region {
+        let mut primary = picks
+            .iter()
+            .find(|pick| pick.id == source_area)
+            .cloned()
+            .ok_or_else(|| Unplanned::Invalid(format!("catalog has no complete source `{source_area}`")))?;
+        primary.id = region.id.clone();
+        primary.name = region.name.clone();
+        primary.parent = None;
+        picks.retain(|pick| pick.id != primary.id);
+        picks.push(primary);
+    }
     if !picks.iter().any(|pick| pick.id == env.region) {
         return Err(Unplanned::Invalid(format!("catalog has no complete selection for `{}`", env.region)));
     }
@@ -94,7 +109,7 @@ pub fn step(
         pick.parent = pick.parent.take().filter(|parent| ids.contains(parent));
     }
     let options = Options {
-        sources: vec![CellSource { extract_id: env.region.clone(), snapshot: extract.into() }],
+        sources: vec![CellSource { extract_id: source_area.into(), snapshot: extract.into() }],
         coverage,
         picks,
         posting_log2: V1_POSTING_LOG2,

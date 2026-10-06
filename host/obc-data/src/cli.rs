@@ -8,6 +8,7 @@ mod build_cli;
 mod edit_cli;
 mod freshness;
 mod r2_cli;
+mod regions_cli;
 mod runs_cli;
 mod status_cli;
 mod tui;
@@ -67,7 +68,7 @@ enum Command {
     #[command(args_conflicts_with_subcommands = true)]
     Region {
         #[command(subcommand)]
-        action: Option<RegionAction>,
+        action: Option<regions_cli::Action>,
         /// The environment whose region to set.
         #[arg(requires = "id")]
         env: Option<String>,
@@ -101,14 +102,6 @@ enum Command {
     },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
-}
-
-#[derive(Subcommand)]
-enum RegionAction {
-    /// Every region with its kind and definition.
-    List,
-    /// One region, with the regions a union resolves to and its box.
-    Show { id: String },
 }
 
 /// Run `obc data` with the products whose steps this binary links.
@@ -188,13 +181,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Region { env: Some(env), id: Some(id), .. } => {
             edit_cli::print(edit_cli::region(&root()?, products, &env, &id)?, json)
         }
-        Command::Region { action, .. } => {
-            let regions = Regions::load(&root()?).map_err(|e| Code::InvalidData.error(e))?;
-            match action {
-                None | Some(RegionAction::List) => print_regions(&regions, json),
-                Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
-            }
-        }
+        Command::Region { action, .. } => regions_cli::run(&root()?, action, json),
         Command::Layer { env, layer, switch } => {
             edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
         }
@@ -598,9 +585,8 @@ fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: 
 
 fn definition(region: &Region) -> String {
     match &region.area {
-        Area::Geofabrik => "geofabrik".into(),
+        Area::Geofabrik { areas } => format!("geofabrik: {}", areas.join(" + ")),
         Area::Box { bbox } => format!("box {},{} → {},{}", bbox.west, bbox.south, bbox.east, bbox.north),
-        Area::Polygon { polygon } => format!("polygon {polygon}"),
         Area::Union { union } => format!("union: {}", union.join(" + ")),
     }
 }

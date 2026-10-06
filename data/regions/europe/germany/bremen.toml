@@ -1,2 +1,3 @@
 name = "Bremen"
 kind = "geofabrik"
+areas = ["europe/germany/bremen"]
