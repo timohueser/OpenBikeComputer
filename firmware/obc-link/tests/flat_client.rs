@@ -318,7 +318,7 @@ fn invalid_source_crc_cancels_before_the_last_frame_can_commit() {
         unreachable!();
     };
     request.payload_crc ^= 1;
-    assert_eq!(s.run(Request::Put(request)), Err(Error::Protocol));
+    assert_eq!(s.run(Request::Put(request)), Err(Error::Checksum));
     assert_eq!(s.device.read_object(old.id.0, 0), Some(installed));
     assert!(s.device.is_quiet());
 }

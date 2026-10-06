@@ -19,6 +19,10 @@ pub struct Options {
     pub list_restarts: u8,
     pub reconnect_attempts: u8,
     pub remove_duplicate_creates: bool,
+    /// Whole stream records per payload read, bounded by the pending window.
+    pub upload_source_records: usize,
+    /// Stream records that may await real transport completion.
+    pub upload_pending_records: usize,
 }
 
 impl Default for Options {
@@ -29,6 +33,8 @@ impl Default for Options {
             list_restarts: 4,
             reconnect_attempts: 1,
             remove_duplicate_creates: false,
+            upload_source_records: 1,
+            upload_pending_records: 1,
         }
     }
 }
@@ -38,6 +44,7 @@ pub enum Error {
     Busy,
     InvalidInput,
     Protocol,
+    Checksum,
     Remote(Refusal),
     Timeout,
     Cancelled,
@@ -141,6 +148,7 @@ struct Operation {
     answer: Option<TransferResponse>,
     source_due: Option<(u64, u64, usize)>,
     sinks: VecDeque<(u64, u64, usize)>,
+    stream_writes: VecDeque<StreamWrite>,
     entries: Vec<EntryMeta>,
     sequence: Option<u64>,
     restarts: u8,
@@ -160,6 +168,7 @@ impl Operation {
             answer: None,
             source_due: None,
             sinks: VecDeque::new(),
+            stream_writes: VecDeque::new(),
             entries: Vec::new(),
             sequence: None,
             restarts: 0,
@@ -179,13 +188,20 @@ impl Operation {
         self.answer = None;
         self.source_due = None;
         self.sinks.clear();
+        self.stream_writes.clear();
     }
 }
 
 #[derive(Clone, Copy)]
 enum Write {
     Control,
-    Stream { offset: u64, len: usize },
+}
+
+struct StreamWrite {
+    token: u64,
+    offset: u64,
+    len: usize,
+    written: bool,
 }
 
 struct Cancellation {
@@ -246,6 +262,23 @@ impl Client {
         self.actions.pop_front()
     }
 
+    /// Configure finite upload reads and pending records while the primary operation is idle.
+    /// Adapters may group records, but report Written only after their actual batch completes.
+    pub fn set_upload_window(&mut self, source_records: usize, pending_records: usize) -> Result<(), Error> {
+        if self.operation.is_some() {
+            return Err(Error::Busy);
+        }
+        if source_records == 0
+            || pending_records < source_records
+            || pending_records.checked_mul(self.ceilings.stream()).is_none()
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.options.upload_source_records = source_records;
+        self.options.upload_pending_records = pending_records;
+        Ok(())
+    }
+
     /// A LIST starts at the first page; pagination and snapshot restarts belong to the client.
     /// ARCHIVE_RIDE is an assertion by the adapter that archive persistence barriers completed.
     pub fn start(&mut self, request: Request, now_ms: u64) -> Result<(), Error> {
@@ -268,6 +301,9 @@ impl Client {
         }
         if matches!(request, Request::List(ListRequest { cursor: Some(_), .. })) {
             return Err(Error::InvalidInput);
+        }
+        if matches!(request, Request::Put(_)) {
+            self.set_upload_window(self.options.upload_source_records, self.options.upload_pending_records)?;
         }
         let mut record = [0u8; MAX_REQUEST_LEN];
         encode_request(&mut record, RequestId(1), request).ok_or(Error::InvalidInput)?;
@@ -343,7 +379,7 @@ impl Client {
             Event::Tick => Ok(()),
         };
         if let Err(error) = result {
-            if matches!(error, Error::Protocol | Error::Io)
+            if matches!(error, Error::Protocol | Error::Checksum | Error::Io)
                 && self.cancellation.is_none()
                 && self.cancel(error, now_ms).is_ok()
             {
@@ -413,60 +449,67 @@ impl Client {
     }
 
     fn written(&mut self, token: u64, now: u64) -> Result<(), Error> {
-        let Some((expected, write)) = self.write else {
-            return Ok(());
-        };
-        if token != expected {
-            return Ok(());
-        }
-        self.write = None;
-        if self.cancellation.is_some() {
-            return Ok(());
-        }
-        self.deadline = now.saturating_add(self.options.timeout_ms);
-        match write {
-            Write::Control => {
-                if self
-                    .pending
-                    .as_ref()
-                    .is_some_and(|p| p.purpose == Purpose::Run && matches!(p.request, Request::Put(_)))
-                {
-                    self.request_source()?;
-                }
+        if self.write.is_some_and(|(expected, _)| expected == token) {
+            self.write = None;
+            if self.cancellation.is_some() || self.restoring {
+                return Ok(());
             }
-            Write::Stream { offset, len } => {
-                let op = self.operation.as_mut().unwrap();
-                if offset != op.settled {
-                    return Err(Error::Protocol);
-                }
-                op.settled += len as u64;
-                let Request::Put(put) = op.request else {
-                    return Err(Error::Protocol);
-                };
-                self.actions.push_back(Action::Progress { done: op.settled, total: put.payload_len });
+            self.deadline = now.saturating_add(self.options.timeout_ms);
+            if self.pending.as_ref().is_some_and(|p| p.purpose == Purpose::Run && matches!(p.request, Request::Put(_)))
+            {
                 self.request_source()?;
             }
+            return self.finish_transfer();
         }
+        if self.cancellation.is_some() || self.restoring {
+            return Ok(());
+        }
+        let Some(op) = self.operation.as_mut() else {
+            return Ok(());
+        };
+        let Some(write) = op.stream_writes.iter_mut().find(|write| write.token == token) else {
+            return Ok(());
+        };
+        write.written = true;
+        let before = op.settled;
+        while op.stream_writes.front().is_some_and(|write| write.written) {
+            let write = op.stream_writes.pop_front().unwrap();
+            if write.offset != op.settled {
+                return Err(Error::Protocol);
+            }
+            op.settled += write.len as u64;
+        }
+        if op.settled != before {
+            let Request::Put(put) = op.request else {
+                return Err(Error::Protocol);
+            };
+            self.actions.push_back(Action::Progress { done: op.settled, total: put.payload_len });
+        }
+        self.deadline = now.saturating_add(self.options.timeout_ms);
+        self.request_source()?;
         self.finish_transfer()
     }
 
     fn request_source(&mut self) -> Result<(), Error> {
-        let token = self.token()?;
-        let op = self.operation.as_mut().unwrap();
+        let op = self.operation.as_ref().unwrap();
         let Request::Put(put) = op.request else {
             return Err(Error::Protocol);
         };
-        if op.settled == put.payload_len {
-            if op.crc.finalize() != put.payload_crc {
-                return Err(Error::Protocol);
-            }
-        } else {
-            let max_len = (put.payload_len - op.settled)
-                .min((self.ceilings.stream() - STREAM_HEADER_LEN).min(u16::MAX as usize) as u64)
-                as usize;
-            op.source_due = Some((token, op.settled, max_len));
-            self.actions.push_back(Action::ReadSource { token, offset: op.settled, max_len });
+        if op.source_due.is_some() || op.received == put.payload_len {
+            return Ok(());
         }
+        let available = self.options.upload_pending_records - op.stream_writes.len();
+        let payload = (self.ceilings.stream() - STREAM_HEADER_LEN).min(u16::MAX as usize);
+        let remaining = put.payload_len - op.received;
+        let records = self.options.upload_source_records.min(remaining.div_ceil(payload as u64) as usize);
+        if available < records {
+            return Ok(());
+        }
+        let max_len = remaining.min((records * payload) as u64) as usize;
+        let token = self.token()?;
+        let op = self.operation.as_mut().unwrap();
+        op.source_due = Some((token, op.received, max_len));
+        self.actions.push_back(Action::ReadSource { token, offset: op.received, max_len });
         Ok(())
     }
 
@@ -474,7 +517,9 @@ impl Client {
         if self.cancellation.is_some() || self.restoring {
             return Ok(());
         }
-        let op = self.operation.as_mut().unwrap();
+        let Some(op) = self.operation.as_mut() else {
+            return Ok(());
+        };
         let Some((expected, due, max_len)) = op.source_due else {
             return Ok(());
         };
@@ -488,11 +533,8 @@ impl Client {
         if self.write.is_some()
             || offset != due
             || bytes.len() > max_len
-            || offset != op.settled
-            || op.received != offset
+            || offset != op.received
             || bytes.is_empty()
-            || bytes.len() > self.ceilings.stream() - STREAM_HEADER_LEN
-            || bytes.len() > u16::MAX as usize
             || bytes.len() as u64 > put.payload_len - offset
         {
             return Err(Error::Protocol);
@@ -501,17 +543,29 @@ impl Client {
         crc.update(bytes);
         let received = op.received + bytes.len() as u64;
         if received == put.payload_len && crc.finalize() != put.payload_crc {
-            return Err(Error::Protocol);
+            return Err(Error::Checksum);
         }
         op.crc = crc;
         op.received = received;
-        let mut record = vec![0; STREAM_HEADER_LEN + bytes.len()];
         let id = self.pending.as_ref().ok_or(Error::Protocol)?.id;
-        write_stream(&mut record, id, offset, bytes.len()).ok_or(Error::Protocol)?;
-        record[STREAM_HEADER_LEN..].copy_from_slice(bytes);
-        self.send(Channel::Stream, record, Write::Stream { offset, len: bytes.len() })?;
+        let payload = (self.ceilings.stream() - STREAM_HEADER_LEN).min(u16::MAX as usize);
+        let mut at = offset;
+        for chunk in bytes.chunks(payload) {
+            let token = self.token()?;
+            let mut record = vec![0; STREAM_HEADER_LEN + chunk.len()];
+            write_stream(&mut record, id, at, chunk.len()).ok_or(Error::Protocol)?;
+            record[STREAM_HEADER_LEN..].copy_from_slice(chunk);
+            self.operation.as_mut().unwrap().stream_writes.push_back(StreamWrite {
+                token,
+                offset: at,
+                len: chunk.len(),
+                written: false,
+            });
+            self.actions.push_back(Action::Send { token, channel: Channel::Stream, record });
+            at += chunk.len() as u64;
+        }
         self.deadline = now.saturating_add(self.options.timeout_ms);
-        Ok(())
+        self.request_source()
     }
 
     fn stream(&mut self, record: &[u8], now: u64) -> Result<(), Error> {
@@ -588,7 +642,7 @@ impl Client {
             return Ok(());
         }
         if op.crc.finalize() != answer.payload_crc {
-            return Err(Error::Protocol);
+            return Err(Error::Checksum);
         }
         let outcome = if matches!(op.request, Request::Put(_)) { Outcome::Put(answer) } else { Outcome::Get(answer) };
         self.finish(Ok(outcome));
@@ -618,6 +672,7 @@ impl Client {
             || self.operation.as_ref().is_some_and(|op| {
                 op.source_due.is_some_and(|(expected, _, _)| expected == token)
                     || op.sinks.iter().any(|(expected, _, _)| *expected == token)
+                    || op.stream_writes.iter().any(|write| write.token == token)
             })
     }
 }
