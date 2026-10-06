@@ -12,10 +12,10 @@
 
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, POI_CHUNK_SIZE, STYLE_RECORD_LEN};
+use obc_map_core::progress::Progress;
 use obc_pack::config::LineStyle as PackLineStyle;
 use obc_pack::geom::Geom;
 use obc_pack::nav::NavGraph;
-use obc_pack::progress::Progress;
 use obc_pack::quadtree::build_lod_with;
 use obc_pack::serialize::{pack_style_dict, NavProfile, Style};
 use obc_pack::{serialize_lods, LodLayer};

@@ -33,14 +33,14 @@ use obc_bake::source::LocalExtracts;
 use obc_bake::terrain::{
     ReferenceSource, TerrainBakeOptions, TerrainBakery, TerrainCell, TerrainCutter, TerrainDoc, TerrainRunSummary,
 };
+use obc_map_core::progress::Progress;
 use obc_pack::config::Config;
 use obc_pack::cut::{CutOptions, CutSummary};
 use obc_pack::geom::Geom;
 use obc_pack::grid::{BandTable, CellId};
 use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 
 const SNAPSHOT: &str = "2026-07-28";
 /// The two licences the fixture's landmark artifact is under: one article, one photo.

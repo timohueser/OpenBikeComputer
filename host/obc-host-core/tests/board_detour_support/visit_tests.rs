@@ -594,7 +594,7 @@ fn closed_place_can_be_previewed_and_accepted_even_if_it_closes_during_review() 
             Some(obc_ports::Fix::at(500_000, 500_000))
         }
     }
-    let mut schedule = obc_pack::hours::Schedule::default();
+    let mut schedule = obc_places::hours::Schedule::default();
     for day in &mut schedule.days {
         day[0].close_q = 48;
     }

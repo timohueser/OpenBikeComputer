@@ -13,10 +13,10 @@ use std::process::Command;
 
 pub use obc_osm::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
 
+use obc_map_core::progress::Progress;
 use obc_pack::catalog::CellSource;
 use obc_pack::cut::{CellArtifact, CutOptions, SourceExtent};
 use obc_pack::grid::{BandTable, CellId, UBox, GRID_ORIGIN};
-use obc_pack::progress::Progress;
 use serde::{Deserialize, Serialize};
 
 use crate::cell_store::{paths as cell_paths, read_current as read_cell_state, CellSidecar, CellState};

@@ -13,6 +13,7 @@
 //! complement as `natural.sea`.
 //! `natural.sea`.
 
+use obc_pbf::area::ring_to_coordseq;
 use std::fs::File;
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -20,11 +21,9 @@ use std::sync::{Arc, Mutex};
 
 use geos::{Geom as _, Geometry};
 
-use crate::geom::{
-    box_polygon, collect_polygons, from_geos, geom_from_geos, ring_to_coordseq, try_polygon_to_geos, Geom,
-};
+use crate::geom::{box_polygon, collect_polygons, from_geos, geom_from_geos, try_polygon_to_geos, Geom};
 use crate::net;
-use crate::progress::Progress;
+use obc_map_core::progress::Progress;
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
@@ -616,7 +615,7 @@ mod tests {
         let path = dir.join("fixture.shp");
         one_record_shp(&path);
 
-        let cancel = crate::progress::CancelToken::new();
+        let cancel = obc_map_core::progress::CancelToken::new();
         cancel.cancel();
         let cancelled = Progress::new(cancel, |_, _| {});
         land_index(&path, &cancelled).expect_err("a cancelled scan fails");

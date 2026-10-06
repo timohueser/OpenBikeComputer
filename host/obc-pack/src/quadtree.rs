@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::geom::{
     clip_to_box, hole_anchors_encodable, packed_size_budget, to_feature, trim_excess_holes, Bounds, Geom,
 };
-use crate::progress::Progress;
 use crate::serialize::Node;
+use obc_map_core::progress::Progress;
 use obc_reader::MAX_FEAT_RINGS;
 
 /// Degree bounds `(min_lon, min_lat, max_lon, max_lat)` of an integer-µdeg box.

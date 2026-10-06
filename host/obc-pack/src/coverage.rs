@@ -1,8 +1,9 @@
 //! Geometric coverage predicates for selecting complete source extracts.
 
 use geos::{Geom as _, Geometry};
+use obc_pbf::area::ring_to_coordseq;
 
-use crate::geom::{geom_from_geos, ring_to_coordseq, Geom};
+use crate::geom::{geom_from_geos, Geom};
 
 fn union(polys: &[&Geom]) -> Result<Geometry, String> {
     let polygons = polys

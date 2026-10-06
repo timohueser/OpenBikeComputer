@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::config::Config;
 use crate::cut::{artifact_path, cut, CutOptions};
 use crate::grid::{Band, BandTable, CellId};
-use crate::progress::{CancelToken, Progress};
+use obc_map_core::progress::{CancelToken, Progress};
 
 /// The schema that every cell is cut with.
 pub(crate) const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"));
@@ -143,6 +143,10 @@ pub fn capture_code() -> String {
     let code = [
         include_str!("catalog/boundary.rs"),
         include_str!("geom.rs"),
+        include_str!("../../obc-pbf/src/area.rs"),
+        include_str!("../../obc-places/src/lib.rs"),
+        include_str!("../../obc-places/src/metadata.rs"),
+        include_str!("../../obc-places/src/name.rs"),
         include_str!("landmarks/discover.rs"),
         include_str!("landmarks/peaks.rs"),
     ];
@@ -473,9 +477,9 @@ mod tests {
         std::fs::write(&manifest, serde_json::to_vec(&document).unwrap()).unwrap();
 
         let files = |name: &str, path: &Path| (name.to_string(), path.to_path_buf());
-        let build = |name: &str, summits_sha256: &str| {
+        let boundary_sha256 = hex(&std::fs::read(&boundary).unwrap());
+        let build = |name: &str, boundary_sha256: &str, summits_sha256: &str| {
             let recipe = dir.join(format!("{name}.json"));
-            let boundary_sha256 = hex(&std::fs::read(&boundary).unwrap());
             let pins = serde_json::json!({"boundary_sha256": boundary_sha256, "summits_sha256": summits_sha256});
             std::fs::write(&recipe, pins.to_string()).unwrap();
             let capture = [files("#peaks=0/manifest.json", &manifest), files("#peaks=0/recipe.json", &recipe)];
@@ -494,13 +498,20 @@ mod tests {
             };
             peak_content(&request).map(|()| request.output)
         };
-        let output = build("current", &hex(&bytes)).unwrap();
+        let output = build("current", &boundary_sha256, &hex(&bytes)).unwrap();
         let content = std::fs::read(output.join("peaks/peaks.json")).unwrap();
         let content: PeakContent = serde_json::from_slice(&content).unwrap();
         let summits: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(content.counts.captured > 0);
         assert_eq!(content.counts.captured, summits["summits"].as_array().unwrap().len());
-        let refused = build("other-code", &hex(b"other summits")).unwrap_err();
-        assert!(refused.ends_with("Plan with `--move wikidata`"), "{refused}");
+        for (name, boundary_pin, summit_pin, changed) in [
+            ("other-summits", boundary_sha256.as_str(), hex(b"other summits"), "summits"),
+            ("other-boundary", "other boundary", hex(&bytes), "boundary"),
+        ] {
+            let refused = build(name, boundary_pin, &summit_pin).unwrap_err();
+            assert!(refused.contains(&format!("the {changed} that it pinned")), "{refused}");
+            assert!(refused.ends_with("Plan with `--move wikidata`"), "{refused}");
+            assert!(!dir.join(name).join("output/peaks/peaks.json").exists(), "pin mismatch writes no content");
+        }
     }
 }

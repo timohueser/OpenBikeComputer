@@ -1,6 +1,7 @@
 //! Join canonical peak articles to the exact summit nodes carried by a map.
-use crate::{grid::CellId, landmarks::peaks::PeakContent, poi::Poi};
+use crate::{grid::CellId, landmarks::peaks::PeakContent};
 use obc_formats::obcm::{landmarks::ContentRef, peaks::*, SourceId, SUMMIT_SUBTYPE_ID};
+use obc_places::metadata::Poi;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},

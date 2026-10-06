@@ -36,6 +36,7 @@ obc-render = { workspace = true }
 embedded-graphics = { workspace = true }
 
 [dev-dependencies]
+obc-places = { workspace = true }
 obc-link = { workspace = true }
 obc-pack = { workspace = true }
 obc-storage = { workspace = true, features = ["std"] }

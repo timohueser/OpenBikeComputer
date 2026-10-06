@@ -29,15 +29,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use osmpbf::{Blob, BlobReader, BlobType, ByteOffset, Element, RelMemberType};
-use rayon::prelude::*;
+use osmpbf::{ByteOffset, Element, RelMemberType};
 
 use crate::config::Config;
-use crate::geom::{assemble_multipolygon, polygon_is_valid, Geom};
-use crate::hours;
-use crate::nav::{self, NavGraph, RoutableWay};
-use crate::poi::{self, Poi};
-use crate::progress::{Phase, Progress};
+use crate::geom::{assemble_multipolygon, Geom};
+use crate::nav::{self, NavGraph};
+use obc_map_core::progress::{Phase, Progress};
+use obc_pbf::area::polygon_is_valid;
+use obc_pbf::bbox::{to_deg, Bbox};
+use obc_pbf::scan::{par_sources, scan_blobs, Keyed, Scan};
+use obc_pbf::selection::{Crop, IdSet};
+use obc_places::hours;
+use obc_places::metadata::{self as poi, Poi};
+use obc_places::routing::RoutableWay;
 
 pub struct IngestFeature {
     pub style_id: u8,
@@ -65,354 +69,6 @@ struct PendingRelation {
 
 /// The tags whose presence (with `area != no`) classifies a closed way as a polygon.
 const AREA_TAGS: [&str; 6] = ["building", "landuse", "amenity", "leisure", "natural", "waterway"];
-
-/// `decimicro / 1e7`, never `* 1e-7`, so coords match osmium exactly.
-#[inline]
-fn to_deg(decimicro: i32) -> f64 {
-    decimicro as f64 / 1e7
-}
-
-/// A `--bbox` crop region, held in the PBF's own decimicro-degree integer grid — the fixed point
-/// `osmium::Location` stores. [`Bbox::contains`] is then an integer comparison, so the in-process
-/// crop cannot disagree with `osmium extract` about a node sitting a float ULP from the boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Bbox {
-    min_lon: i32,
-    min_lat: i32,
-    max_lon: i32,
-    max_lat: i32,
-}
-
-/// Degrees → osmium's fixed point: `std::round` half-away-from-zero, same as
-/// libosmium's `double_to_fix`. Rust's `f64::round` rounds the same way.
-#[inline]
-fn to_fix(deg: f64) -> i32 {
-    (deg * 1e7).round() as i32
-}
-
-impl Bbox {
-    /// Parse a `W,S,E,N` degrees spec, as strictly as `osmium extract` parses its own `--bbox`:
-    /// four finite in-range numbers, west strictly west of east and south strictly south of north.
-    ///
-    /// A box wrapping the antimeridian is rejected. Every stage downstream — the header bbox, the
-    /// quadtree root box, the land clip — assumes `min < max` in plain degrees.
-    pub fn parse(spec: &str) -> Result<Self, String> {
-        let parts: Vec<&str> = spec.split(',').map(str::trim).collect();
-        if parts.len() != 4 {
-            return Err(format!("--bbox wants four comma-separated numbers W,S,E,N (got {spec:?})"));
-        }
-        let mut v = [0.0f64; 4];
-        for (slot, text) in v.iter_mut().zip(&parts) {
-            *slot = text
-                .parse::<f64>()
-                .ok()
-                .filter(|f| f.is_finite())
-                .ok_or_else(|| format!("--bbox: {text:?} is not a finite number (expected degrees, W,S,E,N)"))?;
-        }
-        let [w, s, e, n] = v;
-        for (name, deg, limit) in [("west", w, 180.0), ("east", e, 180.0), ("south", s, 90.0), ("north", n, 90.0)] {
-            if deg < -limit || deg > limit {
-                return Err(format!("--bbox: {name} {deg} is outside ±{limit}°"));
-            }
-        }
-        if w >= e {
-            return Err(format!(
-                "--bbox: west ({w}) must be strictly west of east ({e}); a box crossing the antimeridian is not \
-                 supported — pack the two halves separately"
-            ));
-        }
-        if s >= n {
-            return Err(format!("--bbox: south ({s}) must be strictly south of north ({n})"));
-        }
-        Ok(Bbox { min_lon: to_fix(w), min_lat: to_fix(s), max_lon: to_fix(e), max_lat: to_fix(n) })
-    }
-
-    /// The box back in degrees, snapped to the decimicro grid it was parsed onto. Handed to
-    /// `osmium extract` on the multi-input merge path, so both croppers see the identical box.
-    pub fn to_degrees(self) -> (f64, f64, f64, f64) {
-        (to_deg(self.min_lon), to_deg(self.min_lat), to_deg(self.max_lon), to_deg(self.max_lat))
-    }
-
-    /// Inclusive integer microdegree coordinates contained in this box.
-    pub fn microdegree_bounds(self) -> (i64, i64, i64, i64) {
-        (
-            (i64::from(self.min_lon) + 9).div_euclid(10),
-            (i64::from(self.min_lat) + 9).div_euclid(10),
-            i64::from(self.max_lon).div_euclid(10),
-            i64::from(self.max_lat).div_euclid(10),
-        )
-    }
-
-    /// Closed on all four edges, exactly like `osmium::Box::contains`.
-    #[inline]
-    fn contains(&self, lon: i32, lat: i32) -> bool {
-        lon >= self.min_lon && lon <= self.max_lon && lat >= self.min_lat && lat <= self.max_lat
-    }
-}
-
-/// The area of a `W,S,E,N` degree box on the sphere, in km². Pack time follows the region size far
-/// more closely than the source file size does: the box decides how much survives ingest.
-pub fn box_area_km2((w, s, e, n): (f64, f64, f64, f64)) -> f64 {
-    const EARTH_RADIUS_KM: f64 = 6371.0088;
-    let lon_span = (e - w).to_radians();
-    let lat_band = n.to_radians().sin() - s.to_radians().sin();
-    EARTH_RADIUS_KM * EARTH_RADIUS_KM * lon_span * lat_band
-}
-
-/// The `W,S,E,N` box a source declares in its PBF header, if it declares one. It is the first blob
-/// of the file, so the answer costs one read. A source without it is not an error.
-pub fn declared_bbox(path: &str) -> Result<Option<(f64, f64, f64, f64)>, String> {
-    let mut reader = BlobReader::from_path(path).map_err(|e| format!("open {path}: {e}"))?;
-    let Some(blob) = reader.next() else { return Ok(None) };
-    let blob = blob.map_err(|e| format!("read {path}: {e}"))?;
-    match blob.decode().map_err(|e| format!("read {path}: {e}"))? {
-        osmpbf::BlobDecode::OsmHeader(header) => {
-            Ok(header.bbox().map(|b| (b.left, b.bottom, b.right, b.top)).filter(|(w, s, e, n)| w < e && s < n))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// What a blob scan should do after the element it was just handed.
-enum Scan {
-    Continue,
-    /// Stop here. [`scan_blobs`] returns the offset of the blob this element came from, so a later
-    /// pass can resume at exactly this point.
-    StopAtThisBlob,
-}
-
-/// Stream a `.pbf`'s data blobs — from `start`, or from the beginning — handing every element to
-/// `f`, and return the offset of the blob the scan stopped in (`None` if it ran to the end).
-///
-/// This is `ElementReader::for_each` plus the ability to stop and to resume. A sorted PBF stores
-/// nodes, then ways, then relations, and the node section is about 85 % of the bytes, so a pass that
-/// only wants ways skips straight to them. The blob boundary is also the ingest's cancellation
-/// checkpoint, and every reading pass goes through here.
-///
-/// Blobs are decoded on the rayon pool a chunk at a time, but `f` is a stateful fold that must see
-/// elements in file order, so the decoded blocks reach it one after another in that order and
-/// memory stays bounded by the chunk. A chunk can overshoot a [`Scan::StopAtThisBlob`]: that work
-/// is discarded unhandled, together with any read or decode error inside it, so a stopping scan
-/// succeeds or fails exactly as a sequential one would.
-fn scan_blobs<F>(
-    path: &str,
-    start: Option<ByteOffset>,
-    progress: &Progress,
-    mut f: F,
-) -> Result<Option<ByteOffset>, String>
-where
-    F: FnMut(Element) -> Scan,
-{
-    let mut reader = BlobReader::seekable_from_path(path).map_err(|e| format!("open {path}: {e}"))?;
-    if let Some(pos) = start {
-        reader.seek(pos).map_err(|e| format!("seek {path}: {e}"))?;
-    }
-    let chunk = chunk_len();
-    let mut raw: Vec<Blob> = Vec::with_capacity(chunk);
-    loop {
-        // A read error ends the chunk but is only reported after the blobs before it are handled,
-        // and not at all if the scan stops first — matching the lazy sequential reader.
-        raw.clear();
-        let mut read_err: Option<String> = None;
-        while raw.len() < chunk {
-            match reader.next() {
-                // The header blob carries no elements; only OSMData blocks do.
-                Some(Ok(blob)) if matches!(blob.get_type(), BlobType::OsmData) => raw.push(blob),
-                Some(Ok(_)) => {}
-                Some(Err(e)) => {
-                    read_err = Some(format!("read {path}: {e}"));
-                    break;
-                }
-                None => break,
-            }
-        }
-
-        // Decode in parallel; an error surfaces below, only if the scan reaches the failing blob.
-        progress.check()?;
-        let blocks: Vec<_> = raw.par_iter().map(|b| (b.offset(), b.to_primitiveblock())).collect();
-
-        for (offset, block) in blocks {
-            progress.check()?;
-            let block = block.map_err(|e| format!("decode {path}: {e}"))?;
-            for el in block.elements() {
-                if let Scan::StopAtThisBlob = f(el) {
-                    return Ok(offset);
-                }
-            }
-        }
-        if let Some(e) = read_err {
-            return Err(e);
-        }
-        if raw.len() < chunk {
-            return Ok(None);
-        }
-    }
-}
-
-/// How many raw blobs one [`scan_blobs`] chunk holds: enough to keep every rayon worker busy
-/// through a decode round, small enough that the in-flight blobs stay tens of megabytes.
-fn chunk_len() -> usize {
-    2 * rayon::current_num_threads().max(1)
-}
-
-/// Run `f` over every source in parallel, collecting the results in source order. Each pass reads
-/// each file independently, and only the fold that combines them has to be ordered.
-fn par_sources<T, F>(paths: &[String], f: F) -> Result<Vec<T>, String>
-where
-    T: Send,
-    F: Fn(usize, &str) -> Result<T, String> + Sync,
-{
-    paths.par_iter().enumerate().map(|(i, p)| f(i, p.as_str())).collect()
-}
-
-/// Per-element output tagged with the id of the OSM object that produced it.
-///
-/// The tag is what lets several `.pbf`s be read independently and still come out as one merged file
-/// would have produced them: later copies of an already-seen object dropped
-/// ([`Keyed::retain_keys`]), everything back in id order ([`Keyed::sort`]). With a single source
-/// nothing is tagged and this is a plain `Vec<T>`, so an uncropped country pack pays nothing.
-struct Keyed<T> {
-    tagged: bool,
-    keys: Vec<i64>,
-    items: Vec<T>,
-}
-
-impl<T> Keyed<T> {
-    fn new(tagged: bool) -> Self {
-        Keyed { tagged, keys: Vec::new(), items: Vec::new() }
-    }
-
-    #[inline]
-    fn push(&mut self, key: i64, item: T) {
-        if self.tagged {
-            self.keys.push(key);
-        }
-        self.items.push(item);
-    }
-
-    /// Concatenate a later source's outputs onto this one.
-    fn append(&mut self, mut other: Self) {
-        self.keys.append(&mut other.keys);
-        self.items.append(&mut other.items);
-    }
-
-    /// Drop every item whose key `keep` rejects, preserving order. Tagged only: it is a merge
-    /// operation and never runs on a single-source ingest.
-    fn retain_keys(&mut self, mut keep: impl FnMut(i64) -> bool) {
-        debug_assert!(self.tagged && self.keys.len() == self.items.len());
-        let mut w = 0;
-        for r in 0..self.items.len() {
-            if keep(self.keys[r]) {
-                if w != r {
-                    self.keys.swap(w, r);
-                    self.items.swap(w, r);
-                }
-                w += 1;
-            }
-        }
-        self.keys.truncate(w);
-        self.items.truncate(w);
-    }
-
-    /// Put the items back in ascending-id order — the order a merged, sorted `.pbf` would have
-    /// handed them to the same pass.
-    ///
-    /// The sort is stable, so a file that repeats an id inside itself keeps its own order instead
-    /// of picking one arbitrarily. The already-sorted check keeps the transient pair vector — the
-    /// only copy of the payload this merge makes — out of the common case.
-    fn sort(&mut self) {
-        debug_assert!(self.tagged && self.keys.len() == self.items.len());
-        if self.keys.is_sorted() {
-            return;
-        }
-        let keys = std::mem::take(&mut self.keys);
-        let items = std::mem::take(&mut self.items);
-        let mut pairs: Vec<(i64, T)> = keys.into_iter().zip(items).collect();
-        pairs.sort_by_key(|(k, _)| *k);
-        (self.keys, self.items) = pairs.into_iter().unzip();
-    }
-
-    fn into_items(self) -> Vec<T> {
-        self.items
-    }
-}
-
-/// A grow-then-freeze set of OSM ids, backed by a sorted `Vec`: 8 flat bytes and a binary search
-/// instead of a `HashSet`'s per-entry overhead, because these sets are the memory floor of a
-/// `--bbox` run over a large source. Each set is filled in one pass and read in a later one, and
-/// `contains` on an unfrozen set would silently lie, so freezing is the type's one rule.
-#[derive(Default)]
-struct IdSet(Vec<i64>);
-
-impl IdSet {
-    fn push(&mut self, id: i64) {
-        self.0.push(id);
-    }
-
-    /// Take another source's ids wholesale, moving the first batch instead of copying it.
-    fn absorb(&mut self, mut ids: Vec<i64>) {
-        if self.0.is_empty() {
-            self.0 = ids;
-        } else {
-            self.0.append(&mut ids);
-        }
-    }
-
-    /// End the fill phase. Idempotent, so pass 0 can freeze the node set early (the first way
-    /// needs it) and freeze the rest at the end.
-    fn freeze(&mut self) {
-        self.0.sort_unstable();
-        self.0.dedup();
-        self.0.shrink_to_fit();
-    }
-
-    #[inline]
-    fn contains(&self, id: i64) -> bool {
-        self.0.binary_search(&id).is_ok()
-    }
-
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-/// The id sets that define a `--bbox` crop.
-pub struct Crop {
-    /// Nodes whose location falls inside the box.
-    inside: IdSet,
-    /// Nodes outside the box that a kept way still references — the halo that keeps
-    /// boundary-crossing ways whole.
-    halo: IdSet,
-    /// Ways with at least one node inside the box, plus every member way of a renderable area
-    /// relation touched by one of those ways.
-    ways: IdSet,
-    /// Renderable area relations reached from a way touching the box.
-    relations: IdSet,
-}
-
-impl Crop {
-    /// Nodes the extract would contain: inside the box, or needed by a kept way.
-    #[inline]
-    fn keeps_node(&self, id: i64) -> bool {
-        self.inside.contains(id) || self.halo.contains(id)
-    }
-
-    #[inline]
-    fn keeps_way(&self, id: i64) -> bool {
-        self.ways.contains(id)
-    }
-
-    #[inline]
-    fn keeps_relation(&self, id: i64) -> bool {
-        self.relations.contains(id)
-    }
-
-    /// Nothing inside the box and no way reaching into it — the caller should fail loudly rather
-    /// than pack an empty map.
-    fn is_empty(&self) -> bool {
-        self.inside.len() == 0 && self.ways.len() == 0
-    }
-}
 
 /// Pass 0 — select the crop across every source: nodes inside `bbox`, ways touching one of them,
 /// complete members of renderable area relations reached by those ways, and the outside nodes all
@@ -566,7 +222,7 @@ fn select_crop(
 
     // Relation completion can introduce ways that never touch an in-box node. Read only the way
     // section again to collect every node those ways require.
-    if relation_ways.len() != 0 {
+    if !relation_ways.is_empty() {
         let scans = par_sources(paths, |i, path| {
             let mut relation_halo = Vec::new();
             scan_blobs(path, ways_at[i], progress, |el| {
@@ -588,7 +244,7 @@ fn select_crop(
         }
     }
 
-    ways.absorb(relation_ways.0);
+    ways.absorb(relation_ways.into_ids());
     ways.freeze();
     halo.freeze();
     progress.log(format!(
@@ -599,7 +255,7 @@ fn select_crop(
         relation_ids.len(),
         halo.len()
     ));
-    Ok((Crop { inside, halo, ways, relations: relation_ids }, ways_at))
+    Ok((Crop::new(inside, halo, ways, relation_ids), ways_at))
 }
 
 /// One source's pass-1 harvest.
@@ -735,8 +391,8 @@ fn ingest_inner(
                 Geom::Polygon { exterior, .. } => Some(exterior.as_slice()),
                 _ => None,
             })) {
-                poi.lon_udeg = poi::to_udeg(x);
-                poi.lat_udeg = poi::to_udeg(y);
+                poi.lon_udeg = obc_places::to_udeg(x);
+                poi.lat_udeg = obc_places::to_udeg(y);
                 poi_cands.push(poi);
             }
         }
@@ -836,8 +492,8 @@ fn read_nodes(
 fn fold_node_scans(scans: Vec<NodeScan>, merging: bool) -> NodeScan {
     let mut it = scans.into_iter();
     let mut acc = it.next().expect("at least one source");
-    let mut seen_rels: HashSet<i64> = acc.rels.keys.iter().copied().collect();
-    let mut seen_links: HashSet<i64> = acc.links.keys.iter().copied().collect();
+    let mut seen_rels: HashSet<i64> = acc.rels.keys().iter().copied().collect();
+    let mut seen_links: HashSet<i64> = acc.links.keys().iter().copied().collect();
     for mut next in it {
         // Ownership is tested BEFORE this source's nodes land in `acc`, so the question is whether
         // an earlier source already had this node — and the whole object loses, tags and all.
@@ -946,7 +602,7 @@ fn fold_way_scans(scans: Vec<WayScan>, merging: bool) -> WayScan {
 }
 
 /// Capture a routable way's node-id sequence and µdeg coords for the nav graph. Routability is
-/// tag-based ([`nav::is_routable`]) and independent of styling. `coords` is snapped here to the µdeg
+/// tag-based ([`obc_places::routing::is_routable`]) and independent of styling. `coords` is snapped here to the µdeg
 /// grid POIs and the serializer use, so edge lengths and later serialization agree.
 fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64)], out: &mut Keyed<RoutableWay>) {
     if refs.len() < 2 {
@@ -954,8 +610,8 @@ fn push_routable_way(id: i64, w: &osmpbf::Way, refs: &[i64], coords: &[(f64, f64
     }
     // Classify once (routability plus the way-kind byte). This is the only place tags exist, so
     // the kind is captured here or never.
-    let Some(kind) = nav::classify(w.tags()) else { return };
-    let coords_udeg = coords.iter().map(|&(x, y)| (poi::to_udeg(x), poi::to_udeg(y))).collect();
+    let Some(kind) = obc_places::routing::classify(w.tags()) else { return };
+    let coords_udeg = coords.iter().map(|&(x, y)| (obc_places::to_udeg(x), obc_places::to_udeg(y))).collect();
     out.push(id, RoutableWay { node_ids: refs.to_vec(), coords: coords_udeg, kind });
 }
 
@@ -979,8 +635,8 @@ where
                 wikidata: tags.iter().find(|(k, _)| *k == "wikidata").map(|(_, v)| (*v).into()),
                 wikipedia: tags.iter().find(|(k, _)| *k == "wikipedia").map(|(_, v)| (*v).into()),
                 subtype,
-                lon_udeg: poi::to_udeg(to_deg(decimicro_lon)),
-                lat_udeg: poi::to_udeg(to_deg(decimicro_lat)),
+                lon_udeg: obc_places::to_udeg(to_deg(decimicro_lon)),
+                lat_udeg: obc_places::to_udeg(to_deg(decimicro_lat)),
                 name,
                 from_node: true,
                 hours: raw_hours.and_then(hours::parse),
@@ -1079,7 +735,7 @@ fn process_way(
             poi::classify_linked(tags.iter().map(|(&k, &v)| (k, v)))
                 .filter(|p| p.subtype != obc_formats::obcm::SUMMIT_SUBTYPE_ID)
         {
-            let (cx, cy) = if is_closed { poi::ring_centroid(coords) } else { coords[0] };
+            let (cx, cy) = if is_closed { obc_places::ring_centroid(coords) } else { coords[0] };
             let subtype = if is_closed { subtype } else { 0 };
             pois.push(
                 w.id(),
@@ -1092,8 +748,8 @@ fn process_way(
                     wikidata: tags.get("wikidata").map(|v| (*v).into()),
                     wikipedia: tags.get("wikipedia").map(|v| (*v).into()),
                     subtype,
-                    lon_udeg: poi::to_udeg(cx),
-                    lat_udeg: poi::to_udeg(cy),
+                    lon_udeg: obc_places::to_udeg(cx),
+                    lat_udeg: obc_places::to_udeg(cy),
                     name,
                     from_node: false,
                     hours: raw_hours.and_then(hours::parse),
@@ -1265,7 +921,7 @@ mod tests {
         let w2 = find(None, 5);
         assert_eq!((w2.lat_udeg, w2.lon_udeg, w2.from_node), (48_000_200, 7_870_200, false));
         // N4 (amenity=parking) never classified.
-        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("water 4").count(), 1);
+        assert_eq!(obc_places::metadata::format_counts(&ing.pois, 0).matches("water 4").count(), 1);
 
         // The settlement rows: one of each class, the fall-backs, and the area centroid.
         let city = find(Some("Testville"), 21);
@@ -1279,7 +935,7 @@ mod tests {
         let ring = find(Some("Ringdorf"), 23);
         assert_eq!((ring.lat_udeg, ring.lon_udeg, ring.from_node), (47_950_200, 7_900_200, false));
         find(Some("Mirnyy"), 23);
-        assert_eq!(crate::poi::format_counts(&ing.pois, 0).matches("settlement 8").count(), 1);
+        assert_eq!(obc_places::metadata::format_counts(&ing.pois, 0).matches("settlement 8").count(), 1);
     }
 
     #[test]
@@ -1292,8 +948,8 @@ mod tests {
             (-8_000_001, -1_000_000, 8_000_001, 1_000_000)
         );
         // The edges land on osmium's grid: round-half-away-from-zero at 1e-7.
-        assert_eq!(to_fix(7.39), 73_900_000);
-        assert_eq!(to_fix(-7.39), -73_900_000);
+        assert_eq!(Bbox::parse("7.39,0,8,1").unwrap().microdegree_bounds().0, 7_390_000);
+        assert_eq!(Bbox::parse("-7.39,0,8,1").unwrap().microdegree_bounds().0, -7_390_000);
 
         for bad in [
             "7.39,43.71,7.47",         // three fields
@@ -1315,19 +971,19 @@ mod tests {
 
     #[test]
     fn box_area_shrinks_with_latitude() {
-        let one_degree_at_equator = box_area_km2((0.0, 0.0, 1.0, 1.0));
+        let one_degree_at_equator = obc_pbf::bbox::box_area_km2((0.0, 0.0, 1.0, 1.0));
         assert!((one_degree_at_equator - 12_363.0).abs() < 10.0, "{one_degree_at_equator} km²");
-        let one_degree_at_sixty = box_area_km2((0.0, 59.5, 1.0, 60.5));
+        let one_degree_at_sixty = obc_pbf::bbox::box_area_km2((0.0, 59.5, 1.0, 60.5));
         assert!((one_degree_at_sixty - 6_182.0).abs() < 10.0, "{one_degree_at_sixty} km²");
 
         // The Grimsel fixture box: a region a look is meant to reach.
-        let grimsel = box_area_km2((8.15034, 46.48261, 8.46007, 46.72070));
+        let grimsel = obc_pbf::bbox::box_area_km2((8.15034, 46.48261, 8.46007, 46.72070));
         assert!((600.0..700.0).contains(&grimsel), "{grimsel} km²");
     }
 
     #[test]
     fn a_source_without_a_declared_box_reads_as_unknown() {
-        assert_eq!(declared_bbox(TINY_PBF), Ok(None));
+        assert_eq!(obc_pbf::bbox::declared_bbox(TINY_PBF), Ok(None));
     }
 
     /// The relation-complete crop, over the `tiny.osm` truth table. The box covers R1 whole, takes
@@ -1529,17 +1185,17 @@ mod tests {
             k.push(id, name);
         }
         k.retain_keys(|id| id != 3);
-        assert_eq!(k.items, ["a", "c", "d"], "retain preserves the surviving order");
-        assert_eq!(k.keys, [9, 11, 1]);
+        assert_eq!(k.items(), ["a", "c", "d"], "retain preserves the surviving order");
+        assert_eq!(k.keys(), [9, 11, 1]);
         k.sort();
-        assert_eq!(k.items, ["d", "a", "c"], "sort puts them in ascending id order");
-        assert_eq!(k.keys, [1, 9, 11]);
+        assert_eq!(k.items(), ["d", "a", "c"], "sort puts them in ascending id order");
+        assert_eq!(k.keys(), [1, 9, 11]);
 
         // Untagged (single source) is a plain Vec — nothing is recorded to sort by.
         let mut plain = Keyed::new(false);
         plain.push(9, "a");
         plain.push(3, "b");
-        assert!(plain.keys.is_empty(), "a single source records no tags");
+        assert!(plain.keys().is_empty(), "a single source records no tags");
         assert_eq!(plain.into_items(), ["a", "b"], "and keeps file order");
     }
 

@@ -27,4 +27,5 @@ regex = "1"
 tempfile = { workspace = true }
 
 [dev-dependencies]
+obc-map-core = { workspace = true }
 obc-pack = { workspace = true }

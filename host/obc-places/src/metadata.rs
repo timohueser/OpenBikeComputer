@@ -1,7 +1,7 @@
 //! OSM point-of-interest extraction: classify nodes and closed ways against the fixed
 //! category/subtype table, normalize names for the device font, and collapse OSM double-mapping.
 //!
-//! The table below is canonical and append-only: ids are stable, mirrored in firmware, and pinned
+//! The shared category table is canonical and append-only: ids are stable, mirrored in firmware, and pinned
 //! normatively in `OBCM_Spec.md`. Subtype `0` is reserved, and `0xFF` is the end-of-chunk sentinel.
 //! First match in table order wins, the same convention as the config's style map.
 //!
@@ -17,7 +17,7 @@ const SETTLEMENT_POPULATION_MAX: u16 = SETTLEMENT_POPULATION_UNKNOWN - 1;
 
 use crate::hours::Schedule;
 
-pub use obc_places::{ring_centroid, to_udeg, PoiKind, POI_TABLE};
+use crate::{ring_centroid, to_udeg, PoiKind, POI_TABLE};
 
 /// Category display names for the pack log, indexed by category id (0 unused).
 pub const CATEGORY_NAMES: [&str; 10] = [
@@ -81,9 +81,7 @@ impl From<&Poi> for LandmarkLink {
 }
 
 /// Build-only subtype zero carries an explicit Wiki link through source topology resolution.
-pub(crate) fn classify_linked<'a>(
-    tags: impl IntoIterator<Item = (&'a str, &'a str)> + Clone,
-) -> Option<Classification<'a>> {
+pub fn classify_linked<'a>(tags: impl IntoIterator<Item = (&'a str, &'a str)> + Clone) -> Option<Classification<'a>> {
     classify(tags.clone()).or_else(|| {
         let tags: Vec<_> = tags.into_iter().collect();
         tags.iter().any(|(key, _)| matches!(*key, "wikidata" | "wikipedia")).then(|| Classification {
@@ -117,7 +115,7 @@ pub fn classify<'a, I>(tags: I) -> Option<Classification<'a>>
 where
     I: IntoIterator<Item = (&'a str, &'a str)> + Clone,
 {
-    let subtype = obc_places::classify(tags.clone())?.subtype;
+    let subtype = crate::classify(tags.clone())?.subtype;
     let mut raw_name: Option<&str> = None;
     let mut short_name: Option<&str> = None;
     let mut name_en: Option<&str> = None;
@@ -254,8 +252,8 @@ pub fn dedupe(candidates: Vec<Poi>) -> (Vec<Poi>, usize) {
 /// Resolve only explicit OSM node membership, never nearby geometry.
 pub fn resolve_approaches(
     pois: &mut [Poi],
-    ways: &[crate::nav::RoutableWay],
-    profiles: &[crate::serialize::NavProfile],
+    ways: &[crate::routing::RoutableWay],
+    profiles: &[obc_map_core::serialize::NavProfile],
 ) {
     let wanted: std::collections::HashSet<_> = pois.iter().flat_map(|p| p.access_nodes.iter().copied()).collect();
     let mut nodes: HashMap<i64, ((i32, i32), u8)> = HashMap::new();
@@ -530,7 +528,7 @@ mod tests {
 
     #[test]
     fn approach_requires_explicit_topology() {
-        use crate::nav::RoutableWay;
+        use crate::routing::RoutableWay;
         let mut linked = poi(1, 48.0, 7.8, Some("A"), true);
         linked.access_nodes = vec![10];
         let mut unrelated = linked.clone();
@@ -541,7 +539,7 @@ mod tests {
             coords: vec![(7_800_000, 48_000_000), (7_800_010, 48_000_000)],
             kind: 1,
         }];
-        resolve_approaches(&mut pois, &ways, &crate::config::default_profiles());
+        resolve_approaches(&mut pois, &ways, &obc_map_core::config::default_profiles());
         assert!(pois[0].metadata.approach.is_some());
         assert!(pois[1].metadata.approach.is_none());
     }

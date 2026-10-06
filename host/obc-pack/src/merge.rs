@@ -28,8 +28,8 @@ use rayon::prelude::*;
 
 use crate::config::LineStyle;
 use crate::geom::{merge_lines_geos, union_polygons, Geom};
-use crate::progress::Progress;
 use crate::serialize::Style;
+use obc_map_core::progress::Progress;
 
 /// A fill's render-equivalence key: `(z_index, color, priority)`. Two `color2`-less styles sharing
 /// it paint every fill pixel the same, so their polygons may be unioned. `priority` is in the key

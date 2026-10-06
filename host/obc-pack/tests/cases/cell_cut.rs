@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use obc_map_core::progress::Progress;
 use obc_map_scene::BBox;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
@@ -17,9 +18,8 @@ use obc_pack::geom::Geom;
 use obc_pack::grid::{BandTable, CellId, UBox};
 use obc_pack::ingest::{IngestFeature, Ingested};
 use obc_pack::nav::{integrate_edge_ascent, RoutableWay};
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
 use obc_pack::terrain::TerrainSet;
+use obc_places::metadata::Poi;
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The band-`2^18` lon line between cells `j = 1052` and `j = 1053`: the worked-example seam.
@@ -830,7 +830,7 @@ fn landmark_only_cell_survives_beyond_osm_feature_bounds() {
         opts.landmarks = vec![path.clone()];
         if with_bbox {
             opts.bbox = Some(
-                obc_pack::ingest::Bbox::parse(&format!(
+                obc_pbf::bbox::Bbox::parse(&format!(
                     "{},{},{},{}",
                     deg(SEAM - 4000),
                     deg(LAT - 2000),

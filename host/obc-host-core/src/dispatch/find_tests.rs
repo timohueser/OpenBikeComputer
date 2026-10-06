@@ -82,7 +82,7 @@ fn run_find(scenario: Scenario) {
         .filter(|(i, _)| *i != 8)
         .map(|(i, &(lon, lat))| {
             let source = SourceId::osm(1, i as u64 + 1);
-            obc_pack::poi::Poi {
+            obc_places::metadata::Poi {
                 metadata: PoiMetadata { source, approach: Some(PoiApproach { source, lon, lat, profile_mask: 1 }) },
                 access_nodes: vec![],
                 wikidata: None,
@@ -92,7 +92,7 @@ fn run_find(scenario: Scenario) {
                 lat_udeg: lat,
                 name: Some(format!("Water {i}")),
                 from_node: true,
-                hours: obc_pack::hours::parse("Mo-Su 09:00-11:00"),
+                hours: obc_places::hours::parse("Mo-Su 09:00-11:00"),
                 elevation_m: None,
                 population: None,
             }
@@ -102,7 +102,7 @@ fn run_find(scenario: Scenario) {
     closed.name = Some("Closed nearest".into());
     closed.lon_udeg = 499_990;
     closed.metadata.source = SourceId::osm(1, 99);
-    closed.hours = obc_pack::hours::parse("off");
+    closed.hours = obc_places::hours::parse("off");
     pois.push(closed);
     let bbox = (490_000, 490_000, 590_000, 510_000);
     let lods =

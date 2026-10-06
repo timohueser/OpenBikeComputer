@@ -85,7 +85,7 @@ fn route() -> Vec<u8> {
 fn map_bytes() -> Vec<u8> {
     map_with_hours(None)
 }
-fn map_with_hours(hours: Option<obc_pack::hours::Schedule>) -> Vec<u8> {
+fn map_with_hours(hours: Option<obc_places::hours::Schedule>) -> Vec<u8> {
     use obc_pack::nav::{Edge, NavGraph, Node};
     let coords = [
         (500_000, 500_000),
@@ -111,7 +111,7 @@ fn map_with_hours(hours: Option<obc_pack::hours::Schedule>) -> Vec<u8> {
         &[],
         0,
         bbox,
-        &[obc_pack::poi::Poi {
+        &[obc_places::metadata::Poi {
             metadata: obc_formats::obcm::PoiMetadata { source: obc_formats::obcm::SourceId::osm(1, 3), approach: None },
             access_nodes: vec![],
             wikidata: None,

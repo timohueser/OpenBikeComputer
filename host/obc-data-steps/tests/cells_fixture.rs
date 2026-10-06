@@ -21,11 +21,11 @@ use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
 use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
 use obc_formats::obcm::SourceId;
+use obc_map_core::progress::Progress;
 use obc_osm::LeafId;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut, CutOptions};
 use obc_pack::grid::{BandTable, CellId};
-use obc_pack::progress::Progress;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 const VERSION: &str = "2022-05-09";

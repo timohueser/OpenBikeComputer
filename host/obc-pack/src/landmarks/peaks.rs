@@ -66,7 +66,7 @@ pub struct PeakContent {
 }
 
 pub(super) fn is_summit(tags: &BTreeMap<String, String>) -> bool {
-    crate::poi::classify(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+    obc_places::metadata::classify(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .is_some_and(|p| p.subtype == obc_formats::obcm::SUMMIT_SUBTYPE_ID)
 }
 

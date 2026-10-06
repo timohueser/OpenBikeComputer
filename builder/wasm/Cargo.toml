@@ -32,6 +32,8 @@ js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
 
 [dev-dependencies]
+obc-places = { workspace = true }
+obc-map-core = { workspace = true }
 obc-ports = { workspace = true }
 obcm-testkit = { workspace = true }
 # The fixture cutter uses GEOS and must stay outside the production graph.

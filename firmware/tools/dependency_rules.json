@@ -59,6 +59,7 @@
       "obc-mkimage",
       "obc-osm",
       "obc-pack",
+      "obc-pbf",
       "obc-places",
       "obc-search-bake",
       "obc-replay",

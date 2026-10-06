@@ -28,16 +28,16 @@ use obc_host_core::flat_store::HostStore;
 use obc_host_core::frame::{self, Scene};
 use obc_host_core::test_support::CountedSource;
 use obc_host_core::RgbaFrame;
+use obc_map_core::progress::Progress;
 use obc_pack::config::{Config, LineStyle as PackLineStyle};
 use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
 use obc_pack::geom::Geom;
 use obc_pack::grid::BandTable;
 use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
 use obc_pack::quadtree::build_lod_with;
 use obc_pack::{serialize_lods, LodLayer};
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obc_route::nav::{plan_route, NavScratch};
@@ -190,7 +190,7 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
 /// hours leaves the whole remap untested.
 fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {
     Poi {
-        hours: Some(obc_pack::hours::parse(hours).expect("the fixture's opening_hours parses")),
+        hours: Some(obc_places::hours::parse(hours).expect("the fixture's opening_hours parses")),
         ..poi(subtype, lat, lon, name)
     }
 }
@@ -1889,12 +1889,12 @@ fn a_map_assembled_from_landmark_and_peak_artifacts_has_both_sections() {
     ing.pois.push(summit);
     let hours = ["Mo-Su 08:00-18:00", "Mo-Fr 09:00-17:00"];
     for (qid, hours) in (1..).zip(hours) {
-        ing.landmark_links.push(obc_pack::poi::LandmarkLink {
+        ing.landmark_links.push(obc_places::metadata::LandmarkLink {
             metadata: PoiMetadata { source: SourceId::osm(1, 500 + qid), approach: None },
             position: None,
             wikidata: Some(format!("Q{qid}")),
             wikipedia: None,
-            hours: obc_pack::hours::parse(hours),
+            hours: obc_places::hours::parse(hours),
         });
     }
     let dir = scratch("articles");
@@ -1960,7 +1960,7 @@ fn a_map_assembled_from_landmark_and_peak_artifacts_has_both_sections() {
         assert_ne!(record.hours_ref, POI_HOURS_REF_NONE, "the hours of the artifact join the map's pool");
         let mut blob = [0; obc_formats::obcm::POI_HOURS_BLOB_LEN];
         src.read_at(pool + u64::from(record.hours_ref) * blob.len() as u64, &mut blob).unwrap();
-        let expected = obc_pack::hours::parse(hours[record.qid as usize - 1]).unwrap().encode();
+        let expected = obc_places::hours::parse(hours[record.qid as usize - 1]).unwrap().encode();
         assert_eq!(blob, expected, "Q{}", record.qid);
     }
     let section = obc_reader::peaks::map_section(&src).unwrap().expect("a peak section");

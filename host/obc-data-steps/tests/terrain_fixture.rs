@@ -164,7 +164,7 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
         cutter: &DemCutter::open(&sources, None).unwrap(),
         opts: TerrainBakeOptions { out: out.clone(), doc, force: false, allow_short_reference: false },
     }
-    .run(&obc_pack::progress::Progress::silent())
+    .run(&obc_map_core::progress::Progress::silent())
     .unwrap();
 
     let mut expected = BTreeMap::new();

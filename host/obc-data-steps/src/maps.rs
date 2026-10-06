@@ -377,9 +377,6 @@ fn capture_params_at(
         for source in CAPTURES {
             let _ = version(env, store, source, &params).map_err(Unplanned::Failed)?;
         }
-        if value(&params, "code").as_deref() != Some(obc_pack::step::capture_code().as_str()) {
-            return Err(invalid(format!("{collection} capture code changed; plan with `--move wikidata`")));
-        }
         let (osm, poly) = (value(&params, "osm").unwrap_or_default(), value(&params, "poly").unwrap_or_default());
         if let Some(read) = reads(&osm, &poly, true)? {
             return Ok((params, read));
@@ -1223,26 +1220,39 @@ pub(crate) mod tests {
         with_osm(&store);
         without_models(&store, &env, &regions);
         with_captures(&store, "1");
-        let mut params = capture_params("landmarks", "europe/test", "osm", FREIBURG);
+        let current = capture_params("landmarks", "europe/test", "osm", FREIBURG);
+        let mut params = current.clone();
         params.iter_mut().find(|(name, _)| name == "code").unwrap().1 = "old".into();
-        env.live.insert(("wikidata".into(), params), ["1".into()].into());
+        for source in CAPTURES {
+            let requested = Requested {
+                version: "1".into(),
+                params: params.clone(),
+                files: store.requested(source, "1", &current).unwrap().unwrap(),
+            };
+            store.put_requested(source, &requested).unwrap();
+            env.live.insert((source.into(), params.clone()), ["1".into()].into());
+        }
+        env.requests.borrow_mut().clear();
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(listed
-            .blocked
-            .iter()
-            .any(|b| b.layer == "maps/landmark-content" && b.reason.contains("capture code changed")));
+        assert!(!listed.blocked.iter().any(|b| b.layer == "maps/landmark-content"));
+        let content = listed.steps.iter().find(|s| s.name == "maps/landmark-content").unwrap();
+        for source in CAPTURES {
+            assert!(
+                content.inputs.iter().any(|input| matches!(input,
+                    Input::Snapshot { source: found, version, params: kept, .. }
+                        if found == source && version == "1" && kept == &params
+                )),
+                "{source} retains the exact held request until content checks its pins"
+            );
+            assert!(env.requests.borrow().contains(&(source.into(), obc_data::store::sorted(&params))));
+            assert!(
+                !env.requests.borrow().contains(&(source.into(), obc_data::store::sorted(&current))),
+                "no replacement capture request is selected"
+            );
+        }
         assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"));
-        assert!(
-            env.requests.borrow().iter().any(|(source, params)| source == "wikidata"
-                && params.iter().any(|(name, value)| name == "code" && value == "old")),
-            "blocked capture requests remain active"
-        );
-        env.live.retain(|(source, _), _| source != "wikidata");
         env.stale.insert("wikidata".into());
-        env.stale_requests.insert((
-            "wikidata".into(),
-            obc_data::store::sorted(&capture_params("landmarks", "europe/test", "osm", FREIBURG)),
-        ));
+        env.stale_requests.insert(("wikidata".into(), obc_data::store::sorted(&params)));
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().all(|b| b.reason.contains("capture stale")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));

@@ -81,11 +81,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use obc_map_core::progress::Progress;
 use obc_pack::catalog::CellSource;
 use obc_pack::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
 use obc_pack::grid::{BandTable, CellId};
-use obc_pack::ingest::Bbox;
-use obc_pack::progress::Progress;
+use obc_pbf::bbox::Bbox;
 use serde::Serialize;
 
 use crate::cell_store::{
@@ -176,8 +176,8 @@ impl CellCutter for ObcCutter {
         opts.chunk_size = self.chunk_size;
         match obc_pack::cut::cut(pbfs, config, out_dir, &opts, progress) {
             Ok(s) => Ok(s),
-            Err(obc_pack::PackError::Failed(e)) => Err(e),
-            Err(obc_pack::PackError::Cancelled) => Err("cancelled".into()),
+            Err(obc_map_core::progress::PackError::Failed(e)) => Err(e),
+            Err(obc_map_core::progress::PackError::Cancelled) => Err("cancelled".into()),
         }
     }
 }

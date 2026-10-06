@@ -39,14 +39,14 @@
 
 use std::path::{Path, PathBuf};
 
+use obc_map_core::progress::Progress;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut_ingested, CutOptions, SourceExtent};
 use obc_pack::geom::Geom;
 use obc_pack::grid::BandTable;
 use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 
 /// The `2^18` lon line the fixture straddles.
 const SEAM: i64 = 7_602_176;
@@ -219,7 +219,7 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
 
 fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {
     Poi {
-        hours: Some(obc_pack::hours::parse(hours).expect("the fixture's opening_hours parses")),
+        hours: Some(obc_places::hours::parse(hours).expect("the fixture's opening_hours parses")),
         ..poi(subtype, lat, lon, name)
     }
 }

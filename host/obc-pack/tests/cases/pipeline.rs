@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use obc_map_core::progress::{CancelToken, PackError, Phase, Progress};
 use obc_pack::config::Config;
 use obc_pack::pipeline::{pack, PackOptions};
-use obc_pack::progress::{CancelToken, PackError, Phase, Progress};
 
 /// Everything a run said, in order, as a test can inspect it.
 type Reported<T> = Arc<Mutex<Vec<(T, String)>>>;
