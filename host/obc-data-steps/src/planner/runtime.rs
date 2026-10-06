@@ -304,6 +304,7 @@ mod tests {
     #[test]
     fn runtime_descriptors_bind_the_target_and_owned_payload() {
         let fixture = temp("runtime-descriptor");
+        std::fs::create_dir_all(&fixture.0).unwrap();
         let store = Store::at(fixture.0.join("store"));
         let payload = fixture.0.join("payload");
         std::fs::write(&payload, b"authored receipt payload").unwrap();
