@@ -237,7 +237,7 @@ pub fn compile(
         include_bytes!("photo.rs"),
         include_bytes!("text.rs"),
         include_bytes!("locale.rs"),
-        include_bytes!("../poi.rs"),
+        include_bytes!("../../../obc-places/src/metadata.rs"),
         locale::LANGUAGE_BYTES,
         PHOTO_POOL_BYTES,
     ] {

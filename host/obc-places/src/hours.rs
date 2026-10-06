@@ -20,8 +20,7 @@
 
 use std::collections::HashMap;
 
-// The normative hours-blob dimensions and flags are owned by `obc-formats`. `BLOB_LEN` is
-// `pub(crate)` because `serialize.rs` asserts its own width against it.
+// The normative hours-blob dimensions and flags are owned by `obc-formats`.
 pub(crate) use obc_formats::obcm::{
     POI_HOURS_BLOB_LEN as BLOB_LEN, POI_HOURS_DAYS as DAYS, POI_HOURS_FLAG_SEASONAL as FLAG_SEASONAL,
     POI_HOURS_FLAG_TRUNCATED as FLAG_TRUNCATED, POI_HOURS_SLOTS_PER_DAY as SLOTS_PER_DAY,

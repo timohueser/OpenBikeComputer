@@ -43,10 +43,6 @@ pub(crate) const MAX_SEGMENT: i64 = 30_000;
 /// Chebyshev distance.
 pub(crate) const MAX_HOLE_ANCHOR_DELTA: i64 = i16::MAX as i64;
 
-// The serializer's blob length must equal `hours.rs`'s `Schedule::encode` width, or the pool bytes
-// and the `POI_HOURS_BLOB_LEN` the directory advertises disagree.
-const _: () = assert!(POI_HOURS_BLOB_LEN == obc_places::hours::BLOB_LEN, "hours blob length must match hours.rs");
-
 // A cap-degree record must fit one chunk, or `pack_nav_chunk` would drop real junctions.
 const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
 
