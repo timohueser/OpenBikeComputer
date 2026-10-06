@@ -291,6 +291,7 @@ fn content_views(request: &Request, dir: &str, doc: &str) -> Result<Vec<PathBuf>
 }
 
 fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec<u8>>) -> Result<(), String> {
+    std::fs::create_dir_all(request.output.join(dir)).map_err(|e| e.to_string())?;
     for (cell, bytes) in artifacts {
         let width = crate::grid::id_width(cell.log2);
         let path = request.output.join(format!("{dir}/{:0width$}/{:0width$}.bin", cell.i, cell.j));
@@ -429,6 +430,22 @@ mod tests {
         let bytes = std::fs::read(request.output.join(format!("peaks/{:04}/{:04}.bin", cell.i, cell.j))).unwrap();
         let reader = Directory::read(&SliceSource(&bytes)).unwrap();
         assert_eq!((reader.associations, reader.records), (2, 2));
+        let mut empty = article("Q1", 1);
+        empty["records"] = serde_json::json!([]);
+        empty["associations"] = serde_json::json!([]);
+        let file = dir.join("empty.json");
+        std::fs::write(&file, empty.to_string()).unwrap();
+        let empty = Request {
+            layers: BTreeMap::from([(
+                "maps/peak-content/empty".into(),
+                BTreeMap::from([("peaks/peaks.json".into(), file)]),
+            )]),
+            output: dir.join("empty").join("output"),
+            ..request
+        };
+        peaks(&empty).unwrap();
+        assert!(empty.output.join("peaks").is_dir(), "valid empty content fulfills the declared output");
+        assert_eq!(std::fs::read_dir(empty.output.join("peaks")).unwrap().count(), 0, "no placeholder payload");
     }
 
     /// The capture keeps no summits, which are OSM data: the step makes them again from the
