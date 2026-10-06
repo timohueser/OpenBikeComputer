@@ -914,6 +914,7 @@ fn an_assembly_hands_its_whole_scratch_back() {
         inputs,
         Vec::new(),
         None,
+        Default::default(),
         &schema_with(&cfg, BANDS),
         &map_styles(&cfg),
         &opts,
@@ -1143,6 +1144,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
             inputs,
             Vec::new(),
             terrain,
+            Default::default(),
             &schema_with(&cfg, BANDS),
             &map_styles(&cfg),
             &opts,
@@ -1871,4 +1873,99 @@ fn settlements_survive_assembly_with_their_payload() {
         vec![(SettlementClass::Village, "Grüßau", None), (SettlementClass::City, "Weststadt", Some(250_000))],
         "three records, two identities: the stored name and population survive the merge"
     );
+}
+
+/// The map cells carry no landmarks or peaks: their artifacts, one per network cell, join them at
+/// assembly, and the reader finds both sections in the map. Each landmark artifact has its own
+/// hours pool, and each record still names its own schedule in the map's one pool.
+#[test]
+fn a_map_assembled_from_landmark_and_peak_artifacts_has_both_sections() {
+    use obc_formats::obcm::{PoiMetadata, SourceId, POI_HOURS_REF_NONE, SUMMIT_SUBTYPE_ID};
+    use obcm_assemble::{assemble_full, Articles, MemoryScratch};
+    use serde_json::json;
+    let cfg = config();
+    let (mut ing, ways) = fixture(&cfg);
+    let mut summit = poi(SUMMIT_SUBTYPE_ID, LAT, SEAM + 100_000, "Massif");
+    summit.metadata.source = SourceId::osm(1, 101);
+    ing.pois.push(summit);
+    let hours = ["Mo-Su 08:00-18:00", "Mo-Fr 09:00-17:00"];
+    for (qid, hours) in (1..).zip(hours) {
+        ing.landmark_links.push(obc_pack::poi::LandmarkLink {
+            metadata: PoiMetadata { source: SourceId::osm(1, 500 + qid), approach: None },
+            position: None,
+            wikidata: Some(format!("Q{qid}")),
+            wikipedia: None,
+            hours: obc_pack::hours::parse(hours),
+        });
+    }
+    let dir = scratch("articles");
+    let summary = cut(&dir.join("cells"), &cfg, &ing, &ways);
+
+    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Castle&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors"});
+    let counts = serde_json::to_value(obc_pack::landmarks::Counts::default()).unwrap();
+    let landmarks = dir.join("content.json");
+    let records = [(1, SEAM + 1_000), (2, SEAM - 1_000)].map(|(qid, lon)| {
+        json!({"qid":format!("Q{qid}"),"name":"Castle","category":1,"latitude":deg(LAT),"longitude":deg(lon),
+            "default_language":"en","fallback_sources":[],"photo":null,
+            "variants":[{"language":"en","text_pages":["A castle."],"attribution":credit}]})
+    });
+    let content = json!({"schema":2,"input_sha256":"input","policy_sha256":"policy","category_policy_sha256":"categories",
+        "languages":["en","de","fr","es"],"source_coverage":{},"counts":counts,"candidate_qids":[],"omissions":[],
+        "records":records});
+    std::fs::write(&landmarks, serde_json::to_vec(&content).unwrap()).unwrap();
+    let peaks = dir.join("peaks.json");
+    let catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy",
+        "languages":["en","de","fr","es"],"source_coverage":{},"counts":counts,"omissions":[],
+        "records":[{"id":"Q7","name":"Massif","default_language":"en","fallback_sources":[],"photo":null,
+            "variants":[{"language":"en","text_pages":["A mountain."],"attribution":credit}]}],
+        "associations":[{"node_id":101,"article_id":"Q7","latitude":deg(LAT),"longitude":deg(SEAM + 100_000)}]});
+    std::fs::write(&peaks, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+    let network: Vec<_> = summary.cells.iter().filter(|c| c.band == "network").map(|c| c.id).collect();
+    let landmark_artifacts = obc_pack::landmark_map::artifacts(&[landmarks], &ing.landmark_links, &network).unwrap();
+    let peak_artifacts = obc_pack::peak_map::artifacts(&[peaks], &network).unwrap();
+    assert_eq!((landmark_artifacts.len(), peak_artifacts.len()), (2, 1), "the seam parts the landmarks");
+
+    let sources: Vec<MemorySource> =
+        summary.cells.iter().map(|c| MemorySource(std::fs::read(dir.join("cells").join(&c.path)).unwrap())).collect();
+    let inputs: Vec<CellInput<'_>> = summary
+        .cells
+        .iter()
+        .zip(&sources)
+        .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
+        .collect();
+    let artifacts = |bytes: &std::collections::BTreeMap<_, Vec<u8>>| -> Vec<MemorySource> {
+        bytes.values().map(|bytes| MemorySource(bytes.clone())).collect()
+    };
+    let (landmark_sources, peak_sources) = (artifacts(&landmark_artifacts), artifacts(&peak_artifacts));
+    let articles = Articles {
+        landmarks: landmark_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+        peaks: peak_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+    };
+    let mut store = MemoryStore::default();
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let (schema, styles) = (schema_with(&cfg, BANDS), map_styles(&cfg));
+    let scratch = MemoryScratch::new();
+    assemble_full(inputs, Vec::new(), None, articles, &schema, &styles, &opts, &mut store, &NoClock, &scratch)
+        .expect("the assembly runs");
+
+    let src = SliceSource(&store.map.0);
+    let section = obc_reader::landmarks::map_section(&src).unwrap().expect("a landmark section");
+    let directory = obc_reader::landmarks::LandmarkDirectory::read(&section).unwrap();
+    assert_eq!(directory.count, 2);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    let pool = reader.poi_directory().hours_pool_offset + 2;
+    for index in 0..directory.count {
+        let record = directory.record(&section, index).unwrap();
+        assert_ne!(record.hours_ref, POI_HOURS_REF_NONE, "the hours of the artifact join the map's pool");
+        let mut blob = [0; obc_formats::obcm::POI_HOURS_BLOB_LEN];
+        src.read_at(pool + u64::from(record.hours_ref) * blob.len() as u64, &mut blob).unwrap();
+        let expected = obc_pack::hours::parse(hours[record.qid as usize - 1]).unwrap().encode();
+        assert_eq!(blob, expected, "Q{}", record.qid);
+    }
+    let section = obc_reader::peaks::map_section(&src).unwrap().expect("a peak section");
+    let directory = obc_reader::peaks::Directory::read(&section).unwrap();
+    assert_eq!((directory.records, directory.associations), (1, 1));
+    assert!(reader.peak_article(SourceId::osm(1, 101)).unwrap().is_some());
 }

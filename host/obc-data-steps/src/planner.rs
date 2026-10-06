@@ -447,6 +447,7 @@ mod tests {
         fetched(&store, obc_pack::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         for day in days {
             fetched(&store, EXTRACTS, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), (*day).into())]);
+            crate::maps::tests::captured(&store, "1", AREA, day, poly);
         }
         store
     }

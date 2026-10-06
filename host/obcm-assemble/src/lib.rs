@@ -275,6 +275,15 @@ pub struct TerrainJob<'a> {
     pub cells: Vec<TerrainCellInput<'a>>,
 }
 
+/// The landmark and peak artifacts of an assembly (OBCC §14.3). Like the terrain cells, they are
+/// inputs beside the map cells: the merge joins them with the sections that core cells carry and
+/// copies their content into the map's landmark and peak regions.
+#[derive(Default)]
+pub struct Articles<'a> {
+    pub landmarks: Vec<&'a dyn ByteSource>,
+    pub peaks: Vec<&'a dyn ByteSource>,
+}
+
 /// The spliced raster, as the caller sees it.
 ///
 /// There is no digest here and that is deliberate: the raster is a run of bytes inside the map, and
@@ -339,7 +348,7 @@ fn assemble_with_default_scratch(
     clock: &dyn Clock,
 ) -> Result<Summary> {
     let scratch = MemoryScratch::new();
-    assemble_full(cells, known_empty, terrain, schema, styles, opts, store, clock, &scratch)
+    assemble_full(cells, known_empty, terrain, Articles::default(), schema, styles, opts, store, clock, &scratch)
 }
 
 /// Assemble artifacts plus explicit zero-byte coverage from a pinned catalog.
@@ -369,12 +378,13 @@ pub fn assemble_with_known_empty(
 /// `scratch` is where the merge spills the passes it may not hold in memory — the third host seam,
 /// alongside the store and the clock, and the reason the engine can sort a country-scale graph
 /// without a filesystem of its own.
-// One assembly is exactly these nine things; a struct would restate the signature.
+// One assembly is exactly these ten things; a struct would restate the signature.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_full(
     cells: Vec<CellInput<'_>>,
     known_empty: Vec<KnownEmptyInput>,
     terrain: Option<TerrainJob<'_>>,
+    articles: Articles<'_>,
     schema: &Schema,
     map_styles: &MapStyles,
     opts: &Options,
@@ -446,8 +456,8 @@ pub fn assemble_full(
     let core_band = schema.core_band().expect("validated: exactly one core band");
     let core_cells: Vec<&Cell<'_>> = cells.iter().filter(|c| c.band == core_band.id).collect();
     let mut merged_pois = poi::merge(&core_cells)?;
-    let landmark_section = landmarks::merge(&core_cells, &mut merged_pois)?;
-    let peak_section = peaks::merge(&core_cells, &merged_pois)?;
+    let landmark_section = landmarks::merge(&core_cells, &articles.landmarks, &mut merged_pois)?;
+    let peak_section = peaks::merge(&core_cells, &articles.peaks, &merged_pois)?;
     let poi_section = poi::layout(&merged_pois, assembly.ubox())?;
     let t_poi = clock.now_us();
     let merged_nav = nav::merge_profiled(

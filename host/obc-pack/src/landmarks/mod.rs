@@ -8,6 +8,7 @@ mod locale;
 pub mod peaks;
 mod photo;
 mod policy;
+pub mod select;
 pub mod text;
 
 /// The shared UI language set, verbatim. It decides which articles are fetched and which places

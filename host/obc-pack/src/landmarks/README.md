@@ -58,6 +58,10 @@ map-wide language argument.
 | `<region id>/landmarks.json` | The declaration: region, recipe version, the digests the capture ran under, and one digest over every other file of the directory. |
 | catalogue root, `landmarks` | Each artifact's counts, languages, digest and licence URLs (`OBCC_Spec.md` §14). `obc bake verify` re-computes the digest; `obc bake publish` refuses a directory with no declaration. |
 
+`obc data` compiles the same content in `maps/landmark-content` and `maps/peak-content`, and
+writes one artifact per network cell in `maps/landmarks/<leaf>` and `maps/peaks/<leaf>`
+(`OBCC_Spec.md` §14.3, `specs/obc-data.md`).
+
 ### Local language fallback
 
 For a place's default language the compiler follows its best-rank P131 administrative chain and
