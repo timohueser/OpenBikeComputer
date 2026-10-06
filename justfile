@@ -549,7 +549,7 @@ desktop *args:
       _run cargo run --release
     fi
 
-[doc("Pack the iOS host as target/OBCHost.xcframework, in release. Args: [--sim-only] (simulator only)")]
+[doc("Pack the iOS host as target/OBCHost.xcframework, in release. Args: [--sim-only|--mac-only]")]
 [group('ios')]
 ios-host *args:
     #!/usr/bin/env bash
@@ -582,6 +582,7 @@ ios-companion *args:
     source "{{lib}}"; obc_init
     (( $# <= 1 )) || { _err "usage: obc ios-companion [DEVICE]"; exit 1; }
     device="$(ios_phone "${1:-}")"
+    _run "$OBC_TOOLS/build-ios-host.sh"
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
 [doc("What governs these files: contracts, guards, suites, frames, budgets. Args: PATH...")]

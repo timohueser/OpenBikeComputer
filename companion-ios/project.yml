@@ -57,6 +57,16 @@ targets:
       - path: ../THIRD-PARTY.md
         buildPhase: resources
     preBuildScripts:
+      - name: Rust store client
+        basedOnDependencyAnalysis: false
+        script: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          unset SDKROOT
+          if [ "$PLATFORM_NAME" = iphonesimulator ]; then
+            "$SRCROOT/../tools/build-ios-host.sh" --sim-only
+          else
+            "$SRCROOT/../tools/build-ios-host.sh"
+          fi
       - name: Build offline planner
         basedOnDependencyAnalysis: false
         script: bash "$SRCROOT/../tools/build-planner-ios.sh"

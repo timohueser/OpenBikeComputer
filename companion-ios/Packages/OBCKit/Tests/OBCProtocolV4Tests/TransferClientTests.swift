@@ -8,7 +8,7 @@ struct TransferClientTests {
     func midTransferDisconnectReconciles() async throws {
         let payload = Data("protocol v4 replacement".utf8)
         let link = DisconnectingLink(payload: payload)
-        let client = TransferClient(link: link, firstRequestID: 0x2A00)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(
             payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
@@ -27,7 +27,7 @@ struct TransferClientTests {
     @Test("Store identity stops after the first LIST page")
     func storeIdentityDoesNotWalkTheCatalog() async throws {
         let link = PagedIdentityLink()
-        let client = TransferClient(link: link, firstRequestID: 0x4100)
+        let client = TransferClient(link: link)
 
         let storeID = try await client.storeID()
         let requests = await link.listRequests
@@ -40,7 +40,7 @@ struct TransferClientTests {
     func freshCreateDoesNotWalkTheCatalog() async throws {
         let payload = Data("new route".utf8)
         let link = FreshCreateLink(payload: payload)
-        let client = TransferClient(link: link, firstRequestID: 0x4200)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(payload, kind: .route, displayName: "New Route")
         let opcodes = await link.opcodes
@@ -55,7 +55,7 @@ struct TransferClientTests {
     func streamDropWithNoAnswerReconciles() async throws {
         let payload = Data("protocol v4 replacement".utf8)
         let link = AbandonedAnswerLink(payload: payload)
-        let client = TransferClient(link: link, firstRequestID: 0x5300)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(
             payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
@@ -76,7 +76,7 @@ struct TransferClientTests {
     func lateAnswerToAnAbandonedRequestIsSkipped() async throws {
         let payload = Data("protocol v4 replacement".utf8)
         let link = AbandonedAnswerLink(payload: payload, answersTheAbandonedRequest: true)
-        let client = TransferClient(link: link, firstRequestID: 0x6100)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(
             payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
