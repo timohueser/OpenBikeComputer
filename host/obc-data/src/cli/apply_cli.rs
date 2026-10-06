@@ -344,16 +344,23 @@ fn files(store: &Store, scratch: &Scratch, next: &Live, switches: &[Switch]) -> 
             files.push(File { path: write(scratch, &key, bytes)?, key, size, sha256: None, upload: IMMUTABLE });
         }
     }
-    for ((source, version), record) in &next.inputs {
+    for (read, record) in &next.inputs {
+        let (source, version) = (&read.source, &read.version);
         let record = record.as_ref().ok_or_else(|| {
             Code::Failed
                 .error(format!("neither R2 nor the store has the record of the input copy {source}@{version}"))
                 .fix(format!("Fetch it with `obc data fetch {source}@{version}`, or plan with `--move {source}`."))
         })?;
-        let key = format!("{INPUTS}/records/{source}/{version}.json");
-        let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
-        let upload = Upload { content_type: Some(JSON), ..Upload::default() };
-        files.push(File { path: write(scratch, &key, &bytes)?, key, size: None, sha256: None, upload });
+        let key = read.path();
+        let bytes = record.canonical();
+        let upload = Upload { content_type: Some(JSON), ..IMMUTABLE };
+        files.push(File {
+            path: write(scratch, &key, &bytes)?,
+            key,
+            size: Some(bytes.len() as u64),
+            sha256: Some(crate::store::sha256_hex(&bytes)),
+            upload,
+        });
         files.extend(record.files.iter().map(|file| File {
             key: format!("{INPUTS}/objects/{}", file.sha256),
             path: store.object(&file.sha256),
@@ -369,6 +376,19 @@ fn files(store: &Store, scratch: &Scratch, next: &Live, switches: &[Switch]) -> 
 /// key with another size goes first: an immutable upload never replaces. Each file is checked
 /// against its SHA-256 before R2 changes, and each key after its upload.
 fn upload(bucket: &Bucket, listed: &[Object], files: &[File]) -> Result<Vec<String>, Error> {
+    for file in files
+        .iter()
+        .filter(|f| f.key.starts_with(&format!("{INPUTS}/records/")) && listed.iter().any(|object| object.key == f.key))
+    {
+        let bytes = bucket
+            .read(&file.key)
+            .map_err(r2_failed)?
+            .ok_or_else(|| Code::R2Failed.error(format!("{} disappeared", file.key)))?;
+        if file.sha256.as_deref() != Some(crate::store::sha256_hex(&bytes).as_str()) {
+            return Err(Code::VerifyFailed
+                .error(format!("{} already holds different immutable copy metadata; nothing changed", file.key)));
+        }
+    }
     let listed: BTreeMap<&str, &Object> = listed.iter().map(|object| (object.key.as_str(), object)).collect();
     let (mut missing, mut wrong) = (BTreeMap::new(), Vec::new());
     for file in files {
@@ -552,10 +572,11 @@ mod tests {
         assert!(apply(&fixture, &remote, &[&Versioned]).unwrap().built.is_none(), "live has every change");
 
         // R2 lost the record of an input copy: the store gives it, and its objects stay.
-        std::fs::remove_file(dir.join("inputs/records/head/2020-01-01.json")).unwrap();
+        let record = keys.keys().find(|key| key.starts_with("inputs/records/head/2020-01-01/")).unwrap().clone();
+        std::fs::remove_file(dir.join(&record)).unwrap();
         age(&fixture);
         let repaired = apply(&fixture, &remote, &[&Versioned]).unwrap();
-        assert_eq!(repaired.uploaded, ["inputs/records/head/2020-01-01.json"]);
+        assert_eq!(repaired.uploaded, [record]);
         assert!(repaired.switched.is_empty() && repaired.removed.is_empty(), "{repaired:?}");
         checked(&fixture, &remote);
     }
@@ -578,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn an_apply_that_moves_a_source_keeps_the_shared_object_and_removes_the_old_record() {
+    fn an_apply_that_moves_a_source_removes_unread_input_files_and_the_old_record() {
         let (fixture, remote) = repository("apply-move");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let old = checked(&fixture, &remote).unwrap();
@@ -590,12 +611,19 @@ mod tests {
         let applied = apply(&fixture, &remote, &[&Versioned]).unwrap();
         assert_ne!(checked(&fixture, &remote).unwrap(), old);
         let removed: Vec<&str> = applied.removed.iter().map(|object| object.key.as_str()).collect();
-        for key in ["inputs/records/head/2020-01-01.json".into(), format!("test/releases/{old}.json")] {
-            assert!(removed.contains(&key.as_str()), "{key} in {removed:?}");
-        }
+        let old_record = files(&fixture)
+            .into_iter()
+            .find(|path| path.to_string_lossy().contains("inputs/records/head/2020-01-01/"))
+            .map(|path| path.strip_prefix(fixture.scratch.0.join("bucket")).unwrap().to_string_lossy().into_owned());
+        let key = format!("test/releases/{old}.json");
+        assert!(removed.contains(&key.as_str()), "{key} in {removed:?}");
         let keys = keys(&fixture);
-        assert!(keys.contains_key("inputs/records/head/2020-02-01.json"));
-        assert_eq!(keys[&format!("inputs/objects/{}", sha256_hex(b"head\n"))], b"head\n", "both versions have it");
+        assert!(old_record.is_none(), "the old read record is removed");
+        assert!(keys.keys().any(|key| key.starts_with("inputs/records/head/2020-02-01/")));
+        assert!(
+            !keys.contains_key(&format!("inputs/objects/{}", sha256_hex(b"head\n"))),
+            "an unread file of the new snapshot is not copied"
+        );
         assert!(!keys.contains_key(&format!("test/releases/{old}/LICENSE.txt")));
     }
 

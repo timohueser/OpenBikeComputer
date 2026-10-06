@@ -174,9 +174,9 @@ pub struct InputRecord {
     /// The source id or the layer name.
     pub name: String,
     pub digest: String,
-    /// The paths that a layer input selects, sorted, or none for every file. Not in the key: the
-    /// digest names the paths.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Exact resolved snapshot file names, including an empty read. For a layer input, the
+    /// selected paths, or none for every file. The digest names the bytes in the key.
+    #[serde(default)]
     pub files: Vec<String>,
 }
 
@@ -518,8 +518,10 @@ fn prepare(
                         })
                     }
                 };
+                let mut names: Vec<_> = files.iter().map(|file| file.name.clone()).collect();
+                names.sort();
                 let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
-                (InputKind::Snapshot, source, Vec::new(), files.collect())
+                (InputKind::Snapshot, source, names, files.collect())
             }
             Input::Layer { name, files: selected } => {
                 let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
@@ -608,7 +610,8 @@ fn build_step(
     mut request: Request,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
-    if let Some(stored) = reusable(store, &receipt.key)? {
+    if let Some(mut stored) = reusable(store, &receipt.key)? {
+        stored.inputs = receipt.inputs.clone();
         return Ok(Built { receipt: stored, reused: true });
     }
     let work = store.partial(&format!("layer-{}", receipt.key));
@@ -744,7 +747,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         ) -> Result<Vec<Built>, String> {
             let mut run = runs::Run::create(&self.store, "build test")?;
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
-            let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, limits };
+            let context =
+                runs::Context { store: &self.store, root: &root, sources: &[], http: &http, copies: None, limits };
             let built = run.build(&context, steps, plan);
             run.finish(built.as_ref().err().map(String::as_str))?;
             built
@@ -934,7 +938,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     #[test]
     fn a_snapshot_input_keys_only_the_files_it_selects() {
         let fixture = fixture("engine-select");
-        fixture.build(&pipeline()).unwrap();
+        let built = fixture.build(&pipeline()).unwrap();
+        let mut old = built[0].receipt.clone();
+        let resolved = old.inputs[0].files.clone();
+        assert!(!resolved.is_empty());
+        old.inputs[0].files.clear();
+        fixture.store.put_layer(&old).unwrap();
+        let released =
+            release::release(&fixture.store, &fixture.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
+        let restored = released.layers.iter().find(|l| l.key == old.key).unwrap();
+        assert_eq!(
+            restored.inputs[0].files, resolved,
+            "a freshly resolved digest-matching selection repairs provenance without rebuilding bytes"
+        );
+
         fixture.fetched("head", "other.txt", b"other\n");
         assert_eq!(fixture.plan(&pipeline()).unwrap().groups, []);
 

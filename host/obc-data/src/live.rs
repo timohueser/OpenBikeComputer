@@ -5,7 +5,7 @@
 //! `"release": "<id>"` and `"applied"`), `P/releases/<id>.json` (the manifest),
 //! `P/releases/<id>/<path>` (files that a client finds by name) and `P/objects/<sha256>` (the files
 //! of its client layers). The input
-//! copies are `inputs/records/<source>/<version>.json` (a snapshot record) and
+//! copies are `inputs/records/<source>/<version>/<digest>.json` (an exact read record) and
 //! `inputs/objects/<sha256>`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,10 +16,11 @@ use serde::{Deserialize, Serialize};
 use crate::engine::release::{Layer, Release};
 use crate::env::LiveVersions;
 use crate::fetch::http::{self, Http};
+use crate::input_copy::{self, Key, Record};
 use crate::product::Product;
 use crate::r2::{Bucket, Credentials, Object};
 use crate::sources::Source;
-use crate::store::{sha256_hex, write_atomic, Snapshot, Store};
+use crate::store::{sha256_hex, write_atomic, Store};
 
 /// The public URL of the bucket of `OBC_R2_*`.
 pub const PUBLIC: &str = "https://maps.openbikecomputer.com";
@@ -56,7 +57,7 @@ impl Remote {
     }
 
     /// The bytes of `key`, or `None` when there is no such object.
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+    pub(crate) fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         match self {
             Remote::Bucket(bucket) => bucket.read(key),
             Remote::Public(url) => match Http::new().text(&format!("{url}/{key}"), "application/json") {
@@ -80,9 +81,9 @@ impl Remote {
 pub struct Live {
     /// One per product, in the order of the products.
     pub products: Vec<LiveProduct>,
-    /// The record that R2 holds of each snapshot that a live release reads, by source and version;
+    /// The record that R2 holds of each snapshot that a live release reads, by source, version and input digest;
     /// `None` for a source with `r2_copy` whose record R2 lacks.
-    pub inputs: BTreeMap<(String, String), Option<Snapshot>>,
+    pub inputs: BTreeMap<Key, Option<Record>>,
 }
 
 #[derive(Debug)]
@@ -111,17 +112,24 @@ impl Live {
             };
             live.products.push(LiveProduct { product: product.name().into(), prefix: prefix.into(), release, applied });
         }
-        // Each record that R2 holds counts, whatever `sources` says now: a removal depends on R2
-        // alone. Only a record of a source with `r2_copy` that R2 lacks is drift.
-        for (source, version) in live.snapshots() {
-            let key = record_key(&source, &version);
-            let record: Option<Snapshot> = remote
-                .get(&key)?
-                .map(|bytes| serde_json::from_slice(&bytes))
-                .transpose()
-                .map_err(|e| format!("{key}: {e}"))?;
-            if record.is_some() || sources.iter().any(|s| s.id == source && s.r2_copy) {
-                live.inputs.insert((source, version), record);
+        let mut records: BTreeMap<Key, Option<Record>> = BTreeMap::new();
+        for read in input_copy::reads(&live)? {
+            let record = match records.get(&read.key) {
+                Some(record) => record.clone(),
+                None => {
+                    let record = input_copy::read(remote, &read.key)?;
+                    records.insert(read.key.clone(), record.clone());
+                    record
+                }
+            };
+            if let Some(record) = &record {
+                let names: Vec<_> = record.files.iter().map(|f| f.name.clone()).collect();
+                if names != read.files {
+                    return Err(format!("{}: the copy file names differ from the live read", read.key.path()));
+                }
+            }
+            if record.is_some() || sources.iter().any(|s| s.id == read.key.source && s.r2_copy) {
+                live.inputs.insert(read.key, record);
             }
         }
         Ok(live)
@@ -177,8 +185,8 @@ impl Live {
                 release.objects().into_iter().map(|(sha256, size)| (format!("{prefix}/objects/{sha256}"), Some(size))),
             );
         }
-        for ((source, version), record) in &self.inputs {
-            keys.insert(record_key(source, version), None);
+        for (key, record) in &self.inputs {
+            keys.insert(key.path(), record.as_ref().map(|r| r.canonical().len() as u64));
             let files = record.iter().flat_map(|record| &record.files);
             keys.extend(files.map(|file| (format!("{INPUTS}/objects/{}", file.sha256), Some(file.size))));
         }
@@ -286,10 +294,6 @@ pub struct Removal {
     pub key: String,
     /// `None` for the record of an input copy, whose size is not known before a listing.
     pub bytes: Option<u64>,
-}
-
-fn record_key(source: &str, version: &str) -> String {
-    format!("{INPUTS}/records/{source}/{version}.json")
 }
 
 /// Refuse an older publish to `prefix` once an apply made a release live there: it would replace
@@ -411,7 +415,12 @@ pub(crate) mod tests {
         let layer = Layer {
             step: "test/one".into(),
             key: "key".into(),
-            inputs: Vec::new(),
+            inputs: vec![crate::engine::InputRecord {
+                kind: crate::engine::InputKind::Snapshot,
+                name: "land".into(),
+                digest: crate::engine::digest([("land.zip", sha256_hex(b"land").as_str())]),
+                files: vec!["land.zip".into()],
+            }],
             options: serde_json::json!({}),
             code: String::new(),
             command: None,
@@ -441,8 +450,22 @@ pub(crate) mod tests {
             sha256: sha256_hex(b"land"),
             retrieved: "2026-10-01T00:00:00Z".into(),
         };
-        let record = Snapshot { source: "land".into(), version: "2026-10-01".into(), files: vec![file] };
-        write(&bucket.join("inputs/records/land/2026-10-01.json"), &serde_json::to_string(&record).unwrap());
+        let record = crate::input_copy::Record {
+            source: "land".into(),
+            version: "2026-10-01".into(),
+            files: vec![crate::input_copy::File {
+                name: file.name,
+                url: file.url,
+                size: file.size,
+                sha256: file.sha256,
+            }],
+        };
+        let key = crate::input_copy::Key {
+            source: record.source.clone(),
+            version: record.version.clone(),
+            digest: release.layers[0].inputs[0].digest.clone(),
+        };
+        write(&bucket.join(key.path()), &String::from_utf8(record.canonical()).unwrap());
         write(&bucket.join(format!("inputs/objects/{}", sha256_hex(b"land"))), "land");
     }
 
@@ -538,6 +561,7 @@ pub(crate) mod tests {
         assert_eq!(live.swept(), ["test-catalog", "inputs"], "no live layer reads a `dtm-*` source");
 
         let mut national = release(b"layer");
+        national.layers[0].inputs[0].name = "dtm-ch".into();
         let read = national.layers[0].snapshots.remove("land").unwrap();
         national.layers[0].snapshots.insert("dtm-ch".into(), read);
         publish(&dir, &national);

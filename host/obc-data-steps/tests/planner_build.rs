@@ -101,7 +101,8 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         steps
     };
     let http = Http::new();
-    let context = Context { store: &store, root: &root, sources: &[], http: &http, limits: Limits::machine() };
+    let context =
+        Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
     let build = |steps: &[Step]| -> Vec<Built> {
         let mut run = RunLog::create(&store, "build test").unwrap();
         let built = run.build(&context, steps, &plan(&store, &root, steps).unwrap()).unwrap();

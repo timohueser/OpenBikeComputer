@@ -131,7 +131,9 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let http = Http::new();
-    let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env));
+    let copies = crate::input_copy::Restore { remote: &remote, live: &live };
+    loaded.env.retained = crate::input_copy::retained(&live, &store)?;
+    let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env, Some(&copies)));
     let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     // `Live::read` gives one live product per product, in their order.
