@@ -1,55 +1,104 @@
-//! The code of a step: the files it declares, and the files of the crates it declares with their
-//! path dependencies. The code hash is their digest.
+//! Declared files and the selected Rust, Python and source content that produce a layer.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+mod python;
+mod rust;
 
 use super::Code;
 use crate::store::hash_file;
 
-/// The code files: path relative to `root`, with `/`, to SHA-256.
+/// File paths and named dependency fingerprints, in byte order, to SHA-256.
 pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
-    let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
-    let mut pathspecs = Vec::new();
-    for path in &code.paths {
-        if !root.join(path).exists() {
-            return Err(format!("the code path {path} does not exist in {}", root.display()));
+    Context::default().files(root, code)
+}
+
+#[derive(Default)]
+pub(super) struct Context {
+    rust: Option<rust::Metadata>,
+    python: HashMap<Option<String>, BTreeMap<String, String>>,
+}
+
+impl Context {
+    pub fn files(&mut self, root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
+        let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
+        let mut pathspecs = Vec::new();
+        for path in &code.paths {
+            if !root.join(path).exists() {
+                return Err(format!("the code path {path} does not exist in {}", root.display()));
+            }
+            pathspecs.push(PathBuf::from(path));
         }
-        pathspecs.push(PathBuf::from(path));
-    }
-    let crates = crate_dirs(&root, &code.crates)?;
-    for dir in &crates {
-        let dir = dir.strip_prefix(&root).map_err(|_| format!("{} is outside {}", dir.display(), root.display()))?;
-        pathspecs.extend(["Cargo.toml", "build.rs", "src"].map(|name| dir.join(name)));
-    }
-    let mut files = listed(&root, &pathspecs)?;
-    if let Some(path) = code.paths.iter().find(|path| !files.iter().any(|file| file.starts_with(root.join(path)))) {
-        return Err(format!("{path} is ignored by git"));
-    }
-    let mut pending: Vec<(PathBuf, &Path)> = Vec::new();
-    for dir in &crates {
-        let sources = files.iter().filter(|file| file.starts_with(dir) && is_rust(file));
-        pending.extend(sources.map(|source| (source.clone(), dir.as_path())));
-    }
-    while let Some((source, dir)) = pending.pop() {
-        for file in included(&source, dir)? {
-            if files.insert(file.clone()) && is_rust(&file) {
-                pending.push((file, dir));
+        let (crates, dependencies) = if code.crates.is_empty() {
+            (BTreeSet::new(), BTreeMap::new())
+        } else {
+            if self.rust.is_none() {
+                self.rust = Some(rust::Metadata::load(&root)?);
+            }
+            self.rust.as_ref().unwrap().selected(&root, &code.crates)?
+        };
+        for dir in &crates {
+            let dir =
+                dir.strip_prefix(&root).map_err(|_| format!("{} is outside {}", dir.display(), root.display()))?;
+            pathspecs.extend(["Cargo.toml", "build.rs", "src"].map(|name| dir.join(name)));
+        }
+        let mut files = listed(&root, &pathspecs)?;
+        if let Some(path) = code.paths.iter().find(|path| !files.iter().any(|file| file.starts_with(root.join(path)))) {
+            return Err(format!("{path} is ignored by git"));
+        }
+        let mut pending: Vec<(PathBuf, &Path)> = Vec::new();
+        for dir in &crates {
+            let sources = files.iter().filter(|file| file.starts_with(dir) && is_rust(file));
+            pending.extend(sources.map(|source| (source.clone(), dir.as_path())));
+        }
+        while let Some((source, dir)) = pending.pop() {
+            for file in included(&source, dir)? {
+                if files.insert(file.clone()) && is_rust(&file) {
+                    pending.push((file, dir));
+                }
             }
         }
+        let mut hashes = BTreeMap::new();
+        for file in files {
+            let relative =
+                file.strip_prefix(&root).map_err(|_| format!("{} is outside {}", file.display(), root.display()))?;
+            let relative = relative.to_str().ok_or_else(|| format!("{} is not UTF-8", relative.display()))?;
+            let explicit = code.paths.iter().any(|path| file.starts_with(root.join(path)));
+            let hash = if !explicit && crates.iter().any(|dir| file == dir.join("Cargo.toml")) {
+                manifest_hash(&file)?
+            } else {
+                hash_file(&file)?.0
+            };
+            hashes.insert(relative.replace('\\', "/"), hash);
+        }
+        hashes.extend(dependencies);
+        if let Some(runtime) = &code.python {
+            if !self.python.contains_key(&runtime.group) {
+                self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
+            }
+            hashes.extend(self.python[&runtime.group].clone());
+        }
+        if !code.sources.is_empty() {
+            let registry = crate::sources::Registry::load(&root)?;
+            for id in &code.sources {
+                let source = registry
+                    .sources
+                    .iter()
+                    .find(|source| &source.id == id)
+                    .ok_or_else(|| format!("code names no source `{id}`"))?;
+                let mut content = serde_json::to_value(source).map_err(|error| error.to_string())?;
+                for field in ["refresh", "credential", "r2_copy", "redistribute", "hosts"] {
+                    content.as_object_mut().unwrap().remove(field);
+                }
+                let bytes = serde_json::to_vec(&super::sorted(content)).map_err(|error| error.to_string())?;
+                hashes.insert(format!("data/sources.toml#{id}"), crate::store::sha256_hex(&bytes));
+            }
+        }
+        Ok(hashes)
     }
-    let mut hashes = BTreeMap::new();
-    for file in files {
-        let relative =
-            file.strip_prefix(&root).map_err(|_| format!("{} is outside {}", file.display(), root.display()))?;
-        let relative = relative.to_str().ok_or_else(|| format!("{} is not UTF-8", relative.display()))?;
-        hashes.insert(relative.replace('\\', "/"), hash_file(&file)?.0);
-    }
-    Ok(hashes)
 }
 
 pub fn hash(files: &BTreeMap<String, String>) -> String {
@@ -137,68 +186,74 @@ fn literal(text: &str) -> Option<(&str, &str)> {
     rest[hashes.len()..].strip_prefix('"')?.split_once(&format!("\"{hashes}"))
 }
 
-#[derive(Deserialize)]
-struct Metadata {
-    packages: Vec<Package>,
-}
-
-#[derive(Deserialize)]
-struct Package {
-    name: String,
-    manifest_path: PathBuf,
-    dependencies: Vec<Dependency>,
-}
-
-#[derive(Deserialize)]
-struct Dependency {
-    kind: Option<String>,
-    path: Option<PathBuf>,
-}
-
-/// The directories of `crates` and of their normal and build path dependencies, but `obc-data`,
-/// from `cargo metadata` of the workspace at `root`.
-fn crate_dirs(root: &Path, crates: &[String]) -> Result<BTreeSet<PathBuf>, String> {
-    if crates.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .args(["metadata", "--format-version", "1", "--no-deps", "--offline"])
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("cargo metadata: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("cargo metadata: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    let metadata: Metadata = serde_json::from_slice(&output.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
-    let dir = |manifest: &Path| -> Result<PathBuf, String> {
-        let dir = manifest.parent().unwrap_or(manifest);
-        dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))
-    };
-    let mut packages = HashMap::new();
-    for package in &metadata.packages {
-        packages.insert(dir(&package.manifest_path)?, package);
-    }
-    let mut pending = Vec::new();
-    for name in crates {
-        let package = metadata.packages.iter().find(|package| &package.name == name);
-        pending.push(dir(&package.ok_or_else(|| format!("the workspace has no crate `{name}`"))?.manifest_path)?);
-    }
-    let mut dirs = BTreeSet::new();
-    while let Some(next) = pending.pop() {
-        let package = packages.get(&next).ok_or_else(|| {
-            format!("the path dependency {} is not in the workspace; declare its files instead", next.display())
-        })?;
-        // The engine only selects and passes the inputs of a step: what it selects reaches the
-        // key through the input digests, so its own code is no code of a step.
-        if package.name == env!("CARGO_PKG_NAME") || !dirs.insert(next.clone()) {
-            continue;
+/// Only automatically selected producer manifests omit dev-only dependency declarations.
+fn manifest_hash(path: &Path) -> Result<String, String> {
+    let text = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut manifest: toml::Value = toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    let table = manifest.as_table_mut().ok_or("Cargo.toml is not a table")?;
+    table.remove("dev-dependencies");
+    if let Some(targets) = table.get_mut("target").and_then(toml::Value::as_table_mut) {
+        for target in targets.values_mut().filter_map(toml::Value::as_table_mut) {
+            target.remove("dev-dependencies");
         }
-        for dependency in &package.dependencies {
-            if let Some(path) = dependency.path.as_deref().filter(|_| dependency.kind.as_deref() != Some("dev")) {
-                pending.push(path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?);
-            }
+        targets.retain(|_, target| target.as_table().is_none_or(|table| !table.is_empty()));
+        if targets.is_empty() {
+            table.remove("target");
         }
     }
-    Ok(dirs)
+    let value = serde_json::to_value(manifest).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(&super::sorted(value)).map_err(|error| error.to_string())?;
+    Ok(crate::store::sha256_hex(&bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::{fixture, write};
+
+    #[test]
+    fn source_content_identity_is_scoped_and_freshness_controls_do_not_change_it() {
+        let fixture = fixture("code-content-source");
+        let root = fixture.root();
+        let sources = root.join("data/sources.toml");
+        let source = "[[source]]\nid = \"land\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Land\"\nfetch = { kind = \"http\", url = \"https://example.org/land\" }\nversion = \"date\"\nrefresh = 7\nredistribute = true\n";
+        let text = format!("{source}{}", source.replace("land", "other").replace("Land", "Other"));
+        write(&sources, &text);
+        let code = Code { sources: vec!["land".into()], ..Default::default() };
+        let before = files(&root, &code).unwrap();
+        let mut steps = crate::engine::tests::pipeline();
+        steps[0].code.sources = code.sources.clone();
+        fixture.build(&steps).unwrap();
+        write(&sources, &text.replace("refresh = 7", "refresh = 30").replace("Other", "Changed"));
+        assert_eq!(files(&root, &code).unwrap(), before, "unrelated sources and age policy do not change content");
+        assert!(fixture.plan(&steps).unwrap().groups.is_empty(), "policy-only edits reuse the built layers");
+        write(&sources, &text.replace("attribution = \"Land\"", "attribution = \"New credit\""));
+        assert_ne!(files(&root, &code).unwrap(), before);
+        assert!(
+            !fixture.plan(&steps).unwrap().groups.is_empty(),
+            "plan and code identity use the same content projection"
+        );
+        write(&sources, &text.replace("example.org/land", "example.org/new-land"));
+        assert_ne!(files(&root, &code).unwrap(), before, "acquisition configuration is content identity");
+        let missing = Code { sources: vec!["missing".into()], ..Default::default() };
+        assert!(files(&root, &missing).unwrap_err().contains("no source"));
+    }
+
+    #[test]
+    fn automatic_manifest_projection_excludes_dev_tables_and_preserves_normal_build_configuration() {
+        let fixture = fixture("code-manifest");
+        let path = fixture.root().join("steps/Cargo.toml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let before = manifest_hash(&path).unwrap();
+        let explicit = Code { paths: vec!["steps/Cargo.toml".into()], ..Default::default() };
+        let full_before = files(&fixture.root(), &explicit).unwrap();
+        let dev = "\n[dev-dependencies]\ncheck = \"2\"\n[target.'cfg(unix)'.dev-dependencies]\nprobe = \"3\"\n";
+        write(&path, &(original.clone() + dev));
+        assert_eq!(manifest_hash(&path).unwrap(), before);
+        assert_ne!(files(&fixture.root(), &explicit).unwrap(), full_before, "explicit paths keep full file identity");
+        write(&path, &(original.clone() + "\n[target.'cfg(unix)'.build-dependencies]\nnormal = \"3\"\n"));
+        assert_ne!(manifest_hash(&path).unwrap(), before);
+        write(&path, &original.replace("2021", "2024"));
+        assert_ne!(manifest_hash(&path).unwrap(), before);
+    }
 }
