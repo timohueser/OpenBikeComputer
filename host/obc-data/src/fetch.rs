@@ -593,6 +593,61 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn request_checks_normalize_params_and_keep_success_history_after_failure() {
+        let (url, log) = serve(|index, headers| {
+            if index >= 2 {
+                return not_found();
+            }
+            let mut reply = whole(b"");
+            let day = if header(headers, ":path").unwrap().contains("/a/") {
+                "Mon, 05 Oct 2026 03:43:59 GMT"
+            } else {
+                "Sun, 04 Oct 2026 03:43:59 GMT"
+            };
+            reply.headers = vec![("Last-Modified", day.into())];
+            reply
+        });
+        let scratch = Scratch::new("upstream-requests");
+        let store = Store::at(&scratch.0);
+        let mut land = source(&url.replace("data/file.bin", "{area}/{file}"), "date");
+        let a = vec![("file".into(), "outline".into()), ("area".into(), "a".into())];
+        let b = vec![("area".into(), "b".into()), ("file".into(), "outline".into())];
+        let first = upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 100);
+        assert_eq!(first.result, Upstream::Newest("2026-10-05".into()));
+        assert_eq!(
+            upstream::observe(&store, &quick(), &land, &b, upstream::CACHE, 100).result,
+            Upstream::Newest("2026-10-04".into())
+        );
+        let reversed = a.iter().rev().cloned().collect::<Vec<_>>();
+        land.refresh = Refresh::Days(7);
+        assert_eq!(
+            upstream::observe(&store, &quick(), &land, &reversed, upstream::CACHE, 3699),
+            first,
+            "normalized requests share a check; policy edits do not change acquisition"
+        );
+        assert_eq!(log.lock().unwrap().len(), 2);
+        let failed = upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3700);
+        assert!(matches!(failed.result, Upstream::Failed(_)));
+        assert_eq!(failed.checked_at, Some(3700));
+        assert_eq!(failed.last_success, first.last_success);
+        assert_eq!(upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3701), failed);
+        let count = log.lock().unwrap().len();
+        land.fetch.url = Some(url.replace("data/file.bin", "changed/{area}/{file}"));
+        let changed = upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3701);
+        assert!(matches!(changed.result, Upstream::Failed(_)));
+        assert_eq!(changed.last_success, None, "a changed acquisition descriptor invalidates old evidence");
+        assert!(log.lock().unwrap().len() > count);
+        let count = log.lock().unwrap().len();
+        land.fetch.kind = FetchKind::Glo30;
+        let changed_kind = upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3702);
+        assert_eq!(changed_kind.checked_at, Some(3702));
+        assert!(log.lock().unwrap().len() > count, "fetch kind changes invalidate the same rendered probe");
+        land.fetch.kind = FetchKind::Capture;
+        let capture = upstream::observe(&store, &quick(), &land, &a, 0, 4000);
+        assert_eq!((capture.result, capture.checked_at, capture.last_success), (Upstream::Capture, None, None));
+    }
+
+    #[test]
     fn a_newest_only_url_refuses_an_older_date_version() {
         let (url, log) = serve(|_, _| whole(b"polygons"));
         let scratch = Scratch::new("older");

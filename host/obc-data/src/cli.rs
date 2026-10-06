@@ -6,6 +6,7 @@ mod api;
 mod apply_cli;
 mod build_cli;
 mod edit_cli;
+mod freshness;
 mod r2_cli;
 mod runs_cli;
 mod status_cli;
@@ -21,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::fetch::http::Http;
-use crate::fetch::upstream::{self, Upstream};
+
 use crate::fetch::Request;
 use crate::live::{Live, Remote};
 use crate::product::Product;
@@ -246,13 +247,6 @@ fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], st
     Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
 }
 
-/// The LIVE column of the sources: source id to the versions that the live releases read. It
-/// reads only the pointers and the manifests.
-fn live_column(products: &[&dyn Product], store: &Store) -> Result<BTreeMap<String, Vec<String>>, Error> {
-    let live = Live::read(&remote()?, products, &[], store).map_err(|e| Code::R2Failed.error(e))?;
-    Ok(live.by_source())
-}
-
 /// The one warning when the LIVE column is unknown.
 fn live_unknown(error: &Error) -> String {
     format!("live is unknown (`?`): {}", error.message)
@@ -444,6 +438,8 @@ struct SourceRow {
     reason: Option<String>,
     /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
+    requests: Vec<freshness::RequestStatus>,
+    credential_missing: bool,
 }
 
 /// A version of a source in the local store.
@@ -483,27 +479,36 @@ impl SourceRow {
     }
 }
 
-/// Every source in kind order, with `live`, the versions that the live releases read, and its state
-/// from the newest upstream version.
+/// Source summaries use active requests. The live column also retains held provenance.
 fn source_rows(
     registry: &Registry,
     live: Option<&BTreeMap<String, Vec<String>>>,
+    inventory: Option<&crate::env::Env>,
     check_now: bool,
 ) -> Result<Vec<SourceRow>, Error> {
-    let max_age = if check_now { 0 } else { upstream::CACHE };
-    let today = crate::date::today();
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
     let (store, http) = (Store::open()?, Http::new());
-    let newest = upstreams(&store, &http, &sorted, max_age);
     sorted
         .into_iter()
-        .zip(&newest)
-        .map(|(source, upstream)| {
-            let versions = |id: &str| live.and_then(|live| live.get(id)).cloned().unwrap_or_default();
-            let status = source_status(source, live, upstream, today);
+        .map(|source| {
+            let requests =
+                inventory.map(|env| freshness::requests(&store, &http, source, env, check_now)).unwrap_or_default();
+            let state = requests.iter().map(|r| r.state).min().unwrap_or_else(|| {
+                if source.kind != Kind::Tool && source.licence.is_none() {
+                    State::Blocked
+                } else {
+                    State::Ok
+                }
+            });
+            let reason = requests
+                .iter()
+                .find(|r| r.state == state)
+                .and_then(|r| r.reason.clone())
+                .or_else(|| (state == State::Blocked && requests.is_empty()).then(|| "no licence recorded".into()));
+            let age_days = requests.iter().filter_map(|r| r.age_days).max();
+            let upstream = requests.iter().filter_map(|r| r.observation.result.version()).max().map(str::to_string);
             let mut snapshots = store.snapshots(&source.id)?;
-            // `retrieved` is `YYYY-MM-DDTHH:MM:SSZ`, so it sorts as text.
             snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
             let snapshots = snapshots
                 .into_iter()
@@ -511,64 +516,54 @@ fn source_rows(
                 .collect();
             Ok(SourceRow {
                 source: source.clone(),
-                live: live.map(|_| versions(&source.id)),
-                upstream: upstream.version().map(str::to_string),
-                age_days: status.age_days,
-                state: status.state,
-                reason: status.reason,
+                live: live.map(|live| live.get(&source.id).cloned().unwrap_or_default()),
+                upstream,
+                age_days,
+                state,
+                reason,
                 snapshots,
+                requests,
+                credential_missing: source.credential.as_ref().is_some_and(|credential| !credential.present()),
             })
         })
         .collect()
 }
 
-/// The newest upstream version of each of `sources`, from checks at most `max_age` seconds old.
-fn upstreams(store: &Store, http: &Http, sources: &[&Source], max_age: u64) -> Vec<Upstream> {
-    std::thread::scope(|scope| {
-        let checks: Vec<_> =
-            sources.iter().map(|source| scope.spawn(|| upstream::newest(store, http, source, max_age))).collect();
-        checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
-    })
-}
+type SourceListing = (Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>);
 
-/// The state of `source`, with `live` the versions that the live releases read of each source.
-fn source_status(
-    source: &Source,
-    live: Option<&BTreeMap<String, Vec<String>>>,
-    upstream: &Upstream,
-    today: i64,
-) -> sources::Status {
-    let first = |id: &str| live.and_then(|live| live.get(id)).and_then(|versions| versions.first()).map(String::as_str);
-    // The state reads the first version in order: for a date, the oldest.
-    let base = source.fetch.from.as_deref().and_then(first);
-    let present = source.credential.as_ref().is_none_or(|c| c.present());
-    sources::status(source, first(&source.id), base, upstream, today, present)
-}
-
-/// Each stale source that live reads and that is not manual, with its newest upstream version when
-/// a check knows it: a plan of live moves it there.
-fn stale(
-    store: &Store,
-    http: &Http,
-    sources: &[Source],
-    live: &BTreeMap<String, Vec<String>>,
-) -> BTreeMap<String, Option<String>> {
-    let moves = |source: &&Source| live.contains_key(&source.id) && source.refresh != Refresh::Manual;
-    let read: Vec<&Source> = sources.iter().filter(moves).collect();
-    let today = crate::date::today();
-    let newest = upstreams(store, http, &read, upstream::CACHE);
-    let stale = read
-        .into_iter()
-        .zip(newest)
-        .filter(|(source, upstream)| source_status(source, Some(live), upstream, today).state == State::Stale);
-    stale.map(|(source, upstream)| (source.id.clone(), upstream.version().map(str::to_string))).collect()
+fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Result<SourceListing, Error> {
+    let (store, mut loaded) = (Store::open()?, build_cli::load(root, "live")?);
+    let registry = Registry { sources: loaded.sources.clone() };
+    let remote = remote();
+    let live = match &remote {
+        Ok(remote) => read_live(remote, &registry, products, &store),
+        Err(error) => Err(Code::Blocked.error(error.message.clone())),
+    };
+    let inventory = if let Ok(live) = &live {
+        loaded.env.live = live.versions();
+        loaded.env.retained = crate::input_copy::retained(live, &store)?;
+        let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
+        Some(freshness::discover(
+            products,
+            &loaded.env,
+            &loaded.regions,
+            &store,
+            &Http::new(),
+            &loaded.sources,
+            Some(&copies),
+        )?)
+    } else {
+        eprintln!("obc data: {}", live_unknown(live.as_ref().unwrap_err()));
+        None
+    };
+    let versions = live.as_ref().ok().map(Live::by_source);
+    Ok((source_rows(&registry, versions.as_ref(), inventory.as_ref(), check_now)?, versions))
 }
 
 fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: bool) -> Result<(), Error> {
-    let live = live_column(products, &Store::open()?).inspect_err(|e| eprintln!("obc data: {}", live_unknown(e)));
-    let rows = source_rows(&registry(root)?, live.as_ref().ok(), check_now)?;
+    let (rows, live) = source_listing(root, products, check_now)?;
     if json {
-        return print_json(&Sources { live_unknown: live.is_err(), sources: &rows });
+        return print_json(&Sources { live_unknown: live.is_none(), sources: &rows });
     }
     let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;
