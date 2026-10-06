@@ -21,10 +21,9 @@ use obc_app::settings::Settings;
 use obc_app::{App, AppState, CameraMode, CatalogObjectId, Screen};
 use obc_host_core::flat_map::{FlatMap, MapError};
 use obc_host_core::flat_store::HostStore;
-use obc_host_core::frame;
 use obc_host_core::{
-    convert_gpx, initial_camera, ActiveRouteSession, DeviceInput, FileSettingsStore, FlatRideRecorder, FlatRideStore,
-    FlatRouteStore, HostLoop, HostPlatform, RgbaFrame, RideRepository, RouteRepository, TrackStore,
+    convert_gpx, initial_camera, DeviceHost, DeviceInput, FileSettingsStore, FlatRideRecorder, FlatRideStore,
+    FlatRouteStore, HostPlatform, RideRepository, RouteRepository, TrackStore,
 };
 use obc_ports::{Button, InputClock, RideClock, SettingsSaveError, SettingsStore};
 use obc_route::{ElevationSource, NullElevation};
@@ -114,36 +113,13 @@ fn open_card(card: &Path) -> Result<HostStore, String> {
 
 /// The whole device, over one persistent card.
 pub struct Host {
-    map: FlatMap,
-    /// The shared app, heap-allocated: a by-value `App` temporary is the kind of silent stack trap
-    /// the iOS main thread's budget cannot absorb.
-    app: Box<App>,
-    /// The render path's per-frame scratch, lent to each render call. Boxed for the same reason as
-    /// the app.
-    scratch: Box<obc_render::RenderScratch>,
-    routes: FlatRouteStore,
-    rides: FlatRideStore,
-    tracks: TrackStore,
+    device: DeviceHost<TrackStore>,
     sensors: PhoneSensors,
-    /// The four on-screen buttons as raw edges, drained by the app's own recognizer each tick.
     input: DeviceInput,
     settings: FileSettingsStore,
-    /// The shared typed executor: the next pass's outcomes and facts, and the in-flight route plan.
-    host: HostLoop,
-    /// The resident active-route parse, opened once per frame and lent to both the pass and the
-    /// render, so the map opens without a per-frame `RouteIndex` reparse.
-    session: ActiveRouteSession,
-    frame: RgbaFrame,
-    photo: obc_host_core::photo::Preparer,
-    /// The cooperative panorama build, when the card map carries surface terrain.
     peaks: Option<obc_host_core::peak_view::Runtime>,
-    elevation: Box<dyn ElevationSource>,
-    /// The newest cue a pass raised that the shell has not taken yet.
     sound: Option<Sound>,
-    /// The last taken cue's samples, alive until the next take.
     samples: Vec<f32>,
-    /// First frame rendered: the shell's readiness signal.
-    ready: bool,
 }
 
 impl Host {
@@ -188,24 +164,13 @@ impl Host {
         tracks.offer_recovery(&mut app);
 
         Ok(Box::new(Host {
-            map,
-            app,
-            scratch: Box::new(obc_render::RenderScratch::new()),
-            routes,
-            rides,
-            tracks,
+            device: DeviceHost::new(app, map, routes, rides, tracks, elevation, (FRAME_W, FRAME_H)),
             sensors: PhoneSensors::default(),
             input: DeviceInput::new(),
             settings: settings_store,
-            host: HostLoop::new(),
-            session: ActiveRouteSession::new(),
-            frame: RgbaFrame::new(FRAME_W, FRAME_H),
-            photo: obc_host_core::photo::Preparer::default(),
             peaks,
-            elevation,
             sound: None,
             samples: Vec::new(),
-            ready: false,
         }))
     }
 
@@ -226,74 +191,29 @@ impl Host {
         let now = now_ms.max(0.0) as u32;
         // Recognition runs every tick, also with no queued edge, because that is how a held Select
         // or Back fires its hold. A chord resolves inside `recognize`, above the screen stack.
-        let gestures = self.app.recognize(InputClock(now), &mut self.input);
+        let gestures = self.device.app.recognize(InputClock(now), &mut self.input);
         match &mut self.peaks {
-            Some(peaks) => peaks.update(&mut self.app, &self.map.reader()),
+            Some(peaks) => peaks.update(&mut self.device.app, &self.device.map.reader()),
             // A card map with no surface terrain can say so instead of waiting forever.
-            None if matches!(self.app.top_screen(), Screen::PeakView(_)) => {
-                self.app.set_peak_view_status(obc_app::peak_view::runtime::Status::Unavailable)
+            None if matches!(self.device.app.top_screen(), Screen::PeakView(_)) => {
+                self.device.app.set_peak_view_status(obc_app::peak_view::runtime::Status::Unavailable)
             }
             None => {}
         }
 
-        // Open the active route once from the resident session and lend it to the pass, so the
-        // map-matcher reads the geometry the frame draws.
-        self.session.sync(&self.app, &mut self.routes);
-        let mut plan = {
-            let route = frame::active_route(&self.session, &self.routes);
-            self.host.pass(
-                &mut self.app,
-                PassClock { ride: RideClock(now), ui: InputClock(now) },
-                &gestures,
-                self.sensors.ports(),
-                route.as_ref(),
-                SUPPORT,
-            )
-        };
-        self.sound = plan.sound.or(self.sound);
-        // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
-        // latch the pass may have armed rather than leaving it set for a plane that does not exist.
-        let _ = self.app.take_hold_cancel();
-        {
-            let mut platform = PhonePlatform { settings: &mut self.settings };
-            self.host.execute(
-                &mut self.app,
-                &mut plan,
-                &mut self.session,
-                &mut self.routes,
-                &mut self.rides,
-                &mut self.tracks,
-                &mut (),
-                &self.map,
-                &mut *self.elevation,
-                &mut platform,
-            );
-        }
-        // The map-referenced altimeter's terrain read, drained once per frame behind the pass.
-        self.app.sample_terrain(&mut *self.elevation);
-
-        // `plan.next_wake_ms` and `plan.immediate` are ignored: the display link paces the loop,
-        // and its next frame is already what an immediate wake asks for. Otherwise the render is on
-        // demand, from the same signal the firmware gates its repaints on.
-        if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
-            self.session.sync(&self.app, &mut self.routes);
-            let route = frame::active_route(&self.session, &self.routes);
-            let reader = self.map.reader();
-            frame::render(
-                &mut self.app,
-                &mut self.scratch,
-                &mut self.frame,
-                frame::Scene { reader: &reader, route: route.as_ref() },
-                self.peaks.as_ref().and_then(|peaks| peaks.panorama()),
-                (FRAME_W as f32, FRAME_H as f32),
-                frame::device_rgb888,
-                &obc_render::NoopClock,
-                Some(self.photo.interactive(plan.render.map || !self.ready)),
-            );
-            self.ready = true;
-            return true;
-        }
-        false
+        let plan = self.device.step(
+            PassClock { ride: RideClock(now), ui: InputClock(now) },
+            &gestures,
+            self.sensors.ports(),
+            SUPPORT,
+            &mut PhonePlatform { settings: &mut self.settings },
+            |app, plan| {
+                self.sound = plan.sound.or(self.sound);
+                let _ = app.take_hold_cancel();
+            },
+        );
+        self.device.app.sample_terrain(&mut *self.device.elevation);
+        self.device.render_if_dirty(plan.render, self.peaks.as_ref().and_then(|peaks| peaks.panorama()))
     }
 
     /// Import one route file into the card: `.obcr` bytes as they are, `.gpx` converted and
@@ -303,12 +223,17 @@ impl Host {
         let bytes = match extension.as_str() {
             "obcr" => std::fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?,
             "gpx" => {
-                convert_gpx(path, self.app.settings().bike_type, Some((&self.map.reader(), self.attribution_key())))?.0
+                convert_gpx(
+                    path,
+                    self.device.app.settings().bike_type,
+                    Some((&self.device.map.reader(), self.attribution_key())),
+                )?
+                .0
             }
             _ => return Err(format!("{}: not an .obcr or .gpx route", path.display())),
         };
-        let id = self.routes.import(&bytes).map_err(|error| format!("import {}: {error}", path.display()))?;
-        self.host.note_store_commit();
+        let id = self.device.routes.import(&bytes).map_err(|error| format!("import {}: {error}", path.display()))?;
+        self.device.host.note_store_commit();
         Ok(id)
     }
 
@@ -321,22 +246,22 @@ impl Host {
 
     /// The rendered RGBA frame, for the shell's `CGImage`.
     pub fn frame(&self) -> &[u8] {
-        self.frame.as_rgba()
+        self.device.frame()
     }
 
     /// The current input-receiving screen's variant name.
     pub fn screen(&self) -> &'static str {
-        self.app.top_screen().name()
+        self.device.app.top_screen().name()
     }
 
     /// Whether a ride is open. The shell keeps the screen awake while it is.
     pub fn recording(&self) -> bool {
-        self.app.recording()
+        self.device.app.recording()
     }
 
     /// The key that binds a converted route to this exact map revision.
     fn attribution_key(&self) -> obc_formats::obcr::RouteSourceKey {
-        let source = self.map.source();
+        let source = self.device.map.source();
         obc_formats::obcr::RouteSourceKey {
             store: source.store_id().0,
             object: source.id().0,

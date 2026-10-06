@@ -1105,7 +1105,7 @@ mod tests {
             "edits": [{"kind": "layers", "product": "planner", "on": ["sun"], "off": []}],
             "only": [],
             "groups": groups,
-            "blocked": [{"product": "maps", "reason": "source `wikidata` is blocked"}],
+            "blocked": [{"product": "maps", "reason": "source `wikidata` is blocked", "layers": []}],
             "remove": [{"key": "planner/objects/aa", "bytes": 1_100_000_000}, {"key": "planner/objects/bb", "bytes": 5_000_000}],
             "listed": false,
         }))

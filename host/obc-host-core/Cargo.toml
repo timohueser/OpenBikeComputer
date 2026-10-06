@@ -11,43 +11,43 @@ external-fixtures = []
 test-support = []
 
 [dependencies]
-obc-app = { path = "../../firmware/obc-app" }
+obc-app = { workspace = true }
 # Semantic replay and track ports shared by both desktop and browser hosts.
-obc-ports = { path = "../../firmware/obc-ports" }
-obc-map-scene = { path = "../../firmware/obc-map-scene" }
-obc-reader = { path = "../../firmware/obc-reader", features = ["alloc"] }
-obc-storage = { path = "../../firmware/obc-storage" }
-obc-crc = { path = "../../firmware/obc-crc" }
+obc-ports = { workspace = true }
+obc-map-scene = { workspace = true }
+obc-reader = { workspace = true, features = ["alloc"] }
+obc-storage = { workspace = true }
+obc-crc = { workspace = true }
 getrandom = "0.2"
 unicode-normalization = "0.1.25"
 # `alloc` gives us `NavScratch::new_boxed` — a zeroed heap allocation with no giant stack temporary
 # (the ~39 KB A* table would overflow the wasm build's stack via a plain `Box::new`).
-obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
-obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
+obc-route = { workspace = true, features = ["alloc"] }
+obc-formats = { workspace = true } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
 # The OBCT reader and bounded cache sample terrain inside the retained map object.
-obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-elevation = { workspace = true }
 # Shared host GPX replay (the GpxPlayer / BaroSensor `replay_step` advances) — the same crate the
 # USB feeder (obc-usb-host) uses, so a recorded ride plays back identically on every host.
-obc-replay = { path = "../obc-replay" }
+obc-replay = { workspace = true }
 # The render scratch every host lends to `frame::render`, its `Clock` seam and its `RenderStats`.
-obc-render = { path = "../../firmware/obc-render" }
+obc-render = { workspace = true }
 # The `DrawTarget` seam `frame::render` draws every host's frame through, and the pixel writes
 # behind `RgbaFrame`. Same 0.8 the render path pins.
-embedded-graphics = "0.8"
+embedded-graphics = { workspace = true }
 
 [dev-dependencies]
-obc-link = { path = "../../firmware/obc-link" }
-obc-pack = { path = "../obc-pack" }
-obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
-obcm-testkit = { path = "../obcm-testkit" }
-obc-fixtures = { path = "../obc-fixtures" }
-heapless = "0.8"
+obc-link = { workspace = true }
+obc-pack = { workspace = true }
+obc-storage = { workspace = true, features = ["std"] }
+obcm-testkit = { workspace = true }
+obc-fixtures = { workspace = true }
+heapless = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 # The shared file adapter the native map snapshot is read through. Native only: a browser host's
 # map is bytes in memory, and this crate's wasm build must acquire no filesystem.
-obc-file-source = { path = "../obc-file-source" }
+obc-file-source = { workspace = true }
 
 # `MoveFileExW`: the write-through, no-clobber move that publishes a new card name.
 # Windows has no directory sync, so this call is the whole name barrier.

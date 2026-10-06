@@ -147,6 +147,16 @@ fn apply_live(
         }
     };
     build_cli::suits(products, plan)?;
+    if let Some(blocked) = plan.blocked.iter().find(|blocked| !blocked.layers.is_empty()) {
+        let reasons =
+            blocked.layers.iter().map(|layer| format!("{}: {}", layer.layer, layer.reason)).collect::<Vec<_>>();
+        return Err(Code::Blocked.error(format!(
+            "product `{}` is incomplete: {}",
+            blocked.product,
+            reasons.join("; ")
+        )));
+    }
+
     if plan.groups.is_empty() && plan.remove.is_empty() {
         return Ok(Applied::default());
     }
@@ -431,7 +441,6 @@ mod tests {
     use super::*;
     use crate::cli::build_cli::tests::{upstream, Versioned, SOURCES};
     use crate::engine::tests::{fixture, write, Fixture, JOIN};
-    use crate::engine::Step;
     use crate::env::Env;
     use crate::product::{PointerFn, Unplanned};
     use crate::regions::Regions;
@@ -598,7 +607,7 @@ mod tests {
             "test"
         }
 
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
+        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
             Versioned.steps(env, regions, store)
         }
 
@@ -633,8 +642,8 @@ mod tests {
         fn pointer(&self) -> Option<PointerFn> {
             Versioned.pointer()
         }
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<crate::engine::Step>, Unplanned> {
-            Ok(vec![crate::engine::tests::packaged(self.0.clone())])
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Ok(vec![crate::engine::tests::packaged(self.0.clone())].into())
         }
     }
 
@@ -664,6 +673,34 @@ mod tests {
         assert!(expanded.uploaded.contains(&private), "the store retains private bytes");
     }
 
+    #[test]
+    fn blocked_required_layers_refuse_apply_and_preserve_the_complete_live_release() {
+        let (fixture, remote) = repository("apply-partial");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        age(&fixture);
+        write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        let before = keys(&fixture);
+        let error = apply(&fixture, &remote, &[&super::super::build_cli::tests::Partial]).unwrap_err();
+        assert_eq!(error.code, Code::Blocked);
+        assert!(error.message.contains("test/missing"));
+        assert_eq!(keys(&fixture), before);
+        let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
+        let (built, applying) = build_cli::build_env(
+            &fixture.root(),
+            &fixture.store,
+            &Http::new(),
+            Some(&remote),
+            &[&super::super::build_cli::tests::Partial],
+            &args,
+            None,
+        )
+        .unwrap();
+        assert!(built.releases.is_empty());
+        let applying = applying.unwrap();
+        assert_eq!(applying.next.products[0].release, applying.live.products[0].release);
+        assert_eq!(keys(&fixture), before);
+    }
+
     /// A product without a pointer, whose older publish R2 holds.
     struct Other;
 
@@ -672,8 +709,8 @@ mod tests {
             "other"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
-            Ok(Vec::new())
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Ok(Vec::new().into())
         }
     }
 

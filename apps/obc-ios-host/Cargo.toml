@@ -11,22 +11,22 @@ description = "The iPhone host's device core: the shared firmware over a persist
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-obc-route = { path = "../../firmware/obc-route" }
+obc-route = { workspace = true }
 # The host owns the boxed RenderScratch it lends App each frame.
-obc-render = { path = "../../firmware/obc-render" }
-obc-app = { path = "../../firmware/obc-app" }
+obc-render = { workspace = true }
+obc-app = { workspace = true }
 # The pass's clock newtypes and the sensor ports the phone's sensors implement.
-obc-ports = { path = "../../firmware/obc-ports" }
+obc-ports = { workspace = true }
 # The cue-to-pattern table the board and the simulator play too.
-obc-platform = { path = "../../firmware/obc-platform" }
+obc-platform = { workspace = true }
 # The shared host glue: the card stores, the typed executor, the frame, the peak-view runtime.
-obc-host-core = { path = "../../host/obc-host-core" }
+obc-host-core = { workspace = true }
 # The route source key a converted GPX is attributed with.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }
 # `StoreError::NotFound` — how a card with no map yet answers.
-obc-storage = { path = "../../firmware/obc-storage" }
+obc-storage = { workspace = true }
 # The device-resolution frame authority (FRAME_W/FRAME_H) — no re-declared 240×320 literals.
-obc-display = { path = "../../firmware/obc-display" }
+obc-display = { workspace = true }
 
 [dev-dependencies]
-obcm-testkit = { path = "../../host/obcm-testkit" }
+obcm-testkit = { workspace = true }

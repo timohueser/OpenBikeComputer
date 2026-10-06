@@ -40,6 +40,7 @@ fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmd
 version = "date"
 refresh = 7
 redistribute = true
+r2_copy = true
 
 [[source]]
 id = "geofabrik-poly"
@@ -52,6 +53,7 @@ fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}.poly" 
 version = "date"
 refresh = 90
 redistribute = true
+r2_copy = true
 
 # The OSM paths and tracks of a box: the Overpass answer to the trail query of `tools/planner_snow.py`.
 [[source]]

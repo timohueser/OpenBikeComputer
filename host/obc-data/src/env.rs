@@ -39,6 +39,8 @@ pub struct Env {
     pub read: RefCell<Versions>,
     /// The sources whose live versions conflict, and that a step list read without a `--move`.
     pub refused: RefCell<BTreeSet<String>>,
+    /// Failed requests in this listing pass. Products can block only the layers that need them.
+    pub fetch_failures: Vec<(crate::product::Wanted, String)>,
 }
 
 #[derive(Deserialize)]

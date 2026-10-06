@@ -16,40 +16,40 @@ crate-type = ["cdylib", "rlib"]
 # is where every `std::fs` call in that crate lives — the same surface CI's `wasm` job compiles for
 # wasm32. This bridge adds no format knowledge: it is a byte-buffer adapter, a progress/abort seam
 # over the engine's own `Clock` + `MapStore` traits, and an error vocabulary.
-obcm-assemble = { path = "../../host/obcm-assemble", default-features = false }
+obcm-assemble = { workspace = true }
 # The byte-I/O seam (`ByteSource`/`Error`) the engine reads through — imported directly rather than
 # through the engine, because the abort path constructs one of its errors.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }
 # The summary crosses to JS as JSON in the same shape `obcm-assemble --json` prints, so the CLI's
 # output and the browser's are one document to learn. serde_json is already in the engine's graph
 # (it parses the schema and the skin), so this costs the bundle nothing.
-serde_json = "1"
+serde_json = { workspace = true }
 
 # --- Web (wasm32) surface — the only target this crate actually ships on. The driver above stays
 # target-independent so `cargo test` exercises it natively, exactly like obc-web-convert's core.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
+wasm-bindgen = { workspace = true }
 # `js_sys::Error` + `Reflect::set`: a failure crosses to JS as a real `Error` instance carrying a
 # stable `code` property, so callers can branch on the cause without matching on message text.
 # `js_sys::Date` is the wasm clock — `std::time::Instant` panics on wasm32-unknown-unknown.
-js-sys = "0.3"
+js-sys = { workspace = true }
 # Surface Rust panics in the browser console instead of an opaque trap.
-console_error_panic_hook = "0.1"
+console_error_panic_hook = { workspace = true }
 
 [dev-dependencies]
-obc-reader = { path = "../../firmware/obc-reader" }
-obcm-testkit = { path = "../../host/obcm-testkit" }
+obc-reader = { workspace = true }
+obcm-testkit = { workspace = true }
 # The fixture regenerator (`tests/fixture.rs`, `#[ignore]`d) drives the **real cutter** to write the
 # checked-in cell tree, exactly as `obcm-assemble`'s own oracle does. A dev-dep only: obc-pack
 # carries libGEOS and must never enter this bridge's build graph, let alone the wasm one.
-obc-pack = { path = "../../host/obc-pack" }
+obc-pack = { workspace = true }
 # The terrain half of the fixture. `obc-vectors` writes an OBCT container **straight from the spec's
 # field tables**, independent of both the reader and `obc-dem`'s writer — which is what makes the
 # round-trip an actual check: the cells the assembler places were not produced by the code under
 # test. (It is the oracle crate; this is what it is for.)
-obc-vectors = { path = "../../host/obc-vectors" }
+obc-vectors = { workspace = true }
 # The fixture regenerator digests the terrain cells it writes, as the catalog pins them.
-sha2 = "0.11"
+sha2 = { workspace = true, default-features = true }
 
 # wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting, and the
 # bundle-size budget CI enforces (firmware/tools/wasm_size_guard.py) is measured on its output.

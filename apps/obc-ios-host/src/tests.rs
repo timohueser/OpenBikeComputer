@@ -43,7 +43,7 @@ fn an_imported_card_boots_on_the_map_and_reopens_with_the_same_map_and_routes() 
     assert_eq!(card_state(&empty), Ok(CardState::NoMap));
 
     let mut host = open(&card, &directory);
-    assert!(!host.ready);
+    assert!(!host.device.ready);
     assert!(host.tick(0.0), "the first tick always renders");
     assert_eq!(host.screen(), "Map");
     assert_eq!(host.frame().len(), (FRAME_W * FRAME_H * 4) as usize);
@@ -54,25 +54,25 @@ fn an_imported_card_boots_on_the_map_and_reopens_with_the_same_map_and_routes() 
     assert!(idle[32..].iter().all(|changed| !changed), "an idle host stops reporting frame changes");
 
     let id = host.import_route(Path::new(OBCR)).expect("the authored route imports");
-    assert_eq!(host.routes.ids(), &[id]);
+    assert_eq!(host.device.routes.ids(), &[id]);
     // The catalog re-reads the card by itself, a pass or two after the import.
     for frame in 65..81 {
         host.tick(f64::from(frame) * 16.0);
-        if host.app.route_ids().contains(&id) {
+        if host.device.app.route_ids().contains(&id) {
             break;
         }
     }
-    assert!(host.app.route_ids().contains(&id), "the catalog re-reads the card within 16 ticks");
+    assert!(host.device.app.route_ids().contains(&id), "the catalog re-reads the card within 16 ticks");
 
     let identity = {
-        let source = host.map.source();
+        let source = host.device.map.source();
         (source.store_id(), source.id(), source.revision())
     };
     drop(host);
     let host = open(&card, &directory);
-    let source = host.map.source();
+    let source = host.device.map.source();
     assert_eq!((source.store_id(), source.id(), source.revision()), identity, "the same map, not a re-import");
-    assert_eq!(host.routes.ids(), &[id], "and the same route ids");
+    assert_eq!(host.device.routes.ids(), &[id], "and the same route ids");
     drop(source);
     drop(host);
     std::fs::remove_dir_all(directory).unwrap();
@@ -112,10 +112,10 @@ fn each_pushed_sensor_value_polls_once_and_a_fix_moves_the_app() {
     let (card, directory) = card("sensors");
     let mut host = open(&card, &directory);
     host.tick(0.0);
-    assert!(host.app.state.user_fix.is_none(), "the device has no position until the phone gives one");
+    assert!(host.device.app.state.user_fix.is_none(), "the device has no position until the phone gives one");
     host.sensors().push_fix(GRIMSEL, Some(1_700_000_123));
     host.tick(16.0);
-    assert_eq!(host.app.state.user_fix.map(|fix| (fix.lat, fix.lon)), Some((GRIMSEL.lat, GRIMSEL.lon)));
+    assert_eq!(host.device.app.state.user_fix.map(|fix| (fix.lat, fix.lon)), Some((GRIMSEL.lat, GRIMSEL.lon)));
     drop(host);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -141,13 +141,13 @@ fn a_select_tap_presses_and_a_held_select_holds() {
     assert_eq!(host.screen(), "Map");
 
     // Select-hold on the Map enters Pan mode. The stack does not move, so the pan is the evidence.
-    assert!(host.app.state.pan.is_none());
+    assert!(host.device.app.state.pan.is_none());
     host.push_button(Button::Select, true);
     host.tick(1_500.0);
     host.tick(1_900.0);
-    assert!(host.app.state.pan.is_none(), "before the threshold a held Select has fired nothing");
+    assert!(host.device.app.state.pan.is_none(), "before the threshold a held Select has fired nothing");
     host.tick(2_100.0);
-    assert!(host.app.state.pan.is_some(), "a held Select holds on a tick that carries no edge");
+    assert!(host.device.app.state.pan.is_some(), "a held Select holds on a tick that carries no edge");
     drop(host);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -179,11 +179,14 @@ fn a_gpx_route_imports_as_the_shared_conversion_attributed_to_the_card_map() {
     let (card, directory) = card("gpx");
     let mut host = open(&card, &directory);
     let id = host.import_route(Path::new(GPX)).expect("the GPX converts and imports");
-    let expected =
-        convert_gpx(Path::new(GPX), obc_route::BikeType::Road, Some((&host.map.reader(), host.attribution_key())))
-            .expect("the same conversion outside the host")
-            .0;
-    let source = host.routes.source(id).unwrap();
+    let expected = convert_gpx(
+        Path::new(GPX),
+        obc_route::BikeType::Road,
+        Some((&host.device.map.reader(), host.attribution_key())),
+    )
+    .expect("the same conversion outside the host")
+    .0;
+    let source = host.device.routes.source(id).unwrap();
     let mut stored = vec![0; source.len() as usize];
     source.read_at(0, &mut stored).unwrap();
     assert_eq!(stored, expected);
@@ -230,7 +233,7 @@ fn the_c_surface_opens_a_card_it_imported_and_takes_a_null_host_as_nothing() {
         // A stationary fix with no stamp: NaN and zero are how C spells an absent value.
         obc_ios_push_fix(host, GRIMSEL.lat, GRIMSEL.lon, f32::NAN, f32::NAN, 0);
         obc_ios_tick(host, 16.0);
-        let fix = (*host).app.state.user_fix.expect("the pushed fix reaches the app");
+        let fix = (*host).device.app.state.user_fix.expect("the pushed fix reaches the app");
         assert_eq!(fix, Fix { lat: GRIMSEL.lat, lon: GRIMSEL.lon, course: None, speed_mps: None });
 
         // Closing frees the host, so the card's exclusive lock goes with it and the same card

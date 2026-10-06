@@ -82,7 +82,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     let env = Env { name: "test".into(), region: AREA.into(), live: BTreeMap::from(live), ..Env::default() };
     // The assets and the model read no layer, so this build leaves them out.
     let steps = |python: bool| {
-        let mut steps = Planner.steps(&env, &regions, &store).unwrap();
+        let mut steps = Planner.steps(&env, &regions, &store).unwrap().steps;
         let rust = ["planner/osm", "planner/terrain", "planner/routing"];
         let other = ["planner/assets", "planner/model", "planner/basemap"];
         steps.retain(|step| rust.contains(&step.name.as_str()) || python && !other.contains(&step.name.as_str()));

@@ -22,13 +22,13 @@ default = ["http"]
 http = ["dep:axum", "dep:tokio", "dep:tower-http"]
 
 [dependencies]
-route-engine = { path = "../../host/route-engine" }
-serde_json = "1"
+route-engine = { workspace = true }
+serde_json = { workspace = true }
 axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"], optional = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"], optional = true }
 tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "cors"], optional = true }
 
 [dev-dependencies]
-route-build = { path = "../../host/route-build" }
+route-build = { workspace = true }
 
 tower = { version = "0.5", features = ["util"] }

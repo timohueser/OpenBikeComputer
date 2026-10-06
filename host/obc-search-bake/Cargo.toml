@@ -11,20 +11,20 @@ name = "search-bake"
 path = "src/main.rs"
 
 [dependencies]
-obc-places = { path = "../obc-places" }
+obc-places = { workspace = true }
 # The planner search dump step of `obc data`.
-obc-data = { path = "../obc-data" }
-clap = { version = "4", features = ["derive"] }
-osmpbfreader = "0.19"
-serde_json = "1"
+obc-data = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+osmpbfreader = { workspace = true }
+serde_json = { workspace = true }
 sha2 = "0.10"
 geo = { version = "0.31", default-features = false }
 rstar = "0.12"
 zstd = "0.13"
-unicode-normalization = "0.1"
-flate2 = "1"
+unicode-normalization = { workspace = true }
+flate2 = { workspace = true }
 regex = "1"
-tempfile = "3"
+tempfile = { workspace = true }
 
 [dev-dependencies]
-obc-pack = { path = "../obc-pack" }
+obc-pack = { workspace = true }

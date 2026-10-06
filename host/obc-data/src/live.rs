@@ -368,7 +368,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::engine::release::SnapshotRead;
     use crate::engine::tests::write;
-    use crate::engine::{LayerFile, Step};
+    use crate::engine::LayerFile;
     use crate::env::Env;
     use crate::product::Unplanned;
     use crate::regions::Regions;
@@ -387,8 +387,8 @@ pub(crate) mod tests {
             "test-catalog"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
-            Ok(Vec::new())
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Ok(Vec::new().into())
         }
     }
 
@@ -553,8 +553,8 @@ pub(crate) mod tests {
             "old"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
-            Ok(Vec::new())
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Ok(Vec::new().into())
         }
     }
 
