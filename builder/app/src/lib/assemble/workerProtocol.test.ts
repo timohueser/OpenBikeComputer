@@ -52,10 +52,10 @@ describe("requestTransferList", () => {
     it("lists a shared buffer once — transferring it twice would throw", () => {
         const pool = new ArrayBuffer(8);
         const list = requestTransferList(
-            assembleReq([
+            { ...assembleReq([
                 { id: "18/0001/0001", band: "fine", partial: false, bytes: new Uint8Array(pool, 0, 4) },
                 { id: "18/0001/0002", band: "fine", partial: false, bytes: new Uint8Array(pool, 4, 4) },
-            ]),
+            ]), articles: { landmarks: [new Uint8Array(pool)], peaks: [new Uint8Array(pool)] } },
         );
         expect(list).toEqual([pool]);
     });

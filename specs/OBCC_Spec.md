@@ -62,10 +62,9 @@ generated from the root's `source` block (§3.1); it keeps a stable key because 
 person, not a pin, is its consumer. `schema.json`, skin documents, cell sidecars,
 region metadata, and boundaries are producer records and MAY retain stable keys
 because no root points at them.
-Every root-referenced cell, satellite, and preview uses the immutable form above;
-the digest immediately before its final extension is the same lowercase SHA-256
-carried by its pin. Local bake trees keep the unsuffixed names, so content
-addressing changes publication rather than the resumable bake layout.
+Every root-referenced cell, satellite, and preview uses an immutable URL (§9).
+Local bake trees keep the unsuffixed names. An object pool uses `objects/<sha256>`
+for the same bytes.
 
 The root and satellites are complete JSON documents. Unknown optional fields MAY
 be ignored. Missing required fields, unknown enum values, duplicate ids, unknown
@@ -84,6 +83,7 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
   "cell_index": [ /* CellIndexRef */ ],
   "terrain": { /* TerrainEntry, §13 — optional */ },
   "landmarks": { /* LandmarkEntry, §14 — optional */ },
+  "articles": { /* Detached article index pin, §14.5 — optional */ },
   "network_terrain_revision": 4
 }
 ```
@@ -99,9 +99,10 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 | `cell_index` | array | Exactly one pinned index per schema band. |
 | `terrain` | object | Optional. The terrain artifact class (§13). |
 | `landmarks` | object | Optional. The landmark artifact class (§14). |
+| `articles` | object | Optional. The detached article index pin (§14.5). |
 | `network_terrain_revision` | integer | Optional. The terrain revision the `core` band's nav ascents were integrated from (§13.4). |
 
-Every field but `source`, `terrain`, `landmarks` and `network_terrain_revision`
+Every field but `source`, `terrain`, `landmarks`, `articles` and `network_terrain_revision`
 is required.
 `terrain` and `network_terrain_revision` are absent for a terrain-less catalog,
 which is complete and valid; `source` is required of every producer (§3.1) and
@@ -221,6 +222,7 @@ A region id is a slash-separated Geofabrik-style id such as
 | `cell_count` | object | Per-band cell counts. |
 | `partial_cell_count_by_band` | object | Per-band counts of selected cells whose square is not fully covered. |
 | `terrain` | object | Optional `{ cell_count, known_empty_count, bytes }` for this region's terrain selection (§13.3). |
+| `article_bytes` | integer | Sum of selected detached landmark and peak bytes. Required when the root has `articles`; separate from `bytes` and terrain. |
 | `cells_url` | string | Region satellite URL. |
 | `cells_bytes` | integer | Exact satellite byte length. |
 | `cells_sha256` | string | Lowercase SHA-256 of the exact satellite bytes. |
@@ -358,11 +360,11 @@ consumer MUST restrict all satellite and cell requests to the configured catalog
 origin; it MUST NOT follow the catalog to an unrelated origin. Plain HTTP is
 permitted only for loopback development.
 
-Producers MUST place the pinned object's lowercase SHA-256 immediately before
-the URL's final extension. The path is immutable: producers MUST NOT later serve
-different bytes at that key and MUST retain an object while a published root may
-still reference it. Consumers MUST verify that the URL contains the exact stated
-digest in that position and MUST NOT derive a URL from an id or digest themselves.
+A pinned URL MUST end in `.<sha256>.<extension>` or `/objects/<sha256>`.
+The digest MUST be the pin's exact lowercase SHA-256. The URL MUST NOT have a
+query or fragment. Producers MUST NOT serve different bytes at that key and MUST
+retain an object while a published root can reference it. Consumers MUST check
+the digest in the URL and MUST NOT derive a URL from an id or digest.
 
 For every pinned object, consumers MUST:
 
@@ -490,9 +492,8 @@ The array is absent when no published cell used a reference; it is never empty w
 present. `attribution` at the top of the block stays the base dataset's credit.
 
 All other fields are required when the block is present. The pin is the §8 machinery reused whole
-— exact byte length, lowercase SHA-256, and a URL carrying that digest immediately
-before the final extension — and §9's integrity rules apply to it and to every object
-it names, unchanged.
+— exact byte length, lowercase SHA-256, and an immutable URL — and §9's integrity
+rules apply to it and to every object it names.
 
 The pinned index:
 
@@ -753,3 +754,22 @@ the options; and the code. The key of the compiled capture is the capture, the
 region's `.poly` and extract, and the compiler code. A capture names the extract
 and the `.poly` that it read by their SHA-256, so its version says which OSM it
 found its places in.
+
+### 14.5 Detached article index
+
+The optional root `articles` is a pin with `bytes`, `sha256` and `url` (§9). It
+names one satellite with `schema_version` equal to the root's and a `cells` array.
+Each entry has a canonical core-band cell `id` and at least one of `landmarks` or
+`peaks`. Each collection value is a pin for the corresponding artifact (§14.3).
+Cell ids MUST be unique and on the core band's grid.
+
+The index is sparse. An absent cell or collection means no content only after
+the consumer fetches and verifies the index. A fetch, length or digest failure
+MUST fail the build. A consumer MUST NOT fall back to embedded content after a
+detached index failure.
+
+The builder selects entries from the selected core-band cell ids. It adds their
+bytes to the selection price and verifies each artifact before assembly. The
+assembler reads both collections with the same readers as embedded content and
+verifies the finished map. Each article and photo keeps its source credit in the
+assembled map.

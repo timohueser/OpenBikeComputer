@@ -173,6 +173,7 @@ self.onmessage = async (event: MessageEvent<AssembleWorkerRequest>) => {
                         // same digest and length arrive on the result — but the seam requires it.
                         sink ? { ...sinkMethods(sink), sealed: () => {} } : undefined,
                         scratch ?? undefined,
+                        req.articles,
                     );
                 } catch (cause) {
                     if (sink?.quotaExceeded || scratch?.quotaExceeded) {

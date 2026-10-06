@@ -13,6 +13,7 @@
 // The checks below are the spec's MUSTs, not a taste for strictness. Every
 // consumer-side rejection has a `fail()` here with its reason in the message.
 
+import { parseArtifactPin, type ArtifactPin } from "./articles";
 import { GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE } from "./grid";
 import {
     arr,
@@ -139,6 +140,7 @@ export interface Boundary {
 
 export interface RegionEntry {
     id: string;
+    article_bytes: number;
     /** This region's terrain selection, priced; `null` for a catalog with no
      *  terrain block. */
     terrain: RegionTerrain | null;
@@ -246,6 +248,7 @@ export interface Catalog {
      *  from, or `null` when the store was baked with no terrain. Root level and
      *  deliberately not in `SchemaEntry`. */
     network_terrain_revision: number | null;
+    articles: ArtifactPin | null;
 }
 
 /** What a satellite has to match before it is believed. */
@@ -522,7 +525,7 @@ function parseBoundary(v: unknown, where: string): Boundary {
     };
 }
 
-function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEntry[] {
+function parseRegions(v: unknown, where: string, bandIds: Set<string>, hasArticles: boolean): RegionEntry[] {
     const raw = arr(v, where);
     const seen = new Set<string>();
     const regions = raw.map((entry, k) => {
@@ -546,6 +549,7 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
         ]) {
             if (!bandIds.has(band)) fail(`${at}: band ${JSON.stringify(band)} is not in schema.bands`);
         }
+        const articleBytes = hasArticles || o.article_bytes != null ? int(o, "article_bytes", at, 0) : 0;
         const bytes = int(o, "bytes", at, 0);
         const summed = Object.values(bytesByBand).reduce((a, b) => a + b, 0);
         // The split is what makes pricing per *file* rather than merely per set, so
@@ -585,6 +589,7 @@ function parseRegions(v: unknown, where: string, bandIds: Set<string>): RegionEn
             boundary: parseBoundary(o.boundary, `${at}.boundary`),
             bytes,
             bytes_by_band: bytesByBand,
+            article_bytes: articleBytes,
             cell_count: cellCount,
             partial_cell_count_by_band: partialByBand,
             cells_url: pinnedUrlStr(o, "cells_url", cellsSha256, at),
@@ -757,9 +762,10 @@ export function parseRoot(body: string): Catalog {
         source: parseSource(root.source, "catalog.source"),
         schema,
         skins: parseSkins(root.skins, "catalog.skins", schema),
-        regions: parseRegions(root.regions, "catalog.regions", bandIds),
+        regions: parseRegions(root.regions, "catalog.regions", bandIds, root.articles != null),
         cell_index: parseCellIndexRefs(root.cell_index, "catalog.cell_index", schema.bands),
         terrain,
+        articles: root.articles == null ? null : parseArtifactPin(root.articles, "catalog.articles"),
         network_terrain_revision: (ntr as number | null | undefined) ?? null,
     };
 }
