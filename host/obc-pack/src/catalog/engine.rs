@@ -83,10 +83,10 @@ pub fn build(request: &Request) -> Result<(), String> {
                     for id in ids(path)? {
                         let id = parse_strict_id(&id)?;
                         if id.log2 != u32::from(definition.cell_log2)
-                            || !options.coverage.get(band).is_some_and(|cells| cells.contains_key(&id.to_string()))
+                            || options.coverage.get(band).and_then(|cells| cells.get(&id.to_string())) != Some(&false)
                             || !empty.entry(band.into()).or_default().insert(id)
                         {
-                            return Err("invalid or duplicate empty cell".into());
+                            return Err("invalid, partial or duplicate empty cell".into());
                         }
                     }
                 } else {
@@ -428,4 +428,51 @@ fn compact_terrain(cells: BTreeSet<CellId>) -> Result<Vec<TerrainEmptyRun>, Stri
     .into_iter()
     .map(|run| TerrainEmptyRun { start: run.start, end: run.end })
     .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_data::engine::LayerFile;
+
+    #[test]
+    fn empty_metadata_requires_full_source_coverage() {
+        let dir = obcm_testkit::scratch::scratch_dir("catalog", "empty-coverage");
+        let id = CellId::new(18, 1204, 1052).unwrap().to_string();
+        let body = serde_json::to_vec(&vec![id.clone()]).unwrap();
+        let path = dir.join("empty.json");
+        fs::write(&path, &body).unwrap();
+        let mut options = Options {
+            sources: vec![CellSource { extract_id: "test".into(), snapshot: "2026-10-01".into() }],
+            coverage: BandTable::recommended().bands.into_iter().map(|band| (band.id, BTreeMap::new())).collect(),
+            picks: Vec::new(),
+            terrain_cell_log2: 19,
+            posting_log2: 9,
+            dataset_version: "1".into(),
+        };
+        options.coverage.get_mut("fine").unwrap().insert(id.clone(), false);
+        let mut request = Request {
+            step: "maps/catalog".into(),
+            snapshots: BTreeMap::new(),
+            layers: BTreeMap::from([("maps/fine/leaf".into(), BTreeMap::from([("metadata/empty.json".into(), path)]))]),
+            layer_files: BTreeMap::from([(
+                "maps/fine/leaf".into(),
+                vec![LayerFile {
+                    path: "metadata/empty.json".into(),
+                    size: body.len() as u64,
+                    sha256: obc_data::store::sha256_hex(&body),
+                }],
+            )]),
+            options: serde_json::to_value(&options).unwrap(),
+            output: dir.join("output"),
+            metrics: dir.join("metrics"),
+        };
+        build(&request).unwrap();
+        let root: Catalog = serde_json::from_slice(&fs::read(request.output.join("catalog.json")).unwrap()).unwrap();
+        let fine = root.cell_index.iter().find(|band| band.band == "fine").unwrap();
+        assert_eq!((fine.cell_count, fine.known_empty_count), (0, 1));
+        options.coverage.get_mut("fine").unwrap().insert(id, true);
+        request.options = serde_json::to_value(options).unwrap();
+        assert!(build(&request).unwrap_err().contains("partial"));
+    }
 }

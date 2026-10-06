@@ -115,13 +115,21 @@ impl Product for Maps {
             return Ok(Steps { steps, blocked });
         };
         let captures = captures(env, store, &extract, &area, &mut blocked)?;
+        let source_coverage = Coverage::union(&outlines.iter().collect::<Vec<_>>())
+            .ok_or_else(|| Unplanned::Failed("cannot union source coverage".into()))?;
         let mut osm_leaves = BTreeSet::new();
         let mut network = BTreeMap::new();
         for band in BandTable::recommended().bands {
             let reads_terrain = obc_pack::step::reads_terrain(&band).map_err(Unplanned::Failed)?;
+            let boundary = source_coverage.boundary_cells(band.cell_log2);
             for (leaf, cells) in leaves(&outlines, band.cell_log2) {
                 osm_leaves.insert(leaf);
-                steps.push(map_cells(&band, leaf, &cells, &land_polygons, reads_terrain));
+                let partial = cells
+                    .iter()
+                    .filter(|cell| !source_coverage.covers(**cell, &boundary))
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                steps.push(map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain));
                 if band.has_nav() {
                     network.insert(leaf, cells);
                 }
@@ -475,7 +483,14 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
 
 /// The map cells of one band in one leaf, from the OSM of the leaf, the land polygons and, for a
 /// band whose bytes read heights, the terrain of the leaf.
-fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, reads_terrain: bool) -> Step {
+fn map_cells(
+    band: &Band,
+    leaf: LeafId,
+    cells: &[CellId],
+    partial: Vec<String>,
+    land_polygons: &str,
+    reads_terrain: bool,
+) -> Step {
     let land_polygons =
         Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
     let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_bake::step::leaf_pbf(leaf)] };
@@ -488,6 +503,7 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
         inputs,
         options: serde_json::json!({
             "band": band.id,
+            "partial_cells": partial,
             "leaf": [i64::from(LEAF_LOG2), leaf.i, leaf.j],
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),

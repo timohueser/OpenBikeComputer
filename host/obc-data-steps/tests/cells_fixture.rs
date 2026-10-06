@@ -253,7 +253,12 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         BANDS.iter().map(|band| (band.to_string(), BTreeSet::new())).collect();
     for cell in &summary.cells {
         let layer = objects(&format!("maps/{}/0037-0033", cell.band));
-        if cell.empty {
+        let partial = options(&cell.band)["partial_cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id.as_str() == Some(cell.id.to_string().as_str()));
+        if cell.empty && !partial {
             let empty: Vec<String> =
                 serde_json::from_slice(&std::fs::read(&layer["metadata/empty.json"]).unwrap()).unwrap();
             assert!(empty.contains(&cell.id.to_string()), "{} {}", cell.band, cell.id);

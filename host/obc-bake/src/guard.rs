@@ -13,7 +13,7 @@
 //! and the guard says so and succeeds, because a project that has not published a catalog yet must
 //! not have a red CI check about it.
 
-use obc_pack::catalog::Catalog;
+use serde::Deserialize;
 
 /// What the guard found.
 #[derive(Debug, Clone)]
@@ -89,16 +89,27 @@ pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
             obc_pack::catalog::CATALOG_SCHEMA_VERSION
         ));
     }
-    let root: Catalog = serde_json::from_str(body).map_err(|e| format!("catalog: {e}"))?;
+    #[derive(Deserialize)]
+    struct Schema {
+        id: String,
+        obcm_version: u8,
+    }
+    #[derive(Deserialize)]
+    struct Band {
+        cell_count: usize,
+    }
+    #[derive(Deserialize)]
+    struct Published {
+        schema: Schema,
+        cell_index: Vec<Band>,
+    }
+    let root: Published = serde_json::from_str(body).map_err(|e| format!("catalog: {e}"))?;
     let expected = obc_formats::obcm::VERSION;
-    let cells: usize = root.cell_index.iter().map(|band| band.cell_count as usize).sum();
+    let cells: usize = root.cell_index.iter().map(|band| band.cell_count).sum();
     if root.schema.obcm_version == expected {
         Ok(GuardOutcome::Current { cells, obcm_version: expected })
     } else {
-        let found = vec![(
-            format!("schema `{}` digest {} ({cells} cells)", root.schema.id, root.schema.sha256),
-            root.schema.obcm_version,
-        )];
+        let found = vec![(format!("schema `{}` ({cells} cells)", root.schema.id), root.schema.obcm_version)];
         Ok(GuardOutcome::Stale { expected, found, cells })
     }
 }
@@ -503,6 +514,9 @@ mod tests {
         let outcome = evaluate(&catalog_with(obc_formats::obcm::VERSION)).unwrap();
         assert!(outcome.ok(), "{}", outcome.render());
         assert!(matches!(outcome, GuardOutcome::Current { .. }));
+        let mut legacy: serde_json::Value = serde_json::from_str(&catalog_with(obc_formats::obcm::VERSION)).unwrap();
+        legacy["schema"].as_object_mut().unwrap().remove("sha256");
+        assert!(evaluate(&legacy.to_string()).unwrap().ok(), "wire checks do not depend on content identity fields");
     }
 
     #[test]
