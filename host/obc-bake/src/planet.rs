@@ -283,6 +283,25 @@ impl ShardRunner for OsmiumRunner {
 }
 
 impl OsmiumRunner {
+    /// The prepared executable and its version. Discovery only reads local tooling.
+    pub fn identity(&self) -> Result<serde_json::Value, String> {
+        let binary = if self.binary.components().count() > 1 {
+            self.binary.clone()
+        } else {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|directory| directory.join(&self.binary))
+                .find(|path| path.is_file())
+                .ok_or("prepare Osmium, or set OBC_OSMIUM to its executable")?
+        };
+        let binary = binary.canonicalize().map_err(|e| e.to_string())?;
+        let (sha256, _) = obc_data::store::hash_file(&binary)?;
+        let output = Command::new(&binary).arg("--version").output().map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err("prepared Osmium --version failed".into());
+        }
+        Ok(serde_json::json!({"sha256": sha256, "version": String::from_utf8_lossy(&output.stdout).trim()}))
+    }
+
     /// The first line of `osmium --version`.
     pub fn version(&self) -> Result<String, String> {
         let out = Command::new(&self.binary).arg("--version").output();

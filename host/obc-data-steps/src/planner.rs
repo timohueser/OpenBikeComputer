@@ -20,7 +20,7 @@ use route_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::maps::{invalid, outlines, text, EXTRACTS, TILE_LIST};
+use crate::maps::{invalid, text, EXTRACTS, TILE_LIST};
 use crate::python;
 
 const SEARCH: &str = "apps/planner-search";
@@ -121,16 +121,24 @@ impl Product for Planner {
         regions: &Regions,
         store: &Store,
     ) -> Result<obc_data::product::Steps, Unplanned> {
+        self.steps_with_tool(root, env, regions, store, obc_bake::planet::OsmiumRunner::default().identity())
+    }
+}
+
+impl Planner {
+    /// Plan with an explicit prepared-tool observation. Multiple area inputs need the merge tool.
+    pub fn steps_with_tool(
+        &self,
+        root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<serde_json::Value, String>,
+    ) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let region =
             regions.get(&env.region).ok_or_else(|| Unplanned::Failed(format!("no region `{}`", env.region)))?;
-        let Some(source_area) = region.source_area() else {
-            return Err(invalid(format!(
-                "region `{}`: the planner reads the OSM of one Geofabrik area only",
-                region.id
-            )));
-        };
         if region.countries.is_empty() {
             return Err(invalid(format!("region `{}` names no `countries`, which the route catalog needs", region.id)));
         }
@@ -140,32 +148,37 @@ impl Product for Planner {
         let on = |layer: &str| env.layers.iter().any(|name| name == layer);
         let mut wanted = Vec::new();
         let glo30 = version(env, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
-        let outlines = outlines(env, regions, store, &mut wanted)?;
+        let selection = crate::region_sources::resolve(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-        let area = vec![("area".to_string(), source_area.to_string())];
-        let extract = snapshot(env, store, EXTRACTS, area, &mut wanted)?;
         let assets = vec![
             snapshot(env, store, "protomaps-assets", Vec::new(), &mut wanted)?,
             snapshot(env, store, "tangrams-icons", Vec::new(), &mut wanted)?,
         ];
         let model = snapshot(env, store, "query-model", Vec::new(), &mut wanted)?;
         let country_data = snapshot(env, store, "nominatim-country-data", Vec::new(), &mut wanted)?;
-        let (Some(outlines), Some(tile_list), Ok(glo30)) = (outlines, tile_list, glo30) else {
+        let (Some(selection), Some(tile_list), Ok(glo30)) = (selection, tile_list, glo30) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let (west, south, east, north) = outlines[0].bbox();
+        let requested = obc_bake::coverage::Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
+            .ok_or_else(|| Unplanned::Failed("cannot union planner region coverage".into()))?;
+        let (west, south, east, north) = requested.bbox();
         let bounds = [west, south, east, north].map(|udeg| udeg as f64 / 1e6);
         let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
         let coverage = terrain_bounds(bounds, config.terrain.margin_m);
-        let osm = Step {
-            name: "planner/osm".into(),
-            inputs: vec![extract],
-            options: json!({"path": "osm.pbf"}),
-            code: Code { paths: Vec::new(), crates: vec!["obc-data".into()], ..Default::default() },
-            outputs: vec!["osm.pbf".into()],
-            run: Run::Rust(obc_data::engine::pass),
-            client: Client::None,
+        let source_steps = crate::region_sources::inputs("planner", &selection);
+        let osm = if selection.sources.len() == 1 {
+            Step {
+                name: "planner/osm".into(),
+                inputs: vec![Input::Layer { name: source_steps[0].name.clone(), files: vec!["source.osm.pbf".into()] }],
+                options: json!({"path": "osm.pbf"}),
+                code: Code { crates: vec!["obc-data".into()], ..Default::default() },
+                outputs: vec!["osm.pbf".into()],
+                run: Run::Rust(obc_data::engine::pass),
+                client: Client::None,
+            }
+        } else {
+            crate::region_sources::combined("planner/osm", &source_steps, &tool.map_err(Unplanned::Invalid)?)?
         };
         let mut inputs = vec![Input::layer(osm.name.clone())];
         for source in BASEMAP_SOURCES {
@@ -313,9 +326,10 @@ impl Product for Planner {
             &["tools/planner_places.py", "tools/planner_mvt.py", POI_KINDS],
             &["places.pmtiles"],
         );
-        let mut steps = vec![
+        let mut steps = source_steps;
+        steps.extend([
             osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
-        ];
+        ]);
         if on("climate") {
             let first_year = config.climate.first_year;
             let params = vec![bbox, ("first-year".to_string(), first_year.to_string())];
@@ -671,11 +685,47 @@ mod tests {
         let region = parse_region("ride/freiburg", "name = \"My ride\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n").unwrap();
         let regions = Regions::new(vec![region]).unwrap();
         let listed = Planner.steps(&root(), &env("ride/freiburg", &[]), &regions, &store).unwrap();
-        let osm = listed.steps.iter().find(|step| step.name == "planner/osm").unwrap();
+        let osm = listed.steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
         let Input::Snapshot { params, .. } = &osm.inputs[0] else {
             panic!("OSM snapshot");
         };
         assert_eq!(params, &[("area".into(), AREA.into())]);
+    }
+
+    #[test]
+    fn multiple_areas_keep_each_request_and_use_the_union_bounds() {
+        let temporary = temp("planner-multi-source");
+        let store = store(&temporary, &["2026-10-01"]);
+        let area = [("area".into(), "europe/second".into())];
+        let shape = "second\n1\n 7.82 47.99\n 7.85 47.99\n 7.85 48.02\n 7.82 48.02\n 7.82 47.99\nEND\nEND\n";
+        fetched(&store, "geofabrik-poly", "2026-10-02", &area, &[("europe/second.poly".into(), shape.into())]);
+        fetched(&store, EXTRACTS, "2026-10-02", &area, &[("europe/second.osm.pbf".into(), "second".into())]);
+        let region = parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/test','europe/second']\ncountries=['DE']\ntime_zone='Europe/Berlin'\n").unwrap();
+        let env = env("ride", &[]);
+        let steps = Planner
+            .steps_with_tool(
+                &root(),
+                &env,
+                &Regions::new(vec![region]).unwrap(),
+                &store,
+                Ok(json!({"sha256":"0".repeat(64), "version":"authored merge fixture"})),
+            )
+            .unwrap()
+            .steps;
+        let versions = steps
+            .iter()
+            .filter(|step| step.name.starts_with("planner/source/"))
+            .map(|step| {
+                let Input::Snapshot { version, params, .. } = &step.inputs[0] else { panic!("area request") };
+                (params[0].1.as_str(), version.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(versions, [("europe/second", "2026-10-02"), ("europe/test", "2026-10-01")]);
+        let osm = steps.iter().find(|step| step.name == "planner/osm").unwrap();
+        assert_eq!(osm.inputs.len(), 2);
+        let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
+        assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
+        assert_eq!(env.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
     }
 
     #[test]
@@ -695,6 +745,7 @@ mod tests {
             .steps;
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
         let layers = [
+            "source/europe/test",
             "osm",
             "terrain",
             "routing",
@@ -726,6 +777,7 @@ mod tests {
         assert_eq!(
             intermediate,
             [
+                "planner/source/europe/test",
                 "planner/osm",
                 "planner/terrain",
                 "planner/routing",
@@ -741,9 +793,12 @@ mod tests {
                 "planner/basemap"
             ]
         );
-        let [osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        let [source, osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        assert!(
+            matches!(&osm.inputs[0], Input::Layer { name, files } if name == "planner/source/europe/test" && files == &["source.osm.pbf"])
+        );
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
-        let Input::Snapshot { source, version, params, .. } = &osm.inputs[0] else { panic!("not a snapshot") };
+        let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
         // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
         assert_eq!(terrain.options["bounds"], json!([7.382257389170511, 47.71727272727273, 8.4375, 48.45835188280866]));
@@ -802,7 +857,17 @@ mod tests {
         let store = store(&temp, &["2026-10-01"]);
         crate::maps::tests::without_models(&store, &env(AREA, &[]), &regions());
         let mut steps = Planner.steps(&root(), &env(AREA, &[]), &regions(), &store).unwrap().steps;
-        steps.extend(Maps.steps(&root(), &env(AREA, &[]), &regions(), &store).unwrap().steps);
+        steps.extend(
+            Maps.steps_with_tool(
+                &root(),
+                &env(AREA, &[]),
+                &regions(),
+                &store,
+                Ok(json!({"sha256": "0".repeat(64), "version": "authored copy fixture"})),
+            )
+            .unwrap()
+            .steps,
+        );
         for step in &steps {
             let files = step.code.files(&root()).unwrap();
             assert!(!files.contains_key("Cargo.lock"), "{} declares Cargo.lock", step.name);

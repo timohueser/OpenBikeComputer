@@ -21,9 +21,8 @@
 //! test would call canonical. That is the safe error: `partial` under-claims coverage and the
 //! builder warns, where the opposite would publish a cell with a missing sliver as canonical.
 //!
-//! Every predicate here is integer arithmetic on microdegrees, so two runs agree exactly. The one
-//! float step is the GEOS union of several sources' polygons ([`Coverage::union`]), which runs on
-//! sorted input and is rounded to microdegrees before any decision is taken.
+//! Cell predicates use integer microdegrees. Full-polygon union, intersection and containment use
+//! GEOS on sorted source geometry. Cell decisions use the result rounded to microdegrees.
 
 use std::collections::BTreeSet;
 
@@ -73,6 +72,26 @@ impl Coverage {
             1 => Some(parts[0].clone()),
             _ => union_all(&polys).map(Self::from_polys),
         }
+    }
+
+    /// Whether the source polygons contain the entire requested ground, including holes and edges.
+    pub fn covers_coverage(&self, requested: &Self) -> Result<bool, String> {
+        let polys = self.polys.iter().collect::<Vec<_>>();
+        for polygon in &requested.polys {
+            if !obc_pack::coverage::covers_polygon(&polys, polygon)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The common ground. A boundary touch has no ground area.
+    pub fn intersection(&self, other: &Self) -> Result<Option<Self>, String> {
+        let polys = obc_pack::coverage::intersect_polygons(
+            &self.polys.iter().collect::<Vec<_>>(),
+            &other.polys.iter().collect::<Vec<_>>(),
+        )?;
+        Ok((!polys.is_empty()).then(|| Self::from_polys(polys)))
     }
 
     fn from_polys(polys: Vec<Geom>) -> Self {
@@ -501,5 +520,18 @@ mod tests {
     fn a_malformed_poly_is_an_error_not_an_empty_coverage() {
         assert!(Coverage::parse_poly("").is_err());
         assert!(Coverage::parse_poly("region\n1\n   7.0 47.0\nEND\nEND\n").is_err());
+    }
+
+    #[test]
+    fn complete_region_coverage_requires_geometry_not_its_bounds() {
+        let requested = Coverage::parse_poly(&box_poly(7.0, 47.0, 8.0, 48.0)).unwrap();
+        let west = Coverage::parse_poly(&box_poly(7.0, 47.0, 7.5, 48.0)).unwrap();
+        let east = Coverage::parse_poly(&box_poly(7.5, 47.0, 8.0, 48.0)).unwrap();
+        assert!(Coverage::union(&[&west, &east]).unwrap().covers_coverage(&requested).unwrap());
+        let gap = Coverage::parse_poly(&box_poly(7.500001, 47.0, 8.0, 48.0)).unwrap();
+        assert!(!Coverage::union(&[&west, &gap]).unwrap().covers_coverage(&requested).unwrap());
+        let hole = "region\n1\n 7 47\n 8 47\n 8 48\n 7 48\n 7 47\nEND\n!2\n 7.25 47.25\n 7.75 47.25\n 7.75 47.75\n 7.25 47.75\n 7.25 47.25\nEND\nEND\n";
+        assert!(!Coverage::parse_poly(hole).unwrap().covers_coverage(&requested).unwrap());
+        assert!(requested.covers_coverage(&requested).unwrap());
     }
 }
