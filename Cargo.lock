@@ -3705,9 +3705,12 @@ name = "obc-ios-host"
 version = "0.1.0"
 dependencies = [
  "obc-app",
+ "obc-crc",
  "obc-display",
+ "obc-flat-device",
  "obc-formats",
  "obc-host-core",
+ "obc-link",
  "obc-platform",
  "obc-ports",
  "obc-render",

@@ -9,6 +9,7 @@
 //! The card is persistent and this host never creates it: [`import_map`] does, with no host open.
 //! Everything here is target-independent and tested natively; [`ffi`] is the C ABI over it.
 
+pub mod client;
 pub mod ffi;
 mod sensors;
 #[cfg(test)]

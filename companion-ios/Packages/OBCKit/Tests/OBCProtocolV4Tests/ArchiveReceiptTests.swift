@@ -31,7 +31,7 @@ struct ArchiveReceiptTests {
         let result = try await send(TransferClient(link: link), store: link.store)
         #expect(result.timestamp == 100)
         let frames = await link.frames
-        #expect(frames.map(\.opcode) == [.list, .archiveRide, .list, .list, .archiveRide])
+        #expect(frames.map(\.opcode) == [.list, .archiveRide, .list, .archiveRide])
         let receipts = frames.filter { $0.opcode == .archiveRide }
         #expect(receipts[0].payload == receipts[1].payload)
         #expect(receipts[0].requestID != receipts[1].requestID)

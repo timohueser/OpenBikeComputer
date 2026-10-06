@@ -1,4 +1,5 @@
 import Foundation
+import OBCHost
 
 /// The physical facts protocol v4 needs from BLE or USB. Implementations preserve record
 /// boundaries, order a control write before stream records for that request, release a parked
@@ -34,466 +35,373 @@ public enum TransferClientError: Error, Equatable, Sendable {
     case outcomeNotCommitted
 }
 
-/// Protocol-v4's one client shape: announce on control, stream on the live link, then consume the
-/// one result. A link loss discards transfer bytes, restores the physical link, establishes the
-/// store identity with LIST, and reconciles mutations with STATUS (or LIST for a create).
+/// Rust owns request correlation, catalogue snapshots and mutation recovery. This actor owns
+/// the FIFO, payload storage and the two physical receive tasks.
 public actor TransferClient {
     private let link: any TransferLink
-    private var nextRequestValue: UInt32
-    private var currentStoreID: StoreID?
     private let archiveResponseTimeout: Duration
-
-    // Actor reentrancy must not turn two callers into two live transfers. This small FIFO is
-    // the client's operation gate.
+    private var core: RustStoreClient?
     private var busy = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var completion: CheckedContinuation<RustStoreClient.Result, Error>?
+    private var source = Data()
+    private var sink = Data()
+    private var progress: @Sendable (Int, Int) -> Void = { _, _ in }
+    private var queryID: UInt64?
+    private var generation: UInt64 = 0
+    private var ioEpoch: UInt64 = 0
+    private var controlReader: ReceiveTask?
+    private var streamReader: ReceiveTask?
+    private var controlReadSettled = false
+    private var streamReadSettled = false
+    private var writers: [UInt64: Task<Void, Never>] = [:]
+    private var timer: Task<Void, Never>?
+    private var draining = false
+    private var receiveFailure: Error?
+    private var deferredAction: RustStoreClient.Action?
 
-    public init(
-        link: any TransferLink, firstRequestID: UInt32 = 1,
-        archiveResponseTimeout: Duration = .seconds(10)
-    ) {
+    public init(link: any TransferLink, archiveResponseTimeout: Duration = .seconds(10)) {
         self.link = link
         self.archiveResponseTimeout = archiveResponseTimeout
-        self.nextRequestValue = firstRequestID == 0 ? 1 : firstRequestID
     }
 
     public func list(kind: ObjectKind? = nil) async throws -> [CatalogEntry] {
-        try await acquire()
-        defer { release() }
-        do { return try await listAll(kind: kind).entries }
-        catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            return try await listAll(kind: kind).entries
-        }
+        try await catalog(kind: kind).entries
     }
 
     public func catalog(kind: ObjectKind? = nil) async throws -> (storeID: StoreID, entries: [CatalogEntry]) {
         try await acquire()
         defer { release() }
-        do { return try await listAll(kind: kind) }
-        catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            return try await listAll(kind: kind)
-        }
+        let result = try await execute(request(1, kind: kind))
+        return (result.store, result.entries)
     }
 
-    /// Establish the store identity from the first LIST page without walking the whole catalog.
-    /// A BLE page carries only two entries at the preferred MTU, so `catalog()` would cost
-    /// hundreds of needless control writes for one StoreId.
     public func storeID() async throws -> StoreID {
         try await acquire()
         defer { release() }
-        do { return try await identifyStore() }
-        catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            guard let currentStoreID else { throw TransferClientError.unexpectedResponse }
-            return currentStoreID
-        }
+        return try await identifyStore()
     }
 
     public func status(objectID: ObjectID, revision: Revision) async throws -> StatusResult {
         try await acquire()
         defer { release() }
-        try await ensureIntroduced()
-        do { return try await statusOnLiveLink(objectID: objectID, revision: revision) }
-        catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            return try await statusOnLiveLink(objectID: objectID, revision: revision)
-        }
-    }
-
-    public func get(
-        objectID: ObjectID, revision: Revision? = nil, expectedStoreID: StoreID? = nil,
-        progress: @escaping @Sendable (_ bytesDone: Int, _ total: Int) -> Void = { _, _ in }
-    ) async throws -> (result: GetResult, payload: Data) {
-        try await acquire()
-        defer { release() }
-        try await ensureIntroduced()
-        if let expectedStoreID { try await checkStore(expectedStoreID) }
-        let downloaded: (result: GetResult, payload: Data)
-        do {
-            downloaded = try await getOnLiveLink(objectID: objectID, revision: revision, progress: progress)
-        } catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            if let expectedStoreID { try await checkStore(expectedStoreID) }
-            downloaded = try await getOnLiveLink(objectID: objectID, revision: revision, progress: progress)
-        }
-        if let revision, downloaded.result.revision != revision {
+        let value = try await execute(request(2, id: objectID, revision: revision))
+        guard let state = StatusState(rawValue: UInt8(exactly: value.state) ?? 255) else {
             throw TransferClientError.unexpectedResponse
         }
-        if let expectedStoreID { try await checkStore(expectedStoreID) }
-        return downloaded
+        return StatusResult(state: state, headRevision: value.revision,
+                            headPayloadLength: value.length, headPayloadCRC32: value.crc)
     }
 
-    private func checkStore(_ expected: StoreID) async throws {
-        let actual = try await identifyStore()
-        guard actual == expected else {
-            throw TransferClientError.storeChanged(previous: expected, current: actual)
-        }
-    }
-
-    public func put(
-        _ payload: Data, objectID: ObjectID? = nil, expectedRevision: Revision? = nil,
-        kind: ObjectKind, displayName: String,
-        progress: @escaping @Sendable (_ bytesDone: Int, _ total: Int) -> Void = { _, _ in }
-    ) async throws -> PutResult {
+    public func get(objectID: ObjectID, revision: Revision? = nil, expectedStoreID: StoreID? = nil,
+                    progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async throws
+        -> (result: GetResult, payload: Data) {
         try await acquire()
         defer { release() }
-        try await ensureIntroduced()
-        let crc = CRC32.checksum(payload)
-        let request = PutRequest(
-            objectID: objectID, expectedRevision: expectedRevision,
-            payloadLength: UInt64(payload.count), payloadCRC32: crc, kind: kind,
-            displayName: displayName)
-        do {
-            return try await putOnLiveLink(request, payload: payload, progress: progress)
-        } catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            if let objectID, let expectedRevision {
-                guard expectedRevision.rawValue < UInt64.max else { throw TransferClientError.outcomeNotCommitted }
-                let produced = Revision(rawValue: expectedRevision.rawValue + 1)
-                let status = try await statusOnLiveLink(objectID: objectID, revision: produced)
-                if status.state == .committed {
-                    guard status.headPayloadLength == UInt64(payload.count),
-                        status.headPayloadCRC32 == crc
-                    else { throw TransferClientError.outcomeNotCommitted }
-                    return PutResult(
-                        objectID: objectID, revision: produced,
-                        payloadLength: status.headPayloadLength, payloadCRC32: status.headPayloadCRC32)
-                }
-                // STATUS says the proposed revision is not the head, so the interrupted PUT did
-                // not commit. Re-announcing the same CAS is safe: if the catalog changed again the
-                // peer returns revisionConflict rather than overwriting it.
-                return try await putOnLiveLink(request, payload: payload, progress: progress)
-            }
+        if let expectedStoreID { _ = try await identifyStore(expected: expectedStoreID) }
+        let value = try await execute(request(3, id: objectID, revision: revision, store: expectedStoreID),
+                                      progress: progress)
+        let payload = sink
+        if let revision, revision != value.revision { throw TransferClientError.unexpectedResponse }
+        if let expectedStoreID { _ = try await identifyStore(expected: expectedStoreID) }
+        return (GetResult(revision: value.revision, payloadLength: value.length,
+                          payloadCRC32: value.crc), payload)
+    }
 
-            // A create has no ObjectId until its response, so LIST's immutable fingerprint is
-            // the reconciliation key for the lost assignment.
-            let catalog = try await listAll(kind: kind)
-            let matches = catalog.entries.filter {
-                !$0.flags.contains(.retained)
-                    && $0.payloadLength == UInt64(payload.count)
-                    && $0.payloadCRC32 == crc
-                    && $0.displayName == request.displayName
-            }
-            guard let entry = matches.max(by: { $0.objectID < $1.objectID }) else {
-                return try await putOnLiveLink(request, payload: payload, progress: progress)
-            }
-            // A create response can be lost after commit and a refreshed LIST can race the
-            // publication once. If that produced duplicates, keep the newest assignment and
-            // remove the others with their exact revisions.
-            for duplicate in matches where duplicate.objectID != entry.objectID {
-                _ = try await removeOnLiveLink(
-                    objectID: duplicate.objectID, expectedRevision: duplicate.revision)
-            }
-            return PutResult(
-                objectID: entry.objectID, revision: entry.revision,
-                payloadLength: entry.payloadLength, payloadCRC32: entry.payloadCRC32)
-        }
+    public func put(_ payload: Data, objectID: ObjectID? = nil, expectedRevision: Revision? = nil,
+                    kind: ObjectKind, displayName: String,
+                    progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> PutResult {
+        try await acquire()
+        defer { release() }
+        var input = request(4, id: objectID, revision: expectedRevision, kind: kind)
+        input.length = UInt64(payload.count)
+        input.crc = RustStoreClient.checksum(payload)
+        let value = try await execute(input, name: displayName, source: payload, progress: progress)
+        return PutResult(objectID: value.objectID, revision: value.revision,
+                         payloadLength: value.length, payloadCRC32: value.crc)
     }
 
     public func remove(objectID: ObjectID, expectedRevision: Revision) async throws -> RemoveResult {
         try await acquire()
         defer { release() }
-        try await ensureIntroduced()
-        do {
-            return try await removeOnLiveLink(objectID: objectID, expectedRevision: expectedRevision)
-        } catch is TransferLinkLost {
-            try await restoreAndRefreshStore()
-            let result = try await statusOnLiveLink(objectID: objectID, revision: expectedRevision)
-            if result.state == .absent { return RemoveResult(commitSequence: nil) }
-            // The exact revision is still the head: the remove did not land, and its CAS remains
-            // valid, so finish it once on the restored link. A different head is a real conflict.
-            if result.state == .committed {
-                return try await removeOnLiveLink(objectID: objectID, expectedRevision: expectedRevision)
-            }
-            throw TransferClientError.outcomeNotCommitted
-        }
+        let value = try await execute(request(5, id: objectID, revision: expectedRevision))
+        return RemoveResult(commitSequence: value.flag ? value.sequence : nil)
     }
 
     public func cancel(transfer: RequestID) async throws -> CancelResult {
         try await acquire()
         defer { release() }
-        try await ensureIntroduced()
-        let response = try await request(.cancel(transfer: transfer), opcode: .cancel)
-        guard case .cancel(let result) = response else { throw TransferClientError.unexpectedResponse }
-        return result
+        var input = request(6)
+        input.object_id = UInt64(transfer.rawValue)
+        return try await execute(input).flag ? .cancelled : .noSuchTransfer
     }
 
     public func arm(packageObjectID: ObjectID, expectedRevision: Revision) async throws -> ArmResult {
         try await acquire()
         defer { release() }
-        try await ensureIntroduced()
-        let response = try await request(
-            .arm(packageObjectID: packageObjectID, expectedRevision: expectedRevision), opcode: .arm)
-        guard case .arm(let result) = response else { throw TransferClientError.unexpectedResponse }
-        return result
+        let value = try await execute(request(7, id: packageObjectID, revision: expectedRevision))
+        return ArmResult(rollbackObjectID: value.objectID, commitSequence: value.sequence)
     }
 
-    /// Destructively initialize the card as a new empty flat store. No iOS surface calls it today.
     public func format(expectedStoreID: StoreID, replacementStoreID: StoreID) async throws -> FormatResult {
         try await acquire()
         defer { release() }
-        try await ensureIntroduced()
-        let response = try await request(
-            .format(expectedStoreID: expectedStoreID, replacementStoreID: replacementStoreID), opcode: .format)
-        guard case .format(let result) = response else { throw TransferClientError.unexpectedResponse }
-        return result
+        var input = request(8, store: expectedStoreID)
+        copy(replacementStoreID, to: &input.replacement)
+        let value = try await execute(input)
+        return FormatResult(storeID: value.store)
     }
 
-    /// Persist possession of an exact durable archive. A lost answer is retried through the
-    /// idempotent receipt operation itself; object STATUS cannot establish archive proof.
-    public func archiveRide(
-        storeID: StoreID, objectID: ObjectID, revision: Revision,
-        payloadLength: UInt64, payloadCRC32: UInt32
-    ) async throws -> ArchiveRideResult {
+    public func archiveRide(storeID: StoreID, objectID: ObjectID, revision: Revision,
+                            payloadLength: UInt64, payloadCRC32: UInt32) async throws -> ArchiveRideResult {
         try await acquire()
         defer { release() }
-        try Task.checkCancellation()
-        let receipt = ControlRequest.archiveRide(
-            storeID: storeID, objectID: objectID, revision: revision,
-            payloadLength: payloadLength, payloadCRC32: payloadCRC32)
-        do {
-            try await checkStore(storeID)
-            return try await archiveOnLiveLink(receipt)
-        } catch is TransferLinkLost {
+        _ = try await identifyStore(expected: storeID)
+        var input = request(9, id: objectID, revision: revision, store: storeID)
+        input.length = payloadLength
+        input.crc = payloadCRC32
+        let components = archiveResponseTimeout.components
+        let seconds = UInt64(clamping: components.seconds)
+        let fractional = UInt64(clamping: components.attoseconds) / 1_000_000_000_000_000
+        let (whole, overflow) = seconds.multipliedReportingOverflow(by: 1_000)
+        let (milliseconds, sumOverflow) = whole.addingReportingOverflow(fractional)
+        let value = try await execute(input, timeout: overflow || sumOverflow ? UInt64.max : milliseconds)
+        return ArchiveRideResult(commitSequence: value.sequence, timestamp: value.timestamp)
+    }
+
+    private func identifyStore(expected: StoreID? = nil) async throws -> StoreID {
+        let input = request(1, store: expected)
+        do { return try await execute(input, query: true).store }
+        catch is TransferLinkLost {
             try Task.checkCancellation()
-            try await restoreAndRefreshStore()
-            try Task.checkCancellation()
-            try await checkStore(storeID)
-            return try await archiveOnLiveLink(receipt)
+            try await link.restore()
+            try client().event(10, offset: UInt64(Int(UInt16.max) + FlatStoreV4.controlHeaderLength),
+                               length: link.maximumStreamPayload + FlatStoreV4.streamHeaderLength, now: now)
+            return try await execute(input, query: true).store
         }
     }
 
-    private func archiveOnLiveLink(_ receipt: ControlRequest) async throws -> ArchiveRideResult {
+    private func request(_ opcode: UInt32, id: ObjectID? = nil, revision: Revision? = nil,
+                         kind: ObjectKind? = nil, store: StoreID? = nil) -> ObcClientRequest {
+        var input = ObcClientRequest()
+        input.opcode = opcode
+        input.object_id = id?.rawValue ?? 0
+        input.revision = revision?.rawValue ?? 0
+        input.kind = UInt32(kind?.rawValue ?? 0)
+        if let store { input.scoped = 1; copy(store, to: &input.store) }
+        return input
+    }
+
+    private func copy<T>(_ store: StoreID, to output: inout T) {
+        withUnsafeMutableBytes(of: &output) { _ = store.bytes.copyBytes(to: $0) }
+    }
+
+    private func client() throws -> RustStoreClient {
+        if let core { return core }
+        let value = try RustStoreClient(payloadCeiling: link.maximumStreamPayload)
+        core = value
+        return value
+    }
+    private var now: UInt64 { DispatchTime.now().uptimeNanoseconds / 1_000_000 }
+
+    private func execute(_ input: ObcClientRequest, name: String = "", query: Bool = false,
+                         source: Data = Data(), timeout: UInt64? = nil,
+                         progress: @escaping @Sendable (Int, Int) -> Void = { _, _ in }) async throws
+        -> RustStoreClient.Result {
         try Task.checkCancellation()
-        let response = try await withThrowingTaskGroup(of: ControlResponse.self) { group in
-            group.addTask {
-                try Task.checkCancellation()
-                return try await self.request(receipt, opcode: .archiveRide)
+        let core = try client()
+        generation &+= 1
+        let live = generation
+        self.source = source
+        sink.removeAll(keepingCapacity: true)
+        self.progress = progress
+        let id = try core.start(input, name: name, query: query, timeout: timeout, now: now)
+        queryID = query ? id : nil
+        let result = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                completion = continuation
+                scheduleDrain()
             }
-            group.addTask { [archiveResponseTimeout] in
-                try await Task.sleep(for: archiveResponseTimeout)
-                throw TransferClientError.responseTimedOut
-            }
-            defer { group.cancelAll() }
-            guard let response = try await group.next() else { throw TransferClientError.unexpectedResponse }
-            return response
+        } onCancel: {
+            Task { await self.abort(live) }
         }
         try Task.checkCancellation()
-        guard case .archiveRide(let result) = response else { throw TransferClientError.unexpectedResponse }
         return result
     }
 
-    private func getOnLiveLink(
-        objectID: ObjectID, revision: Revision?,
-        progress: @escaping @Sendable (Int, Int) -> Void
-    ) async throws -> (result: GetResult, payload: Data) {
-        let requestID = try makeRequestID()
-        try await link.sendControlRecord(
-            ControlRequest.get(objectID: objectID, revision: revision).frame(requestID: requestID).encode())
+    private func abort(_ live: UInt64) {
+        guard generation == live, completion != nil, let core else { return }
+        if let queryID { core.cancelQuery(queryID) }
+        else { try? core.event(7, now: now) }
+        // Stream cancellation does not fabricate a write acknowledgement. Its task must settle.
+        for task in writers.values { task.cancel() }
+        scheduleDrain()
+    }
 
-        enum Part: Sendable { case result(GetResult, complete: Bool), streamComplete }
-        let accumulator = DownloadAccumulator(requestID: requestID)
-        var result: GetResult?
-        do {
-            try await withThrowingTaskGroup(of: Part.self) { group in
-                group.addTask { [link] in
-                    let record = try await awaitControlRecord(on: link, for: requestID)
-                    let response = try ControlResponse(
-                        decoding: record, expectedOpcode: .get, expectedRequestID: requestID)
-                    guard case .get(let result) = response else { throw TransferClientError.unexpectedResponse }
-                    return .result(result, complete: await accumulator.set(result: result))
-                }
-                group.addTask { [link] in
+    private func scheduleDrain() {
+        guard !draining else { return }
+        draining = true
+        Task { await self.drain() }
+    }
+
+    private func drain() async {
+        guard let core else { draining = false; return }
+        while true {
+            if let error = receiveFailure {
+                receiveFailure = nil
+                self.core = nil
+                await finish(.failure(error))
+                return
+            }
+            guard let action = deferredAction ?? core.next() else { break }
+            deferredAction = nil
+            switch action {
+            case .send(let token, let channel, let bytes):
+                let epoch = ioEpoch
+                writers[token] = Task { [weak self, link] in
                     do {
-                        while true {
-                            let record = try StreamRecord(decoding: try await link.receiveStreamRecord())
-                            // Stream traffic can outlive the answer that ended an earlier
-                            // transfer. Request ids name the live direction; every other valid
-                            // record is late traffic and is discarded in silence.
-                            guard record.requestID == requestID else { continue }
-                            if try await accumulator.append(record) { return .streamComplete }
-                        }
-                    } catch is CancellationError {
-                        return .streamComplete
-                    }
+                        if channel == 0 { try await link.sendControlRecord(bytes) }
+                        else { try await link.sendStreamRecord(bytes) }
+                        await self?.sent(token, epoch: epoch)
+                    } catch { await self?.failed(error, token: token, epoch: epoch) }
                 }
-                for try await part in group {
-                    switch part {
-                    case .result(let value, let complete):
-                        result = value
-                        if complete {
-                            await link.cancelStreamReceive()
-                            group.cancelAll()
-                        }
-                    case .streamComplete:
-                        if result != nil { group.cancelAll() }
-                    }
+            case .source(let token, let offset, let length):
+                guard let start = Int(exactly: offset), start <= source.count else {
+                    try? core.event(8, token: token, now: now); continue
+                }
+                let end = start + min(length, source.count - start)
+                try? core.event(3, token: token, offset: offset, bytes: source.subdata(in: start..<end), now: now)
+            case .sink(let token, let offset, let bytes):
+                guard offset == UInt64(sink.count) else { try? core.event(8, token: token, now: now); continue }
+                sink.append(bytes)
+                try? core.event(5, token: token, offset: offset, length: bytes.count, now: now)
+            case .resetSink: sink.removeAll(keepingCapacity: true)
+            case .progress(let done, let total):
+                if let done = Int(exactly: done), let total = Int(exactly: total) { progress(done, total) }
+            case .resetChannels: await stopIO()
+            case .restore:
+                do {
+                    try await link.restore()
+                    try core.event(10, offset: UInt64(Int(UInt16.max) + FlatStoreV4.controlHeaderLength),
+                                   length: link.maximumStreamPayload + FlatStoreV4.streamHeaderLength, now: now)
+                } catch { receiveFailure = error }
+            case .complete(let result):
+                await finish(result)
+                return
+            case .query(let id, let result):
+                if queryID == id { await finish(result); return }
+            }
+        }
+        if controlReadSettled {
+            await controlReader?.drain()
+            controlReader = nil; controlReadSettled = false
+        }
+        if streamReadSettled {
+            await streamReader?.drain()
+            streamReader = nil; streamReadSettled = false
+        }
+        if completion != nil {
+            if core.reads & 1 != 0 { startReader(stream: false) }
+            if core.reads & 2 != 0 { startReader(stream: true) }
+        }
+        // I/O may settle while the completed reader task is joined above.
+        deferredAction = core.next()
+        armTimer()
+        draining = false
+        if deferredAction != nil { scheduleDrain() }
+    }
+
+    private func sent(_ token: UInt64, epoch: UInt64) {
+        guard ioEpoch == epoch, completion != nil, let core else { return }
+        writers.removeValue(forKey: token)
+        try? core.event(4, token: token, now: now)
+        scheduleDrain()
+    }
+
+    private func failed(_ error: Error, token: UInt64 = 0, epoch: UInt64) {
+        guard ioEpoch == epoch, completion != nil, let core else { return }
+        if error is TransferLinkLost {
+            ioEpoch &+= 1
+            try? core.event(9, now: now)
+        } else if token == 0 {
+            // A failed receive cannot settle a write token. Close this failed session after drain.
+            receiveFailure = error
+        } else { try? core.event(8, token: token, now: now) }
+        scheduleDrain()
+    }
+
+    private func startReader(stream: Bool) {
+        if stream ? streamReader != nil : controlReader != nil { return }
+        let epoch = ioEpoch
+        let cancellation = ReceiveCancellation()
+        let task = Task { [weak self, link] in
+            do {
+                let bytes = try await withTaskCancellationHandler {
+                    if stream { return try await link.receiveStreamRecord() }
+                    return try await link.receiveControlRecord()
+                } onCancel: {
+                    cancellation.request(on: link, stream: stream)
+                }
+                await self?.readFinished(.success(bytes), stream: stream, epoch: epoch)
+            } catch {
+                if !Task.isCancelled {
+                    await self?.readFinished(.failure(error), stream: stream, epoch: epoch)
                 }
             }
-        } catch {
-            await link.cancelStreamReceive()
-            throw error
         }
-        let payload = await accumulator.payload
-        guard let result else { throw TransferClientError.lengthMismatch }
-        guard UInt64(payload.count) == result.payloadLength else { throw TransferClientError.lengthMismatch }
-        guard CRC32.checksum(payload) == result.payloadCRC32 else { throw TransferClientError.checksumMismatch }
-        progress(payload.count, payload.count)
-        return (result, payload)
+        let read = ReceiveTask(task: task, cancellation: cancellation)
+        if stream { streamReader = read } else { controlReader = read }
     }
 
-    private func putOnLiveLink(
-        _ request: PutRequest, payload: Data,
-        progress: @escaping @Sendable (Int, Int) -> Void
-    ) async throws -> PutResult {
-        let ceiling = link.maximumStreamPayload
-        guard ceiling > 0, ceiling <= Int(UInt16.max) else {
-            throw TransferClientError.invalidLinkCeiling(ceiling)
+    private func readFinished(_ result: Swift.Result<Data, Error>, stream: Bool, epoch: UInt64) {
+        guard epoch == ioEpoch, completion != nil else { return }
+        if stream { streamReadSettled = true } else { controlReadSettled = true }
+        switch result {
+        case .success(let bytes): try? core?.event(stream ? 2 : 1, bytes: bytes, now: now)
+        case .failure(let error): failed(error, epoch: epoch)
         }
-        let requestID = try makeRequestID()
-        // Awaiting the response is armed by the peer's indication subscription before this call;
-        // this write is the announce, and only after it returns do stream records begin.
-        try await link.sendControlRecord(ControlRequest.put(request).frame(requestID: requestID).encode())
-
-        enum Part: Sendable { case result(PutResult), streamed }
-        var result: PutResult?
-        try await withThrowingTaskGroup(of: Part.self) { group in
-            group.addTask { [link] in
-                let record = try await awaitControlRecord(on: link, for: requestID)
-                let response = try ControlResponse(
-                    decoding: record, expectedOpcode: .put, expectedRequestID: requestID)
-                guard case .put(let result) = response else { throw TransferClientError.unexpectedResponse }
-                return .result(result)
-            }
-            group.addTask { [link] in
-                var offset = 0
-                while offset < payload.count {
-                    try Task.checkCancellation()
-                    let end = min(offset + ceiling, payload.count)
-                    let frame = try StreamRecord(
-                        requestID: requestID, offset: UInt64(offset), payload: payload[offset..<end])
-                    try await link.sendStreamRecord(frame.encode())
-                    offset = end
-                    progress(offset, payload.count)
-                }
-                return .streamed
-            }
-            var streamed = false
-            for try await part in group {
-                switch part {
-                case .result(let value): result = value
-                case .streamed: streamed = true
-                }
-                if result != nil, streamed { group.cancelAll() }
-            }
-        }
-        guard let result,
-            result.payloadLength == UInt64(payload.count),
-            result.payloadCRC32 == request.payloadCRC32
-        else { throw TransferClientError.unexpectedResponse }
-        if let objectID = request.objectID, result.objectID != objectID {
-            throw TransferClientError.unexpectedResponse
-        }
-        return result
+        scheduleDrain()
     }
 
-    private func removeOnLiveLink(objectID: ObjectID, expectedRevision: Revision) async throws -> RemoveResult {
-        let response = try await request(
-            .remove(objectID: objectID, expectedRevision: expectedRevision), opcode: .remove)
-        guard case .remove(let result) = response else { throw TransferClientError.unexpectedResponse }
-        return result
+    private func stopIO() async {
+        ioEpoch &+= 1
+        timer?.cancel(); timer = nil
+        let reads = [controlReader, streamReader].compactMap { $0 }
+        controlReader = nil; streamReader = nil
+        controlReadSettled = false; streamReadSettled = false
+        let writes = Array(writers.values)
+        writers.removeAll()
+        for read in reads { read.task.cancel() }
+        for task in writes { task.cancel() }
+        for read in reads { await read.drain() }
+        for task in writes { await task.value }
     }
 
-    private func statusOnLiveLink(objectID: ObjectID, revision: Revision) async throws -> StatusResult {
-        let response = try await request(.status(objectID: objectID, revision: revision), opcode: .status)
-        guard case .status(let result) = response else { throw TransferClientError.unexpectedResponse }
-        return result
+    private func finish(_ result: Swift.Result<RustStoreClient.Result, Error>) async {
+        await stopIO()
+        let continuation = completion
+        completion = nil
+        queryID = nil
+        source.removeAll(keepingCapacity: true)
+        draining = false
+        continuation?.resume(with: result)
     }
 
-    private func request(_ request: ControlRequest, opcode: Opcode) async throws -> ControlResponse {
-        try Task.checkCancellation()
-        let requestID = try makeRequestID()
-        try await link.sendControlRecord(try request.frame(requestID: requestID).encode())
-        return try ControlResponse(
-            decoding: try await awaitControlRecord(on: link, for: requestID),
-            expectedOpcode: opcode, expectedRequestID: requestID)
-    }
-
-    private func ensureIntroduced() async throws {
-        guard currentStoreID == nil else { return }
-        do { _ = try await identifyStore() }
-        catch is TransferLinkLost { try await restoreAndRefreshStore() }
-    }
-
-    private func restoreAndRefreshStore() async throws {
-        let previous = currentStoreID
-        currentStoreID = nil
-        try await link.restore()
-        let refreshed = try await identifyStore()
-        if let previous, previous != refreshed {
-            throw TransferClientError.storeChanged(previous: previous, current: refreshed)
+    private func armTimer() {
+        timer?.cancel(); timer = nil
+        guard completion != nil, let deadline = core?.deadline else { return }
+        let live = generation
+        let delay = deadline > now ? deadline - now : 0
+        timer = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(Int64(clamping: delay))) }
+            catch { return }
+            await self?.tick(live)
         }
     }
-
-    /// One cursorless LIST is sufficient to introduce a store: every page carries the same
-    /// StoreId and commit sequence. Pagination belongs only to callers that need the entries.
-    private func identifyStore() async throws -> StoreID {
-        let response = try await request(.list(kind: nil, cursor: nil), opcode: .list)
-        guard case .list(let page) = response else { throw TransferClientError.unexpectedResponse }
-        if let currentStoreID, currentStoreID != page.storeID {
-            self.currentStoreID = page.storeID
-            throw TransferClientError.storeChanged(previous: currentStoreID, current: page.storeID)
-        }
-        currentStoreID = page.storeID
-        return page.storeID
-    }
-
-    private func listAll(kind: ObjectKind?) async throws -> (storeID: StoreID, entries: [CatalogEntry]) {
-        for _ in 0..<3 {
-            do { return try await listOneSnapshot(kind: kind) }
-            catch WireError.remote(let error) where error.code == .catalogChanged { continue }
-        }
-        throw TransferClientError.catalogChanged
-    }
-
-    private func listOneSnapshot(kind: ObjectKind?) async throws -> (storeID: StoreID, entries: [CatalogEntry]) {
-        var cursor: CatalogCursor?
-        var storeID: StoreID?
-        var commitSequence: UInt64?
-        var entries: [CatalogEntry] = []
-        repeat {
-            let response = try await request(.list(kind: kind, cursor: cursor), opcode: .list)
-            guard case .list(let page) = response else { throw TransferClientError.unexpectedResponse }
-            if let kind, page.entries.contains(where: { $0.kind != kind }) {
-                throw TransferClientError.unexpectedResponse
-            }
-            if let storeID, storeID != page.storeID { throw TransferClientError.catalogChanged }
-            if let commitSequence, commitSequence != page.commitSequence { throw TransferClientError.catalogChanged }
-            storeID = page.storeID
-            commitSequence = page.commitSequence
-            entries.append(contentsOf: page.entries)
-            cursor = page.hasMore ? page.entries.last.map {
-                CatalogCursor(
-                    objectID: $0.objectID, revision: $0.revision,
-                    commitSequence: page.commitSequence)
-            } : nil
-            if page.hasMore, cursor == nil { throw TransferClientError.unexpectedResponse }
-        } while cursor != nil
-        guard let storeID else { throw TransferClientError.unexpectedResponse }
-        if let currentStoreID, currentStoreID != storeID {
-            self.currentStoreID = storeID
-            throw TransferClientError.storeChanged(previous: currentStoreID, current: storeID)
-        }
-        currentStoreID = storeID
-        return (storeID, entries)
-    }
-
-    private func makeRequestID() throws -> RequestID {
-        guard let id = RequestID(rawValue: nextRequestValue) else { throw TransferClientError.requestIDExhausted }
-        if nextRequestValue == UInt32.max { nextRequestValue = 1 } else { nextRequestValue += 1 }
-        return id
+    private func tick(_ live: UInt64) {
+        guard generation == live, completion != nil else { return }
+        try? core?.event(6, now: now)
+        scheduleDrain()
     }
 
     private func acquire() async throws {
@@ -503,67 +411,43 @@ public actor TransferClient {
         do { try Task.checkCancellation() }
         catch { release(); throw error }
     }
-
     private func release() {
         if operationWaiters.isEmpty { busy = false } else { operationWaiters.removeFirst().resume() }
     }
 }
 
-/// Wait for this request's control answer, and tell the link when the operation stops waiting.
-///
-/// A task group returns only after every child finishes, so a parked receive that outlives its
-/// operation must be released from outside; cancellation is the only signal that reaches it. The
-/// peer answers every request exactly once, so the answer to a request nobody waits for any more
-/// still arrives. It echoes its own `RequestId`, belongs to no live operation, and is skipped.
-private func awaitControlRecord(on link: any TransferLink, for requestID: RequestID) async throws -> Data {
-    while true {
-        let record = try await withTaskCancellationHandler {
-            try await link.receiveControlRecord()
-        } onCancel: {
-            Task { await link.cancelControlReceive() }
-        }
-        if let frame = try? ControlFrame(decoding: record, direction: .response),
-            frame.requestID != requestID
-        { continue }
-        return record
+public enum CRC32 {
+    public static func checksum(_ data: Data) -> UInt32 { RustStoreClient.checksum(data) }
+}
+
+/// Cancellation can release a read before its physical cleanup returns. Both lifetimes belong
+/// to the receive barrier; no cleanup task may reach the next operation's channel.
+private struct ReceiveTask {
+    let task: Task<Void, Never>
+    let cancellation: ReceiveCancellation
+
+    func drain() async {
+        await task.value
+        await cancellation.drain()
     }
 }
 
-public enum CRC32 {
-    public static func checksum(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0xFFFF_FFFF
-        for byte in data {
-            crc ^= UInt32(byte)
-            for _ in 0..<8 {
-                crc = (crc & 1 == 1) ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1
+private final class ReceiveCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func request(on link: any TransferLink, stream: Bool) {
+        lock.withLock {
+            guard task == nil else { return }
+            task = Task {
+                if stream { await link.cancelStreamReceive() }
+                else { await link.cancelControlReceive() }
             }
         }
-        return crc ^ 0xFFFF_FFFF
-    }
-}
-
-private actor DownloadAccumulator {
-    private let requestID: RequestID
-    private var bytes = Data()
-    private var expectedLength: UInt64?
-
-    init(requestID: RequestID) { self.requestID = requestID }
-
-    func set(result: GetResult) -> Bool {
-        expectedLength = result.payloadLength
-        return UInt64(bytes.count) == result.payloadLength
     }
 
-    func append(_ record: StreamRecord) throws -> Bool {
-        guard record.requestID == requestID, record.offset == UInt64(bytes.count) else {
-            throw TransferClientError.unexpectedStream
-        }
-        bytes.append(record.payload)
-        if let expectedLength, UInt64(bytes.count) > expectedLength {
-            throw TransferClientError.lengthMismatch
-        }
-        return expectedLength == UInt64(bytes.count)
+    func drain() async {
+        let pending = lock.withLock { task }
+        await pending?.value
     }
-
-    var payload: Data { bytes }
 }

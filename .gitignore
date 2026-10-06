@@ -106,3 +106,6 @@ fixtures/build/
 
 # repowise local index and session cache — never committed.
 /.repowise/
+
+# Package-local reference to the existing Rust XCFramework.
+companion-ios/Packages/OBCKit/.swiftpm/OBCHost.xcframework

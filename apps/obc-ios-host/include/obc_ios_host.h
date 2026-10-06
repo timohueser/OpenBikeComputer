@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "obc_client.h"
 
 #ifdef __cplusplus
 extern "C" {

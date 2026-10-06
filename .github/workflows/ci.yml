@@ -793,6 +793,13 @@ jobs:
       - name: Test camera engine
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.replay-camera')
         run: npm test --prefix companion-ios/ReplayAssets
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'swift.obckit-host')
+        with:
+          cache: false
+      - name: Pack the existing Rust host for package tests
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'swift.obckit-host')
+        run: tools/build-ios-host.sh --mac-only
       - name: OBCKit package tests (XCTest and Swift Testing, host)
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'swift.obckit-host')
         id: swift-tests
@@ -865,7 +872,7 @@ jobs:
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
         run: companion-ios/scripts/capture-website-screenshots.sh --boot
       - name: Pack the iOS host (simulator slice)
-        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-device-build')
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-device-build') || contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ios-app-build') || contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.xcuitest')
         run: tools/build-ios-host.sh --sim-only
       - name: xcodegen generate
         working-directory: companion-ios
@@ -934,6 +941,8 @@ jobs:
         with:
           workspaces: .
           key: ios
+      - name: Pack the Rust store client (simulator slice)
+        run: tools/build-ios-host.sh --sim-only
       - name: xcodegen generate
         working-directory: companion-ios
         run: xcodegen generate
