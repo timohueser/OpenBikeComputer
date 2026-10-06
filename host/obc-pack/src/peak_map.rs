@@ -133,21 +133,26 @@ pub fn load(paths: &[PathBuf]) -> Result<Peaks, String> {
 /// the associations whose summit node is in the cell, and their articles. A cell without one has no
 /// artifact.
 pub fn artifacts(paths: &[PathBuf], cells: &[CellId]) -> Result<BTreeMap<CellId, Vec<u8>>, String> {
-    let peaks = load(paths)?;
-    let mut nodes = BTreeMap::new();
+    let Some(log2) = cells.first().map(|cell| cell.log2) else { return Ok(BTreeMap::new()) };
+    let wanted: BTreeSet<CellId> = cells.iter().copied().collect();
+    let mut owner = BTreeMap::new();
     for path in paths {
         let content: PeakContent =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         for a in content.associations {
             // The rounding of a summit POI, from the same decimicro degrees.
-            let at = (crate::serialize::to_udeg(a.latitude), crate::serialize::to_udeg(a.longitude));
-            nodes.insert(SourceId::osm(1, a.node_id as u64), at);
+            let (lat, lon) = (crate::serialize::to_udeg(a.latitude), crate::serialize::to_udeg(a.longitude));
+            let cell = CellId::containing(log2, lat, lon);
+            if wanted.contains(&cell) {
+                owner.insert(SourceId::osm(1, a.node_id as u64), cell);
+            }
         }
     }
+    // The associations of these cells only, once: a region has many more.
+    let peaks = load(paths)?.keep(|source| owner.contains_key(source));
     let mut out = BTreeMap::new();
-    for &cell in cells {
-        let owned = peaks.keep(|source| nodes.get(source).is_some_and(|&(lat, lon)| cell.contains(lat, lon)));
-        let bytes = serialize(&owned)?;
+    for cell in wanted {
+        let bytes = serialize(&peaks.keep(|source| owner.get(source) == Some(&cell)))?;
         if !bytes.is_empty() {
             out.insert(cell, bytes);
         }

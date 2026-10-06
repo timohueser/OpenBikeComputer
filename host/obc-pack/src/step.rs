@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use obc_data::engine::{view, Request};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::cut::{artifact_path, cut, CutOptions};
@@ -125,6 +126,7 @@ pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 pub fn landmark_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = capture_view(request)?;
     crate::landmarks::discover::discover(&extract, &view.join("candidates.json"))?;
+    check_pins(&view, &boundary, "candidates")?;
     crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)
         .map(drop)
 }
@@ -134,8 +136,29 @@ pub fn landmark_content(request: &Request) -> Result<(), String> {
 pub fn peak_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = capture_view(request)?;
     crate::landmarks::peaks::discover(&extract, &boundary, &view.join("summits.json"))?;
+    check_pins(&view, &boundary, "summits")?;
     crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)
         .map(drop)
+}
+
+/// Refuse a capture whose recipe pinned another boundary, or other `candidates` or `summits`, than
+/// the step made again: the code that makes them changed since the capture, and a new capture
+/// with this code is the fix.
+fn check_pins(view: &Path, boundary: &Path, made: &str) -> Result<(), String> {
+    let read = |path: &Path| std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()));
+    let recipe: Value = serde_json::from_slice(&read(&view.join("recipe.json"))?)
+        .map_err(|e| format!("the recipe of the capture: {e}"))?;
+    for (name, path) in [("boundary", boundary.to_path_buf()), (made, view.join(format!("{made}.json")))] {
+        let digest: String = Sha256::digest(read(&path)?).iter().map(|byte| format!("{byte:02x}")).collect();
+        if recipe[format!("{name}_sha256")].as_str() != Some(digest.as_str()) {
+            return Err(format!(
+                "the capture of `{}` is out of date for this code: its {name} differ from those that this code \
+                 makes. Plan with `--move {}`",
+                CAPTURES[0], CAPTURES[0]
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The capture files as the capture wrote them, the boundary from the `.poly`, and the `.osm.pbf`.
@@ -265,7 +288,8 @@ mod tests {
     use crate::landmarks::peaks::{discover, PeakContent};
 
     /// The capture keeps no summits, which are OSM data: the step makes them again from the
-    /// extract, byte for byte, or the compiler refuses the digest that the capture pinned.
+    /// extract, byte for byte, and refuses a capture whose recipe pinned others, as after a change
+    /// of the code that makes them.
     #[test]
     fn a_peak_capture_compiles_with_the_summits_that_the_step_makes_again() {
         let dir = obcm_testkit::scratch::scratch_dir("step", "peak-content");
@@ -279,34 +303,42 @@ mod tests {
             .unwrap();
         let summits = capture.join("summits.json");
         discover(&osm, &boundary, &summits).unwrap();
+        let hex = |bytes: &[u8]| Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
         let bytes = std::fs::read(&summits).unwrap();
-        let sha256: String =
-            <sha2::Sha256 as sha2::Digest>::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
         let manifest = capture.join("manifest.json");
-        let source =
-            serde_json::json!({"path": "summits.json", "url": "urn:summits", "bytes": bytes.len(), "sha256": sha256});
+        let source = serde_json::json!({"path": "summits.json", "url": "urn:summits", "bytes": bytes.len(), "sha256": hex(&bytes)});
         let document = serde_json::json!({"schema": 1, "sources": [source], "places": [],
             "peaks": {"summits_path": "summits.json", "resolutions": []}});
         std::fs::write(&manifest, serde_json::to_vec(&document).unwrap()).unwrap();
 
-        let files = |name: &str, path: &Path| BTreeMap::from([(name.to_string(), path.to_path_buf())]);
-        let request = Request {
-            step: "maps/peak-content".into(),
-            snapshots: BTreeMap::from([
-                ("wikidata".to_string(), files("#peaks=0/manifest.json", &manifest)),
-                ("geofabrik-poly".to_string(), files("area.poly", &poly)),
-                ("geofabrik-extracts".to_string(), files("area.osm.pbf", &osm)),
-            ]),
-            layers: BTreeMap::new(),
-            options: serde_json::json!({}),
-            output: dir.join("step/output"),
-            metrics: dir.join("step/metrics.json"),
+        let files = |name: &str, path: &Path| (name.to_string(), path.to_path_buf());
+        let build = |name: &str, summits_sha256: &str| {
+            let recipe = dir.join(format!("{name}.json"));
+            let boundary_sha256 = hex(&std::fs::read(&boundary).unwrap());
+            let pins = serde_json::json!({"boundary_sha256": boundary_sha256, "summits_sha256": summits_sha256});
+            std::fs::write(&recipe, pins.to_string()).unwrap();
+            let capture = [files("#peaks=0/manifest.json", &manifest), files("#peaks=0/recipe.json", &recipe)];
+            let request = Request {
+                step: "maps/peak-content".into(),
+                snapshots: BTreeMap::from([
+                    ("wikidata".to_string(), BTreeMap::from(capture)),
+                    ("geofabrik-poly".to_string(), BTreeMap::from([files("area.poly", &poly)])),
+                    ("geofabrik-extracts".to_string(), BTreeMap::from([files("area.osm.pbf", &osm)])),
+                ]),
+                layers: BTreeMap::new(),
+                options: serde_json::json!({}),
+                output: dir.join(name).join("output"),
+                metrics: dir.join(name).join("metrics.json"),
+            };
+            peak_content(&request).map(|()| request.output)
         };
-        peak_content(&request).unwrap();
-        let content = std::fs::read(request.output.join("peaks/peaks.json")).unwrap();
+        let output = build("current", &hex(&bytes)).unwrap();
+        let content = std::fs::read(output.join("peaks/peaks.json")).unwrap();
         let content: PeakContent = serde_json::from_slice(&content).unwrap();
         let summits: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(content.counts.captured > 0);
         assert_eq!(content.counts.captured, summits["summits"].as_array().unwrap().len());
+        let refused = build("other-code", &hex(b"other summits")).unwrap_err();
+        assert!(refused.ends_with("Plan with `--move wikidata`"), "{refused}");
     }
 }

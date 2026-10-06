@@ -989,7 +989,7 @@ pub(crate) mod tests {
         let poly = format!("sha256:{}", sha256_hex(b"poly"));
         store.insert(&file, &sha256_hex(b"poly")).unwrap();
         let params = |collection: &str, osm: &str| {
-            let pairs = [("collection", collection), ("osm", osm), ("poly", poly.as_str())];
+            let pairs = [("collection", collection), ("area", "europe/test"), ("osm", osm), ("poly", poly.as_str())];
             pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec()
         };
         let fails =

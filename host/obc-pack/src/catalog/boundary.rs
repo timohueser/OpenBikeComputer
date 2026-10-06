@@ -138,18 +138,20 @@ pub fn geojson(poly_text: &str) -> Result<String, String> {
     Ok(polygons_geojson(&polys))
 }
 
-/// `polys` as one GeoJSON MultiPolygon, rounded to microdegrees: the text is hashed, so float noise
-/// from another GEOS build must not move it.
+/// `polys` as one GeoJSON MultiPolygon in microdegrees. The text is hashed, so it is canonical:
+/// each exterior ring turns counterclockwise and each hole clockwise, each ring starts at its
+/// smallest point, and the holes and the polygons are sorted. Another GEOS build, which can order
+/// and start the rings otherwise, gives the same text.
 pub fn polygons_geojson(polys: &[Geom]) -> String {
     use std::fmt::Write;
     fn collect(geom: &Geom, out: &mut Vec<Vec<Ring>>) {
         match geom {
             Geom::Polygon { exterior, interiors } => {
-                let rings: Vec<Ring> =
-                    std::iter::once(exterior).chain(interiors).filter_map(|ring| to_udeg_ring(ring)).collect();
-                if !rings.is_empty() {
-                    out.push(rings);
-                }
+                let Some(exterior) = to_udeg_ring(exterior) else { return };
+                let mut holes: Vec<Ring> =
+                    interiors.iter().filter_map(|ring| to_udeg_ring(ring)).map(|ring| canonical(ring, false)).collect();
+                holes.sort();
+                out.push(std::iter::once(canonical(exterior, true)).chain(holes).collect());
             }
             Geom::Multi(parts) => parts.iter().for_each(|part| collect(part, out)),
             Geom::Line(_) | Geom::Empty => {}
@@ -157,6 +159,7 @@ pub fn polygons_geojson(polys: &[Geom]) -> String {
     }
     let mut polygons = Vec::new();
     polys.iter().for_each(|poly| collect(poly, &mut polygons));
+    polygons.sort();
     let mut s = String::from("{\n  \"type\": \"MultiPolygon\",\n  \"coordinates\": [");
     for (p, polygon) in polygons.iter().enumerate() {
         let _ = write!(s, "{}\n    [", if p == 0 { "" } else { "," });
@@ -249,6 +252,25 @@ fn to_udeg_ring(points: &[(f64, f64)]) -> Option<Ring> {
     (ring.len() >= 4).then_some(ring)
 }
 
+/// A closed ring that turns counterclockwise or not, as asked, and starts at its smallest point.
+fn canonical(mut ring: Ring, counterclockwise: bool) -> Ring {
+    ring.pop();
+    // Twice the signed area in (lon, lat): positive when the ring turns counterclockwise.
+    let next = ring.iter().cycle().skip(1);
+    let area: i128 = ring
+        .iter()
+        .zip(next)
+        .map(|(a, b)| i128::from(a[1]) * i128::from(b[0]) - i128::from(b[1]) * i128::from(a[0]))
+        .sum();
+    if (area > 0) != counterclockwise {
+        ring.reverse();
+    }
+    let start = ring.iter().enumerate().min_by_key(|(_, point)| **point).map_or(0, |(at, _)| at);
+    ring.rotate_left(start);
+    ring.push(ring[0]);
+    ring
+}
+
 fn udeg(deg: f64) -> i32 {
     (deg * 1e6).round() as i32
 }
@@ -266,6 +288,26 @@ fn ring_key(ring: &Ring) -> (i32, i32, i32, i32, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_geojson_is_the_same_for_any_order_start_and_turn_of_the_rings() {
+        let square =
+            |w: f64, s: f64, size: f64| vec![(w, s), (w + size, s), (w + size, s + size), (w, s + size), (w, s)];
+        let polygon = |exterior, interiors| Geom::Polygon { exterior, interiors };
+        let turned = |ring: Vec<(f64, f64)>| {
+            let mut ring = ring[1..].to_vec();
+            ring.reverse();
+            ring.rotate_left(2);
+            ring.push(ring[0]);
+            ring
+        };
+        let holes = || vec![square(0.2, 0.2, 0.2), square(0.6, 0.6, 0.2)];
+        let one = [polygon(square(0.0, 0.0, 1.0), holes()), polygon(square(2.0, 0.0, 1.0), Vec::new())];
+        let mut holes = holes().into_iter().map(turned).collect::<Vec<_>>();
+        holes.reverse();
+        let other = [polygon(turned(square(2.0, 0.0, 1.0)), Vec::new()), polygon(turned(square(0.0, 0.0, 1.0)), holes)];
+        assert_eq!(polygons_geojson(&one), polygons_geojson(&other));
+    }
 
     /// A square with a square hole, plus a detached island — the three shapes a
     /// country outline is made of.

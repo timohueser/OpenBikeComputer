@@ -64,8 +64,7 @@ impl Product for Maps {
         let (Some(extract), Some(land_polygons)) = osm_sources else {
             return Ok(steps);
         };
-        let poly = poly_version(env, store, &area)?;
-        let captures = captures(env, store, &extract, &poly, &area)?;
+        let captures = captures(env, store, &extract, &area)?;
         let mut osm_leaves = BTreeSet::new();
         let mut network = BTreeMap::new();
         for band in BandTable::recommended().bands {
@@ -78,49 +77,49 @@ impl Product for Maps {
                 }
             }
         }
-        let snapshot = |source: &str, version: &str| Input::Snapshot {
-            source: source.into(),
-            version: version.into(),
-            params: area.clone(),
-            files: Vec::new(),
-        };
-        for (collection, mut inputs) in captures {
-            inputs.extend([snapshot(POLY, &poly), snapshot(EXTRACTS, &extract)]);
+        for (collection, inputs) in captures {
             steps.push(content(collection, inputs));
             for (&leaf, cells) in &network {
                 steps.push(artifacts(collection, leaf, cells));
             }
         }
-        steps.push(osm(snapshot(EXTRACTS, &extract), &osm_leaves));
+        let extract = Input::Snapshot { source: EXTRACTS.into(), version: extract, params: area, files: Vec::new() };
+        steps.push(osm(extract, &osm_leaves));
         Ok(steps)
     }
 }
 
-/// The two Wikimedia captures of a region, `landmarks` and `peaks`: each reads the extract and the
-/// `.poly` of the region by their digests, and gives the files of [`CAPTURES`]. `Err` names the
-/// fetches of the captures that the store lacks.
+/// The two Wikimedia captures of a region, `landmarks` and `peaks`, with the files of [`CAPTURES`],
+/// and the extract and the `.poly` that each read, by digest. `Err` names the fetches of the
+/// captures that the store lacks.
 fn captures(
     env: &Env,
     store: &Store,
     extract: &str,
-    poly: &str,
     area: &[(String, String)],
 ) -> Result<Vec<(&'static str, Vec<Input>)>, Unplanned> {
-    let (osm, poly) = (digest(store, EXTRACTS, extract, area)?, digest(store, POLY, poly, area)?);
+    let poly = version(env, store, POLY, area).map_err(Unplanned::Failed)?;
+    let poly = poly.map_err(|_| Unplanned::Failed(format!("the store has no {POLY} of {area:?}")))?;
+    let now = [(EXTRACTS, extract), (POLY, poly.as_str())].map(|(source, version)| file(store, source, version, area));
+    let [osm, poly] = now.map(|file| file.map(|(_, sha256)| format!("sha256:{sha256}")));
+    let (osm, poly) = (osm?, poly?);
     let mut wanted = Vec::new();
     let mut captures = Vec::new();
     for collection in ["landmarks", "peaks"] {
-        let params = vec![
-            ("collection".to_string(), collection.to_string()),
-            ("osm".to_string(), osm.clone()),
-            ("poly".to_string(), poly.clone()),
-        ];
+        let params = capture_params(env, store, collection, &area[0].1, (&osm, &poly))?;
         let mut inputs = Vec::new();
         for source in CAPTURES {
             if let Some(version) = snapshot_version(env, store, source, &params, &mut wanted)? {
                 let params = params.clone();
                 inputs.push(Input::Snapshot { source: source.into(), version, params, files: Vec::new() });
             }
+        }
+        // The extract and the `.poly` that the capture read, which need not be those of now. Their
+        // input names the file, not the params: a fetch has one version in a release.
+        for (source, name) in [(EXTRACTS, "osm"), (POLY, "poly")] {
+            let digest = &params.iter().find(|(param, _)| param == name).expect("a capture param").1;
+            let (version, file) = by_digest(store, source, area, digest)?;
+            inputs.push(Input::Snapshot { source: source.into(), version, params: Vec::new(), files: vec![file] });
         }
         captures.push((collection, inputs));
     }
@@ -130,22 +129,79 @@ fn captures(
     }
 }
 
-/// The version of the `.poly` of the Geofabrik region with `area`, which the outline already read.
-fn poly_version(env: &Env, store: &Store, area: &[(String, String)]) -> Result<String, Unplanned> {
-    let version = version(env, store, POLY, area).map_err(Unplanned::Failed)?;
-    version.map_err(|_| Unplanned::Failed(format!("the store has no {POLY} of {area:?}")))
+/// The params of the capture of `collection` for the region `area`: those of the capture that `env`
+/// reads (a saved plan, or live), or else of the newest capture in the store, until a source of
+/// [`CAPTURES`] moves. A new extract alone asks for no new capture. A moved capture, or the first
+/// one, reads the extract and the `.poly` of `now`.
+fn capture_params(
+    env: &Env,
+    store: &Store,
+    collection: &str,
+    area: &str,
+    now: (&str, &str),
+) -> Result<Vec<(String, String)>, Unplanned> {
+    let value = |params: &[(String, String)], name: &str| {
+        params.iter().find(|(param, _)| param == name).map(|(_, value)| value.clone())
+    };
+    let ours = |params: &[(String, String)]| {
+        value(params, "collection").as_deref() == Some(collection) && value(params, "area").as_deref() == Some(area)
+    };
+    let mut kept = None;
+    if !CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
+        let named: Vec<&Vec<(String, String)>> = match &env.planned {
+            Some(planned) => planned.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
+            None => env.live.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
+        };
+        kept = named.into_iter().find(|params| ours(params)).cloned();
+        if kept.is_none() && env.planned.is_none() {
+            let stored = store.requests_of(CAPTURES[0]).map_err(Unplanned::Failed)?;
+            kept = stored
+                .into_iter()
+                .filter(|request| ours(&request.params))
+                .max_by(|a, b| a.version.cmp(&b.version))
+                .map(|request| request.params);
+        }
+    }
+    let (osm, poly) = match &kept {
+        Some(params) => (value(params, "osm").unwrap_or_default(), value(params, "poly").unwrap_or_default()),
+        None => (now.0.to_string(), now.1.to_string()),
+    };
+    let pairs = [("collection", collection), ("area", area), ("osm", &osm), ("poly", &poly)];
+    Ok(pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec())
 }
 
-/// `sha256:<hex>` of the one file that the fetch of `source@version` with `params` gave.
-fn digest(store: &Store, source: &str, version: &str, params: &[(String, String)]) -> Result<String, Unplanned> {
+/// The name and the SHA-256 of the one file that the fetch of `source@version` with `params` gave.
+fn file(
+    store: &Store,
+    source: &str,
+    version: &str,
+    params: &[(String, String)],
+) -> Result<(String, String), Unplanned> {
     let missing = || Unplanned::Failed(format!("the store has no file of {source}@{version} {params:?}"));
     let names = store.requested(source, version, params).map_err(Unplanned::Failed)?.ok_or_else(missing)?;
     let snapshot = store.snapshot(source, version).map_err(Unplanned::Failed)?.ok_or_else(missing)?;
     let file = match &names[..] {
-        [name] => snapshot.files.iter().find(|file| &file.name == name).ok_or_else(missing)?,
+        [name] => snapshot.files.into_iter().find(|file| &file.name == name).ok_or_else(missing)?,
         _ => return Err(Unplanned::Failed(format!("a fetch of {source} with {params:?} gives {} files", names.len()))),
     };
-    Ok(format!("sha256:{}", file.sha256))
+    Ok((file.name, file.sha256))
+}
+
+/// The version and the name of the file of a fetch of `source` with `params` whose digest is
+/// `sha256:<hex>`.
+fn by_digest(
+    store: &Store,
+    source: &str,
+    params: &[(String, String)],
+    digest: &str,
+) -> Result<(String, String), Unplanned> {
+    for request in store.requests(source, params).map_err(Unplanned::Failed)? {
+        let (name, sha256) = file(store, source, &request.version, params)?;
+        if digest.strip_prefix("sha256:") == Some(sha256.as_str()) {
+            return Ok((request.version, name));
+        }
+    }
+    Err(Unplanned::Failed(format!("the store has no file of {source} {params:?} with {digest}, which a capture read")))
 }
 
 /// The compiled landmarks or peaks of the region, from their capture, the `.poly` and the extract.
@@ -161,6 +217,7 @@ fn content(collection: &str, inputs: Vec<Input>) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec![collection.into()],
         run: Run::Rust(run),
+        client: false,
     }
 }
 
@@ -191,6 +248,7 @@ fn artifacts(collection: &str, leaf: LeafId, cells: &[CellId]) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec![collection.into()],
         run: Run::Rust(run),
+        client: true,
     }
 }
 
@@ -420,18 +478,21 @@ pub(crate) mod tests {
 
     /// The params of the Wikimedia capture of `collection` of the extract and the `.poly` with
     /// these texts.
-    fn capture_params(collection: &str, osm: &str, poly: &str) -> Vec<(String, String)> {
+    fn capture_params(collection: &str, area: &str, osm: &str, poly: &str) -> Vec<(String, String)> {
         vec![
             ("collection".into(), collection.into()),
+            ("area".into(), area.into()),
             ("osm".into(), format!("sha256:{}", sha256_hex(osm.as_bytes()))),
             ("poly".into(), format!("sha256:{}", sha256_hex(poly.as_bytes()))),
         ]
     }
 
-    /// The landmark and peak captures at `version` of the extract and the `.poly` with these texts.
-    pub(crate) fn captured(store: &Store, version: &str, osm: &str, poly: &str) {
+    /// The landmark and peak captures at `version` for the region `area`, of the extract and the
+    /// `.poly` with these texts.
+    pub(crate) fn captured(store: &Store, version: &str, area: &str, osm: &str, poly: &str) {
         for collection in ["landmarks", "peaks"] {
-            let (params, recipe) = (capture_params(collection, osm, poly), format!("#{collection}=0/recipe.json"));
+            let params = capture_params(collection, area, osm, poly);
+            let recipe = format!("#{collection}=0/recipe.json");
             for source in CAPTURES {
                 fetched(store, source, version, &params, &[(recipe.clone(), version.into())]);
             }
@@ -440,7 +501,7 @@ pub(crate) mod tests {
 
     /// The landmark and peak captures of the Freiburg region at `version`.
     fn with_captures(store: &Store, version: &str) {
-        captured(store, version, "osm", FREIBURG);
+        captured(store, version, "europe/test", "osm", FREIBURG);
     }
 
     /// Add the files `(name, text)` to the record of `source@version`, as a fetch with `params`
@@ -566,7 +627,8 @@ pub(crate) mod tests {
         };
         let osm = r#"maps/osm ["osm/0037-0032.osm.pbf"]"#;
         assert_eq!(reads("maps/osm"), [EXTRACTS]);
-        assert!(steps.iter().all(|step| step.client == (step.name != "maps/osm")), "no client reads the OSM");
+        let intermediate = |name: &str| name == "maps/osm" || name.ends_with("-content");
+        assert!(steps.iter().all(|step| step.client != intermediate(&step.name)), "no client reads an intermediate");
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
         for band in ["mid", "fine", "network"] {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
@@ -584,7 +646,7 @@ pub(crate) mod tests {
         let fetch = |collection, source: &str| Wanted {
             source: source.into(),
             version: None,
-            params: capture_params(collection, "osm", FREIBURG),
+            params: capture_params(collection, "europe/test", "osm", FREIBURG),
         };
         let captures =
             ["landmarks", "peaks"].into_iter().flat_map(|collection| CAPTURES.map(|source| fetch(collection, source)));
@@ -599,7 +661,7 @@ pub(crate) mod tests {
             };
             step.inputs.iter().map(read).collect()
         };
-        let content = ["wikidata", "wikipedia", "commons", POLY, EXTRACTS];
+        let content = ["wikidata", "wikipedia", "commons", EXTRACTS, POLY];
         assert_eq!(reads("maps/landmark-content"), content);
         assert_eq!(reads("maps/peak-content"), content);
         assert_eq!(reads("maps/landmarks/0037-0032"), ["maps/osm", "maps/landmark-content"]);
@@ -607,6 +669,37 @@ pub(crate) mod tests {
         let network = steps.iter().find(|step| step.name == "maps/network/0037-0032").unwrap();
         let landmarks = steps.iter().find(|step| step.name == "maps/landmarks/0037-0032").unwrap();
         assert_eq!(landmarks.options["cells"], network.options["cells"], "an artifact per network cell");
+    }
+
+    /// A new extract asks for no new capture: the compile keeps reading the extract that its
+    /// capture read, and the map cells read the new one. A capture that moves reads the new one.
+    #[test]
+    fn a_capture_keeps_its_extract_until_it_moves() {
+        let temp = temp("capture-extract");
+        let store = Store::at(temp.0.join("store"));
+        let (mut env, regions) = freiburg(&store);
+        with_osm(&store);
+        with_captures(&store, "1");
+        let area = [("area".to_string(), "europe/test".to_string())];
+        fetched(&store, EXTRACTS, "2", &area, &[("europe/test-2.osm.pbf".into(), "osm 2".into())]);
+        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let extract = |name: &str| {
+            let step = steps.iter().find(|step| step.name == name).unwrap();
+            let read = step.inputs.iter().find_map(|input| match input {
+                Input::Snapshot { source, version, files, .. } if source == EXTRACTS => Some((version, files)),
+                _ => None,
+            });
+            read.map(|(version, files)| (version.clone(), files.clone()))
+        };
+        assert_eq!(extract("maps/osm"), Some(("2".into(), Vec::new())));
+        for content in ["maps/landmark-content", "maps/peak-content"] {
+            assert_eq!(extract(content), Some(("1".into(), vec!["europe/test.osm.pbf".into()])), "{content}");
+        }
+
+        env.moves.insert("wikidata".into(), None);
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("a new capture") };
+        let moved = capture_params("landmarks", "europe/test", "osm 2", FREIBURG);
+        assert!(wanted.iter().any(|fetch| fetch.source == "wikidata" && fetch.params == moved), "{wanted:?}");
     }
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,

@@ -135,7 +135,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     // The Wikimedia captures, which only the compiles read, and this test has none.
     let [osm, poly] = [&pbf, &poly].map(|path| format!("sha256:{}", hash_file(path).unwrap().0));
     for collection in ["landmarks", "peaks"] {
-        let params = [("collection", collection), ("osm", osm.as_str()), ("poly", poly.as_str())];
+        let params = [("collection", collection), ("area", AREA), ("osm", osm.as_str()), ("poly", poly.as_str())];
         for source in obc_pack::step::CAPTURES {
             fetched(&store, source, &params, &format!("#{collection}=0/recipe.json"), &zip);
         }

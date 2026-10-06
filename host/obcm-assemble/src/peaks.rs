@@ -77,7 +77,11 @@ pub fn merge<'a>(cells: &[&Cell<'a>], artifacts: &[&'a dyn ByteSource], pois: &M
         sections.extend(map_section(cell.src).map_err(malformed)?);
     }
     for &src in artifacts {
-        sections.push(WindowSource::new(src, 0, src.len()).expect("a source is a window onto itself"));
+        let section = WindowSource::new(src, 0, src.len()).expect("a source is a window onto itself");
+        if u64::from(Directory::read(&section).map_err(malformed)?.len) != src.len() {
+            return Err(Error::Format("a peak artifact is not exactly its section".into()));
+        }
+        sections.push(section);
     }
     for (index, section) in sections.iter().enumerate() {
         let d = Directory::read(section).map_err(malformed)?;
