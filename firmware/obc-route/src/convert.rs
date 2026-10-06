@@ -539,6 +539,9 @@ fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut [WpPlace], offset: u32) ->
         return Ok(0);
     }
     // Stable order keeps waypoints at the same distance in their input order.
+    #[cfg(feature = "alloc")]
+    wps.sort_by_key(|w| w.along_m);
+    #[cfg(not(feature = "alloc"))]
     for i in 1..wps.len() {
         let mut j = i;
         while j > 0 && wps[j - 1].along_m > wps[j].along_m {

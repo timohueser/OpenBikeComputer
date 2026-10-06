@@ -274,17 +274,24 @@ fn authored_points_use_the_gpx_emitter_and_reject_unsupported_capacity() {
         name: Default::default(),
         provenance: None,
     };
+    let authored: Vec<_> = (0..=MAX_WAYPOINTS)
+        .rev()
+        .map(|k| {
+            let mut w = waypoint.clone();
+            w.name = k.to_string().as_str().try_into().unwrap();
+            (w, (k / 2) as f64)
+        })
+        .collect();
     let mut sink = VecSink::default();
-    let stats = points_to_obcr(
-        &points,
-        &vec![(waypoint.clone(), 0.0); MAX_WAYPOINTS + 1],
-        "Beyond Resident Table",
-        BikeType::Road,
-        &mut sink,
-    )
-    .unwrap();
+    let stats = points_to_obcr(&points, &authored, "Beyond Resident Table", BikeType::Road, &mut sink).unwrap();
     assert_eq!(usize::from(stats.waypoint_count), MAX_WAYPOINTS + 1);
-    assert_eq!(for_each_waypoint(&SliceSource(&sink.buf), |_| {}).unwrap(), stats.waypoint_count);
+    let mut order = Vec::new();
+    assert_eq!(
+        for_each_waypoint(&SliceSource(&sink.buf), |w| order.push(w.name.parse::<usize>().unwrap())).unwrap(),
+        stats.waypoint_count
+    );
+    let expected: Vec<_> = (0..MAX_WAYPOINTS / 2).flat_map(|k| [2 * k + 1, 2 * k]).chain([MAX_WAYPOINTS]).collect();
+    assert_eq!(order, expected);
 
     let mut sink = VecSink::default();
     assert_eq!(
