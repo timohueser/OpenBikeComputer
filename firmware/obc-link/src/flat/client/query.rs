@@ -1,4 +1,5 @@
 use super::*;
+use crate::flat::ObjectKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryId(pub u64);
@@ -6,7 +7,14 @@ pub struct QueryId(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryOutcome {
     Page { store: StoreId, sequence: u64, more: bool, entries: Vec<EntryMeta> },
+    Catalog { store: StoreId, sequence: u64, entries: Vec<EntryMeta> },
     Status(StatusResponse),
+}
+
+#[derive(Default)]
+struct Catalog {
+    entries: Vec<EntryMeta>,
+    restarts: u8,
 }
 
 pub(super) struct Query {
@@ -15,6 +23,7 @@ pub(super) struct Query {
     request: Request,
     expected_store: Option<StoreId>,
     introducing: bool,
+    catalog: Option<Catalog>,
     pub(super) token: Option<u64>,
     pub(super) deadline: u64,
 }
@@ -23,6 +32,42 @@ impl Client {
     /// Submit one LIST page or STATUS without taking ownership of the primary transfer.
     /// LIST cursors retain their snapshot sequence; a refused page is not silently restarted.
     pub fn query(&mut self, request: Request, expected_store: Option<StoreId>, now: u64) -> Result<QueryId, Error> {
+        self.start_query(request, expected_store, now, None)
+    }
+
+    /// Collect a complete snapshot beside the primary operation. Catalog changes restart at
+    /// the first page, up to the same restart limit as the primary catalogue request.
+    pub fn query_catalog(
+        &mut self,
+        kind: Option<ObjectKind>,
+        expected_store: Option<StoreId>,
+        now: u64,
+    ) -> Result<QueryId, Error> {
+        self.start_query(
+            Request::List(ListRequest { kind, cursor: None }),
+            expected_store,
+            now,
+            Some(Catalog::default()),
+        )
+    }
+
+    /// Complete one query locally. A transmitted request may still answer; its response and
+    /// completion token no longer belong to a live query.
+    pub fn cancel_query(&mut self, handle: QueryId) -> bool {
+        let Some(index) = self.queries.iter().position(|query| query.handle == handle) else {
+            return false;
+        };
+        self.finish_query(index, Err(Error::Cancelled));
+        true
+    }
+
+    fn start_query(
+        &mut self,
+        request: Request,
+        expected_store: Option<StoreId>,
+        now: u64,
+        catalog: Option<Catalog>,
+    ) -> Result<QueryId, Error> {
         if !matches!(request, Request::List(_) | Request::Status(_)) {
             return Err(Error::InvalidInput);
         }
@@ -45,6 +90,7 @@ impl Client {
             request,
             expected_store: expected_store.or(self.store),
             introducing,
+            catalog,
             token: Some(token),
             deadline: now.saturating_add(self.options.timeout_ms),
         });
@@ -98,6 +144,10 @@ impl Client {
 
     fn query_answer(&mut self, index: usize, response: Response<'_>, now: u64) -> Result<Option<QueryOutcome>, Error> {
         if let Response::Error(refusal) = response {
+            if refusal.code == ErrorCode::CatalogChanged && self.queries[index].catalog.is_some() {
+                self.restart_catalog(index, now)?;
+                return Ok(None);
+            }
             return Err(Error::Remote(refusal));
         }
         if let Response::List(page) = response {
@@ -124,20 +174,18 @@ impl Client {
             self.store = Some(page.store);
             if query.introducing {
                 let request = query.request;
-                let id = self.id()?;
-                let token = self.send_query(request, id)?;
-                let query = &mut self.queries[index];
-                query.id = id;
-                query.token = Some(token);
-                query.introducing = false;
-                query.expected_store = Some(page.store);
-                query.deadline = now.saturating_add(self.options.timeout_ms);
+                self.queries[index].expected_store = Some(page.store);
+                self.advance_query(index, request, now)?;
                 return Ok(None);
             }
             let Request::List(list) = query.request else {
                 return Err(Error::Protocol);
             };
             if list.cursor.is_some_and(|cursor| cursor.sequence != page.sequence) {
+                if query.catalog.is_some() {
+                    self.restart_catalog(index, now)?;
+                    return Ok(None);
+                }
                 return Err(Error::CatalogChanged);
             }
             let entries: Vec<_> = page.entries().collect();
@@ -150,6 +198,24 @@ impl Client {
             {
                 return Err(Error::Protocol);
             }
+            if let Some(catalog) = &mut self.queries[index].catalog {
+                catalog.entries.extend(entries);
+                if page.more {
+                    let last = catalog.entries.last().ok_or(Error::Protocol)?;
+                    let cursor = ListCursor { id: last.id, revision: last.revision, sequence: page.sequence };
+                    self.advance_query(
+                        index,
+                        Request::List(ListRequest { kind: list.kind, cursor: Some(cursor) }),
+                        now,
+                    )?;
+                    return Ok(None);
+                }
+                return Ok(Some(QueryOutcome::Catalog {
+                    store: page.store,
+                    sequence: page.sequence,
+                    entries: core::mem::take(&mut catalog.entries),
+                }));
+            }
             return Ok(Some(QueryOutcome::Page {
                 store: page.store,
                 sequence: page.sequence,
@@ -161,6 +227,31 @@ impl Client {
             (Request::Status(_), Response::Status(status)) => Ok(Some(QueryOutcome::Status(status))),
             _ => Err(Error::Protocol),
         }
+    }
+
+    fn advance_query(&mut self, index: usize, request: Request, now: u64) -> Result<(), Error> {
+        let id = self.id()?;
+        let token = self.send_query(request, id)?;
+        let query = &mut self.queries[index];
+        query.id = id;
+        query.request = request;
+        query.token = Some(token);
+        query.introducing = false;
+        query.deadline = now.saturating_add(self.options.timeout_ms);
+        Ok(())
+    }
+
+    fn restart_catalog(&mut self, index: usize, now: u64) -> Result<(), Error> {
+        let Request::List(list) = self.queries[index].request else {
+            return Err(Error::Protocol);
+        };
+        let catalog = self.queries[index].catalog.as_mut().ok_or(Error::Protocol)?;
+        if catalog.restarts >= self.options.list_restarts {
+            return Err(Error::CatalogChanged);
+        }
+        catalog.restarts += 1;
+        catalog.entries.clear();
+        self.advance_query(index, Request::List(ListRequest { kind: list.kind, cursor: None }), now)
     }
 
     pub(super) fn query_written(&mut self, token: u64, now: u64) -> bool {

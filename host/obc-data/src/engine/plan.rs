@@ -54,6 +54,8 @@ pub enum Cause {
     /// The keys of live that R2 lacks, or holds with another size. Its builds make the unchanged
     /// layers of those keys that the store lacks.
     Repair { keys: Vec<String> },
+    /// The desired client document or release identity differs, without a layer change.
+    Pointer { product: String, release: String, document: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]

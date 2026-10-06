@@ -602,6 +602,7 @@ or when live does not have it. The plan has one group per cause. A layer can hav
 | `move` | `move:SOURCE` | The plan moves the source (see [Versions](#versions)). Each layer that reads it at another version than its live layer. `from` is each version that live reads, and `to` is the version of the plan |
 | `code` | `code:LAYER` | The code that the steps declare (`paths` and `crates`) is not the code of their live layers: other inputs, command, outputs, `client` or code hash. Without an edit of the region, also other options or snapshot reads. `LAYER` is the first layer in dependency order. A live layer that no step makes, without an edit, has empty code |
 | `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
+| `pointer` | `pointer:PRODUCT` | None. The desired client document or release id differs without a layer change. `release` is its desired id; `document` is the SHA-256 of its compact JSON with sorted keys |
 
 A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
 cause changes, in dependency order, each with its `recipe` and `key` as in `builds`. `drops` are
@@ -740,8 +741,9 @@ opening the TUI starts no bulk download.
 A product also gives what clients read of a release: its pointer document, and the files that a
 client finds by name under `<prefix>/releases/<id>/`. A plan, a build and an apply of `live` leave
 out a product without them: it is in `blocked` with the reason "no client document yet", and its
-live release stays. Neither `maps` nor `planner` gives them yet. A product can check a release
-before an apply makes it live; neither `maps` nor `planner` has a check yet.
+live release stays. Maps gives a catalog and checks changed selections with the production
+assembler and reader. Planner has no pointer. A product can check a release
+before an apply makes it live.
 
 Each step selects the files that clients read: the device, the web planner or a service on the
 VPS. Other files are intermediate: only other layers read them. R2 holds only selected files
@@ -755,7 +757,9 @@ the step lists read, and `only`, the groups that `--only` selected, `[]` for eve
 `["none"]` for no group. A plan
 of `live` also has:
 
-- `live`: per product, the id of its live release, or `null` when nothing is live.
+- `live`: per product, the id of its live release, or `null` when nothing is live, and `pointer`,
+  the SHA-256 of its actual client document with sorted keys. The comparison excludes only
+  `release` and `applied`.
 - `edits`: per product, `region` with `from` (the region of the live release, or `null` when
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
   `on` and `off`.
@@ -767,8 +771,7 @@ of `live` also has:
   objects of its live layer, because its new objects are not known yet; an apply keeps an object
   that a new release uses.
 - `listed`: whether the plan listed R2. A listing needs the bucket. Without it, the plan has no
-  `repair` group, `remove` lacks the leftovers and the files of `<prefix>/releases/<id>/`, and
-  `bytes` is `null` for a record.
+  `repair` group, `remove` lacks the leftovers, and `bytes` is `null` for a record.
 
 Another environment has `[]` for `live`, `edits` and `remove`, and `false` for `listed`.
 
@@ -906,7 +909,7 @@ byte order.
 ### Releases
 
 `releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
-"layers"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+"layers", "named"}`, as the compact output of `serde_json` with the keys of each object in byte order.
 `region` is the region of the environment that it was built for, and `optional` the optional layers
 of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
 the same layers make the same release. `layers` is sorted by `step`, and each layer has:
@@ -916,6 +919,19 @@ the same layers make the same release. `layers` is sorted by `step`, and each la
 | `step`, `key`, `inputs`, `options`, `code`, `command`, `outputs`, `digest`, `files` | As in the [receipt](#receipt) |
 | `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE` of each snapshot that the layer read |
 | `client` | The selected client outputs, as in the step (see [Products](#products)) |
+
+`named` holds the exact files under `<prefix>/releases/<id>/`. Each entry has `path`, `size` and
+`sha256` from a layer receipt. Entries are sorted by path. Paths are relative, use `/`, and have
+no empty, `.` or `..` segment. Duplicate paths are refused. Named file identity is part of the
+release id. The root document is generated after these entries finalize the release.
+
+Live ownership, drift checks, uploads and cleanup use these exact paths. An undeclared file in
+the active release folder is a leftover. A missing named file with local receipt bytes needs no
+build or pointer switch. Missing local named objects are restored from their immutable remote
+keys with size and SHA-256 checks. If both copies are absent, the repair builds the owning layer
+and the inputs that it lacks. Existing named metadata with another digest is refused before any
+publication write. A root-only change is actionable without a layer build and still passes the
+product's verification.
 
 The objects of a release are the selected client files, with one object per distinct SHA-256.
 The manifest records every file of every layer, so a plan compares it with live and live names
@@ -2567,6 +2583,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
+        "pointer": {
+          "description": "SHA-256 of the actual client document, excluding only `release` and `applied`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "product": {
           "type": "string"
         },
@@ -2580,7 +2603,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "product",
-        "release"
+        "release",
+        "pointer"
       ],
       "type": "object"
     },
@@ -2817,6 +2841,32 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "required": [
             "kind",
             "keys"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The desired client document or release identity differs, without a layer change.",
+          "properties": {
+            "document": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "pointer",
+              "type": "string"
+            },
+            "product": {
+              "type": "string"
+            },
+            "release": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "product",
+            "release",
+            "document"
           ],
           "type": "object"
         }

@@ -952,6 +952,20 @@ pub fn pack_poly_holes(style_id: u8, ax: i32, ay: i32, ext_deltas: &[(i8, i8)], 
     v
 }
 
+/// A line map for repaint parity and headless simulator diagnostics.
+pub fn build_repaint_map() -> Vec<u8> {
+    const LAT: f64 = 48.0;
+    const LON0: f64 = 7.8;
+    const STYLES: &[Style] = &[(1, 0, 0x07E0, 3, 1, false, None)];
+    let anchor = ((LON0 * 1e6) as i32, (LAT * 1e6) as i32);
+    let chunk = seal(pack_line16(1, anchor.0, anchor.1, &[(2_000, 400), (2_000, -400), (2_000, 400)]), 4096);
+    build_file(
+        (7_000_000, 47_000_000, 9_000_000, 49_000_000),
+        STYLES,
+        &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![chunk], chunk_size: 4096 }],
+    )
+}
+
 // The deterministic bench fixture.
 
 /// Bounding box of [`build_bench_map`] (µdeg, `(min_lon, min_lat, max_lon, max_lat)`): a 54 000 µdeg
