@@ -9,6 +9,7 @@ use obc_pack::catalog::{Boundary, CellSource};
 pub const INDEX: &str = "geofabrik-index";
 pub const LAYER: &str = "maps/catalog";
 
+#[allow(clippy::too_many_arguments)]
 pub fn step(
     env: &Env,
     store: &Store,

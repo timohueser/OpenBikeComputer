@@ -734,7 +734,7 @@ pub(super) fn read_skins(
         };
         validate_id(stem).map_err(|e| format!("{}: skin id {e}", path.display()))?;
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let doc: SkinMetaDoc = serde_json::from_str(text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let doc: SkinMetaDoc = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let meta =
             doc.meta.ok_or_else(|| format!("{}: no `_meta` block (id, name, description, version)", path.display()))?;
         if meta.id != stem {
