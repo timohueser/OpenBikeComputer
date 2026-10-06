@@ -367,7 +367,7 @@ impl Client {
     }
 }
 
-fn opcode(request: Request) -> Opcode {
+pub(super) fn opcode(request: Request) -> Opcode {
     match request {
         Request::List(_) => Opcode::List,
         Request::Status(_) => Opcode::Status,

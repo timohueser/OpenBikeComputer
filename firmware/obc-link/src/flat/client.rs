@@ -7,6 +7,10 @@ use obc_crc::Crc32;
 use super::{wire::*, ArchiveResult, Ceilings, Channel, EntryFlags, EntryMeta, ObjectId, StoreId};
 
 mod control;
+mod query;
+
+use query::Query;
+pub use query::{QueryId, QueryOutcome};
 
 fn record_id(record: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(record[at..at + 4].try_into().unwrap())
@@ -213,7 +217,7 @@ struct Cancellation {
     transfer_answered: bool,
 }
 
-/// One logical operation at a time. Cancellation has its own request while a transfer is live.
+/// One primary operation and independent metadata queries. Cancellation targets the live transfer.
 /// No transport, file, task, timer or whole payload is owned by this client.
 pub struct Client {
     options: Options,
@@ -229,6 +233,8 @@ pub struct Client {
     restoring: bool,
     deadline: u64,
     actions: VecDeque<Action>,
+    queries: Vec<Query>,
+    query_results: VecDeque<(QueryId, Result<QueryOutcome, Error>)>,
 }
 
 impl Client {
@@ -247,6 +253,8 @@ impl Client {
             restoring: false,
             deadline: 0,
             actions: VecDeque::new(),
+            queries: Vec::new(),
+            query_results: VecDeque::new(),
         }
     }
 
@@ -256,6 +264,21 @@ impl Client {
 
     pub fn is_busy(&self) -> bool {
         self.operation.is_some()
+    }
+
+    pub fn next_deadline_ms(&self) -> Option<u64> {
+        self.queries.iter().map(|query| query.deadline).chain(self.operation.as_ref().map(|_| self.deadline)).min()
+    }
+
+    pub fn active_transfer_id(&self) -> Option<RequestId> {
+        if self.restoring {
+            return None;
+        }
+        self.pending
+            .filter(|pending| {
+                pending.purpose == Purpose::Run && matches!(pending.request, Request::Get(_) | Request::Put(_))
+            })
+            .map(|pending| pending.id)
     }
 
     pub fn next_action(&mut self) -> Option<Action> {
@@ -293,7 +316,12 @@ impl Client {
         expected_store: Option<StoreId>,
         now_ms: u64,
     ) -> Result<(), Error> {
-        if self.is_busy() || !self.actions.is_empty() {
+        if self.is_busy()
+            || self.actions.iter().any(|action| {
+                !matches!(action,
+            Action::Send { token, .. } if self.queries.iter().any(|query| query.token == Some(*token)))
+            })
+        {
             return Err(Error::Busy);
         }
         if !self.connected {
@@ -320,6 +348,14 @@ impl Client {
     }
 
     pub fn event(&mut self, event: Event<'_>, now_ms: u64) {
+        match &event {
+            Event::Control(record) if self.query_control(record, now_ms) => return,
+            Event::Written(token) if self.query_written(*token, now_ms) => return,
+            Event::IoFailed(token) if self.query_failed(*token) => return,
+            Event::Tick => self.expire_queries(now_ms),
+            Event::LinkLost => self.fail_queries(Error::LinkLost),
+            _ => {}
+        }
         if !self.is_busy() {
             match event {
                 Event::LinkLost => {
@@ -470,6 +506,9 @@ impl Client {
         let Some(write) = op.stream_writes.iter_mut().find(|write| write.token == token) else {
             return Ok(());
         };
+        if write.written {
+            return Ok(());
+        }
         write.written = true;
         let before = op.settled;
         while op.stream_writes.front().is_some_and(|write| write.written) {
@@ -501,7 +540,10 @@ impl Client {
         let available = self.options.upload_pending_records - op.stream_writes.len();
         let payload = (self.ceilings.stream() - STREAM_HEADER_LEN).min(u16::MAX as usize);
         let remaining = put.payload_len - op.received;
-        let records = self.options.upload_source_records.min(remaining.div_ceil(payload as u64) as usize);
+        let records = self
+            .options
+            .upload_source_records
+            .min(usize::try_from(remaining.div_ceil(payload as u64)).unwrap_or(usize::MAX));
         if available < records {
             return Ok(());
         }
@@ -605,7 +647,9 @@ impl Client {
         if self.cancellation.is_some() || self.restoring {
             return Ok(());
         }
-        let op = self.operation.as_mut().unwrap();
+        let Some(op) = self.operation.as_mut() else {
+            return Ok(());
+        };
         let Some((expected, due, count)) = op.sinks.front().copied() else {
             return Ok(());
         };
@@ -631,7 +675,9 @@ impl Client {
     }
 
     fn finish_transfer(&mut self) -> Result<(), Error> {
-        let op = self.operation.as_ref().unwrap();
+        let Some(op) = self.operation.as_ref() else {
+            return Ok(());
+        };
         let Some(answer) = op.answer else {
             return Ok(());
         };
@@ -650,7 +696,8 @@ impl Client {
     }
 
     fn finish(&mut self, result: Result<Outcome, Error>) {
-        if result.is_err() {
+        if let Err(error) = result {
+            self.fail_queries(error);
             self.actions.clear();
         }
         if self.operation.as_ref().is_some_and(|op| matches!(op.request, Request::Get(_))) && result.is_err() {

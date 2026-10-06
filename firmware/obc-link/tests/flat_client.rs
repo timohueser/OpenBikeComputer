@@ -2,7 +2,7 @@
 
 use obc_flat_device::{crc32, formatted_card, Device, Reaction, STORE, TOTAL_BLOCKS};
 use obc_link::flat::{
-    client::{Action, Client, Error, Event, Options, Outcome},
+    client::{Action, Client, Error, Event, Options, Outcome, QueryOutcome},
     wire::*,
     ArchiveSource, Ceilings, Channel, DisplayName, Link, ObjectId, ObjectKind, Revision, StoreId,
 };
@@ -74,62 +74,79 @@ impl<'a> Session<'a> {
         self.pump()
     }
 
+    fn step(&mut self) -> Option<Result<Outcome, Error>> {
+        self.now += 1;
+        if let Some(action) = self.client.next_action() {
+            match action {
+                Action::Send { token, channel, record } => {
+                    let reaction = match channel {
+                        Channel::Control if self.allow_arm => self.device.on_control_with(
+                            Link::Ble,
+                            &mut obc_flat_device::AllowArm { reserve: 4096 },
+                            &record,
+                        ),
+                        Channel::Control => self.device.on_control(&record),
+                        Channel::Stream => self.device.on_stream(&record),
+                    };
+                    if self.answer_first {
+                        self.deliver(reaction);
+                        self.client.event(Event::Written(token), self.now);
+                    } else {
+                        self.client.event(Event::Written(token), self.now);
+                        self.deliver(reaction);
+                    }
+                }
+                Action::ReadSource { token, offset, max_len } => {
+                    let start = offset as usize;
+                    let bytes = &self.source[start..(start + max_len).min(self.source.len())];
+                    self.client.event(Event::Source { token, offset, bytes }, self.now);
+                }
+                Action::WriteSink { token, offset, bytes } => {
+                    assert_eq!(offset, self.sink.len() as u64);
+                    self.sink.extend_from_slice(&bytes);
+                    self.client.event(Event::SinkWritten { token, offset, len: bytes.len() }, self.now);
+                }
+                Action::ResetSink => self.sink.clear(),
+                Action::Progress { done, total } => {
+                    self.progress.push((done, total));
+                    if self.cancel_after.is_some_and(|limit| done >= limit) {
+                        self.cancel_after = None;
+                        self.client.event(Event::Cancel, self.now);
+                    }
+                }
+                Action::ResetChannels => {}
+                Action::Restore => {
+                    let ceilings = self.device.ceilings();
+                    self.device.link_up(Link::Ble, ceilings);
+                    self.client.event(Event::Restored(ceilings), self.now);
+                }
+                Action::Complete(result) => return Some(result),
+            }
+        } else {
+            let reaction = self.device.poll();
+            self.deliver(reaction);
+            self.client.event(Event::Tick, self.now);
+        }
+        None
+    }
+
     fn pump(&mut self) -> Result<Outcome, Error> {
         for _ in 0..10_000 {
-            self.now += 1;
-            if let Some(action) = self.client.next_action() {
-                match action {
-                    Action::Send { token, channel, record } => {
-                        let reaction = match channel {
-                            Channel::Control if self.allow_arm => self.device.on_control_with(
-                                Link::Ble,
-                                &mut obc_flat_device::AllowArm { reserve: 4096 },
-                                &record,
-                            ),
-                            Channel::Control => self.device.on_control(&record),
-                            Channel::Stream => self.device.on_stream(&record),
-                        };
-                        if self.answer_first {
-                            self.deliver(reaction);
-                            self.client.event(Event::Written(token), self.now);
-                        } else {
-                            self.client.event(Event::Written(token), self.now);
-                            self.deliver(reaction);
-                        }
-                    }
-                    Action::ReadSource { token, offset, max_len } => {
-                        let start = offset as usize;
-                        let bytes = &self.source[start..(start + max_len).min(self.source.len())];
-                        self.client.event(Event::Source { token, offset, bytes }, self.now);
-                    }
-                    Action::WriteSink { token, offset, bytes } => {
-                        assert_eq!(offset, self.sink.len() as u64);
-                        self.sink.extend_from_slice(&bytes);
-                        self.client.event(Event::SinkWritten { token, offset, len: bytes.len() }, self.now);
-                    }
-                    Action::ResetSink => self.sink.clear(),
-                    Action::Progress { done, total } => {
-                        self.progress.push((done, total));
-                        if self.cancel_after.is_some_and(|limit| done >= limit) {
-                            self.cancel_after = None;
-                            self.client.event(Event::Cancel, self.now);
-                        }
-                    }
-                    Action::ResetChannels => {}
-                    Action::Restore => {
-                        let ceilings = self.device.ceilings();
-                        self.device.link_up(Link::Ble, ceilings);
-                        self.client.event(Event::Restored(ceilings), self.now);
-                    }
-                    Action::Complete(result) => return result,
-                }
-            } else {
-                let reaction = self.device.poll();
-                self.deliver(reaction);
-                self.client.event(Event::Tick, self.now);
+            if let Some(result) = self.step() {
+                return result;
             }
         }
         panic!("client did not complete");
+    }
+
+    fn query_result(&mut self) -> (obc_link::flat::client::QueryId, Result<QueryOutcome, Error>) {
+        for _ in 0..10_000 {
+            if let Some(result) = self.client.next_query_result() {
+                return result;
+            }
+            assert!(self.step().is_none());
+        }
+        panic!("query did not complete");
     }
 }
 
@@ -400,7 +417,7 @@ fn download_waits_for_independent_channel_delivery_and_checks_crc() {
                 client.event(Event::Control(&reply[..len]), 9);
                 assert!(matches!(client.next_action(), Some(Action::ResetSink)));
                 assert!(matches!(client.next_action(), Some(Action::ResetChannels)));
-                assert_eq!(client.next_action(), Some(Action::Complete(Err(Error::Protocol))));
+                assert_eq!(client.next_action(), Some(Action::Complete(Err(Error::Checksum))));
             } else {
                 assert_eq!(client.next_action(), Some(Action::Progress { done: 3, total: 3 }));
                 assert!(matches!(client.next_action(), Some(Action::Complete(Ok(Outcome::Get(_))))));
@@ -603,4 +620,169 @@ fn first_introduction_pins_identity_for_loss_reconciliation() {
         client.next_action(),
         Some(Action::Complete(Err(Error::StoreChanged { previous: StoreId([1; 16]), current: StoreId([2; 16]) })))
     );
+}
+
+#[test]
+fn independent_pages_and_status_complete_beside_a_live_get() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    for _ in 0..3 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), s.now).unwrap();
+    assert!(s.step().is_none()); // ResetSink
+    assert!(s.step().is_none()); // GET control request
+    let transfer = s.client.active_transfer_id().unwrap();
+    let page_id = s.client.query(Request::List(ListRequest { kind: None, cursor: None }), None, s.now).unwrap();
+    let status_id = s
+        .client
+        .query(Request::Status(StatusRequest { id: installed.id, revision: installed.revision }), None, s.now)
+        .unwrap();
+    let (id, result) = s.query_result();
+    assert_eq!(id, page_id);
+    let QueryOutcome::Page { store, sequence, more, entries } = result.unwrap() else {
+        panic!("page");
+    };
+    assert_eq!(store, StoreId(STORE.0));
+    assert!(more);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(s.client.active_transfer_id(), Some(transfer));
+    let (id, result) = s.query_result();
+    assert_eq!(id, status_id);
+    assert!(matches!(result, Ok(QueryOutcome::Status(StatusResponse { state: ObjectState::Committed, .. }))));
+    let cursor = ListCursor { id: entries.last().unwrap().id, revision: entries.last().unwrap().revision, sequence };
+    let next = s.client.query(Request::List(ListRequest { kind: None, cursor: Some(cursor) }), None, s.now).unwrap();
+    let (id, result) = s.query_result();
+    assert_eq!(id, next);
+    assert!(matches!(result, Ok(QueryOutcome::Page { sequence: actual, entries, .. })
+        if actual == sequence && entries.len() == 2 && entries[0].id > cursor.id));
+    assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, s.source);
+    assert_eq!(s.client.next_deadline_ms(), None);
+    assert_eq!(s.client.active_transfer_id(), None);
+}
+
+#[test]
+fn query_scope_is_checked_before_send_and_during_first_introduction() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let request = Request::Status(StatusRequest { id: ObjectId(1), revision: Revision(1) });
+    let previous = StoreId([0xab; 16]);
+    let id = s.client.query(request, Some(previous), 0).unwrap();
+    assert_eq!(s.query_result(), (id, Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })));
+    assert_eq!(s.client.store_id(), None);
+    assert_eq!(s.client.next_action(), None);
+    let id =
+        s.client.query(Request::List(ListRequest { kind: None, cursor: None }), Some(StoreId(STORE.0)), s.now).unwrap();
+    assert!(matches!(s.query_result(), (actual, Ok(QueryOutcome::Page { .. })) if actual == id));
+    assert_eq!(
+        s.client.query(request, Some(previous), s.now),
+        Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })
+    );
+    assert_eq!(s.client.next_action(), None);
+    let id = s.client.query(request, None, s.now).unwrap();
+    assert!(matches!(s.query_result(), (actual, Ok(QueryOutcome::Status(_))) if actual == id));
+}
+
+#[test]
+fn query_timeouts_and_stale_write_failures_do_not_terminate_the_get() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    let now = s.now;
+    let first = s.client.query(Request::List(ListRequest { kind: None, cursor: None }), None, now).unwrap();
+    let Action::Send { token: first_token, .. } = s.client.next_action().unwrap() else {
+        panic!("query send");
+    };
+    let second = s.client.query(Request::List(ListRequest { kind: None, cursor: None }), None, now + 10).unwrap();
+    let Action::Send { token: second_token, record, .. } = s.client.next_action().unwrap() else {
+        panic!("query send");
+    };
+    s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), now + 20).unwrap();
+    assert_eq!(s.client.next_deadline_ms(), Some(now + 15_000));
+    s.client.event(Event::Tick, now + 15_000);
+    assert_eq!(s.client.next_query_result(), Some((first, Err(Error::Timeout))));
+    assert!(s.client.is_busy());
+    assert_eq!(s.client.next_deadline_ms(), Some(now + 15_010));
+    s.client.event(Event::IoFailed(first_token), now + 15_001);
+    assert!(s.client.is_busy());
+    let reaction = s.device.on_control(&record);
+    s.deliver(reaction);
+    assert!(matches!(s.client.next_query_result(), Some((actual, Ok(QueryOutcome::Page { .. }))) if actual == second));
+    s.client.event(Event::IoFailed(second_token), now + 15_002);
+    assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, s.source);
+}
+
+#[test]
+fn upload_window_is_bounded_and_only_contiguous_real_completions_advance_progress() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    s.client.set_upload_window(8, 32).unwrap();
+    s.source = (0..5_000).map(|n| n as u8).collect();
+    s.client.start(put(ObjectId::NONE, Revision::HEAD, &s.source), 0).unwrap();
+    let mut pending = Vec::new();
+    while let Some(action) = s.client.next_action() {
+        match action {
+            Action::Send { token, channel: Channel::Stream, record } => {
+                let reaction = s.device.on_stream(&record);
+                s.deliver(reaction);
+                pending.push(token);
+            }
+            Action::Send { token, channel: Channel::Control, record } => {
+                let reaction = s.device.on_control(&record);
+                s.deliver(reaction);
+                s.client.event(Event::Written(token), s.now);
+            }
+            Action::ReadSource { token, offset, max_len } => {
+                assert_eq!(max_len, 8 * (128 - STREAM_HEADER_LEN));
+                let bytes = &s.source[offset as usize..offset as usize + max_len];
+                s.client.event(Event::Source { token, offset, bytes }, s.now);
+            }
+            Action::Progress { done, total } => s.progress.push((done, total)),
+            _ => panic!("unexpected upload action"),
+        }
+    }
+    assert_eq!(pending.len(), 32);
+    assert_eq!(s.progress, vec![(0, 5_000)]);
+    for token in pending.iter().rev().take(31) {
+        s.client.event(Event::Written(*token), s.now);
+        assert_eq!(s.client.next_action(), None);
+    }
+    s.client.event(Event::Written(pending[0]), s.now);
+    assert_eq!(
+        s.client.next_action(),
+        Some(Action::Progress { done: 32 * (128 - STREAM_HEADER_LEN) as u64, total: 5_000 })
+    );
+    assert!(matches!(s.pump(), Ok(Outcome::Put(_))));
+    assert_eq!(s.progress.iter().filter(|(done, _)| *done == 5_000).count(), 1);
+    assert!(s.progress.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+    let Outcome::Catalog { entries, .. } = s.run(Request::List(ListRequest { kind: None, cursor: None })).unwrap()
+    else {
+        panic!("catalog");
+    };
+    assert_eq!(s.device.read_object(entries[0].id.0, 0), Some(s.source.clone()));
+}
+
+#[test]
+fn a_single_page_query_preserves_cursor_refusal_without_restarting_the_catalog() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    for _ in 0..4 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.client.query(Request::List(ListRequest { kind: None, cursor: None }), None, 0).unwrap();
+    let (_, result) = s.query_result();
+    let QueryOutcome::Page { sequence, more: true, entries, .. } = result.unwrap() else {
+        panic!("first page");
+    };
+    let last = entries.last().unwrap();
+    let cursor = ListCursor { id: last.id, revision: last.revision, sequence };
+    s.device.seed(ObjectKind::Route as u16, &[3, 4], "new route");
+    let id = s.client.query(Request::List(ListRequest { kind: None, cursor: Some(cursor) }), None, s.now).unwrap();
+    assert!(
+        matches!(s.query_result(), (actual, Err(Error::Remote(Refusal { code: ErrorCode::CatalogChanged, .. }))) if actual == id)
+    );
+    assert_eq!(s.client.next_action(), None);
 }
