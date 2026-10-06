@@ -665,24 +665,32 @@ fn independent_pages_and_status_complete_beside_a_live_get() {
 
 #[test]
 fn query_scope_is_checked_before_send_and_during_first_introduction() {
-    let disk = formatted_card(TOTAL_BLOCKS, 23);
-    let mut s = Session::new(&disk);
-    let request = Request::Status(StatusRequest { id: ObjectId(1), revision: Revision(1) });
-    let previous = StoreId([0xab; 16]);
-    let id = s.client.query(request, Some(previous), 0).unwrap();
-    assert_eq!(s.query_result(), (id, Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })));
-    assert_eq!(s.client.store_id(), None);
-    assert_eq!(s.client.next_action(), None);
-    let id =
-        s.client.query(Request::List(ListRequest { kind: None, cursor: None }), Some(StoreId(STORE.0)), s.now).unwrap();
-    assert!(matches!(s.query_result(), (actual, Ok(QueryOutcome::Page { .. })) if actual == id));
-    assert_eq!(
-        s.client.query(request, Some(previous), s.now),
-        Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })
-    );
-    assert_eq!(s.client.next_action(), None);
-    let id = s.client.query(request, None, s.now).unwrap();
-    assert!(matches!(s.query_result(), (actual, Ok(QueryOutcome::Status(_))) if actual == id));
+    for request in [
+        Request::Status(StatusRequest { id: ObjectId(1), revision: Revision(1) }),
+        Request::Cancel(CancelRequest { transfer: RequestId(u32::MAX) }),
+    ] {
+        let disk = formatted_card(TOTAL_BLOCKS, 23);
+        let mut s = Session::new(&disk);
+        let previous = StoreId([0xab; 16]);
+        let id = s.client.query(request, Some(previous), 0).unwrap();
+        assert_eq!(s.query_result(), (id, Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })));
+        assert_eq!(s.client.store_id(), None);
+        assert_eq!(s.client.next_action(), None);
+        let id = s
+            .client
+            .query(Request::List(ListRequest { kind: None, cursor: None }), Some(StoreId(STORE.0)), s.now)
+            .unwrap();
+        assert!(matches!(s.query_result(), (actual, Ok(QueryOutcome::Page { .. })) if actual == id));
+        assert_eq!(
+            s.client.query(request, Some(previous), s.now),
+            Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })
+        );
+        assert_eq!(s.client.next_action(), None);
+        let id = s.client.query(request, None, s.now).unwrap();
+        assert!(
+            matches!(s.query_result(), (actual, Ok(QueryOutcome::Status(_) | QueryOutcome::Cancel(false))) if actual == id)
+        );
+    }
 }
 
 #[test]
@@ -996,4 +1004,146 @@ fn complete_catalog_scope_and_restart_limit_do_not_change_the_primary() {
     assert!(s.client.is_busy());
     assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
     assert_eq!(s.sink, s.source);
+}
+
+#[test]
+fn cancel_query_reports_the_peer_and_waits_for_the_primary_terminal_response() {
+    for upload in [false, true] {
+        let disk = formatted_card(TOTAL_BLOCKS, 23);
+        let mut s = Session::new(&disk);
+        let installed = first_put(&mut s);
+        let old = s.source.clone();
+        let request = if upload {
+            s.source = vec![87; 900];
+            put(installed.id, installed.revision, &s.source)
+        } else {
+            Request::Get(GetRequest { id: installed.id, revision: installed.revision })
+        };
+        s.client.start(request, s.now).unwrap();
+        assert!(s.step().is_none());
+        assert!(s.step().is_none());
+        let transfer = s.client.active_transfer_id().unwrap();
+        let status = s
+            .client
+            .query(Request::Status(StatusRequest { id: installed.id, revision: installed.revision }), None, s.now)
+            .unwrap();
+        let cancel = s.client.query(Request::Cancel(CancelRequest { transfer }), None, s.now).unwrap();
+        assert!(matches!(s.query_result(), (id, Ok(QueryOutcome::Status(_))) if id == status));
+        assert_eq!(s.query_result(), (cancel, Ok(QueryOutcome::Cancel(true))));
+        assert!(s.client.is_busy());
+        assert_eq!(s.pump(), Err(Error::Cancelled));
+        assert_eq!(s.device.read_object(installed.id.0, 0), Some(old));
+        assert_eq!(s.client.next_query_result(), None);
+        assert_eq!(s.client.next_deadline_ms(), None);
+    }
+}
+
+#[test]
+fn unknown_cancel_query_is_false_and_does_not_cancel_the_get() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), s.now).unwrap();
+    assert!(s.step().is_none());
+    assert!(s.step().is_none());
+    let transfer = s.client.active_transfer_id();
+    let cancelled =
+        s.client.query(Request::Cancel(CancelRequest { transfer: RequestId(u32::MAX - 1) }), None, s.now).unwrap();
+    assert!(s.client.cancel_query(cancelled));
+    assert_eq!(s.client.next_query_result(), Some((cancelled, Err(Error::Cancelled))));
+    let unknown =
+        s.client.query(Request::Cancel(CancelRequest { transfer: RequestId(u32::MAX) }), None, s.now).unwrap();
+    assert_eq!(s.query_result(), (unknown, Ok(QueryOutcome::Cancel(false))));
+    assert_eq!(s.client.active_transfer_id(), transfer);
+    assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, s.source);
+}
+
+#[test]
+fn cancel_query_keeps_a_false_peer_answer_when_a_put_commit_wins_the_race() {
+    for commit_first in [false, true] {
+        let disk = formatted_card(TOTAL_BLOCKS, 23);
+        let mut s = Session::new(&disk);
+        s.client.set_upload_window(8, 32).unwrap();
+        s.source = (0..900).map(|n| n as u8).collect();
+        s.client.start(put(ObjectId::NONE, Revision::HEAD, &s.source), 0).unwrap();
+        let mut commit = None;
+        while let Some(action) = s.client.next_action() {
+            match action {
+                Action::Send { token, channel, record } => {
+                    let reply = match channel {
+                        Channel::Control => s.device.on_control(&record),
+                        Channel::Stream => s.device.on_stream(&record),
+                    };
+                    if matches!(&reply, Reaction::Send { channel: Channel::Control, bytes }
+                        if matches!(decode_response(bytes).unwrap().1, Response::Put(_)))
+                    {
+                        commit = Some(reply);
+                    } else {
+                        s.deliver(reply);
+                    }
+                    s.client.event(Event::Written(token), s.now);
+                }
+                Action::ReadSource { token, offset, max_len } => {
+                    let start = offset as usize;
+                    let bytes = &s.source[start..start + max_len];
+                    s.client.event(Event::Source { token, offset, bytes }, s.now);
+                }
+                Action::Progress { .. } => {}
+                _ => panic!("unexpected upload action"),
+            }
+        }
+        let transfer = s.client.active_transfer_id().unwrap();
+        let cancel = s.client.query(Request::Cancel(CancelRequest { transfer }), None, s.now).unwrap();
+        if commit_first {
+            s.deliver(commit.take().unwrap());
+        }
+        assert_eq!(s.query_result(), (cancel, Ok(QueryOutcome::Cancel(false))));
+        if let Some(commit) = commit {
+            assert!(s.client.is_busy());
+            s.deliver(commit);
+        }
+        let Outcome::Put(installed) = s.pump().unwrap() else {
+            panic!("authoritative commit");
+        };
+        assert_eq!(s.device.read_object(installed.id.0, 0), Some(s.source.clone()));
+    }
+}
+
+#[test]
+fn aborting_the_cancel_waiter_keeps_its_real_primary_cancellation_intent() {
+    for delivery in 0..3 {
+        let disk = formatted_card(TOTAL_BLOCKS, 23);
+        let mut s = Session::new(&disk);
+        let installed = first_put(&mut s);
+        s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), s.now).unwrap();
+        assert!(s.step().is_none());
+        assert!(s.step().is_none());
+        let transfer = s.client.active_transfer_id().unwrap();
+        let cancel = s.client.query(Request::Cancel(CancelRequest { transfer }), None, s.now).unwrap();
+        let reply = if delivery > 0 {
+            let Action::Send { token, record, channel: Channel::Control } = s.client.next_action().unwrap() else {
+                panic!("cancel request");
+            };
+            let reply = s.device.on_control(&record);
+            if delivery == 2 {
+                s.client.event(Event::Written(token), s.now);
+            }
+            Some((token, reply))
+        } else {
+            None
+        };
+        assert!(s.client.cancel_query(cancel));
+        assert!(!s.client.cancel_query(cancel));
+        assert_eq!(s.client.next_query_result(), Some((cancel, Err(Error::Cancelled))));
+        if let Some((token, reply)) = reply {
+            s.deliver(reply);
+            s.client.event(Event::Written(token), s.now);
+        }
+        assert_eq!(s.pump(), Err(Error::Cancelled));
+        assert_eq!(s.client.next_query_result(), None);
+        assert_eq!(s.client.store_id(), Some(StoreId(STORE.0)));
+        assert_eq!(s.client.next_deadline_ms(), None);
+        assert!(s.device.is_quiet());
+    }
 }
