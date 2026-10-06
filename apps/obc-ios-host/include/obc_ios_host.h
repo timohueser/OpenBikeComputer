@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "obc_client.h"
+#include "obc_route.h"
 
 #ifdef __cplusplus
 extern "C" {

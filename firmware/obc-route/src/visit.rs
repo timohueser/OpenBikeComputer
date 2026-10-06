@@ -4,7 +4,6 @@ use crate::convert::{ObcrEmitter, RouteStats};
 use crate::reader::WaypointCursor;
 use crate::walk::{walk, Records, Step};
 use crate::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
-use heapless::Vec;
 use obc_formats::bike::BikeType;
 use obc_formats::io::{put_i16, put_i32, put_u16, put_u32, ByteSink, Error};
 use obc_formats::obcm::{PoiMetadata, SourceId};
@@ -588,7 +587,7 @@ impl VisitBuilder {
                 self.stats = Some(self.em.finish(
                     &mut capture,
                     if self.easier.is_some() { "Easier route" } else { "Visit" },
-                    &mut Vec::new(),
+                    &mut [],
                 )?);
                 self.waypoint_offset = self.em.geometry_end();
                 self.cursor = Some(WaypointCursor::new(original.source())?);
