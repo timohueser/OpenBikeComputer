@@ -804,7 +804,7 @@ route = "ordinary"
 command = "npm test --prefix apps/planner-search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**"]
+triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
 
 [[suite]]
 id = "planner.tiles"
@@ -828,7 +828,7 @@ route = "manual"
 command = "npm run test:data --prefix apps/planner-search"
 fixtures = ["local-photon-search-packages"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**"]
+triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
 
 [[suite]]
 id = "planner.query-model"
