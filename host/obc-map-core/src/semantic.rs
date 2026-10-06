@@ -43,6 +43,10 @@ impl SemanticScheme {
     pub fn style_for(&self, class: SemanticClass) -> Option<u8> {
         self.output_style[class as usize]
     }
+
+    pub fn output_styles(&self) -> &[Option<u8>] {
+        &self.output_style
+    }
 }
 impl Default for SemanticScheme {
     fn default() -> Self {

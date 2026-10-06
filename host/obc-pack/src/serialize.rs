@@ -10,7 +10,6 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use obc_formats::obcm::{
     BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    FEATURE_HEADER_COMPACT_LEN,
 };
 
 use obc_formats::obcm::{
@@ -22,7 +21,7 @@ use obc_formats::obcm::{
 };
 
 use obc_map_core::serialize::{
-    align_up, check_scale_covers, emit_nav_section, header_bytes, lay_out, pack_profile_table, place, prefix_offsets,
+    align_up, check_scale_covers, emit_nav_section, header_bytes, lay_out, pack_profile_table, prefix_offsets,
     push_lod_entry, scaled, NavBody, STYLE_OFFSET,
 };
 pub use obc_map_core::serialize::{

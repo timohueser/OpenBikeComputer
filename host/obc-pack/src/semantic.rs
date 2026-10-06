@@ -365,7 +365,7 @@ pub fn build_semantic_lod(
     let mut emitted_m = Vec::new();
     for (class, geom) in smoothed {
         if class != SemanticClass::Base as u8 {
-            if let Some(style_id) = scheme.output_style[class as usize] {
+            if let Some(style_id) = scheme.output_styles()[class as usize] {
                 emitted_m.push((style_id, geom));
             }
         }
