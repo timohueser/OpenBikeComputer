@@ -2846,7 +2846,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "additionalProperties": false,
-          "description": "The actual desired client document differs, without a layer change.",
+          "description": "The desired client document or release identity differs, without a layer change.",
           "properties": {
             "document": {
               "type": "string"
@@ -2857,11 +2857,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             },
             "product": {
               "type": "string"
+            },
+            "release": {
+              "type": "string"
             }
           },
           "required": [
             "kind",
             "product",
+            "release",
             "document"
           ],
           "type": "object"
