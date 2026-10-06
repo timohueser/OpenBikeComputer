@@ -504,9 +504,9 @@ pub(crate) mod tests {
             0 => Reply { body: old[..40_000].to_vec(), ..whole(&old) },
             // Upstream changed between the tries, so If-Range gets the whole new file.
             _ => {
-                let mut reply = whole(&served);
-                reply.headers[0].1 = "\"v2\"".into();
-                reply
+                let headers =
+                    vec![("ETag", "\"v2\"".into()), ("Last-Modified", "Mon, 05 Oct 2026 09:12:00 GMT".into())];
+                Reply { headers, ..whole(&served) }
             }
         });
         let scratch = Scratch::new("restart");
