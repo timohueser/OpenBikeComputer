@@ -6,8 +6,9 @@ The [data contract](../../specs/obc-data.md#apply) defines publication and durab
 
 Prepare one Linux VPS owner. Install its matching MIT `obc-data-plumbing` binary at
 `/opt/obc-data/bin/obc-data-plumbing`. Install rclone. Give the owner the same `OBC_R2_*`
-bucket configuration as the initiating machine. The known entry point must load these
-credentials on local and SSH invocation. Create `/var/lib/obc-data/incoming` and
+bucket configuration as the initiating machine. Put its environment in the owner-controlled
+`/etc/obc-data/owner.env`, readable only by that account. The account must admit the fixed
+system service through systemd. Create `/var/lib/obc-data/incoming` and
 `/var/lib/obc-data/store`. Only the owner account may change them.
 
 Set `OBC_COMMIT_HOST` to the configured SSH host on the laptop. Install rsync and SSH
@@ -22,19 +23,31 @@ to `/etc/caddy/Caddyfile`. The owner must control `/opt/obc-planner/services`,
 
 ## Operation
 
-Run `obc data prepare live --json`. Review and save its `.plan`. Run
+`prepare`, `build` and `apply` return a run handle. On macOS the retained worker detaches
+from the terminal. On Linux, set `OBC_RUN_ENV_FILE` to an absolute, private environment file.
+Use standard systemd environment syntax and absolute tool paths. Prepare the locked tools,
+an active systemd user manager and enabled linger for the operator. Missing setup blocks start.
+
+Run `obc data prepare live --json`. Inspect `obc data runs RUN --follow`, then get its output
+with `obc data runs RUN --result`. Review and save `.plan`. Run
 `obc data apply live --plan PLAN --yes`. The initiating machine builds and verifies.
 The VPS owner uploads, switches and cleans under one inherited OS lock.
+
+`obc data runs RUN --stop` drains current preparation before stopping. It refuses after owner
+handoff. Preparation is exclusive per environment on one host/store. Laptop and VPS preparation
+can overlap; final publication has one fixed VPS owner. A run has no waiting queue.
 
 After a disconnect, query the original operation on the VPS:
 
 ```sh
-/opt/obc-data/bin/obc-data-plumbing commit-status RUN
+obc data runs RUN
+obc data runs RUN --reconcile
 ```
 
 Inspect `/var/lib/obc-data/store/runs/RUN.jsonl` for acknowledged writes. A pending intent
 blocks every later commit. Do not delete it or retry from a later object read alone.
-There is no automatic reconciliation or timeout takeover. Reusing a run id with another
+Reads do not change local history. Explicit reconciliation requires a verified final owner reply;
+a missing record cannot disprove a delayed admission. There is no timeout takeover. Reusing a run id with another
 bundle is refused. Planner apply stages and probes stored service artifacts, reloads checked
 endpoint routes, then switches its pointer. Old slots and pinned routes stay through the
 reader window before retirement. Unknown slot ownership blocks apply.
