@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -118,18 +119,10 @@ pub(in crate::cli) fn journal(reply: &Reply) -> Option<&[Event]> {
 pub(in crate::cli) fn query(host: &str, run: &str, digest: &str) -> Result<Observation, String> {
     super::host(host).map_err(|error| error.message)?;
     unit(run, digest)?;
-    let mut command = if host == "local" {
-        Command::new(WORKER)
-    } else {
-        let mut command = Command::new("ssh");
-        command.args(["-T", host, WORKER]);
-        command
-    };
-    let output = command.args(["commit-status", run, digest]).output().map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err("owner status could not be read; the publication outcome stays unresolved".into());
-    }
-    let observed: Observation = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+    let mut command = query_command(host);
+    command.args(["commit-status", run, digest]);
+    let output = bounded_output(&mut command, Duration::from_secs(30))?;
+    let observed: Observation = serde_json::from_slice(&output).map_err(|e| e.to_string())?;
     if observed.run != run
         || observed.bundle != digest
         || observed.state.as_ref().is_some_and(|state| state.run != run || state.bundle != digest)
@@ -139,9 +132,139 @@ pub(in crate::cli) fn query(host: &str, run: &str, digest: &str) -> Result<Obser
     Ok(observed)
 }
 
+#[cfg(any(not(test), unix))]
+fn query_command(host: &str) -> Command {
+    if host == "local" {
+        Command::new(WORKER)
+    } else {
+        let mut command = Command::new("ssh");
+        command.args([
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=5",
+            "-o",
+            "ServerAliveCountMax=2",
+            host,
+            WORKER,
+        ]);
+        command
+    }
+}
+
+/// Only the local read transport is stopped. The remote publication owner keeps its locks.
+#[cfg(any(not(test), unix))]
+fn bounded_output(command: &mut Command, limit: Duration) -> Result<Vec<u8>, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = (command, limit);
+        Err("owner observation needs a supported Unix host".into())
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        use std::time::Instant;
+        let mut child = command
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("owner observation could not start: {e}"))?;
+        let mut stdout = child.stdout.take().expect("piped status output");
+        let deadline = Instant::now() + limit;
+        let result = (|| -> Result<Vec<u8>, String> {
+            // SAFETY: stdout owns this pipe descriptor. Nonblocking reads keep collection within the same deadline.
+            unsafe {
+                let flags = libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL);
+                if flags < 0 || libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+            }
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 16384];
+            let mut status = None;
+            let mut eof = false;
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) => eof = true,
+                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+                if status.is_none() {
+                    status = child.try_wait().map_err(|e| e.to_string())?;
+                }
+                if let Some(status) = status {
+                    if eof {
+                        return if status.success() {
+                            Ok(bytes)
+                        } else {
+                            Err("owner status could not be read; publication stays unresolved".into())
+                        };
+                    }
+                }
+                if Instant::now() >= deadline {
+                    return Err("owner observation deadline expired; publication stays unresolved".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        })();
+        // SAFETY: this child owns a fresh process group. No publication process runs in it.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::time::Instant;
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_observation_is_noninteractive_and_has_a_real_command_deadline() {
+        let command = query_command("publisher");
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().to_string()).collect();
+        for option in [
+            "BatchMode=yes",
+            "ConnectionAttempts=1",
+            "ConnectTimeout=10",
+            "ServerAliveInterval=5",
+            "ServerAliveCountMax=2",
+        ] {
+            assert!(args.iter().any(|arg| arg == option));
+        }
+        let mut normal = Command::new("sh");
+        normal.args(["-c", "printf status"]);
+        assert_eq!(bounded_output(&mut normal, Duration::from_secs(5)).unwrap(), b"status");
+        let mut stuck = Command::new("sh");
+        stuck.args(["-c", "sleep 60"]);
+        let started = Instant::now();
+        assert!(bounded_output(&mut stuck, Duration::from_millis(50)).unwrap_err().contains("deadline expired"));
+        assert!(started.elapsed() < Duration::from_secs(5), "a wedged status reader must return unresolved");
+        let mut inherited = Command::new("sh");
+        inherited.args(["-c", "printf status; sleep 60 &"]);
+        let started = Instant::now();
+        assert!(bounded_output(&mut inherited, Duration::from_millis(50)).unwrap_err().contains("deadline expired"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "an exited reader's child cannot hold output collection open"
+        );
+    }
 
     #[test]
     fn missing_owner_evidence_is_not_completion_and_identity_cannot_change() {

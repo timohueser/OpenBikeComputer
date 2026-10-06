@@ -54,28 +54,22 @@ pub fn view(store: &Store, run: &str) -> Result<View, Error> {
 fn output(store: &Store, run: &str) -> Result<Option<serde_json::Value>, Error> {
     let directory = operation::directory(store, run)?;
     if let Some(control) = operation::read(store, run)? {
-        if let State::Resolved { result, ok, .. } = control.state {
+        if let State::Resolved { ref result, ok, .. } | State::Finished { ref result, ok } = control.state {
             let path = directory.join(&result.path);
-            if super::file(&path, "owner-result.json")? != result {
-                return Err(Code::VerifyFailed.error("sealed owner result bytes changed"));
+            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+            if bytes.len() as u64 != result.size || crate::store::sha256_hex(&bytes) != result.sha256 {
+                return Err(Code::VerifyFailed.error("sealed operation result bytes changed"));
             }
-            let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-                .map_err(|e| Code::Failed.error(e.to_string()))?;
-            if value["status"] != if ok { "done" } else { "failed" } {
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| Code::Failed.error(e.to_string()))?;
+            if matches!(control.state, State::Resolved { .. }) && value["status"] != if ok { "done" } else { "failed" }
+            {
                 return Err(Code::VerifyFailed.error("sealed owner result differs from its recorded outcome"));
             }
             return Ok(Some(value));
         }
     }
-    let path = directory.join("stdout.json");
-    match std::fs::read(&path) {
-        Ok(bytes) if bytes.is_empty() => Ok(None),
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map(Some).map_err(|e| Code::Failed.error(format!("{}: {e}", path.display())))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string().into()),
-    }
+    Ok(None)
 }
 
 fn apply_observation(
@@ -189,6 +183,55 @@ mod tests {
     use crate::cli::commit_cli::{lifetime::Observation, Committed, Reply};
     use crate::engine::runs::{Event, Outcome};
     use crate::store::tests::Scratch;
+
+    #[test]
+    fn local_completion_seals_output_and_failed_sealing_keeps_the_original_error() {
+        let scratch = Scratch::new("operation-local-result");
+        let store = Store::at(&scratch.0);
+        let request = operation::Request {
+            kind: operation::Kind::Prepare,
+            env: "live".into(),
+            only: Vec::new(),
+            moves: Vec::new(),
+            plan: None,
+        };
+        for (id, fails) in [("2026-10-06-120000", false), ("2026-10-06-120001", true)] {
+            let control = operation::Control {
+                run: id.into(),
+                request_sha256: request.digest().unwrap(),
+                request: request.clone(),
+                root: "/checkout".into(),
+                worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
+                code: "b".repeat(64),
+                state: State::Reserved,
+            };
+            operation::reserve(&store, &control).unwrap();
+            let using = operation::claim(&store, id, &control.request_sha256).unwrap();
+            let directory = operation::directory(&store, id).unwrap();
+            std::fs::write(directory.join("stdout.json"), r#"{"plan":{"env":"live"}}"#).unwrap();
+            if fails {
+                std::fs::create_dir(directory.join("result.json")).unwrap();
+                let error =
+                    super::super::finish_result(&store, id, Err(Code::FetchFailed.error("upstream unavailable")))
+                        .unwrap_err();
+                assert_eq!(error.code, Code::FetchFailed);
+                assert_eq!(error.run.as_deref(), Some(id));
+                assert!(error.message.starts_with("upstream unavailable; operation result could not finish:"));
+                assert_eq!(operation::read(&store, id).unwrap().unwrap().state, State::Running);
+                std::fs::remove_dir(directory.join("result.json")).unwrap();
+                super::super::finish_result(&store, id, Err(Code::FetchFailed.error("upstream unavailable")))
+                    .unwrap_err();
+                assert_eq!(output(&store, id).unwrap().unwrap()["error"]["code"], "fetch_failed");
+            } else {
+                super::super::finish_result(&store, id, Ok(())).unwrap();
+                std::fs::write(directory.join("stdout.json"), r#"{"plan":{"env":"wrong"}}"#).unwrap();
+                assert_eq!(output(&store, id).unwrap().unwrap()["plan"]["env"], "live");
+                std::fs::write(directory.join("result.json"), r#"{"plan":{"env":"wrong"}}"#).unwrap();
+                assert_eq!(output(&store, id).unwrap_err().code, Code::VerifyFailed);
+            }
+            drop(using);
+        }
+    }
 
     #[test]
     fn observing_a_bound_final_owner_keeps_original_local_history_and_unknown_intent_stays_unknown() {

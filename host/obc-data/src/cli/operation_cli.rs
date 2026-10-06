@@ -107,6 +107,7 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         }
         std::fs::copy(&executable, &worker).map_err(|e| e.to_string())?;
         File::open(&worker).and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
+        crate::commit::durable_directory(&directory)?;
         if file(&worker, "worker")? != control.worker {
             return Err(Code::Blocked.error("producer executable changed during retention"));
         }
@@ -240,11 +241,41 @@ pub(super) fn resume(store: &Store, command: &str) -> Result<Option<Run>, String
     Ok(Some(Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?))
 }
 
-pub(super) fn finish(ok: bool) -> Result<(), String> {
-    if let Some(session) = SESSION.get() {
-        operation::finish(&session.store, &session.control.run, ok)?;
+fn finish_result(store: &Store, run: &str, mut result: Result<(), Error>) -> Result<(), Error> {
+    if let Err(error) = &mut result {
+        error.run = Some(run.into());
     }
-    Ok(())
+    let finished = (|| -> Result<(), String> {
+        let control = operation::read(store, run)?.ok_or("operation has no control")?;
+        let sealed = if control.state == State::Running {
+            use std::io::Write;
+            let directory = operation::directory(store, run)?;
+            let bytes = match &result {
+                Err(error) => serde_json::to_vec(&super::api::Failure { error }).map_err(|e| e.to_string())?,
+                Ok(()) => {
+                    std::io::stdout().flush().map_err(|e| e.to_string())?;
+                    let bytes = std::fs::read(directory.join("stdout.json")).map_err(|e| e.to_string())?;
+                    serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| e.to_string())?;
+                    bytes
+                }
+            };
+            let path = directory.join("result.json");
+            crate::commit::durable(&path, &bytes)?;
+            Some(file(&path, "result.json")?)
+        } else {
+            None
+        };
+        operation::finish(store, run, result.is_ok(), sealed)
+    })();
+    if let Err(message) = finished {
+        match &mut result {
+            Err(error) => error.message += &format!("; operation result could not finish: {message}"),
+            Ok(()) => {
+                result = Err(Code::Failed.error(format!("operation result could not finish: {message}")).with_run(run))
+            }
+        }
+    }
+    result
 }
 
 pub(super) fn plan_path() -> Result<Option<PathBuf>, String> {
@@ -302,7 +333,7 @@ pub(super) fn perform(
             true,
         ),
     };
-    finish(result.is_ok())?;
+    let result = finish_result(store, run, result);
     // All admitted producers and publication transport have drained before dropping the binary.
     if operation::read(store, run)?.is_some_and(|control| {
         matches!(control.state, State::Stopped | State::Finished { .. } | State::Resolved { .. })

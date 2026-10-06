@@ -72,6 +72,7 @@ pub enum State {
     },
     Finished {
         ok: bool,
+        result: LayerFile,
     },
     Resolved {
         host: String,
@@ -116,7 +117,7 @@ pub fn status(store: &Store, run: &str) -> Result<Option<Status>, String> {
         State::Stopping => Status::Stopped,
         State::Stopped => Status::Stopped,
         State::Owner { host, bundle } => Status::AwaitingOwner { host, bundle },
-        State::Finished { ok } | State::Resolved { ok, .. } => Status::Finished { ok },
+        State::Finished { ok, .. } | State::Resolved { ok, .. } => Status::Finished { ok },
     }))
 }
 
@@ -160,6 +161,7 @@ pub fn read(store: &Store, run: &str) -> Result<Option<Control>, String> {
         || control.worker.path != "worker"
         || !digest(&control.worker.sha256)
         || !digest(&control.code)
+        || matches!(&control.state, State::Finished { result, .. } if result.path != "result.json" || !digest(&result.sha256))
         || matches!(&control.state, State::Resolved { result, .. } if result.path != "owner-result.json" || !digest(&result.sha256))
     {
         return Err("operation control differs from its run or immutable request".into());
@@ -260,10 +262,16 @@ pub fn claim(store: &Store, run: &str, request: &str) -> Result<crate::store::Lo
 }
 
 /// Local completion cannot resolve a handed-off publication outcome.
-pub fn finish(store: &Store, run: &str, ok: bool) -> Result<(), String> {
+pub fn finish(store: &Store, run: &str, ok: bool, result: Option<LayerFile>) -> Result<(), String> {
     change(store, run, |control| {
         control.state = match &control.state {
-            State::Running => State::Finished { ok },
+            State::Running => {
+                let result = result.ok_or("completed operation has no sealed result")?;
+                if result.path != "result.json" || !digest(&result.sha256) {
+                    return Err("completed operation result is not a pinned result.json".into());
+                }
+                State::Finished { ok, result }
+            }
             State::Stopping => State::Stopped,
             State::Stopped => State::Stopped,
             State::Finished { .. } | State::Resolved { .. } => return Ok(()),
@@ -341,7 +349,7 @@ mod tests {
         let using = claim(&store, &next.run, &next.request_sha256).unwrap();
         assert_eq!(stop(&store, &next.run).unwrap(), State::Stopping);
         assert!(stopped(&store, &next.run).unwrap());
-        finish(&store, &next.run, false).unwrap();
+        finish(&store, &next.run, false, None).unwrap();
         drop(using);
         assert_eq!(read(&store, &next.run).unwrap().unwrap().state, State::Stopped);
     }
@@ -396,7 +404,7 @@ mod tests {
         );
         assert!(handoff(&fixture.store, &id, "publisher", &"c".repeat(64)).is_err());
         run.finish(Some(&error)).unwrap();
-        finish(&fixture.store, &id, false).unwrap();
+        finish(&fixture.store, &id, false, None).unwrap();
         drop(using);
         assert_eq!(status(&fixture.store, &id).unwrap(), Some(Status::Stopped));
     }
@@ -416,7 +424,7 @@ mod tests {
         handoff(&store, &first.run, "publisher", &"c".repeat(64)).unwrap();
         drop(using);
         assert!(stop(&store, &first.run).unwrap_err().contains("cannot stop safely"));
-        finish(&store, &first.run, false).unwrap();
+        finish(&store, &first.run, false, None).unwrap();
         assert_eq!(
             read(&store, &first.run).unwrap().unwrap().state,
             State::Owner { host: "publisher".into(), bundle: "c".repeat(64) }
