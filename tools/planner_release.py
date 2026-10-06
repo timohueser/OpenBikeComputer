@@ -155,6 +155,16 @@ def publish(args):
                            "--immutable", "--checksum", "--transfers", "2", "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
             r2.run_rclone(["check", str(args.data_dir / "sources"), f"{remote.path}/planner/sources", *options,
                            "--one-way", "--download", "--checkers", "2"], remote.env)
+        objects = {name: item for name, item in files.items() if name.startswith("objects/")}
+        listing = Path(directory) / "objects.txt"
+        listing.write_text("\n".join(name.removeprefix("objects/") for name in objects) + "\n")
+        options = ["--files-from", str(listing)]
+        r2.run_rclone(["copy", str(args.data_dir / "objects"), f"{remote.path}/planner/objects", *options,
+                       "--immutable", "--checksum", "--transfers", "4", "--s3-upload-concurrency", "2",
+                       "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
+        r2.run_rclone(["check", str(args.data_dir / "objects"), f"{remote.path}/planner/objects", *options,
+                       "--one-way", "--download", "--checkers", "2"], remote.env)
+        files = {name: item for name, item in files.items() if name not in objects}
         listing = Path(directory) / "files.txt"
         listing.write_text("\n".join(files) + "\n")
         r2.run_rclone(["copy", str(args.data_dir), f"{remote.path}/{prefix}", "--files-from", str(listing),

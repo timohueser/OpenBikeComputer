@@ -88,7 +88,10 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, env: &Env| {
-        let mut steps = Planner.steps(env, &regions, &store).unwrap().steps;
+        let planned = Planner.steps(env, &regions, &store).unwrap();
+        assert_eq!(planned.blocked.len(), 1);
+        assert_eq!(planned.blocked[0].layer, "planner/runtime");
+        let mut steps = planned.steps;
         let rust = ["planner/osm", "planner/terrain", "planner/routing"];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
@@ -300,7 +303,53 @@ for name, entry in catalog['files'].items():
     assert_eq!(plan(&store, &root, &steps(true, &env)).unwrap().groups.len(), 0);
     let release = release(&store, &root, "planner", AREA, &[], &steps(true, &env)).unwrap();
     assert!(release.is_some(), "the store has every layer");
-    let release = release.unwrap();
+    let mut release = release.unwrap();
+    release.name_files(Planner.named(&release).unwrap()).unwrap();
+    assert!(release.named.iter().any(|file| file.path == "indexes/planner/routing/grid/index.json"));
+    assert!(release.named.iter().all(|file| file.path == "release.json"
+        || file.path.starts_with("public/")
+        || file.path.starts_with("indexes/")));
+    let metadata_bytes: u64 = release.named.iter().map(|file| file.size).sum();
+    eprintln!("planner named verification metadata: {} files, {metadata_bytes} bytes", release.named.len());
+    let pointer = Planner.pointer().unwrap()(&release, &store).unwrap();
+    assert_eq!(pointer.document["active"]["id"], release.id());
+    assert_eq!(pointer.document["active"]["name"], "Test");
+    assert!(pointer.document["active"].get("routing").is_none(), "runtime endpoints need real code receipts");
+    Planner.verify(&root, None, &release, &store).unwrap();
+    // A fresh machine restores only published objects and named metadata, not producer bytes.
+    let restored = Store::at(temp.0.join("restored"));
+    for (sha256, _) in
+        release.objects().into_iter().chain(release.named.iter().map(|file| (file.sha256.as_str(), file.size)))
+    {
+        let path = restored.partial("restore");
+        write_atomic(&path, &std::fs::read(store.object(sha256)).unwrap()).unwrap();
+        restored.insert(&path, sha256).unwrap();
+    }
+    assert!(!restored.object(&osm.files[0].sha256).exists());
+    Planner.verify(&root, None, &release, &restored).unwrap();
+    let private = release
+        .layers
+        .iter()
+        .find(|layer| layer.step == "planner/routing")
+        .unwrap()
+        .files
+        .iter()
+        .find(|file| file.path == "routing/manifest.json")
+        .unwrap();
+    assert!(!restored.object(&private.sha256).exists());
+    let descriptor = release.named.iter().find(|file| file.path == "release.json").unwrap();
+    let descriptor: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.object(&descriptor.sha256)).unwrap()).unwrap();
+    let archive =
+        descriptor["files"].as_object().unwrap().iter().find(|(name, _)| name.ends_with(".pmtiles")).unwrap().1;
+    let archive_sha = archive["transport"]["sha256"].as_str().unwrap();
+    std::fs::remove_file(restored.object(archive_sha)).unwrap();
+    Planner.verify(&root, Some(&release), &release, &restored).unwrap();
+    assert!(Planner.verify(&root, None, &release, &restored).unwrap_err().contains(archive_sha));
+    let mut invalid = release.clone();
+    invalid.layers.iter_mut().find(|layer| layer.step == "planner/routing/grid").unwrap().client =
+        obc_data::engine::Client::None;
+    assert!(Planner.verify(&root, None, &invalid, &store).unwrap_err().contains("client object"));
     for layer in release.layers.iter().filter(|layer| layer.step.ends_with("/grid")) {
         assert!(layer.files.iter().any(|file| file.path == "index.json"));
         assert!(layer.client_files().all(|file| file.path.starts_with("objects/")));

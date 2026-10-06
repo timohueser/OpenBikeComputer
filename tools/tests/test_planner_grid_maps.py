@@ -13,7 +13,7 @@ from pmtiles.reader import MmapSource, Reader, all_tiles
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import write
 
-from tools import planner_grid_maps as grid, planner_offline as offline
+from tools import planner_grid_maps as grid, planner_offline as offline, planner_verify
 
 
 BOUNDS = [-180, -85, 180, 85]
@@ -86,6 +86,10 @@ class MapGrid(unittest.TestCase):
             grid.step(request)
             output, index = self.files(request)
             entry = index["files"]["maps/tiles/terrain/0-0-0.pmtiles"]
+            path = output / "objects" / entry["transport"]["sha256"]
+            planner_verify.archive(path, "terrain")
+            with self.assertRaisesRegex(ValueError, 'tile format'):
+                planner_verify.archive(path, "basemap")
             with (output / "objects" / entry["transport"]["sha256"]).open("rb") as stream:
                 read = MmapSource(stream)
                 self.assertEqual(dict(all_tiles(read)), {(0, 0, 0): data})

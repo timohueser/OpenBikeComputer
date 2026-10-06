@@ -52,6 +52,7 @@ impl Product for Maps {
 
     fn verify(
         &self,
+        _root: &std::path::Path,
         previous: Option<&obc_data::engine::release::Release>,
         release: &obc_data::engine::release::Release,
         store: &Store,

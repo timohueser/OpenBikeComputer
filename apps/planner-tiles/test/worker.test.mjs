@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync, gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import worker, { tileRoute } from '../src/worker.mjs';
 const release = 'a'.repeat(64), base = `/releases/${release}`;
 test('tile routes bound archive selection and coordinates', () => {
@@ -55,17 +56,17 @@ function bucket(objects, reads = { count: 0 }) {
 }
 function grid(prefix, packs) {
   return [[`${prefix}/public/grid.json`, JSON.stringify({ format: 2, map_zoom: 11 })],
-    ...Object.entries(packs).flatMap(([name, bytes], i) => {
-      const digest = String(i).repeat(64);
+    ...Object.entries(packs).flatMap(([name, bytes]) => {
+      const digest = createHash('sha256').update(bytes).digest('hex');
       return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))],
-        [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`${prefix}/objects/${digest}`, bytes]];
+        [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)], [`planner/objects/${digest}`, bytes]];
     })];
 }
 
 test('range reads deliver decoded tiles, cache tiles and empty coverage, and do not cache missing releases', async () => {
   const prefix = `planner/releases/${release}`, tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Test data"}');
   const objects = new Map([...grid(prefix, { basemap: archive() }), [`${prefix}/public/maps/basemap.json.json`, pointer('e'.repeat(64), tilejson)],
-    [`${prefix}/objects/${'e'.repeat(64)}`, tilejson]]);
+    [`planner/objects/${'e'.repeat(64)}`, tilejson]]);
   const cached = new Map(), pending = [], reads = { count: 0 };
   globalThis.caches = { default: {
     async match(key) { return cached.get(key.url)?.clone(); },
@@ -103,7 +104,7 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   const sun = Buffer.from('{"tilejson":"3.0.0","sun_format":3,"minzoom":0,"maxzoom":12}');
   const digest = '8'.repeat(64);
   objects.set(`${prefix}/public/maps/sun.json.json`, pointer(digest, sun));
-  objects.set(`${prefix}/objects/${digest}`, sun);
+  objects.set(`planner/objects/${digest}`, sun);
   const sunMeta = await (await worker.fetch(new Request(`https://tiles.example${base}/sun.json`), env, ctx)).json();
   assert.equal(sunMeta.sun_format, 3);
   assert.equal((await worker.fetch(new Request(sunMeta.tiles[0].replace('{z}', '12').replace('{x}', '1').replace('{y}', '1')), env, ctx)).status, 204);
@@ -116,12 +117,12 @@ test('grid archives share download objects and assets stream from their pointers
   const routes = Buffer.from('{"format":1,"routes":[]}'), packedRoutes = gzipSync(routes);
   const objects = new Map([...grid(prefix, { basemap: archive(), places: archive() }),
     [`${prefix}/public/maps/assets/fonts/Noto Sans Regular/0-255.pbf.json`, pointer('f'.repeat(64), packed, 'gzip', glyphs.length)],
-    [`${prefix}/objects/${'f'.repeat(64)}`, packed],
+    [`planner/objects/${'f'.repeat(64)}`, packed],
     [`${prefix}/public/routes/tiles/9-268-178.json.json`, pointer('b'.repeat(64), packedRoutes, 'gzip', routes.length)],
-    [`${prefix}/objects/${'b'.repeat(64)}`, packedRoutes],
+    [`planner/objects/${'b'.repeat(64)}`, packedRoutes],
     [`${prefix}/public/device/catalog.json.json`, pointer('e'.repeat(64), asset)],
     [`${prefix}/public/maps/assets/sprites/v4/light@2x.json.json`, pointer('e'.repeat(64), asset)],
-    [`${prefix}/objects/${'e'.repeat(64)}`, asset],
+    [`planner/objects/${'e'.repeat(64)}`, asset],
   ]);
   globalThis.caches = {default:{async match(){return undefined},async put(){}}};
   const env = { BUCKET: bucket(objects) };

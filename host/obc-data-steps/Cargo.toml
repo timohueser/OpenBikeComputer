@@ -26,7 +26,8 @@ obc-bake = { path = "../obc-bake" }
 obc-pack = { path = "../obc-pack" }
 # The terrain steps.
 obc-dem = { path = "../obc-dem", features = ["terrarium"] }
-# The planner routing step.
+# The planner routing step and stored graph verification.
+route-engine = { path = "../route-engine" }
 route-build = { path = "../route-build" }
 # The planner search dump step.
 obc-search-bake = { path = "../obc-search-bake" }
@@ -39,7 +40,6 @@ toml = "0.9"
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
-route-engine = { path = "../route-engine" }
 # Reads the search databases of the planner build test.
 rusqlite = { version = "0.38", features = ["bundled"] }
 # The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.

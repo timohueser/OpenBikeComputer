@@ -29,7 +29,7 @@ export async function objectPointer(bucket, prefix, name) {
   if (!/^[a-f0-9]{64}$/.test(value.sha256) || !['identity', 'gzip'].includes(value.encoding)
     || !Number.isSafeInteger(value.bytes) || value.bytes < 0
     || !Number.isSafeInteger(value.decoded_bytes) || value.decoded_bytes < 0) throw new Error('Invalid public object pointer');
-  return { ...value, path: `${prefix}/objects/${value.sha256}` };
+  return { ...value, path: `planner/objects/${value.sha256}` };
 }
 
 export async function publicFile(bucket, prefix, name, contentType, headers) {
