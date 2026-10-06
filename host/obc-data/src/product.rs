@@ -46,7 +46,7 @@ pub type PointerFn = fn(&Release, &Store) -> Result<Pointer, String>;
 
 /// What clients read of a release.
 pub struct Pointer {
-    /// The document of `<prefix>/catalog.json`, without `release`: an apply adds it.
+    /// The document of `<prefix>/catalog.json`, without `release` and `applied`: an apply adds them.
     pub document: serde_json::Map<String, serde_json::Value>,
     /// The files of `<prefix>/releases/<id>/`, by path.
     pub named: BTreeMap<String, Vec<u8>>,

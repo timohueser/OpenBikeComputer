@@ -3,7 +3,9 @@
 //! its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
 //! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
-//! `data/planner.toml` holds the options that are the same for each region.
+//! `planner/osm`, `planner/search/policy`, `planner/search/dump` and `planner/search/records` are
+//! intermediate layers: no client reads them. `data/planner.toml` holds the options that are the
+//! same for each region.
 
 use std::collections::HashSet;
 
@@ -124,6 +126,7 @@ impl Product for Planner {
             code: Code { paths: Vec::new(), crates: vec!["obc-data".into()] },
             outputs: vec!["osm.pbf".into()],
             run: Run::Rust(obc_data::engine::pass),
+            client: false,
         };
         let terrain = Step {
             name: "planner/terrain".into(),
@@ -132,6 +135,7 @@ impl Product for Planner {
             code: Code { paths: vec!["data/sources.toml".into()], crates: vec!["obc-dem".into()] },
             outputs: vec!["terrain.mbtiles".into()],
             run: Run::Rust(obc_dem::step::planner_terrain),
+            client: true,
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
@@ -147,6 +151,7 @@ impl Product for Planner {
             code: Code { paths: vec!["data/sources.toml".into()], crates: vec!["route-build".into()] },
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
             run: Run::Rust(route_build::step::step),
+            client: true,
         };
         let overlays = python(
             "planner/overlays",
@@ -177,14 +182,17 @@ impl Product for Planner {
             ],
             &["model"],
         );
-        let policy = python(
-            "planner/search/policy",
-            vec![country_data],
-            json!({}),
-            ("host/obc-search-bake/policy.py", Some("planner-search")),
-            &["host/obc-search-bake/policy.py"],
-            &["policy.json", "country_osm_grid.sql.gz"],
-        );
+        let policy = Step {
+            client: false,
+            ..python(
+                "planner/search/policy",
+                vec![country_data],
+                json!({}),
+                ("host/obc-search-bake/policy.py", Some("planner-search")),
+                &["host/obc-search-bake/policy.py"],
+                &["policy.json", "country_osm_grid.sql.gz"],
+            )
+        };
         let dump = Step {
             name: "planner/search/dump".into(),
             inputs: vec![Input::layer(osm.name.clone()), Input::layer(policy.name.clone())],
@@ -192,15 +200,19 @@ impl Product for Planner {
             code: Code { paths: Vec::new(), crates: vec!["obc-search-bake".into()] },
             outputs: vec!["search.jsonl.zst".into()],
             run: Run::Rust(obc_search_bake::step::step),
+            client: false,
         };
-        let records = python(
-            "planner/search/records",
-            vec![Input::layer(dump.name.clone())],
-            json!({}),
-            ("apps/planner-search/split.py", Some("planner-search")),
-            &[["apps/planner-search/split.py"].as_slice(), &RECORDS].concat(),
-            &["pois.jsonl.zst", "addresses.jsonl.zst"],
-        );
+        let records = Step {
+            client: false,
+            ..python(
+                "planner/search/records",
+                vec![Input::layer(dump.name.clone())],
+                json!({}),
+                ("apps/planner-search/split.py", Some("planner-search")),
+                &[["apps/planner-search/split.py"].as_slice(), &RECORDS].concat(),
+                &["pois.jsonl.zst", "addresses.jsonl.zst"],
+            )
+        };
         // One search database per component: the POIs and the addresses.
         let search = |component: &str| {
             // writer.py imports pois.py or addresses.py by the component.
@@ -436,6 +448,11 @@ mod tests {
             "places",
         ];
         assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
+        let intermediate: Vec<&str> = steps.iter().filter(|step| !step.client).map(|step| step.name.as_str()).collect();
+        assert_eq!(
+            intermediate,
+            ["planner/osm", "planner/search/policy", "planner/search/dump", "planner/search/records"]
+        );
         let [osm, terrain, routing, .., pois, _, _] = &steps[..] else { unreachable!() };
         let Input::Snapshot { source, version, params, .. } = &osm.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));

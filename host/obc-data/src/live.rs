@@ -1,9 +1,10 @@
 //! What live is: per product, the release that its pointer on R2 names, and the keys on R2 that
 //! the live releases and their input copies use.
 //!
-//! A product with prefix `P` has `P/catalog.json` (the pointer: the client document and
-//! `"release": "<id>"`), `P/releases/<id>.json` (the manifest), `P/releases/<id>/<path>` (files
-//! that a client finds by name) and `P/objects/<sha256>` (the files of its layers). The input
+//! A product with prefix `P` has `P/catalog.json` (the pointer: the client document,
+//! `"release": "<id>"` and `"applied"`), `P/releases/<id>.json` (the manifest),
+//! `P/releases/<id>/<path>` (files that a client finds by name) and `P/objects/<sha256>` (the files
+//! of its client layers). The input
 //! copies are `inputs/records/<source>/<version>.json` (a snapshot record) and
 //! `inputs/objects/<sha256>`.
 
@@ -91,6 +92,8 @@ pub struct LiveProduct {
     /// The id and the manifest of the release that the pointer names. `None` without a pointer,
     /// or with a pointer that names no release.
     pub release: Option<(String, Release)>,
+    /// `applied` of the pointer: the time of the switch to its release, which an apply writes.
+    pub applied: Option<String>,
 }
 
 impl Live {
@@ -100,11 +103,13 @@ impl Live {
         let mut live = Live::default();
         for product in products {
             let prefix = product.prefix();
-            let release = match pointer(remote, prefix)? {
-                Some(id) => Some((id.clone(), manifest(remote, store, product.name(), prefix, &id)?)),
-                None => None,
+            let (release, applied) = match pointer(remote, prefix)? {
+                Some((id, applied)) => {
+                    (Some((id.clone(), manifest(remote, store, product.name(), prefix, &id)?)), applied)
+                }
+                None => (None, None),
             };
-            live.products.push(LiveProduct { product: product.name().into(), prefix: prefix.into(), release });
+            live.products.push(LiveProduct { product: product.name().into(), prefix: prefix.into(), release, applied });
         }
         // Each record that R2 holds counts, whatever `sources` says now: a removal depends on R2
         // alone. Only a record of a source with `r2_copy` that R2 lacks is drift.
@@ -218,7 +223,8 @@ impl Live {
         let mut owners = BTreeSet::new();
         for (prefix, _, release) in self.releases() {
             let holds = |sha256: &str| keys.contains(&format!("{prefix}/objects/{sha256}"));
-            let layers = release.layers.iter().filter(|layer| layer.files.iter().any(|file| holds(&file.sha256)));
+            let layers = release.layers.iter().filter(|layer| layer.client);
+            let layers = layers.filter(|layer| layer.files.iter().any(|file| holds(&file.sha256)));
             owners.extend(layers.map(|layer| layer.step.clone()));
         }
         owners
@@ -311,8 +317,8 @@ pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The release that the pointer of `prefix` names.
-fn pointer(remote: &Remote, prefix: &str) -> Result<Option<String>, String> {
+/// The release that the pointer of `prefix` names, and its `applied`.
+fn pointer(remote: &Remote, prefix: &str) -> Result<Option<(String, Option<String>)>, String> {
     let key = format!("{prefix}/catalog.json");
     let Some(bytes) = remote.get(&key)? else { return Ok(None) };
     let pointer: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
@@ -321,7 +327,8 @@ fn pointer(remote: &Remote, prefix: &str) -> Result<Option<String>, String> {
         Some(serde_json::Value::String(id))
             if id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
         {
-            Ok(Some(id.clone()))
+            let applied = pointer.get("applied").and_then(|applied| applied.as_str()).map(str::to_string);
+            Ok(Some((id.clone(), applied)))
         }
         Some(other) => Err(format!("{key}: `release` is {other}, not the SHA-256 of a manifest")),
     }
@@ -412,6 +419,7 @@ pub(crate) mod tests {
             digest: String::new(),
             files: vec![file],
             snapshots: [("land".to_string(), read)].into(),
+            client: true,
         };
         Release { product: "test".into(), region: "monaco".into(), optional: Vec::new(), layers: vec![layer] }
     }
@@ -479,6 +487,7 @@ pub(crate) mod tests {
                 product: "test".into(),
                 prefix: "test-catalog".into(),
                 release: Some((release.id(), release)),
+                applied: None,
             });
             Live { products: products.collect(), ..Live::default() }
         };

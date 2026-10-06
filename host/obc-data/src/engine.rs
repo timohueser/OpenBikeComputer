@@ -33,6 +33,9 @@ pub struct Step {
     /// Paths in the output directory: a file, or a directory whose every file is part of the layer.
     pub outputs: Vec<String>,
     pub run: Run,
+    /// Whether a client reads the layer. R2 holds the files of a client layer only: another
+    /// layer is an intermediate, which a build makes again from its inputs.
+    pub client: bool,
 }
 
 pub enum Input {
@@ -763,7 +766,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     pub(crate) fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
-        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run }
+        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run, client: true }
     }
 
     pub(crate) fn steps_crate() -> Code {

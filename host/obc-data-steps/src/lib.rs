@@ -41,6 +41,7 @@ pub(crate) fn python(
         code: Code { paths, crates: Vec::new() },
         outputs: outputs.iter().map(|output| output.to_string()).collect(),
         run: Run::Command(argv),
+        client: true,
     }
 }
 

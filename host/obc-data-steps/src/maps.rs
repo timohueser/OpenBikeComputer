@@ -1,7 +1,8 @@
 //! The device maps. Each layer covers one leaf of the `2^23` grid that the region touches:
-//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`,
-//! `maps/reference/<i>-<j>` the national terrain models that those cells read, and
-//! `maps/<band>/<i>-<j>` its map cells of one band. `maps/osm` holds the OSM of each leaf.
+//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`, and
+//! `maps/<band>/<i>-<j>` its map cells of one band. Two layers are intermediates, which no client
+//! reads: `maps/osm` holds the OSM of each leaf, and `maps/reference/<i>-<j>` the national terrain
+//! models that the terrain cells of the leaf read.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -120,7 +121,8 @@ fn snapshot_version(
     })
 }
 
-/// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo.
+/// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo. Only
+/// the map cells read it.
 fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
     Step {
         name: "maps/osm".into(),
@@ -129,6 +131,7 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-bake".into()] },
         outputs: vec!["osm".into()],
         run: Run::Rust(obc_bake::step::osm),
+        client: false,
     }
 }
 
@@ -153,6 +156,7 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec!["cells".into()],
         run: Run::Rust(obc_pack::step::cells),
+        client: true,
     }
 }
 
@@ -225,14 +229,17 @@ fn reference(
         return Ok(None);
     }
     let tiles: Vec<String> = tiles.iter().map(|(ti, tj)| format!("{ti:04}/{tj:04}")).collect();
-    Ok(Some(crate::python(
-        &name,
-        inputs,
-        serde_json::json!({"models": models, "tiles": tiles}),
-        ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
-        &REFERENCE_CODE,
-        &["reference"],
-    )))
+    Ok(Some(Step {
+        client: false,
+        ..crate::python(
+            &name,
+            inputs,
+            serde_json::json!({"models": models, "tiles": tiles}),
+            ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
+            &REFERENCE_CODE,
+            &["reference"],
+        )
+    }))
 }
 
 /// The code of a reference step besides the uv environment: the merge, the ingest tool that it
@@ -265,6 +272,7 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
         code: Code { paths: Vec::new(), crates: vec!["obc-dem".into()] },
         outputs: vec!["terrain".into()],
         run: Run::Rust(obc_dem::step::terrain),
+        client: true,
     }
 }
 
@@ -528,6 +536,7 @@ pub(crate) mod tests {
         };
         let osm = r#"maps/osm ["osm/0037-0032.osm.pbf"]"#;
         assert_eq!(reads("maps/osm"), [EXTRACTS]);
+        assert!(steps.iter().all(|step| step.client == (step.name != "maps/osm")), "no client reads the OSM");
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
         for band in ["mid", "fine", "network"] {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
