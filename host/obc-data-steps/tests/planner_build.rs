@@ -149,7 +149,8 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
 
     assert_eq!(plan(&store, &root, &steps(true)).unwrap().groups.len(), 0);
-    assert!(release(&store, &root, "planner", &steps(true)).unwrap().is_some(), "the store has every layer");
+    let release = release(&store, &root, "planner", AREA, &[], &steps(true)).unwrap();
+    assert!(release.is_some(), "the store has every layer");
 }
 
 /// A stand-in for the Nominatim archive: the settings of Germany, and a country grid in which the

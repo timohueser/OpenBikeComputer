@@ -528,11 +528,14 @@ looks at the steps in dependency order:
 A group is one change. Two builds are in the same group when one reads the layer of the other.
 Thus a run of one group never needs a build of another group. Two groups can need the same
 fetch. `--only GROUP,…` selects groups by their `id`. An `id` names a group only in the plan that
-it comes from.
+it comes from. A plan of `live` has one group per cause instead: see
+[Changes of live](#changes-of-live).
 
 | Key | Value |
 | --- | --- |
 | `id` | The step of the first build of the group, in dependency order |
+| `cause` | `null`. A plan of `live` gives the cause |
+| `layers`, `drops` | `[]`. A plan of `live` gives the layers that the cause changes, as `builds` gives them |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
 | `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build) and `estimate` |
 
@@ -543,6 +546,36 @@ record of the version. When that record does not list them all, it is the size i
 another version that lists them all, the last in byte order. Without `files`, the files are those
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
 fetches a version with the same `params` once, with the files of every group that needs it.
+
+### Changes of live
+
+A plan of `live` compares the steps with the layers of the live releases (see [Live](#live)). A
+layer changes when it differs from its live layer as [State of a layer](#state-of-a-layer) says,
+or when live does not have it. The plan has one group per cause. A layer can have more causes:
+
+| `cause.kind` | `id` | The layers that it changes |
+| --- | --- | --- |
+| `region` | `region` | `region` of the environment is not the `region` of the live release of a product, or the product has nothing live. Each layer of the product that live does not have, or whose options or snapshot reads differ |
+| `layers` | `layers` | `layers` of the environment are not the `optional` layers of the live release of a product. Each layer of the product that live does not have |
+| `move` | `move:SOURCE` | The plan moves the source (see [Versions](#versions)). Each layer that reads it at another version than its live layer. `from` is each version that live reads, and `to` is the version of the plan |
+| `code` | `code:LAYER` | The code that the steps declare (`paths` and `crates`) is not the code of their live layers: other inputs, command, outputs or code hash. Without an edit of the region, also other options or snapshot reads. `LAYER` is the first layer in dependency order. A live layer that no step makes, without an edit, has empty code |
+| `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
+
+A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
+cause changes, in dependency order, each with its `recipe` and `key` as in `builds`. `drops` are
+the live layers of a product that no step makes now. Their cause is the edit of the product, or
+else `code`. The `fetches` and `builds` of a group make its `layers` and the layers that they
+read, when the store lacks them. Those of `repair` make the unchanged layers of its keys that the
+store lacks. Groups come in the order of the table. Two groups can need the same build.
+
+A plan of `live` takes every group: git holds what live contains, so an edit or a change of the
+code cannot stay out. `--only move:SOURCE,…` selects the moves: a move that it does not select
+does not move, and the steps read the version of live. An explicit `--move` that `--only` leaves
+out gives a warning. Another `id` in `--only` is a usage error.
+
+The release of a product after a plan is its live release with the `layers` of the groups in place
+of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
+environment (`Release::compose`). A product that no group or edit changes keeps its release.
 
 ### Runs
 
@@ -601,6 +634,11 @@ one function (`obc_data::product::version`), in this order:
    fetch of it without that value fails with `usage` and the fix `Plan with --move
    SOURCE@VERSION`.
 
+A plan or a build of `live` without `--plan` also moves each stale source that live reads (see
+[State of a source](#state-of-a-source)) to the newest upstream version of the check of the last
+hour, as `--move SOURCE@VERSION` does. Each source is one group, `move:SOURCE`. A stale source that
+no step list reads, and a `manual` source, do not move this way.
+
 A source with `refresh = "manual"` moves only with `--move`: step 4 does not fetch it, and the
 command fails with `blocked` and the fix `Plan with --move SOURCE@VERSION`. Before the first apply,
 nothing is live, so a plan takes the versions of the store and of upstream. The fetch of a
@@ -631,21 +669,44 @@ environment, `build` fails with `blocked`. An error of the store, a file or the 
 in a step list fails the command with `failed`.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
-`region` and `layers` of the environment, `moves`, the version of each `--move` (a `--move SOURCE`
-has the version that its fetch gave), `versions`, the version of each fetch that the step lists
-read, and `only`, the groups that `--only` selected or `[]` for every group. `build ENV --plan
-FILE` builds the groups of that file, or those of them that its own `--only` selects; it takes no
-`--move` and does not read live. Its step lists read the `versions` of the file and no other
-version. A version that the store lacks is fetched; when that fetch fails, the command fails with
-its code, and a fix that says to plan again when the fetch gives none. It refuses the file, with exit status 3, before it builds:
+`region` and `layers` of the environment, `moves`, the version of each source that the plan moves
+(a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
+the step lists read, and `only`, the groups that `--only` selected or `[]` for every group. A plan
+of `live` also has:
 
-- when `env`, `region`, `layers` or `blocked` differ from the environment and its products;
+- `live`: per product, the id of its live release, or `null` when nothing is live.
+- `edits`: per product, `region` with `from` (the region of the live release, or `null` when
+  nothing is live) and `to`, and `layers` with the optional layers that the environment switches
+  `on` and `off`.
+- `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: each key of the
+  listing of the owned prefixes, or without a listing each key that live uses, that the releases
+  after the plan do not use. Those are the keys of their layers and input copies, the pointers and
+  the files under `<prefix>/releases/<id>/`. A layer that the store lacks counts with all the
+  objects of its live layer, because its new objects are not known yet; an apply keeps an object
+  that a new release uses.
+- `listed`: whether the plan listed R2. A listing needs the bucket. Without it, the plan has no
+  `repair` group, `remove` lacks the leftovers and the files of `<prefix>/releases/<id>/`, and
+  `bytes` is `null` for a record.
+
+Another environment has `[]` for `live`, `edits` and `remove`, and `false` for `listed`.
+
+`build ENV --plan FILE` builds the groups of that file; it takes no `--only` and no `--move`. Its
+step lists read the `versions` of the file and no other version, and it moves the sources of
+`moves`. A version that the store lacks is fetched; when that
+fetch fails, the command fails with its code, and a fix that says to plan again when the fetch
+gives none. It refuses the file, with exit status 3, before it builds:
+
+- when `env`, `region`, `layers`, `blocked`, `live` or `edits` differ from the environment, its
+  products and live now;
 - when a step list reads a fetch that `versions` does not name;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
-  apart from `estimate` and `bytes`.
+  apart from `estimate` and `bytes`. Against live, the groups must change the same layers, by
+  recipe, with the same causes and drops, whatever the store has: a second build of one plan does
+  the same work.
 
 When the store has the layer of every step of a product after the run, `build` writes the
-release of that product.
+release of that product. A build of `live` writes the release of each product that its groups or
+edits change, as [Changes of live](#changes-of-live) composes it.
 
 #### `maps`
 
@@ -711,9 +772,10 @@ byte order.
 
 ### Releases
 
-`releases/<product>/<id>.json` is the manifest of a release: `{"product", "layers"}`, as the
-compact output of `serde_json` with the keys of each object in byte order. The id is the
-SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
+`releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
+"layers"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+`region` is the region of the environment that it was built for, and `optional` the optional layers
+of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
 the same layers make the same release. `layers` is sorted by `step`, and each layer has:
 
 | Key | Meaning |
@@ -795,8 +857,8 @@ first writes the status, and the second writes an error.
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the old cache directories with their files and sizes. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
-| `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products). `--move` is in [Versions](#versions) |
-| `obc data build ENV [--only GROUP,…] [--plan FILE \| --move SOURCE[@VERSION]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built. It uploads nothing |
+| `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products). `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
+| `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
@@ -1050,7 +1112,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "releases": {
-          "description": "The release of each product whose every layer is built.",
+          "description": "The release of each product whose every layer is built. For `live`, the release of each\nproduct that the groups change: its live layers with the layers of the groups.",
           "items": {
             "$ref": "#/$defs/BuiltRelease"
           },
@@ -1354,6 +1416,72 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Edit": {
+      "description": "What the environment file changes against the live release of a product.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "`from` is `None` when the product has nothing live.",
+          "properties": {
+            "from": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "region",
+              "type": "string"
+            },
+            "product": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "product",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The optional layers that the environment switches on and off.",
+          "properties": {
+            "kind": {
+              "const": "layers",
+              "type": "string"
+            },
+            "off": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "on": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "product": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "product",
+            "on",
+            "off"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Edited": {
       "description": "An environment file after an edit.",
       "properties": {
@@ -1388,6 +1516,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "edits": {
+          "description": "For `live`: what the environment file changes against the live releases.",
+          "items": {
+            "$ref": "#/$defs/Edit"
+          },
+          "type": "array"
+        },
         "env": {
           "type": "string"
         },
@@ -1403,11 +1538,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "listed": {
+          "description": "For `live`: whether the plan listed R2, which needs the bucket. Without a listing, the plan\nhas no `repair` group, and `remove` lacks the leftovers and the files that a client finds\nby name.",
+          "type": "boolean"
+        },
+        "live": {
+          "description": "For `live`: the release that each product has live now. Empty for another environment.",
+          "items": {
+            "$ref": "#/$defs/LiveRelease"
+          },
+          "type": "array"
+        },
         "moves": {
           "additionalProperties": {
             "type": "string"
           },
-          "description": "The version of each source that `--move` names. A `--move SOURCE` has the newest version\nupstream that the plan fetched.",
+          "description": "The version of each source that the plan moves: each `--move`, and for `live` each stale\nsource that the step lists read. A move without a version has the version that its fetch\ngave.",
           "type": "object"
         },
         "only": {
@@ -1419,6 +1565,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "region": {
           "type": "string"
+        },
+        "remove": {
+          "description": "For `live`: the keys that an apply of the plan removes from R2.",
+          "items": {
+            "$ref": "#/$defs/Removal"
+          },
+          "type": "array"
         },
         "versions": {
           "description": "The version of each fetch that the step lists read. `build --plan` reads exactly these.",
@@ -1434,9 +1587,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers",
         "moves",
         "versions",
+        "live",
+        "edits",
         "only",
         "groups",
-        "blocked"
+        "blocked",
+        "remove",
+        "listed"
       ],
       "type": "object"
     },
@@ -2146,6 +2303,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "LiveRelease": {
+      "additionalProperties": false,
+      "properties": {
+        "product": {
+          "type": "string"
+        },
+        "release": {
+          "description": "`None` when nothing is live.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "product",
+        "release"
+      ],
+      "type": "object"
+    },
     "Object": {
       "description": "One object in the bucket.",
       "properties": {
@@ -2241,6 +2418,117 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "PlanCause": {
+      "description": "Why a group changes live.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The environment names another region than a live release, or a product has nothing live.",
+          "properties": {
+            "kind": {
+              "const": "region",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The environment switches on other optional layers than a live release has.",
+          "properties": {
+            "kind": {
+              "const": "layers",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A `--move`, or a stale source: the layers read `to`, not the versions that live reads.",
+          "properties": {
+            "from": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "move",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The code that the steps declare is not the code of their live layers, or it gives other\noptions or inputs. A layer that live has and the steps do not make has no code.",
+          "properties": {
+            "crates": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "code",
+              "type": "string"
+            },
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "paths",
+            "crates"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The keys of live that R2 lacks, or holds with another size. Its builds make the unchanged\nlayers of those keys that the store lacks.",
+          "properties": {
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "repair",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "keys"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "PlanFetch": {
       "additionalProperties": false,
       "properties": {
@@ -2294,12 +2582,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "PlanGroup": {
       "additionalProperties": false,
-      "description": "One change: builds that read each other's layers, and the fetches that they need. A group\nnever needs a build of another group, so each can be selected alone. Two groups can need the\nsame fetch.",
+      "description": "One change, and the fetches and builds that it needs. Without live, a group is builds that read\neach other's layers: it never needs a build of another group, so each can be selected alone.\nAgainst live, a group is one cause, and two groups can need the same build. Two groups can need\nthe same fetch.",
       "properties": {
         "builds": {
           "description": "In dependency order.",
           "items": {
             "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
+        "cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanCause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why live changes; `None` without live."
+        },
+        "drops": {
+          "description": "The live layers that the release no longer has.",
+          "items": {
+            "type": "string"
           },
           "type": "array"
         },
@@ -2310,12 +2616,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "id": {
-          "description": "The step of its first build. It names the group only in the plan that it comes from.",
+          "description": "It names the group only in the plan that it comes from.",
           "type": "string"
+        },
+        "layers": {
+          "description": "The layers that the cause changes, in dependency order, each with its recipe and key as in\n`builds`.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
         }
       },
       "required": [
         "id",
+        "cause",
+        "layers",
+        "drops",
         "fetches",
         "builds"
       ],
@@ -2694,6 +3010,28 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "regions"
+      ],
+      "type": "object"
+    },
+    "Removal": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "description": "`None` for the record of an input copy, whose size is not known before a listing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "bytes"
       ],
       "type": "object"
     },

@@ -29,6 +29,9 @@ pub struct Env {
     /// Source id to the version of a `--move SOURCE@VERSION`. `None` for `--move SOURCE`: the
     /// newest upstream version, until a fetch names it.
     pub moves: BTreeMap<String, Option<String>>,
+    /// The sources of `moves` that move because they are stale, not by a `--move`. No step list
+    /// needs to read them.
+    pub stale: BTreeSet<String>,
     /// The versions of a saved plan. A step list then reads exactly these, and a fetch that they
     /// lack is not in the plan.
     pub planned: Option<Versions>,

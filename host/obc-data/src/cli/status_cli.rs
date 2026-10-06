@@ -148,7 +148,10 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
             format!("{} files, {}; `obc data clean --apply` moves them into the store", dir.files, bytes(dir.bytes));
         attention.push(Attention { kind: AttentionKind::OldCache, about: dir.dir.display().to_string(), reason });
     }
-    let check = check.then(|| live.check(&remote)).transpose().map_err(|e| Code::R2Failed.error(e))?;
+    let check = check
+        .then(|| live.list(&remote).map(|listed| live.check(&listed)))
+        .transpose()
+        .map_err(|e| Code::R2Failed.error(e))?;
     if let Some(check) = &check {
         let about = "R2".to_string();
         if !check.drift.is_empty() {
