@@ -476,15 +476,17 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   A prepared compiler binding requires an explicit `target` and a checked builder in the step
   options. It does not use the host compiler as the identity of a target executable.
 - Native Rust adds the selected compiler and Cargo executable digests, their verbose versions,
-  its compiler libraries, native link driver and linker digests, and ordered compiler flags.
+  its compiler and selected-host sysroot libraries, native link driver and linker digests,
+  and ordered compiler flags.
   The C compiler enters the identity when the selected closure uses `cc`. Rustup proxies
   resolve to the actual selected executables in the checkout. A native target must match the
   selected compiler host. Both compiler bindings add the selected dev/release profile settings,
   its build override and applicable package overrides. Named package overrides use the selected
   closure; `*` applies only when that closure contains a non-workspace package. Unselected
   profiles and package overrides add no records. Profile inheritance and package-ID overrides
-  are refused. Tool bytes are cached within a checking context and revalidated at execution
-  boundaries; a changed tool invalidates its cached digest.
+  are refused. Tool discovery and bytes are cached within a checking context. Each execution
+  boundary checks tool, library, environment and selection/config witnesses. A change runs
+  discovery again and invalidates changed file digests.
 - Native discovery checks Cargo config in the checkout, its ancestors and Cargo home. It
   refuses build overrides except jobs and target directories. Network, registry, terminal and
   alias settings add no byte identity. The supported flags are ordered `--cfg` and explicit
