@@ -1346,7 +1346,7 @@ pub(crate) mod tests {
 
     #[test]
     fn preparation_fails_when_a_product_keeps_usable_steps_after_a_failed_fetch() {
-        use crate::fetch::tests::{quick, serve, whole, Reply};
+        use crate::fetch::tests::{not_found, quick, serve};
         struct Softened;
         impl Product for Softened {
             fn name(&self) -> &'static str {
@@ -1368,7 +1368,7 @@ pub(crate) mod tests {
                 Ok(listed)
             }
         }
-        let (url, requests) = serve(|_, _| Reply { status: 404, ..whole(b"missing") });
+        let (url, requests) = serve(|_, _| not_found());
         let fixture = fixture("prepare-softened-fetch");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(

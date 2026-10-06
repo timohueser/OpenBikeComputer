@@ -471,7 +471,7 @@ pub(crate) mod tests {
         source
     }
 
-    fn not_found() -> Reply {
+    pub(crate) fn not_found() -> Reply {
         Reply { status: 404, headers: vec![], body: vec![], length: 0 }
     }
 
