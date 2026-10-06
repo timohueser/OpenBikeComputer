@@ -3,14 +3,14 @@
 pub mod maps;
 pub mod planner;
 
-use obc_data::engine::{Client, Code, Input, Run, Step};
+use obc_data::engine::{Client, Code, Input, Python, Run, Step};
 use obc_data::product::Product;
 use serde_json::Value;
 
 pub const PRODUCTS: &[&dyn Product] = &[&maps::Maps, &planner::Planner];
 
-/// The uv environment, and the request of a step: code of every Python step.
-pub(crate) const PYTHON: [&str; 4] = [".python-version", "pyproject.toml", "uv.lock", "tools/step_request.py"];
+/// The request protocol imported by every Python step.
+pub(crate) const PYTHON: [&str; 1] = ["tools/step_request.py"];
 
 /// A Python step: `entry`, a `tools.*` module or a script, with the argument `--step`, under `uv
 /// run` with the packages of `group` of `pyproject.toml`. `files` is its code besides [`PYTHON`]:
@@ -25,8 +25,18 @@ pub(crate) fn python(
     files: &[&str],
     outputs: &[&str],
 ) -> Step {
-    let mut argv: Vec<String> =
-        ["env", "PYTHONHASHSEED=0", "uv", "run", "--locked", "--offline"].map(String::from).into();
+    let mut argv: Vec<String> = [
+        "env",
+        "PYTHONHASHSEED=0",
+        "uv",
+        "run",
+        "--locked",
+        "--offline",
+        "--no-default-groups",
+        "--no-python-downloads",
+    ]
+    .map(String::from)
+    .into();
     argv.extend(group.into_iter().flat_map(|group| ["--group".to_string(), group.to_string()]));
     argv.push("python".into());
     if !entry.ends_with(".py") {
@@ -38,7 +48,7 @@ pub(crate) fn python(
         name: name.into(),
         inputs,
         options,
-        code: Code { paths, crates: Vec::new() },
+        code: Code { paths, python: Some(Python { group: group.map(str::to_string) }), ..Default::default() },
         outputs: outputs.iter().map(|output| output.to_string()).collect(),
         run: Run::Command(argv),
         client: Client::All,

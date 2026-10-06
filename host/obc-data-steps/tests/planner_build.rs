@@ -98,12 +98,12 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
             if step.name == "planner/basemap" {
                 step.inputs = vec![Input::layer("planner/places")];
                 step.options = serde_json::json!({"kind": "planner/basemap"});
-                step.code = Code { paths: Vec::new(), crates: vec!["obc-data".into()] };
+                step.code = Code { paths: Vec::new(), crates: vec!["obc-data".into()], ..Default::default() };
                 step.run = Run::Rust(local_files);
             } else if ["planner/assets", "planner/model"].contains(&step.name.as_str()) {
                 step.inputs.clear();
                 step.options = serde_json::json!({"kind": step.name});
-                step.code = Code { paths: Vec::new(), crates: vec!["obc-data-steps".into()] };
+                step.code = Code { paths: Vec::new(), crates: vec!["obc-data-steps".into()], ..Default::default() };
                 step.run = Run::Rust(local_files);
             }
         }

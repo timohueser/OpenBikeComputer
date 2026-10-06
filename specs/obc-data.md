@@ -428,7 +428,7 @@ A step declares:
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
 | `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
 | `options` | A JSON object |
-| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
@@ -445,22 +445,40 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
 - The digest of a snapshot input lists its selected files by `name`.
 - The digest of a layer lists its files by `path`. The digest of a layer input lists the files
   that it selects.
-- The code hash lists the code files by their path relative to the repository root, with `/`.
+- The code hash lists file paths and named dependency fingerprints, each to its SHA-256.
   A path adds the files that `git ls-files --cached --others --exclude-standard` lists for
   it: the files that git tracks or does not ignore. A path that lists no file fails the step,
-  and so does a repository root that is not a git checkout. A crate adds its `Cargo.toml`, `build.rs`
-  and `src/` the same way. Each path dependency that is not a dev-dependency adds the same,
-  and so do its own path dependencies, as `cargo metadata --no-deps` lists them. A path
-  dependency must be a workspace member. The walk stops at the engine crate `obc-data`: the
-  engine only selects inputs, and what it selects is in the input digests. A crate that the
-  walk reaches through another crate is still code. A step whose bytes use `obc_data::sources`,
-  such as an attribution, declares `data/sources.toml` in its code paths. A `.rs` file of a
-  crate also adds each file that it names in `include_str!`, `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs`
-  file adds its own. The name is a string literal, normal or raw, relative to the file, or a
-  `concat!` of string literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`.
-  These are not code unless the step declares them: a name that a literal with an escape, a
-  constant or another macro gives; `#[path]` in an inline module; a file that `build.rs` reads;
-  and `Cargo.lock`.
+  and so does a repository root that is not a git checkout. Explicit paths hash the full file.
+- A crate adds its `Cargo.toml`, `build.rs` and `src/` the same way. Automatic manifest hashes
+  omit top-level and target-specific dev-dependency tables. The resolved normal and build
+  dependencies add local crate files, registry checksums or resolved Git revisions. Local
+  crates must be inside the checkout. Each selected package adds its name, version, edition,
+  resolved package settings and features under `cargo/<name>@<version>#<source>`. Cargo metadata runs locked,
+  offline and for the native host target. Features use Cargo's workspace resolution. This
+  conservative union can rebuild a step when another producer enables a shared feature.
+  Dev-only and unrelated packages add no records. The walk stops at the engine crate
+  `obc-data`: its selected inputs enter the input digests.
+- A `.rs` file of a selected crate adds each file that it names in `include_str!`,
+  `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs` file adds its own.
+  The name is a string literal, normal or raw, relative to the file, or a `concat!` of string
+  literals, relative to the file or after `env!("CARGO_MANIFEST_DIR")`. These are not code
+  unless the step declares them: a name that a literal with an escape, a constant or another
+  macro gives; `#[path]` in an inline module; and a file that `build.rs` reads.
+- `sources` adds each named source's content settings under `data/sources.toml#<id>`.
+  Acquisition, coverage, version scheme and licence settings enter this projection.
+  Refresh policy, credentials, host permissions and input-copy controls do not. Unnamed
+  sources add no records.
+- `python` adds the locked base packages and selected group under `python/packages/<group>`.
+  A null group selects only the base packages. `uv export --locked --offline` selects the
+  dependency closure without default groups. The sorted requirement records retain package
+  sources, versions, hashes and markers. `python/runtime` holds the implementation, full
+  version and ABI of the interpreter that `uv python find --system --offline --no-python-downloads`
+  selects for the project, with an explicit `UV_PYTHON` request when set. Before execution, the
+  engine checks this code identity again and sets the child `UV_PYTHON` to that interpreter.
+  The project environment can change the environment location, but not the base interpreter.
+  A no-sync override cannot retain an incompatible interpreter. Discovery does not download,
+  install or sync. A missing interpreter
+  fails with a request to prepare the runtime.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
 of each object in byte order:
@@ -478,11 +496,10 @@ An input layer enters a key with its digest, not with its key. A rebuild that gi
 files gives the same digest, so the keys of the layers that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
-A key holds no version of an installed tool, such as the Python interpreter or Java. The first
-Python step that ships adds a `uv.lock`; from then on, a Python step runs with
-`uv run --locked` and declares `uv.lock` as code. A Rust step runs the code of the running
-binary, but its code hash comes from the files in the repository root. `obc data` runs with
-`cargo run` in the checkout that it reads, so the two are the same sources.
+A Rust step runs the code of the running binary, but its code hash comes from the checkout.
+`obc data` runs with `cargo run` in that checkout. Code identity does not bind the running
+binary or detect a source change during a run. External prepared tools enter through their
+selected snapshot bytes.
 
 The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name", "files"}`
 for a layer and `{"kind", "name", "version", "params", "files"}` for a snapshot, `params` and
@@ -894,13 +911,13 @@ only its producer, its grid and the final index. The engine release manifest hol
 and preparation provenance; the client manifest holds the [planner release](planner-release.md)
 data. It contains no deployment probe, device catalogue snapshot or source mirror.
 
-A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --group <group> python
-<entry> --step` in the repository root, with the packages of a dependency group of
-`pyproject.toml`; `uv sync --all-groups` installs them on a machine. The fixed hash seed keeps
-the order of a set out of the bytes. Its code is each Python file that it imports, each file
-that it reads from the repository, `tools/step_request.py`, `.python-version`, `pyproject.toml`
-and `uv.lock`. A credit that it writes comes in its options, so `data/sources.toml` is no code
-of it.
+A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --no-default-groups
+--no-python-downloads --group <group> python <entry> --step` in the repository root.
+`uv sync --all-groups` prepares the packages on a machine. The fixed hash seed keeps the order
+of a set out of the bytes. Its code names the selected Python group, each Python file that it
+imports, each file that it reads from the repository and `tools/step_request.py`. The selected
+locked package closure and interpreter enter its code identity. A credit that it writes comes
+in its options, so it needs no source content projection.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
