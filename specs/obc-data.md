@@ -955,7 +955,8 @@ Routing also binds the selected release profile. Search source selection uses Gi
 declared file list on the initiating host; the container receives that same list.
 Each step writes `<service>.tar.gz` and `runtime.json`; only the archive is a client file.
 The descriptor is a named release reference under `runtime/<service>.json`. It binds the
-service, target, archive hash and size, required shared libraries and entry point.
+service, target, archive hash and size, required host libraries and entry point.
+Libraries supplied by archive ELF files are not host requirements.
 
 Archives retain dependency metadata and licences. They contain no checkout, virtual
 environment, builder paths or recipe key. Search keeps its model in the separate data input.
@@ -980,6 +981,8 @@ paths. Host architecture, glibc, shared libraries and interpreter versions must 
 runtime descriptor. Search uses packaged Python dependencies with site packages disabled.
 Readiness reports the opened routing package, search grid and model file hashes, or downloads
 catalogue hash. An expected identity in an environment variable is not readiness evidence.
+Probes bind these results to the running process, its runtime files, and the requested site
+origin or shared object pool. Reloaded unit configuration alone cannot prove runtime readiness.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
