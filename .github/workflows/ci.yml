@@ -121,18 +121,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: &python-uv-version "0.8.17"
       - name: Install Python test reporter
-        # `--group` reads the dependency groups of pyproject.toml; pip has it from 25.1.
-        run: |
-          python -m pip install --upgrade "pip>=25.1"
-          pip install -r tools/requirements-test.txt --group planner-snow --group planner-sun
+        run: uv sync --locked --group dev --group planner-snow --group planner-sun
       - name: Test plan drift
-        run: python3 tools/test_plan.py check
+        run: uv run --locked --group dev python tools/test_plan.py check
       - name: Repository tool unit tests
         id: python-repository-tools
         run: |
           rm -rf .artifacts/python/repository-tools
-          python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
+          uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       - name: Upload repository Python test results
         if: ${{ !cancelled() && (steps.python-repository-tools.outcome == 'success' || steps.python-repository-tools.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -242,7 +242,7 @@ jobs:
           java-version: "21"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          version: "0.8.17"
+          version: *python-uv-version
       - name: Cache content-addressed developer fixtures
         uses: actions/cache@v4
         with:
@@ -263,25 +263,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: |
-            tools/requirements-test.txt
-            pyproject.toml
       - name: Install Python test reporter
-        # `--group` reads the dependency groups of pyproject.toml; pip has it from 25.1.
-        run: |
-          python -m pip install --upgrade "pip>=25.1"
-          pip install -r tools/requirements-test.txt --group planner-snow --group planner-sun
+        run: uv sync --locked --group dev --group planner-snow --group planner-sun
       - name: firmware resource/dependency tool unit tests
         id: python-firmware-tools
         run: |
           rm -rf .artifacts/python/firmware-tools
-          python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
+          uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
       - name: reference archive ingest unit tests
         id: python-dem-reference
         run: |
           rm -rf .artifacts/python/dem-reference
-          uv run --locked --group terrain-reference --with-requirements tools/requirements-test.txt python -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference
+          uv run --locked --group terrain-reference --group dev python -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference
       - name: Upload reference archive Python test results
         if: ${{ !cancelled() && (steps.python-dem-reference.outcome == 'success' || steps.python-dem-reference.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -395,9 +388,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: *python-uv-version
       - name: Prepare web-builder packer tests
         run: |
-          pip install -r builder/requirements-dev.txt
+          uv sync --locked --group builder-test
           cargo build -p obc-pack --release --locked
       - name: Packer binary and corpus are present
         run: |
@@ -408,7 +404,7 @@ jobs:
         run: |
           mkdir -p .artifacts/python
           rm -f .artifacts/python/builder.xml
-          PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml
+          PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml
       - name: Upload builder Python test results
         if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1220,12 +1216,15 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: *python-uv-version
       - name: Install Linux launch dependencies
         run: |
           sudo apt-get update
           webkit_version=$(apt-cache policy libwebkit2gtk-4.1-0 | awk '/Candidate:/ {print $2}')
           sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
-          pip install -r apps/obc-desktop/e2e/requirements.txt
+          uv sync --locked --group desktop-e2e
           cargo install tauri-driver --version 2.0.6 --locked
           chmod +x apps/obc-desktop/target/release/obc-desktop
           dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
@@ -1233,7 +1232,7 @@ jobs:
         id: launch
         env:
           OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
-        run: xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
+        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py
       - name: Upload Linux launch evidence
         if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1262,8 +1261,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci --prefix apps/planner-search
-      - run: python -m venv apps/planner-search/.venv
-      - run: apps/planner-search/.venv/bin/pip install -r apps/planner-search/query/requirements.txt
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: *python-uv-version
+      - run: UV_PROJECT_ENVIRONMENT="$PWD/apps/planner-search/.venv" uv sync --locked --group search-test
       - run: npm test --prefix apps/planner-search
       - run: npm run test:query --prefix apps/planner-search
       - run: npm ci --prefix apps/planner-tiles
