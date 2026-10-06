@@ -52,9 +52,10 @@ band rather than only by cell size because two semantic bands MAY use the same
 `terrain` is a **reserved** segment under `cells/`: it holds the terrain artifact
 class (§13), which is not a band. A schema MUST NOT declare a band with that id.
 
-`landmarks/` holds the landmark artifact class (§14), one directory per region.
-Nothing in it is fetched to build a map: the cells already carry the landmark
-content, and these objects are the provenance and the licence record behind it.
+`landmarks/` holds the compiled landmarks of each region (§14.1) of a store whose
+cells carry their landmark sections. Nothing in it is fetched to build a map: the
+cells already carry the landmark content, and these objects are the provenance and
+the licence record behind it.
 
 `LICENSE.txt` is the store's human-readable provenance and licence statement,
 generated from the root's `source` block (§3.1); it keeps a stable key because a
@@ -626,16 +627,19 @@ A known-empty terrain square is canonical coverage that happens to be void. A co
 MUST include it in selection coverage and hole detection and MUST NOT fetch an object
 for it — the same treatment §8 gives an empty band cell.
 
-## 14. Landmark artifacts
+## 14. Landmark and peak artifacts
 
-Landmarks are compiled Wikipedia, Wikidata and Commons content, published as a
-**third artifact class with its own revision track**. It is not a band, not a
-section, and not covered by §10.
+Landmarks are compiled Wikipedia, Wikidata and Commons content (OBCM §9). Peaks
+are the articles of OSM summits from the same sources (OBCM §10). Each is an
+**artifact class of its own** on the grid of the core band, like terrain (§13).
+It is not a band and not covered by §10. A landmark or peak refresh changes no
+map cell, and a map cell has no landmark or peak section when the store has these
+artifacts (§14.3).
 
-**No consumer downloads one.** A cell carries the landmark sections it was cut
-from, so a map the assembler builds has landmarks with no extra object. This
-block exists for two other reasons: it is the provenance of content that is not
-OpenStreetMap, and it carries a licence obligation.
+A store whose cells were cut with their landmark sections publishes the
+`landmarks` block (§14.1): it is the provenance of content that is not
+OpenStreetMap, and it carries a licence obligation. No consumer downloads the
+objects that it lists.
 
 A catalog with no `landmarks` block is complete and valid.
 
@@ -711,10 +715,33 @@ per article and per photo; the device displays them beside the place.
 `landmarks` block.** The section is the text and the photos; the block is the only
 place their credit is published. The two travel together or neither is publishable.
 
-### 14.3 Declaration
+### 14.3 Artifacts per core cell
 
-Every published artifact MUST carry `landmarks.json` beside its content document:
-the region, the recipe version, the digests of the boundary, the category policy,
-the UI language set and the candidate list it was captured under, and `sha256`.
-A producer MUST refuse to publish an artifact directory without one — an artifact
-that cannot say what it was compiled from is a licence statement no one can check.
+A landmark or peak artifact holds the content of one cell of the core band
+(OBCA, `2^18` µdeg in the recommended band table). A cell owns a landmark when
+the cell holds its display coordinate, and an association when the cell holds
+its summit node, both by the half-open rules of OBCM §9.4 and §10.4. A cell that
+owns no content has no artifact.
+
+| Class | Path in the layer | Bytes |
+| :-- | :-- | :-- |
+| landmark | `landmarks/<i>/<j>.bin` | The OBCM §9 section of the cell, exactly its section length, then the OBCM §7.5 hours pool that the hours references of its records index |
+| peak | `peaks/<i>/<j>.bin` | The OBCM §10 section of the cell, exactly its section length |
+
+`<i>` and `<j>` are those of the cell id, with the zero padding of OBCA §1.3.
+Offsets inside a section are relative to the section, as in a map.
+
+The assembler reads an artifact as it reads the section of a core cell. It merges
+the artifacts and the sections of the core cells by the rules of OBCM §9.4 and
+§10.4, collects the schedules of the landmark artifacts into the map's one hours
+pool, and copies the content into the landmark and peak regions of the map.
+
+### 14.4 Keys
+
+An artifact has no revision number. Its key is content, as
+[obc-data.md](obc-data.md) defines it: the compiled capture, and for landmarks
+the OSM of the cell's leaf, which gives the OSM link and the hours of a landmark;
+the options; and the code. The key of the compiled capture is the capture, the
+region's `.poly` and extract, and the compiler code. A capture names the extract
+and the `.poly` that it read by their SHA-256, so its version says which OSM it
+found its places in.
