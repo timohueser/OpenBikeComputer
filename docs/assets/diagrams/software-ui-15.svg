@@ -1,0 +1,33 @@
+<svg viewBox="0 0 720 192" role="img" aria-label="One timeline row dissected, plus the source cue legend. The row is amber because it is under the cursor: line one carries a category icon with a small diamond pip beside it and the ellipsized name Fontaine du port; line two carries the distance to go, a climb to go prefixed by an up triangle, and at the right edge a left-pointing triangle followed by 271 metres, the off-route side hint. To the right, four icon states: a map POI unselected in muted olive, a map POI under the cursor in ink, a custom waypoint in amber with a pip, and a custom waypoint under the cursor in ink with a pip." xmlns="http://www.w3.org/2000/svg" width="720" height="192" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">The row · the source cue</text>
+
+  <!-- the row (selected: amber) -->
+  <rect x="24" y="44" width="392" height="66" rx="6" class="d-amber" fill="#f4a81d" />
+  <circle cx="52" cy="70" r="7" fill="#000" /><path d="M45 67 l7 -9 l7 9 z" fill="#000" />
+  <path d="M66 56 l4 4 l-4 4 l-4 -4 z" fill="#000" />
+  <text x="80" y="76" font-family="var(--mono)" style="font-size:12.5px;fill:#000" fill="#1c1b14">Fontaine du port</text>
+  <text x="34" y="100" font-family="var(--mono)" style="font-size:12px;fill:#000" fill="#1c1b14">219m</text>
+  <path d="M228 93 l5 -7 l5 7 z" fill="#000" />
+  <text x="242" y="100" font-family="var(--mono)" style="font-size:12px;fill:#000" fill="#1c1b14">13m</text>
+  <path d="M352 96 l9 -5 l0 10 z" fill="#000" />
+  <text x="406" y="100" text-anchor="end" font-family="var(--mono)" style="font-size:12px;fill:#000" fill="#1c1b14">271m</text>
+
+  <!-- callouts -->
+  <text class="d-sub" x="24" y="128" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">icon + pip</text>
+  <text class="d-sub" x="96" y="128" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">name, ellipsized to fit</text>
+  <text class="d-sub" x="24" y="142" style="font-size:12px" fill="#5c5a2e" font-size="12px">distance-to-go</text>
+  <text class="d-sub" x="214" y="142" style="font-size:12px" fill="#5c5a2e" font-size="12px">climb-to-go</text>
+  <text class="d-sub" x="416" y="142" text-anchor="end" style="font-size:12px" fill="#5c5a2e" font-size="12px">side, past 50 m</text>
+
+  <!-- source cue legend -->
+  <text class="d-tag" x="444" y="60" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">the icon says which source</text>
+  <g>
+    <circle cx="460" cy="80" r="6" fill="#6b7758" /><text class="d-sub" x="478" y="84" style="font-size:12px" fill="#5c5a2e" font-size="12px">map POI</text>
+    <circle cx="460" cy="102" r="6" fill="#24331c" /><text class="d-sub" x="478" y="106" style="font-size:12px" fill="#5c5a2e" font-size="12px">map POI · cursor</text>
+    <circle cx="460" cy="124" r="6" fill="#ffaa00" /><path d="M472 116 l3.5 3.5 l-3.5 3.5 l-3.5 -3.5 z" fill="#ffaa00" />
+    <text class="d-sub" x="484" y="128" style="font-size:12px" fill="#5c5a2e" font-size="12px">waypoint</text>
+    <circle cx="460" cy="146" r="6" fill="#24331c" /><path d="M472 138 l3.5 3.5 l-3.5 3.5 l-3.5 -3.5 z" fill="#24331c" />
+    <text class="d-sub" x="484" y="150" style="font-size:12px" fill="#5c5a2e" font-size="12px">waypoint · cursor</text>
+  </g>
+  <text class="d-sub" x="444" y="172" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">the pip is the colourblind-safe half of the pair</text>
+</svg>

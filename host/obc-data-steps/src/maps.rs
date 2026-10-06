@@ -22,6 +22,8 @@ use obc_dem::step::GLO30;
 use obc_pack::grid::{id_width, Band, BandTable, CellId};
 use obc_pack::step::{CAPTURES, LAND};
 
+mod catalog;
+
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_bake::planet::SOURCE_LEAF_LOG2;
 const POLY: &str = "geofabrik-poly";
@@ -40,6 +42,19 @@ impl Product for Maps {
         "cell-catalog"
     }
 
+    fn pointer(&self) -> Option<obc_data::product::PointerFn> {
+        Some(catalog::pointer())
+    }
+
+    fn verify(
+        &self,
+        previous: Option<&obc_data::engine::release::Release>,
+        release: &obc_data::engine::release::Release,
+        store: &Store,
+    ) -> Result<(), String> {
+        catalog::verify(previous, release, store)
+    }
+
     fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
@@ -53,6 +68,14 @@ impl Product for Maps {
                 snapshot_version(env, store, LAND, &[], &mut wanted)?,
             ),
             false => (None, None),
+        };
+        let catalog_index = if geofabrik {
+            let body = text(env, store, catalog::INDEX, &[], &mut wanted)?;
+            let version =
+                if body.is_some() { snapshot_version(env, store, catalog::INDEX, &[], &mut wanted)? } else { None };
+            body.zip(version)
+        } else {
+            None
         };
         // The version of the tiles: the fetch of a tile is in the plan of the step that reads it.
         let glo30 = snapshot_version(env, store, GLO30, &[], &mut wanted)?;
@@ -85,16 +108,28 @@ impl Product for Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let (Some(extract), Some(land_polygons)) = osm_sources else {
+            blocked.push(BlockedLayer {
+                layer: catalog::LAYER.into(),
+                reason: "complete maps require one Geofabrik area; box and multi-area sources are not prepared".into(),
+            });
             return Ok(Steps { steps, blocked });
         };
         let captures = captures(env, store, &extract, &area, &mut blocked)?;
+        let source_coverage = Coverage::union(&outlines.iter().collect::<Vec<_>>())
+            .ok_or_else(|| Unplanned::Failed("cannot union source coverage".into()))?;
         let mut osm_leaves = BTreeSet::new();
         let mut network = BTreeMap::new();
         for band in BandTable::recommended().bands {
             let reads_terrain = obc_pack::step::reads_terrain(&band).map_err(Unplanned::Failed)?;
+            let boundary = source_coverage.boundary_cells(band.cell_log2);
             for (leaf, cells) in leaves(&outlines, band.cell_log2) {
                 osm_leaves.insert(leaf);
-                steps.push(map_cells(&band, leaf, &cells, &land_polygons, reads_terrain));
+                let partial = cells
+                    .iter()
+                    .filter(|cell| !source_coverage.covers(**cell, &boundary))
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
+                steps.push(map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain));
                 if band.has_nav() {
                     network.insert(leaf, cells);
                 }
@@ -108,8 +143,27 @@ impl Product for Maps {
                 steps.push(artifacts(collection, leaf, cells));
             }
         }
-        let extract = Input::Snapshot { source: EXTRACTS.into(), version: extract, params: area, files: Vec::new() };
-        steps.push(osm(extract, &osm_leaves));
+        steps.push(osm(
+            Input::Snapshot { source: EXTRACTS.into(), version: extract.clone(), params: area, files: Vec::new() },
+            &osm_leaves,
+        ));
+        if blocked.is_empty() {
+            let (body, version) =
+                catalog_index.ok_or_else(|| Unplanned::Failed("catalog index was not fetched".into()))?;
+            match catalog::step(env, store, &outlines, &steps, &extract, &glo30, version, &body) {
+                Ok(step) => steps.push(step),
+                Err(Unplanned::Invalid(reason)) => blocked.push(BlockedLayer { layer: catalog::LAYER.into(), reason }),
+                Err(error) => return Err(error),
+            }
+        } else {
+            blocked.push(BlockedLayer {
+                layer: catalog::LAYER.into(),
+                reason: format!(
+                    "catalog requires all map, terrain and article layers: {}",
+                    blocked.iter().map(|layer| layer.reason.as_str()).collect::<Vec<_>>().join("; ")
+                ),
+            });
+        }
         let mut listed = Steps { steps, blocked };
         listed.block_dependents();
         Ok(listed)
@@ -166,7 +220,16 @@ fn captures(
             }
         }
         if !missing.is_empty() {
-            if CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
+            let retained = missing.iter().all(|wanted| {
+                wanted.version.as_ref().is_some_and(|version| {
+                    env.retained.iter().any(|read| {
+                        read.key.source == wanted.source
+                            && read.key.version == *version
+                            && read.params == obc_data::store::sorted(&wanted.params)
+                    })
+                })
+            });
+            if retained || CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
                 wanted.extend(missing);
             } else {
                 let reason = format!("{collection} capture missing; plan with `--move wikidata`");
@@ -227,10 +290,14 @@ fn capture_params(
     }
     // The extract and the `.poly` that the capture read, which need not be those of now. Their
     // input names the file, not the params: a fetch has one version in live.
-    let reads = |osm: &str, poly: &str| -> Result<Option<Vec<Input>>, Unplanned> {
+    let reads = |osm: &str, poly: &str, held: bool| -> Result<Option<Vec<Input>>, Unplanned> {
         let mut inputs = Vec::new();
         for (source, digest) in [(EXTRACTS, osm), (POLY, poly)] {
-            let Some((version, file)) = by_digest(store, source, area, digest)? else { return Ok(None) };
+            let Some((version, file)) =
+                by_digest(env, store, source, area, digest, held.then(|| content_layer(collection)).as_deref())?
+            else {
+                return Ok(None);
+            };
             inputs.push(Input::Snapshot { source: source.into(), version, params: Vec::new(), files: vec![file] });
         }
         Ok(Some(inputs))
@@ -240,13 +307,13 @@ fn capture_params(
             return Err(invalid(format!("{collection} capture code changed; plan with `--move wikidata`")));
         }
         let (osm, poly) = (value(&params, "osm").unwrap_or_default(), value(&params, "poly").unwrap_or_default());
-        if let Some(read) = reads(&osm, &poly)? {
+        if let Some(read) = reads(&osm, &poly, true)? {
             return Ok((params, read));
         }
         return Err(invalid(format!("{collection} capture inputs missing; plan with `--move wikidata`")));
     }
-    let read =
-        reads(now.0, now.1)?.ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
+    let read = reads(now.0, now.1, false)?
+        .ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
     let code = obc_pack::step::capture_code();
     let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", &code)];
     Ok((pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec(), read))
@@ -273,11 +340,38 @@ fn file(
 /// `sha256:<hex>`, or `None` when the store has it no more: a clean keeps the request record of a
 /// version whose snapshot record it deletes.
 fn by_digest(
+    env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
     digest: &str,
+    held_step: Option<&str>,
 ) -> Result<Option<(String, String)>, Unplanned> {
+    let area = params.iter().find(|(name, _)| name == "area").map(|(_, value)| value.as_str());
+    let suffix = if source == POLY { ".poly" } else { ".osm.pbf" };
+    let retained: Vec<_> =
+        env.retained.iter().filter(|read| read.key.source == source && held_step == Some(read.step.as_str())).collect();
+    let held: BTreeSet<_> = retained
+        .iter()
+        .copied()
+        .flat_map(|read| read.record.files.iter().map(move |file| (read, file)))
+        .filter(|(_, file)| {
+            digest.strip_prefix("sha256:") == Some(file.sha256.as_str())
+                && area.is_some_and(|area| file.name == format!("{area}{suffix}"))
+        })
+        .map(|(read, file)| (read.key.version.clone(), file.name.clone()))
+        .collect();
+    if held.len() > 1 {
+        return Err(Unplanned::Failed(format!("{source}: retained capture input {digest} has ambiguous versions")));
+    }
+    if let Some(held) = held.into_iter().next() {
+        return Ok(Some(held));
+    }
+    if !retained.is_empty() {
+        return Err(Unplanned::Failed(format!(
+            "{source}: retained capture input {digest} disagrees with its content layer"
+        )));
+    }
     for request in store.requests(source, params).map_err(Unplanned::Failed)? {
         if store.snapshot(source, &request.version).map_err(Unplanned::Failed)?.is_none() {
             continue;
@@ -389,7 +483,14 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
 
 /// The map cells of one band in one leaf, from the OSM of the leaf, the land polygons and, for a
 /// band whose bytes read heights, the terrain of the leaf.
-fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, reads_terrain: bool) -> Step {
+fn map_cells(
+    band: &Band,
+    leaf: LeafId,
+    cells: &[CellId],
+    partial: Vec<String>,
+    land_polygons: &str,
+    reads_terrain: bool,
+) -> Step {
     let land_polygons =
         Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
     let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_bake::step::leaf_pbf(leaf)] };
@@ -402,13 +503,14 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
         inputs,
         options: serde_json::json!({
             "band": band.id,
+            "partial_cells": partial,
             "leaf": [i64::from(LEAF_LOG2), leaf.i, leaf.j],
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
-        outputs: vec!["cells".into()],
+        outputs: vec!["cells".into(), "metadata".into()],
         run: Run::Rust(obc_pack::step::cells),
-        client: Client::All,
+        client: Client::Paths(vec!["cells".into()]),
     }
 }
 
@@ -449,7 +551,13 @@ fn reference(
                 if files.as_ref().is_some_and(|files| files.is_empty()) {
                     continue;
                 }
-                if files.is_none() {
+                if files.is_none()
+                    && !env.retained.iter().any(|read| {
+                        read.key.source == source.id
+                            && read.key.version == version
+                            && read.params == obc_data::store::sorted(&params)
+                    })
+                {
                     if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
                         return Err(invalid(format!(
                             "{name} reads `{}`, which is blocked: credential missing: {}",
@@ -528,9 +636,9 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
         code: Code { paths: Vec::new(), crates: vec!["obc-dem".into()] },
-        outputs: vec!["terrain".into()],
+        outputs: vec!["terrain".into(), "metadata".into()],
         run: Run::Rust(obc_dem::step::terrain),
-        client: Client::All,
+        client: Client::Paths(vec!["terrain".into()]),
     }
 }
 
@@ -640,6 +748,7 @@ pub(crate) mod tests {
     fn freiburg(store: &Store) -> (Env, Regions) {
         let area = [("area".to_string(), "europe/test".to_string())];
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), FREIBURG.into())]);
+        with_index(store);
         with_tile_list(store, &["N47_00_E007", "N48_00_E007"]);
         let region = obc_data::regions::parse_region("europe/test", "name = \"Test\"\nkind = \"geofabrik\"\n").unwrap();
         let live = BTreeMap::from([
@@ -648,6 +757,13 @@ pub(crate) mod tests {
         ]);
         let env = Env { name: "test".into(), region: "europe/test".into(), live, ..Env::default() };
         (env, Regions::new(vec![region]).unwrap())
+    }
+
+    pub(crate) fn with_index(store: &Store) {
+        let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+            "properties":{"id":"test","name":"Test","parent":null,"urls":{"pbf":"https://download.geofabrik.de/europe/test-latest.osm.pbf"}},
+            "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+        fetched(store, catalog::INDEX, "1", &[], &[("index-v1.json".into(), index.to_string())]);
     }
 
     /// The extract of the Freiburg region and the land polygons.
@@ -747,7 +863,8 @@ pub(crate) mod tests {
 
     fn fake(request: &Request) -> Result<(), String> {
         std::fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
-        std::fs::write(request.output.join("terrain/empty.json"), "[]").map_err(|e| e.to_string())
+        std::fs::create_dir(request.output.join("metadata")).map_err(|e| e.to_string())?;
+        std::fs::write(request.output.join("metadata/empty.json"), "[]").map_err(|e| e.to_string())
     }
 
     fn builds(plan: &Plan) -> Vec<&str> {
@@ -779,7 +896,8 @@ pub(crate) mod tests {
         glo30_fetched(&store, &steps("2"), "2", |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));
 
         let (root, http) = (root(), Http::new());
-        let context = Context { store: &store, root: &root, sources: &[], http: &http, limits: Limits::machine() };
+        let context =
+            Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
         let first = plan(&store, &root, &steps("1")).unwrap();
         assert_eq!(builds(&first), names);
         let mut run = RunLog::create(&store, "build test").unwrap();
@@ -853,7 +971,7 @@ pub(crate) mod tests {
         let listed = Maps.steps(&env, &regions, &store).unwrap();
         assert_eq!(
             listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
-            ["maps/landmark-content", "maps/landmarks/0037-0032"]
+            ["maps/landmark-content", "maps/catalog", "maps/landmarks/0037-0032"]
         );
         assert!(listed.blocked.iter().all(|b| b.reason.contains("--move wikidata")));
         for name in ["maps/terrain/0037-0032", "maps/network/0037-0032", "maps/peak-content", "maps/peaks/0037-0032"] {
@@ -983,6 +1101,60 @@ pub(crate) mod tests {
         let listed = Maps.steps(&env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+        // The live copy metadata identifies the held input without its local request or bytes.
+        for (source, name, text) in [(EXTRACTS, "europe/test.osm.pbf", "osm"), (POLY, "europe/test.poly", FREIBURG)] {
+            let file = obc_data::input_copy::File {
+                name: name.into(),
+                url: format!("https://example.org/{name}"),
+                size: text.len() as u64,
+                sha256: sha256_hex(text.as_bytes()),
+            };
+            env.retained.push(obc_data::input_copy::Retained {
+                step: content_layer("landmarks"),
+                key: obc_data::input_copy::Key {
+                    source: source.into(),
+                    version: "1".into(),
+                    digest: obc_data::engine::digest([(file.name.as_str(), file.sha256.as_str())]),
+                },
+                params: Vec::new(),
+                record: obc_data::input_copy::Record { source: source.into(), version: "1".into(), files: vec![file] },
+            });
+        }
+        let params = capture_params("landmarks", "europe/test", "osm", FREIBURG);
+        for source in CAPTURES {
+            env.live.insert((source.into(), params.clone()), ["1".into()].into());
+        }
+        let fresh = Store::at(temp.0.join("fresh"));
+        let (params, inputs) =
+            super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
+        assert_eq!(params, capture_params("landmarks", "europe/test", "osm", FREIBURG));
+        assert!(inputs.iter().all(|input| matches!(input, Input::Snapshot { version, params, files, .. } if version == "1" && params.is_empty() && files.len() == 1)));
+        assert!(!fresh.root().exists(), "metadata lookup downloads no old extract or poly");
+        let mut peak_poly = env.retained[1].clone();
+        peak_poly.step = content_layer("peaks");
+        peak_poly.key.version = "2".into();
+        peak_poly.record.version = "2".into();
+        let mut peak_osm = env.retained[0].clone();
+        peak_osm.step = content_layer("peaks");
+        env.retained.extend([peak_osm, peak_poly.clone()]);
+        let peak_params = capture_params("peaks", "europe/test", "osm", FREIBURG);
+        for source in CAPTURES {
+            env.live.insert((source.into(), peak_params.clone()), ["1".into()].into());
+        }
+        let (_, peak_inputs) = super::capture_params(&env, &fresh, "peaks", &area, ("new osm", "new poly")).unwrap();
+        assert!(peak_inputs
+            .iter()
+            .any(|input| matches!(input, Input::Snapshot { source, version, .. } if source == POLY && version == "2")));
+        let (_, landmark_inputs) =
+            super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
+        assert!(landmark_inputs
+            .iter()
+            .any(|input| matches!(input, Input::Snapshot { source, version, .. } if source == POLY && version == "1")));
+        peak_poly.step = content_layer("landmarks");
+        env.retained.push(peak_poly);
+        assert!(
+            matches!(super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")), Err(Unplanned::Failed(message)) if message.contains("ambiguous versions"))
+        );
     }
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
@@ -1078,10 +1250,58 @@ pub(crate) mod tests {
                 assert!(!token.present());
                 assert_eq!(
                     listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
-                    ["maps/reference/0038-0032", "maps/terrain/0038-0032"]
+                    ["maps/reference/0038-0032", "maps/terrain/0038-0032", "maps/catalog"]
                 );
-                assert!(listed.blocked.iter().all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                assert!(listed
+                    .blocked
+                    .iter()
+                    .filter(|b| b.layer != "maps/catalog")
+                    .all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                assert!(listed.blocked.last().unwrap().reason.contains("box and multi-area"));
                 assert!(listed.steps.is_empty());
+                let mut restored_env = env.clone();
+                let coverage =
+                    Coverage::parse_poly(&box_poly(&Bbox { west: 8.2, south: 53.8, east: 8.3, north: 56.1 })).unwrap();
+                let (leaf, cells) = leaves(&[coverage], V1_CELL_LOG2.into()).into_iter().next().unwrap();
+                // Pin the request before reference preflight; the missing credential matters only upstream.
+                let windows: Vec<_> = cells
+                    .iter()
+                    .map(|c| cell_window(c.i as u32, c.j as u32, V1_POSTING_LOG2, V1_CELL_LOG2).unwrap())
+                    .collect();
+                let bbox = format!(
+                    "{},{},{},{}",
+                    windows.iter().map(|w| w.lon_lo).min().unwrap() as f64 / 1e6,
+                    windows.iter().map(|w| w.lat_lo).min().unwrap() as f64 / 1e6,
+                    windows.iter().map(|w| w.lon_hi).max().unwrap() as f64 / 1e6,
+                    windows.iter().map(|w| w.lat_hi).max().unwrap() as f64 / 1e6
+                );
+                let params = vec![("bbox".to_string(), bbox)];
+                for source in ["dtm-de-ni", "dtm-dk"] {
+                    restored_env.live.insert((source.into(), params.clone()), ["1".into()].into());
+                    restored_env.retained.push(obc_data::input_copy::Retained {
+                        step: leaf_layer("maps/reference", leaf),
+                        key: obc_data::input_copy::Key {
+                            source: source.into(),
+                            version: "1".into(),
+                            digest: obc_data::engine::digest([]),
+                        },
+                        params: params.clone(),
+                        record: obc_data::input_copy::Record {
+                            source: source.into(),
+                            version: "1".into(),
+                            files: Vec::new(),
+                        },
+                    });
+                }
+                let mut wanted = Vec::new();
+                let restored = reference(&restored_env, &store, leaf, &cells, &mut wanted).unwrap().unwrap();
+                assert!(wanted.is_empty());
+                assert_eq!(
+                    restored.inputs.len(),
+                    2,
+                    "verified retained reads defer the credential check until restoration"
+                );
+                assert_eq!(plan(&store, &root(), &[restored]).unwrap().fetches().len(), 2);
             }
             // A machine with the token fetches the model.
             Err(Unplanned::NeedsFetch(wanted)) => {

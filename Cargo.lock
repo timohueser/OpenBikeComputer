@@ -3572,15 +3572,18 @@ dependencies = [
  "obc-data",
  "obc-dem",
  "obc-elevation",
+ "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-pack",
  "obc-search-bake",
+ "obcm-assemble",
  "route-build",
  "route-engine",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "zip",
 ]
@@ -3941,6 +3944,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.2",
  "nusb",
+ "obc-flat-device",
  "obc-link",
  "serde",
  "tokio",
@@ -4019,6 +4023,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]

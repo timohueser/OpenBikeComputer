@@ -92,10 +92,7 @@ root:
 ```sh
 sudo apt-get install webkit2gtk-driver xvfb imagemagick dbus-daemon
 cargo install tauri-driver --version 2.0.6 --locked
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r apps/obc-desktop/e2e/requirements.txt
-xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py
+xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py
 ```
 
 **Use a WebKit driver with the same version as the installed WebKitGTK runtime.** CI installs an

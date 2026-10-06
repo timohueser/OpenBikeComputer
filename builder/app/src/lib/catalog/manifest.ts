@@ -21,7 +21,6 @@ import {
     oneOf,
     CatalogFormatError,
     fail,
-    instant,
     int,
     intMap,
     json,
@@ -78,7 +77,7 @@ export interface RoutingEntry {
 
 export interface SchemaEntry {
     id: string;
-    revision: number;
+    sha256: string;
     name: string;
     description: string;
     obcm_version: number;
@@ -192,7 +191,6 @@ export interface TerrainEntry {
     posting_log2: number;
     /** `log2(S)` of the terrain cell, µdeg. Independent of any band's. */
     cell_log2: number;
-    terrain_revision: number;
     /** The source dataset's required credit, verbatim. Taking it from here rather
      *  than hard-coding it is a MUST, so a dataset change carries its own notice
      *  with it. */
@@ -235,7 +233,6 @@ export interface SourceEntry {
 
 export interface Catalog {
     schema_version: number;
-    generated_at: string;
     /** `null` only for older catalogs; every current producer writes it. */
     source: SourceEntry | null;
     schema: SchemaEntry;
@@ -247,7 +244,6 @@ export interface Catalog {
     /** The terrain revision the network band's baked ascents were integrated
      *  from, or `null` when the store was baked with no terrain. Root level and
      *  deliberately not in `SchemaEntry`. */
-    network_terrain_revision: number | null;
     articles: ArtifactPin | null;
 }
 
@@ -413,7 +409,7 @@ function parseSchema(v: unknown, where: string): SchemaEntry {
 
     return {
         id: str(o, "id", where, KEBAB),
-        revision: int(o, "revision", where, 1),
+        sha256: str(o, "sha256", where, SHA256),
         name: str(o, "name", where),
         description: str(o, "description", where),
         obcm_version: int(o, "obcm_version", where, 0, U8),
@@ -676,7 +672,6 @@ function parseTerrain(v: unknown, where: string): TerrainEntry | null {
         // pairing the format does not admit.
         posting_log2: int(o, "posting_log2", where, 4, 16),
         cell_log2: int(o, "cell_log2", where, MIN_CELL_LOG2, MAX_CELL_LOG2),
-        terrain_revision: int(o, "terrain_revision", where, 1),
         attribution,
         references: parseReferences(o.references, `${where}.references`),
         cell_index: {
@@ -752,13 +747,8 @@ export function parseRoot(body: string): Catalog {
     const schema = parseSchema(root.schema, "catalog.schema");
     const bandIds = new Set(schema.bands.map((b) => b.id));
     const terrain = parseTerrain(root.terrain, "catalog.terrain");
-    const ntr = root.network_terrain_revision;
-    if (ntr !== undefined && ntr !== null && (typeof ntr !== "number" || !Number.isInteger(ntr) || ntr < 1)) {
-        fail("catalog.network_terrain_revision: must be a positive integer or null");
-    }
     return {
         schema_version: CATALOG_SCHEMA_VERSION,
-        generated_at: instant(root, "generated_at", "catalog"),
         source: parseSource(root.source, "catalog.source"),
         schema,
         skins: parseSkins(root.skins, "catalog.skins", schema),
@@ -766,7 +756,6 @@ export function parseRoot(body: string): Catalog {
         cell_index: parseCellIndexRefs(root.cell_index, "catalog.cell_index", schema.bands),
         terrain,
         articles: root.articles == null ? null : parseArtifactPin(root.articles, "catalog.articles"),
-        network_terrain_revision: (ntr as number | null | undefined) ?? null,
     };
 }
 

@@ -129,22 +129,18 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// `obc-pack catalog <cell-tree> --base-url <url> [--out -] [--generated-at <ts>]`
+/// `obc-pack catalog <cell-tree> --base-url <url> [--out -]`
 fn run_catalog(args: &[String]) -> Result<(), String> {
     const USAGE: &str = "usage: obc-pack catalog <cell-tree> --base-url <url> [--out -] \
-                         [--generated-at <ts>]";
+                        ";
     let mut tree: Option<PathBuf> = None;
     let mut base_url: Option<String> = None;
     let mut out: Option<String> = None;
-    let mut generated_at: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--base-url" => base_url = Some(it.next().ok_or("--base-url needs a URL")?.clone()),
             "--out" => out = Some(it.next().ok_or("--out needs a path (or `-` for stdout)")?.clone()),
-            "--generated-at" => {
-                generated_at = Some(it.next().ok_or("--generated-at needs an RFC 3339 UTC instant")?.clone());
-            }
             other if other.starts_with("--") => return Err(format!("unknown flag `{other}`\n{USAGE}")),
             other if tree.replace(PathBuf::from(other)).is_some() => {
                 return Err(format!("only one bake tree can be walked\n{USAGE}"));
@@ -161,8 +157,7 @@ fn run_catalog(args: &[String]) -> Result<(), String> {
     // written into the tree (satellites first, root last) rather than to one output;
     // written yet would be a half-published state. `--out -` prints the root for
     // inspection.
-    let opts =
-        obc_pack::catalog::CatalogOptions::new(base_url, generated_at.unwrap_or_else(obc_pack::catalog::now_timestamp));
+    let opts = obc_pack::catalog::CatalogOptions::new(base_url);
     let generated = obc_pack::catalog::generate(&tree, &opts)?;
     for w in &generated.warnings {
         eprintln!("obc-pack catalog: warning: {w}");

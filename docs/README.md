@@ -11,7 +11,9 @@ posts are described in [BLOG.md](BLOG.md).
 
 ## Diagrams
 
-Diagrams are inline SVG in the Markdown; screen captures and hardware renders are image assets.
+Diagrams are SVG assets in `assets/diagrams/`. Use a relative
+`<img src="..." alt="..." data-inline-svg>` tag. The renderer embeds the asset in the page.
+Screen captures and hardware renders use normal image tags.
 Follow the existing diagrams in [formats](content/software/formats.md) and
 [ui](content/software/ui.md): a 720-unit viewBox, the `d-*` classes, forest for structure,
 coral for the hot path, amber for rider or route emphasis, colour never the only distinction.

@@ -1,0 +1,46 @@
+<svg viewBox="0 0 820 236" role="img" aria-label="A frame's pipeline as a trail with seven waypoints: project, pick level of detail, quadtree cull, selection and decode, painter sort, rasterise, overlays — from map bytes to the panel." xmlns="http://www.w3.org/2000/svg" width="820" height="236" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">One frame, start to finish</text>
+
+  <!-- trail -->
+  <line x1="92" y1="120" x2="734" y2="120" stroke="#5f7d3d" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round" />
+
+  <!-- start flag -->
+  <circle cx="58" cy="120" r="7" class="d-forest" fill="#a4501e" />
+  <text class="d-sub" x="58" y="150" text-anchor="middle" fill="#5c5a2e" font-size="12px">map +</text>
+  <text class="d-sub" x="58" y="168" text-anchor="middle" fill="#5c5a2e" font-size="12px">route bytes</text>
+
+  <!-- waypoints: x = 110,214,318,422,526,630,734 -->
+  <!-- 1 project (above) -->
+  <circle cx="110" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="110" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">1</text>
+  <text class="d-label" x="110" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">Project</text>
+  <text class="d-sub" x="110" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">camera → px</text>
+  <!-- 2 LOD (below) -->
+  <circle cx="214" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="214" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">2</text>
+  <text class="d-label" x="214" y="160" text-anchor="middle" fill="#1c1b14" font-size="14px">Pick LOD</text>
+  <text class="d-sub" x="214" y="174" text-anchor="middle" fill="#5c5a2e" font-size="12px">for this zoom</text>
+  <!-- 3 cull (above) -->
+  <circle cx="318" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="318" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">3</text>
+  <text class="d-label" x="318" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">Quadtree cull</text>
+  <text class="d-sub" x="318" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">visible chunks</text>
+  <!-- 4 priority (below, HOT) -->
+  <circle cx="422" cy="120" r="16" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="422" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">4</text>
+  <text class="d-label" x="422" y="160" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">Select + decode</text>
+  <text class="d-sub" x="422" y="174" text-anchor="middle" fill="#5c5a2e" font-size="12px">complete features</text>
+  <!-- 5 sort (above) -->
+  <circle cx="526" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="526" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">5</text>
+  <text class="d-label" x="526" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">Painter sort</text>
+  <text class="d-sub" x="526" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">by z-index</text>
+  <!-- 6 rasterise (below, HOT) -->
+  <circle cx="630" cy="120" r="16" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="630" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">6</text>
+  <text class="d-label" x="630" y="160" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">Rasterise</text>
+  <text class="d-sub" x="630" y="174" text-anchor="middle" fill="#5c5a2e" font-size="12px">fill + stroke</text>
+  <!-- 7 overlays (above) -->
+  <circle cx="734" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="734" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">7</text>
+  <text class="d-label" x="734" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">Overlays</text>
+  <text class="d-sub" x="734" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">route · you</text>
+
+  <!-- end panel -->
+  <rect class="d-panel" x="770" y="104" width="36" height="32" rx="5" style="fill:#e7ead8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="788" y="156" text-anchor="middle" fill="#5c5a2e" font-size="12px">panel</text>
+<text class="d-sub" x="20" y="212" text-anchor="start" fill="#5c5a2e" font-size="12px">Priority decides what fits; z-index decides paint order.</text>
+</svg>

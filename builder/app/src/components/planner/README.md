@@ -38,8 +38,8 @@ Use `--inputs DIRECTORY` to supply a prepared `basemap.pmtiles` and `inputs.json
 The manifest names the OSM hash, bounds, tool versions, and output hashes.
 Search always builds from the verified OSM input.
 
-The VPS needs Caddy, Python, `/root/.cargo/bin/cargo`, and Node 24+
-at `/usr/local/bin/node`. Services bind to loopback under
+The VPS needs Caddy, Python 3.12+, `uv` 0.8.17+, `/root/.cargo/bin/cargo`, and
+Node 24+ at `/usr/local/bin/node`. Services bind to loopback under
 `releases.openbikecomputer.com`.
 
 Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.

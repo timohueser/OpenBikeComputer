@@ -19,7 +19,7 @@ const styles: SkinStyle[] = Object.entries(preset.features).flatMap(([tag, value
 export const canonicalSchema: SchemaEntry = {
     ...exampleCatalog.schema,
     id: "bikepacking",
-    revision: 1,
+    sha256: "1".repeat(64),
     styles: styles.map((style, index) => ({ id: index + 1, feature_type: style.feature_type })),
 };
 

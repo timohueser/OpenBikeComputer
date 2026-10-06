@@ -1,0 +1,32 @@
+<svg viewBox="0 0 720 392" role="img" aria-label="Three views show a clean map, a transparent overlay with a hold-progress window, and the combined panel image. The stored base map is unchanged; presenting its clean window removes the overlay." xmlns="http://www.w3.org/2000/svg" width="720" height="392" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<defs><marker id="r49arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Transient feedback · composite a window over the clean frame</text>
+<text class="d-title" x="20" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Clean base frame</text>
+<text class="d-title" x="272" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Transient hold window</text>
+<text class="d-title" x="524" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Presented frame</text>
+<rect x="20" y="83" width="175" height="215" fill="#ece8cf" stroke="#3c6b39" stroke-width="1.2" rx="8"/>
+<path d="M25 203 C85 133 120 263 190 168" fill="none" stroke="#33575b" stroke-width="5"/>
+<path d="M45 93 L82 148 L130 193 L165 287" fill="none" stroke="#cf6a2a" stroke-width="4"/>
+<path d="M30 248 L106 199 L178 115" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<path d="M111 196 l-7 19 15 -4 z" fill="#24331c"/>
+<rect x="524" y="83" width="175" height="215" fill="#ece8cf" stroke="#3c6b39" stroke-width="1.2" rx="8"/>
+<path d="M529 203 C589 133 624 263 694 168" fill="none" stroke="#33575b" stroke-width="5"/>
+<path d="M549 93 L586 148 L634 193 L669 287" fill="none" stroke="#cf6a2a" stroke-width="4"/>
+<path d="M534 248 L610 199 L682 115" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<path d="M615 196 l-7 19 15 -4 z" fill="#24331c"/>
+<rect x="272" y="83" width="175" height="215" fill="none" stroke="#3c6b39" stroke-width="1.2" stroke-dasharray="5 5" rx="8"/>
+<text class="d-title" x="237" y="182" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">+</text>
+<path d="M462 182 H510" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r49arrow)"/>
+<rect x="284" y="221" width="151" height="61" fill="#f3f0df" stroke="#3c6b39" stroke-width="1.2" rx="6"/>
+<text class="d-sub" x="359" y="242" text-anchor="middle" fill="#5c5a2e" font-size="12px">Hold to confirm</text>
+<rect x="296" y="255" width="125" height="10" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="296" y="255" width="82" height="10" fill="#cf6a2a" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="536" y="221" width="151" height="61" fill="#f3f0df" stroke="#3c6b39" stroke-width="1.2" rx="6"/>
+<text class="d-sub" x="611" y="242" text-anchor="middle" fill="#5c5a2e" font-size="12px">Hold to confirm</text>
+<rect x="548" y="255" width="125" height="10" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="548" y="255" width="82" height="10" fill="#cf6a2a" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="20" y="330" text-anchor="start" fill="#5c5a2e" font-size="12px">Base pixels stay unchanged.</text>
+<text class="d-sub" x="272" y="330" text-anchor="start" fill="#5c5a2e" font-size="12px">Only the active window draws.</text>
+<text class="d-sub" x="524" y="330" text-anchor="start" fill="#5c5a2e" font-size="12px">Base + hold feedback</text>
+<text class="d-sub" x="20" y="368" text-anchor="start" fill="#5c5a2e" font-size="12px">On release or completion, present the clean window again to remove the feedback.</text>
+</svg>

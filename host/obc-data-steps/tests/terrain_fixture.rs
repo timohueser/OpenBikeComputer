@@ -75,7 +75,7 @@ fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<S
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
-    let context = Context { store, root, sources: &[], http: &Http::new(), limits: Limits::machine() };
+    let context = Context { store, root, sources: &[], http: &Http::new(), copies: None, limits: Limits::machine() };
     let built = run.build(&context, &steps, &plan).unwrap();
     run.finish(None).unwrap();
     let files = built[0].receipt.files.iter();
@@ -130,7 +130,7 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
             std::fs::read(out.join(format!("cells/terrain/{path}.obcd"))).unwrap(),
         );
     }
-    expected.insert("terrain/empty.json".into(), b"[]".to_vec());
+    expected.insert("metadata/empty.json".into(), b"[]".to_vec());
     assert_eq!(built.keys().collect::<Vec<_>>(), expected.keys().collect::<Vec<_>>());
     assert!(built == expected, "the layer and the tree of obc-bake terrain differ");
 

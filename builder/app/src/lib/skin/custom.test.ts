@@ -46,7 +46,7 @@ describe("custom skin storage", () => {
         expect(loadCustomSkins(storage, schema)).toEqual([]);
 
         persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
-        expect(loadCustomSkins(storage, { ...schema, revision: schema.revision + 1 })).toEqual([]);
+        expect(loadCustomSkins(storage, { ...schema, sha256: "2".repeat(64) })).toEqual([]);
     });
 
     it("does not let a storage failure masquerade as a saved skin", () => {
@@ -90,7 +90,6 @@ describe("custom skin validation", () => {
         persistCustomSkins(storage, schema, [{ skin, based_on: "default" }]);
         for (const unknown of [
             { ...schema, id: "another-schema" },
-            { ...schema, revision: 2 },
             { ...schema, styles: schema.styles.slice(1) },
             { ...schema, styles: schema.styles.map((style, index) => index === 0 ? { ...style, id: 99 } : style) },
             { ...schema, styles: schema.styles.map((style, index) => index === 0 ? { ...style, feature_type: "unknown.layer" } : style) },
@@ -100,7 +99,7 @@ describe("custom skin validation", () => {
             // Match the envelope to the new catalog so its existing identity check cannot mask admission.
             const envelope = JSON.parse(storage.values.get(CUSTOM_SKINS_KEY)!);
             envelope.schema_id = unknown.id;
-            envelope.schema_revision = unknown.revision;
+            envelope.schema_sha256 = unknown.sha256;
             storage.values.set(CUSTOM_SKINS_KEY, JSON.stringify(envelope));
             expect(loadCustomSkins(storage, unknown)).toEqual([]);
         }

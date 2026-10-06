@@ -2,8 +2,8 @@
 """Fail when code fetches from a host that is neither a declared source nor a listed non-bake host.
 
 The registry is the one list of external data, and its licence and attribution are only as
-complete as that list. Every URL literal in the code under host/, tools/, fixtures/ and
-builder/server/ names a host. That host is the host of a source's `fetch.url`, one of its
+complete as that list. URL literals in justfile, host/, tools/, fixtures/ and
+builder/server/ name a host. That host is the host of a source's `fetch.url`, one of its
 `hosts`, or one of the non-bake hosts in `NOT_SOURCES`. The check is per host, not per URL: a
 new download from a host that a source already declares (github.com, for one) passes. Tests
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
@@ -12,8 +12,8 @@ cannot be checked; a placeholder in front of a fixed domain counts as `*.domain`
 
 from __future__ import annotations
 
-GOVERNS = ['host/**', 'tools/**', 'fixtures/**', 'builder/server/**', 'data/sources.toml']
-RULE = 'Every host that code in host/, tools/, fixtures/ and builder/server/ fetches from is a source in data/sources.toml or a listed non-bake host.'
+GOVERNS = ['justfile', 'host/**', 'tools/**', 'fixtures/**', 'builder/server/**', 'data/sources.toml']
+RULE = 'Every host that code in justfile, host/, tools/, fixtures/ and builder/server/ fetches from is a source in data/sources.toml or a listed non-bake host.'
 
 import re
 import subprocess
@@ -22,7 +22,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCOPE = ("host/", "tools/", "fixtures/", "builder/server/")
+SCOPE = ("justfile", "host/", "tools/", "fixtures/", "builder/server/")
 CODE = (".rs", ".py", ".sh", ".mjs", ".js", ".ts", ".toml", "justfile")
 TEST = re.compile(r"(^|/)(tests?/|test_[^/]*\.py$|[^/]*_tests?\.(rs|py)$|tests\.rs$)")
 URL = re.compile(r"https?://((?:\{[^{}\s]*\}|[A-Za-z0-9.-])+)")

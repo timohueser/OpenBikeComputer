@@ -228,7 +228,7 @@ fn read_region(
 
     let cells_doc = RegionCellsDocument {
         schema_version: CATALOG_SCHEMA_VERSION,
-        schema_revision: schema.revision,
+        schema_sha256: schema.sha256.clone(),
         region_id: id.to_string(),
         cells,
         terrain: terrain_selection.as_ref().map(|s| s.ids.clone()).unwrap_or_default(),

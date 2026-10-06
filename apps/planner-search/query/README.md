@@ -4,8 +4,7 @@ Run these commands from this folder. The parent setup command installs the runti
 Training needs a separate environment with PyTorch:
 
 ```sh
-uv venv --python 3.12 speed/.venv
-uv pip install --python speed/.venv/bin/python -r speed/requirements.txt
+UV_PROJECT_ENVIRONMENT="$PWD/speed/.venv" uv sync --locked --project ../../.. --group search-training
 ```
 
 Restore the pinned inputs from the repository's model release:

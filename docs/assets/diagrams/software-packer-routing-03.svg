@@ -1,0 +1,42 @@
+<svg viewBox="0 0 720 280" role="img" aria-label="Ingest in two passes. Pass 1 reads the pbf into a node store and collects area relations. Pass 2 turns ways into lines and closed-way polygons and coastlines, capturing member geometry. Then relation member ways are assembled via build_area into a polygon with a hole — a lake with an island." xmlns="http://www.w3.org/2000/svg" width="720" height="280" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aP3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Two passes over the .pbf, then relation assembly</text>
+
+  <!-- pbf -->
+  <rect class="d-panel" x="30" y="96" width="70" height="60" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="65" y="130" text-anchor="middle" fill="#5c5a2e" font-size="12px">.pbf</text>
+
+  <!-- pass 1 -->
+  <line class="d-flow" x1="104" y1="112" x2="150" y2="92" marker-end="url(#aP3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel-2" x="156" y="56" width="200" height="60" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="172" y="76" fill="#1c1b14" font-size="14px">Pass 1</text>
+  <text class="d-sub" x="172" y="94" fill="#5c5a2e" font-size="12px">node store · id → coord</text>
+  <text class="d-sub" x="172" y="108" fill="#5c5a2e" font-size="12px">+ collect area relations</text>
+
+  <!-- pass 2 -->
+  <line class="d-flow" x1="104" y1="140" x2="150" y2="160" marker-end="url(#aP3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel-2" x="156" y="140" width="200" height="76" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="172" y="160" fill="#1c1b14" font-size="14px">Pass 2</text>
+  <text class="d-sub" x="172" y="178" fill="#5c5a2e" font-size="12px">ways → lines · polygons</text>
+  <text class="d-sub" x="172" y="194" fill="#5c5a2e" font-size="12px">coastlines (always)</text>
+  <text class="d-sub" x="172" y="210" fill="#5c5a2e" font-size="12px">capture member geometry</text>
+
+  <!-- assemble -->
+  <line class="d-flow" x1="360" y1="135" x2="412" y2="135" marker-end="url(#aP3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="420" y="80" width="120" height="110" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="436" y="100" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">build_area</text>
+  <!-- lake with island -->
+  <path d="M436 110 L524 110 L524 178 L436 178 Z" fill="#bcd3da" stroke="#33575b" stroke-width="1.4" />
+  <path d="M462 130 L498 130 L490 160 L468 158 Z" fill="#f3f0df" stroke="#33575b" stroke-width="1.2" />
+  <text class="d-sub" x="480" y="200" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">lake + island = 1 hole</text>
+
+  <!-- closed-way classification note -->
+  <rect class="d-panel-2" x="560" y="80" width="140" height="110" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-tag" x="574" y="100" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">closed way?</text>
+  <text class="d-sub" x="574" y="122" style="font-size:12px" fill="#5c5a2e" font-size="12px">area tag → polygon</text>
+  <text class="d-sub" x="574" y="142" style="font-size:12px" fill="#5c5a2e" font-size="12px">else → line</text>
+  <text class="d-sub" x="574" y="168" style="font-size:12px" fill="#5c5a2e" font-size="12px">never both — a closed</text>
+  <text class="d-sub" x="574" y="186" style="font-size:12px" fill="#5c5a2e" font-size="12px">road loop is a line only</text>
+</svg>

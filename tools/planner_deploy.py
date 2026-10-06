@@ -151,8 +151,7 @@ mkdir -p {base}/bin
 cp target/release/route-server {base}/bin/.route-server.next
 mv {base}/bin/.route-server.next {base}/bin/route-server
 {base}/bin/route-server {base}/routing --verify
-python3 -m venv {base}/search/.venv
-{base}/search/.venv/bin/pip install -q -r {base}/search/requirements.txt
+UV_PROJECT_ENVIRONMENT={base}/search/.venv uv sync --locked --group search-runtime --project {SOURCE}
 id obc-planner-downloads >/dev/null 2>&1 || useradd --system --home-dir {DOWNLOAD_CACHE} --shell /usr/sbin/nologin obc-planner-downloads
 install -d -o obc-planner-downloads -g obc-planner-downloads {DOWNLOAD_CACHE} /var/cache/obc-planner-downloads
 chmod -R a+rX {base}

@@ -381,7 +381,6 @@ fn schema_with(cfg: &Config, band_json: &str) -> Schema {
             .expect("bands parse into the engine's own table");
     Schema {
         id: "fixture".into(),
-        revision: 1,
         obcm_version: obc_formats::obcm::VERSION,
         lods: cfg
             .lods

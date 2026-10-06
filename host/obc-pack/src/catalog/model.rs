@@ -35,9 +35,6 @@ pub const WORLD_SIDE_UDEG: i32 = WORLD_SIDE as i32;
 pub struct Catalog {
     /// Envelope version, `2`. Checked before any other field.
     pub schema_version: u32,
-    /// When this root was generated, RFC 3339 UTC — the only wall clock on the
-    /// generation path (`OBCC_Spec.md` §3).
-    pub generated_at: String,
     /// The cell store's data provenance and licence (§3.1). The store is a derivative
     /// database of OpenStreetMap, and the ODbL's share-alike terms require the
     /// published store to say so — this block is that statement, in the one document
@@ -68,16 +65,6 @@ pub struct Catalog {
     /// record behind that content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landmarks: Option<LandmarkEntry>,
-    /// **The one coupling between the two revision tracks** (§13.4). Network-band cells
-    /// are baked sampling OBCT, so their `Ascent M` values are a function of a
-    /// particular terrain revision; this records which one. `None` for a terrain-less
-    /// bake, whose ascents are all zero and depend on nothing.
-    ///
-    /// It is at the root rather than in [`SchemaEntry`] on purpose: the schema is the
-    /// identity of the OBCM store and must not acquire a terrain field, or a terrain
-    /// re-bake would look like a schema change to every consumer that compares schemas.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network_terrain_revision: Option<u32>,
     /// Sparse detached landmark and peak sections on the network grid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub articles: Option<ArtifactRef>,
@@ -119,10 +106,8 @@ pub fn osm_source() -> SourceEntry {
 pub struct SchemaEntry {
     /// Stable id, e.g. `bikepacking`.
     pub id: String,
-    /// Monotone content revision. Every cell states the revision it was baked at, and
-    /// a bump invalidates the whole store — assembly copies chunk bytes between files,
-    /// which is only meaningful within one revision (`OBCA_Spec.md` §6.3).
-    pub revision: u32,
+    /// SHA-256 of the exact named `schema.json` used to bake the cells.
+    pub sha256: String,
     pub name: String,
     pub description: String,
     /// OBCM format version, read from the **cells' own headers**; every cell agrees or
@@ -352,8 +337,8 @@ pub struct CellIndexRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CellIndexDocument {
     pub schema_version: u32,
-    /// The revision every cell in this document was baked at.
-    pub schema_revision: u32,
+    /// The named schema digest, equal to the root schema digest.
+    pub schema_sha256: String,
     pub band: String,
     /// Sorted by `(i, j)`.
     pub cells: Vec<CellEntry>,
@@ -372,8 +357,6 @@ pub struct KnownEmptyRun {
     pub start: String,
     /// Last canonical cell id in the run (inclusive, same row as `start`).
     pub end: String,
-    /// RFC 3339 UTC, recorded by the bake job.
-    pub built_at: String,
     /// Every source extract against which emptiness was established.
     pub sources: Vec<CellSource>,
 }
@@ -387,8 +370,6 @@ pub struct CellEntry {
     pub bytes: u64,
     pub sha256: String,
     pub url: String,
-    /// RFC 3339 UTC, recorded by the bake job.
-    pub built_at: String,
     /// Every source extract this cell was baked from, sorted by `extract_id`.
     pub sources: Vec<CellSource>,
     /// `true` iff those sources do not fully cover the cell's square
@@ -412,7 +393,7 @@ pub struct CellSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RegionCellsDocument {
     pub schema_version: u32,
-    pub schema_revision: u32,
+    pub schema_sha256: String,
     pub region_id: String,
     /// Band id → sorted cell ids.
     pub cells: BTreeMap<String, Vec<String>>,
@@ -426,8 +407,7 @@ pub struct RegionCellsDocument {
 /// The catalog's terrain block: what the raster is, at what resolution, and the one
 /// pinned index that lists its cells (`OBCC_Spec.md` §13.1).
 ///
-/// The four fields `dataset_version`, `posting_log2`, `cell_log2` and
-/// `terrain_revision` are terrain's **whole** lockstep rule (§13.2). Nothing about the
+/// `dataset_version`, `posting_log2` and `cell_log2` bind the terrain index to the root. Nothing about the
 /// OBCM store appears here, and nothing about terrain appears in [`SchemaEntry`] —
 /// which is the shape of the independence, not a comment about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -441,9 +421,6 @@ pub struct TerrainEntry {
     pub posting_log2: u8,
     /// `log2(S)` of the terrain cell, µdeg. Independent of any band's `cell_log2`.
     pub cell_log2: u8,
-    /// Monotone content revision of the terrain store, bumped by a re-bake. Unrelated
-    /// to `schema.revision`: neither invalidates the other (§13.2).
-    pub terrain_revision: u32,
     /// The source licence's required credit, verbatim, so a consumer displays it from
     /// the catalog rather than hard-coding a string that can go stale (§13.5).
     pub attribution: String,
@@ -495,7 +472,6 @@ pub struct TerrainIndexRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerrainIndexDocument {
     pub schema_version: u32,
-    pub terrain_revision: u32,
     pub dataset_id: String,
     pub dataset_version: String,
     pub posting_log2: u8,
@@ -516,8 +492,6 @@ pub struct TerrainCellEntry {
     pub bytes: u64,
     pub sha256: String,
     pub url: String,
-    /// RFC 3339 UTC, recorded by the bake job.
-    pub built_at: String,
 }
 
 /// An inclusive row run of terrain cells that are all `NODATA` — open ocean, which
@@ -529,7 +503,6 @@ pub struct TerrainCellEntry {
 pub struct TerrainEmptyRun {
     pub start: String,
     pub end: String,
-    pub built_at: String,
 }
 
 /// A region's terrain footprint, when the catalog publishes terrain. Kept out of

@@ -30,7 +30,7 @@ export interface CustomSkinRecord {
 interface Envelope {
     format: number;
     schema_id: string;
-    schema_revision: number;
+    schema_sha256: string;
     skins: CustomSkinRecord[];
 }
 
@@ -137,7 +137,7 @@ export function loadCustomSkins(storage: SkinStorage | null, schema: SchemaEntry
             !envelope ||
             envelope.format !== FORMAT ||
             envelope.schema_id !== schema.id ||
-            envelope.schema_revision !== schema.revision ||
+            envelope.schema_sha256 !== schema.sha256 ||
             !Array.isArray(envelope.skins)
         ) {
             return [];
@@ -176,7 +176,7 @@ export function persistCustomSkins(
     const envelope: Envelope = {
         format: FORMAT,
         schema_id: schema.id,
-        schema_revision: schema.revision,
+        schema_sha256: schema.sha256,
         skins: records.map((record) => ({
             skin: cloneSkin(record.skin),
             based_on: record.based_on,

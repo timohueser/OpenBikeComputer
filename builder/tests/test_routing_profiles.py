@@ -11,7 +11,7 @@ network is needed.
 
 Run from the repo root with the uv-managed venv, e.g.::
 
-    PYTHONPATH=. .venv/bin/python -m pytest builder/tests/
+    PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/
 """
 import json
 import os

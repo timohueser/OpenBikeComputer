@@ -99,6 +99,14 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
     assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'no-store');
     assert.ok(!cached.has(missing));
   }
+  // Valid empty sunlight has metadata, while each absent shard is unknown coverage.
+  const sun = Buffer.from('{"tilejson":"3.0.0","sun_format":3,"minzoom":0,"maxzoom":12}');
+  const digest = '8'.repeat(64);
+  objects.set(`${prefix}/public/maps/sun.json.json`, pointer(digest, sun));
+  objects.set(`${prefix}/objects/${digest}`, sun);
+  const sunMeta = await (await worker.fetch(new Request(`https://tiles.example${base}/sun.json`), env, ctx)).json();
+  assert.equal(sunMeta.sun_format, 3);
+  assert.equal((await worker.fetch(new Request(sunMeta.tiles[0].replace('{z}', '12').replace('{x}', '1').replace('{y}', '1')), env, ctx)).status, 204);
   delete globalThis.caches;
 });
 

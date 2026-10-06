@@ -55,6 +55,7 @@ pub struct Context<'a> {
     /// The sources of `data/sources.toml`: a fetch finds its source here.
     pub sources: &'a [Source],
     pub http: &'a Http,
+    pub copies: Option<&'a crate::input_copy::Restore<'a>>,
     pub limits: Limits,
 }
 
@@ -206,7 +207,14 @@ impl Run {
                     // A layer that a planned step reads: the store has it, unless the plan is old.
                     pending.remove(i);
                     let reused = prepare(store, step, &done, code)
-                        .and_then(|(receipt, _)| reusable(store, &receipt.key))
+                        .and_then(|(receipt, _)| {
+                            reusable(store, &receipt.key).map(|stored| {
+                                stored.map(|mut stored| {
+                                    stored.inputs = receipt.inputs;
+                                    stored
+                                })
+                            })
+                        })
                         .and_then(|stored| stored.ok_or(outdated.into()));
                     match reused {
                         Ok(receipt) => {
@@ -293,7 +301,7 @@ impl Run {
                 .and_then(|known| {
                     let request =
                         fetch::Request { source: known, version: Some(version.clone()), params: params.clone() };
-                    fetch::fetch(context.store, context.http, &request)
+                    crate::input_copy::fetch(context.store, context.http, context.copies, &request, &planned.files)
                 });
             match fetched {
                 Ok(snapshot) => {
@@ -819,6 +827,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             root: &fixture.root(),
             sources: &sources,
             http: &http,
+            copies: None,
             limits: Limits::machine(),
         };
         let built = run.build(&context, &steps, &plan).unwrap();

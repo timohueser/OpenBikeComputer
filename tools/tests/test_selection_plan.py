@@ -501,7 +501,7 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_ios_suites_require_their_own_inputs(self) -> None:
         unrelated = [
-            "docs/testing.md", "CONTRIBUTING.md", "tools/justfile", "tools/ci/test.sh", "rustfmt.toml",
+            "docs/testing.md", "CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", "rustfmt.toml",
             ".config/nextest.toml", "testing/suites.toml", "testing/coverage-policy.toml",
             ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
             "host/route-build/src/lib.rs", "apps/route-server/src/main.rs", "apps/route-server/src/http.rs",

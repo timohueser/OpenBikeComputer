@@ -19,7 +19,6 @@ import {
     bool,
     DATE,
     fail,
-    instant,
     int,
     json,
     KEBAB,
@@ -52,7 +51,6 @@ export interface CellEntry {
     bytes: number;
     sha256: string;
     url: string;
-    built_at: string;
     sources: CellSource[];
     /** `true` iff the sources do not fully cover the cell's square. A consumer MUST
      *  NOT present a partial cell as canonical coverage. */
@@ -70,13 +68,12 @@ export interface KnownEmptyRun {
     /** Parsed bounds. Not on the wire. */
     startCell: CellId;
     endCell: CellId;
-    built_at: string;
     sources: CellSource[];
 }
 
 export interface CellIndexDocument {
     schema_version: number;
-    schema_revision: number;
+    schema_sha256: string;
     band: string;
     cells: CellEntry[];
     known_empty: KnownEmptyRun[];
@@ -90,7 +87,7 @@ export interface CellIndexDocument {
 
 export interface RegionCellsDocument {
     schema_version: number;
-    schema_revision: number;
+    schema_sha256: string;
     region_id: string;
     /** Band id → its cell ids, sorted, exactly as published. */
     cells: Record<string, string[]>;
@@ -109,7 +106,6 @@ export interface TerrainCellEntry {
     bytes: number;
     sha256: string;
     url: string;
-    built_at: string;
 }
 
 /** An inclusive, same-row run of canonically void terrain squares — open ocean, or
@@ -121,7 +117,6 @@ export interface TerrainEmptyRun {
     end: string;
     startCell: CellId;
     endCell: CellId;
-    built_at: string;
 }
 
 export interface TerrainIndexDocument {
@@ -129,7 +124,6 @@ export interface TerrainIndexDocument {
     /** The terrain store's own revision. There is deliberately **no
      *  `schema_revision`** here: a terrain cell does not know which OBCM schema it
      *  will be used beside, and the absence is normative. */
-    terrain_revision: number;
     dataset_id: string;
     dataset_version: string;
     posting_log2: number;
@@ -160,12 +154,9 @@ function checkEnvelope(o: Record<string, unknown>, catalog: Catalog, where: stri
     if (o.schema_version !== catalog.schema_version) {
         fail(`${where}: schema_version ${JSON.stringify(o.schema_version)} is not ${catalog.schema_version}`);
     }
-    const revision = int(o, "schema_revision", where, 1);
-    if (revision !== catalog.schema.revision) {
-        fail(
-            `${where}: schema_revision ${revision} is not the catalog's ${catalog.schema.revision} — ` +
-                "cells of two revisions must never be assembled together",
-        );
+    const digest = str(o, "schema_sha256", where, SHA256);
+    if (digest !== catalog.schema.sha256) {
+        fail(`${where}: schema_sha256 ${digest} is not the catalog's ${catalog.schema.sha256}`);
     }
 }
 
@@ -187,7 +178,7 @@ function parseSources(v: unknown, at: string): CellSource[] {
 }
 
 function sameProvenance(a: KnownEmptyRun, b: KnownEmptyRun): boolean {
-    return a.built_at === b.built_at && JSON.stringify(a.sources) === JSON.stringify(b.sources);
+    return JSON.stringify(a.sources) === JSON.stringify(b.sources);
 }
 
 /** The known-empty run containing `id`, if any. */
@@ -258,7 +249,6 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
             bytes: int(o, "bytes", at, 0),
             sha256,
             url: pinnedUrlStr(o, "url", sha256, at),
-            built_at: instant(o, "built_at", at),
             sources: parseSources(o.sources, at),
             partial: bool(o, "partial", at),
         };
@@ -290,7 +280,6 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
             end,
             startCell,
             endCell,
-            built_at: instant(o, "built_at", at),
             sources: parseSources(o.sources, at),
         };
         if (
@@ -321,7 +310,7 @@ export function parseCellIndex(body: string, catalog: Catalog, ref: CellIndexRef
 
     const index: CellIndexDocument = {
         schema_version: catalog.schema_version,
-        schema_revision: catalog.schema.revision,
+        schema_sha256: catalog.schema.sha256,
         band: bandId,
         cells,
         known_empty: knownEmpty,
@@ -368,17 +357,13 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
     if (doc.schema_version !== catalog.schema_version) {
         fail(`${where}: schema_version ${JSON.stringify(doc.schema_version)} is not ${catalog.schema_version}`);
     }
-    if ("schema_revision" in doc) {
+    if ("schema_sha256" in doc) {
         fail(
-            `${where}: carries a schema_revision. Terrain has its own revision track (§13.1/§13.2) — ` +
+            `${where}: carries a schema_sha256. Terrain has its own revision track (§13.1/§13.2) — ` +
                 "a field naming an OBCM schema here would make an OBCM bump rewrite this document",
         );
     }
     const ref = block.cell_index;
-    const revision = int(doc, "terrain_revision", where, 1);
-    if (revision !== block.terrain_revision) {
-        fail(`${where}: terrain_revision ${revision} is not the root's ${block.terrain_revision}`);
-    }
     for (const key of ["dataset_id", "dataset_version"] as const) {
         if (doc[key] !== block[key]) {
             fail(`${where}: ${key} ${JSON.stringify(doc[key])} is not the root's ${JSON.stringify(block[key])}`);
@@ -416,7 +401,6 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
             bytes: int(o, "bytes", at, 0),
             sha256,
             url: pinnedUrlStr(o, "url", sha256, at),
-            built_at: instant(o, "built_at", at),
         };
         byId.set(id, parsed);
         return parsed;
@@ -440,7 +424,7 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
         }
         if (startCell.i !== endCell.i) fail(`${at}: a known-empty range must stay in one latitude row`);
         if (startCell.j > endCell.j) fail(`${at}: range start comes after its end`);
-        const run: TerrainEmptyRun = { start, end, startCell, endCell, built_at: instant(o, "built_at", at) };
+        const run: TerrainEmptyRun = { start, end, startCell, endCell };
         if (
             previousEmpty &&
             (startCell.i < previousEmpty.startCell.i ||
@@ -451,8 +435,7 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
         if (
             previousEmpty &&
             startCell.i === previousEmpty.endCell.i &&
-            startCell.j === previousEmpty.endCell.j + 1 &&
-            previousEmpty.built_at === run.built_at
+            startCell.j === previousEmpty.endCell.j + 1
         ) {
             fail(`${at}: adjacent ranges with identical provenance must be merged`);
         }
@@ -469,7 +452,6 @@ export function parseTerrainIndex(body: string, catalog: Catalog, block: Terrain
 
     const index: TerrainIndexDocument = {
         schema_version: catalog.schema_version,
-        terrain_revision: revision,
         dataset_id: block.dataset_id,
         dataset_version: block.dataset_version,
         posting_log2: block.posting_log2,
@@ -573,7 +555,7 @@ export function parseRegionCells(body: string, catalog: Catalog, entry: RegionEn
 
     return {
         schema_version: catalog.schema_version,
-        schema_revision: catalog.schema.revision,
+        schema_sha256: catalog.schema.sha256,
         region_id: regionId,
         cells,
         terrain,

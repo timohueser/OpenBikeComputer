@@ -488,6 +488,7 @@ same fields.
 | `step` | The layer name |
 | `snapshots` | `{source: {file name: object path}}` |
 | `layers` | `{layer name: {path in the layer: object path}}`, with the files that the input selects |
+| `layer_files` | `{layer name: [{path, size, sha256}, …]}`, from receipts for exactly the same selected files |
 | `options` | The options |
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
@@ -495,7 +496,8 @@ same fields.
 A command starts in the repository root. Its standard output and standard error go to the
 standard error of the engine. Exit status 0 is success. The objects are read-only. While a step
 runs, `output` and `metrics` are in `partial/layer-<key>/`; the engine removes that directory
-when the step ends, also when it fails. A failed step writes no receipt.
+when the step ends, also when it fails. A failed step writes no receipt. A declared directory may be empty when the step creates it.
+A declared output that does not exist is an error.
 
 ### Offline
 
@@ -571,6 +573,11 @@ another version that lists them all, the last in byte order. Without `files`, th
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
 fetches a version with the same `params` once, with the files of every group that needs it.
 
+Ordinary `plan` and `status` may fetch Geofabrik polygons, the Geofabrik index and the GLO-30 tile
+list. They MUST NOT prepare bulk inputs. A missing bulk prerequisite gives a blocked error.
+Automatically selected stale moves do not authorize bulk preparation. An explicit `--move`
+permits preparation during plan discovery; a build uses the normal fetcher.
+
 ### Changes of live
 
 A plan of `live` compares the steps with the layers of the live releases (see [Live](#live)). A
@@ -600,6 +607,19 @@ does not move, and the steps read the version of live. `--only none` selects no 
 The release of a product after a plan is its live release with the `layers` of the groups in place
 of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
 environment (`Release::compose`). A product that no group or edit changes keeps its release.
+
+### Device-map publication
+
+The maps catalog step consumes selected layer paths and their receipt metadata. Map and terrain
+layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
+and `terrain/` payloads are client files. The catalog layer publishes pinned satellites from
+`objects/`. Named schema, terrain, licence and region files remain release metadata.
+
+The catalog selects only Geofabrik picks whose complete band and terrain coverage is available.
+A box or multi-area maps source is blocked until source coverage preparation supports it.
+Before apply, the product compares picks with the previous release and assembles changed picks
+with the real assembler. The production reader verifies each result. Missing inputs and invalid
+artifacts fail verification before upload. An unchanged pick can reuse prior verification.
 
 ### Runs
 
@@ -925,7 +945,7 @@ would use is a leftover.
 | `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
 | `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
 | `<prefix>/objects/<sha256>` | A file of a client layer of a release. Immutable |
-| `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read. A record that R2 holds of a version that a live layer read counts, also without `r2_copy` |
+| `inputs/records/<source>/<version>/<digest>.json` | The immutable record of one exact snapshot read. `digest` is the input digest in the live layer receipt. `files` lists only its selected names, URLs, sizes and SHA-256 values, sorted by name. An empty read has an empty list. Retrieval time stays local. New copies require `redistribute` and `r2_copy`; an existing record of a live read stays without `r2_copy` |
 | `inputs/objects/<sha256>` | A file of an input copy. Immutable |
 
 When `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is set, `obc data` reads that bucket. Otherwise it
@@ -934,10 +954,17 @@ a listing needs the bucket. A release id is 64 lowercase hex digits. The store k
 that it reads, and uses its copy only while the SHA-256 of the copy is the id and the copy is of
 the product.
 
+Planning reads only copy metadata named by the live manifests, once per immutable key. A build
+restores missing files only for matching source, version and request parameters, or the exact
+file names of its selected step inputs. It checks file digests and sizes before recording a
+snapshot or a request. A complete verified local selection serves even if R2 lacks its record.
+A missing or corrupt named retained copy never starts an upstream capture. Status keeps its
+small-source discovery allowlist: it does not download input objects for other sources.
+
 `status --check` lists the owned prefixes, and compares them with live:
 
 - drift: a key of a live release or of its input copies that R2 does not have, or has with
-  another size. Pointers and records of input copies have no expected size.
+  another size. Pointers have no expected size. An available input record gives its canonical size.
 - leftovers: a key under the owned prefixes that no live release uses. The files of
   `<prefix>/releases/<id>/` of a live release are never leftovers.
 
@@ -2405,7 +2432,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "files": {
-          "description": "The paths that a layer input selects, sorted, or none for every file. Not in the key: the\ndigest names the paths.",
+          "default": [],
+          "description": "Exact resolved snapshot file names, including an empty read. For a layer input, the\nselected paths, or none for every file. The digest names the bytes in the key.",
           "items": {
             "type": "string"
           },
@@ -2422,7 +2450,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "kind",
         "name",
-        "digest"
+        "digest",
+        "files"
       ],
       "type": "object"
     },

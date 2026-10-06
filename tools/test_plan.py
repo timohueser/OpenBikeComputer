@@ -7,7 +7,7 @@ cannot see live here — the job table below, and `testing/suites.toml`, which h
 suites no Cargo package owns plus the per-package path triggers and platform limits.
 
 Selection is standard library only.  The structural workflow check in `validate-filters`
-is the one command that needs PyYAML (`tools/requirements-test.txt`).
+is the one command that needs PyYAML (the locked `dev` group).
 """
 
 from __future__ import annotations
@@ -130,6 +130,7 @@ TEST_POLICY_PATTERNS = (
     "tools/ci_aggregate.py",
     "docs/testing.md",
     "CONTRIBUTING.md",
+    "justfile",
     "tools/justfile",
     "tools/obc",
     "tools/obc-dev.sh",
@@ -907,7 +908,7 @@ def validate_workflow(root: Path) -> list[str]:
         import yaml
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on the environment
         raise PlanError(
-            "validate-filters needs PyYAML: pip install -r tools/requirements-test.txt"
+            "validate-filters needs PyYAML: uv run --locked --group dev python tools/test_plan.py validate-filters"
         ) from exc
     with (root / ".github/workflows/ci.yml").open("rb") as handle:
         workflow = yaml.safe_load(handle)

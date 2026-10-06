@@ -98,8 +98,6 @@ impl Default for Routing {
 pub struct Schema {
     #[serde(default)]
     pub id: String,
-    #[serde(default)]
-    pub revision: u32,
     #[serde(default = "default_obcm_version")]
     pub obcm_version: u8,
     pub lods: Vec<LodEntry>,
@@ -482,7 +480,6 @@ mod tests {
             [None, Some(900.0), Some(400.0), Some(120.0), Some(90.0), Some(40.0), Some(12.0), Some(4.0), Some(1.0)];
         Schema {
             id: "bikepacking".into(),
-            revision: 1,
             obcm_version: obc_formats::obcm::VERSION,
             lods: mpp
                 .iter()

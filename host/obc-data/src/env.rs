@@ -26,6 +26,8 @@ pub struct Env {
     pub layers: Vec<String>,
     /// The versions of each fetch that the live releases read; empty without a live release.
     pub live: LiveVersions,
+    /// Exact reads with retained input copies. Credentials are needed only for a new fetch.
+    pub retained: Vec<crate::input_copy::Retained>,
     /// Source id to the version of a `--move SOURCE@VERSION`. `None` for `--move SOURCE`: the
     /// newest upstream version, until a fetch names it.
     pub moves: BTreeMap<String, Option<String>>,

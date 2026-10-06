@@ -1,0 +1,50 @@
+<svg viewBox="0 0 720 250" role="img" aria-label="A feature stores one anchor coordinate and then coordinate deltas. Each feature selects 8-bit or 16-bit deltas." xmlns="http://www.w3.org/2000/svg" width="720" height="250" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aF3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Geometry: one anchor, then a chain of deltas</text>
+
+  <!-- LEFT: absolute -->
+  <rect class="d-panel-2" x="24" y="44" width="300" height="184" rx="12" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-tag" x="40" y="66" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">absolute · µdeg</text>
+  <!-- ring -->
+  <polygon points="96,170 120,108 196,96 244,150 188,196" fill="#7c9a63" fill-opacity="0.35" stroke="#3c6b39" stroke-width="1.6" />
+  <!-- vertices -->
+  <g fill="#3c6b39"><circle cx="120" cy="108" r="3.5"/><circle cx="196" cy="96" r="3.5"/><circle cx="244" cy="150" r="3.5"/><circle cx="188" cy="196" r="3.5"/></g>
+  <!-- anchor -->
+  <circle cx="96" cy="170" r="5.5" class="d-hot-fill" fill="#ae4825" />
+  <text class="d-sub" x="60" y="150" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">anchor</text>
+  <text class="d-sub" x="44" y="208" style="font-size:12px" fill="#5c5a2e" font-size="12px">(47 123 456, 8 654 321)</text>
+  <!-- small delta hints -->
+  <text class="d-sub" x="104" y="132" style="font-size:12px" fill="#5c5a2e" font-size="12px">+Δ</text>
+  <text class="d-sub" x="158" y="92"  style="font-size:12px" fill="#5c5a2e" font-size="12px">+Δ</text>
+  <text class="d-sub" x="226" y="126" style="font-size:12px" fill="#5c5a2e" font-size="12px">+Δ</text>
+
+  <!-- arrow -->
+  <line class="d-flow" x1="332" y1="136" x2="392" y2="136" marker-end="url(#aF3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="362" y="126" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">encode</text>
+
+  <!-- RIGHT: encoded -->
+  <rect class="d-panel" x="400" y="44" width="296" height="184" rx="12" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="416" y="66" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">encoded</text>
+  <!-- anchor cell -->
+  <rect x="416" y="78" width="120" height="30" rx="5" class="d-hot-fill" fill="#ae4825" />
+  <text class="d-sub" x="476" y="97" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">anchor X,Y</text>
+  <text class="d-sub" x="544" y="90" style="font-size:12px" fill="#5c5a2e" font-size="12px">stored vs the</text>
+  <text class="d-sub" x="544" y="108" style="font-size:12px" fill="#5c5a2e" font-size="12px">leaf's corner</text>
+  <!-- delta cells -->
+  <g stroke="#3c6b39" stroke-width="1">
+    <rect x="416" y="118" width="44" height="26" rx="4" class="d-muted" fill="#d6d5c8" />
+    <rect x="462" y="118" width="44" height="26" rx="4" class="d-muted" fill="#d6d5c8" />
+    <rect x="508" y="118" width="44" height="26" rx="4" class="d-muted" fill="#d6d5c8" />
+    <rect x="554" y="118" width="44" height="26" rx="4" class="d-muted" fill="#d6d5c8" />
+  </g>
+  <text class="d-sub" x="438" y="135" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Δx,Δy</text>
+  <text class="d-sub" x="484" y="135" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Δx,Δy</text>
+  <text class="d-sub" x="530" y="135" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Δx,Δy</text>
+  <text class="d-sub" x="576" y="135" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">…</text>
+  <!-- per-feature width choice -->
+  <text class="d-sub" x="416" y="170" style="font-size:12px" fill="#5c5a2e" font-size="12px">every |Δ| ≤ 127  →  <tspan style="fill:#3c6b39">int8</tspan>  · 2 B / point</text>
+  <text class="d-sub" x="416" y="190" style="font-size:12px" fill="#5c5a2e" font-size="12px">otherwise           →  <tspan style="fill:#a9501c">int16</tspan> · 4 B / point</text>
+  <text class="d-sub" x="416" y="212" style="font-size:12px" fill="#5c5a2e" font-size="12px">chosen once per feature (flag bit 0)</text>
+</svg>

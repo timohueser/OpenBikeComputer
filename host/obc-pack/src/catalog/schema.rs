@@ -71,7 +71,7 @@ const CATALOG_DESCRIPTION: &str =
      alone — total bytes and bytes per band, which is the per-file projection a volume set needs — and \
      verifies each satellite against the `bytes` + `sha256` pinned here. The satellite documents are \
      `$defs/CellIndexDocument`, `$defs/RegionCellsDocument` and `$defs/TerrainIndexDocument`. The optional \
-     `terrain` block is a second artifact class on its own revision track (§13). Normative contract: \
+     `terrain` block is a second artifact class on its own dataset and lattice identity (§13). Normative contract: \
      OBCC_Spec.md, with OBCA_Spec.md for the grid, bands, and assembly and OBCT_Spec.md for the raster.";
 
 const BOUNDARY_DESCRIPTION: &str =
@@ -80,12 +80,10 @@ const BOUNDARY_DESCRIPTION: &str =
      input bbox. The coverage outline a builder draws for a live selection is a different object — the union \
      of the selected cells' squares, computed client-side — and is deliberately not in the catalog.";
 
-const TERRAIN_DESCRIPTION: &str =
-    "The terrain artifact class (OBCC_Spec.md §13): an OBCT raster on the same OBCA grid, published with its \
-     OWN revision track. `dataset_version`, `posting_log2`, `cell_log2` and `terrain_revision` are terrain's \
-     entire lockstep rule — no OBCM version or schema revision appears here, and an OBCM or schema bump \
-     invalidates none of these objects. The single reverse coupling is the root's `network_terrain_revision`, \
-     which records the terrain revision the nav graph's ascents were integrated from.";
+const TERRAIN_DESCRIPTION: &str = "The terrain artifact class (OBCC_Spec.md §13): an OBCT raster on the OBCA grid. \
+     Dataset identity, dataset version, posting size and cell size define its lockstep. \
+     Terrain has no map schema binding. Network layer receipts identify the terrain bytes \
+     sampled while the bake integrates ascents.";
 
 const CELL_DESCRIPTION: &str =
     "One published cell. There is deliberately no bbox: a cell's coverage is exactly its grid square, which \
@@ -132,17 +130,15 @@ pub fn catalog_schema() -> Value {
 
     let props = root.get_mut("properties").and_then(Value::as_object_mut).expect("catalog properties");
     props["schema_version"]["const"] = Value::from(CATALOG_SCHEMA_VERSION);
-    props["generated_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
 
     let defs = root.get_mut("$defs").and_then(Value::as_object_mut).expect("catalog definitions");
     for (k, v) in extra_defs {
         defs.insert(k, v);
     }
-    for (doc, field) in [("CellIndexDocument", "schema_revision"), ("RegionCellsDocument", "schema_revision")] {
+    for (doc, field) in [("CellIndexDocument", "schema_sha256"), ("RegionCellsDocument", "schema_sha256")] {
         defs[doc]["properties"]["schema_version"]["const"] = Value::from(CATALOG_SCHEMA_VERSION);
-        // A satellite states the revision it belongs to; a consumer that has the root
-        // compares it and rejects a mismatch rather than mixing revisions.
-        defs[doc]["properties"][field]["minimum"] = Value::from(1);
+        // Consumers compare this digest with the root before accepting the satellite.
+        defs[doc]["properties"][field]["pattern"] = Value::from(SHA256_PATTERN);
     }
     defs["RegionCellsDocument"]["properties"]["region_id"]["pattern"] = Value::from(REGION_ID_PATTERN);
     band_keyed_map(&mut defs["RegionCellsDocument"]["properties"]["cells"]);
@@ -157,11 +153,9 @@ pub fn catalog_schema() -> Value {
     artifact["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
 
     // The terrain artifact class. Its index is the third satellite shape in the same checked-in
-    // file, and it carries no `schema_revision` at all, which states the independence in the schema
-    // rather than only in the prose.
+    // file. Its dataset and lattice identity is independent of the map schema.
     let terrain_doc = defs["TerrainIndexDocument"]["properties"].as_object_mut().expect("terrain index properties");
     terrain_doc["schema_version"]["const"] = Value::from(CATALOG_SCHEMA_VERSION);
-    terrain_doc["terrain_revision"]["minimum"] = Value::from(1);
     terrain_doc["dataset_id"]["pattern"] = Value::from(ID_PATTERN);
     terrain_doc["dataset_version"]["minLength"] = Value::from(1);
     terrain_log2_bounds(terrain_doc);
@@ -171,11 +165,11 @@ pub fn catalog_schema() -> Value {
     terrain["dataset_id"]["pattern"] = Value::from(ID_PATTERN);
     terrain["dataset_version"]["minLength"] = Value::from(1);
     terrain["attribution"]["minLength"] = Value::from(1);
-    terrain["terrain_revision"]["minimum"] = Value::from(1);
     terrain_log2_bounds(terrain);
 
     // Every field of a reference entry is a licence obligation, so the shape is pinned here rather
     // than only in prose: an entry a consumer cannot display is a credit nobody sees.
+    defs["LandmarkArtifactEntry"]["properties"]["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
     let reference = defs["ReferenceEntry"]["properties"].as_object_mut().expect("reference properties");
     reference["key"]["pattern"] = Value::from(ID_PATTERN);
     for field in ["product", "attribution", "licence"] {
@@ -190,18 +184,16 @@ pub fn catalog_schema() -> Value {
     terrain_cell["id"]["pattern"] = Value::from(CELL_ID_PATTERN);
     terrain_cell["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     terrain_cell["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
-    terrain_cell["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
 
     let terrain_empty = defs["TerrainEmptyRun"]["properties"].as_object_mut().expect("terrain empty properties");
     terrain_empty["start"]["pattern"] = Value::from(CELL_ID_PATTERN);
     terrain_empty["end"]["pattern"] = Value::from(CELL_ID_PATTERN);
-    terrain_empty["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
 
     let schema_entry = defs["SchemaEntry"]["properties"].as_object_mut().expect("schema properties");
     schema_entry["id"]["pattern"] = Value::from(ID_PATTERN);
     schema_entry["name"]["minLength"] = Value::from(1);
     schema_entry["description"]["minLength"] = Value::from(1);
-    schema_entry["revision"]["minimum"] = Value::from(1);
+    schema_entry["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     schema_entry["lods"]["minItems"] = Value::from(1);
     schema_entry["bands"]["minItems"] = Value::from(1);
     schema_entry["styles"]["minItems"] = Value::from(1);
@@ -254,7 +246,6 @@ pub fn catalog_schema() -> Value {
     let empty = defs["KnownEmptyRun"]["properties"].as_object_mut().expect("known-empty properties");
     empty["start"]["pattern"] = Value::from(CELL_ID_PATTERN);
     empty["end"]["pattern"] = Value::from(CELL_ID_PATTERN);
-    empty["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
     empty["sources"]["minItems"] = Value::from(1);
 
     defs["CellEntry"]["description"] = Value::from(CELL_DESCRIPTION);
@@ -262,7 +253,6 @@ pub fn catalog_schema() -> Value {
     cell["id"]["pattern"] = Value::from(CELL_ID_PATTERN);
     cell["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
     cell["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
-    cell["built_at"]["pattern"] = Value::from(TIMESTAMP_PATTERN);
     cell["sources"]["minItems"] = Value::from(1);
 
     defs["CellSource"]["properties"]["extract_id"]["pattern"] = Value::from(REGION_ID_PATTERN);
@@ -304,7 +294,8 @@ pub fn catalog_schema_json() -> String {
 /// that produced the cells' bytes.
 pub(super) struct SchemaDoc {
     pub(super) id: String,
-    pub(super) revision: u32,
+    pub(super) revision: Option<u32>,
+    pub(super) sha256: String,
     pub(super) name: String,
     pub(super) description: String,
     pub(super) lods: Vec<LodEntry>,
@@ -330,7 +321,7 @@ struct SchemaMeta {
     /// The cell store's identity. Bumping it invalidates every cell, which is why it is stated here
     /// and recorded in every cell sidecar: the generator can then refuse a tree that mixes
     /// revisions.
-    revision: u32,
+    revision: Option<u32>,
     bands: Vec<BandDoc>,
 }
 
@@ -354,19 +345,22 @@ pub(super) fn read_schema_doc(path: &Path) -> Result<SchemaDoc, String> {
             path.display()
         )
     })?;
-    let doc: SchemaMetaDoc = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let meta = doc
-        .meta
-        .ok_or_else(|| format!("{}: no `_meta` block (id, name, description, revision, bands)", path.display()))?;
+    let schema = parse_schema_doc(&text, path)?;
+    if schema.revision.is_none_or(|revision| revision == 0) {
+        return Err(format!("{}: `_meta.revision` starts at 1", path.display()));
+    }
+    Ok(schema)
+}
+
+pub(super) fn parse_schema_doc(text: &str, path: &Path) -> Result<SchemaDoc, String> {
+    let doc: SchemaMetaDoc = serde_json::from_str(text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta =
+        doc.meta.ok_or_else(|| format!("{}: no `_meta` block (id, name, description, bands)", path.display()))?;
     validate_id(&meta.id).map_err(|e| format!("{}: schema id {e}", path.display()))?;
     if meta.name.trim().is_empty() || meta.description.trim().is_empty() {
         return Err(format!("{}: `_meta.name` and `_meta.description` must be non-empty", path.display()));
     }
-    if meta.revision == 0 {
-        return Err(format!("{}: `_meta.revision` starts at 1 — a cell store has no revision zero", path.display()));
-    }
-
-    let config = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let config = Config::parse(text).map_err(|e| format!("{}: {e}", path.display()))?;
     let bands = check_band_table(&meta.bands, config.lods.len(), path)?;
     let lods = ladder(&config, &bands, path)?;
     let (styles, feature_types) = style_assignment(&config, path)?;
@@ -374,6 +368,7 @@ pub(super) fn read_schema_doc(path: &Path) -> Result<SchemaDoc, String> {
     Ok(SchemaDoc {
         id: meta.id,
         revision: meta.revision,
+        sha256: super::hash_str(text).1,
         name: meta.name,
         description: meta.description,
         lods,

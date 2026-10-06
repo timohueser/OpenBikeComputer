@@ -3,7 +3,7 @@
 //! ```text
 //! obc-bake regions [--regions DIR]
 //! obc-bake bake --out TREE --base-url URL [REGION…] [--skin ID]… [flags]
-//! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--generated-at TS] [--dry-run]
+//! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--dry-run]
 //! obc-bake verify TREE [--sample N]
 //! obc-bake check-obcm-version [--catalog-url URL]
 //! ```
@@ -34,7 +34,6 @@ usage:
         --schema-revision N  store revision (default: 1)
         --bands FILE         band table (default: OBCA recommendation)
         --skin ID            skin to publish (repeatable; default: all skins/)
-        --generated-at TS    pin the catalog's generated_at
         --base-url URL       catalog object base (default: /obc-bake while staging)
         --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
@@ -86,7 +85,6 @@ usage:
         --allow-short-reference publish such cells anyway, and warn
         --regions DIR           region files (default: data/regions/ of the repository)
         --base-url URL          catalog object base
-        --generated-at TS       pin the catalog's generated_at
         --cache DIR             DEM tile links
         --source DIR            directory of .poly files (default: Geofabrik from the store)
         --force                 re-bake even when unchanged
@@ -111,7 +109,6 @@ usage:
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
         --target TARGET      `dir:PATH` (default: dry run) or `r2`
-        --generated-at TS    pin generated_at (RFC 3339 UTC)
         --dry-run            generate + plan, upload nothing
         --verbose            report per-object upload and verification progress
 
@@ -232,7 +229,6 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "schema-revision",
             "bands",
             "skin",
-            "generated-at",
             "regions",
             "presets-dir",
             "source",
@@ -537,7 +533,6 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
             "source",
             "cache",
             "base-url",
-            "generated-at",
         ],
     )?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
@@ -617,10 +612,7 @@ fn finish_tree(flags: &Flags, out: &Path) -> Result<(), String> {
         .map(str::to_owned)
         .or_else(|| std::env::var("OBC_MAPS_BASE_URL").ok().filter(|value| !value.trim().is_empty()))
         .unwrap_or_else(|| "/obc-bake".into());
-    let opts = obc_pack::catalog::CatalogOptions::new(
-        &base_url,
-        flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string),
-    );
+    let opts = obc_pack::catalog::CatalogOptions::new(&base_url);
     let seed = obc_pack::catalog::generate(out, &opts)?;
     let previews = obc_bake::previews::generate(out, &seed.root)?;
     let generated = obc_pack::catalog::generate(out, &opts)?;
@@ -663,7 +655,7 @@ fn run_verify(args: &[String]) -> Result<(), String> {
 }
 
 fn run_publish(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["dry-run", "verbose"], &["base-url", "target", "generated-at"])?;
+    let (flags, positional) = Flags::parse(args, &["dry-run", "verbose"], &["base-url", "target"])?;
     let tree = positional.first().ok_or_else(|| format!("publish needs a bake tree\n\n{USAGE}"))?;
     let base_url = flags
         .get("base-url")
@@ -684,12 +676,11 @@ fn run_publish(args: &[String]) -> Result<(), String> {
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),
     };
 
-    let generated_at = flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string);
     println!("publishing {tree} → {}{}", store.describe(), if dry_run { " (dry run)" } else { "" });
     // R2 publishes are long enough that silence looks like a hang. Local directory publishes stay
     // quiet unless explicitly requested.
     let publish_opts = PublishOptions { dry_run, verbose: flags.has("verbose") || target == "r2" };
-    let opts = CatalogOptions::new(&base_url, generated_at);
+    let opts = CatalogOptions::new(&base_url);
     let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, publish_opts)?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");

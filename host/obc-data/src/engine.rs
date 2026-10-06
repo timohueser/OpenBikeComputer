@@ -135,6 +135,8 @@ pub struct Request {
     pub snapshots: BTreeMap<String, BTreeMap<String, PathBuf>>,
     /// Layer name, then path in the layer, then object path.
     pub layers: BTreeMap<String, BTreeMap<String, PathBuf>>,
+    /// Receipt metadata for exactly the selected files of each layer input.
+    pub layer_files: BTreeMap<String, Vec<LayerFile>>,
     pub options: Value,
     /// An empty directory: the layer is the files the step writes in it.
     pub output: PathBuf,
@@ -174,9 +176,9 @@ pub struct InputRecord {
     /// The source id or the layer name.
     pub name: String,
     pub digest: String,
-    /// The paths that a layer input selects, sorted, or none for every file. Not in the key: the
-    /// digest names the paths.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Exact resolved snapshot file names, including an empty read. For a layer input, the
+    /// selected paths, or none for every file. The digest names the bytes in the key.
+    #[serde(default)]
     pub files: Vec<String>,
 }
 
@@ -500,6 +502,7 @@ fn prepare(
         step: step.name.clone(),
         snapshots: BTreeMap::new(),
         layers: BTreeMap::new(),
+        layer_files: BTreeMap::new(),
         options: step.options.clone(),
         output: PathBuf::new(),
         metrics: PathBuf::new(),
@@ -518,8 +521,10 @@ fn prepare(
                         })
                     }
                 };
+                let mut names: Vec<_> = files.iter().map(|file| file.name.clone()).collect();
+                names.sort();
                 let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
-                (InputKind::Snapshot, source, Vec::new(), files.collect())
+                (InputKind::Snapshot, source, names, files.collect())
             }
             Input::Layer { name, files: selected } => {
                 let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
@@ -534,6 +539,13 @@ fn prepare(
         };
         let digest = digest(files.iter().map(|(name, sha256, _)| (name.as_str(), sha256.as_str())));
         let record = InputRecord { kind, name: name.clone(), digest, files: selected };
+        if kind == InputKind::Layer {
+            let metadata = files
+                .iter()
+                .map(|(path, sha256, size)| LayerFile { path: path.clone(), sha256: sha256.clone(), size: *size })
+                .collect();
+            request.layer_files.insert(name.clone(), metadata);
+        }
         let mut paths = BTreeMap::new();
         for (name, sha256, size) in files {
             let object = store.object(&sha256);
@@ -608,7 +620,8 @@ fn build_step(
     mut request: Request,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
-    if let Some(stored) = reusable(store, &receipt.key)? {
+    if let Some(mut stored) = reusable(store, &receipt.key)? {
+        stored.inputs = receipt.inputs.clone();
         return Ok(Built { receipt: stored, reused: true });
     }
     let work = store.partial(&format!("layer-{}", receipt.key));
@@ -659,7 +672,10 @@ impl InputKind {
 fn collect(store: &Store, output: &Path, declared: &[String]) -> Result<Vec<LayerFile>, String> {
     let mut paths = Vec::new();
     walk(output, "", &mut paths)?;
-    if let Some(missing) = declared.iter().find(|declared| !paths.iter().any(|path| covers(declared, path))) {
+    if let Some(missing) = declared
+        .iter()
+        .find(|declared| !output.join(declared).is_dir() && !paths.iter().any(|path| covers(declared, path)))
+    {
         return Err(format!("it did not write its output {missing}"));
     }
     if let Some(extra) = paths.iter().find(|path| !declared.iter().any(|declared| covers(declared, path))) {
@@ -744,7 +760,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         ) -> Result<Vec<Built>, String> {
             let mut run = runs::Run::create(&self.store, "build test")?;
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
-            let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, limits };
+            let context =
+                runs::Context { store: &self.store, root: &root, sources: &[], http: &http, copies: None, limits };
             let built = run.build(&context, steps, plan);
             run.finish(built.as_ref().err().map(String::as_str))?;
             built
@@ -915,6 +932,51 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     #[test]
+    fn an_empty_client_directory_retains_metadata_and_missing_outputs_still_fail() {
+        let fixture = fixture("engine-empty-client");
+        fn sea(request: &Request) -> Result<(), String> {
+            fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
+            write_atomic(&request.output.join("metadata/empty.json"), b"[\"13/10000/10000\"]")
+        }
+        let step = Step {
+            name: "test/sea".into(),
+            inputs: Vec::new(),
+            options: json!({}),
+            code: steps_crate(),
+            outputs: vec!["terrain".into(), "metadata".into()],
+            run: Run::Rust(sea),
+            client: Client::Paths(vec!["terrain".into()]),
+        };
+        let built = fixture.build(&[step]).unwrap();
+        assert_eq!(
+            built[0].receipt.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            ["metadata/empty.json"]
+        );
+        let missing = Step {
+            name: "test/missing".into(),
+            inputs: Vec::new(),
+            options: json!({}),
+            code: steps_crate(),
+            outputs: vec!["absent".into()],
+            run: Run::Rust(sea),
+            client: Client::All,
+        };
+        assert!(fixture.build(&[missing]).unwrap_err().contains("did not write its output absent"));
+        let step = Step {
+            name: "test/sea".into(),
+            inputs: Vec::new(),
+            options: json!({}),
+            code: steps_crate(),
+            outputs: vec!["terrain".into(), "metadata".into()],
+            run: Run::Rust(sea),
+            client: Client::Paths(vec!["terrain".into()]),
+        };
+        let release = release::release(&fixture.store, &fixture.root(), "test", "sea", &[], &[step]).unwrap().unwrap();
+        assert!(release.objects().is_empty());
+        assert_eq!(release.layers[0].files.len(), 1);
+    }
+
+    #[test]
     fn a_code_change_rebuilds_its_layer_and_stops_where_the_bytes_are_the_same() {
         let fixture = fixture("engine-code");
         let first = fixture.build(&pipeline()).unwrap();
@@ -934,7 +996,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     #[test]
     fn a_snapshot_input_keys_only_the_files_it_selects() {
         let fixture = fixture("engine-select");
-        fixture.build(&pipeline()).unwrap();
+        let built = fixture.build(&pipeline()).unwrap();
+        let mut old = built[0].receipt.clone();
+        let resolved = old.inputs[0].files.clone();
+        assert!(!resolved.is_empty());
+        old.inputs[0].files.clear();
+        fixture.store.put_layer(&old).unwrap();
+        let released =
+            release::release(&fixture.store, &fixture.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
+        let restored = released.layers.iter().find(|l| l.key == old.key).unwrap();
+        assert_eq!(
+            restored.inputs[0].files, resolved,
+            "a freshly resolved digest-matching selection repairs provenance without rebuilding bytes"
+        );
+
         fixture.fetched("head", "other.txt", b"other\n");
         assert_eq!(fixture.plan(&pipeline()).unwrap().groups, []);
 
@@ -960,6 +1035,13 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             Ok(())
         }
         fn one(request: &Request) -> Result<(), String> {
+            assert_eq!(request.layer_files.keys().collect::<Vec<_>>(), request.layers.keys().collect::<Vec<_>>());
+            let files = &request.layer_files["test/leaves"];
+            assert_eq!(
+                files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+                request.layers["test/leaves"].keys().collect::<Vec<_>>()
+            );
+            assert_eq!((files[0].sha256.as_str(), files[0].size), (sha256_hex(b"head\n").as_str(), 5));
             let [object] = request.layers["test/leaves"].values().collect::<Vec<_>>()[..] else {
                 return Err("the step reads more than one file".into());
             };

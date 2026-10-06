@@ -1,7 +1,7 @@
 # Planner sunlight index
 
-The sunlight layer reads `sun.pmtiles` and the terrain archive from the same
-release. The archive stores height bounds and map-scale horizon profiles.
+The sunlight layer reads its tiles and terrain from the same release.
+The tile archives store height bounds and map-scale horizon profiles.
 The client calculates shadows for one date and clock time. No rider schedule
 enters the calculation.
 
@@ -27,10 +27,15 @@ sets the visible region. Terrain extends at least `distance_m` beyond it.
 | `horizon_step` | 90 / 254 degrees per encoded step |
 | `distance_m` | Positive search distance, at most 30000 metres |
 | `timezone` | Region IANA time zone |
-| `terrain_sha256` | SHA-256 of the terrain PMTiles archive |
+| `terrain_sha256` | SHA-256 of the terrain PMTiles archive, or the empty terrain MBTiles database |
 | `attribution` | Terrain source attribution |
 | `bounds` | Visible west, south, east, north |
 | `coverage` | Terrain archive west, south, east, north |
+
+A valid terrain database with no tiles produces sunlight metadata and no tile archives.
+The metadata keeps format 3, terrain identity and coverage. Missing terrain or invalid metadata
+is an error. A tile service returns 204 for this empty coverage. The client treats absent heights
+and horizons as unknown; it does not infer flat ground.
 
 ## Height bounds
 

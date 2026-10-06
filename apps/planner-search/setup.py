@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 import sys
 import shutil
 import signal
@@ -13,8 +14,8 @@ ROOT = Path(__file__).resolve().parent
 MODEL_SHA = 'a8e1a42794fc101aace3982b991ce9f1f8852fcc5da1c056ddd1fe2699e8e48a'
 
 
-def run(*args):
-    subprocess.run(args, cwd=ROOT, check=True)
+def run(*args, env=None):
+    subprocess.run(args, cwd=ROOT, check=True, env=env)
 
 
 def npm_ci(directory):
@@ -71,9 +72,9 @@ def main():
     data = args.data_dir.resolve()
     data.mkdir(parents=True, exist_ok=True)
     npm_ci(ROOT)
-    if not (ROOT / '.venv').exists():
-        run('uv', 'venv', '--python', '>=3.12', '.venv')
-    run('uv', 'pip', 'install', '--python', '.venv/bin/python', '-r', 'requirements.txt', '-r', 'query/requirements.txt')
+    run('uv', 'sync', '--locked', '--project', str(ROOT.parents[1]),
+        '--group', 'search-runtime', '--group', 'search-test',
+        env={**os.environ, 'UV_PROJECT_ENVIRONMENT': str(ROOT / '.venv')})
     npm_ci(ROOT.parents[1] / 'builder/app')
     archive = data / 'query-parser-v2-int8.tar.gz'
     if not archive.exists():
