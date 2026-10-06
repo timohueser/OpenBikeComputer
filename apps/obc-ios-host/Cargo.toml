@@ -11,6 +11,8 @@ description = "The iPhone host's device core: the shared firmware over a persist
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+obc-link = { workspace = true, features = ["client"] }
+obc-crc = { workspace = true }
 obc-route = { workspace = true }
 # The host owns the boxed RenderScratch it lends App each frame.
 obc-render = { workspace = true }
@@ -29,4 +31,5 @@ obc-storage = { workspace = true }
 obc-display = { workspace = true }
 
 [dev-dependencies]
+obc-flat-device = { workspace = true }
 obcm-testkit = { workspace = true }

@@ -432,7 +432,7 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "builder-python", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "builder-python", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
@@ -519,11 +519,13 @@ class ShippedPlanTests(unittest.TestCase):
         for path, expected in [
             ("host/route-engine/src/lib.rs", {"ci.ios-app-build", "ci.ios-release-build"}),
             ("apps/route-server/Cargo.toml", {"ci.ios-app-build", "ci.ios-release-build"}),
-            ("firmware/obc-crc/src/lib.rs", {"ci.ios-device-build"}),
-            ("firmware/obc-app/i18n/en.toml", {"ci.ios-device-build"}),
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
+              for path in ("firmware/obc-crc/src/lib.rs", "firmware/obc-app/i18n/en.toml")],
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
+              for path in ("apps/obc-ios-host/src/client.rs", "firmware/obc-link/src/flat/client.rs")],
             ("apps/planner-search/runtime.mjs", {"ci.ios-app-build", "ci.ios-release-build"}),
             ("apps/planner-search/query/lexicon/kinds.json", {"ci.ios-app-build", "ci.ios-release-build"}),
-            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build"})
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
               for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", ".cargo/config", "rust-toolchain.toml")],
         ]:
             with self.subTest(path=path):
@@ -600,18 +602,19 @@ class ShippedPlanTests(unittest.TestCase):
         workflow = yaml.safe_load((self.root / ".github/workflows/ci.yml").read_text())
         steps = workflow["jobs"]["ios-app"]["steps"]
         app = {"Build (Debug, simulator SDK)", "Mock marker present in Debug"}
-        device = {"Pack the iOS host (simulator slice)", "Build OBCDevice (Debug, simulator SDK)"}
+        pack = {"Pack the iOS host (simulator slice)"}
+        device = pack | {"Build OBCDevice (Debug, simulator SDK)"}
         capture = {"Install WebP tools", "Start the screenshot simulator", "Companion website screenshots are current"}
         routed = app | device | capture
         cases = [
             ("companion-ios/OBCDevice/App.swift", device),
-            ("host/obc-host-core/src/lib.rs", device),
+            ("host/obc-host-core/src/lib.rs", app | device),
             ("apps/planner-search/server.mjs", set()),
-            ("apps/planner-search/native.mjs", app),
-            ("companion-ios/scripts/generate-website-fixture.py", app | capture),
-            ("companion-ios/scripts/capture-website-screenshots.sh", app | capture),
-            ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | capture),
-            ("companion-ios/OBCCompanion/App.swift", app | capture),
+            ("apps/planner-search/native.mjs", app | pack),
+            ("companion-ios/scripts/generate-website-fixture.py", app | pack | capture),
+            ("companion-ios/scripts/capture-website-screenshots.sh", app | pack | capture),
+            ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | pack | capture),
+            ("companion-ios/OBCCompanion/App.swift", app | pack | capture),
             ("companion-ios/OBCCompanion/Assets.xcassets/AppIcon.appiconset/Contents.json", routed),
             ("companion-ios/project.yml", routed),
             (".github/workflows/ci.yml", routed),

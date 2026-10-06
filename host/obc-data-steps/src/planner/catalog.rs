@@ -42,7 +42,7 @@ pub fn pointer(release: &Release, store: &Store) -> Result<Pointer, String> {
         .filter(|kind| files.contains_key(&format!("maps/{kind}.json")))
         .map(|kind| (kind, format!("{tiles}/{kind}.json")))
         .collect();
-    let active = json!({
+    let mut active = json!({
         "id": id, "manifest": format!("{PUBLIC}/releases/{id}/release.json"),
         "region": document["region"], "name": document["name"], "bounds": document["bounds"],
         "basemap": format!("{tiles}/basemap.json"), "places": format!("{tiles}/places.json"),
@@ -52,6 +52,10 @@ pub fn pointer(release: &Release, store: &Store) -> Result<Pointer, String> {
         "attribution": document["attribution"], "landcover_attribution": document["landcover_attribution"],
         "terrain_attribution": document["terrain_attribution"], "layers": layers,
     });
+    let services = super::runtime::identities(release)?;
+    if services.as_object().is_some_and(|services| !services.is_empty()) {
+        active["services"] = services;
+    }
     // The required runtime layer blocks publication until real code receipts supply service endpoints.
     Ok(Pointer { document: json!({"format": 1, "active": active}).as_object().unwrap().clone() })
 }
@@ -83,6 +87,7 @@ struct File {
 
 pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
     release.check_named()?;
+    super::runtime::verify(previous, release, store)?;
     let body = descriptor(release, store)?;
     let document: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
     if release.product != "planner"

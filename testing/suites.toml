@@ -326,13 +326,16 @@ triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sour
 [[suite]]
 id = "swift.obckit-host"
 scoped = true
+rust_packages = ["obc-ios-host"]
+rust_excludes = ["firmware/obc-app/src/harness/**"]
 route = "ordinary"
-command = "npm ci --prefix companion-ios/ReplayAssets && cd companion-ios/Packages/OBCKit && xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO"
+command = "tools/build-ios-host.sh --mac-only && npm ci --prefix companion-ios/ReplayAssets && cd companion-ios/Packages/OBCKit && xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO"
 jobs = ["ios-unit"]
 fixtures = ["captured-met", "legacy-library"]
 platforms = ["macos"]
 triggers = [
   "companion-ios/Packages/OBCKit/Package.swift",
+  "tools/build-ios-host.sh",
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCKit/Tests/**",
   "companion-ios/ReplayAssets/prepare.mjs",
@@ -536,11 +539,11 @@ ci_only = true
 [[suite]]
 id = "ci.ios-app-build"
 scoped = true
-rust_packages = ["route-server"]
+rust_packages = ["route-server", "obc-ios-host"]
 # The phone library disables the HTTP feature.
-rust_excludes = ["apps/route-server/src/http.rs"]
+rust_excludes = ["apps/route-server/src/http.rs", "firmware/obc-app/src/harness/**"]
 route = "ordinary"
-command = "xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
+command = "tools/build-ios-host.sh --sim-only && xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
@@ -551,6 +554,7 @@ triggers = [
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
   "tools/build-planner-ios.sh",
+  "tools/build-ios-host.sh",
   "apps/planner-native/*.swift",
   "apps/planner-search/native.mjs",
   "apps/planner-search/native-build.mjs",
@@ -580,11 +584,11 @@ triggers = [
 [[suite]]
 id = "ci.ios-release-build"
 scoped = true
-rust_packages = ["route-server"]
+rust_packages = ["route-server", "obc-ios-host"]
 # The phone library disables the HTTP feature.
-rust_excludes = ["apps/route-server/src/http.rs"]
+rust_excludes = ["apps/route-server/src/http.rs", "firmware/obc-app/src/harness/**"]
 route = "ordinary"
-command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
+command = "tools/build-ios-host.sh --sim-only && xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
 jobs = ["ios-release"]
 platforms = ["macos"]
 triggers = [
@@ -594,6 +598,7 @@ triggers = [
   "companion-ios/Packages/OBCKit/Package.swift",
   "companion-ios/Packages/OBCKit/Sources/**",
   "tools/build-planner-ios.sh",
+  "tools/build-ios-host.sh",
   "apps/planner-native/*.swift",
   "apps/planner-search/native.mjs",
   "apps/planner-search/native-build.mjs",

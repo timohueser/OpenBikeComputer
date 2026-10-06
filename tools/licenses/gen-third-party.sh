@@ -43,6 +43,8 @@ ARTIFACTS=(
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
     "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
     "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
+    "Linux routing service (\`route-server\`, \`x86_64-unknown-linux-gnu\`)|apps/route-server/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
+    "Linux routing service (\`route-server\`, \`aarch64-unknown-linux-gnu\`)|apps/route-server/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
 )
 
 # Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence
@@ -52,7 +54,7 @@ ARTIFACTS=(
 # trailing spaces removes that class of difference while leaving every word intact; the
 # alternative, --offline, would drop the enrichment and with it real copyright lines.
 canonicalize() {
-    awk '{ sub(/[ \t]+$/, ""); if ($0 == "") { if (!blank) print ""; blank = 1 } else { print; blank = 0 } }'
+    awk '{ sub(/\r$/, ""); sub(/[ \t]+$/, ""); if ($0 == "") { if (!blank) print ""; blank = 1 } else { print; blank = 0 } }'
 }
 
 tmp="$(mktemp)"

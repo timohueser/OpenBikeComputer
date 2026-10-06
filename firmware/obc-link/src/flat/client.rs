@@ -266,8 +266,52 @@ impl Client {
         self.operation.is_some()
     }
 
+    /// Configure the deadline policy only while all operations are idle. None leaves timeouts
+    /// to the adapter; transport failures and cancellation still produce terminal results.
+    pub fn set_timeout_ms(&mut self, timeout_ms: Option<u64>) -> Result<(), Error> {
+        if self.is_busy() || !self.queries.is_empty() {
+            return Err(Error::Busy);
+        }
+        self.options.timeout_ms = timeout_ms.unwrap_or(u64::MAX);
+        Ok(())
+    }
+
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        self.queries.iter().map(|query| query.deadline).chain(self.operation.as_ref().map(|_| self.deadline)).min()
+        self.queries
+            .iter()
+            .map(|query| query.deadline)
+            .chain(self.operation.as_ref().map(|_| self.deadline))
+            .filter(|deadline| *deadline != u64::MAX)
+            .min()
+    }
+
+    /// A reader may park only after the corresponding control write settles. Ignored late
+    /// replies leave this expectation live; a transfer answer can settle before its stream.
+    pub fn awaiting_control(&self) -> bool {
+        if !self.connected || self.restoring {
+            return false;
+        }
+        self.queries.iter().any(|query| query.token.is_none())
+            || self.write.is_none()
+                && self.pending.is_some()
+                && self.operation.as_ref().is_some_and(|op| {
+                    self.cancellation
+                        .as_ref()
+                        .map_or(op.answer.is_none(), |cancel| !cancel.answered || !cancel.transfer_answered)
+                })
+    }
+
+    /// GET can send stream records before its control answer. Once the announced byte count
+    /// arrives, the adapter stops reading while the remaining sink writes settle.
+    pub fn awaiting_stream(&self) -> bool {
+        self.connected
+            && !self.restoring
+            && self.cancellation.is_none()
+            && self.write.is_none()
+            && self
+                .pending
+                .is_some_and(|pending| pending.purpose == Purpose::Run && matches!(pending.request, Request::Get(_)))
+            && self.operation.as_ref().is_some_and(|op| op.answer.is_none_or(|answer| op.received < answer.payload_len))
     }
 
     pub fn active_transfer_id(&self) -> Option<RequestId> {
