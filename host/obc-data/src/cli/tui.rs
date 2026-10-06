@@ -962,8 +962,8 @@ fn help() -> Vec<Line<'static>> {
     let mut lines = vec![
         line(&format!("{} tab", numbers.join(" ")), "screens".into()),
         line("↑ ↓ j k", "move".into()),
-        line("p", format!("plan: obc data plan {LIVE}")),
-        line("u", format!("undo the edits of data/env/{LIVE}.toml: obc data undo {LIVE}")),
+        line("p", "plan".into()),
+        line("u", format!("undo the edits of data/env/{LIVE}.toml")),
         line("esc", "close".into()),
         line("q", "quit".into()),
         line("?", "help".into()),

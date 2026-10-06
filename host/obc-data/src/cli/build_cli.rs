@@ -390,7 +390,7 @@ fn select(plan: &Plan, only: &[String], live: bool) -> Result<Plan, Error> {
         return Ok(plan.clone());
     }
     if only.iter().any(|id| id == NONE) {
-        if only.len() > 1 {
+        if only.iter().any(|id| id != NONE) {
             return Err(Code::Usage.error(format!("`--only {}`: `none` names no other group", only.join(","))));
         }
         return Ok(if live { plan.clone() } else { Plan { groups: Vec::new() } });
@@ -685,14 +685,15 @@ fn next(
             drops.chain(&missing).map(String::as_str).filter(mine).map(str::to_string).collect();
         let new: Vec<_> = stored.values().filter(|layer| mine(&layer.step.as_str())).cloned().collect();
         let edited = plan.edits.iter().any(|edit| edit.product() == name);
-        let (release, applied) = if new.is_empty() && dropped.is_empty() && !edited {
-            (now.release.clone(), now.applied.clone())
+        let release = if new.is_empty() && dropped.is_empty() && !edited {
+            now.release.clone()
         } else {
             let live = now.release.as_ref().map(|(_, release)| release);
             let release = Release::compose(name, &plan.region, &optional(*product, &plan.layers), live, new, &dropped);
-            (Some((release.id(), release)), None)
+            Some((release.id(), release))
         };
-        next.products.push(LiveProduct { product: name.into(), prefix: now.prefix.clone(), release, applied });
+        let prefix = now.prefix.clone();
+        next.products.push(LiveProduct { product: name.into(), prefix, release, applied: None });
     }
     let unbuilt = steps.iter().filter(|step| missing.contains(&step.name)).flat_map(|step| &step.inputs);
     let mut reads = next.snapshots();
@@ -1320,6 +1321,23 @@ pub(crate) mod tests {
         write(&fixture.root().join("data/env/live.toml"), "region = \"andorra\"\n");
         let edit = Edit::Region { product: "test".into(), from: Some("monaco".into()), to: "andorra".into() };
         assert_eq!(live_plan(&fixture, &remote, &[]).unwrap().edits, [edit], "no layer reads the region");
+    }
+
+    #[test]
+    fn a_live_intermediate_layer_that_a_client_now_reads_gets_its_files_on_r2() {
+        let (fixture, remote, release) = live("cli-live-client");
+        let mut lean = release.clone();
+        lean.layers[1].client = false;
+        let join = format!("test/objects/{}", release.layers[1].files[0].sha256);
+        std::fs::remove_file(fixture.scratch.0.join("bucket").join(&join)).unwrap();
+        publish(&fixture, &lean);
+        let plan = live_plan(&fixture, &remote, &[]).unwrap();
+        let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
+        assert_eq!(ids, ["code:test/join"], "the step says that a client reads join");
+
+        let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
+        let built = run_build(&fixture.root(), &fixture.store, &Http::new(), Some(&remote), &[&Versioned], &args);
+        assert_eq!(built.unwrap().releases[0].id, release.id(), "the release has the files of join again");
     }
 
     #[test]

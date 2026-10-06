@@ -558,7 +558,7 @@ or when live does not have it. The plan has one group per cause. A layer can hav
 | `region` | `region` | `region` of the environment is not the `region` of the live release of a product, or the product has nothing live. Each layer of the product that live does not have, or whose options or snapshot reads differ |
 | `layers` | `layers` | `layers` of the environment are not the `optional` layers of the live release of a product. Each layer of the product that live does not have |
 | `move` | `move:SOURCE` | The plan moves the source (see [Versions](#versions)). Each layer that reads it at another version than its live layer. `from` is each version that live reads, and `to` is the version of the plan |
-| `code` | `code:LAYER` | The code that the steps declare (`paths` and `crates`) is not the code of their live layers: other inputs, command, outputs or code hash. Without an edit of the region, also other options or snapshot reads. `LAYER` is the first layer in dependency order. A live layer that no step makes, without an edit, has empty code |
+| `code` | `code:LAYER` | The code that the steps declare (`paths` and `crates`) is not the code of their live layers: other inputs, command, outputs, `client` or code hash. Without an edit of the region, also other options or snapshot reads. `LAYER` is the first layer in dependency order. A live layer that no step makes, without an edit, has empty code |
 | `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
 
 A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
@@ -813,7 +813,7 @@ is as in [State of a source](#state-of-a-source).
 | `not applied` | Live has no layer of the step | `missing in live` |
 | `not applied` | The options are not the options of the live layer | `options` |
 | `not applied` | The step reads a source that the live layer read, with another version or other `params` (in any order), or the store has the files that it reads and their digest is not the one that the live layer read | `SOURCE@VERSION not in live`, and ` (not fetched)` when the store does not have the files |
-| `code changed` | The inputs (kind and name), the command or the outputs are not those of the live layer | `inputs`, `command` or `outputs` |
+| `code changed` | The inputs (kind and name), the command, the outputs or whether a client reads the layer are not those of the live layer | `inputs`, `command`, `outputs` or `client` |
 | `code changed` | The code hash is not the one of the live layer | The first code file that changed, and `and N more`. The declared code when the store has no `code/<hash>.json` of the live layer |
 | `input changed` | A layer that the step reads is `not applied`, `code changed` or `input changed`, or its live layer is not the one that the live layer of the step read | The name of that layer |
 | `stale` | A source that the step reads is `stale` | `SOURCE: ` and the reason of the source |
