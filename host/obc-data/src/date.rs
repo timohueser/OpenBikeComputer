@@ -46,6 +46,21 @@ pub fn timestamp(seconds: u64) -> String {
     format!("{}T{:02}:{:02}:{:02}Z", format((seconds / 86_400) as i64), time / 3600, time / 60 % 60, time % 60)
 }
 
+/// A UTC time that starts `YYYY-MM-DDTHH:MM:SS`, such as an upload time on R2, as seconds since
+/// 1970-01-01; the rest, such as fractions of a second, is left out.
+pub fn seconds(text: &str) -> Option<u64> {
+    let (day, time) = (text.get(..10)?, text.get(10..19)?);
+    let [hours, minutes, seconds]: [u64; 3] = time
+        .strip_prefix('T')?
+        .split(':')
+        .map(|part| part.parse().ok())
+        .collect::<Option<Vec<_>>>()?
+        .try_into()
+        .ok()?;
+    let days = u64::try_from(parse(day)?).ok()?;
+    (hours < 24 && minutes < 60 && seconds < 60).then(|| days * 86_400 + hours * 3600 + minutes * 60 + seconds)
+}
+
 /// The day of an HTTP date such as `Sun, 06 Nov 1994 08:49:37 GMT`, as `YYYY-MM-DD`.
 pub fn from_http(value: &str) -> Option<String> {
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -82,7 +97,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format, from_http, parse, timestamp};
+    use super::{format, from_http, parse, seconds, timestamp};
 
     #[test]
     fn dates_count_days_and_reject_impossible_days() {
@@ -100,6 +115,8 @@ mod tests {
             assert_eq!(format(parse(text).unwrap()), text);
         }
         assert_eq!(timestamp(86_400 + 3_723), "1970-01-02T01:02:03Z");
+        assert_eq!(seconds("1970-01-02T01:02:03.278071679Z"), Some(86_400 + 3_723), "an R2 upload time");
+        assert_eq!(seconds("1970-01-02T25:02:03Z"), None);
         assert_eq!(from_http("Mon, 05 Oct 2026 03:43:59 GMT").as_deref(), Some("2026-10-05"));
         assert_eq!(from_http("Mon, 32 Oct 2026 03:43:59 GMT"), None);
         assert_eq!(from_http("yesterday"), None);

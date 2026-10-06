@@ -29,8 +29,8 @@ pub trait Product {
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
     fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned>;
 
-    /// What clients read of a release. `None` while the product has no client document: an apply
-    /// refuses a plan that changes its release, because it cannot make that release live.
+    /// What clients read of a release. `None` while the product has no client document: a plan of
+    /// `live` leaves the product out, because an apply cannot make its release live.
     fn pointer(&self) -> Option<PointerFn> {
         None
     }

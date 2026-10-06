@@ -669,10 +669,10 @@ environment, `build` fails with `blocked`. An error of the store, a file or the 
 in a step list fails the command with `failed`.
 
 A product also gives what clients read of a release: its pointer document, and the files that a
-client finds by name under `<prefix>/releases/<id>/`. `apply live` fails with `blocked`, before it
-builds, when the plan changes the release of a product without them; neither `maps` nor `planner`
-gives them yet. A product can check a release before an apply makes it live; neither `maps` nor
-`planner` has a check yet.
+client finds by name under `<prefix>/releases/<id>/`. A plan, a build and an apply of `live` leave
+out a product without them: it is in `blocked` with the reason "no client document yet", and its
+live release stays. Neither `maps` nor `planner` gives them yet. A product can check a release
+before an apply makes it live; neither `maps` nor `planner` has a check yet.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each source that the plan moves
@@ -686,7 +686,8 @@ of `live` also has:
   `on` and `off`.
 - `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: each key of the
   listing, or without a listing each key that live uses, that the releases after the plan do not
-  use. The listing has the prefixes that live owns after the apply, and `reference/v1`. Those are the keys of their layers and input copies, the pointers and
+  use. The listing has the prefixes that live owns after the apply, and `reference/v1` once live
+  reads a `dtm-*` source. Those are the keys of their layers and input copies, the pointers and
   the files under `<prefix>/releases/<id>/`. A layer that the store lacks counts with all the
   objects of its live layer, because its new objects are not known yet; an apply keeps an object
   that a new release uses.
@@ -829,7 +830,7 @@ would use is a leftover.
 | `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
 | `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
 | `<prefix>/objects/<sha256>` | A file of a layer of a release. Immutable |
-| `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read |
+| `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read. A record that R2 holds of a version that a live layer read counts, also without `r2_copy` |
 | `inputs/objects/<sha256>` | A file of an input copy. Immutable |
 
 When `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is set, `obc data` reads that bucket. Otherwise it
@@ -853,12 +854,13 @@ first writes the status, and the second writes an error.
 `apply live` makes the plan of live live. It needs the bucket, and it changes R2 in this order:
 
 1. It refuses when `data/` has changes that are not committed, apart from
-   `data/env/local.toml`: live builds from a committed `data/`. It does not commit or push. One
-   apply of live runs at a time on a machine.
+   `data/env/local.toml`: live builds from a committed `data/`. The steps run the code of the
+   working tree, also code that is not committed. It does not commit or push. One apply of live
+   runs at a time on a machine.
 2. It asks once in a terminal: "Apply M changes to live? removes X GB from R2", with the groups
-   and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan and does not
-   ask; the plan must be the plan of now, as for `build --plan`. When live has every change and
-   nothing is to be removed, it applies nothing.
+   and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan; the plan must
+   be the plan of now, as for `build --plan`. Without a terminal, `--yes` or `--plan` is the
+   consent. When live has every change and nothing is to be removed, it applies nothing.
 3. It builds the plan, as `build live --plan` does.
 4. It checks each release that changes: the check of its product, and its pointer. Each file
    that it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
@@ -866,11 +868,12 @@ first writes the status, and the second writes an error.
    or holds with another size; a key with another size goes first. Then it checks each key.
 6. It writes the pointer of each product whose release changes: the document of the product with
    `"release": "<id>"`, and `Cache-Control: public, max-age=60, must-revalidate`.
-7. When a pointer changed, it waits 10 minutes: a client that read the old pointer finishes its
-   downloads.
-8. It reads live again, lists its prefixes and `reference/v1`, and removes each key that no live
-   release uses, with a line in `removed.jsonl`. With drift, it removes nothing. It removes only
-   under the prefixes of live products, `inputs` and `reference/v1`.
+7. It reads live again and lists its prefixes, and `reference/v1` once live reads a `dtm-*`
+   source. With drift, it removes nothing. The keys to remove are those that no live release
+   uses and that R2 had before the apply started: a key of another apply that runs now stays.
+8. When there are keys to remove, it waits until 10 minutes after the newest pointer, so a client
+   that read an old pointer finishes its downloads, also after an apply that stopped in the wait.
+   Then it removes the keys, with a line in `removed.jsonl`.
 
 An apply that stops before step 6 leaves live as it was, and the same plan applies again: it
 uploads only what R2 still lacks. The objects, manifests and named files are immutable, with
@@ -920,7 +923,10 @@ rclone moves the bytes. The planner publish, deploy and finalize, and the refere
 ingest, still use the remote of `tools/r2.py`. `obc data r2` is plumbing for scripts: those
 commands call it. It does not change the state of a release. `obc bake publish --target r2`, `obc
 bake clean-r2` and the planner publish, deploy and finalize refuse to run when the pointer of
-their prefix has `release`: after an apply, only an apply changes live.
+their prefix has `release`, or is not JSON: after an apply, only an apply changes live. The
+planner deploy reads the pointer from the bucket again just before it writes it. `obc data r2
+put` and `delete` refuse a key under `cell-catalog/` or `planner/` once the pointer of that
+prefix has `release`, and under `inputs/` once any pointer has.
 
 ### Credentials
 

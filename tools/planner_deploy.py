@@ -246,6 +246,10 @@ def verify_services(active, document, origin):
 def activate(public_url, catalog):
     remote = r2.bucket_remote()
     with tempfile.TemporaryDirectory(prefix="planner-activate-") as directory:
+        # An apply can switch the catalogue while a deploy runs: read the bucket, not the CDN.
+        current = r2.fetch_optional(remote, "planner/catalog.json", Path(directory) / "current.json")
+        if current:
+            refuse_applied(json.loads(current.read_bytes()))
         path = Path(directory) / "catalog.json"
         path.write_bytes(encoded(catalog))
         r2.run_rclone(["copyto", str(path), f"{remote.path}/planner/catalog.json", "--header-upload", "Content-Type: application/json",

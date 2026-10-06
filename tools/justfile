@@ -437,9 +437,10 @@ bake *args:
         }
         pointer="$(mktemp)"
         "${client[@]}" get "$prefix/catalog.json" "$pointer" >/dev/null
-        if python3 -c 'import json, sys; sys.exit("release" not in json.load(open(sys.argv[1])))' "$pointer"; then
+        # Only a catalog that is JSON without `release` passes: one that does not parse can be live.
+        if ! python3 -c 'import json, sys; sys.exit("release" in json.load(open(sys.argv[1])))' "$pointer" 2>/dev/null; then
           rm -f "$pointer"
-          _err "$prefix/catalog.json names a release of obc data apply live; apply live instead"
+          _err "$prefix/catalog.json names a release of obc data apply live, or is not JSON; apply live instead"
           exit 1
         fi
         rm -f "$pointer"

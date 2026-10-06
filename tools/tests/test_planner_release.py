@@ -169,6 +169,17 @@ class ReleaseTests(unittest.TestCase):
     DOCUMENT = {"region": "engadin", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
                 "grid": {"format": 2, "zoom": 9, "map_zoom": 11}, "files": {}}
 
+    def test_activation_refuses_a_catalogue_that_an_apply_wrote_meanwhile(self):
+        for text in [json.dumps({"format": 1, "active": None, "release": "c" * 64}), "{\"release\": "]:
+            def fetch(_remote, _key, path, text=text):
+                path.write_text(text)
+                return path
+            with patch.object(r2, "bucket_remote", return_value=r2.Remote("test:bucket", {})), \
+                 patch.object(r2, "fetch_optional", side_effect=fetch), \
+                 patch.object(r2, "run_rclone", side_effect=AssertionError("no upload")):
+                with self.assertRaises(ValueError):
+                    planner_deploy.activate("https://maps.example", {"format": 1, "active": None})
+
     def test_failed_service_probe_does_not_activate_a_release(self):
         with patch.object(release, "release", return_value=("a" * 64, self.DOCUMENT)) as verified, \
              patch.object(planner_deploy, "read_url", side_effect=[self.DOCUMENT, {"active": None, "previous": None}]), \
