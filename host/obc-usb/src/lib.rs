@@ -4,6 +4,8 @@
 //! a status envelope means, or which object an upload belongs to. The desktop app and maintenance
 //! CLI share this transport; their protocol clients sit above it.
 
+pub mod client;
+
 use std::sync::Arc;
 
 use nusb::transfer::{Buffer, Bulk, Completion, In, Out, TransferError};
