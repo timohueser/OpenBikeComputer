@@ -37,7 +37,7 @@ pub struct Owner {
 impl Owner {
     pub fn open(directory: &Path, run: &str, bundle: &[u8]) -> Result<Self, String> {
         crate::engine::runs::check_id(run)?;
-        std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        durable_directory(directory)?;
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -119,13 +119,23 @@ impl Owner {
 
 pub fn durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("durable file has no directory")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    durable_directory(parent)?;
     let temporary = path.with_extension("pending");
     let mut file =
         OpenOptions::new().create(true).truncate(true).write(true).open(&temporary).map_err(|e| e.to_string())?;
     file.write_all(bytes).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
     std::fs::rename(&temporary, path).map_err(|e| e.to_string())?;
     File::open(parent).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())
+}
+
+/// Persist directory entries too, including ancestors created by store setup.
+pub(crate) fn durable_directory(path: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    for directory in path.ancestors() {
+        File::open(directory).and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -166,8 +176,13 @@ mod tests {
     #[test]
     fn acknowledged_mutations_clear_intent_and_keep_the_operation_binding() {
         let fixture = fixture("commit-ack");
-        let mut run = Run::create(&fixture.store, "commit").unwrap();
-        let directory = fixture.store.root().join("commits");
+        let run = Run::create(&fixture.store, "commit").unwrap();
+        let id = run.id().to_string();
+        let prefix = crate::engine::runs::events(&fixture.store, &id).unwrap();
+        drop(run);
+        let store = crate::store::Store::at(fixture.store.root().join("fresh/owner/store"));
+        let mut run = Run::attach(&store, &id, &prefix).unwrap();
+        let directory = store.root().join("commits");
         let mut owner = Owner::open(&directory, run.id(), b"bundle").unwrap();
         let path = owner.path.clone();
         owner
@@ -180,7 +195,7 @@ mod tests {
         let saved: State = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.pending.is_none());
         assert!(matches!(
-            crate::engine::runs::events(&fixture.store, run.id()).unwrap().last(),
+            crate::engine::runs::events(&store, run.id()).unwrap().last(),
             Some(crate::engine::runs::Event::Published { .. })
         ));
         owner.finish().unwrap();

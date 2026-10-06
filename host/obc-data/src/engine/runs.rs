@@ -191,14 +191,14 @@ impl Run {
         }
         let lock = store.try_lock(&format!("run-{id}"))?.ok_or("the originating run still has an owner")?;
         let path = store.run(id);
-        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        crate::commit::durable_directory(path.parent().unwrap())?;
         if path.exists() {
             let existing = events(store, id)?;
             if !existing.starts_with(prefix) || existing.iter().any(|event| matches!(event, Event::Finished { .. })) {
                 return Err("commit journal differs from the originating run".into());
             }
         }
-        let file = OpenOptions::new().append(true).create(true).open(path).map_err(|e| e.to_string())?;
+        let file = OpenOptions::new().append(true).create(true).open(&path).map_err(|e| e.to_string())?;
         let elapsed = match prefix.first() {
             Some(Event::Started { at, .. }) => {
                 date::seconds(at).map(|at| Duration::from_secs(date::now().saturating_sub(at)))
@@ -213,6 +213,7 @@ impl Run {
             }
         }
         run.sync()?;
+        File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
         Ok(run)
     }
 

@@ -119,11 +119,12 @@ pub(super) fn pack(
     Ok(sha256_hex(&bytes))
 }
 
+fn sha(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn validate(bundle: &Bundle) -> Result<(), Error> {
     crate::engine::runs::check_id(&bundle.run)?;
-    let sha = |value: &str| {
-        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    };
     let segment = |value: &str| {
         !value.is_empty()
             && !matches!(value, "." | "..")
@@ -319,6 +320,10 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
     let host = std::env::var("OBC_COMMIT_HOST")
         .map_err(|_| Code::Blocked.error("set OBC_COMMIT_HOST to the configured VPS, or local on that VPS"))?;
     let worker = "/opt/obc-data/bin/obc-data-plumbing";
+    crate::engine::runs::check_id(run)?;
+    if !sha(digest) {
+        return Err(Code::Usage.error("commit bundle digest is not SHA-256"));
+    }
     let incoming = format!("/var/lib/obc-data/incoming/{run}/{digest}");
     if host == "local" {
         let output = Command::new(worker)
@@ -332,6 +337,11 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
         || host.starts_with('-')
     {
         return Err(Code::Usage.error("OBC_COMMIT_HOST is not an SSH host"));
+    }
+    let prepared =
+        Command::new("ssh").args(["-T", &host, "mkdir", "-p", "--", &incoming]).output().map_err(|e| e.to_string())?;
+    if !prepared.status.success() {
+        return Err(Code::Failed.error("commit transfer directory could not be made; no publication owner started"));
     }
     let copied = Command::new("rsync")
         .args(["-r", "--", &format!("{}/", directory.display()), &format!("{host}:{incoming}/")])

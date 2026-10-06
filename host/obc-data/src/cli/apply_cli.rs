@@ -477,7 +477,7 @@ fn delete(
 }
 
 pub(super) fn leftovers(
-    (remote, products, sources, store): (&Remote, &[&dyn Product], &[Source], &Store),
+    (remote, products, sources, store): (&Remote, &[(&str, &str)], &[Source], &Store),
     start: u64,
 ) -> Result<(Vec<Object>, Option<u64>), Error> {
     let live = Live::read_products(remote, products, sources, store).map_err(r2_failed)?;
