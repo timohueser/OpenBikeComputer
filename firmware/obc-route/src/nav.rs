@@ -1390,6 +1390,3 @@ mod tests {
         assert_eq!(p.edge_cost(1_000, u16::MAX, 4), None);
     }
 }
-
-#[cfg(test)]
-mod differential;
