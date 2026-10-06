@@ -31,10 +31,7 @@ use super::build_cli::plan_live;
 use super::edit_cli::{self, Edited, Switch};
 use super::runs_cli::{bytes, duration, mark, step_cells};
 use super::status_cli::{self, Status};
-use super::{
-    clean, clean_plan, live_column, live_unknown, policy, registry, row_text, source_rows, widths, CleanPlan, Error,
-    SourceRow,
-};
+use super::{clean, clean_plan, policy, row_text, source_listing, widths, CleanPlan, Error, SourceRow};
 use live::{Fix, LiveRow};
 use plan::PlanView;
 
@@ -216,11 +213,11 @@ static NO_PLAN: CleanPlan = CleanPlan {
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
     let store = Store::open()?;
-    let live = live_column(products, &store);
-    let mut app = App::new(source_rows(&registry(root)?, live.as_ref().ok(), false)?, list_runs(&store)?);
-    app.live = live.as_ref().ok().cloned();
+    let (sources, live) = source_listing(root, products, false)?;
+    let mut app = App::new(sources, list_runs(&store)?);
+    app.live = live;
     app.regions = Regions::load(root).map(|regions| regions.iter().map(|region| region.id.clone()).collect());
-    app.notice = app.regions.clone().err().or(live.err().as_ref().map(live_unknown));
+    app.notice = app.regions.clone().err();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
@@ -289,10 +286,10 @@ fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App,
         Effect::None | Effect::Quit => Ok(()),
         Effect::Policy(id, refresh) => {
             let result = policy(root, &id, refresh).map(drop);
-            let reloaded = app.reload(root, false);
+            let reloaded = app.reload(root, products, false);
             result.and(reloaded)
         }
-        Effect::CheckNow => app.reload(root, true),
+        Effect::CheckNow => app.reload(root, products, true),
         Effect::PlanClean => {
             let result = clean_plan(root, products, store).map(|plan| app.store = Some(plan));
             if result.is_err() {
@@ -394,8 +391,8 @@ impl App {
     }
 
     /// Read the sources again; with `check_now`, after a check of upstream now.
-    fn reload(&mut self, root: &Path, check_now: bool) -> Result<(), Error> {
-        self.sources = source_rows(&registry(root)?, self.live.as_ref(), check_now)?;
+    fn reload(&mut self, root: &Path, products: &[&dyn Product], check_now: bool) -> Result<(), Error> {
+        (self.sources, self.live) = source_listing(root, products, check_now)?;
         Ok(())
     }
 
@@ -1120,6 +1117,8 @@ mod tests {
             state: State::Ok,
             reason: None,
             snapshots: vec![Stored { version: "2024-01-02".into(), bytes: 1_000_000 }],
+            requests: Vec::new(),
+            credential_missing: false,
             source,
         });
         let run = |id: &str| Details {

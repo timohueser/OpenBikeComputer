@@ -120,6 +120,7 @@ pub fn version(
     source: &str,
     params: &[(String, String)],
 ) -> Result<Result<String, Wanted>, String> {
+    env.requests.borrow_mut().insert((source.into(), sorted(params)));
     let named = env.version(source, params).inspect_err(|_| {
         env.refused.borrow_mut().insert(source.into());
     })?;

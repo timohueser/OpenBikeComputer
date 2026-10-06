@@ -144,18 +144,28 @@ The options of the [planner layers](#planner) that are the same for each region.
 
 ## State of a source
 
-`obc data sources` computes the state of each source when it runs. It stores nothing.
+`obc data sources` discovers the active acquisition requests from the current product step lists.
+Discovery can read small region metadata. It does not fetch bulk inputs. A held capture input is
+provenance, not an active acquisition request. Request identity is the source id and sorted
+`NAME=VALUE` pairs. The source row reports the least request state in the state order.
 
 | State | When |
 | --- | --- |
-| `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The live version, the first in order when live reads more (for a date, the oldest), is a date, `refresh` is in days, the live version is older than `refresh`, and the newest upstream version is later than the live version. Or the live version is before the live version of the source that `fetch.from` names |
-| `ok` | Otherwise. A source that live does not read is never stale, and a source with `refresh = "manual"` is never stale by age |
+| `blocked` | A `data` or `asset` source has no `licence`, an active request has conflicting live versions, or a due request has no successful upstream result |
+| `stale` | An active date request is older than its maximum data age and upstream names a later version, or the request is an on-demand capture. Or its live version is before the live version of the source that `fetch.from` names |
+| `ok` | Otherwise. A request without a live version is never stale. A `manual` source is never stale by age |
 
-The live version of a source is the version that the live releases read, see [Live](#live). Its
-age is the number of days from its date to today (UTC). When the live version is older than
-`refresh` and the newest upstream version is not known, the state is `ok` and the reason says
-`upstream unknown`, and whether the source cannot be checked or the check failed.
+Data age is the number of days from the live version date to today (UTC). A request is due only
+when its age is greater than `refresh`. An unchanged successful check does not change data age:
+the request stays due, but its state is `ok` until a later check finds a newer version. Probe
+cache age is separate from data age.
+
+Each request reports its params, live version, due flag, state, age and upstream observation.
+The observation reports the result, the latest probe time and the last successful probe time
+and version. A failed probe keeps the last success. A capture result has no probe time: current
+capture policy is not evidence of a network check. The source row reports missing credentials,
+but credentials block only a selected new fetch. Verified local bytes or retained copies need
+no upstream credential. The live column also lists held versions for provenance.
 
 ## Store
 
@@ -170,7 +180,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
-| `upstream/<source>.json` | The last upstream check of a source: `checked` (seconds since 1970-01-01 UTC), `version` (a string, or `null` when the check failed) and `error` (only when it failed) |
+| `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `imports/<YYYYMMDDTHHMMSSZ>.jsonl` | The import record of one `obc data clean --apply`, see [Clean](#clean) |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
 | `locks/` | One lock file per key and per run |
@@ -390,17 +400,18 @@ no fetcher yet; the fetch fails.
 - A source with a `credential` that is not on this machine fails before the program runs, and
   the error names the variables or the file.
 
-The upstream check finds the newest version of a source with one request, which has 15 seconds.
-The store keeps its answer, or its failure, for one hour.
+Each acquisition check has 15 seconds. The store keeps its answer or failure for one hour.
+Equal normalized requests share a check. A changed acquisition URL or check kind invalidates
+the cached observation. Refresh policy changes do not invalidate acquisition evidence.
 
 | Source | Check |
 | --- | --- |
 | `osm` | `GET` of `<fetch.url>state.txt`; the day of its `timestamp` |
-| `http`, and a URL whose only `{name}` is `{yymmdd}` | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the file name of its `Location` |
-| `capture` | Today, with no request: a query service answers with current data |
+| `http` or `geofabrik`, with `{yymmdd}` and known request params | `HEAD` of the URL with `latest` for `{yymmdd}`, not following the redirect; the day in the file name of its `Location` |
+| `capture` | On-demand capture policy, with no network check or probe time |
 | `github`, `commit` | The GitHub API: the newest commit of the default branch |
 | `github`, `release` | The GitHub API: the tag of the newest release that has the asset of the URL |
-| `http`, `geofabrik` or `glo30`, `date`, and a URL without `{name}` | `HEAD` of the URL; the `Last-Modified` day |
+| `http`, `geofabrik` or `glo30`, `date`, and a URL without a version placeholder, with known request params | `HEAD` of the URL; the `Last-Modified` day |
 | Every other source | None; the source cannot be checked |
 
 ## Layers
@@ -678,15 +689,18 @@ one function (`obc_data::product::version`), in this order:
    fetch of it without that value fails with `usage` and the fix `Plan with --move
    SOURCE@VERSION`.
 
-A plan or a build of `live` without `--plan` also moves each stale source that live reads (see
-[State of a source](#state-of-a-source)) to the newest upstream version of the check of the last
-hour, as `--move SOURCE@VERSION` does. Each source is one group, `move:SOURCE`. A stale source that
-no step list reads, and a `manual` source, do not move this way.
+A plan or a build of `live` without `--plan` first discovers active requests with metadata-only
+preparation. It selects each stale active request (see [State of a source](#state-of-a-source))
+using its own upstream observation of the last hour. Other requests keep their live versions.
+Each source remains one group, `move:SOURCE`. A held input, an unused source and a `manual`
+source do not move this way. A stale capture requires an explicit move for its collection.
 
 A source with `refresh = "manual"` moves only with `--move`: step 4 does not fetch it, and the
 command fails with `blocked` and the fix `Plan with --move SOURCE@VERSION`. Before the first apply,
 nothing is live, so a plan takes the versions of the store and of upstream. The fetch of a
-`--move SOURCE` names its version, and every product of the plan reads that version. Upstream can
+`--move SOURCE` resolves each normalized request independently. `--move SOURCE@VERSION` fixes
+that version for all requests of the source. Fetches never mutate source move intent. A saved
+plan records both the intent and each exact resolved request version. Upstream can
 stop serving an old version, such as a Geofabrik extract of an earlier day: when the fetch of a
 version that live reads fails, the fix names `--move SOURCE`.
 

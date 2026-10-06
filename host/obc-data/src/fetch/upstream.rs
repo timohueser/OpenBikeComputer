@@ -1,6 +1,6 @@
-//! The newest version upstream has: one HEAD or index request per source that can be checked. The
-//! store keeps each answer, and each failure, for an hour.
+//! Request-specific upstream observations. Check age and data age are separate.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::http::Http;
@@ -11,10 +11,13 @@ use crate::store::{self, Store};
 /// How long a check stays valid, in seconds.
 pub const CACHE: u64 = 3600;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", content = "value", rename_all = "snake_case")]
 pub enum Upstream {
     Newest(String),
-    /// No request can tell, for example for a URL with `{area}`.
+    /// The service captures current data on demand; no network probe establishes a version.
+    Capture,
+    /// The source has no cheap upstream probe.
     CannotCheck,
     Failed(String),
 }
@@ -28,61 +31,126 @@ impl Upstream {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Success {
+    pub checked_at: u64,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Observation {
+    /// None for policy-derived capture results and sources without a probe.
+    pub checked_at: Option<u64>,
+    pub result: Upstream,
+    pub last_success: Option<Success>,
+}
+
 #[derive(Deserialize, Serialize)]
 struct Cached {
-    checked: u64,
-    version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    checks: Vec<Check>,
+    observation: Observation,
 }
 
 /// The one request that finds the newest version.
-enum Check<'a> {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum Check {
     /// The URL with `latest` for `{yymmdd}` redirects to the file of the newest day, such as
-    /// `planet-latest.osm.pbf` to `planet-YYMMDD.osm.pbf`. It holds the URL and the template.
-    LatestRedirect(String, &'a str),
+    /// `planet-latest.osm.pbf` to `planet-YYMMDD.osm.pbf`.
+    LatestRedirect(String),
     /// The `state.txt` of a replication directory names the day of its newest diff.
     ReplicationState(String),
-    LastModified(&'a str),
+    LastModified(String),
     /// The newest commit of the default branch, from the API URL of the repository.
     GithubCommit(String),
     /// The newest release that has the asset, whose name may hold `{version}`.
-    GithubRelease(String, &'a str),
+    GithubRelease(String, String),
 }
 
 /// The newest upstream version of `source`, from a check at most `max_age` seconds old.
 pub fn newest(store: &Store, http: &Http, source: &Source, max_age: u64) -> Upstream {
-    let check = match plan(source) {
-        Ok(check) => check,
-        Err(answer) => return answer,
+    observe(store, http, source, &[], max_age, date::now()).result
+}
+
+#[cfg(test)]
+pub(crate) fn seed(store: &Store, source: &Source, params: &[(String, String)], version: &str) {
+    let mut checks = plan(source, params).unwrap();
+    checks.sort_by_cached_key(|check| serde_json::to_string(check).unwrap());
+    checks.dedup();
+    let checked_at = date::now();
+    let observation = Observation {
+        checked_at: Some(checked_at),
+        result: Upstream::Newest(version.into()),
+        last_success: Some(Success { checked_at, version: version.into() }),
     };
-    let path = store.root().join("upstream").join(format!("{}.json", source.id));
-    let now = date::now();
-    let cached = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Cached>(&text).ok());
-    let answer = match cached.filter(|cached| now.saturating_sub(cached.checked) < max_age) {
-        Some(cached) => cached.version.ok_or(cached.error.unwrap_or_default()),
-        None => {
-            let answer = run(http, &check);
-            let (version, error) = (answer.clone().ok(), answer.clone().err());
-            if let Ok(text) = serde_json::to_string(&Cached { checked: now, version, error }) {
-                let _ = store::write_atomic(&path, text.as_bytes());
-            }
-            answer
-        }
+    store::write_atomic(
+        &path(store, &source.id, params),
+        &serde_json::to_vec(&Cached { checks, observation }).unwrap(),
+    )
+    .unwrap();
+}
+
+pub fn path(store: &Store, source: &str, params: &[(String, String)]) -> std::path::PathBuf {
+    let params = serde_json::to_vec(&store::sorted(params)).expect("strings serialize");
+    store.root().join("upstream").join(source).join(format!("{}.json", store::sha256_hex(&params)))
+}
+
+/// Observe one normalized acquisition request. Failures retain the previous successful probe.
+pub fn observe(
+    store: &Store,
+    http: &Http,
+    source: &Source,
+    params: &[(String, String)],
+    max_age: u64,
+    now: u64,
+) -> Observation {
+    let immediate = |result| Observation { checked_at: None, result, last_success: None };
+    let mut checks = match plan(source, params) {
+        Ok(checks) => checks,
+        Err(answer) => return immediate(answer),
     };
-    answer.map_or_else(Upstream::Failed, Upstream::Newest)
+    checks.sort_by_cached_key(|check| serde_json::to_string(check).expect("probe serializes"));
+    checks.dedup();
+    let path = path(store, &source.id, params);
+    let lock = store.lock(&format!("upstream-{}", store::sha256_hex(path.to_string_lossy().as_bytes())));
+    let _lock = match lock {
+        Ok(lock) => lock,
+        Err(error) => return immediate(Upstream::Failed(error)),
+    };
+    let cached = std::fs::read(&path).ok().and_then(|text| serde_json::from_slice::<Cached>(&text).ok());
+    let cached = cached.filter(|cached| cached.checks == checks);
+    if let Some(cached) = cached
+        .as_ref()
+        .filter(|cached| cached.observation.checked_at.is_some_and(|checked| now.saturating_sub(checked) < max_age))
+    {
+        return cached.observation.clone();
+    }
+    let answer = checks.iter().map(|check| run(http, check)).collect::<Result<Vec<_>, _>>();
+    let result = answer.map_or_else(Upstream::Failed, |versions| {
+        versions.into_iter().max().map_or(Upstream::CannotCheck, Upstream::Newest)
+    });
+    let last_success = match &result {
+        Upstream::Newest(version) => Some(Success { checked_at: now, version: version.clone() }),
+        _ => cached.and_then(|cached| cached.observation.last_success),
+    };
+    let observation = Observation { checked_at: Some(now), result, last_success };
+    if let Ok(text) = serde_json::to_vec(&Cached { checks, observation: observation.clone() }) {
+        let _ = store::write_atomic(&path, &text);
+    }
+    observation
 }
 
 /// The request that checks `source`, or the answer when no request is needed.
-fn plan(source: &Source) -> Result<Check<'_>, Upstream> {
+fn plan(source: &Source, params: &[(String, String)]) -> Result<Vec<Check>, Upstream> {
     let Some(url) = source.fetch.url.as_deref() else { return Err(Upstream::CannotCheck) };
-    match source.fetch.kind {
+    let check = match source.fetch.kind {
         FetchKind::Osm => Ok(Check::ReplicationState(format!("{url}state.txt"))),
-        FetchKind::Http if url.contains("{yymmdd}") && !url.replace("{yymmdd}", "").contains('{') => {
-            Ok(Check::LatestRedirect(url.replace("{yymmdd}", "latest"), url))
+        FetchKind::Http | FetchKind::Geofabrik if url.contains("{yymmdd}") => {
+            return super::expand(&url.replace("{yymmdd}", "latest"), None, params)
+                .map(|urls| urls.into_iter().map(Check::LatestRedirect).collect())
+                .map_err(Upstream::Failed);
         }
         // A query service answers with today's data.
-        FetchKind::Capture => Err(Upstream::Newest(date::format(date::today()))),
+        FetchKind::Capture => Err(Upstream::Capture),
         FetchKind::Github => {
             let path = url.split_once("://").map_or("", |(_, rest)| rest);
             let mut parts = path.split('/').skip(1);
@@ -91,26 +159,29 @@ fn plan(source: &Source) -> Result<Check<'_>, Upstream> {
             match source.version {
                 VersionScheme::Commit => Ok(Check::GithubCommit(api)),
                 VersionScheme::Release if url.contains("/releases/download/") => {
-                    Ok(Check::GithubRelease(api, url.rsplit('/').next().unwrap_or_default()))
+                    Ok(Check::GithubRelease(api, url.rsplit('/').next().unwrap_or_default().into()))
                 }
                 _ => Err(Upstream::CannotCheck),
             }
         }
         FetchKind::Http | FetchKind::Geofabrik | FetchKind::Glo30
-            if source.version == VersionScheme::Date && !url.contains('{') =>
+            if source.version == VersionScheme::Date && !super::names_version(url) =>
         {
-            Ok(Check::LastModified(url))
+            return super::expand(url, None, params)
+                .map(|urls| urls.into_iter().map(Check::LastModified).collect())
+                .map_err(Upstream::Failed);
         }
         _ => Err(Upstream::CannotCheck),
-    }
+    }?;
+    Ok(vec![check])
 }
 
 fn run(http: &Http, check: &Check) -> Result<String, String> {
     match check {
-        Check::LatestRedirect(url, template) => {
+        Check::LatestRedirect(url) => {
             let target = http.location(url)?;
-            let name = template.rsplit('/').next().unwrap_or_default();
-            let (prefix, suffix) = name.split_once("{yymmdd}").unwrap_or_default();
+            let name = url.rsplit('/').next().unwrap_or_default();
+            let (prefix, suffix) = name.rsplit_once("latest").unwrap_or_default();
             let got = target.rsplit('/').next().unwrap_or_default();
             let digits = got.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix));
             let digits = digits.filter(|d| d.len() == 6 && d.bytes().all(|b| b.is_ascii_digit()));
