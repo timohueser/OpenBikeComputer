@@ -488,6 +488,7 @@ same fields.
 | `step` | The layer name |
 | `snapshots` | `{source: {file name: object path}}` |
 | `layers` | `{layer name: {path in the layer: object path}}`, with the files that the input selects |
+| `layer_files` | `{layer name: [{path, size, sha256}, …]}`, from receipts for exactly the same selected files |
 | `options` | The options |
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
@@ -495,7 +496,8 @@ same fields.
 A command starts in the repository root. Its standard output and standard error go to the
 standard error of the engine. Exit status 0 is success. The objects are read-only. While a step
 runs, `output` and `metrics` are in `partial/layer-<key>/`; the engine removes that directory
-when the step ends, also when it fails. A failed step writes no receipt.
+when the step ends, also when it fails. A failed step writes no receipt. A declared directory may be empty when the step creates it.
+A declared output that does not exist is an error.
 
 ### Offline
 
@@ -571,6 +573,11 @@ another version that lists them all, the last in byte order. Without `files`, th
 that a fetch with the same `params` gave, or else every file. Otherwise `bytes` is `null`. A run
 fetches a version with the same `params` once, with the files of every group that needs it.
 
+Ordinary `plan` and `status` may fetch Geofabrik polygons, the Geofabrik index and the GLO-30 tile
+list. They MUST NOT prepare bulk inputs. A missing bulk prerequisite gives a blocked error.
+Automatically selected stale moves do not authorize bulk preparation. An explicit `--move`
+permits preparation during plan discovery; a build uses the normal fetcher.
+
 ### Changes of live
 
 A plan of `live` compares the steps with the layers of the live releases (see [Live](#live)). A
@@ -600,6 +607,19 @@ does not move, and the steps read the version of live. `--only none` selects no 
 The release of a product after a plan is its live release with the `layers` of the groups in place
 of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
 environment (`Release::compose`). A product that no group or edit changes keeps its release.
+
+### Device-map publication
+
+The maps catalog step consumes selected layer paths and their receipt metadata. Map and terrain
+layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
+and `terrain/` payloads are client files. The catalog layer publishes pinned satellites from
+`objects/`. Named schema, terrain, licence and region files remain release metadata.
+
+The catalog selects only Geofabrik picks whose complete band and terrain coverage is available.
+A box or multi-area maps source is blocked until source coverage preparation supports it.
+Before apply, the product compares picks with the previous release and assembles changed picks
+with the real assembler. The production reader verifies each result. Missing inputs and invalid
+artifacts fail verification before upload. An unchanged pick can reuse prior verification.
 
 ### Runs
 

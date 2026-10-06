@@ -63,7 +63,7 @@ Three properties of this definition are load-bearing:
 
 A **band** is a named class of cell content with one cell size. A band's cells carry a stated
 subset of the schema's LOD ladder and, optionally, the non-geometry sections. The band table is a
-property of the **schema revision** (§6), not of this format; the v1 values are §1.5.
+property of the **schema digest** (§6), not of this format; the v1 values are §1.5.
 
 Two rules are normative here:
 
@@ -185,17 +185,17 @@ A baked cell MUST be a complete, valid OBCM file of the catalog's OBCM version, 
   finds nothing, so a cell of any band stays a legal, openable map;
 - the POI section and the nav section MUST be present, per `OBCM_Spec.md` §7/§8, and MUST be
   **empty** unless the cell's band carries them;
-- both style tables MUST be the schema revision's **canonical table** (§6.2) — right ids, right
+- both style tables MUST be the schema digest's **canonical table** (§6.2) — right ids, right
   count, right order, placeholder values — and both marker colors the schema's placeholder.
 
 Because the full ladder is written, **geometry-band membership is not recorded in the cell's
-bytes**. It is a property of the schema revision, read from the catalog (§6). A producer MUST NOT
+bytes**. It is a property of the schema digest, read from the catalog (§6). A producer MUST NOT
 infer a cell's band from which of its LODs happen to be non-empty: a legitimately empty cell — open
 sea — is indistinguishable that way.
 
 ### 3.2 Determinism
 
-> **Same source snapshot + same schema revision + same cell ⇒ byte-identical file.**
+> **Same source snapshot + same schema digest + same cell ⇒ byte-identical file.**
 
 This is what lets the catalog content-address cells, lets a re-bake be a no-op, and lets two
 independently baked neighbours agree on a seam coordinate (§3.4). Producers MUST ensure that:
@@ -205,11 +205,11 @@ independently baked neighbours agree on a seam coordinate (§3.4). Producers MUS
 - floating-point geometry work is either avoided or performed so that the result is
   reproducible on the producing toolchain, and every coordinate that survives into the file is the
   result of the same integer rounding (`(deg * 1e6).round()`) the packer already uses;
-- the schema revision, not the machine, fixes every threshold — simplification tolerances, cull
+- the schema digest, not the machine, fixes every threshold — simplification tolerances, cull
   areas, merge passes, and the island-prune threshold of §3.5.
 
 Read "source snapshot" as the whole **source set**: a cell's bytes are a function of (source
-snapshot set, schema revision, crop), where the source set is every co-baked extract whose coverage
+snapshot set, schema digest, crop), where the source set is every co-baked extract whose coverage
 intersects the cell — cut once from an ingest of exactly that set (§3.7) — and the crop is whatever
 box that ingest was reduced to, which drops edge-crossing relations exactly as an extract's own
 boundary does. Both belong to the determinism key, and neither may depend on the order the extracts
@@ -217,7 +217,7 @@ were named: a producer MUST key its cut plans by the **sorted** source set, so t
 extracts on a command line cannot change a single output byte.
 
 A bakery MUST record the source extract identity and snapshot date per cell and MUST NOT publish
-two different byte sequences under one (cell, schema revision, snapshot) triple.
+two different byte sequences under one (cell, schema digest, snapshot) triple.
 
 ### 3.3 Cutting geometry at the cell edge
 
@@ -294,7 +294,7 @@ Therefore:
   boundary, however small.
 - The real pruning pass runs at **assembly** time (§4.6), over the merged graph, where component
   sizes are finally true.
-- `min_component_edges` is a property of the **schema revision**, never of the skin. Two cells
+- `min_component_edges` is a property of the **schema digest**, never of the skin. Two cells
   pruned at different thresholds do not assemble into a graph with consistent semantics.
 
 ### 3.6 POIs and hours
@@ -319,7 +319,7 @@ each extract lacks the side roads that create the neighbour's junctions. So:
 - A catalog MUST mark a partial cell as such (§6.1), and a consumer MUST NOT present a partial
   cell as canonical coverage.
 - A bakery MUST replace a partial cell when a covering source becomes available, and MUST NOT
-  publish a canonical cell and a partial cell for the same (cell, schema revision) pair. Co-baking
+  publish a canonical cell and a partial cell for the same (cell, schema digest) pair. Co-baking
   a border cell from every extract that touches it is the sanctioned way to make it canonical
   without a planet source.
 
@@ -329,7 +329,7 @@ A covering source can prove that a band's canonical payload for a cell is empty.
 represent those cells as compact **known-empty** row ranges rather than as complete empty OBCM
 objects.
 
-- The assertion is per `(schema revision, band, cell)` and carries the same
+- The assertion is per `(schema digest, band, cell)` and carries the same
   source-set identities, snapshot dates, and bake timestamp as an artifact.
 - It is canonical coverage: a partial source MUST NOT produce a known-empty
   assertion. Absence from both the artifact list and the known-empty ranges
@@ -342,7 +342,7 @@ objects.
   artifact would have contributed.
 
 An assembly containing no artifact at all has no cell from which to verify the
-schema revision's binary style and routing-profile tables. An assembler MUST
+schema digest's binary style and routing-profile tables. An assembler MUST
 refuse that all-known-empty input rather than borrow an unselected artifact as
 an implicit metadata source.
 
@@ -356,12 +356,12 @@ section defines what an assembler does.
 
 ### 4.1 Inputs and preconditions
 
-An assembler takes a selection (any set of areas, holes allowed), a schema revision with its band
+An assembler takes a selection (any set of areas, holes allowed), a schema digest with its band
 table, a light skin, a dark skin, the artifacts the coverage rule (§1.2) selects, and any selected
 known-empty identities (§3.8). It MUST refuse to proceed if:
 
 - the cells do not all carry the same OBCM version, or that version is not the one it writes; or
-- the cells do not all belong to the same schema revision; or
+- the cells do not all belong to the same schema digest; or
 - two cells disagree on the style table's ordered ids, or on the
   `OBCM_Spec.md` §8.6 profile table; or
 - any selected cell is missing, and the caller has not accepted the resulting hole; or
@@ -538,7 +538,7 @@ no source cell is a bug.
 A **skin** is one authored presentation: per feature type a color, weight, dash bit, `color2`,
 z-index and priority, plus a marker color. Each assembly stamps one light and one dark skin:
 
-- resolve each feature type's style **id** from the schema revision's canonical assignment (§6.2)
+- resolve each feature type's style **id** from the schema digest's canonical assignment (§6.2)
   — neither skin MUST introduce, remove, reorder, or renumber ids;
 - before any output write, compare the resolved ids against the cells' canonical table. This check
   also applies when a local schema omits the style assignment and the skins supply explicit ids;
@@ -608,7 +608,7 @@ define.
 
 ### 6.1 What the catalog must say about a cell
 
-For each published cell: its id (§1.3), its band, its schema revision, its OBCM version read from
+For each published cell: its id (§1.3), its band, its schema digest, its OBCM version read from
 its own header, its size, its SHA-256, its URL, its source extents and snapshot dates, and whether
 it is **`partial`** (§3.7). A consumer must be able to price an assembly — cell count and total
 bytes, **per band** — from the manifest alone, before fetching anything, which is what makes §4.1's
@@ -616,14 +616,14 @@ projection arithmetic rather than estimation.
 
 ### 6.2 Schema owns ids; skin owns values
 
-A schema revision fixes: the feature types and their `min_lod`, the LOD ladder (`Max Meters/Pixel`
+A schema digest fixes: the feature types and their `min_lod`, the LOD ladder (`Max Meters/Pixel`
 per level), simplification tolerances, cull thresholds, the merge passes, `Chunk Size`, the
 routing profile table, `min_component_edges`, and the **band table** (§1.2). All of it is baked
 into chunk bytes, so it is the identity of a cell store.
 
 Critically, the schema also fixes the **style-id assignment**: `obc-pack` numbers feature types
 `1`-based in config document order (`OBCM_Spec.md` §2), and those ids are referenced by every
-feature header in every chunk. A schema revision therefore has one **canonical style assignment** —
+feature header in every chunk. A schema digest therefore has one **canonical style assignment** —
 one id per feature type, in one order. The two skins may change the other seven bytes of each record
 and their marker colors, and nothing else (§4.7).
 
@@ -632,9 +632,9 @@ therefore skins. Custom schemas remain a local-bake affair for the desktop app.
 
 ### 6.3 Lockstep and the bake guard
 
-An OBCM version bump or a schema-revision bump invalidates **every** cell, because assembly copies
-chunk bytes between files and that is only meaningful within one revision. The bakery's guard MUST
-refuse to publish a catalog that mixes OBCM versions or schema revisions across cells, exactly as
+An OBCM version bump or a schema digest change invalidates **every** cell, because assembly copies
+chunk bytes between files and that is only meaningful under one schema. The bakery's guard MUST
+refuse to publish a catalog that mixes OBCM versions or schema digests across cells, exactly as
 `OBCC_Spec.md` §10 already refuses a mixed-version artifact catalog, and an assembler MUST refuse a
 mixed input set (§4.1).
 
