@@ -20,6 +20,7 @@ pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, Strin
 pub(super) struct Context {
     rust: Option<rust::Metadata>,
     python: HashMap<Option<String>, python::Identity>,
+    packages: HashMap<String, BTreeMap<String, String>>,
 }
 
 impl Context {
@@ -80,6 +81,12 @@ impl Context {
                 self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
             }
             hashes.extend(self.python[&runtime.group].hashes.clone());
+        }
+        if let Some(group) = &code.python_packages {
+            if !self.packages.contains_key(group) {
+                self.packages.insert(group.clone(), python::packages(&root, Some(group))?);
+            }
+            hashes.extend(self.packages[group].clone());
         }
         if !code.sources.is_empty() {
             let registry = crate::sources::Registry::load(&root)?;
