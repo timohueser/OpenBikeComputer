@@ -591,7 +591,7 @@ or when live does not have it. The plan has one group per cause. A layer can hav
 | `move` | `move:SOURCE` | The plan moves the source (see [Versions](#versions)). Each layer that reads it at another version than its live layer. `from` is each version that live reads, and `to` is the version of the plan |
 | `code` | `code:LAYER` | The code that the steps declare (`paths` and `crates`) is not the code of their live layers: other inputs, command, outputs, `client` or code hash. Without an edit of the region, also other options or snapshot reads. `LAYER` is the first layer in dependency order. A live layer that no step makes, without an edit, has empty code |
 | `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
-| `pointer` | `pointer:PRODUCT` | None. The desired client document differs while the release id stays equal. `document` is the SHA-256 of its compact JSON with sorted keys |
+| `pointer` | `pointer:PRODUCT` | None. The desired client document or release id differs without a layer change. `release` is its desired id; `document` is the SHA-256 of its compact JSON with sorted keys |
 
 A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
 cause changes, in dependency order, each with its `recipe` and `key` as in `builds`. `drops` are
