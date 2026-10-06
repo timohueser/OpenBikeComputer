@@ -1,14 +1,13 @@
 """Partition a planner map into immutable PMTiles grid archives."""
 
 from collections import OrderedDict
-from contextlib import closing
 import argparse
 import json
 from pathlib import Path
-import sqlite3
 import tempfile
 
 from . import planner_offline as offline, planner_runtime as runtime, step_request
+from .planner_map_archive import empty_mbtiles
 
 MAP_ZOOM = 11
 
@@ -64,7 +63,7 @@ def map_tiles(source, output, kinds=None):
 
 
 def step(request):
-    from pmtiles.convert import mbtiles_to_pmtiles, mbtiles_to_header_json
+    from pmtiles.convert import mbtiles_to_pmtiles
     from pmtiles.reader import Reader, MmapSource
 
     kind = request["options"]["kind"]
@@ -80,13 +79,19 @@ def step(request):
         archive = archives / f"{kind}.pmtiles"
         empty = False
         if name.endswith(".mbtiles"):
-            with closing(sqlite3.connect(f"{Path(source).resolve().as_uri()}?mode=ro", uri=True)) as db:
-                empty = db.execute("SELECT 1 FROM tiles LIMIT 1").fetchone() is None
-                if empty:
-                    header, metadata = mbtiles_to_header_json(dict(db.execute("SELECT name, value FROM metadata")))
+            empty_metadata = empty_mbtiles(source)
+            empty = empty_metadata is not None
+            if empty:
+                header, metadata = empty_metadata
             # The PMTiles writer requires at least one tile; sea-only terrain has none.
             if not empty:
                 mbtiles_to_pmtiles(source, archive, None)
+        elif kind == "sun" and name == "sun/empty.json":
+            metadata = json.loads(Path(source).read_bytes())
+            if metadata.get("sun_format") != 3:
+                raise ValueError("Unsupported empty sunlight metadata")
+            header = {"min_zoom": 0, "max_zoom": 12}
+            empty = True
         else:
             archive.symlink_to(Path(source).absolute())
         if not empty:

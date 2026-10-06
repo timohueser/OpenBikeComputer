@@ -19,7 +19,7 @@ from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
 from . import step_request
-from .planner_map_archive import tile_window
+from .planner_map_archive import empty_mbtiles, tile_window
 
 SIZE, DEM_ZOOM, INDEX_ZOOM, UNKNOWN = 512, 12, 10, 32767
 BOUND_STEP = 16
@@ -51,6 +51,18 @@ def encode(values):
     return output.getvalue()
 
 
+def terrain_coverage(header, bounds, distance_m):
+    if header["tile_type"] != TileType.WEBP or header["max_zoom"] != DEM_ZOOM:
+        raise ValueError("Use the planner's zoom-12 WebP terrain archive")
+    coverage = [header[key] / 1e7 for key in ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")]
+    latitude = distance_m / 110000
+    longitude = latitude / math.cos(math.radians(max(abs(bounds[1]), abs(bounds[3]))))
+    required = [bounds[0] - longitude, bounds[1] - latitude, bounds[2] + longitude, bounds[3] + latitude]
+    if any(coverage[i] > required[i] + 1e-7 for i in (0, 1)) or any(coverage[i] < required[i] - 1e-7 for i in (2, 3)):
+        raise ValueError("Terrain must cover the sun search distance beyond every visible edge")
+    return coverage
+
+
 def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, horizon_directions=72):
     if output.exists():
         raise ValueError("Output exists; choose a fresh path")
@@ -58,8 +70,7 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
     with terrain.open("rb") as stream, tempfile.TemporaryDirectory(prefix=".sun-", dir=output.parent) as folder:
         reader = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset))
         header = reader.header()
-        if header["tile_type"] != TileType.WEBP or header["max_zoom"] != DEM_ZOOM:
-            raise ValueError("Use the planner's zoom-12 WebP terrain archive")
+        coverage = terrain_coverage(header, bounds, distance_m)
 
         @lru_cache(maxsize=30)
         def heights(x, y):
@@ -75,12 +86,6 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
             return np.where(rgba[:, :, 3] == 255, height, UNKNOWN).clip(-32768, UNKNOWN).astype(np.int16)
 
         # Use every finest terrain tile, including the context outside the displayed region.
-        coverage = [header[key] / 1e7 for key in ("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")]
-        latitude = distance_m / 110000
-        longitude = latitude / math.cos(math.radians(max(abs(bounds[1]), abs(bounds[3]))))
-        required = [bounds[0] - longitude, bounds[1] - latitude, bounds[2] + longitude, bounds[3] + latitude]
-        if any(coverage[i] > required[i] + 1e-7 for i in (0, 1)) or any(coverage[i] < required[i] - 1e-7 for i in (2, 3)):
-            raise ValueError("Terrain must cover the sun search distance beyond every visible edge")
         stage = Path(folder)
         count, payload = 0, 0
         with (stage / "sun.pmtiles").open("wb") as target:
@@ -126,16 +131,37 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
     print(json.dumps({"index_tiles": count, "index_payload_bytes": payload, "archive_bytes": output.stat().st_size}))
 
 
-def step():
-    """The `obc data` step `planner/sun`: `sun.pmtiles` from the terrain of `planner/terrain`, read
-    as a PMTiles archive that the step converts beside its output."""
+def step(request=None):
+    """Bake the sunlight archive, or metadata-only unknown coverage for empty terrain."""
     from pmtiles.convert import mbtiles_to_pmtiles
 
-    request = step_request.read()
+    request = request if request is not None else step_request.read()
     options = request["options"]
-    output = Path(request["output"])
-    terrain = output.with_name("terrain.pmtiles")
-    mbtiles_to_pmtiles(request["layers"]["planner/terrain"]["terrain.mbtiles"], terrain, None)
+    output = Path(request["output"]) / "sun"
+    output.mkdir()
+    source = Path(request["layers"]["planner/terrain"]["terrain.mbtiles"])
+    empty = empty_mbtiles(source)
+    if empty is not None:
+        from .planner_sun_horizons import ANGLE_STEP
+        from .planner_geo import bounds as parse_bounds
+        header, metadata = empty
+        try:
+            parse_bounds(metadata.get("bounds", ""))
+        except argparse.ArgumentTypeError as error:
+            raise ValueError("Empty terrain has invalid bounds") from error
+        coverage = terrain_coverage(header, options["bounds"], options["distance_m"])
+        with source.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        metadata = {"sun_format": 3, "dem_zoom": DEM_ZOOM, "index_zoom": INDEX_ZOOM,
+                    "bound_step": BOUND_STEP, "horizon_min_zoom": 8, "horizon_zoom": DEM_ZOOM,
+                    "horizon_samples": options["horizon_samples"], "horizon_directions": options["horizon_directions"],
+                    "horizon_step": ANGLE_STEP, "distance_m": options["distance_m"], "timezone": options["time_zone"],
+                    "terrain_sha256": digest, "attribution": metadata.get("attribution", ""),
+                    "bounds": options["bounds"], "coverage": coverage}
+        (output / "empty.json").write_text(json.dumps(metadata, sort_keys=True, separators=(",", ":")))
+        return
+    terrain = Path(request["output"]).with_name("terrain.pmtiles")
+    mbtiles_to_pmtiles(source, terrain, None)
     bake(terrain, output / "sun.pmtiles", options["bounds"], options["time_zone"], options["distance_m"],
          options["horizon_samples"], options["horizon_directions"])
 

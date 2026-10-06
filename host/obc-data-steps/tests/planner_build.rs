@@ -79,7 +79,13 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         "pgf-encoding",
     ];
     let live = read.map(|id| ((id.to_string(), Vec::new()), BTreeSet::from(["1".to_string()])));
-    let env = Env { name: "test".into(), region: AREA.into(), live: BTreeMap::from(live), ..Env::default() };
+    let env = Env {
+        name: "test".into(),
+        region: AREA.into(),
+        layers: vec!["sun".into()],
+        live: BTreeMap::from(live),
+        ..Env::default()
+    };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, env: &Env| {
         let mut steps = Planner.steps(env, &regions, &store).unwrap().steps;
@@ -141,10 +147,20 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     }
     // Machine setup, which a set-up machine has done: the step itself runs offline.
     let sync = Command::new("uv")
-        .args(["sync", "--locked", "--inexact", "--group", "planner-maps", "--group", "planner-search"])
+        .args([
+            "sync",
+            "--locked",
+            "--inexact",
+            "--group",
+            "planner-maps",
+            "--group",
+            "planner-search",
+            "--group",
+            "planner-sun",
+        ])
         .current_dir(&root)
         .status();
-    assert!(sync.unwrap().success(), "uv sync of the groups planner-maps and planner-search");
+    assert!(sync.unwrap().success(), "uv sync of the planner groups");
     let built = build(&steps(true, &env));
     let metrics = |step: &str| &built.iter().find(|built| built.receipt.step == step).unwrap().receipt.metrics;
     assert_eq!(
@@ -174,7 +190,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
     assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
-    for kind in ["places", "overlays", "terrain"] {
+    for kind in ["places", "overlays", "terrain", "sun"] {
         let name = format!("planner/{kind}/grid");
         let receipt = &built.iter().find(|built| built.receipt.step == name).unwrap().receipt;
         let index = receipt.files.iter().find(|file| file.path == "index.json").unwrap();
@@ -224,8 +240,12 @@ _, document = runtime.release(source, include_sources=False)
 assert document['osm_sha256'] == sys.argv[2]
 indexes = {index['kind']: index for path in (source / 'indexes').rglob('index.json')
     for index in [json.loads(path.read_bytes())]}
+assert indexes['sun']['metadata']['sun_format'] == 3
+assert indexes['sun']['metadata']['terrain_sha256'] == indexes['terrain']['source']['sha256']
+assert set(indexes['sun']['files']) == {'maps/sun.json'}
 options = {key: document[key] for key in ('region', 'bounds', 'attribution', 'landcover_attribution')}
-for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1])]:
+for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1]),
+                          ('sun', 'terrain_sha256', '0' * 64)]:
     wrong = copy.deepcopy(indexes)
     wrong[kind]['metadata'][field] = value
     try:
@@ -236,7 +256,7 @@ for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bo
         raise AssertionError('an inconsistent source or coverage is rejected')
 offline.materialize(source, source / 'runtime', document, ('offline/', 'routing/', 'search/'))
 catalog = json.loads((source / 'runtime/offline/catalog.json').read_bytes())
-assert not any(block['kind'] == 'terrain' for block in catalog['map_blocks'])
+assert not any(block['kind'] in ('terrain', 'sun') for block in catalog['map_blocks'])
 assert catalog['release']['terrain_bounds'] == document['terrain_bounds']
 assert catalog['release']['osm_sha256'] == document['osm_sha256']
 search = json.loads((source / 'runtime/search/test.grid.json').read_bytes())
@@ -268,7 +288,7 @@ for name, entry in catalog['files'].items():
     assert!(check.success(), "real grid objects and empty terrain form a verified offline selection");
 
     let mut climate = env.clone();
-    climate.layers = vec!["climate".into()];
+    climate.layers.push("climate".into());
     climate.moves.insert("era5-land".into(), Some(DAY.into()));
     let climate = plan(&store, &root, &steps(true, &climate)).unwrap();
     assert_eq!(

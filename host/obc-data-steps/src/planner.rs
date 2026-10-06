@@ -310,7 +310,7 @@ impl Product for Planner {
                     "tools/planner_map_archive.py",
                     "tools/planner_geo.py",
                 ],
-                &["sun.pmtiles"],
+                &["sun"],
             ));
         }
         let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun"];
@@ -434,10 +434,16 @@ fn map_grid(source: &Step, kind: &str, bounds: [f64; 4]) -> Step {
         client: Client::Paths(vec!["objects".into()]),
         ..python(
             &format!("{}/grid", source.name),
-            vec![Input::Layer { name: source.name.clone(), files: source.outputs.clone() }],
+            vec![Input::layer(source.name.clone())],
             json!({"kind": kind, "bounds": bounds}),
             ("tools.planner_grid_maps", Some("planner-maps")),
-            &["tools/planner_grid_maps.py", "tools/planner_offline.py", "tools/planner_runtime.py"],
+            &[
+                "tools/planner_grid_maps.py",
+                "tools/planner_map_archive.py",
+                "tools/planner_geo.py",
+                "tools/planner_offline.py",
+                "tools/planner_runtime.py",
+            ],
             &["objects", "index.json"],
         )
     }

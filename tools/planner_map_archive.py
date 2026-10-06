@@ -18,6 +18,18 @@ import time
 from .planner_geo import bounds, mercator
 
 
+def empty_mbtiles(path):
+    """Read metadata only when a valid MBTiles database has no tiles."""
+    from contextlib import closing
+    import sqlite3
+    from pmtiles.convert import mbtiles_to_header_json
+
+    with closing(sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)) as db:
+        if db.execute("SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles LIMIT 1").fetchone() is None:
+            return mbtiles_to_header_json(dict(db.execute("SELECT name, value FROM metadata")))
+    return None
+
+
 def tile_window(region, zoom, halo=0):
     """Return an exclusive XYZ rectangle. X can cross the world seam."""
     left, top = mercator(region[0], region[3], zoom)
