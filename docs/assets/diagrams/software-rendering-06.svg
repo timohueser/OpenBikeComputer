@@ -1,0 +1,19 @@
+<svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. The OBCM adapter resolves each winning opaque token to its source position and seeks straight to that feature, skipping everything in between by advancing the read pointer." xmlns="http://www.w3.org/2000/svg" width="720" height="168" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Pass B — the source resolves each opaque winner token</text>
+  <!-- byte stream cells -->
+  <g font-family="var(--mono)">
+    <!-- cell template: x width 78, y 52 h 46 -->
+    <rect x="24"  y="56" width="78" height="46" rx="6" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="63" y="84" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">win</text>
+    <rect x="110" y="56" width="78" height="46" rx="6" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="149" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">skip</text>
+    <rect x="196" y="56" width="78" height="46" rx="6" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="235" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">skip</text>
+    <rect x="282" y="56" width="78" height="46" rx="6" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="321" y="84" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">win</text>
+    <rect x="368" y="56" width="78" height="46" rx="6" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="407" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">skip</text>
+    <rect x="454" y="56" width="78" height="46" rx="6" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="493" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">skip</text>
+    <rect x="540" y="56" width="78" height="46" rx="6" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="579" y="84" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">win</text>
+    <rect x="626" y="56" width="70" height="46" rx="6" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="661" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">end</text>
+  </g>
+  <!-- read head -->
+  <line class="d-stroke" x1="24" y1="112" x2="696" y2="112" style="stroke:#cf6a2a;stroke-dasharray:2 5" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <text class="d-sub" x="24" y="130" fill="#5c5a2e" font-size="12px">read head jumps offset → offset →</text>
+  <text class="d-sub" x="24" y="152" style="font-size:12px" fill="#5c5a2e" font-size="12px">Pass B decodes the selected features. Other geometry is not decoded.</text>
+</svg>

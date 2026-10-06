@@ -1,0 +1,33 @@
+<svg viewBox="0 0 720 378" role="img" aria-label="Two routes connect the same points. Route A crosses the hill: 8 km and 500 metres ascent. Route B goes around: 10 km and 200 metres ascent. A climb weight of 10 changes the lower-cost choice from A to B, assuming equal road multipliers." xmlns="http://www.w3.org/2000/svg" width="720" height="378" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="22" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Climb cost · two routes around one hill · illustrative example</text>
+
+  <!-- the hill, as nested contours -->
+  <ellipse cx="360" cy="180" rx="132" ry="68" fill="#eae4cb" fill-opacity="0.6" stroke="#9aa884" stroke-width="1.2" />
+  <ellipse cx="360" cy="178" rx="90" ry="46" fill="none" stroke="#9aa884" stroke-width="1.1" />
+  <ellipse cx="360" cy="176" rx="48" ry="25" fill="none" stroke="#9aa884" stroke-width="1.1" />
+  <text class="d-sub" x="360" y="192" text-anchor="middle" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">crest</text>
+
+
+  <!-- over the top -->
+  <path d="M78 214 C 170 200, 262 176, 360 170 C 458 164, 566 186, 646 192"
+        fill="none" stroke="#cf6a2a" stroke-width="2.8" />
+  <!-- round the valley -->
+  <path d="M78 214 C 190 268, 320 280, 440 268 C 540 258, 606 218, 646 192"
+        fill="none" stroke="#3c6b39" stroke-width="2.6" stroke-dasharray="7 5" />
+  <circle cx="78" cy="214" r="4.5" class="d-hot-fill" fill="#ae4825" />
+  <circle cx="646" cy="192" r="4.5" class="d-hot-fill" fill="#ae4825" />
+  <text class="d-sub" x="78" y="234" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">start</text>
+  <text class="d-sub" x="636" y="214" style="font-size:12px" fill="#5c5a2e" font-size="12px">goal</text>
+
+  <!-- labels -->
+  <rect class="d-panel-2" x="24" y="34" width="316" height="38" rx="8" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="38" y="50" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">A · over the hill</text>
+  <text class="d-sub" x="38" y="64" text-anchor="start" fill="#5c5a2e" font-size="12px">8 km · 500 m ascent</text>
+
+  <rect class="d-panel-2" x="380" y="34" width="316" height="38" rx="8" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="394" y="50" style="font-size:12px;fill:#2c5230" fill="#5c5a2e" font-size="12px">B · around the hill</text>
+  <text class="d-sub" x="394" y="64" style="font-size:12px" fill="#5c5a2e" font-size="12px">10 km · 200 m ascent</text>
+
+  <text class="d-sub" x="24" y="306" text-anchor="start" fill="#5c5a2e" font-size="12px">Weight 0: A = 8,000 m; B = 10,000 m. A wins.</text>
+  <text class="d-sub" x="24" y="330" text-anchor="start" fill="#5c5a2e" font-size="12px">Weight 10: A = 8,000 + 500×10 = 13,000; B = 10,000 + 200×10 = 12,000. B wins.</text>
+<text class="d-sub" x="24" y="357" text-anchor="start" fill="#5c5a2e" font-size="12px">Assumes a road-distance multiplier of 1. Route curves and contours are schematic.</text></svg>

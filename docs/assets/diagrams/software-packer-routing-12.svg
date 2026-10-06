@@ -1,0 +1,35 @@
+<svg viewBox="0 0 720 290" role="img" aria-label="A route polyline with a cursor on it. A bounded forward window of dozens of segments ahead (and a few behind) is highlighted around the cursor. A GPS fix off to the side is projected onto the nearest segment in that window, giving a progress distance along the route and a cross-track distance to it. A far fix is flagged off-route and freezes progress." xmlns="http://www.w3.org/2000/svg" width="720" height="290" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Snap each fix to the nearest segment in a forward window</text>
+
+  <!-- route -->
+  <path d="M40 210 C 120 120, 200 120, 270 170 C 320 205, 380 150, 470 120" fill="none" stroke="#9aa884" stroke-width="3" />
+  <!-- forward window (highlighted) -->
+  <path d="M200 138 C 235 128, 255 150, 285 168" fill="none" stroke="#cf6a2a" stroke-width="5" stroke-opacity="0.3" />
+  <text class="d-sub" x="262" y="114" text-anchor="middle" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">forward window</text>
+  <!-- cursor -->
+  <circle cx="210" cy="135" r="5" class="d-hot-fill" fill="#ae4825" /><text class="d-sub" x="170" y="130" style="font-size:12px" fill="#5c5a2e" font-size="12px">cursor</text>
+  <!-- a fix near the route -->
+  <circle cx="262" cy="178" r="5" class="d-water" fill="#33575b" />
+  <text class="d-sub" x="274" y="188" style="font-size:12px" fill="#5c5a2e" font-size="12px">fix</text>
+  <!-- cross-track to nearest segment -->
+  <line x1="262" y1="178" x2="259" y2="159" stroke="#33575b" stroke-width="1.5" stroke-dasharray="3 2" />
+  <circle cx="259" cy="159" r="3" class="d-water" fill="#33575b" />
+  <text class="d-sub" x="300" y="170" style="font-size:12px" fill="#5c5a2e" font-size="12px">cross-track dist</text>
+  <!-- progress label -->
+  <text class="d-sub" x="90" y="205" style="font-size:12px" fill="#5c5a2e" font-size="12px">← progress along the route</text>
+
+  <!-- off-route fix -->
+  <circle cx="430" cy="210" r="5" class="d-muted" stroke="#c0492e" stroke-width="1.5" fill="#d6d5c8" />
+  <text class="d-sub" x="430" y="230" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">far fix</text>
+  <line x1="430" y1="210" x2="452" y2="135" stroke="#c0492e" stroke-width="1.2" stroke-dasharray="3 3" />
+  <text class="d-sub" x="430" y="244" text-anchor="middle" style="fill:#c0492e;font-size:12px" fill="#5c5a2e" font-size="12px">off-route → freeze</text>
+
+  <!-- hysteresis band note -->
+  <rect class="d-panel-2" x="500" y="60" width="196" height="120" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-tag" x="516" y="80" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">off-route hysteresis</text>
+  <text class="d-sub" x="516" y="102" style="font-size:12px" fill="#5c5a2e" font-size="12px">≥ 25 m → off-route</text>
+  <text class="d-sub" x="516" y="122" style="font-size:12px" fill="#5c5a2e" font-size="12px">&lt; 15 m  → back on</text>
+  <text class="d-sub" x="516" y="146" style="font-size:12px" fill="#5c5a2e" font-size="12px">the gap is the dead-band that</text>
+  <text class="d-sub" x="516" y="160" style="font-size:12px" fill="#5c5a2e" font-size="12px">keeps the flag from flapping</text>
+  <text class="d-sub" x="516" y="174" style="font-size:12px" fill="#5c5a2e" font-size="12px">on GPS jitter at the edge</text>
+</svg>

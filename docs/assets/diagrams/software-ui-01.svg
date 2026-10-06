@@ -1,0 +1,42 @@
+<svg viewBox="0 0 720 322" role="img" aria-label="On the left, the Screen enum lists representative variants: Home, Map, Statistics, RideControl, Menu, ContextDrawer, RouteMenu, RouteOverview, and RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation." xmlns="http://www.w3.org/2000/svg" width="720" height="322" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aU1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">A screen is a value — no retained widget tree</text>
+
+  <!-- enum Screen -->
+  <rect class="d-panel" x="36" y="44" width="210" height="254" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="56" y="66" fill="#1c1b14" font-size="14px">enum Screen</text>
+  <g font-family="var(--mono)">
+    <rect x="52" y="78"  width="178" height="22" rx="5" class="d-hot-fill" fill="#ae4825" /><text class="d-sub" x="62" y="93" style="fill:#fff" fill="#5c5a2e" font-size="12px">Map(MapScreen)</text>
+    <rect x="52" y="104" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="118" fill="#5c5a2e" font-size="12px">Home(HomeScreen)</text>
+    <rect x="52" y="126" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="140" fill="#5c5a2e" font-size="12px">Statistics(…)</text>
+    <rect x="52" y="148" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="162" fill="#5c5a2e" font-size="12px">RideControl(…)</text>
+    <rect x="52" y="170" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="184" fill="#5c5a2e" font-size="12px">Menu(…)</text>
+    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="206" fill="#5c5a2e" font-size="12px">ContextDrawer(…)</text>
+    <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="228" fill="#5c5a2e" font-size="12px">RouteMenu(…)</text>
+    <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="250" fill="#5c5a2e" font-size="12px">RouteOverview(…)</text>
+    <rect x="52" y="258" width="178" height="20" rx="5" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="62" y="272" fill="#5c5a2e" font-size="12px">RouteSwap(…)</text>
+  </g>
+
+  <!-- arrow to module -->
+  <line class="d-flow" x1="232" y1="89" x2="320" y2="120" marker-end="url(#aU1)" fill="none" stroke="#a4501e" stroke-width="2" />
+
+  <!-- module -->
+  <rect class="d-panel-2" x="324" y="62" width="360" height="150" rx="11" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="344" y="84" fill="#1c1b14" font-size="14px">screen/map.rs</text>
+  <g font-family="var(--mono)">
+    <rect x="340" y="96"  width="328" height="32" rx="6" style="fill:#eef2df;stroke:#9aa884;stroke-width:1" />
+    <text class="d-sub" x="352" y="110" fill="#5c5a2e" font-size="12px">struct MapScreen { … }</text>
+    <text class="d-sub" x="352" y="123" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">typed state — owned, inline, no alloc</text>
+    <rect x="340" y="134" width="328" height="32" rx="6" style="fill:#eef2df;stroke:#9aa884;stroke-width:1" />
+    <text class="d-sub" x="352" y="148" fill="#5c5a2e" font-size="12px">fn handle(g, &amp;mut Ctx) → Transition</text>
+    <text class="d-sub" x="352" y="161" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">logic — react to a gesture, ask to navigate</text>
+    <rect x="340" y="172" width="328" height="32" rx="6" style="fill:#eef2df;stroke:#9aa884;stroke-width:1" />
+    <text class="d-sub" x="352" y="186" fill="#5c5a2e" font-size="12px">fn draw(target, &amp;Render)</text>
+    <text class="d-sub" x="352" y="199" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">pixels — read state, paint the panel</text>
+  </g>
+
+  <text class="d-tag" x="324" y="240" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">dispatched by match — static, zero-alloc</text>
+  <text class="d-sub" x="324" y="258" style="font-size:12px" fill="#5c5a2e" font-size="12px">one row per screen, with its capabilities</text>
+</svg>

@@ -1,0 +1,48 @@
+<svg viewBox="0 0 760 300" role="img" aria-label="Top row, per-feature order (wrong): building A is filled and outlined, then building B's fill lands over the shared edge and erases A's wall there, then B is outlined — the two touching buildings merge into one block with no divider. Bottom row, per-z-group order (right): both buildings are filled first, then both are outlined — the shared middle wall is drawn last, after every fill, so it survives and the two buildings read as distinct." xmlns="http://www.w3.org/2000/svg" width="760" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Outline after every fill in the z-group, so shared walls survive</text>
+
+  <!-- TOP ROW: per-feature (wrong) -->
+  <text class="d-label" x="30" y="70" style="fill:#a9501c" fill="#1c1b14" font-size="14px">per feature</text>
+  <text class="d-sub" x="30" y="84" style="font-size:12px" fill="#5c5a2e" font-size="12px">outline after each fill</text>
+
+  <!-- frame 1: A filled + outlined -->
+  <rect x="182" y="52" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <text class="d-sub" x="204" y="112" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">① fill + outline A</text>
+
+  <!-- frame 2: B's fill lands over the shared edge -->
+  <rect x="352" y="52" width="44" height="44" style="fill:#d6cda8" />
+  <rect x="396" y="52" width="44" height="44" style="fill:#d6cda8" />
+  <!-- A's surviving outer edges (coral), but the shared edge is covered by B's fill -->
+  <path d="M352 52 h44 M352 96 h44 M352 52 v44" fill="none" stroke="#cf6a2a" stroke-width="2.5" />
+  <line x1="399" y1="50" x2="399" y2="98" stroke="#c0492e" stroke-width="2" stroke-dasharray="3 3" />
+  <text x="446" y="70" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#c0492e" fill="#1c1b14">B's fill erased</text>
+  <text x="446" y="88" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#c0492e" fill="#1c1b14">A's shared wall</text>
+  <text class="d-sub" x="374" y="112" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">② B's fill lands</text>
+
+  <!-- frame 3: B outlined -> blob -->
+  <rect x="600" y="52" width="88" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <text class="d-sub" x="644" y="112" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">③ one merged blob ✗</text>
+
+  <!-- divider -->
+  <line class="d-stroke" x1="30" y1="150" x2="730" y2="150" style="stroke:#9aa884;stroke-width:1" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+
+  <!-- BOTTOM ROW: per-z-group (right) -->
+  <text class="d-label" x="30" y="192" style="fill:#3c6b39" fill="#1c1b14" font-size="14px">per z-group</text>
+  <text class="d-sub" x="30" y="206" style="font-size:12px" fill="#5c5a2e" font-size="12px">all fills, then outlines</text>
+
+  <!-- frame 1: both fills, no outlines -->
+  <rect x="182" y="176" width="44" height="44" style="fill:#d6cda8" />
+  <rect x="226" y="176" width="44" height="44" style="fill:#d6cda8" />
+  <text class="d-sub" x="226" y="236" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">① all fills first</text>
+
+  <!-- frame 2: both outlined -> wall kept -->
+  <rect x="374" y="176" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <rect x="418" y="176" width="44" height="44" style="fill:#d6cda8;stroke:#cf6a2a;stroke-width:2.5" />
+  <line x1="418" y1="174" x2="418" y2="222" stroke="#cf6a2a" stroke-width="2.5" />
+  <text class="d-sub" x="418" y="236" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">② all outlines</text>
+
+  <!-- result -->
+  <text x="560" y="196" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#3c6b39" fill="#1c1b14">the shared wall is</text>
+  <text x="560" y="210" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#3c6b39" fill="#1c1b14">drawn after every fill</text>
+  <text x="560" y="224" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#3c6b39" fill="#1c1b14">→ two crisp buildings ✓</text>
+</svg>

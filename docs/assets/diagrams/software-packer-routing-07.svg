@@ -1,0 +1,48 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="Building the navigation graph in three steps. First, a bike-legality filter keeps most highway ways but excludes motorway and its links, excludes trunk unless it is tagged bicycle equals yes, and hard-excludes anything tagged access equals no or private, bicycle equals no, or motorroad equals yes. Second, junction detection: a node touched by two or more routable ways, or sitting at a way's endpoint, becomes a junction; interior shape points do not. Third, each way is split at its junctions into edges, duplicate and reversed parallel ways are deduplicated by an unordered endpoint pair plus geometry key, and each edge's great-circle length becomes its cost. The result is junction nodes joined by edges." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aNG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Filter routable ways → find junctions → split + dedup into edges</text>
+
+  <!-- 1 class/access filter -->
+  <rect class="d-panel" x="24" y="52" width="216" height="120" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="40" y="72" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">① routable? highway + access</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="40" y="92"  style="font-size:12px;fill:#2c5230" fill="#5c5a2e" font-size="12px">residential · track · path ✓</text>
+    <text class="d-sub" x="40" y="107" style="font-size:12px;fill:#2c5230" fill="#5c5a2e" font-size="12px">footway · steps · service ✓</text>
+    <text class="d-sub" x="40" y="125" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">motorway ✗ · trunk: conditional</text>
+    <text class="d-sub" x="40" y="140" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">access=no|private · bicycle=no ✗</text>
+  </g>
+  <text class="d-sub" x="40" y="162" style="font-size:12px" fill="#5c5a2e" font-size="12px">independent of render styling</text>
+
+  <!-- 2 junction detection -->
+  <line class="d-flow" x1="246" y1="112" x2="276" y2="112" marker-end="url(#aNG)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="270" y="52" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">② a shared node = a junction</text>
+  <!-- two ways crossing at a node -->
+  <line x1="288" y1="140" x2="392" y2="96" stroke="#9aa884" stroke-width="2.4" />
+  <line x1="300" y1="86"  x2="380" y2="150" stroke="#9aa884" stroke-width="2.4" />
+  <!-- interior shape points (open) -->
+  <circle cx="322" cy="128" r="2.6" fill="#ece8cf" stroke="#9aa884" stroke-width="1"/>
+  <circle cx="360" cy="112" r="2.6" fill="#ece8cf" stroke="#9aa884" stroke-width="1"/>
+  <!-- the shared junction -->
+  <circle cx="340" cy="119" r="5" class="d-hot-fill" fill="#ae4825" />
+  <text class="d-sub" x="340" y="172" text-anchor="middle" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">touched ≥2× → junction</text>
+  <text class="d-sub" x="270" y="192" style="font-size:12px" fill="#5c5a2e" font-size="12px">endpoints are always junctions;</text>
+  <text class="d-sub" x="270" y="210" style="font-size:12px" fill="#5c5a2e" font-size="12px">interior shape points never are</text>
+
+  <!-- 3 split + dedup -->
+  <line class="d-flow" x1="404" y1="112" x2="440" y2="112" marker-end="url(#aNG)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-hot" x="448" y="52" width="248" height="120" rx="10" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-tag" x="464" y="72" style="fill:#a9501c" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">③ split into edges + dedup</text>
+  <text class="d-sub" x="464" y="94"  style="font-size:12px" fill="#5c5a2e" font-size="12px">cut each way at every junction</text>
+  <text class="d-sub" x="464" y="110" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ edge interiors are junction-free</text>
+  <text class="d-sub" x="464" y="130" style="font-size:12px" fill="#5c5a2e" font-size="12px">dedup key: unordered (a,b) + geometry</text>
+  <text class="d-sub" x="464" y="146" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">a way + its reverse = one edge</text>
+  <text class="d-sub" x="464" y="162" style="font-size:12px" fill="#5c5a2e" font-size="12px">cost = great-circle length, metres</text>
+
+  <!-- result graph -->
+  <line class="d-flow" x1="360" y1="216" x2="360" y2="242" marker-end="url(#aNG)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel-2" x="180" y="246" width="360" height="46" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="360" y="266" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Junction nodes have dense IDs; edges are undirected.</text>
+  <text class="d-sub" x="360" y="282" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ serialized as the map's §8 navigation graph</text>
+</svg>
