@@ -286,7 +286,8 @@ reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the s
 one entry for each kind of root that names objects that no reached record or layer has:
 `live release`, `fixture`, `planner recipe` or `import record`. The size of
 an entry is the size of its files. The collection takes the store lock alone, or refuses to start
-while a fetch, a build or an import holds it. Then it deletes each snapshot record and each object
+while a mutating run, fetch or import holds it. A writer run holds it through verification and
+publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
 that is not reached. Receipts, release manifests, import records and upstream checks stay. A
 clean that cannot read live deletes nothing.
 
