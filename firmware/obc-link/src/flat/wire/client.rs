@@ -30,7 +30,7 @@ pub struct ListPage<'a> {
 impl ListPage<'_> {
     pub fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
         // The complete page is validated before it can be constructed.
-        self.entries.chunks_exact(LIST_ENTRY_LEN).map(|entry| decode_entry(entry).unwrap())
+        self.entries.as_chunks::<LIST_ENTRY_LEN>().0.iter().map(|entry| decode_entry(entry).unwrap())
     }
 }
 
@@ -138,7 +138,7 @@ pub fn decode_response(record: &[u8]) -> Result<(Header, Response<'_>), Response
                 return Err(InvalidFrame);
             }
             let entries = &body[LIST_PREFIX_LEN..];
-            if entries.chunks_exact(LIST_ENTRY_LEN).any(|e| decode_entry(e).is_none())
+            if entries.as_chunks::<LIST_ENTRY_LEN>().0.iter().any(|e| decode_entry(e).is_none())
                 || bits & flags::MORE != 0 && entries.is_empty()
             {
                 return Err(InvalidFrame);
