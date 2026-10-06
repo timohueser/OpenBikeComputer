@@ -54,6 +54,11 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     let area = || vec![("area".to_string(), AREA.to_string())];
     let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
     fetched(&store, "geofabrik-poly", DAY, area(), &format!("{AREA}.poly"), poly.as_bytes());
+    let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+        "properties":{"id":"test","name":"Test","parent":null,
+            "urls":{"pbf":format!("https://download.geofabrik.de/{AREA}-latest.osm.pbf")}},
+        "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+    fetched(&store, "geofabrik-index", "1", Vec::new(), "index.json", &serde_json::to_vec(&index).unwrap());
     let pbf = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/planner.osm.pbf")).unwrap();
     fetched(&store, "geofabrik-extracts", DAY, area(), &format!("{AREA}-261001.osm.pbf"), &pbf);
     // The tile list names no tile: the region is sea to GLO-30, so the layers read no tile.
@@ -61,7 +66,13 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     fetched(&store, "nominatim-country-data", "1", Vec::new(), "nominatim_db-1-py3-none-any.whl", &country_data());
 
-    let text = "name = \"Test\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
+    let text = r#"name = "Test"
+kind = "box"
+box = [7.79,47.99,7.82,48.02]
+countries = ["DE"]
+time_zone = "Europe/Berlin"
+"#;
+
     let regions = Regions::new(vec![parse_region(AREA, text).unwrap()]).unwrap();
     let read = [
         GLO30,
@@ -94,7 +105,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
             ["planner/runtime/routing", "planner/runtime/search", "planner/runtime/downloads", "planner/runtime"]
         );
         let mut steps = planned.steps;
-        let rust = ["planner/osm", "planner/terrain", "planner/routing"];
+        let rust = ["planner/source/europe/test", "planner/osm", "planner/terrain", "planner/routing"];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
             if step.name == "planner/basemap" {
@@ -123,7 +134,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     let built = build(&steps(false, &env));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 3);
+    assert_eq!(names.len(), 4);
     for name in ["planner/osm", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }

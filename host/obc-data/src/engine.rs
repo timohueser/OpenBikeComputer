@@ -481,13 +481,14 @@ pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
-/// A step whose layer is the one file of its snapshot inputs, as it is, at the path of the option
+/// A step whose layer is the one file of its snapshot or selected layer inputs, at the path of the option
 /// `path`: a layer that other steps read, whatever gives its bytes. It only passes an input on, so,
 /// like the rest of the engine, it is no code of a step. Its step declares the crate `obc-data`,
 /// which adds no file.
 pub fn pass(request: &Request) -> Result<(), String> {
     let path = request.options["path"].as_str().ok_or("option `path` is not a string")?;
-    let files: Vec<&PathBuf> = request.snapshots.values().flat_map(BTreeMap::values).collect();
+    let files: Vec<&PathBuf> =
+        request.snapshots.values().chain(request.layers.values()).flat_map(BTreeMap::values).collect();
     let [file] = files[..] else {
         return Err(format!("the step reads {} files, not one", files.len()));
     };

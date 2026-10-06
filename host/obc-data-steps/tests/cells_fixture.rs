@@ -66,9 +66,13 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
 /// Record a fetch without files of each national model that the step list asks for: the store has
 /// no national data of the Grimsel, so the terrain reads GLO-30 alone.
 fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) =
-        Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store)
-    else {
+    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps_with_tool(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        env,
+        regions,
+        store,
+        Ok(serde_json::json!({"sha256": "0".repeat(64), "version":"authored copy fixture"})),
+    ) else {
         return;
     };
     for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
@@ -111,7 +115,7 @@ fn land_zip(path: &Path) {
 
 /// The OSM of each leaf: the extract as it is.
 fn copy(request: &Request) -> Result<(), String> {
-    let extract = request.snapshots[EXTRACTS].values().next().ok_or("no extract")?;
+    let extract = request.layers.values().flat_map(|files| files.values()).next().ok_or("no extract")?;
     std::fs::create_dir(request.output.join("osm")).map_err(|e| e.to_string())?;
     for leaf in request.options["leaves"].as_array().ok_or("no leaves")? {
         let leaf = LeafId { i: leaf[0].as_i64().unwrap(), j: leaf[1].as_i64().unwrap() };
@@ -166,26 +170,32 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         }
     }
 
-    let region =
-        parse_region(AREA, "name = \"Grimsel east\"\nkind = \"geofabrik\"\nareas = [\"europe/grimsel-east\"]\n")
-            .unwrap();
+    let region = parse_region("grimsel-box", REGION).unwrap();
     let regions = Regions::new(vec![region]).unwrap();
     let live = BTreeMap::from([
         ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),
         ((TILE_LIST.into(), Vec::new()), [VERSION.to_string()].into()),
     ]);
-    let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
+    let env = Env { name: "test".into(), region: "grimsel-box".into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &env, &regions);
-    let listed = Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &env, &regions, &store).unwrap();
+    let listed = Maps
+        .steps_with_tool(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            &env,
+            &regions,
+            &store,
+            Ok(serde_json::json!({"sha256": "0".repeat(64), "version":"authored copy fixture"})),
+        )
+        .unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 
     for step in &mut steps {
         match step.name.as_str() {
             "maps/osm" => step.run = Run::Rust(copy),
-            "maps/landmark-content" => step.run = Run::Rust(landmark_content),
-            "maps/peak-content" => step.run = Run::Rust(peak_content),
+            name if name.starts_with("maps/landmark-content/") => step.run = Run::Rust(landmark_content),
+            name if name.starts_with("maps/peak-content/") => step.run = Run::Rust(peak_content),
             name if name.starts_with("maps/coarse/") || name.starts_with("maps/mid/") => {
                 step.run = Run::Rust(authored_geometry)
             }
@@ -210,7 +220,8 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
 
-    let mut release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    let mut release =
+        obc_data::engine::release::release(&store, &root, "maps", &env.region, &[], &steps).unwrap().unwrap();
     release.name_files(Maps.named(&release).unwrap()).unwrap();
     Maps.verify(&root, None, &release, &store).unwrap();
     let pointer = Maps.pointer().unwrap()(&release, &store).unwrap();
@@ -220,8 +231,29 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     );
     let catalog: obc_pack::catalog::Catalog = serde_json::from_value(pointer.document.into()).unwrap();
     assert_eq!(catalog.schema.sha256, release.named.iter().find(|file| file.path == "schema.json").unwrap().sha256);
-    assert_eq!(catalog.regions.len(), 1);
-    assert!(catalog.regions[0].article_bytes.unwrap() > 0);
+    assert_eq!(
+        catalog.regions.iter().map(|region| region.id.as_str()).collect::<BTreeSet<_>>(),
+        [AREA, "grimsel-box"].into()
+    );
+    let selected = catalog.regions.iter().find(|region| region.id == env.region).unwrap();
+    assert!(selected.article_bytes.unwrap() > 0);
+    for region in &catalog.regions {
+        let named = release.named.iter().find(|file| file.path == format!("regions/{}/cells.json", region.id)).unwrap();
+        assert_eq!((&named.sha256, named.size), (&region.cells_sha256, region.cells_bytes));
+        let cells: obc_pack::catalog::RegionCellsDocument =
+            serde_json::from_slice(&std::fs::read(store.object(&named.sha256)).unwrap()).unwrap();
+        assert_eq!((cells.region_id.as_str(), &cells.schema_sha256), (region.id.as_str(), &catalog.schema.sha256));
+        assert_eq!(
+            cells.cells.iter().map(|(band, ids)| (band.clone(), ids.len() as u32)).collect::<BTreeMap<_, _>>(),
+            region.cell_count
+        );
+    }
+    let source = release.layers.iter().find(|layer| layer.step == format!("maps/source/{AREA}")).unwrap();
+    assert!(source.client_files().next().is_none());
+    for name in [EXTRACTS, "geofabrik-poly"] {
+        let read = &source.snapshots[name];
+        assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
+    }
     assert!(release
         .layers
         .iter()
@@ -321,7 +353,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut run = RunLog::create(&store, "build changed fixture").unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
-    let next = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    let next = obc_data::engine::release::release(&store, &root, "maps", &env.region, &[], &steps).unwrap().unwrap();
     let error = Maps.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
 }
