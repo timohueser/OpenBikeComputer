@@ -1,0 +1,835 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>obc data TUI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;600;700&family=Atkinson+Hyperlegible+Next:wght@400;600;700&display=swap">
+<style>
+/* Layout: page header with the owner's wishes as jump chips, then the terminal (left) and per-screen design notes (right); stacks below 1240px. The terminal is one fixed dark world in both themes, like a real terminal. */
+:root {
+  --page: #f4f2eb; --panel: #ffffff; --ink: #1c1b14; --ink-soft: #5c5a2e; --ink-faint: #676443;
+  --line: rgba(92, 90, 46, .18); --accent: #a4501e; --chip: #e7ecdf; --chip-on: #1c1b14; --chip-on-fg: #f2efe3;
+  --t-bg: #16150f; --t-chrome: #0e0d09; --t-bar: #201f17; --t-line: #3d3b2d; --t-hover: #26251c;
+  --t-fg: #f2efe3; --t-soft: #bdb47e; --t-dim: #8c866a;
+  --t-amber: #f2a93a; --t-on-amber: #1c1b14; --t-ok: #a3d08c; --t-warn: #ef996f; --t-err: #ff7b6b; --t-info: #8bb9bd; --t-pink: #f175c5;
+  --sans: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #11100b; --panel: #201f17; --ink: #f2efe3; --ink-soft: #bdb47e; --ink-faint: #aaa383;
+    --line: rgba(189, 180, 126, .18); --accent: #f2a93a; --chip: #232820; --chip-on: #f2a93a; --chip-on-fg: #1c1b14;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #11100b; --panel: #201f17; --ink: #f2efe3; --ink-soft: #bdb47e; --ink-faint: #aaa383;
+  --line: rgba(189, 180, 126, .18); --accent: #f2a93a; --chip: #232820; --chip-on: #f2a93a; --chip-on-fg: #1c1b14;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding-inline: 20px; padding-block: 28px 40px; }
+.wrap { max-width: 1520px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+header { display: flex; flex-direction: column; gap: 8px; max-width: 980px; }
+.eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+h1 { margin: 0; font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+h1 span { color: var(--accent); }
+.lede { margin: 0; color: var(--ink-soft); max-width: 72ch; }
+.wishes { display: flex; flex-wrap: wrap; gap: 8px; }
+.wish { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--chip); color: var(--ink); padding: 5px 11px; border-radius: 999px; cursor: pointer; display: inline-flex; gap: 7px; align-items: baseline; }
+.wish b { font-family: var(--mono); color: var(--accent); font-weight: 700; }
+.wish:hover { border-color: var(--accent); }
+.wish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wish.on { background: var(--chip-on); color: var(--chip-on-fg); border-color: var(--chip-on); }
+.wish.on b { color: inherit; }
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 20px; align-items: start; }
+@media (max-width: 1240px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+.termscroll { overflow-x: auto; min-width: 0; border-radius: 12px; padding-bottom: 4px; }
+.notes { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.notes .tag { font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 700; letter-spacing: .02em; }
+.notes h2 { margin: 0; font-size: 18px; text-wrap: balance; }
+.notes p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+.notes ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--ink); }
+.notes pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.55; background: var(--page); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; color: var(--ink); }
+.notes .src { font-size: 12px; color: var(--ink-faint); border-top: 1px solid var(--line); padding-top: 10px; }
+footer { color: var(--ink-faint); font-size: 13px; max-width: 90ch; }
+
+/* ── terminal ─────────────────────────────────────────── */
+.term { font-family: var(--mono); font-size: 13px; line-height: 20px; background: var(--t-bg); color: var(--t-fg); border: 1px solid #000; border-radius: 12px; box-shadow: 0 0 0 1px var(--t-line), 0 22px 60px rgba(14, 13, 9, .35); width: 1040px; height: 740px; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; position: relative; font-variant-numeric: tabular-nums; }
+.term:focus { outline: none; }
+.term:focus-visible { box-shadow: 0 0 0 2px var(--t-amber), 0 22px 60px rgba(14, 13, 9, .35); }
+.chrome { display: flex; align-items: center; gap: 12px; padding: 7px 12px; background: var(--t-chrome); border-bottom: 1px solid var(--t-line); font-family: var(--sans); font-size: 12px; color: var(--t-dim); user-select: none; }
+.dots { display: flex; gap: 7px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; background: var(--t-line); display: block; }
+.wtab { padding: 3px 12px; border-radius: 6px; cursor: pointer; color: var(--t-dim); border: 1px solid transparent; background: none; font: inherit; }
+.wtab.on { background: var(--t-bar); color: var(--t-fg); border-color: var(--t-line); }
+.wtab:focus-visible { outline: 1px solid var(--t-amber); }
+.chrome .path { margin-left: auto; font-family: var(--mono); }
+.tabs { display: flex; background: var(--t-bar); border-bottom: 1px solid var(--t-line); padding: 0 6px; white-space: nowrap; user-select: none; }
+.tab { padding: 1px 10px; cursor: pointer; color: var(--t-soft); }
+.tab .k { color: var(--t-dim); }
+.tab:hover { color: var(--t-fg); }
+.tab.on { background: var(--t-amber); color: var(--t-on-amber); font-weight: 600; }
+.tab.on .k { color: var(--t-on-amber); }
+.tabs .host { margin-left: auto; color: var(--t-dim); padding: 1px 4px; }
+.mid { position: relative; overflow: hidden; min-height: 0; }
+.body { position: absolute; inset: 0; overflow: auto; padding: 4px 14px 14px; }
+.bar { background: var(--t-bar); border-top: 1px solid var(--t-line); padding: 1px 10px; display: flex; gap: 14px; white-space: nowrap; overflow: hidden; user-select: none; }
+.bar .k b { color: var(--t-amber); font-weight: 600; }
+.bar .k { color: var(--t-soft); cursor: pointer; }
+.bar .cli { margin-left: auto; color: var(--t-dim); }
+.bar .cli span { color: var(--t-info); }
+.bar .toast { color: var(--t-amber); }
+
+.box { border: 1px solid var(--t-line); position: relative; padding: 12px 10px 8px; margin-top: 14px; min-width: 0; }
+.box > .bt { position: absolute; top: -11px; left: 8px; background: var(--t-bg); padding: 0 6px; color: var(--t-amber); font-weight: 600; white-space: nowrap; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; }
+.box > .bt .sub { color: var(--t-dim); font-weight: 400; }
+.cols { display: grid; gap: 0 14px; }
+.row { display: grid; gap: 0 12px; white-space: nowrap; padding: 0 4px; }
+.row > span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.row.hd { color: var(--t-dim); }
+.row.c { cursor: pointer; }
+.row.c:hover { background: var(--t-hover); }
+.row.sel, .row.sel:hover { background: var(--t-amber); color: var(--t-on-amber); }
+.row.sel * { color: var(--t-on-amber) !important; }
+.line { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.wrapl { white-space: normal; }
+.gap { height: 10px; }
+.ok { color: var(--t-ok); } .warn { color: var(--t-warn); } .err { color: var(--t-err); } .info { color: var(--t-info); }
+.dim { color: var(--t-dim); } .soft { color: var(--t-soft); } .amb { color: var(--t-amber); } .pink { color: var(--t-pink); } .fg { color: var(--t-fg); }
+.b { font-weight: 600; }
+.ov { position: absolute; inset: 10px 26px 12px; background: var(--t-bg); border: 1px solid var(--t-amber); box-shadow: 0 0 0 2000px rgba(8, 7, 4, .62); padding: 4px 14px 12px; overflow: auto; z-index: 5; }
+.ovt { position: sticky; top: -4px; background: var(--t-bg); padding: 6px 0 4px; color: var(--t-amber); font-weight: 700; display: flex; gap: 12px; z-index: 1; }
+.ovt .sub { color: var(--t-dim); font-weight: 400; }
+.ovt .x { margin-left: auto; color: var(--t-dim); cursor: pointer; font-weight: 400; }
+.sec { color: var(--t-soft); margin-top: 10px; font-weight: 600; }
+.chk { cursor: pointer; }
+.btn { display: inline-block; padding: 0 8px; border: 1px solid var(--t-amber); color: var(--t-amber); cursor: pointer; margin-right: 8px; }
+.btn:hover { background: var(--t-amber); color: var(--t-on-amber); }
+.btn.dim { border-color: var(--t-line); color: var(--t-soft); }
+.btn.dim:hover { background: var(--t-amber); color: var(--t-on-amber); border-color: var(--t-amber); }
+.diff .a { color: var(--t-ok); } .diff .r { color: var(--t-err); }
+.minimap { display: block; width: 100%; height: 250px; background: #12110c; border: 1px solid var(--t-line); }
+.minimap .grat { stroke: #2a291f; stroke-width: 1; fill: none; }
+.minimap .oth { stroke: #5c5944; stroke-width: 1; fill: none; stroke-dasharray: 3 3; }
+.minimap .othp { stroke: #6e6a52; stroke-width: 1; fill: none; }
+.minimap .selp { stroke: var(--t-amber); stroke-width: 2; fill: rgba(242, 169, 58, .14); }
+.minimap .selr { stroke: var(--t-amber); stroke-width: 2; fill: rgba(242, 169, 58, .14); stroke-dasharray: 6 3; }
+.minimap text { fill: var(--t-dim); font-family: var(--mono); font-size: 11px; }
+.minimap .lbl { fill: var(--t-amber); }
+.cursor { display: inline-block; width: 8px; height: 15px; background: var(--t-amber); vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+.cli-out { white-space: pre; line-height: 20px; }
+.braille { margin: 0; font-family: "DejaVu Sans Mono", "Apple Braille", "Segoe UI Symbol", monospace; font-size: 13px; line-height: 13px; letter-spacing: 0; background: #12110c; border: 1px solid var(--t-line); padding: 6px 8px; overflow: hidden; }
+.cli-out .p { color: var(--t-amber); }
+.cli-out .c { color: var(--t-fg); font-weight: 600; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">OpenBikeComputer · #2410 · final mock for approval · nothing runs</div>
+    <h1><span>obc data</span> — one tool for every bake</h1>
+    <p class="lede">Five screens and a few overlays. Click a row to select it, click it again (or press enter) for its action. The chips jump to the screen for each task.</p>
+    <div class="wishes" id="wishes"></div>
+  </header>
+  <div class="stage">
+    <div class="termscroll">
+      <div class="term" id="term" tabindex="0" aria-label="obc data terminal mock">
+        <div class="chrome">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <button class="wtab on" id="wt-tui" type="button">obc data</button>
+          <button class="wtab" id="wt-cli" type="button">zsh · plain CLI</button>
+          <button class="wtab" id="wt-api" type="button">agent · JSON API</button>
+          <span class="path">~/OpenBikeComputer · develop @ 925b1c1</span>
+        </div>
+        <div class="tabs" id="tabs"></div>
+        <div class="mid"><div class="body" id="body"></div><div id="ov"></div></div>
+        <div class="bar" id="bar"></div>
+      </div>
+    </div>
+    <aside class="notes" id="notes" aria-live="polite"></aside>
+  </div>
+  <footer>Real values, read on 2026-10-05 from the production catalogs: the live release IDs, sizes, layer sizes of the planner, attribution strings, and the missing planner inputs on R2 (HTTP 404). Everything else is example data: timings, ages, store sizes, run history, leftover counts.</footer>
+</div>
+
+<script>
+(() => {
+'use strict';
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const BW = [[8.227,48.967],[8.29,49.004],[8.353,49.102],[8.382,49.241],[8.48,49.295],[8.444,49.332],[8.49,49.367],[8.455,49.376],[8.5,49.434],[8.437,49.447],[8.455,49.469],[8.406,49.554],[8.417,49.59],[8.474,49.597],[8.583,49.526],[8.608,49.551],[8.58,49.612],[8.695,49.631],[8.699,49.572],[8.733,49.528],[8.826,49.53],[8.824,49.512],[8.902,49.506],[8.931,49.479],[8.948,49.507],[9.031,49.506],[9.07,49.539],[9.07,49.576],[9.237,49.585],[9.3,49.657],[9.397,49.663],[9.291,49.734],[9.309,49.772],[9.427,49.795],[9.654,49.794],[9.658,49.712],[9.802,49.734],[9.84,49.698],[9.877,49.61],[9.919,49.584],[9.954,49.486],[10.02,49.497],[10.06,49.549],[10.093,49.545],[10.171,49.389],[10.12,49.374],[10.118,49.332],[10.142,49.328],[10.158,49.281],[10.129,49.233],[10.159,49.194],[10.254,49.149],[10.26,49.13],[10.219,49.102],[10.252,49.094],[10.276,49.051],[10.35,49.031],[10.454,48.942],[10.455,48.81],[10.434,48.765],[10.515,48.697],[10.465,48.663],[10.352,48.647],[10.333,48.678],[10.265,48.677],[10.33,48.608],[10.318,48.521],[10.178,48.457],[10.042,48.445],[10.046,48.428],[9.977,48.379],[10.069,48.281],[10.115,48.127],[10.143,48.113],[10.146,48.037],[10.121,47.974],[10.089,47.963],[10.115,47.936],[10.109,47.862],[10.143,47.808],[10.077,47.786],[10.121,47.761],[10.132,47.67],[10.076,47.636],[10.061,47.672],[9.994,47.674],[9.972,47.649],[9.856,47.674],[9.751,47.602],[9.648,47.599],[9.566,47.533],[9.512,47.532],[9.257,47.658],[9.031,47.683],[8.897,47.646],[8.801,47.727],[8.775,47.715],[8.813,47.696],[8.797,47.672],[8.671,47.683],[8.662,47.715],[8.723,47.717],[8.708,47.725],[8.73,47.755],[8.689,47.753],[8.651,47.796],[8.631,47.757],[8.616,47.796],[8.568,47.8],[8.578,47.781],[8.489,47.769],[8.415,47.7],[8.416,47.674],[8.497,47.652],[8.609,47.673],[8.632,47.652],[8.584,47.592],[8.528,47.628],[8.461,47.599],[8.487,47.576],[8.386,47.563],[8.21,47.619],[8.086,47.556],[7.916,47.546],[7.891,47.585],[7.865,47.586],[7.697,47.531],[7.614,47.557],[7.514,47.672],[7.506,47.702],[7.541,47.736],[7.524,47.778],[7.549,47.873],[7.613,47.968],[7.562,48.033],[7.561,48.085],[7.595,48.16],[7.663,48.225],[7.685,48.303],[7.732,48.327],[7.73,48.406],[7.763,48.492],[7.795,48.508],[7.797,48.582],[7.834,48.644],[7.959,48.728],[7.959,48.755],[8.1,48.823],[8.131,48.897],[8.227,48.967]];
+
+/* ── regions (data/regions/) ──────────────────────────── */
+const REG = {
+  bw: { id: 'europe/germany/baden-wuerttemberg', def: 'geofabrik', km2: 35748, box: [7.506, 47.531, 10.515, 49.795], poly: BW, contains: ['bw'] },
+  bwch: { id: 'baden-wuerttemberg-switzerland', def: 'box 5.95,45.80 → 10.50,49.85', km2: 153318, box: [5.95, 45.8, 10.5, 49.85], contains: ['bw', 'ch', 'bwch', 'engadin', 'grimsel', 'freiburg'] },
+  dach: { id: 'dach', def: 'union: europe/germany + europe/austria + europe/switzerland', km2: 482756, box: [5.87, 45.82, 17.16, 55.06], contains: ['bw', 'ch', 'dach', 'engadin', 'grimsel', 'freiburg', 'de'] },
+  de: { id: 'europe/germany', def: 'geofabrik', km2: 357592, box: [5.87, 47.27, 15.04, 55.06], contains: ['bw', 'de', 'freiburg'] },
+  ch: { id: 'europe/switzerland', def: 'geofabrik', km2: 41285, box: [5.96, 45.82, 10.49, 47.81], contains: ['ch', 'engadin', 'grimsel'] },
+  at: { id: 'europe/austria', def: 'geofabrik', km2: 83879, box: [9.53, 46.37, 17.16, 49.02], contains: ['at'] },
+  engadin: { id: 'engadin', def: 'box 9.55,46.30 → 10.25,46.70', km2: 2388, box: [9.55, 46.3, 10.25, 46.7], contains: ['engadin'] },
+  grimsel: { id: 'grimsel', def: 'box 8.150,46.483 → 8.460,46.721', km2: 628, box: [8.15034, 46.48261, 8.46007, 46.7207], contains: ['grimsel'] },
+  freiburg: { id: 'freiburg', def: 'box 7.77,47.97 → 7.93,48.14', km2: 225, box: [7.77, 47.97, 7.93, 48.14], contains: ['freiburg'] },
+  monaco: { id: 'monaco', def: 'box 7.39,43.71 → 7.47,43.77', km2: 43, box: [7.39, 43.71, 7.47, 43.77], contains: ['monaco'] },
+};
+const REG_ORDER = ['bw', 'bwch', 'dach', 'de', 'ch', 'at', 'engadin', 'grimsel', 'freiburg', 'monaco'];
+const usedBy = k => [S.base.region === k ? 'live' : '', S.localRegion === k ? 'local' : '', ['grimsel', 'freiburg', 'monaco'].includes(k) ? 'fixtures' : ''].filter(Boolean).join(', ') || '—';
+const devSize = k => REG[k].km2 * 27.3 / 1e6, planSize = k => 2.37 * REG[k].km2 / REG.bw.km2;
+
+/* ── sources (data/sources.toml) ──────────────────────── */
+const SRC = [
+  { id: 'osm', lic: 'ODbL-1.0', obl: 'attribution, share-alike', attr: '© OpenStreetMap contributors', copy: false, pin: '2026-09-21', age: 14, pol: 7, up: '2026-10-04', newer: { v: '2026-10-04', gb: 1.3, min: 18 }, used: 'map cells, landmarks, peaks, basemap, search, routing', snaps: [['2026-09-21', 'planet + extracts · 82.1 GB', 'live, local'], ['2026-09-13', 'extracts · 0.6 GB', 'fixtures']] },
+  { id: 'geofabrik-boundaries', lic: 'ODbL-1.0', obl: 'attribution', attr: '© OpenStreetMap contributors', copy: false, pin: '2026-09-21', age: 14, pol: 90, used: 'regions', snaps: [['2026-09-21', '37 polygons · 4 MB', 'live, local']] },
+  { id: 'land-polygons', lic: 'ODbL-1.0', obl: 'attribution, share-alike', attr: '© OpenStreetMap contributors', copy: true, pin: '2026-08-05', age: 61, pol: 90, used: 'map cells, basemap', snaps: [['2026-08-05', '951.9 MB', 'live, local']] },
+  { id: 'water-polygons', lic: 'ODbL-1.0', obl: 'attribution, share-alike', attr: '© OpenStreetMap contributors', copy: true, pin: '2026-08-05', age: 61, pol: 90, used: 'basemap', snaps: [['2026-08-05', '931.0 MB', 'live, local']] },
+  { id: 'copernicus-glo-30', lic: 'Copernicus DEM', obl: 'attribution', attr: 'produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved', copy: false, pin: '2021-1', age: null, pol: 'manual', used: 'terrain (both products), routing', snaps: [['2021-1', '412 tiles · 9.8 GB', 'live, local, fixtures']] },
+  { id: 'dtm-de-bw', lic: 'dl-de/by-2-0', obl: 'attribution', attr: 'Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0', copy: true, pin: '2026-09-21', age: 14, pol: 365, used: 'terrain (both products), routing', snaps: [['2026-09-21', '18.4 GB', 'live, local']] },
+  { id: 'dtm-ch', lic: 'swisstopo open data', obl: 'attribution', attr: '© swisstopo (Open data, attribution required)', copy: true, pin: '2026-09-21', age: 14, pol: 365, used: 'terrain (both products), routing', snaps: [['2026-09-21', '25.6 GB', 'live, local']] },
+  { id: 'wikidata', lic: 'CC0-1.0', obl: 'none', attr: 'Wikidata', copy: true, pin: '2026-07-01', age: 96, pol: 90, up: 'live API', newer: { v: 'today', gb: 0.41, min: 90 }, used: 'landmarks, peaks', snaps: [['2026-07-01', '412 MB', 'live, fixtures']] },
+  { id: 'wikipedia', lic: 'CC-BY-SA-4.0', obl: 'attribution, share-alike', attr: 'Wikipedia contributors', copy: true, pin: '2026-07-01', age: 96, pol: 90, up: 'live API', newer: { v: 'today', gb: 0.19, min: 30 }, used: 'landmarks, peaks', snaps: [['2026-07-01', '188 MB', 'live, fixtures']] },
+  { id: 'commons', lic: 'per photo (CC-BY, CC-BY-SA, PD)', obl: 'credit per photo', attr: 'credit per photo', copy: true, pin: '2026-07-01', age: 96, pol: 90, up: 'live API', newer: { v: 'today', gb: 1.2, min: 40 }, used: 'landmarks', snaps: [['2026-07-01', '1.2 GB', 'live, fixtures']] },
+  { id: 'era5-land', lic: 'CC-BY-4.0', obl: 'attribution', attr: 'Contains modified Copernicus Climate Change Service information', copy: false, pin: '—', age: null, pol: 365, used: 'climate (off in live)', snaps: [] },
+  { id: 'modis-snow', lic: 'NASA open data', obl: 'none', attr: 'NASA MODIS (MOD10A1) via Microsoft Planetary Computer', copy: false, pin: '2026-06-30', age: 97, pol: 365, used: 'snow (off in live)', snaps: [['2026-06-30', '1.4 GB', 'local']] },
+  { id: 'hr-wsi', lic: 'Copernicus Land', obl: 'attribution', attr: 'European Union, Copernicus Land Monitoring Service, EEA', copy: false, pin: '—', age: null, pol: 365, used: 'snow for engadin', cred: '~/.config/openbikecomputer/cdse-s3.env', snaps: [] },
+  { id: 'hansen-gfc', lic: 'CC-BY-4.0', obl: 'attribution', attr: 'Hansen/UMD/Google/USGS/NASA', copy: false, pin: 'v1.11', age: null, pol: 'manual', used: 'snow (off in live)', snaps: [['v1.11', '2.2 GB', 'local']] },
+  { id: 'natural-earth', lic: 'public domain', obl: 'none', attr: 'Natural Earth', copy: false, pin: '5.1.2', age: null, pol: 'manual', used: 'basemap', snaps: [['5.1.2', '446.4 MB', 'live, local']] },
+  { id: 'daylight-landcover', lic: 'ODbL-1.0', obl: 'attribution, share-alike', attr: '© OpenStreetMap contributors', copy: false, pin: 'v1.58', age: null, pol: 'manual', used: 'basemap', snaps: [['v1.58', '36.1 MB', 'live, local']] },
+  { id: 'qrank', lic: null, obl: '—', attr: '—', copy: true, pin: '2026-08-05', age: 61, pol: 90, used: 'basemap', snaps: [['2026-08-05', '105.5 MB', 'live, local']] },
+  { id: 'pgf-encoding', lic: null, obl: '—', attr: '—', copy: false, pin: 'fd11be3e', age: null, pol: 'manual', used: 'basemap', snaps: [['fd11be3e', '0.8 MB', 'live, local']] },
+  { id: 'basemaps-assets', lic: 'OFL-1.1 (fonts)', obl: 'licence text ships with the fonts', attr: 'Noto fonts', copy: false, pin: '028c18f', age: null, pol: 'manual', used: 'planner assets', snaps: [['028c18f', '11.6 MB', 'live, local']] },
+  { id: 'query-model', lic: 'MIT', obl: 'licence notice', attr: '—', copy: false, pin: 'v2', age: null, pol: 'manual', used: 'search', snaps: [['v2', '103.7 MB', 'live, local']] },
+  { id: 'planetiler', tool: true, lic: 'Apache-2.0', pin: '0.10.2', pol: 'manual', used: 'basemap step', snaps: [['0.10.2', '', 'live, local']] },
+  { id: 'protomaps-basemaps', tool: true, lic: 'BSD-3-Clause', pin: '42ffaaa4', pol: 'manual', used: 'basemap step', snaps: [['42ffaaa4', '', 'live, local']] },
+  { id: 'photon', tool: true, lic: 'Apache-2.0', pin: '1.3.0', pol: 'manual', used: 'search step', snaps: [['1.3.0', '', 'live, local']] },
+  { id: 'nominatim', tool: true, lic: 'GPL-2.0', pin: '5.3.2', pol: 'manual', used: 'search step', snaps: [['5.3.2', '', 'live, local']] },
+];
+const src = id => SRC.find(s => s.id === id);
+const polOf = s => S.pol[s.id] !== undefined ? S.pol[s.id] : s.pol;
+const polTxt = p => p === 'manual' ? 'manual' : `${p} d`;
+function srcState(s) {
+  if (!s.tool && !s.lic) return ['blocked', 'no licence recorded'];
+  if (s.cred) return ['blocked', 'credential missing'];
+  const p = polOf(s), pin = S.base.pins[s.id] || s.pin;
+  if (pin === 'today' || (s.id === 'osm' && pin === '2026-10-04')) return ['ok', ''];
+  if (p !== 'manual' && s.age !== null && s.age > p && s.newer) return ['stale', `${s.age} d > ${p} d`];
+  return ['ok', ''];
+}
+
+/* ── layers ───────────────────────────────────────────── */
+const LAYERS = {
+  'device-maps': [['map cells', 0.89, 28, ['osm', 'land-polygons']], ['terrain', 0.09, 6, ['copernicus-glo-30', 'dtm-de-bw', 'dtm-ch']], ['landmarks', 0.06, 6, ['wikidata', 'wikipedia', 'commons', 'osm']], ['peaks', 0.02, 4, ['osm', 'wikidata', 'wikipedia']]],
+  planner: [['basemap', 0.324, 41, ['osm', 'land-polygons', 'water-polygons', 'natural-earth', 'qrank']], ['places', 0.0004, 3, ['basemap']], ['terrain', 0.189, 22, ['copernicus-glo-30', 'dtm-de-bw', 'dtm-ch']], ['search', 0.716, 143, ['osm']], ['routing', 1.04, 37, ['osm', 'copernicus-glo-30', 'dtm-de-bw']], ['overlays', 0.063, 7, ['routing']]],
+  optional: { climate: [0.04, 48, ['era5-land'], 'ERA5-Land · 3.9 GB download'], snow: [0.02, 26, ['modis-snow', 'hansen-gfc'], 'MODIS · already in the store'], sun: [0.03, 55, ['terrain'], 'reads terrain · no download'] },
+};
+function layerState(product, name) {
+  const b = S.base;
+  if (product === 'device-maps' && ['landmarks', 'peaks'].includes(name) && !b.dmExtra) return ['not applied', 'missing in live'];
+  if (product === 'planner' && name === 'routing' && S.codeChanged) return ['code changed', 'host/route-build'];
+  if (product === 'planner' && name === 'overlays' && S.codeChanged) return ['input changed', 'routing'];
+  const all = [...LAYERS[product === 'device-maps' ? 'device-maps' : 'planner'], ...Object.entries(LAYERS.optional).map(([k, v]) => [k, v[0], v[1], v[2]])];
+  const L = all.find(l => l[0] === name);
+  const stale = L && L[3].map(src).filter(Boolean).filter(s => srcState(s)[0] === 'stale').map(s => s.id);
+  if (stale && stale.length) return ['stale', stale.join(', ')];
+  return ['ok', ''];
+}
+const RANK = { 'code changed': 4, 'not applied': 5, 'input changed': 3, stale: 2, blocked: 1, ok: 0 };
+function productState(product) {
+  const names = product === 'device-maps' ? LAYERS['device-maps'].map(l => l[0]) : [...LAYERS.planner.map(l => l[0]), ...['climate', 'snow', 'sun'].filter(k => S.base[k])];
+  const sts = names.map(n => [n, layerState(product, n)[0]]);
+  const worst = sts.reduce((w, x) => RANK[x[1]] > RANK[w] ? x[1] : w, 'ok');
+  if (worst === 'ok') return ['ok', ''];
+  const top = sts.filter(x => x[1] === worst).map(x => x[0]), rest = sts.filter(x => x[1] !== 'ok' && x[1] !== worst).length;
+  return [worst, top.join(', ') + (rest ? ` · ${rest} more layer${rest > 1 ? 's' : ''} out of date` : '')];
+}
+
+/* ── state ────────────────────────────────────────────── */
+const S = {
+  mode: 'tui', tab: 'live', ov: null, ovFrom: null, toast: '', sel: { live: 1, local: 0, sources: 0, store: 0, runs: 0 }, items: [],
+  base: { region: 'bw', climate: false, snow: false, sun: false, pins: {}, dmExtra: false },
+  want: { region: 'bw', climate: false, snow: false, sun: false, pins: {} },
+  pol: {}, codeChanged: true, leftovers: true, drift: true, applies: 0, cleaned: false,
+  ids: { dev: '27fc70ea', plan: '540e2ed8', local: '91c2a0e4' }, localRegion: 'bw', localRunning: true,
+  skip: new Set(), psel: 0, details: false, confirm: false, run: null, pick: null, ovSel: 0, filter: '', filtering: false, wiz: 0, detail: null,
+};
+const NEXT = { dev: ['9d41c0e2', 'a8f3d710', 'f21c6b08', '0be37d55'], plan: ['b81d04aa', 'c3e9f150', 'd07a2b6e', 'e5c41f93'] };
+const edits = () => (S.want.region !== S.base.region) + ['climate', 'snow', 'sun'].filter(k => S.want[k] !== S.base[k]).length + Object.keys(S.want.pins).filter(k => S.want.pins[k] !== S.base.pins[k]).length + Object.keys(S.pol).length;
+
+/* ── helpers ──────────────────────────────────────────── */
+const ST = { ok: ['ok', '●'], stale: ['warn', '●'], 'code changed': ['warn', '●'], 'input changed': ['warn', '●'], 'not applied': ['amb', '●'], blocked: ['err', '●'], drift: ['err', '●'], leftovers: ['warn', '●'], 'old cache': ['info', '●'] };
+const badge = (k, why) => `<span class="${ST[k][0]}">${ST[k][1]} ${k}</span>${why ? ` <span class="dim">${why}</span>` : ''}`;
+const row = (tpl, cells, o = {}) => `<div class="row${o.hd ? ' hd' : ''}${o.i !== undefined ? ' c' : ''}${o.sel ? ' sel' : ''}" style="grid-template-columns:${tpl}"${o.i !== undefined ? ` data-i="${o.i}"` : ''}${o.o !== undefined ? ` data-o="${o.o}"` : ''}>${cells.map(c => `<span>${c}</span>`).join('')}</div>`;
+const box = (title, sub, inner) => `<div class="box"><div class="bt">${title}${sub ? ` <span class="sub">${sub}</span>` : ''}</div>${inner}</div>`;
+const bar = (f, w) => { f = Math.max(0, Math.min(1, f)); const e = Math.round(f * w * 8), full = Math.floor(e / 8), rem = e % 8; return '█'.repeat(full) + (rem ? ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'][rem] : '') + ' '.repeat(Math.max(0, w - full - (rem ? 1 : 0))); };
+const gb = x => x >= 1 ? `${x.toFixed(2)} GB` : x >= 0.001 ? `${Math.round(x * 1000)} MB` : x > 0 ? '<1 MB' : '0';
+const hm = m => m >= 60 ? `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min` : `${Math.max(1, Math.round(m))} min`;
+const fmt = n => Math.round(n).toLocaleString('en-US');
+let sink = [];
+const item = o => { sink.push(o); return sink.length - 1; };
+const isSel = i => S.sel[S.tab] === i;
+
+/* ── plan: independent changes ────────────────────────── */
+function groups() {
+  const b = S.base, w = S.want, G = [];
+  if (w.region !== b.region) {
+    const from = REG[b.region], to = REG[w.region], keeps = to.contains.includes(b.region), f = to.km2 / from.km2;
+    const newKm2 = to.km2 - (keeps ? from.km2 : 0);
+    G.push({ id: 'region', label: `region → ${to.id}`, what: keeps ? `device-maps adds cells, reuses ${from.id}; planner rebuilds every layer` : 'both products rebuild every layer', vps: true,
+      fetch: [['geofabrik-boundaries', `${to.id} polygon`, 0.0001, 0], ['copernicus-glo-30', `${Math.max(1, Math.round(newKm2 / 7600))} more tiles`, newKm2 / 7600 * 0.03, 3], ['wikidata · wikipedia · commons', `capture for the new area`, newKm2 / 35748 * 0.7, newKm2 / 35748 * 140]],
+      steps: [['device-maps/map cells', newKm2 * 0.8 / 1000, keeps ? 'new cells only' : 'new region'], ['device-maps/terrain', newKm2 * 0.15 / 1000, keeps ? 'new cells only' : 'new region'], ['device-maps/landmarks', Math.max(2, newKm2 * 0.17 / 1000), 'new area'], ['device-maps/peaks', Math.max(2, newKm2 * 0.11 / 1000), 'new area'],
+        ...LAYERS.planner.map(l => ['planner/' + l[0], l[2] * f, 'new region']), ...['climate', 'snow', 'sun'].filter(k => w[k]).map(k => ['planner/' + k, LAYERS.optional[k][1] * f, 'new region'])],
+      up: (keeps ? devSize(w.region) - devSize(b.region) : devSize(w.region)) + planSize(w.region), mirror: newKm2 / 35748 * 0.7,
+      rm: (keeps ? 0 : devSize(b.region)) + 2.26, dev: true, plan: true,
+      warn: w.region === 'dach' || w.region === 'de' ? 'The national terrain models cover de-bw and ch only. The rest bakes terrain from GLO-30 alone.' : null });
+  } else {
+    if (!b.dmExtra) G.push({ id: 'dm', label: 'add layers landmarks, peaks', what: 'device-maps · map cells and terrain stay', dev: true,
+      fetch: [['wikidata · wikipedia · commons', `capture for ${REG[b.region].id}`, 0.7, 140]], steps: [['device-maps/landmarks', 6, 'missing in live'], ['device-maps/peaks', 4, 'missing in live']], up: 0.08, mirror: 0.7, rm: 0 });
+    if (S.codeChanged) G.push({ id: 'code', label: 'route-build code changed', what: 'planner · routing, then overlays', plan: true, vps: true,
+      steps: [['planner/routing', 37, 'code changed'], ['planner/overlays', 7, 'reads routing']], up: 1.10, rm: 1.10 });
+    ['climate', 'snow', 'sun'].forEach(k => {
+      const L = LAYERS.optional[k];
+      if (w[k] && !b[k]) G.push({ id: k, label: `add layer ${k}`, what: 'planner · R2 only, the VPS is not touched', plan: true,
+        fetch: k === 'climate' ? [['era5-land', '2015–2025', 3.9, 52]] : [], steps: [['planner/' + k, L[1], 'new layer']], up: L[0], rm: 0 });
+      if (!w[k] && b[k]) G.push({ id: k, label: `remove layer ${k}`, what: 'planner', plan: true, steps: [], up: 0, rm: L[0] });
+    });
+  }
+  Object.keys(w.pins).filter(id => w.pins[id] !== b.pins[id]).forEach(id => {
+    const s = src(id), nw = s.newer && w.pins[id] === s.newer.v ? s.newer : { gb: 0, min: 0 }; const readers = [];
+    [['device-maps', LAYERS['device-maps']], ['planner', LAYERS.planner]].forEach(([p, ls]) => ls.forEach(l => { if (l[3].includes(id)) readers.push([p + '/' + l[0], l[2], `reads ${id}`]); }));
+    if (readers.some(r => r[0] === 'planner/basemap')) readers.push(['planner/places', 3, 'reads basemap']);
+    if (readers.some(r => r[0] === 'planner/routing')) readers.push(['planner/overlays', 7, 'reads routing']);
+    G.push({ id: 'pin-' + id, label: `${id} pin → ${w.pins[id]}`, what: `rebuilds ${readers.map(r => r[0].split('/')[1]).filter((v, i, a) => a.indexOf(v) === i).join(', ')}`,
+      fetch: nw.gb ? [[id, `snapshot ${w.pins[id]}`, nw.gb, nw.min]] : [], steps: readers, up: readers.reduce((a, r) => a + 0.4, 0), mirror: s.copy ? nw.gb : 0, rm: readers.reduce((a, r) => a + 0.4, 0),
+      dev: readers.some(r => r[0].startsWith('device')), plan: readers.some(r => r[0].startsWith('planner')), vps: readers.some(r => /routing|search/.test(r[0])) });
+  });
+  return G;
+}
+function planOf(sel) {
+  const steps = new Map(), fetch = new Map();
+  sel.forEach(g => { (g.fetch || []).forEach(f => fetch.set(f[0], f)); (g.steps || []).forEach(s => { const e = steps.get(s[0]); if (e) { if (!e[2].includes(s[2])) e[2] += ' + ' + s[2]; e[1] = Math.max(e[1], s[1]); } else steps.set(s[0], [...s]); }); });
+  const build = [...steps.values()], fetches = [...fetch.values()];
+  const up = sel.reduce((a, g) => a + g.up, 0), mirror = sel.reduce((a, g) => a + (g.mirror || 0), 0);
+  const remove = [];
+  const rmSw = sel.reduce((a, g) => a + g.rm, 0);
+  if (rmSw > 0) remove.push(['objects of the old releases that the new ones do not use', rmSw]);
+  if (S.leftovers && sel.length) remove.push(['leftovers in no release (4,179 objects)', 5.21]);
+  const mins = build.reduce((a, b) => a + b[1], 0) + fetches.reduce((a, f) => a + f[3], 0);
+  return { sel, build, fetches, up, mirror, remove, rm: remove.reduce((a, r) => a + r[1], 0), down: fetches.reduce((a, f) => a + f[2], 0), wall: mins / 1.7,
+    dev: sel.some(g => g.dev), plan: sel.some(g => g.plan), vps: sel.some(g => g.vps), drift: S.drift && sel.length, warn: sel.map(g => g.warn).filter(Boolean) };
+}
+const curPlan = () => { const G = groups(); return planOf(G.filter(g => !S.skip.has(g.id))); };
+
+/* ── screen 1: Live ───────────────────────────────────── */
+function scrLive() {
+  const b = S.base, w = S.want;
+  let h = '';
+  const ri = item({ act: 'region' });
+  h += row('10ch 1fr 16ch', ['<span class="soft">region</span>', `<span class="fg">${REG[w.region].id}</span> ▸${w.region !== b.region ? ` <span class="ok">change from ${REG[b.region].id}</span>` : ''}`, '<span class="dim">r change</span>'], { i: ri, sel: isSel(ri) });
+  const T = '13ch 10ch 12ch 9ch 1fr';
+  let pr = row(T, ['PRODUCT', 'RELEASE', 'BUILT', 'SIZE', 'STATE'], { hd: true });
+  [['device-maps', S.ids.dev, S.ids.dev === '27fc70ea' ? '2026-09-23' : 'today', gb(devSize(b.region) + (b.dmExtra ? 0.08 : 0))], ['planner', S.ids.plan, S.ids.plan === '540e2ed8' ? '2026-10-02' : 'today', gb(planSize(b.region))]].forEach(p => {
+    const st = productState(p[0]); const i = item({ act: 'details', product: p[0] });
+    pr += row(T, [`<span class="fg">${p[0]}</span>`, `<span class="info">${p[1]}</span>`, p[2], p[3], badge(st[0], st[1])], { i, sel: isSel(i) });
+  });
+  h += box('LIVE', 'what the website, the planner and the apps use now · enter shows the layers', pr);
+  let opt = '';
+  ['climate', 'snow', 'sun'].forEach(k => {
+    const i = item({ act: 'toggle', k });
+    const mark = w[k] !== b[k] ? (w[k] ? ' <span class="ok">+ add</span>' : ' <span class="err">− remove</span>') : '';
+    opt += row('5ch 22ch 1fr', [`<span class="amb">${w[k] ? '[x]' : '[ ]'}</span>`, k + mark, `<span class="dim">${b[k] ? 'in live' : LAYERS.optional[k][3]}</span>`], { i, sel: isSel(i) });
+  });
+  h += box('OPTIONAL PLANNER LAYERS', 'space toggles · every other layer is always part of a release', opt);
+  const att = [];
+  const stale = {};
+  SRC.filter(s => srcState(s)[0] === 'stale' && !/off in live/.test(s.used)).forEach(s => { const k = `${S.base.pins[s.id] || s.pin}|${s.age}|${polTxt(polOf(s))}`; (stale[k] = stale[k] || []).push(s.id); });
+  Object.entries(stale).forEach(([k, ids]) => { const [pin, age, pol] = k.split('|'); att.push(['stale', `${ids.join(', ')} · pin ${pin} is ${age} d old (policy ${pol}) and upstream is newer`, { go: 'sources', src: ids[0] }]); });
+  SRC.filter(s => srcState(s)[0] === 'blocked').forEach(s => att.push(['blocked', `${s.id}: ${srcState(s)[1]}${s.cred ? ' (' + s.cred + ')' : ''}`, { go: 'sources', src: s.id }]));
+  if (S.drift) att.push(['drift', '4 mirrored inputs of planner 540e2ed8 are missing on R2 · the next apply uploads them', { msg: 'The next apply uploads the missing mirror files.' }]);
+  if (S.leftovers) att.push(['leftovers', 'R2 holds 5.21 GB that no release uses · the next apply removes it', { msg: 'The next apply removes them, after the switch.' }]);
+  if (!S.cleaned) att.push(['old cache', '5 old cache directories (283.5 GB) are not in the store yet', { go: 'store' }]);
+  let ah = att.map(a => { const i = item({ act: 'attention', ...a[2] }); return row('14ch 1fr', [badge(a[0]), a[1]], { i, sel: isSel(i) }); }).join('');
+  h += box('NEEDS ATTENTION', 'enter goes to the fix', ah || '<div class="line ok">nothing</div>');
+  return h;
+}
+
+/* ── screen 2: Local ──────────────────────────────────── */
+function scrLocal() {
+  let h = '';
+  const ri = item({ act: 'region', local: true });
+  h += row('10ch 1fr 26ch', ['<span class="soft">region</span>', `<span class="fg">${REG[S.localRegion].id}</span> ▸   <span class="soft">release</span> <span class="info">${S.ids.local}</span>`, S.localRunning ? '<span class="ok">● running</span> <span class="dim">s stops</span>' : '<span class="dim">○ stopped · s starts</span>'], { i: ri, sel: isSel(ri) });
+  const A = '3ch 14ch 1fr';
+  let ap = '';
+  [['web planner', 'http://localhost:5173/plan.html'], ['map builder', 'http://localhost:5173/'], ['simulator', 'obc sim --env local']].forEach(([n, u]) => {
+    const on = S.localRunning && n !== 'simulator'; const i = item({ act: 'app', n, u, on });
+    ap += row(A, [on ? '<span class="ok">●</span>' : '<span class="dim">○</span>', n, `<span class="info">${u}</span>${n === 'simulator' ? ' <span class="dim">· o starts it</span>' : ''}`], { i, sel: isSel(i) });
+  });
+  ap += `<div class="line dim">   services  ${S.localRunning ? '<span class="ok">●</span>' : '○'} tiles :8080  ${S.localRunning ? '<span class="ok">●</span>' : '○'} route-server :8787  ${S.localRunning ? '<span class="ok">●</span>' : '○'} search :8786</div>`;
+  h += box('APPS', 'o opens the selected app · l shows its log', ap);
+  let ch = '';
+  [['planner/routing', 'host/route-build differs from live (committed)'], ['planner/overlays', 'reads your routing'], ['planner/snow', 'tools/planner_snow.py (not committed) · layer not in live']].forEach(([l, why]) => {
+    const i = item({ act: 'layer', l }); ch += row('18ch 1fr', [`<span class="fg">${l}</span>`, why], { i, sel: isSel(i) });
+  });
+  ch += `<div class="line dim">  every other layer is the live release, downloaded</div>`;
+  h += box('YOUR CHANGES', 'the only layers built from your working tree · b rebuilds after you edit again', ch);
+  return h;
+}
+
+/* ── screen 3: Sources ────────────────────────────────── */
+function scrSources() {
+  const T = '20ch 20ch 7ch 23ch 6ch 8ch 1fr';
+  let h = row(T, ['SOURCE', 'LICENCE', 'R2 COPY', 'LIVE PIN', 'AGE', 'POLICY', 'STATE'], { hd: true });
+  let toolsHd = false;
+  SRC.forEach(s => {
+    if (s.tool && !toolsHd) { h += `<div class="line soft b" style="margin-top:6px">  tools · code that steps run; nothing of theirs ships</div>`; toolsHd = true; }
+    const i = item({ act: 'pin', src: s.id });
+    const st = srcState(s), p = polOf(s);
+    const pin = S.want.pins[s.id] && S.want.pins[s.id] !== (S.base.pins[s.id] || s.pin) ? `${S.base.pins[s.id] || s.pin} <span class="ok">→ ${S.want.pins[s.id]}</span>` : (S.base.pins[s.id] || s.pin);
+    const polCell = S.pol[s.id] !== undefined ? `<span class="ok">${polTxt(p)}</span>` : polTxt(p);
+    h += row(T, [`<span class="fg">${s.id}</span>`, s.lic || '<span class="err">not recorded</span>', s.copy ? '<span class="info">yes</span>' : '<span class="dim">no</span>', pin, s.age !== null && s.age !== undefined && !(S.base.pins[s.id]) ? `${s.age} d` : '<span class="dim">—</span>', polCell, st[0] === 'ok' ? '<span class="ok">● ok</span>' : badge(st[0], st[1])], { i, sel: isSel(i) });
+    if (isSel(i)) {
+      const D = '14ch 1fr';
+      let d = '';
+      if (!s.tool) { d += row(D, ['licence', `${s.lic || '<span class="err">not recorded — it cannot ship until you record it</span>'} <span class="dim">· ${s.obl}</span>`]); d += row(D, ['attribution', `<span class="soft">${esc(s.attr)}</span>`]); }
+      d += row(D, ['snapshots', s.snaps.length ? s.snaps.map(x => `${x[0]}${x[1] ? ' · ' + x[1] : ''} <span class="dim">(${x[2]})</span>`).join(' · ') : '<span class="dim">none fetched</span>']);
+      d += row(D, ['used by', s.used]);
+      if (s.cred) d += row(D, ['credential', `<span class="err">missing: ${s.cred}</span>`]);
+      h += `<div class="detail" style="border-left:2px solid var(--t-amber);margin:2px 0 6px 2ch;padding:2px 8px">${d}</div>`;
+    }
+  });
+  return `<div class="line dim" style="margin-top:6px">  data/sources.toml · R2 COPY: R2 keeps a copy because upstream cannot give it again</div>` + box('SOURCES', 'enter changes the pin · e changes the policy · L attribution', h);
+}
+
+/* ── screen 4: Store ──────────────────────────────────── */
+function scrStore() {
+  const rows = [
+    ['snapshots', null], ['osm planet 2026-09-21', '82.1 GB', 'pin of live and local'], ['osm extracts 2026-09-13', '0.6 GB', 'pin of fixtures'], ['copernicus-glo-30 2021-1', '9.8 GB', 'pin of live, local, fixtures'],
+    ['dtm-de-bw, dtm-ch', '44.0 GB', 'pin of live · copy on R2'], ['land and water polygons, qrank', '2.0 GB', 'pin of live, local · copy on R2'], ['wikidata, wikipedia, commons 2026-07-01', '1.8 GB', 'pin of live, fixtures · copy on R2'],
+    ...(S.cleaned ? [] : [['osm extracts 2026-08-02', '1.3 GB', '<span class="warn">unused</span>']]),
+    ['releases', null], ['device-maps', S.cleaned ? '1.0 GB' : '6.3 GB', S.cleaned ? 'live, local' : 'live 0.98 · local 0.02 · <span class="warn">unused 5.3</span>'], ['planner', S.cleaned ? '4.8 GB' : '19.4 GB', S.cleaned ? 'live, local' : 'live 2.37 · local 2.40 · <span class="warn">unused 14.6</span>'], ['fixtures', '1.1 GB', 'fixtures'],
+    ['history', null], ['receipts and run logs', '41 MB', 'always kept'],
+    ...(S.cleaned ? [] : [['old cache directories (5)', '283.5 GB', '<span class="info">not in the store yet</span>']]),
+  ];
+  let h = row('42ch 10ch 1fr', ['ENTRY', 'SIZE', 'KEPT BECAUSE'], { hd: true });
+  rows.forEach(r => { h += r[1] === null ? `<div class="line soft b" style="margin-top:4px">  ${r[0]}</div>` : row('42ch 10ch 1fr', ['  ' + r[0], r[1], r[2]]); });
+  const r2 = `<div class="line">  <span class="soft">R2</span>  releases ${gb(devSize(S.base.region) + planSize(S.base.region))} · copies of inputs 46.04 GB${S.leftovers ? ' · <span class="warn">leftovers 5.21 GB</span>' : ''}</div>`;
+  const cl = S.cleaned ? '<div class="line ok">  nothing to clean</div>' : '<div class="line">  <span class="amb">c clean</span> removes 21.2 GB that nothing uses and moves the 5 old cache directories into the store</div>';
+  return box('LOCAL STORE', '~/.cache/openbikecomputer/store · 1.4 TB free', h) + r2 + cl;
+}
+
+/* ── screen 5: Runs ───────────────────────────────────── */
+const RUNS = [
+  { when: '2026-10-05 10:02', cmd: 'dev planner europe/germany/baden-wuerttemberg', ok: true, took: '24 min', moved: '2.06 GB down', steps: [['download live layers', 300, null, '0.4 GB', '2.06 GB'], ['planner/routing', 2210, '+6m 12s', '11.8 GB', '1.04 GB'], ['planner/overlays', 405, '+20s', '1.6 GB', '63 MB'], ['planner/snow', 1380, null, '5.1 GB', '20 MB'], ['start apps', 20, null, '0.3 GB', '—']] },
+  { when: '2026-10-02 21:40', cmd: 'apply live', ok: true, took: '3 h 12 min', moved: '2.37 GB up · 2.2 GB removed', steps: [['fetch osm extract', 190, null, '1.1 GB', '0.71 GB'], ['planner/basemap', 2472, '+2m 40s', '6.1 GB', '324 MB'], ['planner/search', 8558, '−3m 50s', '9.4 GB', '716 MB'], ['planner/terrain', 1050, '=', '3.8 GB', '189 MB'], ['planner/routing', 2210, '+6m 12s', '11.8 GB', '1.04 GB'], ['planner/overlays', 405, '+20s', '1.6 GB', '63 MB'], ['planner/places', 190, '=', '0.9 GB', '0.4 MB'], ['verify', 125, '=', '2.0 GB', '—'], ['upload', 860, '−40s', '0.3 GB', '2.37 GB']] },
+  { when: '2026-09-30 18:05', cmd: 'apply live', ok: false, took: '41 min', moved: 'verify failed · nothing switched or removed', steps: [['planner/routing', 2190, null, '11.7 GB', '1.04 GB'], ['verify', 60, null, '2.0 GB', '✗ no route for the probe']] },
+  { when: '2026-09-23 14:05', cmd: 'apply live', ok: true, took: '52 min', moved: '0.98 GB up', steps: [['device-maps/terrain', 360, null, '3.1 GB', '88 MB'], ['device-maps/map cells', 1680, null, '5.4 GB', '887 MB'], ['verify', 240, null, '1.2 GB', '—'], ['upload', 420, null, '0.2 GB', '0.98 GB']] },
+];
+function scrRuns() {
+  const list = [...(S.run && !S.run.done ? [{ when: 'now', cmd: 'apply live', running: true }] : []), ...RUNS];
+  const T = '18ch 46ch 3ch 12ch 1fr';
+  let h = row(T, ['WHEN', 'COMMAND', '', 'TOOK', 'MOVED'], { hd: true });
+  list.forEach(r => {
+    const i = item({ act: r.running ? 'reopen' : 'run', r });
+    h += row(T, [r.when, `<span class="fg">${r.cmd}</span>`, r.running ? '<span class="amb">◐</span>' : r.ok ? '<span class="ok">✓</span>' : '<span class="err">✗</span>', r.running ? `${S.run.i}/${S.run.steps.length} steps` : r.took, r.running ? '<span class="dim">enter shows it</span>' : r.moved], { i, sel: isSel(i) });
+  });
+  const sel = list[Math.min(S.sel.runs, list.length - 1)];
+  let st = '';
+  if (sel && !sel.running) {
+    const max = Math.max(...sel.steps.map(s => s[1]));
+    const sec = s => s >= 3600 ? `${Math.floor(s / 3600)}h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+    const S2 = '24ch 26ch 9ch 10ch 10ch 1fr';
+    st = row(S2, ['STEP', 'DURATION', '', 'Δ LAST RUN', 'PEAK RAM', 'OUTPUT'], { hd: true }) + sel.steps.map(s => row(S2, [s[0], `<span class="amb">${bar(s[1] / max, 24)}</span>`, sec(s[1]), s[2] ? (s[2][0] === '+' ? `<span class="warn">${s[2]}</span>` : s[2][0] === '−' ? `<span class="ok">${s[2]}</span>` : `<span class="dim">${s[2]}</span>`) : '<span class="dim">—</span>', s[3], s[4].startsWith('✗') ? `<span class="err">${s[4]}</span>` : s[4]])).join('');
+  }
+  return box('RUNS', 'every bake, apply and local build', h) + (st ? box('STEPS', `${sel.cmd} · ${sel.when}`, st) : '');
+}
+const SCREENS = { live: scrLive, local: scrLocal, sources: scrSources, store: scrStore, runs: scrRuns };
+const TABS = [['live', 'Live'], ['local', 'Local'], ['sources', 'Sources'], ['store', 'Store'], ['runs', 'Runs']];
+
+/* ── overlays ─────────────────────────────────────────── */
+const ovHead = (t, sub) => `<div class="ovt">${t}${sub ? ` <span class="sub">${sub}</span>` : ''}<span class="x" data-act="close">esc ✕</span></div>`;
+const sec = (t, n) => `<div class="sec">${t}${n ? ` <span class="dim">${n}</span>` : ''}</div>`;
+
+function ovPlan() {
+  const clean = S.ov === 'clean';
+  if (clean) {
+    let h = ovHead('CLEAN STORE', 'local only · R2 is not touched');
+    h += sec('REMOVE', '21.2 GB that no environment, pin or fixture uses');
+    [['osm extracts 2026-08-02', 1.3], ['device-maps releases nothing uses', 5.3], ['planner releases nothing uses', 14.6]].forEach(r => { h += row('3ch 46ch 1fr', ['<span class="err">−</span>', r[0], gb(r[1])]); });
+    h += sec('MOVE INTO THE STORE', 'then delete the old directories');
+    ['~/.cache/obcm', '~/.cache/obc/planner', '~/.cache/openbikecomputer', '~/obc-bake', '~/obc-reference'].forEach(d => { h += row('3ch 46ch 1fr', ['<span class="info">→</span>', d, '']); });
+    h += `<div class="line" style="margin-top:6px">  283.5 GB in, duplicates kept once · the store grows by about 96 GB</div>`;
+    h += S.confirm ? confirmBox('Clean the local store?', 'y clean · esc cancel') : `<div style="margin-top:12px"><span class="btn" data-act="apply">a  clean</span><span class="btn dim" data-act="close">esc  back</span></div>`;
+    return h;
+  }
+  const G = groups(), p = curPlan();
+  let h = ovHead('PLAN · live', `${REG[S.want.region].id} · code 925b1c1`);
+  if (!G.length) return h + `<div class="line ok" style="margin-top:12px">Nothing to do. Live matches data/env/live.toml and the code.</div>`;
+  h += sec('CHANGES', 'space toggles · apply takes the checked ones');
+  G.forEach((g, k) => {
+    const on = !S.skip.has(g.id), pg = planOf([g]);
+    h += row('4ch 34ch 1fr 11ch 9ch', [`<span class="amb">${on ? '[x]' : '[ ]'}</span>`, `<span class="fg">${g.label}</span>`, `<span class="dim">${g.what}</span>`, hm(pg.wall), gb(pg.up)], { o: k, sel: S.psel === k });
+  });
+  if (!p.sel.length) return h + `<div class="line dim" style="margin-top:12px">  nothing checked</div>`;
+  if (S.details) {
+    h += sec('FETCH', `${gb(p.down)}`); p.fetches.forEach(f => { h += row('3ch 30ch 1fr 10ch', ['<span class="ok">↓</span>', f[0], `<span class="dim">${f[1]}</span>`, gb(f[2])]); });
+    h += sec('BUILD', `${p.build.length} layers`); p.build.forEach(b => { h += row('3ch 30ch 1fr 10ch', ['<span class="warn">~</span>', b[0], `<span class="dim">${b[2]}</span>`, hm(b[1])]); });
+    h += sec('THEN'); h += `<div class="line">  verify · upload ${gb(p.up)}${p.mirror ? ` + ${gb(p.mirror)} input copies` : ''} · switch ${[p.dev ? 'cell-catalog' : '', p.plan || p.vps ? 'planner catalog' : '', p.vps ? 'VPS' : ''].filter(Boolean).join(', ')}</div>`;
+  }
+  h += sec('REMOVE FROM R2', '10 min after the switch');
+  h += p.remove.length ? p.remove.map(r => row('3ch 1fr 10ch', ['<span class="err">−</span>', r[0], gb(r[1])])).join('') : '<div class="line dim">  nothing</div>';
+  p.warn.forEach(t => { h += `<div class="line warn wrapl" style="margin-top:6px">⚠ ${t}</div>`; });
+  h += sec('TOTAL'); h += `<div class="line">  ~${hm(p.wall)} · download ${gb(p.down)} · upload ${gb(p.up + p.mirror)} · remove ${gb(p.rm)}${p.vps ? ' · switches the VPS' : ''}</div>`;
+  const n = edits();
+  h += S.confirm ? confirmBox(n ? `Commit data/ (${n} edit${n > 1 ? 's' : ''}) and apply ${p.sel.length} change${p.sel.length > 1 ? 's' : ''} to live?` : `Apply ${p.sel.length} change${p.sel.length > 1 ? 's' : ''} to live from commit 925b1c1?`, `removes ${gb(p.rm)} from R2 · y apply · esc cancel`)
+    : `<div style="margin-top:12px"><span class="btn" data-act="apply">a  apply</span><span class="btn dim" data-act="det">d  ${S.details ? 'hide' : 'show'} steps</span><span class="btn dim" data-act="close">esc  back</span></div>`;
+  return h;
+}
+const confirmBox = (q, sub) => `<div style="margin-top:12px;border:1px solid var(--t-amber);padding:6px 10px"><div class="line amb b">${q}</div><div class="line dim">${sub}</div><div style="margin-top:6px"><span class="btn" data-act="yes">y  yes</span><span class="btn dim" data-act="no">esc  cancel</span></div></div>`;
+
+function ovRun() {
+  const r = S.run, done = r.steps.filter(s => s.state === 'done').length;
+  let h = ovHead(`APPLY live · ${done}/${r.steps.length}`, r.done ? 'finished' : 'esc hides this view; the run continues');
+  r.steps.forEach(s => {
+    const mark = s.state === 'done' ? '<span class="ok">✓</span>' : s.state === 'run' ? '<span class="amb">◐</span>' : '<span class="dim">○</span>';
+    h += row('3ch 30ch 1fr 26ch', [mark, `<span class="${s.state === 'queued' ? 'dim' : 'fg'}">${s.name}</span>`, `<span class="dim">${s.detail}</span>`, s.state === 'run' ? `<span class="amb">${bar(s.frac, 16)}</span> ${Math.round(s.frac * 100)}%` : s.state === 'done' ? `<span class="dim">${hm(s.mins)}</span>` : `<span class="dim">~${hm(s.mins)}</span>`]);
+  });
+  h += sec('LOG') + r.log.slice(-4).map(l => `<div class="line dim">${esc(l)}</div>`).join('');
+  if (r.done) h += `<div class="line ok wrapl" style="margin-top:10px">Applied. Live uses the new releases. R2 holds only them and the input copies.</div>`;
+  else h += `<div style="margin-top:8px"><span class="btn dim" data-act="ff">f  skip to end (mock only)</span></div>`;
+  return h;
+}
+
+function ovDetails() {
+  const d = S.detail;
+  if (d.product) {
+    const p = d.product, names = p === 'device-maps' ? LAYERS['device-maps'] : [...LAYERS.planner, ...['climate', 'snow', 'sun'].filter(k => S.base[k]).map(k => [k, LAYERS.optional[k][0], 0, LAYERS.optional[k][2]])];
+    let h = ovHead(`${p} · release ${p === 'device-maps' ? S.ids.dev : S.ids.plan}`, REG[S.base.region].id);
+    h += sec('LAYERS') + row('14ch 34ch 10ch 1fr', ['LAYER', 'STATE', 'SIZE', 'READS'], { hd: true });
+    names.forEach(l => { const st = layerState(p, l[0]); const missing = st[0] === 'not applied'; h += row('14ch 34ch 10ch 1fr', [l[0], badge(st[0], st[1]), missing ? '—' : gb(l[1] * (p === 'device-maps' ? devSize(S.base.region) / 0.98 : planSize(S.base.region) / 2.37)), `<span class="dim">${l[3].join(', ')}</span>`]); });
+    h += sec('USED BY');
+    (p === 'device-maps' ? ['R2 cell-catalog/ → map builder (openbikecomputer.com/builder), obc-desktop, iOS offline maps', 'the map builder joins the layers into one .obcm per rider selection']
+      : ['R2 planner/ + tiles.openbikecomputer.com → web planner (openbikecomputer.com/plan), map builder basemap, iOS', 'VPS releases.openbikecomputer.com → route-server and search']).forEach(t => { h += `<div class="line">  → ${t}</div>`; });
+    return h;
+  }
+  const L = d.l;
+  let h = ovHead(L, 'local release ' + S.ids.local);
+  const info = { 'planner/routing': [['osm', '2026-09-21'], ['copernicus-glo-30', '2021-1'], ['dtm-de-bw', '2026-09-21']], 'planner/overlays': [['planner/routing', 'local build']], 'planner/snow': [['modis-snow', '2026-06-30'], ['hansen-gfc', 'v1.11']] }[L];
+  h += sec('READS') + info.map(i => row('22ch 1fr', [i[0], i[1]])).join('');
+  h += sec('CODE') + `<div class="line">  ${{ 'planner/routing': 'host/route-build · live was built from f0307f8d, yours is 3b9e2c41', 'planner/overlays': 'unchanged · rebuilt because routing changed', 'planner/snow': 'tools/planner_snow.py · not committed' }[L]}</div>`;
+  h += sec('USED BY') + `<div class="line">  → ${L === 'planner/snow' ? 'tiles :8080 → web planner' : 'route-server :8787, tiles :8080 → web planner'}</div>`;
+  return h;
+}
+
+function brailleMap(r, cols, rows) {
+  const W = cols * 2, H = rows * 4;
+  const [w0, s0, e0, n0] = r.box, c = Math.cos((s0 + n0) / 2 * Math.PI / 180);
+  const span = Math.max((e0 - w0) * c / W, (n0 - s0) / H) * 1.3, cx = (w0 + e0) / 2, cy = (s0 + n0) / 2;
+  const pj = (lon, lat) => [W / 2 + (lon - cx) * c / span, H / 2 - (lat - cy) / span];
+  const sel = new Uint8Array(W * H), oth = new Uint8Array(W * H);
+  const plot = (g, x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) g[y * W + x] = 1; };
+  const line = (g, a, b) => { let x0 = Math.round(a[0]), y0 = Math.round(a[1]); const x1 = Math.round(b[0]), y1 = Math.round(b[1]); const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let e = dx + dy, n = 0; while (n++ < 20000) { plot(g, x0, y0); if (x0 === x1 && y0 === y1) break; const e2 = 2 * e; if (e2 >= dy) { e += dy; x0 += sx; } if (e2 <= dx) { e += dx; y0 += sy; } } };
+  Object.values(REG).forEach(o => {
+    const g = o === r ? sel : oth;
+    const pts = o.poly || [[o.box[0], o.box[1]], [o.box[2], o.box[1]], [o.box[2], o.box[3]], [o.box[0], o.box[3]], [o.box[0], o.box[1]]];
+    const P = pts.map(p => pj(p[0], p[1])); const xs = P.map(p => p[0]);
+    if (Math.max(...xs) < 0 || Math.min(...xs) > W || Math.max(...xs) - Math.min(...xs) > W * 40) return;
+    for (let k = 1; k < P.length; k++) line(g, P[k - 1], P[k]);
+  });
+  const bits = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+  let out = '';
+  for (let cy2 = 0; cy2 < rows; cy2++) {
+    let html = '', run = '', cls = null;
+    for (let cx2 = 0; cx2 < cols; cx2++) {
+      let b = 0, s = false;
+      for (let y = 0; y < 4; y++) for (let x = 0; x < 2; x++) { const i = (cy2 * 4 + y) * W + cx2 * 2 + x; if (sel[i]) { b |= bits[y][x]; s = true; } else if (oth[i]) b |= bits[y][x]; }
+      const k = s ? 'amb' : 'dim'; if (k !== cls) { if (run) html += `<span class="${cls}">${run}</span>`; run = ''; cls = k; }
+      run += String.fromCharCode(0x2800 + b);
+    }
+    out += html + `<span class="${cls}">${run}</span>` + (cy2 < rows - 1 ? '\n' : '');
+  }
+  return `<pre class="braille">${out}</pre>`;
+}
+function regionList() { const f = S.filter.toLowerCase(); return REG_ORDER.filter(k => REG[k].id.includes(f)); }
+function ovRegion() {
+  const local = S.pick === 'local', ks = regionList(), cur = local ? S.localRegion : S.want.region;
+  const k = ks[Math.min(S.ovSel, ks.length - 1)];
+  let h = ovHead(`REGION · ${local ? 'local' : 'live'}`, 'both products use it · / filter · enter choose · n new');
+  h += `<div class="line">  <span class="soft">/</span> ${S.filtering ? `<span class="fg">${esc(S.filter)}</span><span class="cursor"></span>` : (S.filter ? esc(S.filter) : '<span class="dim">filter</span>')}</div>`;
+  let list = row('37ch 9ch 1fr', ['REGION', 'km²', 'USED BY'], { hd: true });
+  ks.forEach((r, i) => { list += row('37ch 9ch 1fr', [`${r === cur ? '<span class="amb">●</span> ' : '  '}${REG[r].id}`, fmt(REG[r].km2), `<span class="dim">${usedBy(r)}</span>`], { o: i, sel: S.ovSel === i }); });
+  let right = '';
+  if (k) {
+    const R = REG[k], keeps = R.contains.includes(S.base.region);
+    const newKm2 = R.km2 - (keeps ? REG[S.base.region].km2 : 0);
+    right = brailleMap(R, 40, 12) + row('11ch 1fr', ['defined by', R.def]) + row('11ch 1fr', ['device-maps', `${gb(devSize(k))} · ${hm(newKm2 * 0.95 / 1000)}${keeps && k !== S.base.region ? ' · reuses the live cells' : ''}`]) + row('11ch 1fr', ['planner', `${gb(planSize(k))} · ${hm(192 * R.km2 / REG.bw.km2)}`]);
+  }
+  h += `<div class="cols" style="grid-template-columns:minmax(0,1fr) minmax(0,0.85fr)"><div>${list}</div><div>${right}</div></div>`;
+  return h;
+}
+function ovNewRegion() {
+  const M = [['Geofabrik area', 'nord-ovest', 'europe/italy/nord-ovest · 57,950 km²'], ['Box', '9.55, 46.30, 10.25, 46.70', 'W, S, E, N in degrees'], ['Union', 'europe/germany + europe/austria', 'joins existing regions'], ['Polygon file', '~/Downloads/vinschgau.geojson', '.geojson or .poly']];
+  let h = ovHead('NEW REGION', 'writes one file in data/regions/ · tab changes the method');
+  h += `<div class="line">  ${M.map((m, i) => i === S.wiz ? `<span class="tab on">${m[0]}</span>` : `<span class="tab" data-wiz="${i}">${m[0]}</span>`).join(' ')}</div>`;
+  h += `<div class="line" style="margin-top:8px">  <span class="fg">${M[S.wiz][1]}</span><span class="cursor"></span></div><div class="line dim">  ${M[S.wiz][2]}</div>`;
+  h += `<div style="margin-top:12px"><span class="btn" data-act="mkregion">enter  create</span><span class="btn dim" data-act="close">esc  cancel</span></div>`;
+  return h;
+}
+function ovPin() {
+  const s = src(S.detail.src), cur = S.want.pins[s.id] || S.base.pins[s.id] || s.pin;
+  const opts = [...s.snaps.map(x => [x[0], `${x[1]}${x[1] ? ' · ' : ''}in the store · used by ${x[2]}`]), ...(s.newer && !S.base.pins[s.id] ? [[s.newer.v, `newest upstream · fetches ${gb(s.newer.gb)} (~${hm(s.newer.min)})`]] : [])];
+  let h = ovHead(`PIN · ${s.id}`, 'the snapshot live is built from · enter chooses');
+  if (s.tool) h += `<div class="line dim">  a tool pin changes the code hash of the steps that use it</div>`;
+  opts.forEach((o, i) => { h += row('3ch 14ch 1fr', [o[0] === cur ? '<span class="amb">●</span>' : '', o[0], `<span class="dim">${o[1]}</span>`], { o: i, sel: S.ovSel === i }); });
+  S.pinOpts = opts;
+  return h;
+}
+function ovPolicy() {
+  const s = src(S.detail.src), cur = polOf(s), opts = [7, 30, 90, 365, 'manual'];
+  let h = ovHead(`REFRESH POLICY · ${s.id}`, 'how old the pin may get before it shows as stale');
+  opts.forEach((o, i) => { h += row('3ch 10ch 1fr', [o === cur ? '<span class="amb">●</span>' : '', polTxt(o), `<span class="dim">${o === 'manual' ? 'never stale; you move the pin yourself' : ''}</span>`], { o: i, sel: S.ovSel === i }); });
+  return h;
+}
+function ovAttribution() {
+  let h = ovHead('ATTRIBUTION', 'generated from data/sources.toml');
+  h += sec('DEVICE ABOUT SCREEN') + `<div class="line wrapl soft">  © OpenStreetMap contributors · produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved</div>`;
+  h += sec('WEB PLANNER') + `<div class="line wrapl soft">  © OpenStreetMap contributors; ODbL 1.0 · © swisstopo (Open data, attribution required); Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0; Copernicus DEM GLO-30</div>`;
+  h += sec('LICENCES THAT SHIP') + row('16ch 1fr', ['device-maps', 'ODbL-1.0 (share-alike) · Copernicus DEM · dl-de/by-2-0 · swisstopo · CC-BY-SA-4.0 · Commons per photo']) + row('16ch 1fr', ['planner', 'ODbL-1.0 (share-alike) · Copernicus DEM · dl-de/by-2-0 · swisstopo · OFL-1.1 · MIT · <span class="err">2 not recorded</span>']);
+  return h;
+}
+function ovHelp() {
+  let h = ovHead('HELP', '');
+  h += sec('EVERYWHERE');
+  [['1 – 5, tab', 'screens'], ['↑ ↓  j k', 'move'], ['enter', 'the row\'s action: details, change, go to the fix'], ['p', 'plan for live'], ['u', 'undo edits that are not applied'], ['R', 'check upstream versions now'], ['esc', 'close'], ['q', 'quit'], ['?', 'help']].forEach(k => { h += row('14ch 1fr', [`<span class="amb">${k[0]}</span>`, k[1]]); });
+  h += sec('ON A SCREEN');
+  [['Live', 'r region · space toggles a layer'], ['Local', 's start/stop · b rebuild · o open · l log · r region'], ['Sources', 'enter pin · e policy · L attribution'], ['Store', 'c clean'], ['Plan', 'space toggles a change · d steps · a apply, then y']].forEach(k => { h += row('14ch 1fr', [`<span class="soft">${k[0]}</span>`, k[1]]); });
+  h += sec('STATES');
+  [['ok', 'up to date'], ['stale', 'a pin is older than its policy and upstream has a newer version'], ['code changed', 'the layer\'s code differs from the code that built it'], ['input changed', 'a layer it reads was rebuilt'], ['not applied', 'live.toml asks for something live does not have yet'], ['blocked', 'a missing licence or credential stops it']].forEach(s => { h += row('20ch 1fr', [badge(s[0]), `<span class="dim">${s[1]}</span>`]); });
+  return h;
+}
+const OVS = { plan: ovPlan, clean: ovPlan, run: ovRun, details: ovDetails, region: ovRegion, newregion: ovNewRegion, pin: ovPin, policy: ovPolicy, attribution: ovAttribution, help: ovHelp };
+
+/* ── run simulation ───────────────────────────────────── */
+function startRun() {
+  const p = curPlan(); if (!p.sel.length) return;
+  const steps = [];
+  p.fetches.forEach(f => steps.push({ name: 'fetch ' + f[0], detail: f[1], mins: Math.max(1, f[3]) }));
+  p.build.forEach(b => steps.push({ name: 'build ' + b[0], detail: b[2], mins: Math.max(1, b[1]) }));
+  steps.push({ name: 'verify', detail: 'open new maps, route the probe', mins: 4 });
+  steps.push({ name: 'upload', detail: gb(p.up + p.mirror), mins: Math.max(2, (p.up + p.mirror) * 6) });
+  steps.push({ name: 'switch', detail: [p.dev ? 'cell-catalog' : '', p.plan || p.vps ? 'planner catalog' : '', p.vps ? 'VPS' : ''].filter(Boolean).join(', '), mins: 2 });
+  if (p.rm) steps.push({ name: 'remove', detail: `${gb(p.rm)} · after 10 min`, mins: 11 });
+  steps.forEach(s => { s.state = 'queued'; s.frac = 0; }); steps[0].state = 'run';
+  S.run = { steps, i: 0, log: [`committed data/ · started apply live`], done: false, sel: p.sel, p };
+  S.ov = 'run'; S.confirm = false; clearTimeout(S.timer); tick();
+}
+function tick() {
+  const r = S.run; if (!r || r.done) return;
+  const st = r.steps[r.i]; st.frac = Math.min(1, st.frac + 1 / (3 + st.mins / 6));
+  if (st.frac >= 1) { st.state = 'done'; r.log.push(`done ${st.name} · ${st.detail}`); r.i++; if (r.i >= r.steps.length) { finish(); render(); return; } r.steps[r.i].state = 'run'; }
+  render(); S.timer = setTimeout(tick, 70);
+}
+function finish() {
+  const r = S.run; r.done = true;
+  r.sel.forEach(g => {
+    if (g.id === 'region') { S.base.region = S.want.region; S.base.dmExtra = true; S.codeChanged = false; ['wikidata', 'wikipedia', 'commons'].forEach(i => S.base.pins[i] = 'today'); }
+    else if (g.id === 'dm') { S.base.dmExtra = true; ['wikidata', 'wikipedia', 'commons'].forEach(i => S.base.pins[i] = 'today'); }
+    else if (g.id === 'code') S.codeChanged = false;
+    else if (g.id.startsWith('pin-')) { const id = g.id.slice(4); S.base.pins[id] = S.want.pins[id]; }
+    else S.base[g.id] = S.want[g.id];
+  });
+  Object.entries(S.pol).forEach(([id, v]) => { src(id).pol = v; }); S.pol = {};
+  if (r.p.dev) S.ids.dev = NEXT.dev.shift(); if (r.p.plan || r.p.vps) S.ids.plan = NEXT.plan.shift();
+  S.leftovers = false; S.drift = false; S.applies++; S.skip.clear(); S.psel = 0;
+  RUNS.unshift({ when: '2026-10-05 14:12', cmd: 'apply live', ok: true, took: hm(r.p.wall), moved: `${gb(r.p.up + r.p.mirror)} up · ${gb(r.p.rm)} removed`, steps: r.steps.map(s => [s.name.replace(/^build /, ''), Math.round(s.mins * 60), null, '—', '—']) });
+  r.log.push('finished · R2 holds only the live releases and input copies');
+}
+function ff() { const r = S.run; if (!r || r.done) return; clearTimeout(S.timer); r.steps.forEach(s => { s.state = 'done'; s.frac = 1; }); finish(); render(); }
+
+/* ── CLI and API tabs ─────────────────────────────────── */
+const PR = c => `<span class="p">$</span> <span class="c">${esc(c)}</span>`;
+function cliView() {
+  const p = curPlan(), G = groups(), dev = productState('device-maps'), pl = productState('planner');
+  const L = [PR('obc data help'),
+    'obc data                 the TUI in a terminal; `status` otherwise',
+    'obc data status          what is live and what needs attention   (--check: exit 1 if anything does)',
+    'obc data plan live       the changes, what they cost, what they remove',
+    'obc data apply live      commit data/ and apply (asks first; --yes for scripts)',
+    'obc data dev [REGION]    local release with your code, plus the apps on localhost',
+    'obc data sources         licence, pin, age, policy, state',
+    'obc data pin SOURCE V    move a pin        obc data policy SOURCE P    change a refresh policy',
+    'obc data region …        list, show or add regions',
+    'obc data clean           clean the local store',
+    'obc data runs [RUN]      past runs and their steps',
+    'Every command takes --json. The contract is specs/obc-data.md.', '',
+    PR('obc data status'),
+    `region       ${REG[S.base.region].id}`,
+    `device-maps  ${S.ids.dev}  ${dev[0]}${dev[1] ? ': ' + dev[1] : ''}`,
+    `planner      ${S.ids.plan}  ${pl[0]}${pl[1] ? ': ' + pl[1] : ''}`,
+    ...SRC.filter(s => srcState(s)[0] !== 'ok').map(s => `${srcState(s)[0].padEnd(12)} ${s.id}: ${srcState(s)[1]}`), '',
+    PR('obc data plan live'),
+    ...(G.length ? G.map(g => `${S.skip.has(g.id) ? '[ ]' : '[x]'} ${g.label.padEnd(34)} ${g.what}`) : ['nothing to do']),
+    ...(p.sel.length ? [`total  ~${hm(p.wall)} · download ${gb(p.down)} · upload ${gb(p.up + p.mirror)} · remove ${gb(p.rm)}`] : []), '',
+    PR('obc data apply live --only route-build'), 'Apply 1 change to live from commit 925b1c1? removes 1.10 GB from R2 [y/N]', ''];
+  return `<div class="cli-out">${L.map(l => l.includes('<span') ? l : esc(l)).join('\n')}\n<span class="p">$</span> <span class="cursor"></span></div>`;
+}
+function apiView() {
+  const j = o => esc(JSON.stringify(o, null, 2));
+  const dev = productState('device-maps'), pl = productState('planner');
+  const L = ['<span class="dim"># Agents use the same commands with --json. The TUI is built on the same API.</span>', '',
+    PR('obc data status --json'), j({ format: 1, region: REG[S.base.region].id, releases: [{ product: 'device-maps', release: S.ids.dev, state: dev[0].replace(' ', '_'), layers: dev[1] ? dev[1].split(', ') : [] }, { product: 'planner', release: S.ids.plan, state: pl[0].replace(' ', '_'), layers: pl[1] ? pl[1].split(', ') : [] }], attention: [{ state: 'blocked', source: 'qrank', reason: 'licence_missing' }] }), '',
+    PR('obc data plan live --json > plan.json'), j({ format: 1, plan: 'pl_7f3c09d2', changes: groups().map(g => g.id), upload_bytes: Math.round(curPlan().up * 1e9), remove_bytes: Math.round(curPlan().rm * 1e9) }), '',
+    PR('obc data apply live --plan plan.json --yes --detach --json'), j({ run: '2026-10-05-1412' }), '',
+    PR('obc data runs 2026-10-05-1412 --follow --json'),
+    esc('{"event":"step_finished","step":"planner/routing","seconds":2210,"peak_rss":11800000000,"bytes_out":1040000000}'),
+    esc('{"event":"switched","pointer":"planner/catalog.json","release":"b81d04aa"}'),
+    esc('{"event":"finished","result":"ok"}'), '',
+    PR('obc data apply live --plan plan.json --yes --json'), j({ error: { code: 'plan_outdated', fix: 'run obc data plan live again' } }), '<span class="err">exit 3</span>', '',
+    '<span class="soft">rules</span>  read commands change nothing · apply needs a plan file or a person at the prompt · --yes is required without a terminal',
+    '<span class="soft">exit </span>  0 ok · 1 check found problems · 2 usage · 3 plan outdated · 4 blocked · 5 verify failed',
+    '<span class="soft">licence</span>  host/obc-data is MIT OR Apache-2.0'];
+  return `<div class="cli-out">${L.join('\n')}\n<span class="p">$</span> <span class="cursor"></span></div>`;
+}
+
+/* ── notes beside the mock ────────────────────────────── */
+const NOTES = {
+  live: ['① What is live, ② change it', 'Live', ['One screen: the two products, the one region they share, the optional planner layers, and what needs attention.', 'Each edit is written to data/env/live.toml. The bottom bar counts them; u undoes them; p plans them.', 'Enter on a product shows its layers with state, size and inputs. Device maps always have map cells, terrain, landmarks and peaks; live lacks the last two today, so the device-maps row says "not applied".']],
+  plan: ['② Plan and apply', 'Plan', ['Every change is independent. Uncheck one to leave it for later.', 'a asks once: it commits the edits in data/ and applies the checked changes. Nothing reaches live without that y.', 'REMOVE is always visible: R2 keeps only the live releases and the input copies. The first apply also removes today\'s leftovers.', 'd shows the steps behind each change.']],
+  run: ['② Apply', 'Run', ['esc hides the view; the run continues. The tab bar shows its progress, and Runs reopens it.', 'If verify fails, nothing is switched or removed.']],
+  local: ['③ Local apps', 'Local', ['Your machine runs the live release plus the layers your code changes, and the real apps on localhost.', 'YOUR CHANGES lists only what differs from live, and why. Everything else is downloaded from live.', 's starts and stops everything; b rebuilds after you edit again; r changes the local region.']],
+  sources: ['④ Sources', 'Sources', ['Every dataset and tool with licence, R2 copy, pin, age, policy and state.', 'Enter on a source changes its pin (for example, fetch the newest OSM). e changes the refresh policy. Both are edits, planned and applied like the rest.', 'The selected source opens inline with its attribution and snapshots.']],
+  store: ['⑤ Store', 'Store', ['One local store for every download and build. Each entry says why it is kept.', 'c clean removes what nothing uses and moves the old cache directories in, after one confirmation.']],
+  runs: ['⑥ Runs', 'Runs', ['Every apply, bake and local build, with the steps of the selected run: duration, change since the last run, peak RAM, output size.', 'A running apply is pinned at the top; enter reopens it.']],
+  cli: ['⑦ CLI and agents', 'Plain CLI', ['The same actions as plain commands. The TUI is a view over them.', 'apply asks the same question as the TUI. Scripts pass --yes.']],
+  api: ['⑦ CLI and agents', 'Agent JSON API', ['Every command takes --json, with the contract in specs/obc-data.md.', 'An agent shows you a plan file; apply --plan applies exactly that and refuses it if live moved.', 'Long runs return a run id at once; progress comes as JSON events.']],
+};
+function renderNotes() {
+  const k = S.mode !== 'tui' ? S.mode : S.ov === 'plan' ? 'plan' : S.ov === 'run' ? 'run' : S.tab;
+  const n = NOTES[k];
+  document.getElementById('notes').innerHTML = `<div class="tag">${n[0]}</div><h2>${n[1]}</h2><ul>${n[2].map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+  document.querySelectorAll('.wish').forEach(b => b.classList.toggle('on', b.dataset.k === k || (k === 'run' && b.dataset.k === 'plan')));
+}
+const WISHES = [['live', '①', 'What is live'], ['plan', '②', 'Change and apply'], ['local', '③', 'Local apps'], ['sources', '④', 'Sources'], ['store', '⑤', 'Store'], ['runs', '⑥', 'Runs'], ['cli', '⑦', 'CLI and agents']];
+document.getElementById('wishes').innerHTML = WISHES.map(w => `<button type="button" class="wish" data-k="${w[0]}"><b>${w[1]}</b>${w[2]}</button>`).join('');
+
+/* ── render ───────────────────────────────────────────── */
+const KEYS = { live: [['r', 'region'], ['space', 'toggle'], ['p', 'plan']], local: [['s', 'start/stop'], ['b', 'rebuild'], ['o', 'open'], ['l', 'log'], ['r', 'region']], sources: [['enter', 'pin'], ['e', 'policy'], ['L', 'attribution']], store: [['c', 'clean']], runs: [] };
+const OVKEYS = { plan: [['space', 'toggle'], ['d', 'steps'], ['a', 'apply'], ['esc', 'back']], clean: [['a', 'clean'], ['esc', 'back']], run: [['esc', 'hide']], region: [['/', 'filter'], ['enter', 'choose'], ['n', 'new'], ['esc', 'back']], newregion: [['tab', 'method'], ['enter', 'create'], ['esc', 'cancel']], pin: [['enter', 'choose'], ['esc', 'back']], policy: [['enter', 'choose'], ['esc', 'back']] };
+const CLIEQ = { live: 'obc data status', local: 'obc data dev', sources: 'obc data sources', store: 'obc data clean', runs: 'obc data runs', plan: 'obc data plan live', clean: 'obc data clean', run: 'obc data runs --follow', region: 'obc data region', newregion: 'obc data region add', pin: 'obc data pin', policy: 'obc data policy', details: 'obc data status --layers', attribution: 'obc data sources --attribution', help: 'obc data help' };
+function render() {
+  ['tui', 'cli', 'api'].forEach(m => document.getElementById('wt-' + m).classList.toggle('on', S.mode === m));
+  const tabs = document.getElementById('tabs'), body = document.getElementById('body'), ov = document.getElementById('ov'), barEl = document.getElementById('bar');
+  if (S.mode !== 'tui') { tabs.innerHTML = `<span class="tab on">zsh</span>`; body.innerHTML = S.mode === 'api' ? apiView() : cliView(); ov.innerHTML = ''; barEl.innerHTML = `<span class="k">click obc data above to go back</span>`; renderNotes(); return; }
+  const n = edits(), running = S.run && !S.run.done;
+  tabs.innerHTML = TABS.map((t, i) => `<span class="tab${S.tab === t[0] ? ' on' : ''}" data-tab="${t[0]}"><span class="k">${i + 1}</span> ${t[1]}</span>`).join('')
+    + `<span class="host">${running ? `<span class="amb">◐ applying ${S.run.i}/${S.run.steps.length}</span> · ` : ''}${n ? `<span class="amb">${n} edit${n > 1 ? 's' : ''}</span> · ` : ''}R2 <span class="ok">✓</span> VPS <span class="ok">✓</span></span>`;
+  sink = []; const sc = body.scrollTop; body.innerHTML = SCREENS[S.tab](); S.items = sink;
+  if (S.sel[S.tab] >= S.items.length) S.sel[S.tab] = Math.max(0, S.items.length - 1);
+  body.scrollTop = sc;
+  ov.innerHTML = S.ov ? `<div class="ov">${OVS[S.ov]()}</div>` : '';
+  const keys = S.ov ? (OVKEYS[S.ov] || [['esc', 'close']]) : [...KEYS[S.tab], ...(n ? [['u', `undo ${n}`]] : []), ['?', 'help']];
+  barEl.innerHTML = keys.map(k => `<span class="k" data-key="${esc(k[0])}"><b>${esc(k[0])}</b> ${k[1]}</span>`).join('') + (S.toast ? `<span class="toast">${S.toast}</span>` : '') + `<span class="cli">same as <span>${CLIEQ[S.ov || S.tab]}</span></span>`;
+  renderNotes();
+}
+
+/* ── actions and keys ─────────────────────────────────── */
+function toast(t) { S.toast = esc(t); render(); clearTimeout(S.tt); S.tt = setTimeout(() => { S.toast = ''; render(); }, 4000); }
+function openOv(name, extra = {}) { S.ov = name; S.ovSel = 0; S.confirm = false; Object.assign(S, extra); render(); }
+function closeOv() { if (S.ov === 'run' && S.run && !S.run.done) toast('The run continues. The tab bar shows it; Runs reopens it.'); S.ov = S.ov === 'newregion' ? 'region' : null; S.confirm = false; S.filtering = false; render(); }
+function act(it) {
+  if (!it) return;
+  if (it.act === 'region') openOv('region', { pick: it.local ? 'local' : 'live', filter: '' });
+  else if (it.act === 'details') openOv('details', { detail: { product: it.product } });
+  else if (it.act === 'layer') openOv('details', { detail: { l: it.l } });
+  else if (it.act === 'toggle') { S.want[it.k] = !S.want[it.k]; render(); }
+  else if (it.act === 'attention') { if (it.go) { if (it.src) S.sel.sources = SRC.findIndex(s => s.id === it.src); S.tab = it.go; render(); } else toast(it.msg); }
+  else if (it.act === 'pin') openOv('pin', { detail: { src: it.src } });
+  else if (it.act === 'app') toast(it.on ? `would open ${it.u}` : `would start ${it.n}`);
+  else if (it.act === 'reopen') openOv('run');
+}
+function ovChoose(i) {
+  if (S.ov === 'plan') { const g = groups()[i]; if (g) { S.psel = i; S.skip.has(g.id) ? S.skip.delete(g.id) : S.skip.add(g.id); render(); } }
+  else if (S.ov === 'region') { const k = regionList()[i]; if (!k) return; if (S.pick === 'local') { S.localRegion = k; S.ov = null; toast(`local region → ${REG[k].id} · b builds it`); } else { S.want.region = k; S.ov = null; render(); } }
+  else if (S.ov === 'pin') { const o = S.pinOpts[i], s = src(S.detail.src); if (!o) return; const base = S.base.pins[s.id] || s.pin; if (o[0] === base) delete S.want.pins[s.id]; else S.want.pins[s.id] = o[0]; S.ov = null; render(); }
+  else if (S.ov === 'policy') { const s = src(S.detail.src), v = [7, 30, 90, 365, 'manual'][i]; if (v === s.pol) delete S.pol[s.id]; else S.pol[s.id] = v; S.ov = null; render(); }
+}
+function ovCount() { return S.ov === 'plan' ? groups().length : S.ov === 'region' ? regionList().length : S.ov === 'pin' ? (S.pinOpts || []).length : S.ov === 'policy' ? 5 : 0; }
+function key(k) {
+  if (S.mode !== 'tui') { if (k === 'Escape') { S.mode = 'tui'; render(); return true; } return false; }
+  if (S.ov) {
+    if (S.ov === 'region' && S.filtering) { if (k === 'Escape' || k === 'Enter') S.filtering = false; else if (k === 'Backspace') S.filter = S.filter.slice(0, -1); else if (k.length === 1) { S.filter += k; S.ovSel = 0; } render(); return true; }
+    if (S.confirm) { if (k === 'y') { if (S.ov === 'clean') { S.cleaned = true; S.ov = null; S.confirm = false; toast('Cleaned: 21.2 GB removed, 5 old directories moved into the store.'); } else startRun(); } else if (k === 'Escape' || k === 'n') { S.confirm = false; render(); } return true; }
+    if (k === 'Escape' || k === 'q') { closeOv(); return true; }
+    const n = ovCount(), selKey = S.ov === 'plan' ? 'psel' : 'ovSel';
+    if ((k === 'ArrowDown' || k === 'j') && n) { S[selKey] = Math.min(n - 1, S[selKey] + 1); render(); return true; }
+    if ((k === 'ArrowUp' || k === 'k') && n) { S[selKey] = Math.max(0, S[selKey] - 1); render(); return true; }
+    if (S.ov === 'plan') { if (k === ' ') { ovChoose(S.psel); return true; } if (k === 'd') { S.details = !S.details; render(); return true; } if (k === 'a') { if (curPlan().sel.length) { S.confirm = true; render(); } return true; } return false; }
+    if (S.ov === 'clean' && k === 'a') { S.confirm = true; render(); return true; }
+    if (S.ov === 'run' && k === 'f') { ff(); return true; }
+    if (S.ov === 'region') { if (k === '/') { S.filtering = true; render(); return true; } if (k === 'n') { openOv('newregion', { wiz: 0 }); return true; } if (k === 'Enter') { ovChoose(S.ovSel); return true; } }
+    if (S.ov === 'newregion') { if (k === 'Tab') { S.wiz = (S.wiz + 1) % 4; render(); return true; } if (k === 'Enter') { S.ov = 'region'; toast('would write the region file in data/regions/'); return true; } }
+    if ((S.ov === 'pin' || S.ov === 'policy') && k === 'Enter') { ovChoose(S.ovSel); return true; }
+    return false;
+  }
+  const n = S.items.length;
+  if ('12345'.includes(k) && k.length === 1) { S.tab = TABS[+k - 1][0]; render(); return true; }
+  if (k === 'Tab') { S.tab = TABS[(TABS.findIndex(t => t[0] === S.tab) + 1) % TABS.length][0]; render(); return true; }
+  if (k === 'ArrowDown' || k === 'j') { S.sel[S.tab] = Math.min(n - 1, S.sel[S.tab] + 1); render(); return true; }
+  if (k === 'ArrowUp' || k === 'k') { S.sel[S.tab] = Math.max(0, S.sel[S.tab] - 1); render(); return true; }
+  if (k === 'Enter') { act(S.items[S.sel[S.tab]]); return true; }
+  if (k === '?') { openOv('help'); return true; }
+  if (k === 'p') { openOv('plan', { psel: 0 }); return true; }
+  if (k === 'u') { if (edits()) { S.want = { ...S.base, pins: { ...S.base.pins } }; delete S.want.dmExtra; S.pol = {}; toast('edits undone'); } return true; }
+  if (k === 'R') { toast('checked upstream: osm 2026-10-04 is the newest · 18 requests, nothing downloaded'); return true; }
+  if (k === 'q') { toast('q quits the TUI (not in the mock)'); return true; }
+  const it = S.items[S.sel[S.tab]] || {};
+  if (S.tab === 'live') { if (k === 'r') { act({ act: 'region' }); return true; } if (k === ' ' && it.act === 'toggle') { act(it); return true; } }
+  if (S.tab === 'local') {
+    if (k === 'r') { act({ act: 'region', local: true }); return true; }
+    if (k === 's') { S.localRunning = !S.localRunning; toast(S.localRunning ? 'apps started' : 'apps stopped · the store keeps everything'); return true; }
+    if (k === 'b') { toast('rebuilds planner/snow (changed since 10:26) and restarts tiles'); return true; }
+    if (k === 'o') { if (it.act === 'app') act(it); else toast('select an app first'); return true; }
+    if (k === 'l') { if (it.act === 'app') toast(`would show the log of ${it.n}`); else toast('select an app first'); return true; }
+  }
+  if (S.tab === 'sources') { if (k === 'e') { openOv('policy', { detail: { src: SRC[S.sel.sources].id } }); return true; } if (k === 'L') { openOv('attribution'); return true; } }
+  if (S.tab === 'store' && k === 'c') { if (!S.cleaned) openOv('clean'); return true; }
+  return false;
+}
+
+/* ── events ───────────────────────────────────────────── */
+const term = document.getElementById('term');
+document.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!(term.contains(document.activeElement) || document.activeElement === document.body)) return;
+  if (key(e.key)) e.preventDefault();
+});
+term.addEventListener('click', e => {
+  if (!e.target.closest('button')) term.focus({ preventScroll: true });
+  const t = e.target;
+  const tab = t.closest('[data-tab]'); if (tab) { S.tab = tab.dataset.tab; S.ov = null; render(); return; }
+  const a = t.closest('[data-act]');
+  if (a) {
+    const v = a.dataset.act;
+    if (v === 'close' || v === 'no') { S.confirm ? (S.confirm = false, render()) : closeOv(); }
+    else if (v === 'apply') { S.confirm = true; render(); }
+    else if (v === 'yes') key('y');
+    else if (v === 'det') { S.details = !S.details; render(); }
+    else if (v === 'ff') ff();
+    else if (v === 'mkregion') key('Enter');
+    return;
+  }
+  const w = t.closest('[data-wiz]'); if (w) { S.wiz = +w.dataset.wiz; render(); return; }
+  const o = t.closest('[data-o]');
+  if (o && S.ov) { const i = +o.dataset.o, selKey = S.ov === 'plan' ? 'psel' : 'ovSel'; if (S[selKey] === i || S.ov === 'plan') ovChoose(i); else { S[selKey] = i; render(); } return; }
+  const kk = t.closest('[data-key]'); if (kk) { const m = { space: ' ', enter: 'Enter', esc: 'Escape', tab: 'Tab' }; key(m[kk.dataset.key] || kk.dataset.key); return; }
+  const r = t.closest('[data-i]');
+  if (r && !S.ov) { const i = +r.dataset.i; if (S.sel[S.tab] === i) act(S.items[i]); else { S.sel[S.tab] = i; render(); } }
+});
+['tui', 'cli', 'api'].forEach(m => document.getElementById('wt-' + m).addEventListener('click', () => { S.mode = m; render(); }));
+document.getElementById('wishes').addEventListener('click', e => {
+  const b = e.target.closest('.wish'); if (!b) return;
+  const k = b.dataset.k; S.mode = 'tui'; S.ov = null;
+  if (k === 'cli') S.mode = 'cli'; else if (k === 'plan') { S.tab = 'live'; S.ov = 'plan'; S.psel = 0; } else S.tab = k;
+  render();
+});
+render();
+})();
+</script>
+
+</body></html>
