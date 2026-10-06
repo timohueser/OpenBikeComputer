@@ -8,11 +8,11 @@ description = "Host-only GPX replay core: parse a recorded track and play it bac
 [dependencies]
 # The dependency-light semantic HAL the player + barometer implement (`Fix`, `LocationSource`,
 # `AltimeterSource`), so replay is reusable without importing the application/UI layer.
-obc-ports = { path = "../../firmware/obc-ports" }
+obc-ports = { workspace = true }
 
 [dev-dependencies]
-obc-elevation = { path = "../../firmware/obc-elevation" }
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-elevation = { workspace = true }
+obc-formats = { workspace = true }
 
 [[example]]
 name = "gpx_to_ride"

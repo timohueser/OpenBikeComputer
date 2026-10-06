@@ -12,19 +12,19 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # The engine under test. `std` is on because this device only ever runs on a host or in a browser.
-obc-link = { path = "../../firmware/obc-link", features = ["std"] }
+obc-link = { workspace = true, features = ["std"] }
 # The card under test: the real flat store over the deterministic sparse disk and its fault gates.
-obc-storage = { path = "../../firmware/obc-storage", features = ["std"] }
+obc-storage = { workspace = true, features = ["std"] }
 # The CRC the wire and the card both use, for the seeded payloads.
-obc-crc = { path = "../../firmware/obc-crc" }
+obc-crc = { workspace = true }
 
 # --- Web (wasm32) surface. The native library above is target-independent, so `cargo test` and
 # `clippy` exercise the whole adapter on the host exactly as `obc-web-assemble` does.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
+wasm-bindgen = { workspace = true }
 # Surface Rust panics in the browser console instead of an opaque trap. An adapter panic is a test
 # failure, so it has to be legible.
-console_error_panic_hook = "0.1"
+console_error_panic_hook = { workspace = true }
 
 # wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting. This package
 # ships to nobody — it is downloaded by Vitest and the dev harness only — so it carries no bundle

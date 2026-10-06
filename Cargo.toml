@@ -79,6 +79,18 @@ obc-route = { path = "firmware/obc-route" }
 obc-storage = { path = "firmware/obc-storage" }
 obc-vectors = { path = "host/obc-vectors" }
 obcm-testkit = { path = "host/obcm-testkit" }
+obc-app = { path = "firmware/obc-app" }
+obc-dem = { path = "host/obc-dem", default-features = false }
+obc-dfu = { path = "firmware/obc-dfu" }
+obc-file-source = { path = "host/obc-file-source" }
+obc-host-core = { path = "host/obc-host-core" }
+obc-places = { path = "host/obc-places" }
+obc-platform = { path = "firmware/obc-platform" }
+obc-replay = { path = "host/obc-replay" }
+obc-tree-walk = { path = "host/obc-tree-walk" }
+obcm-assemble = { path = "host/obcm-assemble", default-features = false }
+route-build = { path = "host/route-build" }
+route-engine = { path = "host/route-engine" }
 
 embedded-graphics = "0.8"
 heapless = "0.8"
@@ -88,6 +100,25 @@ pollster = "0.3"
 serde_json = "1"
 sha2 = { version = "0.11", default-features = false }
 zlib-rs = "0.6.7"
+clap = "4"
+console_error_panic_hook = "0.1"
+eframe = "0.29"
+flate2 = "1"
+getrandom = "0.4"
+image = { version = "0.25", default-features = false }
+js-sys = "0.3"
+osmpbfreader = "0.19"
+postcard = "1"
+rfd = "0.14"
+rusqlite = "0.38"
+schemars = "1"
+serde = "1"
+tempfile = "3"
+tokio = "1"
+unicode-normalization = "0.1"
+ureq = "3"
+wasm-bindgen = "0.2"
+zip = { version = "8", default-features = false }
 
 # Optimize CRC and storage crash-matrix loops in development and tests.
 [profile.dev.package.obc-crc]
