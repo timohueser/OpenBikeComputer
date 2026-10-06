@@ -947,6 +947,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let regions = Regions::new(vec![region]).unwrap();
+        without_models(&store, &env, &regions);
         let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
         let osm = listed.steps.iter().find(|step| step.name == "maps/osm").unwrap();
@@ -973,6 +974,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let regions = Regions::new(vec![region]).unwrap();
+        without_models(&store, &env, &regions);
         let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed
             .blocked

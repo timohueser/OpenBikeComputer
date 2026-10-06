@@ -13,6 +13,7 @@ use crate::regions::{geofabrik, parse_region, Bbox, Region, Regions};
 use crate::store::{hash_file, Store};
 
 mod delete;
+#[cfg(test)]
 pub(super) use delete::Deletion;
 
 #[derive(Subcommand)]
