@@ -1,2 +1,3 @@
 name = "Nordrhein-Westfalen"
 kind = "geofabrik"
+areas = ["europe/germany/nordrhein-westfalen"]

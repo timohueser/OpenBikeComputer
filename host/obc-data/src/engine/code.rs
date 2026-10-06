@@ -9,6 +9,8 @@ use std::sync::Arc;
 mod python;
 mod rust;
 
+pub(crate) use python::executable as python_executable;
+
 use super::Code;
 use crate::store::hash_file;
 

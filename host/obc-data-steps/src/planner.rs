@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{version, Product, Unplanned, Wanted};
-use obc_data::regions::{Area, Regions};
+use obc_data::regions::Regions;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
@@ -125,12 +125,12 @@ impl Product for Planner {
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let region =
             regions.get(&env.region).ok_or_else(|| Unplanned::Failed(format!("no region `{}`", env.region)))?;
-        if region.area != Area::Geofabrik {
+        let Some(source_area) = region.source_area() else {
             return Err(invalid(format!(
                 "region `{}`: the planner reads the OSM of one Geofabrik area only",
                 region.id
             )));
-        }
+        };
         if region.countries.is_empty() {
             return Err(invalid(format!("region `{}` names no `countries`, which the route catalog needs", region.id)));
         }
@@ -142,7 +142,7 @@ impl Product for Planner {
         let glo30 = version(env, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-        let area = vec![("area".to_string(), region.id.clone())];
+        let area = vec![("area".to_string(), source_area.to_string())];
         let extract = snapshot(env, store, EXTRACTS, area, &mut wanted)?;
         let assets = vec![
             snapshot(env, store, "protomaps-assets", Vec::new(), &mut wanted)?,
@@ -631,9 +631,9 @@ mod tests {
     fn regions() -> Regions {
         let region = |id: &str, text: &str| parse_region(id, &format!("name = \"{id}\"\n{text}")).unwrap();
         Regions::new(vec![
-            region(AREA, "kind = \"geofabrik\"\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n"),
-            region("no-countries", "kind = \"geofabrik\"\ntime_zone = \"Europe/Berlin\"\n"),
-            region("no-time-zone", "kind = \"geofabrik\"\ncountries = [\"DE\"]\n"),
+            region(AREA, "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n"),
+            region("no-countries", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ntime_zone = \"Europe/Berlin\"\n"),
+            region("no-time-zone", "kind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\n"),
             region("boxed", "kind = \"box\"\nbox = [7.79, 47.99, 7.82, 48.02]\ncountries = [\"DE\"]\n"),
         ])
         .unwrap()
@@ -662,6 +662,20 @@ mod tests {
     fn tiles(input: &Input) -> Vec<&str> {
         let Input::Snapshot { params, .. } = input else { panic!("not a snapshot") };
         params.iter().map(|(_, tile)| &tile["Copernicus_DSM_COG_10_".len()..][..11]).collect()
+    }
+
+    #[test]
+    fn a_saved_single_area_id_reads_the_selected_upstream_path() {
+        let temp = temp("planner-saved-source");
+        let store = store(&temp, &["2026-10-01"]);
+        let region = parse_region("ride/freiburg", "name = \"My ride\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n").unwrap();
+        let regions = Regions::new(vec![region]).unwrap();
+        let listed = Planner.steps(&root(), &env("ride/freiburg", &[]), &regions, &store).unwrap();
+        let osm = listed.steps.iter().find(|step| step.name == "planner/osm").unwrap();
+        let Input::Snapshot { params, .. } = &osm.inputs[0] else {
+            panic!("OSM snapshot");
+        };
+        assert_eq!(params, &[("area".into(), AREA.into())]);
     }
 
     #[test]

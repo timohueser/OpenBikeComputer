@@ -72,6 +72,32 @@ describe("static documents", () => {
         expect(urls).toEqual([PLANNER, release("a"), PLANNER, release("b")]);
     });
 
+    it("refreshes a fulfilled catalog and memoizes only the new complete release", async () => {
+        const bodies = { [PLANNER]: planner("a"), [release("a")]: EXAMPLE, [release("b")]: EXAMPLE };
+        globalThis.fetch = serve(bodies);
+        const host = await freshHost();
+        await host.catalog();
+        bodies[PLANNER] = planner("b");
+        await expect(host.catalog()).resolves.toMatchObject({ url: release("a") });
+        await expect(host.catalog({ refresh: true })).resolves.toEqual({ url: release("b"), body: EXAMPLE });
+        await host.catalog();
+        expect(urls).toEqual([PLANNER, release("a"), PLANNER, release("b")]);
+    });
+
+    it("does not let an older failed read evict the refreshed catalog", async () => {
+        let rejectOld!: (cause: Error) => void;
+        globalThis.fetch = (() => new Promise<Response>((_, reject) => { rejectOld = reject; })) as typeof fetch;
+        const host = await freshHost();
+        const old = host.catalog();
+        const refused = expect(old).rejects.toThrow(/unavailable/);
+        globalThis.fetch = serve({ [PLANNER]: planner("b"), [release("b")]: EXAMPLE });
+        const refreshed = await host.catalog({ refresh: true });
+        rejectOld(new Error("offline"));
+        await refused;
+        await expect(host.catalog()).resolves.toBe(refreshed);
+        expect(urls).toEqual([PLANNER, release("b")]);
+    });
+
     it("does not pin a failed request", async () => {
         let status = 503;
         globalThis.fetch = (async (input: RequestInfo | URL) => {

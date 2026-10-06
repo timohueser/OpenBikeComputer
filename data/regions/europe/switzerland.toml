@@ -1,2 +1,3 @@
 name = "Switzerland"
 kind = "geofabrik"
+areas = ["europe/switzerland"]

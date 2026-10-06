@@ -9,22 +9,35 @@
     let catalog = $state<{ client: CatalogClient; body: string } | null>(null);
     let error = $state<string | null>(null);
 
-    onMount(async () => {
+    let loading = $state(false);
+
+    async function loadCatalog(refresh = false) {
+        const { url, body } = await platform.catalog({ refresh });
+        return { client: CatalogClient.fromBody(body, url, { fetchImpl: platform.catalogFetch }), body };
+    }
+
+    async function load(refresh = false) {
+        loading = true;
         try {
-            const { url, body } = await platform.catalog();
-            catalog = { client: CatalogClient.fromBody(body, url, { fetchImpl: platform.catalogFetch }), body };
+            catalog = await loadCatalog(refresh);
+            error = null;
         } catch (cause) {
             error = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            loading = false;
         }
-    });
+    }
+
+    onMount(() => { void load(); });
 </script>
 
 {#if catalog}
-    <CoverageHome client={catalog.client} rootBody={catalog.body} {active} />
+    <CoverageHome client={catalog.client} rootBody={catalog.body} {active} refreshCatalog={() => loadCatalog(true)} />
 {:else if error}
     <p class="catalog-error small" role="alert">
         The published map catalog couldn't be read: {error}
     </p>
+    <button type="button" class="btn" disabled={loading} onclick={() => void load(true)}>{loading ? "Refreshing the map catalog…" : "Refresh map catalog"}</button>
 {:else}
     <p class="catalog-status small faint">Loading the map catalog…</p>
 {/if}

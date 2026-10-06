@@ -52,6 +52,18 @@ describe("desktop catalog command", () => {
         expect(calls.map((call) => call.cmd)).toEqual(["catalog"]);
     });
 
+    it("refreshes the native root without retaining the previous document", async () => {
+        let body = EXAMPLE;
+        reply = () => ({ url: "https://example.invalid/catalog.json", body });
+        const host = await freshHost();
+        await host.catalog();
+        body = "new root";
+        await expect(host.catalog()).resolves.toMatchObject({ body: EXAMPLE });
+        await expect(host.catalog({ refresh: true })).resolves.toMatchObject({ body: "new root" });
+        await host.catalog();
+        expect(calls.map((call) => call.cmd)).toEqual(["catalog", "catalog"]);
+    });
+
     it("retries a failed read", async () => {
         let fail = true;
         reply = () => {

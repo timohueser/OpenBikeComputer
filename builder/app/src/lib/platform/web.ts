@@ -19,26 +19,10 @@ function resolve(url: string): string {
     return new URL(url, document.baseURI).toString();
 }
 
-async function get(url: string): Promise<Response> {
-    const res = await fetch(resolve(url));
+async function get(url: string, refresh: boolean): Promise<Response> {
+    const res = await fetch(resolve(url), refresh ? { cache: "no-cache" } : undefined);
     if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
     return res;
-}
-
-/**
- * Static documents are immutable for the life of a page load, so each request is
- * made once. Only a *fulfilled* promise is kept: a failed fetch that pinned itself
- * would make the failure permanent until a reload.
- */
-function once<T>(load: () => Promise<T>): () => Promise<T> {
-    let inflight: Promise<T> | null = null;
-    return () => {
-        inflight ??= load().catch((e: unknown) => {
-            inflight = null;
-            throw e;
-        });
-        return inflight;
-    };
 }
 
 /**
@@ -47,15 +31,19 @@ function once<T>(load: () => Promise<T>): () => Promise<T> {
  */
 let rootInflight: Promise<{ url: string; body: string }> | null = null;
 
-function fetchCatalog(): Promise<{ url: string; body: string }> {
-    rootInflight ??= (async () => {
-        if (!CATALOG_URL) return releaseCatalog();
-        const url = resolve(CATALOG_URL);
-        return { url, body: await (await get(CATALOG_URL)).text() };
-    })().catch((e: unknown) => {
-        rootInflight = null;
-        throw e;
-    });
+function fetchCatalog({ refresh = false }: { refresh?: boolean } = {}): Promise<{ url: string; body: string }> {
+    if (refresh) rootInflight = null;
+    if (!rootInflight) {
+        const request = (async () => {
+            if (!CATALOG_URL) return releaseCatalog();
+            const url = resolve(CATALOG_URL);
+            return { url, body: await (await get(CATALOG_URL, refresh)).text() };
+        })().catch((e: unknown) => {
+            if (rootInflight === request) rootInflight = null;
+            throw e;
+        });
+        rootInflight = request;
+    }
     return rootInflight;
 }
 
@@ -70,8 +58,6 @@ async function releaseCatalog(): Promise<{ url: string; body: string }> {
     if (!res.ok) throw new Error(`${url}: ${res.status} ${res.statusText}`);
     return { url, body: await res.text() };
 }
-
-const catalogOnce = once(fetchCatalog);
 
 export const platform: Platform = {
     name: "web",
@@ -91,7 +77,7 @@ export const platform: Platform = {
     //
     usbViaWebUsb: true,
 
-    catalog: catalogOnce,
+    catalog: fetchCatalog,
     catalogFetch: globalThis.fetch,
     // A map is one `.obcm` again, so the web tier uses the browser's ordinary
     // download flow. This avoids Chromium's restricted directory picker and

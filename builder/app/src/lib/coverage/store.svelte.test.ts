@@ -390,3 +390,58 @@ describe("custom skin admission", () => {
         expect(reopened.customSkinRecords).toEqual(store.customSkinRecords);
     });
 });
+
+
+describe("catalog refresh", () => {
+    it("preserves every selection kind, radius and compatible custom styles without old catalog caches", () => {
+        let saved: string | null = null;
+        const storage = { getItem: () => saved, setItem: (_key: string, value: string) => { saved = value; } };
+        const client = CatalogClient.fromBody(canonicalCatalogBody, ROOT_URL, { fetchImpl: offline });
+        const store = new CoverageStore(client, canonicalCatalogBody, storage);
+        store.indices = indices();
+        withSwissList(store);
+        store.addRegion("europe/switzerland");
+        store.addBox(PUBLISHED_BOX);
+        const points = [{ lat: 47_200_000, lon: 7_400_000 }, { lat: 47_350_000, lon: 7_550_000 }];
+        store.addCorridor("Weekend GPX", points);
+        store.addLasso([...points, { lat: 47_200_000, lon: 7_550_000 }]);
+        store.setCorridorRadius(25_000);
+        store.saveCustomSkin(store.lightSkin, "My light", "default");
+        store.saveCustomSkin(store.darkSkin, "My dark", "dusk");
+        const root = JSON.parse(canonicalCatalogBody);
+        root.schema.sha256 = "9".repeat(64);
+        const body = JSON.stringify(root);
+        const refreshed = CatalogClient.fromBody(body, "https://maps.example.org/new/catalog.json", { fetchImpl: offline });
+        const next = store.refreshed(refreshed, body);
+        expect(next.client).toBe(refreshed);
+        expect(next.rootBody).toBe(body);
+        expect(next.selection).toEqual(store.selection);
+        expect(next.indices).toBeNull();
+        expect(next.regionCells.size).toBe(0);
+        expect(next.lightSkin).toEqual(store.lightSkin);
+        expect(next.darkSkin).toEqual(store.darkSkin);
+        expect(next.refreshNotice).toBeNull();
+        next.addBox(PUBLISHED_BOX);
+        expect(new Set(next.selection.parts.map((p) => p.id)).size).toBe(5);
+        expect(store.selection.parts).toHaveLength(4);
+    });
+
+    it("keeps removed regions as blocked parts and reports an incompatible selected style", () => {
+        const store = makeStore();
+        store.addRegion("europe/switzerland");
+        store.lightSkinId = "removed-style";
+        const root = JSON.parse(EXAMPLE_ROOT);
+        root.regions = root.regions.filter((r: { id: string }) => r.id !== "europe/switzerland" && !r.id.startsWith("europe/switzerland/"));
+        const body = JSON.stringify(root);
+        const client = CatalogClient.fromBody(body, ROOT_URL, { fetchImpl: offline });
+        const next = store.refreshed(client, body);
+        next.indices = indices();
+        expect(next.selection).toEqual(store.selection);
+        expect(next.regionErrors.get("europe/switzerland")).toContain("no longer in the map catalog");
+        expect(next.ledger?.isFinal).toBe(false);
+        expect(next.lightSkinId).toBe("default");
+        expect(next.refreshNotice).toContain("previous map style is unavailable");
+        next.removePart(next.selection.parts[0].id);
+        expect(next.selection.parts).toEqual([]);
+    });
+});
