@@ -153,6 +153,7 @@ impl Run {
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
+        crate::worker::check(root)?;
         let _using = store.using()?;
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
@@ -162,6 +163,7 @@ impl Run {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
         self.fetch(context, plan)?;
+        crate::worker::check(root)?;
 
         // A step whose peak is not known reserves the whole memory, so it runs alone.
         let cost = |peak: Option<u64>| limits.memory_bytes.map_or(0, |memory| peak.unwrap_or(memory));
@@ -187,6 +189,8 @@ impl Run {
             let (hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
             store.put_code(hash, files)?;
         }
+        crate::worker::check(root)?;
+        let checks = std::sync::Mutex::new(std::mem::take(&mut codes.context));
 
         let outdated = "the plan is outdated; plan again";
         let mut done: HashMap<&str, Receipt> = HashMap::new();
@@ -240,10 +244,11 @@ impl Run {
                 match prepared.and_then(|prepared| started.map(|()| prepared)) {
                     Ok((receipt, request)) => {
                         let sender = sender.clone();
+                        let checks = &checks;
                         scope.spawn(move || {
                             // The loop waits for every step that it started, also one that panics.
                             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                                build_step(store, root, step, receipt, request)
+                                build_step(store, root, step, receipt, request, checks)
                             }));
                             let _ = sender.send((step, cost, result.unwrap_or_else(|payload| Err(panicked(payload)))));
                         });
@@ -281,6 +286,7 @@ impl Run {
             return Err(format!("step `{}` reads a layer that the run did not build; plan again", step.name));
         }
         built.sort_by_key(|built| position[built.receipt.step.as_str()]);
+        crate::worker::check(root)?;
         Ok(built)
     }
 

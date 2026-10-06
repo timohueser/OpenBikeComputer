@@ -38,6 +38,36 @@ fn obc_data(temp: &Temp, args: &[&str]) -> Output {
 }
 
 #[test]
+fn a_private_worker_cannot_dispatch_cli_or_capture_callbacks_without_the_launcher() {
+    for args in [vec!["--help"], vec!["landmark-candidates", "--help"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_obc-data-worker"))
+            .args(args)
+            .env_remove(obc_data::worker::ROOT)
+            .env_remove(obc_data::worker::CODE)
+            .env_remove(obc_data::worker::EXE)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("start this worker through obc data"));
+    }
+    for binary in [env!("CARGO_BIN_EXE_obc-data"), env!("CARGO_BIN_EXE_obc-data-worker")] {
+        let temp = Temp::new(if binary.ends_with("worker") { "worker-json" } else { "launcher-json" });
+        let out = Command::new(binary)
+            .args(["status", "--json"])
+            .current_dir(&temp.0)
+            .env_remove(obc_data::worker::ROOT)
+            .env_remove(obc_data::worker::CODE)
+            .env_remove(obc_data::worker::EXE)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let response: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(response["error"]["code"], "failed");
+    }
+}
+
+#[test]
 fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
     let temp = Temp::new("blocked");
     let store = obc_data::store::Store::at(temp.0.join("store"));

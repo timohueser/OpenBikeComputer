@@ -459,6 +459,7 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   conservative union can rebuild a step when another producer enables a shared feature.
   Dev-only and unrelated packages add no records. The walk stops at the engine crate
   `obc-data`: its selected inputs enter the input digests.
+  `target` selects a Rust target instead of the native host and adds its triple to the identity.
 - A `.rs` file of a selected crate adds each file that it names in `include_str!`,
   `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs` file adds its own.
   The name is a string literal, normal or raw, relative to the file, or a `concat!` of string
@@ -480,8 +481,8 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   A no-sync override cannot retain an incompatible interpreter. Discovery does not download,
   install or sync. A missing interpreter
   fails with a request to prepare the runtime.
-- `python_packages` adds the same selected package closure under `python/packages/<group>`.
-  It does not select a host interpreter or install that group for the command.
+- `python_packages` adds the same locked package projection for a separately packaged group,
+  without selecting a host interpreter or preparing its environment.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
 of each object in byte order:
@@ -499,10 +500,28 @@ An input layer enters a key with its digest, not with its key. A rebuild that gi
 files gives the same digest, so the keys of the layers that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
-A Rust step runs the code of the running binary, but its code hash comes from the checkout.
-`obc data` runs with `cargo run` in that checkout. Code identity does not bind the running
-binary or detect a source change during a run. External prepared tools enter through their
-selected snapshot bytes.
+`obc data` builds its private producer worker with locked, offline Cargo. Cargo's JSON artifact
+record selects the executable. The launcher checks the compiled Rust closure before and after
+the build. Cargo tracks the checkout and code hashes that `option_env!` embeds in the worker.
+The launcher copies the executable to a temporary directory, and gives the child its checkout,
+code and executable hashes. The worker checks the compiled stamps and these hashes before CLI
+or capture selection dispatch. An unstamped private worker refuses to run.
+It derives the plan from its fresh product code. Its compiled closure includes the engine and
+uses the source content projection. A source refresh policy change does not require a restart.
+Credential descriptors remain in the compiled guard because product preflight reads them.
+An action in a long-lived worker rejects a persistent Rust source change with a restart message.
+
+The engine checks the whole declared step code before execution and after execution, before it
+accepts output objects or a receipt. These checks detect persistent concurrent edits. They do
+not run Cargo again while its lock and workspace or local manifests remain unchanged. The
+manifest paths come from the resolved metadata. Each check reads current declared source files
+and Python identities. The compiled worker is checked around complete plan and run operations.
+They do not detect an edit that is restored between checks or provide an immutable source snapshot.
+The launcher removes the copied worker after normal child exit, including on Windows. Abrupt
+launcher termination does not cancel the worker and can leave its copy in the operating
+system's temporary directory. The launch hashes guard accidental stale invocation; they are
+not an authentication protocol. External prepared
+tools enter through their selected snapshot bytes.
 
 The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name", "files"}`
 for a layer and `{"kind", "name", "version", "params", "files"}` for a snapshot, `params` and

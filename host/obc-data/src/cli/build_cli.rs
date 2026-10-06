@@ -342,6 +342,7 @@ pub(super) fn build_env(
         built.run = Some(id);
     }
     let Some(live) = live else {
+        crate::worker::check(root)?;
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
         for product in unblocked {
             let (name, optional) = (product.name(), optional(*product, &plan.layers));
@@ -571,6 +572,7 @@ fn planned(
 
     let Some(live) = live else {
         let all = plan::plan(store, root, &steps)?;
+        crate::worker::check(root)?;
         let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
@@ -617,6 +619,7 @@ fn planned(
         }
     }
     (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
+    crate::worker::check(root)?;
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
@@ -775,6 +778,7 @@ fn next(
     steps: &[Step],
     plan: &EnvPlan,
 ) -> Result<(Live, Vec<String>), Error> {
+    crate::worker::check(root)?;
     let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
     let stored = release::stored(store, root, steps, &taken)?;
     let missing: Vec<String> =
@@ -992,6 +996,7 @@ pub(super) fn product_steps(
     let mut failure = None;
     // A refusal belongs to the product that is listed now.
     env.refused.borrow_mut().clear();
+    crate::worker::check(root)?;
     let mut listed = product.steps(root, env, regions, store);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
     let mut fetched: Vec<Wanted> = Vec::new();
@@ -1013,6 +1018,7 @@ pub(super) fn product_steps(
             env.resolved.insert((wanted.source.clone(), crate::store::sorted(&wanted.params)), version);
         }
         fetched.extend(fetches.iter().cloned());
+        crate::worker::check(root)?;
         listed = product.steps(root, env, regions, store);
     }
     let steps = match listed {

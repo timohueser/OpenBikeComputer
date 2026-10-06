@@ -164,6 +164,7 @@ fn apply_live(
 
     let scratch = Scratch::new()?;
     let (built, switches, uploaded) = stage(root, store, http, (remote, bucket), products, plan, &scratch)?;
+    crate::worker::check(root)?;
     let mut switched = Vec::new();
     for switch in switches {
         let key = format!("{}/catalog.json", switch.prefix);
@@ -234,7 +235,9 @@ fn stage<'a>(
     let Applying { live, next } = applying.expect("a build of live gives what an apply changes");
     let switches = switches(root, products, store, &live, &next)?;
     let files = files(store, scratch, &next)?;
-    let uploaded = upload(bucket, &next.list(remote).map_err(r2_failed)?, &files)?;
+    let listed = next.list(remote).map_err(r2_failed)?;
+    crate::worker::check(root)?;
+    let uploaded = upload(bucket, &listed, &files)?;
     Ok((built, switches, uploaded))
 }
 
