@@ -11,14 +11,17 @@ while [ -h "$src" ]; do
   dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
   src="$(readlink "$src")"; [[ "$src" != /* ]] && src="$dir/$src"
 done
-root="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+root="$(cd -P "$(dirname "$src")/.." >/dev/null 2>&1 && pwd)"
 
 # Keep the global human entry point; select local tools inside an OBC worktree.
 checkout="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -n "$checkout" && -f "$checkout/tools/obc" && -f "$checkout/tools/justfile" && -d "$checkout/firmware/obc-app" ]]; then
-  root="$checkout/tools"
+if [[ -n "$checkout" && -f "$checkout/tools/obc" && -d "$checkout/firmware/obc-app" &&
+      ( -f "$checkout/justfile" || -f "$checkout/tools/justfile" ) ]]; then
+  root="$checkout"
 fi
-printf 'obc: checkout %s\n' "$(dirname "$root")" >&2
+justfile="$root/justfile"
+[[ -f "$justfile" ]] || justfile="$root/tools/justfile"
+printf 'obc: checkout %s\n' "$root" >&2
 
 if ! command -v just >/dev/null 2>&1; then
   echo "obc: 'just' is not installed — install it with:  cargo install just" >&2
@@ -29,11 +32,11 @@ fi
 # or `obc TASK --help` describes one task. These are wrapper flags, not just flags, so they go
 # straight to the listing script.
 case "${1:-}" in
-  --agent|--all) exec python3 "$root/tasks.py" --justfile "$root/justfile" "$1" ;;
-  help|-h|--help) exec python3 "$root/tasks.py" --justfile "$root/justfile" ${2:+--task "$2"} ;;
+  --agent|--all) exec python3 "$root/tools/tasks.py" --justfile "$justfile" "$1" ;;
+  help|-h|--help) exec python3 "$root/tools/tasks.py" --justfile "$justfile" ${2:+--task "$2"} ;;
 esac
 case "${2:-}" in
-  -h|--help) exec python3 "$root/tasks.py" --justfile "$root/justfile" --task "$1" ;;
+  -h|--help) exec python3 "$root/tools/tasks.py" --justfile "$justfile" --task "$1" ;;
 esac
 
-exec just --justfile "$root/justfile" --working-directory "$PWD" "$@"
+exec just --justfile "$justfile" --working-directory "$PWD" "$@"
