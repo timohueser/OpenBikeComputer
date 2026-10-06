@@ -1064,6 +1064,8 @@ pub struct Wiring<'r> {
     pub known_empty: Vec<KnownEmptyCell>,
     pub terrain: Option<TerrainLattice>,
     pub terrain_cells: Vec<TerrainCellBytes>,
+    pub landmarks: Vec<Vec<u8>>,
+    pub peaks: Vec<Vec<u8>>,
     /// Where the map is written. `None` keeps it in wasm memory, which is what a native caller
     /// wants and what the browser falls back to. With a sink the file is never resident and
     /// [`Outcome::bytes`] is `None`: its identity is reported to [`Hooks::map_sealed`].
@@ -1083,7 +1085,8 @@ pub fn assemble(
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
 ) -> Result<Outcome, AssembleFailure> {
-    let Wiring { cells, source_cells, reads, known_empty, terrain, terrain_cells, sink, scratch } = wiring;
+    let Wiring { cells, source_cells, reads, known_empty, terrain, terrain_cells, landmarks, peaks, sink, scratch } =
+        wiring;
     if cells.is_empty() && source_cells.is_empty() {
         return Err(AssembleFailure::new(
             ErrorCode::Input,
@@ -1250,11 +1253,17 @@ pub fn assemble(
             &memory_scratch
         }
     };
+    let landmark_sources: Vec<_> = landmarks.into_iter().map(MemorySource).collect();
+    let peak_sources: Vec<_> = peaks.into_iter().map(MemorySource).collect();
+    let articles = Articles {
+        landmarks: landmark_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+        peaks: peak_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+    };
     let summary = match assemble_full(
         inputs,
         known_empty,
         job,
-        Articles::default(),
+        articles,
         &schema,
         &map_styles,
         &options,

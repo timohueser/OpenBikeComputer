@@ -79,7 +79,7 @@ export function urlStr(o: Obj, key: string, where: string): string {
     return v;
 }
 
-/** A pinned URL whose filename embeds the exact digest before its extension. */
+/** A pinned URL names the exact digest as an object key or before its extension. */
 export function pinnedUrlStr(o: Obj, key: string, sha256: string, where: string): string {
     const value = urlStr(o, key, where);
     let url: URL;
@@ -91,8 +91,9 @@ export function pinnedUrlStr(o: Obj, key: string, sha256: string, where: string)
     if (url.search || url.hash) fail(`${where}: ${key} must not contain a query or fragment`);
     const pathname = url.pathname;
     const extension = pathname.lastIndexOf(".");
-    if (extension < 0 || !pathname.slice(0, extension).endsWith(`.${sha256}`)) {
-        fail(`${where}: ${key} must contain its sha256 immediately before the final extension`);
+    if (!pathname.endsWith(`/objects/${sha256}`) &&
+        (extension < 0 || !pathname.slice(0, extension).endsWith(`.${sha256}`))) {
+        fail(`${where}: ${key} must name its sha256 as an object key or before the final extension`);
     }
     return value;
 }

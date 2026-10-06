@@ -78,6 +78,9 @@ pub struct Catalog {
     /// re-bake would look like a schema change to every consumer that compares schemas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_terrain_revision: Option<u32>,
+    /// Sparse detached landmark and peak sections on the network grid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub articles: Option<ArtifactRef>,
 }
 
 /// §3.1's source declaration: what the cells derive from and what that obliges.
@@ -299,6 +302,9 @@ pub struct RegionEntry {
     /// pre-download projection *per file* rather than merely per set: a volume set's
     /// roles partition by band, so the `core` band's bytes are the core file's bytes.
     pub bytes_by_band: BTreeMap<String, u64>,
+    /// Selected detached article bytes, separate from map bands and terrain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub article_bytes: Option<u64>,
     /// Cells per band.
     pub cell_count: BTreeMap<String, u32>,
     /// Partial cells per band, including zeroes for fully covered bands.
@@ -581,4 +587,28 @@ pub struct LandmarkArtifactEntry {
     pub url: String,
     /// RFC 3339 UTC, recorded by the landmark stage.
     pub built_at: String,
+}
+
+/// A digest-pinned object or satellite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactRef {
+    pub bytes: u64,
+    pub sha256: String,
+    pub url: String,
+}
+
+/// Detached article sections. An absent cell or collection has no content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArticleIndexDocument {
+    pub schema_version: u32,
+    pub cells: Vec<ArticleCellEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArticleCellEntry {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landmarks: Option<ArtifactRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peaks: Option<ArtifactRef>,
 }

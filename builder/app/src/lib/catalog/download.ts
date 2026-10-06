@@ -5,20 +5,20 @@
 // not persisted or resumed; that belongs in a host-level content cache.
 
 import { fetchVerified } from "../download";
+import { selectedArticles, type ArticleIndexDocument, type ArtifactPin } from "./articles";
 import type { Catalog } from "./manifest";
 import { knownEmptyAt, type CellEntry, type CellIndexDocument, type TerrainCellEntry, type TerrainIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
 
 export interface CellDownloadItem {
-    /** The band this cell belongs to, or `null` for a **terrain** cell — which belongs
-     *  to no band by construction, and is what tells the assembler which door it goes
-     *  in. */
+    /** Map band, or null for resident terrain and article artifacts. */
     band: string | null;
-    cell: CellEntry | TerrainCellEntry;
+    cell: CellEntry | TerrainCellEntry | (ArtifactPin & { id: string });
+    article?: "landmarks" | "peaks";
 }
 
 export interface CellDownloadPlan {
-    /** In schema band order, then canonical cell id, then the terrain squares.
+    /** In schema band order, then canonical cell id, then terrain and article objects.
      *  The plan is the ordering authority; completion order is whatever the
      *  network does. */
     items: CellDownloadItem[];
@@ -84,6 +84,7 @@ export function planCells(
     catalog: Catalog,
     indices: ReadonlyMap<string, CellIndexDocument>,
     terrain?: TerrainIndexDocument | null,
+    articles: ArticleIndexDocument | null = null,
 ): CellDownloadPlan {
     const items: CellDownloadItem[] = [];
     const knownEmpty: { band: string; id: string }[] = [];
@@ -112,6 +113,11 @@ export function planCells(
             items.push({ band: null, cell });
             terrainBytes += cell.bytes;
         }
+    }
+    if (catalog.articles && !articles) throw new Error("The article index has not been verified.");
+    for (const { kind, id, pin } of selectedArticles(resolution.cellsByBand, catalog, articles)) {
+        items.push({ band: null, cell: { id, ...pin }, article: kind });
+        totalBytes += pin.bytes;
     }
     return { items, knownEmpty, totalBytes: totalBytes + terrainBytes, terrainBytes };
 }

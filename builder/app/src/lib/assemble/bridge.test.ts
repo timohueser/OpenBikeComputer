@@ -38,6 +38,7 @@ function assembleCells(
         Parameters<typeof assemblePairedCells>[8]?,
         Parameters<typeof assemblePairedCells>[9]?,
         Parameters<typeof assemblePairedCells>[10]?,
+        Parameters<typeof assemblePairedCells>[11]?,
     ]
 ) {
     return assemblePairedCells(cells, schemaJson, skinJson, darkSkin, options, ...rest);
@@ -161,6 +162,28 @@ beforeAll(async () => {
 });
 
 describe("assembleCells", () => {
+    it("passes detached peaks through the wasm boundary without losing content", async () => {
+        const input = cells();
+        const peaks: Uint8Array[] = [];
+        for (const cell of input) {
+            const view = new DataView(cell.bytes.buffer, cell.bytes.byteOffset, cell.bytes.byteLength);
+            const start = view.getUint32(57, true) * 16;
+            if (start) {
+                const length = view.getUint32(start + 16, true);
+                peaks.push(cell.bytes.slice(start, start + length));
+                cell.bytes.fill(0, 57, 65);
+            }
+        }
+        expect(peaks.length).toBeGreaterThan(0);
+        const out = await assembleCells(input, sidecar, skin, OPTIONS, undefined, [], terrain(), undefined,
+            undefined, undefined, { landmarks: [], peaks });
+        try {
+            expectSameBytes(out.take(), expectedMap("map"), "detached peak bridge");
+        } finally {
+            out.release();
+        }
+    });
+
     it("reproduces the native CLI's bytes", async () => {
         const result = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], terrain());
         expect(result.resident).toBe(true);

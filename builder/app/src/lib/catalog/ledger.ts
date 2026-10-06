@@ -6,6 +6,7 @@
 // the only size question left is whether it fits the rider's card — which the device
 // answers when the bytes arrive, not the catalog beforehand.
 
+import { selectedArticles, type ArticleIndexDocument } from "./articles";
 import type { BandRole, Catalog, ReferenceEntry, RegionEntry } from "./manifest";
 import type { CellIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
@@ -71,6 +72,8 @@ export interface TerrainLedger {
 }
 
 export interface Ledger {
+    /** Selected detached content; resident during assembly. */
+    articleBytes?: number;
     bands: BandLedger[];
     /** Everything the download costs: the sum of every selected cell's bytes,
      *  across every band **and the raster**. This is the number the summary card
@@ -146,6 +149,7 @@ export function ledgerFor(
     resolution: SelectionResolution,
     catalog: Catalog,
     indices: ReadonlyMap<string, CellIndexDocument>,
+    articles: ArticleIndexDocument | null = null,
 ): Ledger {
     const bands: BandLedger[] = catalog.schema.bands.map((band) => {
         const index = indices.get(band.id);
@@ -180,16 +184,20 @@ export function ledgerFor(
               references: catalog.terrain.references,
           }
         : null;
+    const articleBytes = selectedArticles(resolution.cellsByBand, catalog, articles)
+        .reduce((sum, item) => sum + item.pin.bytes, 0);
     return {
         bands,
         terrain,
-        totalBytes: bands.reduce((sum, b) => sum + b.bytes, 0) + (terrain?.bytes ?? 0),
+        articleBytes,
+        totalBytes: bands.reduce((sum, b) => sum + b.bytes, 0) + (terrain?.bytes ?? 0) + articleBytes,
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: coverageReport(resolution.missingByBand, bands),
         unresolvedBands: resolution.unresolvedBands,
         unresolvedParts: resolution.unresolvedParts,
-        isFinal: resolution.unresolvedBands.length === 0 && resolution.unresolvedParts.length === 0,
+        isFinal: resolution.unresolvedBands.length === 0 && resolution.unresolvedParts.length === 0 &&
+            (!catalog.articles || articles !== null),
     };
 }
 
@@ -235,7 +243,8 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
     return {
         bands,
         terrain,
-        totalBytes: entry.bytes + (terrain?.bytes ?? 0),
+        articleBytes: entry.article_bytes,
+        totalBytes: entry.bytes + (terrain?.bytes ?? 0) + entry.article_bytes,
         cellCount: bands.reduce((sum, b) => sum + b.cellCount, 0),
         core,
         coverage: coverageReport(new Map(), bands, entry.partial_cell_count_by_band),
