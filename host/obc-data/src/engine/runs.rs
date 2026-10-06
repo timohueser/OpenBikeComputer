@@ -176,6 +176,62 @@ impl Run {
         self.file.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.id))
     }
 
+    /// Flush the acknowledgement that a commit intent depends on.
+    pub fn sync(&self) -> Result<(), String> {
+        self.file.sync_all().map_err(|e| format!("run {}: {e}", self.id))
+    }
+
+    /// Transfer an unfinished operation to the final publication owner.
+    pub fn attach(store: &Store, id: &str, prefix: &[Event]) -> Result<Self, String> {
+        check_id(id)?;
+        if !matches!(prefix.first(), Some(Event::Started { .. }))
+            || prefix.iter().any(|event| matches!(event, Event::Finished { .. } | Event::Published { .. }))
+        {
+            return Err("commit journal is not an unfinished preparation".into());
+        }
+        let lock = store.try_lock(&format!("run-{id}"))?.ok_or("the originating run still has an owner")?;
+        let path = store.run(id);
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        if path.exists() {
+            let existing = events(store, id)?;
+            if !existing.starts_with(prefix) || existing.iter().any(|event| matches!(event, Event::Finished { .. })) {
+                return Err("commit journal differs from the originating run".into());
+            }
+        }
+        let file = OpenOptions::new().append(true).create(true).open(path).map_err(|e| e.to_string())?;
+        let elapsed = match prefix.first() {
+            Some(Event::Started { at, .. }) => {
+                date::seconds(at).map(|at| Duration::from_secs(date::now().saturating_sub(at)))
+            }
+            _ => None,
+        };
+        let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
+        let mut run = Self { id: id.into(), file, start, _lock: lock };
+        if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
+            for event in prefix {
+                run.record(event)?;
+            }
+        }
+        run.sync()?;
+        Ok(run)
+    }
+
+    /// Copy acknowledged owner events back to the initiating machine.
+    pub fn mirror(store: &Store, id: &str, journal: &[Event]) -> Result<(), String> {
+        check_id(id)?;
+        let _lock = store.try_lock(&format!("run-{id}"))?.ok_or("the local run still has an owner")?;
+        let local = events(store, id)?;
+        if !journal.starts_with(&local) {
+            return Err("owner journal differs from the originating operation".into());
+        }
+        let mut file = OpenOptions::new().append(true).open(store.run(id)).map_err(|e| e.to_string())?;
+        for event in &journal[local.len()..] {
+            serde_json::to_writer(&mut file, event).map_err(|e| e.to_string())?;
+            file.write_all(b"\n").map_err(|e| e.to_string())?;
+        }
+        file.sync_all().map_err(|e| e.to_string())
+    }
+
     /// Fetch the fetches of `plan` one after another, then build its builds and reuse the layers
     /// that they read. After a fetch or a step fails, no other step starts; the steps that run
     /// finish. A later run reuses every layer that this one built.
@@ -383,7 +439,8 @@ impl Run {
 
     pub fn finish(mut self, error: Option<&str>) -> Result<(), String> {
         let wall_ms = self.start.elapsed().as_millis() as u64;
-        self.record(&Event::Finished { ok: error.is_none(), error: error.map(str::to_string), wall_ms })
+        self.record(&Event::Finished { ok: error.is_none(), error: error.map(str::to_string), wall_ms })?;
+        self.sync()
     }
 }
 

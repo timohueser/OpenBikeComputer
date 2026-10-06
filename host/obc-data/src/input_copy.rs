@@ -457,6 +457,7 @@ mod tests {
                 prefix: "test".into(),
                 release: Some((release.id(), release)),
                 applied: None,
+                observed: None,
                 document: None,
             }],
             ..Live::default()

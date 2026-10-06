@@ -77,16 +77,40 @@ impl Remote {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Live {
     /// One per product, in the order of the products.
     pub products: Vec<LiveProduct>,
     /// The record that R2 holds of each snapshot that a live release reads, by source, version and input digest;
     /// `None` for a source with `r2_copy` whose record R2 lacks.
+    #[serde(with = "records")]
     pub inputs: BTreeMap<Key, Option<Record>>,
 }
 
-#[derive(Debug)]
+mod records {
+    use super::*;
+
+    pub fn serialize<S: serde::Serializer>(
+        value: &BTreeMap<Key, Option<Record>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<Key, Option<Record>>, D::Error> {
+        let rows = Vec::<(Key, Option<Record>)>::deserialize(deserializer)?;
+        let count = rows.len();
+        let values: BTreeMap<_, _> = rows.into_iter().collect();
+        if values.len() != count {
+            return Err(serde::de::Error::custom("duplicate input-copy key"));
+        }
+        Ok(values)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LiveProduct {
     pub product: String,
     pub prefix: String,
@@ -95,6 +119,8 @@ pub struct LiveProduct {
     pub release: Option<(String, Release)>,
     /// `applied` of the pointer: the time of the switch to its release, which an apply writes.
     pub applied: Option<String>,
+    /// SHA-256 of the exact observed pointer bytes, or None for a successful absent read.
+    pub observed: Option<String>,
     /// The actual client document, without the publication id and time.
     pub document: Option<serde_json::Map<String, serde_json::Value>>,
 }
@@ -103,20 +129,33 @@ impl Live {
     /// Read the pointer of each product, its release manifest, and the records of the input
     /// copies of `sources` that the releases read. The store keeps each manifest that it reads.
     pub fn read(remote: &Remote, products: &[&dyn Product], sources: &[Source], store: &Store) -> Result<Live, String> {
+        let names: Vec<_> = products.iter().map(|product| (product.name(), product.prefix())).collect();
+        Self::read_products(remote, &names, sources, store)
+    }
+
+    /// Publication reads do not link producer implementations.
+    pub fn read_products(
+        remote: &Remote,
+        products: &[(&str, &str)],
+        sources: &[Source],
+        store: &Store,
+    ) -> Result<Live, String> {
         let mut live = Live::default();
-        for product in products {
-            let prefix = product.prefix();
-            let (release, applied, document) = match pointer(remote, prefix)? {
+        for &(name, prefix) in products {
+            let bytes = remote.get(&format!("{prefix}/catalog.json"))?;
+            let observed = bytes.as_deref().map(sha256_hex);
+            let (release, applied, document) = match pointer(bytes.as_deref(), prefix)? {
                 Some((id, applied, document)) => {
-                    (Some((id.clone(), manifest(remote, store, product.name(), prefix, &id)?)), applied, Some(document))
+                    (Some((id.clone(), manifest(remote, store, name, prefix, &id)?)), applied, Some(document))
                 }
                 None => (None, None, None),
             };
             live.products.push(LiveProduct {
-                product: product.name().into(),
+                product: name.into(),
                 prefix: prefix.into(),
                 release,
                 applied,
+                observed,
                 document,
             });
         }
@@ -364,9 +403,9 @@ pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
 /// The release that the pointer of `prefix` names, and its `applied`.
 type ReadPointer = (String, Option<String>, serde_json::Map<String, serde_json::Value>);
 
-fn pointer(remote: &Remote, prefix: &str) -> Result<Option<ReadPointer>, String> {
+fn pointer(bytes: Option<&[u8]>, prefix: &str) -> Result<Option<ReadPointer>, String> {
     let key = format!("{prefix}/catalog.json");
-    let Some(bytes) = remote.get(&key)? else { return Ok(None) };
+    let Some(bytes) = bytes else { return Ok(None) };
     let pointer: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
     match pointer.get("release") {
         None => Ok(None),
@@ -569,6 +608,7 @@ pub(crate) mod tests {
                 prefix: "test-catalog".into(),
                 release: Some((release.id(), release)),
                 applied: None,
+                observed: None,
                 document: None,
             });
             Live { products: products.collect(), ..Live::default() }

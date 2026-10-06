@@ -523,6 +523,7 @@ mod tests {
             prefix: "test-catalog".into(),
             release,
             applied: None,
+            observed: None,
             document: None,
         };
         let mut roots = Roots::default();
