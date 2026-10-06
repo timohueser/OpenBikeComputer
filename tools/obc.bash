@@ -120,7 +120,7 @@ _obc() {
     test)
       _obc_reply < <(compgen -W "-p fixtures full --release --" -- "$cur") ;;
     clean)
-      _obc_reply < <(compgen -W "--apply --days --base --include-builds" -- "$cur") ;;
+      _obc_reply < <(compgen -W "--apply --days" -- "$cur") ;;
     fixtures)
       if (( idx == 0 )); then
         _obc_reply < <(compgen -W "list show sync verify prune pack publish" -- "$cur")

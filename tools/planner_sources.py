@@ -69,7 +69,7 @@ def search_dump(osm, output, cache, country):
     archive = download(COUNTRY_DATA_URL, cache / 'nominatim-country-data.whl', COUNTRY_DATA_SHA)
     with tempfile.TemporaryDirectory(prefix='.country-data-', dir=cache) as directory:
         data = Path(directory)
-        maps.run('uv', 'run', '--no-project', '--with', 'PyYAML==6.0.2', 'python',
+        maps.run('uv', 'run', '--locked', '--group', 'planner-search', 'python',
                  maps.ROOT / 'host/obc-search-bake/policy.py', archive, data, cwd=maps.ROOT)
         maps.run('cargo', 'build', '--locked', '--release', '-p', 'obc-search-bake', '--bin', 'search-bake', cwd=maps.ROOT)
         maps.run(maps.ROOT / 'target/release/search-bake', osm, '--output', output,

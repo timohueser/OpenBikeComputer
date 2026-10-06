@@ -5,10 +5,11 @@ import gzip
 import json
 import math
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 
-from . import planner_mvt as mvt
+from . import planner_mvt as mvt, step_request
 
 KINDS = Path(__file__).resolve().parents[1] / "builder/app/src/lib/planner/poi-kinds.json"
 # The only zoom: a route corridor reads few tiles, and rider places keep each tile small.
@@ -93,6 +94,13 @@ def derive(database, destination):
     return {'places': count, 'tiles': len(tiles)}
 
 
+def step():
+    """The `obc data` step `planner/places`: `places.pmtiles` from the database of `planner/search/pois`."""
+    request = step_request.read()
+    (database,) = request["layers"]["planner/search/pois"].values()
+    step_request.metrics(request, derive(Path(database), Path(request["output"]) / "places.pmtiles"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path)
@@ -102,4 +110,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

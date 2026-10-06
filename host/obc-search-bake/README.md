@@ -11,7 +11,7 @@ Export the static country data from the pinned archive in
 [`tools/planner_sources.py`](../../tools/planner_sources.py):
 
 ```sh
-uv run --with PyYAML==6.0.2 python host/obc-search-bake/policy.py COUNTRY_DATA.whl /tmp/country-data
+uv run --locked --group planner-search python host/obc-search-bake/policy.py COUNTRY_DATA.whl /tmp/country-data
 cargo build --locked --release -p obc-search-bake
 target/release/search-bake REGION.osm.pbf --output search.jsonl.zst --default-country ch --policy /tmp/country-data/policy.json --country-grid /tmp/country-data/country_osm_grid.sql.gz
 ```
@@ -33,7 +33,7 @@ The planner also searches categories that the device does not display.
 Compare addresses against an existing reference export and its `inputs.json`:
 
 ```sh
-uv run --with-requirements apps/planner-search/requirements-build.txt python apps/planner-search/address-parity.py search.jsonl.zst REFERENCE.jsonl.zst --reference-inputs INPUTS.json --countries=de,ch --time-zone=Europe/Berlin --output /tmp/address-comparison
+uv run --locked --group planner-search python apps/planner-search/address-parity.py search.jsonl.zst REFERENCE.jsonl.zst --reference-inputs INPUTS.json --countries=de,ch --time-zone=Europe/Berlin --output /tmp/address-comparison
 ```
 
 The comparison verifies source hashes and checks address fields, coordinates,

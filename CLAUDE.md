@@ -44,8 +44,8 @@ and test them from their own directories. The nearest README has the surface's s
 - `obc suites check` after changing test sources, suite commands, workflows or test policy.
   [docs/testing.md](docs/testing.md) explains the plan documents.
 - `cargo fmt --all` for the workspace, and `cargo fmt` in each standalone Cargo root.
-- Report the exact checks you ran and the ones you left out. `obc clean` removes stale state;
-  read its dry run before `--apply`.
+- Report exact checks run and left out. `obc clean` removes old test scratch; read its dry run
+  before `--apply`.
 
 ## How reviews work
 
@@ -79,7 +79,7 @@ record. It does not appear in a contract, a guide, a README, a guard or a commen
 
 A rule is a check or it is one sentence in this file. A number in a gate says where it came from:
 measured on a named build, or chosen by the owner for a stated reason. `obc governs PATH` lists
-every guard, suite, contract, coverage component and budget that reaches a file. `obc prose
+every guard, suite, contract and budget that reaches a file. `obc prose
 --check` budgets guide pages, READMEs, guard docstrings and this file; an over-budget file must
 not grow.
 

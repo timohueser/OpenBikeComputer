@@ -3569,6 +3569,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_scheduler::TEST_PERMIT as PERMIT;
     use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
     use crate::harness::support::ride_summary;
     use crate::settings::SETTINGS_RETRY_BACKOFF_MS;
@@ -5826,10 +5827,10 @@ mod tests {
     #[test]
     fn modal_cards_are_exempt_from_idle_return() {
         for card in [
-            Screen::Passkey(PasskeyScreen::new(123_456)),
-            Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
+            Screen::Passkey(PasskeyScreen::new(PERMIT, 123_456)),
+            Screen::RouteReceived(RouteReceivedScreen::new(PERMIT, 0, 0, None)),
             Screen::NavPlanning(NavPlanningScreen::new("Route")),
-            Screen::Warning(WarningScreen::new(Alert::NoGps.into())),
+            Screen::Warning(WarningScreen::new(PERMIT, Alert::NoGps.into())),
         ] {
             let mut app = App::new_idle(AppState::new(0, 0, 1.0));
             app.settings.idle_return = IdleReturn::S15;
@@ -5960,7 +5961,7 @@ mod tests {
     fn remote_dfu_check_defers_behind_the_passkey_card() {
         use crate::activity::DfuAction;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(123_456)));
+        let _ = app.ui.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(PERMIT, 123_456)));
         assert!(!app.open_remote_dfu_check(), "deferred while the pairing code shows");
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuCheck(_))), "nothing pushed");
         assert_eq!(drain_dfu(&mut app), None, "nothing posted");
@@ -5990,7 +5991,7 @@ mod tests {
             s
         };
         let report = crate::dfu::DfuScanReport { installed: mk("v1"), staged: mk("v2"), first_install: false };
-        let _ = app.ui.stack.push(Screen::DfuConfirm(crate::screen::DfuConfirmScreen::new(report)));
+        let _ = app.ui.stack.push(Screen::DfuConfirm(crate::screen::DfuConfirmScreen::new(PERMIT, report)));
         assert!(!app.open_remote_dfu_check(), "a confirm on the stack ⇒ deferred, never yanked");
         assert_eq!(drain_dfu(&mut app), None);
 
@@ -6974,7 +6975,7 @@ mod tests {
             }),
             ("received mid-ride", |app| {
                 app.test_start_ride();
-                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::received(1, 0)));
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::received(PERMIT, 1, 0)));
                 app.apply_gesture(Gesture::Press);
             }),
             ("phone replace of the active route", |app| {

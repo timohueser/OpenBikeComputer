@@ -116,8 +116,6 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
-      - name: Host-pushed cards are built only by the card scheduler
-        run: python3 tools/check_card_scheduler.py
       - name: Every fetched host is a declared data source
         run: python3 tools/check_data_sources.py
       - name: Prose budgets, published pages and links
@@ -135,23 +133,8 @@ jobs:
       - name: Repository tool unit tests
         id: python-repository-tools
         run: |
-          mkdir -p .artifacts/coverage/repository-tools
           rm -rf .artifacts/python/repository-tools
-          python3 -m coverage run --data-file=.artifacts/coverage/repository-tools/.coverage --source=tools -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
-      - name: repository-tools coverage
-        if: ${{ !cancelled() && (steps.python-repository-tools.outcome == 'success' || steps.python-repository-tools.outcome == 'failure') }}
-        run: |
-          python3 -m coverage lcov --data-file=.artifacts/coverage/repository-tools/.coverage -o .artifacts/coverage/repository-tools/lcov.info
-          python3 tools/coverage_report.py --scope python --lcov .artifacts/coverage/repository-tools/lcov.info --output .artifacts/coverage/repository-tools --tool coverage.py=7.16.1
-          cat .artifacts/coverage/repository-tools/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload repository-tools coverage
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-repository-tools-${{ github.run_attempt }}
-          path: .artifacts/coverage/repository-tools/
-          include-hidden-files: true
-          if-no-files-found: error
+          python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools
       - name: Upload repository Python test results
         if: ${{ !cancelled() && (steps.python-repository-tools.outcome == 'success' || steps.python-repository-tools.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -225,8 +208,6 @@ jobs:
         run: cargo check -p obc-ios-host --target aarch64-apple-ios --locked
 
   test:
-    env:
-      CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
     runs-on: ubuntu-latest
@@ -253,11 +234,9 @@ jobs:
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
-      - name: Install native LLVM coverage tools
-        run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.143,cargo-llvm-cov@0.9.1
+          tool: cargo-nextest@0.9.143
       # The planner Python steps run under uv: obc-data-steps runs one in its tests.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -268,18 +247,12 @@ jobs:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
       # Each section is one step so it keeps its own step name and result artifact; the file
-      # is the same one `obc check test` runs. Only the two nextest steps are instrumented:
-      # their lcov is what the coverage ratchet reads, and the bench gate's release binary
-      # would otherwise merge its profile data into that evidence.
+      # is the same one `obc check test` runs.
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
-        env:
-          OBC_COVERAGE: "1"
         run: bash tools/ci/test.sh nextest-fast
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
-        env:
-          OBC_COVERAGE: "1"
         run: bash tools/ci/test.sh nextest-fixtures
       - name: cargo test --doc (workspace, all features)
         run: bash tools/ci/test.sh doctests
@@ -291,7 +264,6 @@ jobs:
           cache: pip
           cache-dependency-path: |
             tools/requirements-test.txt
-            tools/requirements-coverage.txt
             tools/requirements-bake.txt
             pyproject.toml
       - name: Install Python test reporter
@@ -302,9 +274,8 @@ jobs:
       - name: firmware resource/dependency tool unit tests
         id: python-firmware-tools
         run: |
-          mkdir -p .artifacts/coverage/firmware-tools
           rm -rf .artifacts/python/firmware-tools
-          python3 -m coverage run --data-file=.artifacts/coverage/firmware-tools/.coverage --source=firmware/tools -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
+          python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
       - name: Install the bake tool dependencies (rasterio, pyproj)
         run: pip install -r tools/requirements-bake.txt
       - name: reference archive ingest unit tests
@@ -323,20 +294,6 @@ jobs:
         run: python3 firmware/tools/check_dependencies.py
       - name: obc-bench --check (render + read-counter golden gate)
         run: bash tools/ci/test.sh bench-golden
-      - name: firmware-tools coverage
-        if: ${{ !cancelled() && (steps.python-firmware-tools.outcome == 'success' || steps.python-firmware-tools.outcome == 'failure') }}
-        run: |
-          python3 -m coverage lcov --data-file=.artifacts/coverage/firmware-tools/.coverage -o .artifacts/coverage/firmware-tools/lcov.info
-          python3 tools/coverage_report.py --scope python --lcov .artifacts/coverage/firmware-tools/lcov.info --output .artifacts/coverage/firmware-tools --tool coverage.py=7.16.1
-          cat .artifacts/coverage/firmware-tools/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload firmware-tools coverage
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-firmware-tools-${{ github.run_attempt }}
-          path: .artifacts/coverage/firmware-tools/
-          include-hidden-files: true
-          if-no-files-found: error
       - name: Upload firmware-tools Python test results
         if: ${{ !cancelled() && (steps.python-firmware-tools.outcome == 'success' || steps.python-firmware-tools.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -344,30 +301,14 @@ jobs:
           name: python-firmware-tools-${{ github.run_attempt }}
           path: .artifacts/python/firmware-tools/*.xml
           if-no-files-found: error
-      - name: Rust component coverage
-        if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
-        run: |
-          mkdir -p .artifacts/coverage/rust
-          cargo llvm-cov report --lcov --output-path .artifacts/coverage/rust/lcov.info
-          python3 tools/coverage_report.py --scope rust --lcov .artifacts/coverage/rust/lcov.info --output .artifacts/coverage/rust --tool cargo-llvm-cov=0.9.1 --tool "$(rustc --version)" --tool tree-sitter=0.25.2 --tool tree-sitter-rust=0.24.2
-      - name: Publish Rust coverage summary
-        if: ${{ !cancelled() }}
-        run: cat .artifacts/coverage/rust/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload Rust coverage and remaining native logs
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-rust-${{ github.run_attempt }}
-          path: |
-            .artifacts/coverage/rust/
-            .artifacts/rust/
-          if-no-files-found: error
       - name: Upload Rust test results
         if: ${{ !cancelled() && (steps.nextest.outcome == 'success' || steps.nextest.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-test-${{ github.run_attempt }}
-          path: target/nextest/ci/junit.xml
+          path: |
+            target/nextest/ci/junit.xml
+            .artifacts/rust/
           if-no-files-found: error
       - name: Upload Rust fixture test results
         if: ${{ !cancelled() && (steps.nextest-fixtures.outcome == 'success' || steps.nextest-fixtures.outcome == 'failure') }}
@@ -468,19 +409,7 @@ jobs:
         run: |
           mkdir -p .artifacts/python
           rm -f .artifacts/python/builder.xml
-          PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml --cov=builder/server --cov-report=lcov:.artifacts/coverage/builder/lcov.info --cov-report=term
-      - name: Builder Python coverage
-        if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
-        run: |
-          python3 tools/coverage_report.py --scope python --lcov .artifacts/coverage/builder/lcov.info --output .artifacts/coverage/builder --tool coverage.py=7.16.1 --tool pytest-cov=7.1.0
-          cat .artifacts/coverage/builder/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload builder Python coverage
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-builder-${{ github.run_attempt }}
-          path: .artifacts/coverage/builder/
-          if-no-files-found: error
+          PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml
       - name: Upload builder Python test results
         if: ${{ !cancelled() && (steps.python-builder.outcome == 'success' || steps.python-builder.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -890,30 +819,24 @@ jobs:
         id: swift-tests
         working-directory: companion-ios/Packages/OBCKit
         run: |
-          rm -rf "$RUNNER_TEMP/ios-unit.xcresult" "$GITHUB_WORKSPACE/.artifacts/coverage/ios"
-          mkdir -p "$GITHUB_WORKSPACE/.artifacts/coverage/ios"
-          xcodebuild -version > "$GITHUB_WORKSPACE/.artifacts/coverage/ios/toolchain.txt"
-          swift --version >> "$GITHUB_WORKSPACE/.artifacts/coverage/ios/toolchain.txt"
-          xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO -enableCodeCoverage YES -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" CODE_SIGNING_ALLOWED=NO
+          rm -rf "$RUNNER_TEMP/ios-unit.xcresult" "$GITHUB_WORKSPACE/.artifacts/ios-unit"
+          mkdir -p "$GITHUB_WORKSPACE/.artifacts/ios-unit"
+          xcodebuild -version > "$GITHUB_WORKSPACE/.artifacts/ios-unit/toolchain.txt"
+          swift --version >> "$GITHUB_WORKSPACE/.artifacts/ios-unit/toolchain.txt"
+          xcodebuild test -scheme OBCKit-Package -destination 'platform=macOS' -parallel-testing-enabled NO -enableCodeCoverage NO -resultBundlePath "$RUNNER_TEMP/ios-unit.xcresult" CODE_SIGNING_ALLOWED=NO
       - name: Export native XCTest and Swift Testing results
         if: ${{ !cancelled() && (steps.swift-tests.outcome == 'success' || steps.swift-tests.outcome == 'failure') }}
         run: |
-          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/ios-unit.xcresult" > .artifacts/coverage/ios/test-summary.json
-          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/ios-unit.xcresult" > .artifacts/coverage/ios/tests.json
-      - name: Native Swift coverage summary
-        if: ${{ !cancelled() && (steps.swift-tests.outcome == 'success' || steps.swift-tests.outcome == 'failure') }}
-        run: |
-          xcrun xccov view --report --json "$RUNNER_TEMP/ios-unit.xcresult" > .artifacts/coverage/ios/xccov.json
-          python3 tools/coverage_report.py --scope ios --xccov .artifacts/coverage/ios/xccov.json --output .artifacts/coverage/ios --tool Xcode=26.5
-          cat .artifacts/coverage/ios/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload native Swift results and coverage
+          xcrun xcresulttool get test-results summary --path "$RUNNER_TEMP/ios-unit.xcresult" > .artifacts/ios-unit/test-summary.json
+          xcrun xcresulttool get test-results tests --path "$RUNNER_TEMP/ios-unit.xcresult" > .artifacts/ios-unit/tests.json
+      - name: Upload native Swift results
         if: ${{ !cancelled() && (steps.swift-tests.outcome == 'success' || steps.swift-tests.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-tests-coverage-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/ios-unit.xcresult
-            .artifacts/coverage/ios/
+            .artifacts/ios-unit/
           if-no-files-found: error
       - name: Planner PMTiles reader
         id: planner-tiles
@@ -1105,8 +1028,8 @@ jobs:
         id: builder-vitest
         run: |
           rm -f "$RUNNER_TEMP/web-builder-junit.xml"
-          npm run test:components -- --coverage --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
-      - name: SHA length boundary (without coverage instrumentation)
+          npm run test:components -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
+      - name: SHA length boundary
         id: sha256-tests
         run: |
           rm -f "$RUNNER_TEMP/web-sha256-junit.xml"
@@ -1117,18 +1040,6 @@ jobs:
         with:
           name: web-sha256-${{ github.run_attempt }}
           path: ${{ runner.temp }}/web-sha256-junit.xml
-          if-no-files-found: error
-      - name: Builder component coverage
-        if: ${{ !cancelled() && (steps.builder-vitest.outcome == 'success' || steps.builder-vitest.outcome == 'failure') }}
-        run: |
-          python3 ../../tools/coverage_report.py --scope web --lcov ../../.artifacts/coverage/web/lcov.info --source-root . --output ../../.artifacts/coverage/web --tool Vitest=3.2.6 --tool @vitest/coverage-v8=3.2.6
-          cat ../../.artifacts/coverage/web/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload builder coverage
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-web-${{ github.run_attempt }}
-          path: .artifacts/coverage/web/
           if-no-files-found: error
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
@@ -1309,22 +1220,15 @@ jobs:
       - name: "obc-desktop: build (release)"
         working-directory: apps/obc-desktop
         run: cargo build --release --locked
-      - name: Install native LLVM coverage tools
-        if: runner.os == 'Linux'
-        run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.143,cargo-llvm-cov@0.9.1
+          tool: cargo-nextest@0.9.143
       - name: "obc-desktop: test"
         id: desktop-tests
         working-directory: apps/obc-desktop
         env:
           NEXTEST_PROFILE: ci
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then
-            eval "$(cargo llvm-cov show-env --sh)"
-            find target -maxdepth 1 -name '*.profraw' -delete
-          fi
           rm -f target/nextest/ci/junit.xml
           cargo nextest run --release --locked --config-file ../../.config/nextest.toml --no-tests fail
       - name: Upload native desktop test results
@@ -1333,28 +1237,6 @@ jobs:
         with:
           name: desktop-tests-${{ matrix.slug }}-${{ github.run_attempt }}
           path: apps/obc-desktop/target/nextest/ci/junit.xml
-          if-no-files-found: error
-      - uses: actions/setup-python@v5
-        if: runner.os == 'Linux'
-        with:
-          python-version: '3.12'
-      - name: Desktop component coverage (Linux)
-        if: ${{ !cancelled() && runner.os == 'Linux' && (steps.desktop-tests.outcome == 'success' || steps.desktop-tests.outcome == 'failure') }}
-        working-directory: apps/obc-desktop
-        env:
-          CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/apps/obc-desktop/target
-        run: |
-          pip install -r ../../tools/requirements-coverage.txt
-          mkdir -p ../../.artifacts/coverage/desktop
-          cargo llvm-cov report --release --lcov --output-path ../../.artifacts/coverage/desktop/lcov.info
-          python3 ../../tools/coverage_report.py --scope desktop --lcov ../../.artifacts/coverage/desktop/lcov.info --output ../../.artifacts/coverage/desktop --tool cargo-llvm-cov=0.9.1 --tool "$(rustc --version)" --tool tree-sitter=0.25.2 --tool tree-sitter-rust=0.24.2
-          cat ../../.artifacts/coverage/desktop/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload desktop coverage
-        if: ${{ !cancelled() && runner.os == 'Linux' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-desktop-${{ github.run_attempt }}
-          path: .artifacts/coverage/desktop/
           if-no-files-found: error
       # Recorded so an accidental native dependency or bundling regression is visible.
       - name: "obc-desktop: record the artifact size"

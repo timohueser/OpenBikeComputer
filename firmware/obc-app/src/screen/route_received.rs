@@ -13,6 +13,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::card_scheduler::CardPermit;
 use crate::input::Gesture;
 use crate::Msg;
 
@@ -75,7 +76,12 @@ pub struct RouteReceivedScreen {
 
 impl RouteReceivedScreen {
     /// A prompt for catalog route `route`, opened at `now_ms`.
-    pub fn new(route: usize, now_ms: u32, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>) -> Self {
+    pub(crate) fn new(
+        _permit: CardPermit,
+        route: usize,
+        now_ms: u32,
+        elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
+    ) -> Self {
         RouteReceivedScreen { route: Some(route), actions: ActionRows::new(0), opened_ms: now_ms, elevation }
     }
 
@@ -189,7 +195,7 @@ pub struct TripReceivedScreen {
 
 impl TripReceivedScreen {
     /// A prompt for the trip with durable id `trip_id`, opened at `now_ms`.
-    pub fn new(trip_id: crate::CatalogObjectId, now_ms: u32) -> Self {
+    pub(crate) fn new(_permit: CardPermit, trip_id: crate::CatalogObjectId, now_ms: u32) -> Self {
         TripReceivedScreen { trip_id, actions: ActionRows::new(0), opened_ms: now_ms }
     }
 
@@ -267,7 +273,7 @@ pub struct RouteUpdatedScreen {
 
 impl RouteUpdatedScreen {
     /// A card for the still-navigated catalog route `route`, opened at `now_ms`.
-    pub fn new(route: usize, now_ms: u32) -> Self {
+    pub(crate) fn new(_permit: CardPermit, route: usize, now_ms: u32) -> Self {
         RouteUpdatedScreen { route: Some(route), opened_ms: now_ms }
     }
 

@@ -92,14 +92,6 @@ export default defineConfig(({ mode }) => {
             env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig) },
             // `test-support/` holds what no tier's build has as an input; its suites run here.
             include: ["src/**/*.test.ts", "test-support/**/*.test.ts"],
-            coverage: {
-                provider: "v8",
-                include: ["src/**/*.{ts,js,svelte}"],
-                exclude: ["src/**/*.test.ts", "src/lib/*/pkg/**"],
-                reporter: ["text", "lcov", "json"],
-                reportsDirectory: "../../.artifacts/coverage/web",
-                reportOnFailure: true,
-            },
         },
     };
 });

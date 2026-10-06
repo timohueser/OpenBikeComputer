@@ -12,6 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 obc-places = { path = "../obc-places" }
+# The planner search dump step of `obc data`.
+obc-data = { path = "../obc-data" }
 clap = { version = "4", features = ["derive"] }
 osmpbfreader = "0.19"
 serde_json = "1"

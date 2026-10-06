@@ -2,8 +2,8 @@
 
 `tools/test_plan.py` decides what a change must test. Cargo's graph supplies every Rust package,
 every dependency edge and the split between the fast and the captured-fixture tier.
-`testing/suites.toml` holds only what Cargo cannot see; `testing/coverage-policy.toml` holds
-coverage ownership. `obc suites check` validates both and runs on every pull request.
+`testing/suites.toml` holds only what Cargo cannot see. `obc suites check` validates the test
+plan and runs on every pull request.
 
 ## Commands
 
@@ -33,14 +33,14 @@ The Python suites need `pip install -r tools/requirements-test.txt --group plann
 | --- | --- |
 | `ordinary` | the change selects it (the default for every Rust package) |
 | `required` | it runs whenever one of its CI jobs starts |
-| `manual` | its own command only: generators, probes, captured-source checks, the weekly suites |
+| `manual` | its own command only: generators, probes, captured-source checks, iOS application tests |
 | `live` | it contacts a live service; its own command only |
 
 Selection is per suite, never per test function. A binary that mixes ordinary work with
 captured-fixture, live or manual work is split into separate units. Captured fixtures are ordinary
 work gated on `required-features = ["external-fixtures"]`; a missing package fails with the exact
 `obc fixtures sync` command. Physical procedures have no route; they live in their issue.
-`test-weekly.yml` names the two commands it runs each Monday; their suites are `manual`.
+Each Monday, `test-weekly.yml` runs manual iOS application tests and ordinary storage tests with default features.
 
 ## The plan documents
 
@@ -83,19 +83,6 @@ graph, because its owner may be gone with it.
 Do not retry a flaky test; prefer observed state, a controllable clock or a protocol signal to a
 sleep. A suite that must wait on real time says why in a comment beside it.
 
-## Coverage
-
-Each `[[component]]` in `testing/coverage-policy.toml` names its production paths, its
-exclusions with replacement evidence, and an `enforcement` class. Only the format and protocol
-codecs, CRC, storage, DFU and boot have a no-decrease line-coverage gate, compared as exact
-fractions against `testing/coverage-baseline.json`. Everything else is informational; there is no
-repository-wide percentage gate. CI never writes the baseline; a baseline change needs a measured
-run, its source SHA and its tool versions in the pull request.
-
-The `test` job's two nextest steps stay `--workspace --all-features`, because the coverage ratchet
-reads one report over the whole workspace and fails any critical file it never compiled. Only the
-local `obc test affected` route narrows by package.
-
 ## CI artifacts
 
 Every job uploads its native results after success or failure; a skipped step uploads nothing,
@@ -104,14 +91,12 @@ and a missing expected file fails the upload. Download with
 
 | Artifact | Holds |
 | --- | --- |
-| `rust-test-ATTEMPT`, `rust-fixtures-ATTEMPT` | nextest JUnit XML for the fast and fixture tiers |
-| `coverage-rust-ATTEMPT` | LCOV, component counts, `doctests.log`, `formats-default.log` |
+| `rust-test-ATTEMPT`, `rust-fixtures-ATTEMPT` | nextest JUnit XML for the fast and fixture tiers; the fast artifact also holds `doctests.log` and `formats-default.log` |
 | `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`, `python-builder-ATTEMPT` | unittest and pytest XML |
-| `coverage-repository-tools-ATTEMPT`, `coverage-firmware-tools-ATTEMPT`, `coverage-builder-ATTEMPT` | coverage.py databases and summaries |
-| `web-builder-ATTEMPT`, `web-sha256-ATTEMPT`, `coverage-web-ATTEMPT` | Vitest JUnit XML and V8 coverage |
+| `web-builder-ATTEMPT`, `web-sha256-ATTEMPT` | Vitest JUnit XML |
 | `web-builder-browser-ATTEMPT`, `web-demo-browser-ATTEMPT` | the two Chromium journeys, with a screenshot and trace on failure |
 | `ios-tests-coverage-ATTEMPT`, `ios-screenshots-ATTEMPT`, `ios-application-ATTEMPT` | `.xcresult` bundles; restore the suffix and open in Xcode |
-| `desktop-tests-PLATFORM-ATTEMPT`, `coverage-desktop-ATTEMPT` | desktop nextest results; coverage measured on Linux |
+| `desktop-tests-PLATFORM-ATTEMPT` | desktop nextest results |
 
 The exit status and the CI log stay authoritative; an artifact does not prove a passing run.
 

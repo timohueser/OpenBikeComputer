@@ -15,6 +15,8 @@ planner-climate = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numcodec
 # rasterio brings its own GDAL wheel.
 planner-snow = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "numpy==2.5.3"]
 planner-sun = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==0.68.0"]
+# The search databases, and the country policy that PyYAML reads from the Nominatim archive.
+planner-search = ["orjson==3.12.0", "pyyaml==6.0.2", "shapely==2.1.2", "zstandard==0.25.0"]
 
 [tool.uv]
 package = false
