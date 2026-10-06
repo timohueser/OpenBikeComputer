@@ -432,6 +432,10 @@ pub unsafe extern "C" fn obc_client_next(handle: *mut ObcClient) -> ObcClientAct
         match result {
             Err(error) => action.result = failure(error),
             Ok(QueryOutcome::Status(status)) => status_result(&mut action.result, status),
+            Ok(QueryOutcome::Cancel(cancelled)) => {
+                action.result.opcode = 6;
+                action.result.flag = u32::from(cancelled);
+            }
             Ok(QueryOutcome::Catalog { store, sequence, entries }) => {
                 host.catalog(&mut action.result, store, sequence, entries);
             }
