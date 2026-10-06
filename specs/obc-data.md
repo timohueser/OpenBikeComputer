@@ -1237,12 +1237,14 @@ bytes, root and retained worker identity. State is reserved, running, stopping, 
 finished or resolved. Stop invalidates a reserved child. During preparation, it drains admitted
 work, starts no next fetch or step, and prevents publication handoff. Owner handoff records the
 fixed host and bundle SHA before admission; stop is then refused. Terminal resolution retains
-that binding and pins `owner-result.json` by size and SHA. Finished, drained workers release
+that binding and pins `owner-result.json` by size and SHA. Local completion durably pins
+`result.json` by size and SHA before recording finished. Finished, drained workers release
 their private executable. An unresolved owner retains it.
 
 `runs` reads computed observations. A lost local transport does not prove failure or no writes.
 Owner evidence binds run and bundle to both its inherited per-run lock and the fixed writer lock.
-A held mutation awaits acknowledgement; abandoned pending intent stays unknown. Neither reads
+A held mutation awaits acknowledgement; abandoned pending intent stays unknown. Owner observations
+are noninteractive and bound command execution and output collection to 30 seconds. Neither reads
 nor missing remote state clear a barrier. `runs RUN --reconcile` is an explicit mutation: it checks
 a final bound reply and journal prefix, copies acknowledged events, and resolves local control.
 It refuses while the local worker drains. Result reads verify their sealed bytes.
