@@ -33,9 +33,47 @@ pub struct Step {
     /// Paths in the output directory: a file, or a directory whose every file is part of the layer.
     pub outputs: Vec<String>,
     pub run: Run,
-    /// Whether a client reads the layer. R2 holds the files of a client layer only: another
-    /// layer is an intermediate, which a build makes again from its inputs.
-    pub client: bool,
+    /// The outputs that a client reads. Other files stay in the store.
+    pub client: Client,
+}
+
+/// The published outputs of a layer: none, all, or selected declared paths (including directories).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Client {
+    None,
+    All,
+    Paths(Vec<String>),
+}
+
+impl Client {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    pub fn includes(&self, path: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Paths(paths) => paths.iter().any(|prefix| covers(prefix, path)),
+        }
+    }
+
+    fn sorted(&self) -> Self {
+        match self {
+            Self::Paths(paths) => {
+                let mut paths = paths.clone();
+                paths.sort();
+                paths.dedup();
+                Self::Paths(paths)
+            }
+            other => other.clone(),
+        }
+    }
+}
+
+fn covers(prefix: &str, path: &str) -> bool {
+    path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub enum Input {
@@ -219,6 +257,7 @@ pub fn recipe(step: &Step, code: &str) -> String {
         "options": step.options,
         "code": code,
         "outputs": step.sorted_outputs(),
+        "client": step.client.sorted(),
     });
     sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
 }
@@ -248,6 +287,21 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
         }
     }
     for step in steps {
+        let relative = |path: &String| {
+            !path.contains(['\\', '\r', '\n'])
+                && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+        };
+        if let Some(path) = step.outputs.iter().find(|path| !relative(path)) {
+            return Err(format!("step `{}`: output `{path}` is not a normalized relative path", step.name));
+        }
+        if let Client::Paths(paths) = &step.client {
+            if paths.is_empty() {
+                return Err(format!("step `{}`: client paths is empty; use none", step.name));
+            }
+            if let Some(path) = paths.iter().find(|path| !step.outputs.contains(path)) {
+                return Err(format!("step `{}`: client path `{path}` is not a declared output", step.name));
+            }
+        }
         if let Some(name) = step.layers().find(|name| !names.contains(name)) {
             return Err(format!("step `{}` reads the layer `{name}`, which no step makes", step.name));
         }
@@ -605,9 +659,6 @@ impl InputKind {
 fn collect(store: &Store, output: &Path, declared: &[String]) -> Result<Vec<LayerFile>, String> {
     let mut paths = Vec::new();
     walk(output, "", &mut paths)?;
-    let covers = |declared: &str, path: &str| {
-        path == declared || path.strip_prefix(declared).is_some_and(|rest| rest.starts_with('/'))
-    };
     if let Some(missing) = declared.iter().find(|declared| !paths.iter().any(|path| covers(declared, path))) {
         return Err(format!("it did not write its output {missing}"));
     }
@@ -766,7 +817,37 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     pub(crate) fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
-        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run, client: true }
+        Step {
+            name: name.into(),
+            inputs,
+            options: json!({}),
+            code,
+            outputs: vec![output.into()],
+            run,
+            client: Client::All,
+        }
+    }
+
+    pub(crate) fn packaged(client: Client) -> Step {
+        fn run(request: &Request) -> Result<(), String> {
+            for dir in ["published", "published-extra"] {
+                fs::create_dir(request.output.join(dir)).map_err(|e| e.to_string())?;
+            }
+            for (path, bytes) in [
+                ("published/a", "payload"),
+                ("published/b", "payload"),
+                ("published-extra/a", "other"),
+                ("index.json", "metadata"),
+            ] {
+                fs::write(request.output.join(path), bytes).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        Step {
+            client,
+            outputs: ["published", "published-extra", "index.json"].map(String::from).into(),
+            ..step("test/package", Vec::new(), steps_crate(), "", Run::Rust(run))
+        }
     }
 
     pub(crate) fn steps_crate() -> Code {

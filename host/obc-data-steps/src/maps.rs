@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
 use obc_bake::planet::LeafId;
-use obc_data::engine::{snapshot_files, Code, Input, Run, Step};
+use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{read, version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Bbox, Regions};
@@ -245,7 +245,7 @@ fn content(collection: &str, inputs: Vec<Input>) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec![collection.into()],
         run: Run::Rust(run),
-        client: false,
+        client: Client::None,
     }
 }
 
@@ -276,7 +276,7 @@ fn artifacts(collection: &str, leaf: LeafId, cells: &[CellId]) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec![collection.into()],
         run: Run::Rust(run),
-        client: true,
+        client: Client::All,
     }
 }
 
@@ -325,7 +325,7 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-bake".into()] },
         outputs: vec!["osm".into()],
         run: Run::Rust(obc_bake::step::osm),
-        client: false,
+        client: Client::None,
     }
 }
 
@@ -350,7 +350,7 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec!["cells".into()],
         run: Run::Rust(obc_pack::step::cells),
-        client: true,
+        client: Client::All,
     }
 }
 
@@ -421,7 +421,7 @@ fn reference(
     }
     let tiles: Vec<String> = tiles.iter().map(|(ti, tj)| format!("{ti:04}/{tj:04}")).collect();
     Ok(Some(Step {
-        client: false,
+        client: Client::None,
         ..crate::python(
             &name,
             inputs,
@@ -463,7 +463,7 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
         code: Code { paths: Vec::new(), crates: vec!["obc-dem".into()] },
         outputs: vec!["terrain".into()],
         run: Run::Rust(obc_dem::step::terrain),
-        client: true,
+        client: Client::All,
     }
 }
 
@@ -761,7 +761,10 @@ pub(crate) mod tests {
         let osm = r#"maps/osm ["osm/0037-0032.osm.pbf"]"#;
         assert_eq!(reads("maps/osm"), [EXTRACTS]);
         let intermediate = |name: &str| name == "maps/osm" || name.ends_with("-content");
-        assert!(steps.iter().all(|step| step.client != intermediate(&step.name)), "no client reads an intermediate");
+        assert!(
+            steps.iter().all(|step| step.client.is_none() == intermediate(&step.name)),
+            "no client reads an intermediate"
+        );
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
         for band in ["mid", "fine", "network"] {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
@@ -919,7 +922,7 @@ pub(crate) mod tests {
         assert_eq!(read, [("dtm-ch", "1")]);
         assert_eq!(reference.inputs.len(), 1, "a model without data adds nothing");
         assert_eq!(models[0]["credit"], "© swisstopo");
-        assert!(!reference.client, "only the terrain step reads the national models");
+        assert!(reference.client.is_none(), "only the terrain step reads the national models");
         assert!(!reference.options["tiles"].as_array().unwrap().is_empty());
         let terrain = steps.iter().find(|step| step.name == "maps/terrain/0037-0033").unwrap();
         assert!(matches!(terrain.inputs.last(), Some(Input::Layer { name, .. }) if *name == reference.name));

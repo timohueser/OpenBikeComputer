@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use obc_data::engine::{snapshot_files, Code, Input, Run, Step};
+use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Regions};
@@ -135,7 +135,7 @@ impl Product for Planner {
             code: Code { paths: Vec::new(), crates: vec!["obc-data".into()] },
             outputs: vec!["osm.pbf".into()],
             run: Run::Rust(obc_data::engine::pass),
-            client: false,
+            client: Client::None,
         };
         let mut inputs = vec![Input::layer(osm.name.clone())];
         for source in BASEMAP_SOURCES {
@@ -163,7 +163,7 @@ impl Product for Planner {
             code: Code { paths: vec!["data/sources.toml".into()], crates: vec!["obc-dem".into()] },
             outputs: vec!["terrain.mbtiles".into()],
             run: Run::Rust(obc_dem::step::planner_terrain),
-            client: true,
+            client: Client::All,
         };
         // The last part of the id: the old planner names its files after it.
         let name = region.id.rsplit('/').next();
@@ -179,7 +179,7 @@ impl Product for Planner {
             code: Code { paths: vec!["data/sources.toml".into()], crates: vec!["route-build".into()] },
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
             run: Run::Rust(route_build::step::step),
-            client: true,
+            client: Client::All,
         };
         let overlays = python(
             "planner/overlays",
@@ -211,7 +211,7 @@ impl Product for Planner {
             &["model"],
         );
         let policy = Step {
-            client: false,
+            client: Client::None,
             ..python(
                 "planner/search/policy",
                 vec![country_data],
@@ -228,10 +228,10 @@ impl Product for Planner {
             code: Code { paths: Vec::new(), crates: vec!["obc-search-bake".into()] },
             outputs: vec!["search.jsonl.zst".into()],
             run: Run::Rust(obc_search_bake::step::step),
-            client: false,
+            client: Client::None,
         };
         let records = Step {
-            client: false,
+            client: Client::None,
             ..python(
                 "planner/search/records",
                 vec![Input::layer(dump.name.clone())],
@@ -518,7 +518,8 @@ mod tests {
             "basemap",
         ];
         assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
-        let intermediate: Vec<&str> = steps.iter().filter(|step| !step.client).map(|step| step.name.as_str()).collect();
+        let intermediate: Vec<&str> =
+            steps.iter().filter(|step| step.client.is_none()).map(|step| step.name.as_str()).collect();
         assert_eq!(
             intermediate,
             ["planner/osm", "planner/search/policy", "planner/search/dump", "planner/search/records"]

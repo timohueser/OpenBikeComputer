@@ -223,8 +223,7 @@ impl Live {
         let mut owners = BTreeSet::new();
         for (prefix, _, release) in self.releases() {
             let holds = |sha256: &str| keys.contains(&format!("{prefix}/objects/{sha256}"));
-            let layers = release.layers.iter().filter(|layer| layer.client);
-            let layers = layers.filter(|layer| layer.files.iter().any(|file| holds(&file.sha256)));
+            let layers = release.layers.iter().filter(|layer| layer.client_files().any(|file| holds(&file.sha256)));
             owners.extend(layers.map(|layer| layer.step.clone()));
         }
         owners
@@ -363,6 +362,7 @@ fn verified(bytes: &[u8], product: &str, id: &str, name: &str) -> Result<Release
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::engine::Client;
     use std::path::Path;
 
     use super::*;
@@ -419,7 +419,7 @@ pub(crate) mod tests {
             digest: String::new(),
             files: vec![file],
             snapshots: [("land".to_string(), read)].into(),
-            client: true,
+            client: Client::All,
         };
         Release { product: "test".into(), region: "monaco".into(), optional: Vec::new(), layers: vec![layer] }
     }

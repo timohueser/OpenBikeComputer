@@ -887,6 +887,7 @@ pub(super) fn product_steps(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::engine::Client;
     use std::cell::Cell;
 
     use super::*;
@@ -1327,7 +1328,7 @@ pub(crate) mod tests {
     fn a_live_intermediate_layer_that_a_client_now_reads_gets_its_files_on_r2() {
         let (fixture, remote, release) = live("cli-live-client");
         let mut lean = release.clone();
-        lean.layers[1].client = false;
+        lean.layers[1].client = Client::None;
         let join = format!("test/objects/{}", release.layers[1].files[0].sha256);
         std::fs::remove_file(fixture.scratch.0.join("bucket").join(&join)).unwrap();
         publish(&fixture, &lean);

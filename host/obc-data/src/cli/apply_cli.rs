@@ -624,6 +624,46 @@ mod tests {
         assert_eq!(keys(&fixture), before);
     }
 
+    struct Selected(crate::engine::Client);
+
+    impl Product for Selected {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn pointer(&self) -> Option<PointerFn> {
+            Versioned.pointer()
+        }
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<crate::engine::Step>, Unplanned> {
+            Ok(vec![crate::engine::tests::packaged(self.0.clone())])
+        }
+    }
+
+    #[test]
+    fn client_selection_changes_publication_and_cleanup_without_rebuilding_bytes() {
+        use crate::engine::Client;
+        let (fixture, remote) = repository("apply-selection");
+        apply(&fixture, &remote, &[&Selected(Client::All)]).unwrap();
+        age(&fixture);
+        let product = Selected(Client::Paths(vec!["published".into()]));
+        let applied = apply(&fixture, &remote, &[&product]).unwrap();
+        assert!(applied.built.as_ref().unwrap().run.is_none(), "the bytes are reused");
+        for bytes in [b"other".as_slice(), b"metadata"] {
+            let key = format!("test/objects/{}", sha256_hex(bytes));
+            assert!(applied.removed.iter().any(|object| object.key == key));
+            assert!(!keys(&fixture).contains_key(&key));
+        }
+        let selected = format!("test/objects/{}", sha256_hex(b"payload"));
+        assert!(keys(&fixture).contains_key(&selected));
+        let live = Live::read(&remote, &[&product], &[], &fixture.store).unwrap();
+        assert!(live.owners(&[selected]).contains("test/package"));
+        let private = format!("test/objects/{}", sha256_hex(b"metadata"));
+        assert!(live.owners(&[private.clone()]).is_empty());
+        age(&fixture);
+        let expanded = apply(&fixture, &remote, &[&Selected(Client::All)]).unwrap();
+        assert!(expanded.built.as_ref().unwrap().run.is_none());
+        assert!(expanded.uploaded.contains(&private), "the store retains private bytes");
+    }
+
     /// A product without a pointer, whose older publish R2 holds.
     struct Other;
 
