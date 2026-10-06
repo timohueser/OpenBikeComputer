@@ -44,6 +44,8 @@ fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
         FetchKind::Geofabrik => osm::extract(store, http, request),
         FetchKind::Osm => osm::replication(store, http, request),
         FetchKind::Dtm => capture::dtm(store, request),
+        // A national model that a person orders: the ingest reads the delivery.
+        FetchKind::ByHand if source.id.starts_with("dtm-") => capture::dtm(store, request),
         FetchKind::Capture => capture::run(store, request),
         FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
@@ -257,7 +259,7 @@ fn get(
 fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
     let template = source.fetch.url.as_deref().unwrap_or_default();
     let prefix = match source.fetch.kind {
-        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture => Some(template.to_string()),
+        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture | FetchKind::ByHand => Some(template.to_string()),
         _ => template
             .match_indices('{')
             .map(|(at, _)| at)
@@ -371,7 +373,7 @@ fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) ->
 pub(crate) mod tests {
     use super::*;
     use crate::fetch::upstream::Upstream;
-    use crate::sources::parse_sources;
+    use crate::sources::{parse_sources, Refresh};
     use crate::store::tests::Scratch;
     use crate::store::{hash_file, sha256_hex};
     use std::io::{BufRead, BufReader, Write};
@@ -870,7 +872,7 @@ pub(crate) mod tests {
     fn a_conflict_in_one_record_of_a_capture_writes_none() {
         let scratch = Scratch::new("capture-conflict");
         let store = Store::at(&scratch.0);
-        let land = located(FetchKind::Capture, "https://example.org/land");
+        let land = Source { refresh: Refresh::Days(90), ..located(FetchKind::Capture, "https://example.org/land") };
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
         let version = date::format(date::today());
@@ -891,6 +893,7 @@ pub(crate) mod tests {
             "q=1",
             &[&land, &sea],
             |_| &[0, 1],
+            false,
             |_, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", "echo r > \"$1/recipe.json\"", "sh"]).arg(out);
@@ -908,7 +911,7 @@ pub(crate) mod tests {
     fn a_capture_is_split_into_records_and_another_day_comes_only_from_the_store() {
         let scratch = Scratch::new("capture");
         let store = Store::at(&scratch.0);
-        let land = located(FetchKind::Capture, "https://example.org/land");
+        let land = Source { refresh: Refresh::Days(90), ..located(FetchKind::Capture, "https://example.org/land") };
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
         let sources = [&land, &sea];
@@ -921,7 +924,7 @@ pub(crate) mod tests {
         };
         let today = Request { source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&store, request, "q=1", &sources, owner, move |work, out| {
+            capture::capture(&store, request, "q=1", &sources, owner, false, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 command
@@ -953,6 +956,46 @@ pub(crate) mod tests {
         assert_eq!(run(&pinned, "exit 1").unwrap(), snapshot);
         let yesterday = Request { version: Some(date::format(date::today() - 1)), ..pinned };
         assert!(run(&yesterday, "exit 1").unwrap_err().contains("today's data"));
+
+        // A run that writes no file is a fetch without files where the caller allows one, and the
+        // record of the request that `fetch` writes serves it on another day.
+        let boxed = Request { source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
+        let nothing = |request: &Request, empty| {
+            capture::capture(&store, request, "q=2", &sources, owner, empty, |_, _| std::process::Command::new("true"))
+        };
+        assert!(nothing(&boxed, false).unwrap_err().contains("has no file"));
+        assert_eq!(nothing(&boxed, true).unwrap().files, []);
+        let day = date::format(date::today() - 1);
+        let requested = Requested { version: day.clone(), params: boxed.params.clone(), files: Vec::new() };
+        store.put_requested("land", &requested).unwrap();
+        assert_eq!(nothing(&Request { version: Some(day), ..boxed }, true).unwrap().files, []);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_manual_capture_never_resumes_a_failed_run() {
+        let scratch = Scratch::new("manual-capture");
+        let store = Store::at(&scratch.0);
+        let model = located(FetchKind::Dtm, "https://example.org/model");
+        let request = Request { source: &model, version: None, params: vec![] };
+        let run = |script: &'static str| {
+            capture::capture(
+                &store,
+                &request,
+                "q=1",
+                &[&model],
+                |_| &[0],
+                true,
+                move |work, out| {
+                    let mut command = std::process::Command::new("sh");
+                    command.args(["-c", script, "sh"]).arg(work).arg(out);
+                    command
+                },
+            )
+        };
+        assert!(run("echo half > \"$2/a.tif\"; exit 1").is_err());
+        let names: Vec<_> = run("echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
+        assert_eq!(names, ["#q=1/b.tif"], "the half of the failed run is no data");
     }
 
     #[test]
@@ -973,6 +1016,33 @@ pub(crate) mod tests {
         let good = params(&[("first-year", "2015"), ("bbox", "7.6,47.9,8.0,48.1")]);
         let err = fetch(&store, &quick(), &request(good)).unwrap_err();
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
+    }
+
+    /// A Wikimedia capture names its inputs by digest, so its params are the same on every
+    /// machine; only the `obc data` binary, which links the compiler, can select its places.
+    #[test]
+    fn a_wikimedia_capture_reads_stored_files_and_needs_the_compiler() {
+        let scratch = Scratch::new("wikimedia");
+        let store = Store::at(&scratch.0);
+        let mut wikidata = located(FetchKind::Capture, "https://example.org/wikidata");
+        wikidata.id = "wikidata".into();
+        let file = store.partial("poly");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "poly").unwrap();
+        let poly = format!("sha256:{}", sha256_hex(b"poly"));
+        store.insert(&file, &sha256_hex(b"poly")).unwrap();
+        let params = |collection: &str, osm: &str| {
+            let pairs =
+                [("collection", collection), ("area", "europe/test"), ("osm", osm), ("poly", &poly), ("code", "0")];
+            pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec()
+        };
+        let fails =
+            |params| fetch(&store, &quick(), &Request { source: &wikidata, version: None, params }).unwrap_err();
+        assert!(fails(params("landmarks", "/tmp/a.pbf")).contains("is not sha256:"));
+        let missing = format!("sha256:{}", sha256_hex(b"osm"));
+        assert!(fails(params("landmarks", &missing)).contains("the store has no such file"));
+        assert!(fails(params("roads", &poly)).contains("is not `landmarks` or `peaks`"));
+        assert!(fails(params("peaks", &poly)).contains("this binary has no step code"));
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

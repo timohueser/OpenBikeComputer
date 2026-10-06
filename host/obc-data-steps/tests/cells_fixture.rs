@@ -3,7 +3,8 @@
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
 //! in for the Osmium crop of `maps/osm`. The bands are fine and network, which read the terrain:
 //! the semantic levels of coarse and mid raster the whole leaf, which a debug build takes too long
-//! for.
+//! for. A compiled landmark and a compiled peak on the summit of the extract stand in for the
+//! compile of a capture, and give one artifact each.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -14,11 +15,13 @@ use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
-use obc_data::product::Product;
+use obc_data::product::{Product, Unplanned};
 use obc_data::regions::{parse_region, Area, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
+use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
+use obc_formats::obcm::SourceId;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut, CutOptions};
 use obc_pack::grid::{BandTable, CellId};
@@ -57,6 +60,16 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
     if !params.is_empty() {
         let params = params.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
         store.put_requested(source, &Requested { version: VERSION.into(), params, files: vec![name.into()] }).unwrap();
+    }
+}
+
+/// Record a fetch without files of each national model that the step list asks for: the store has
+/// no national data of the Grimsel, so the terrain reads GLO-30 alone.
+fn without_models(store: &Store, env: &Env, regions: &Regions) {
+    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, regions, store) else { return };
+    for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
+        let requested = Requested { version: VERSION.into(), params: fetch.params.clone(), files: Vec::new() };
+        store.put_requested(&fetch.source, &requested).unwrap();
     }
 }
 
@@ -129,6 +142,14 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let zip = temp.0.join("land.zip");
     land_zip(&zip);
     fetched(&store, "land-polygons", &[], "land-polygons-split-3857.zip", &zip);
+    // The Wikimedia captures, which only the compiles read, and this test has none.
+    let [osm, poly] = [&pbf, &poly].map(|path| format!("sha256:{}", hash_file(path).unwrap().0));
+    for collection in ["landmarks", "peaks"] {
+        let params = [("collection", collection), ("area", AREA), ("osm", osm.as_str()), ("poly", poly.as_str())];
+        for source in obc_pack::step::CAPTURES {
+            fetched(&store, source, &params, &format!("#{collection}=0/recipe.json"), &zip);
+        }
+    }
 
     let region = parse_region(AREA, "name = \"Grimsel east\"\nkind = \"geofabrik\"\n").unwrap();
     let regions = Regions::new(vec![region]).unwrap();
@@ -138,9 +159,17 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     ]);
     let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
+    without_models(&store, &env, &regions);
     let mut steps = Maps.steps(&env, &regions, &store).unwrap();
     steps.retain(|step| !["maps/coarse/", "maps/mid/"].iter().any(|band| step.name.starts_with(band)));
-    steps.iter_mut().filter(|step| step.name == "maps/osm").for_each(|step| step.run = Run::Rust(copy));
+    for step in &mut steps {
+        match step.name.as_str() {
+            "maps/osm" => step.run = Run::Rust(copy),
+            "maps/landmark-content" => step.run = Run::Rust(landmark_content),
+            "maps/peak-content" => step.run = Run::Rust(peak_content),
+            _ => {}
+        }
+    }
     let plan = obc_data::engine::plan::plan(&store, &root, &steps).unwrap();
     let mut run = RunLog::create(&store, "build test").unwrap();
     let context = Context { store: &store, root: &root, sources: &[], http: &Http::new(), limits: Limits::machine() };
@@ -207,4 +236,55 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         let cells: BTreeSet<String> = layer.into_keys().filter(|path| path.ends_with(".obcm")).collect();
         assert_eq!(cells, paths, "the layer of {band} has other cells");
     }
+
+    // The summit's network cell owns the landmark, linked to the summit node, and the peak.
+    let owner = CellId::containing(18, 46_610_000, 8_440_000);
+    let artifact = |layer: &str, class: &str| {
+        let path = format!("{class}/{:04}/{:04}.bin", owner.i, owner.j);
+        assert_eq!(objects(layer).into_keys().collect::<Vec<_>>(), std::slice::from_ref(&path), "{layer}");
+        std::fs::read(&objects(layer)[&path]).unwrap()
+    };
+    let landmarks = artifact("maps/landmarks/0037-0033", "landmarks");
+    assert_eq!(u32::from_le_bytes(landmarks[..4].try_into().unwrap()), 1);
+    let record = &landmarks[SECTION_HEADER_LEN..SECTION_HEADER_LEN + RECORD_LEN];
+    let record = LandmarkRecord::decode(record.try_into().unwrap()).unwrap();
+    assert_eq!((record.qid, record.osm.map(|osm| osm.source)), (1, Some(SourceId::osm(1, 20))));
+    let peaks = artifact("maps/peaks/0037-0033", "peaks");
+    assert_eq!(u32::from_le_bytes(peaks[4..8].try_into().unwrap()), 1, "one association");
+}
+
+/// The credit of an article of the stand-in compiles.
+fn credit() -> serde_json::Value {
+    serde_json::json!({"source_url": "https://en.wikipedia.org/w/index.php?title=Testhorn&oldid=1", "revision": "1",
+        "license_url": "https://creativecommons.org/licenses/by-sa/4.0/", "original_notices": "Authors"})
+}
+
+fn write_content(request: &Request, path: &str, content: serde_json::Value) -> Result<(), String> {
+    let path = request.output.join(path);
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(path, serde_json::to_vec(&content).unwrap()).map_err(|e| e.to_string())
+}
+
+/// The compiled landmarks: the summit as a landmark.
+fn landmark_content(request: &Request) -> Result<(), String> {
+    let counts = serde_json::to_value(obc_pack::landmarks::Counts::default()).unwrap();
+    let content = serde_json::json!({"schema": 2, "input_sha256": "input", "policy_sha256": "policy",
+        "category_policy_sha256": "categories", "languages": ["en", "de", "fr", "es"], "source_coverage": {},
+        "counts": counts, "candidate_qids": [], "omissions": [],
+        "records": [{"qid": "Q1", "name": "Testhorn", "category": 1, "latitude": 46.61, "longitude": 8.44,
+            "default_language": "en", "fallback_sources": [], "photo": null,
+            "variants": [{"language": "en", "text_pages": ["A summit."], "attribution": credit()}]}]});
+    write_content(request, "landmarks/content.json", content)
+}
+
+/// The compiled peaks: an article of the summit node.
+fn peak_content(request: &Request) -> Result<(), String> {
+    let counts = serde_json::to_value(obc_pack::landmarks::Counts::default()).unwrap();
+    let content = serde_json::json!({"schema": 1, "collection": "peaks", "input_sha256": "input",
+        "policy_sha256": "policy", "languages": ["en", "de", "fr", "es"], "source_coverage": {}, "counts": counts,
+        "omissions": [],
+        "records": [{"id": "Q1", "name": "Testhorn", "default_language": "en", "fallback_sources": [], "photo": null,
+            "variants": [{"language": "en", "text_pages": ["A summit."], "attribution": credit()}]}],
+        "associations": [{"node_id": 20, "article_id": "Q1", "latitude": 46.61, "longitude": 8.44}]});
+    write_content(request, "peaks/peaks.json", content)
 }

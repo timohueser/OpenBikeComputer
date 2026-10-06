@@ -31,8 +31,8 @@ use obc_formats::io::{ByteSource, SliceSource};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{MapStyles, Schema};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, KnownEmptyInput, MapStore, MemoryScratch, MemorySource, Options, ScratchId,
-    ScratchStore, TerrainCellInput, TerrainJob, TerrainParams,
+    assemble_full, Articles, CellInput, Clock, Error, KnownEmptyInput, MapStore, MemoryScratch, MemorySource, Options,
+    ScratchId, ScratchStore, TerrainCellInput, TerrainJob, TerrainParams,
 };
 
 /// One downloaded cell, as the caller hands it over: the catalog's identity plus the verified bytes.
@@ -1250,25 +1250,35 @@ pub fn assemble(
             &memory_scratch
         }
     };
-    let summary =
-        match assemble_full(inputs, known_empty, job, &schema, &map_styles, &options, &mut store, &clock, scratch) {
-            Ok(s) => s,
-            Err(e) => {
-                let p = progress.borrow();
-                // A cell that could not be read is the root cause of whatever the engine reported:
-                // `Cell::open` turns a failed read into "not a readable OBCM", which blames the catalog
-                // for the browser's storage. The host's own message wins. The map read-back matters
-                // more, because the verify pass reports every read failure as a defect, so a full disk
-                // would otherwise tell a rider the assembler is broken.
-                let read_failure = cache
-                    .failure
-                    .borrow()
-                    .clone()
-                    .or_else(|| sink_cache.failure.borrow().clone())
-                    .map(|message| AssembleFailure::new(ErrorCode::Io, message));
-                return Err(map_error(e, p.aborted, read_failure.or_else(|| p.failure.clone())));
-            }
-        };
+    let summary = match assemble_full(
+        inputs,
+        known_empty,
+        job,
+        Articles::default(),
+        &schema,
+        &map_styles,
+        &options,
+        &mut store,
+        &clock,
+        scratch,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            let p = progress.borrow();
+            // A cell that could not be read is the root cause of whatever the engine reported:
+            // `Cell::open` turns a failed read into "not a readable OBCM", which blames the catalog
+            // for the browser's storage. The host's own message wins. The map read-back matters
+            // more, because the verify pass reports every read failure as a defect, so a full disk
+            // would otherwise tell a rider the assembler is broken.
+            let read_failure = cache
+                .failure
+                .borrow()
+                .clone()
+                .or_else(|| sink_cache.failure.borrow().clone())
+                .map(|message| AssembleFailure::new(ErrorCode::Io, message));
+            return Err(map_error(e, p.aborted, read_failure.or_else(|| p.failure.clone())));
+        }
+    };
 
     let sha256: String = summary.sha256.iter().map(|b| format!("{b:02x}")).collect();
     let bytes = match core::mem::replace(&mut store.src.body, MapBody::Buffered(Vec::new())) {

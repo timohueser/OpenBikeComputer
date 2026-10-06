@@ -181,6 +181,9 @@ pub struct Source {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obligations: Option<String>,
     pub fetch: Fetch,
+    /// The box outside which the source has no data: west, south, east and north in degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<[f64; 4]>,
     /// Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
@@ -198,6 +201,12 @@ pub struct Source {
 }
 
 impl Source {
+    /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
+    /// the two boxes meet.
+    pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
+        self.extent.is_some_and(|[w, s, e, n]| west <= e && east >= w && south <= n && north >= s)
+    }
+
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         if !crate::is_kebab(&self.id) {
@@ -226,6 +235,13 @@ impl Source {
         }
         if matches!(self.refresh, Refresh::Days(_)) && self.version != VersionScheme::Date {
             return fail("a refresh in days needs `version = \"date\"`: only a date version has an age");
+        }
+        if let Some([west, south, east, north]) = self.extent {
+            let (lon, lat) = (-180.0..=180.0, -90.0..=90.0);
+            let inside = lon.contains(&west) && lon.contains(&east) && lat.contains(&south) && lat.contains(&north);
+            if !(inside && west < east && south < north) {
+                return fail("`extent` is [west, south, east, north] in degrees, west < east, south < north");
+            }
         }
         if self.r2_copy && !self.redistribute {
             return fail("`r2_copy` needs `redistribute`: R2 is public");
@@ -343,10 +359,15 @@ impl Registry {
 /// A source of the `data/sources.toml` that this build embeds. A product that carries a credit
 /// takes it here, so the text has one home. Ids are constants in code: an unknown id panics.
 pub fn embedded(id: &str) -> &'static Source {
+    all().iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no source `{id}` in data/sources.toml"))
+}
+
+/// Every source of the `data/sources.toml` that this build embeds.
+pub fn all() -> &'static [Source] {
     static SOURCES: LazyLock<Vec<Source>> = LazyLock::new(|| {
         parse_sources(include_str!("../../../data/sources.toml")).expect("data/sources.toml is valid")
     });
-    SOURCES.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no source `{id}` in data/sources.toml"))
+    &SOURCES
 }
 
 /// The credit of an embedded source, as the product must show it.

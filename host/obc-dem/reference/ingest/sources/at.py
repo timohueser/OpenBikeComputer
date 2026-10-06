@@ -10,7 +10,6 @@ One national grid in one CRS is the better row, so the registry carries that; `R
 lists the state products as documented alternatives for `--input`.
 """
 
-from .base import registry_credit
 from .cog import CogGrid
 
 # BEV states it for the whole raster: "Grundsätzlich: EVRF2000 Austria, orthometrische
@@ -18,8 +17,8 @@ from .cog import CogGrid
 # older Adria-Triest practical heights, about half a metre away — far below a lift.
 AT = CogGrid(
     "at", "Austria", "ALS DTM 1 m (BEV)", 1.0,
-    "CC BY 4.0", registry_credit("dtm-at"),
-    "EVRF2000 Austria, orthometric (EPSG:9274)", (9.5, 46.3, 17.2, 49.1),
+    "CC BY 4.0",
+    "EVRF2000 Austria, orthometric (EPSG:9274)",
     base="https://data.bev.gv.at/download/ALS/DTM/20250915/",
     name="ALS_DTM_CRS3035RES50000mN{north}E{east}.tif",
     epsg=3035,

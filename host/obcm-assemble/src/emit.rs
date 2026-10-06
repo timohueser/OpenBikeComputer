@@ -319,8 +319,8 @@ pub fn write(
     light_marker_color: u16,
     dark_marker_color: u16,
     poi: &PoiSection,
-    landmarks: &crate::landmarks::LandmarkSection,
-    peaks: &crate::peaks::PeakSection,
+    landmarks: &crate::landmarks::LandmarkSection<'_>,
+    peaks: &crate::peaks::PeakSection<'_>,
     nav: &MergedNav,
     profile_table: &[u8],
     terrain: Option<&crate::terrain::TerrainRegion<'_>>,
@@ -419,8 +419,8 @@ pub fn write(
         let nav_base = usize::try_from(l.nav_offset).map_err(|_| plan.past_usize("nav", l.nav_offset))?;
         crate::poi::emit(poi, &mut w)?;
         crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut w)?;
-        landmarks.emit(nav_cells, &mut w)?;
-        peaks.emit(nav_cells, &mut w)?;
+        landmarks.emit(&mut w)?;
+        peaks.emit(&mut w)?;
 
         // 7. The raster: the filler that carries the nav section to the region's unit boundary, the
         //    OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.

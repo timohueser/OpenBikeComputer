@@ -193,26 +193,7 @@ impl Coverage {
     /// hashed — float noise from a different GEOS build must not invalidate a capture that took
     /// hours.
     pub fn geojson(&self) -> String {
-        use std::fmt::Write;
-        let mut rings = Vec::new();
-        for poly in &self.polys {
-            collect_polygon_rings(poly, &mut rings);
-        }
-        let mut s = String::from("{\n  \"type\": \"MultiPolygon\",\n  \"coordinates\": [");
-        for (p, polygon) in rings.iter().enumerate() {
-            let _ = write!(s, "{}\n    [", if p == 0 { "" } else { "," });
-            for (r, ring) in polygon.iter().enumerate() {
-                let _ = write!(s, "{}\n      [", if r == 0 { "" } else { "," });
-                for (i, &(lat, lon)) in ring.iter().enumerate() {
-                    let deg = |v: i64| format!("{:.6}", v as f64 / 1e6);
-                    let _ = write!(s, "{}[{}, {}]", if i == 0 { "" } else { ", " }, deg(lon), deg(lat));
-                }
-                s.push(']');
-            }
-            s.push_str("\n    ]");
-        }
-        s.push_str("\n  ]\n}\n");
-        s
+        obc_pack::catalog::boundary::polygons_geojson(&self.polys)
     }
 
     /// Whether the coverage contains a cell's whole square — the canonical / `partial` decision.
@@ -226,26 +207,6 @@ impl Coverage {
         let (min_lon, min_lat, _, _) = cell.square();
         let half = cell.size() / 2;
         self.contains(min_lat + half, min_lon + half)
-    }
-}
-
-/// One polygon per entry, exterior ring first — the nesting GeoJSON needs and
-/// [`collect_rings`] deliberately throws away.
-fn collect_polygon_rings(geom: &Geom, out: &mut Vec<Vec<URing>>) {
-    match geom {
-        Geom::Polygon { exterior, interiors } => {
-            let rings: Vec<URing> =
-                std::iter::once(exterior).chain(interiors).filter_map(|ring| to_udeg_ring(ring)).collect();
-            if !rings.is_empty() {
-                out.push(rings);
-            }
-        }
-        Geom::Multi(parts) => {
-            for part in parts {
-                collect_polygon_rings(part, out);
-            }
-        }
-        Geom::Line(_) | Geom::Empty => {}
     }
 }
 
