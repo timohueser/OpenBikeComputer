@@ -680,7 +680,9 @@ and `terrain/` payloads are client files. The catalog layer publishes pinned sat
 `objects/`. Named schema, terrain, licence and region files remain release metadata.
 
 The catalog selects only Geofabrik picks whose complete band and terrain coverage is available.
-A box or multi-area maps source is blocked until source coverage preparation supports it.
+A saved Box or multi-area definition has its own complete catalog pick. Source polygons determine
+which edge cells are partial. Missing required map, terrain or article layers block the catalog;
+a terrain-only release cannot publish.
 Before apply, the product compares picks with the previous release and assembles changed picks
 with the real assembler. The production reader verifies each result. Missing inputs and invalid
 artifacts fail verification before upload. An unchanged pick can reuse prior verification.
@@ -875,9 +877,29 @@ edits change, as [Changes of live](#changes-of-live) composes it.
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
 `geofabrik` region is the union of its source `.poly` files from `geofabrik-poly`,
-`area=<source path>`. Only a single-area definition has map cells, landmarks and peaks.
-It reads the OSM of its selected path. Box, multi-area and union definitions can build terrain
-but have a required catalog blocker; they cannot publish a terrain-only map release.
+`area=<source path>`. Existing union definitions select the union of their leaves.
+
+Both products resolve the same source areas. A Geofabrik definition names its areas directly.
+For a Box, the cached index selects candidates by polygon coverage. Selection descends into
+children only when their union covers the requested part of the parent. Full `.poly` files
+must then cover the complete Box. A gap tries the parent extract before selecting bulk inputs.
+An uncovered Box gives an actionable error. Country metadata does not remove required geography.
+
+Each selected area has a private `<product>/source/<area>` step. It reads the extract and full
+`.poly` at their separate exact versions, and writes `source.osm.pbf` and `source.poly`. A Box
+also records its selected index version. These receipts retain active request provenance even
+when a capture holds older extract or polygon bytes. Each product sorts and deduplicates areas.
+
+A multi-area input uses prepared `osmium merge --with-history`, then `time-filter` at the latest
+object timestamp present in the union. For an overlapping object, its highest supplied version
+wins. Unique supplied objects remain. An extract cannot reveal a deletion absent from its bytes;
+this is a union of available snapshots, not a snapshot at one common date. Conflicting payloads
+at the same object type, id and version are malformed OSM inputs.
+
+The merge and map crop recipes hold the prepared Osmium executable SHA-256 and version. They
+check that identity before and after execution, before accepting output. A persistent tool
+replacement refuses the step. A missing tool asks to prepare Osmium or set `OBC_OSMIUM`.
+Plans probe local tooling only; they do not download or install it.
 
 The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), and the step list
 reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -892,12 +914,13 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `maps/osm` | `geofabrik-extracts`, `area=<source path>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The key holds no Osmium version: another Osmium can give other bytes. The metrics name the version (`osmium`) |
+| `maps/region-osm` | The selected PBF of each `maps/source/<area>`; only for multiple areas | `osmium`: executable SHA-256 and version | `osm.pbf`: the available-snapshot union |
+| `maps/osm` | The PBF of one `maps/source/<area>`, or `maps/region-osm` | `leaves`: `[i, j]` of each leaf; `osmium`: executable SHA-256 and version | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The metrics name the version (`osmium`) |
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
-| `maps/landmark-content`, `maps/peak-content` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<source path>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
-| `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | `maps/landmark-content` and `maps/osm`, the file of the leaf; or `maps/peak-content` | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
+| `maps/landmark-content[/<area>]`, `maps/peak-content[/<area>]` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<source path>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
+| `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | Every area's landmark content and `maps/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
@@ -909,13 +932,19 @@ plans do not start bulk captures without an explicit move. A capture that moves 
 reads the extract and the `.poly` of now. `code=` is the digest of the code that makes the boundary and the
 candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
 
-`maps/osm`, `maps/reference/<i>-<j>`, `maps/landmark-content` and `maps/peak-content` are
-intermediate layers; the other layers are client layers.
+A single-area definition keeps the unsuffixed content layer names. Other definitions have one
+content layer per collection and source area. A selection edit can retain a capture when its
+collection, exact area and pinned inputs match unambiguous live request metadata. It never
+chooses held inputs by a layer name suffix alone. Article inputs keep separate file views;
+canonical content merge rules deduplicate overlaps without losing unique articles.
+
+`maps/source/<area>`, `maps/region-osm`, `maps/osm`, `maps/reference/<i>-<j>` and all content
+layers are private intermediates. Their complete records stay in release provenance.
 
 #### `planner`
 
-The planner has steps for a single-area definition that names its `countries` and its `time_zone`:
-its OSM is the extract of the selected source path. The bounds of the region are the box around its `.poly`.
+The planner accepts a definition that names its `countries` and `time_zone`. It uses the shared
+source selection above. Its bounds enclose the requested Box or union of selected outlines.
 Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
 at its version (see [Versions](#versions)), as for `maps`. The other options come from
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
@@ -924,7 +953,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `planner/osm` | `geofabrik-extracts`, `area=<source path>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
+| `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; `osmium`: executable SHA-256 and version for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
