@@ -637,9 +637,9 @@ that a fetch with the same `params` gave, or else every file. Otherwise `bytes` 
 fetches a version with the same `params` once, with the files of every group that needs it.
 
 Ordinary `plan` and `status` may fetch Geofabrik polygons, the Geofabrik index and the GLO-30 tile
-list. They MUST NOT prepare bulk inputs. A missing bulk prerequisite gives a blocked error.
-Automatically selected stale moves do not authorize bulk preparation. An explicit `--move`
-permits preparation during plan discovery; a build uses the normal fetcher.
+list. They MUST NOT prepare bulk inputs, including with explicit `--move`. An unresolved graph
+sets `needs_prepare`. Explicit `prepare` owns downloads and returns a reviewable `.plan`. A build
+uses the normal fetcher.
 
 ### Changes of live
 
@@ -1309,6 +1309,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `policy` | `Source` |
 | `region`, `region list` | `RegionList` |
 | `region show` | `RegionDetail` |
+| `region areas` | `Suggestions` |
+| `region create` | `Region` |
+| `region delete` | `Deletion` |
 | `region ENV ID`, `layer`, `undo` | `Edited` |
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
@@ -1696,6 +1699,28 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         }
       },
+      "type": "object"
+    },
+    "Deletion": {
+      "properties": {
+        "region": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "used_by": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "region",
+        "sha256",
+        "used_by"
+      ],
       "type": "object"
     },
     "Details": {
@@ -3444,15 +3469,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Region": {
       "oneOf": [
         {
-          "description": "The Geofabrik area whose path is the region id.",
+          "description": "The selected Geofabrik source paths, independent of the saved region id.",
           "properties": {
+            "areas": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "kind": {
               "const": "geofabrik",
               "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "areas"
           ],
           "type": "object"
         },
@@ -3469,23 +3501,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "required": [
             "kind",
             "box"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "An Osmosis `.poly` file, relative to the region file.",
-          "properties": {
-            "kind": {
-              "const": "polygon",
-              "type": "string"
-            },
-            "polygon": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "polygon"
           ],
           "type": "object"
         },
@@ -3542,15 +3557,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RegionDetail": {
       "oneOf": [
         {
-          "description": "The Geofabrik area whose path is the region id.",
+          "description": "The selected Geofabrik source paths, independent of the saved region id.",
           "properties": {
+            "areas": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "kind": {
               "const": "geofabrik",
               "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "areas"
           ],
           "type": "object"
         },
@@ -3567,23 +3589,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "required": [
             "kind",
             "box"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "An Osmosis `.poly` file, relative to the region file.",
-          "properties": {
-            "kind": {
-              "const": "polygon",
-              "type": "string"
-            },
-            "polygon": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "polygon"
           ],
           "type": "object"
         },
@@ -4231,6 +4236,57 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "checked_at",
         "version"
+      ],
+      "type": "object"
+    },
+    "Suggestion": {
+      "properties": {
+        "bounds": {
+          "$ref": "#/$defs/Bbox"
+        },
+        "countries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "parent",
+        "countries",
+        "bounds"
+      ],
+      "type": "object"
+    },
+    "Suggestions": {
+      "properties": {
+        "areas": {
+          "items": {
+            "$ref": "#/$defs/Suggestion"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "areas"
       ],
       "type": "object"
     },
