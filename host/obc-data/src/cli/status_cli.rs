@@ -45,6 +45,9 @@ pub struct ProductStatus {
     pub product: String,
     /// The id of the live release; `None` when nothing is live.
     pub release: Option<String>,
+    /// When an apply made the release live, `YYYY-MM-DDTHH:MM:SSZ`; `None` when nothing is live or
+    /// the pointer has no time.
+    pub applied: Option<String>,
     /// The size of the objects of the live release.
     pub bytes: Option<u64>,
     /// The optional layers of the product, which `layer live NAME on|off` switches.
@@ -144,7 +147,8 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
                 None
             }
         };
-        ProductStatus { product: product.product.clone(), release, bytes, optional, layers }
+        let applied = product.applied.clone();
+        ProductStatus { product: product.product.clone(), release, applied, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
     for row in &rows {

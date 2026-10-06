@@ -149,7 +149,7 @@ pub(super) fn other_read(store: &Store, live: &Layer, input: &Input) -> Result<O
 }
 
 /// What of the code of `step` is not that of its live layer: `inputs` (kind and name), `command`,
-/// `outputs` or `code` (the code hash).
+/// `outputs`, `client` (whether a client reads the layer) or `code` (the code hash).
 pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option<&'static str> {
     let declared: BTreeSet<(InputKind, &str)> = step
         .inputs
@@ -167,6 +167,8 @@ pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option
         Some("command")
     } else if live.outputs != step.sorted_outputs() {
         Some("outputs")
+    } else if live.client != step.client {
+        Some("client")
     } else if live.code != code_hash {
         Some("code")
     } else {
