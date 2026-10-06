@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { webcrypto } from "node:crypto";
 
-import { Sha256 } from "./sha256";
+import { Sha256 } from "../core/hash";
 
 const subtle = webcrypto.subtle;
 
@@ -32,6 +32,12 @@ function noise(len: number, seed = 1): Uint8Array {
 }
 
 describe("Sha256", () => {
+    it("rejects use after finalizing the Rust state", () => {
+        const hash = new Sha256();
+        hash.digest();
+        expect(() => hash.digest()).toThrow("Sha256.digest called twice");
+        expect(() => hash.update(new Uint8Array())).toThrow("Sha256.update after digest()");
+    });
     it("matches the published test vectors", () => {
         expect(Sha256.hex(new Uint8Array(0))).toBe(
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

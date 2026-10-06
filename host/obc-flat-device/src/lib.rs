@@ -3,7 +3,7 @@
 //!
 //! [`Device`] holds one [`Engine`] and one [`FlatStore`] and answers one bounded [`Reaction`] at a
 //! time, [`SimDevice`] adds the card the device owns, so a reboot and a media fault are real, and
-//! `wasm.rs` puts the same surface behind `wasm-bindgen` for Vitest and the browser. One assembly,
+//! `builder/wasm` puts the same surface behind `wasm-bindgen` for Vitest and the browser. One assembly,
 //! shared by every harness that needs a device.
 //!
 //! Here: the engine, the store, the card, the link ceilings, seeding straight through the store
@@ -44,9 +44,6 @@ use obc_storage::flat::{
 mod card;
 mod json;
 mod sim;
-
-#[cfg(target_arch = "wasm32")]
-mod wasm;
 
 pub use card::Card;
 pub use json::{catalog_json, trace_json};

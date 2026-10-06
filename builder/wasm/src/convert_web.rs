@@ -1,47 +1,21 @@
-//! The hosted builder's conversion bridge: route conversion runs in the visitor's browser through
-//! the same `no_std` code the device and the CLI run, so the bytes agree by construction.
-//!
-//! Four pure functions and an error vocabulary. No frame loop, no canvas, no state.
-//!
-//! A failure crosses to JS as a thrown `Error` whose `message` is written for a rider and whose
-//! `code` ([`ErrorCode`]) is the stable identifier a caller branches on. Every
-//! [`obc_formats::io::Error`] variant is mapped by hand in [`convert`], and the matches are
-//! exhaustive so a new variant breaks this build.
-//!
-//! The conversion core ([`convert`]) is target-independent and tested natively; only the bindgen
-//! shim below is wasm-specific.
-
-mod convert;
-
-pub use convert::{
-    gpx_to_obcr, obcr_to_track, obcr_to_waypoints, track_to_gpx, ConvertFailure, ErrorCode, RouteWaypoint,
-    MAX_STORED_POINTS,
-};
-
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::convert::ConvertFailure;
 
-    /// Module start: surface Rust panics in the console instead of an opaque `unreachable` trap.
-    #[wasm_bindgen(start)]
-    pub fn start() {
-        console_error_panic_hook::set_once();
-    }
-
     /// Convert a GPX file's bytes into `.obcr` bytes, naming the route `name` and typing it
     /// `bike` (`0..=3`: Road, Gravel, MTB, Touring). `bike` crosses as `f64` because a narrower
     /// integer would wrap or truncate a bad JS number into a valid type. The header truncates an over-long name on a
     /// char boundary rather than refusing it.
     ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
+    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
     #[wasm_bindgen]
     pub fn obc_convert_gpx_to_obcr(bytes: &[u8], name: &str, bike: f64) -> Result<Vec<u8>, JsValue> {
         let whole = bike.fract() == 0.0 && (0.0..=3.0).contains(&bike);
         let bike = whole.then_some(bike as u8).and_then(obc_route::BikeType::from_u8).ok_or_else(|| {
             to_js(ConvertFailure {
-                code: crate::ErrorCode::Internal,
+                code: crate::convert::ErrorCode::Internal,
                 // A static message: formatting the `f64` would link float printing into the module.
                 message: "Internal error: the bike type is not 0 to 3. This is a bug in the builder.".into(),
             })
@@ -51,7 +25,7 @@ mod web {
 
     /// Convert a finished ride-v6 object into a GPX 1.1 document, naming the track `name`.
     ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
+    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
     #[wasm_bindgen]
     pub fn obc_convert_track_to_gpx(bytes: &[u8], name: &str) -> Result<String, JsValue> {
         crate::convert::track_to_gpx(bytes, name).map_err(to_js)
@@ -60,7 +34,7 @@ mod web {
     /// Decode a `.obcr` route's polyline for the device page's preview: flat `[lat, lon, ele]`
     /// triples in route order, crossing as one `Float64Array`.
     ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
+    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
     #[wasm_bindgen]
     pub fn obc_convert_obcr_to_track(bytes: &[u8]) -> Result<Vec<f64>, JsValue> {
         crate::convert::obcr_to_track(bytes).map_err(to_js)
@@ -75,7 +49,7 @@ mod web {
     /// Plain objects rather than a flat array because names are strings, and at most 32 waypoints
     /// cross per route.
     ///
-    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::ErrorCode`].
+    /// Throws an `Error` carrying `code` and `message` on failure; see [`crate::convert::ErrorCode`].
     #[wasm_bindgen]
     pub fn obc_convert_obcr_to_waypoints(bytes: &[u8]) -> Result<js_sys::Array, JsValue> {
         let wps = crate::convert::obcr_to_waypoints(bytes).map_err(to_js)?;

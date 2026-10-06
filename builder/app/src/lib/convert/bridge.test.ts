@@ -63,7 +63,7 @@ function expectSameBytes(actual: Uint8Array, expected: Uint8Array, what: string)
 beforeAll(async () => {
     // The `--target web` glue fetches the module relative to itself and Node cannot fetch a `file:`
     // URL, so hand it the bytes. A missing artifact is a setup error, never a skip.
-    const wasm = join(dirname(fileURLToPath(import.meta.url)), "pkg", "obc_web_convert_bg.wasm");
+    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "core", "pkg", "obc_builder_bridge_bg.wasm");
     if (!existsSync(wasm)) {
         throw new Error(
             `the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\` in ` +

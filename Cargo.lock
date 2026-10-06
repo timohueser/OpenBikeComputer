@@ -3519,6 +3519,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-builder-bridge"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "obc-flat-device",
+ "obc-formats",
+ "obc-host-core",
+ "obc-link",
+ "obc-map-scene",
+ "obc-pack",
+ "obc-ports",
+ "obc-reader",
+ "obc-render",
+ "obc-route",
+ "obc-storage",
+ "obc-vectors",
+ "obcm-assemble",
+ "obcm-testkit",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obc-crc"
 version = "0.1.0"
 
@@ -3615,11 +3641,9 @@ version = "0.1.0"
 name = "obc-flat-device"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "obc-crc",
  "obc-link",
  "obc-storage",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -3895,23 +3919,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "obc-skin-preview"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "obc-formats",
- "obc-host-core",
- "obc-map-scene",
- "obc-pack",
- "obc-reader",
- "obc-render",
- "obcm-assemble",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "obc-storage"
 version = "0.1.0"
 dependencies = [
@@ -3966,35 +3973,6 @@ dependencies = [
  "obc-elevation",
  "obc-formats",
  "obc-route",
-]
-
-[[package]]
-name = "obc-web-assemble"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "obc-formats",
- "obc-pack",
- "obc-reader",
- "obc-vectors",
- "obcm-assemble",
- "obcm-testkit",
- "serde_json",
- "sha2 0.11.0",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "obc-web-convert"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "obc-formats",
- "obc-ports",
- "obc-route",
- "wasm-bindgen",
 ]
 
 [[package]]

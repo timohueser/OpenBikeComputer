@@ -1,5 +1,5 @@
 // The pinned sparse index of detached article sections on the network grid.
-import { formatCellId, parseCellId } from "./grid";
+import { formatCellId, parseCellId } from "../core/grid";
 import type { Catalog } from "./manifest";
 import { arr, fail, int, json, obj, pinnedUrlStr, SHA256, str } from "./parse";
 

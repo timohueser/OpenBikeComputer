@@ -46,7 +46,7 @@ const ROOT = repoRoot();
 const vector = (name: string) => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
 beforeAll(async () => {
-    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "convert", "pkg", "obc_web_convert_bg.wasm");
+    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "core", "pkg", "obc_builder_bridge_bg.wasm");
     if (!existsSync(wasm)) {
         throw new Error(`the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\`.`);
     }

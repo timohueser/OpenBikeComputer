@@ -1,5 +1,6 @@
 ---
 title: Overview
+copy: mixed
 description: The OpenBikeComputer system, its main data paths, and its technical references.
 ---
 
@@ -105,8 +106,7 @@ computer, before the ride.
 | Application | [`obc-app`](src:firmware/obc-app) | Controls screens, input, navigation, and ride recording. |
 | Simulator | [`obc-sim`](src:apps/obc-sim) | Hosts the application on a desktop. |
 | Web demo | [`obc-web-demo`](src:apps/obc-web-demo) | Hosts the application in WebAssembly. |
-| Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | Converts GPX and OBCR data in the browser. |
-| Assembly bridge | [`obc-web-assemble`](src:apps/obc-web-assemble) | Assembles and verifies map cells in the browser. |
+| Builder bridge | [`obc-builder-bridge`](src:builder/wasm) | Converts routes, assembles maps, and renders previews in the browser. |
 
 Start with [System architecture](software/architecture/). Then read
 [Rendering pipeline](software/rendering/) and [Data formats](software/formats/).

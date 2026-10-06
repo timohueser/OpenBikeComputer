@@ -1,31 +1,8 @@
-//! The product skin editor's live, device-honest preview.
-//!
-//! The browser hands this bridge a canonical map plus the catalog schema and a skin. The bridge
-//! resolves the skin with the same `obcm-assemble` code a real map uses, replaces only the style
-//! table and the marker colour, then draws the scene through the same reader and renderer path the
-//! firmware runs.
-//!
-//! Camera changes stay in this bridge: browser callers ask to pan or zoom in screen pixels and
-//! receive the renderer's own LOD and frame-budget statistics, so no projection or LOD policy is
-//! duplicated in TypeScript. No geometry or LOD setting is editable here.
-
-mod preview;
-
-pub use preview::{
-    MapPreview, PreviewErrorCode, PreviewFailure, PreviewStats, SchemaMapPreview, FRAME_H, FRAME_W, SCHEMA_FRAME_H,
-    SCHEMA_FRAME_W,
-};
-
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::preview::{MapPreview, PreviewFailure, SchemaMapPreview};
-
-    #[wasm_bindgen(start)]
-    pub fn start() {
-        console_error_panic_hook::set_once();
-    }
 
     #[wasm_bindgen(js_name = SkinPreview)]
     pub struct JsSkinPreview(MapPreview);

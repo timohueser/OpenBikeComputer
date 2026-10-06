@@ -3,17 +3,18 @@
  *
  * The OBCM is the bakery's canonical Teningen fixture, emitted by Vite as a
  * separate asset rather than copied into the JS or wasm module. Opening the
- * editor is the only thing that fetches it and the renderer bridge; ordinary
- * skin picking continues to use the small digest-pinned PNGs from R2.
+ * editor fetches the fixture and uses the shared builder renderer; ordinary
+ * skin picking uses the small digest-pinned PNGs.
  */
 
-import type { InitInput } from "./pkg/obc_skin_preview.js";
+import type { InitInput } from "../core/pkg/obc_builder_bridge.js";
+import { initCore } from "../core/bridge";
 import type { SkinEntry } from "../catalog/manifest";
 import { skinStyleError } from "./validation";
 
 const MAP_URL = new URL("../../../../../host/obc-bake/assets/teningen-preview.obcm", import.meta.url);
 
-type Bridge = typeof import("./pkg/obc_skin_preview.js");
+type Bridge = typeof import("../core/pkg/obc_builder_bridge.js");
 type WasmPreview = InstanceType<Bridge["SkinPreview"]>;
 
 export interface LiveSkinPreview {
@@ -53,26 +54,14 @@ interface ThumbnailOptions {
     yieldToBrowser?: () => Promise<void>;
 }
 
-let loading: Promise<Bridge> | null = null;
 let mapLoading: Promise<Uint8Array> | null = null;
 
 function describe(cause: unknown): string {
     return cause instanceof Error ? cause.message : String(cause);
 }
 
-async function module(source?: InitInput): Promise<Bridge> {
-    if (!loading) {
-        const pending = (async () => {
-            const mod = await import("./pkg/obc_skin_preview.js");
-            await mod.default(source === undefined ? undefined : { module_or_path: source });
-            return mod;
-        })();
-        loading = pending;
-        pending.catch(() => {
-            if (loading === pending) loading = null;
-        });
-    }
-    return loading;
+function module(source?: InitInput): Promise<Bridge> {
+    return initCore(source);
 }
 
 async function mapBytes(fetchImpl: typeof fetch): Promise<Uint8Array> {

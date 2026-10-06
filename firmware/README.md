@@ -120,26 +120,17 @@ trunk serve --config docs/Trunk.toml            # http://127.0.0.1:8080/
 trunk build --release --config docs/Trunk.toml  # → docs/dist/, what CI and Pages deploy
 ```
 
-## Build the web builder's wasm bridges
+## Build the web builder core
 
-The hosted builder has no backend, so `obc-web-convert` (GPX → `.obcr`) and `obc-web-assemble`
-(OBCA cells → one map) run as wasm in the tab. They are libraries consumed by Vite, so they build
-with `wasm-pack` (`cargo install wasm-pack` once):
+Build the browser core and its test-only device variant with `wasm-pack`:
 
 ```sh
-# From builder/app — writes src/lib/{convert,assemble}/pkg/ (gitignored).
-npm run build:wasm            # both; :convert / :assemble build one
+# From builder/app.
+npm run build:wasm
 ```
 
-The frontend needs that output before `npm run check`, `npm test` or `npm run build` will work.
-CI's `wasm-bridges` job does the same and enforces the per-module bundle-size budgets:
-
-```sh
-# From the repo root.
-python3 firmware/tools/wasm_size_guard.py --module convert
-python3 firmware/tools/wasm_size_guard.py --module preview
-python3 firmware/tools/wasm_size_guard.py --module assemble
-```
+The frontend needs this output before `npm run check`, `npm test`, or `npm run build`.
+See [the bridge README](../builder/wasm/README.md) for paths and checks.
 
 ## Firmware update images (OBCU)
 

@@ -319,9 +319,16 @@ describe("the USB stack's chunk", () => {
         // whole device. Neither belongs in anything a person installs or visits. The desktop row
         // matters most: that app is the one people take to a bench with a real board, where "if the
         // window says Connected, something enumerated" is the first tell that a transfer is real.
-        const shipped = modulesOf(await target()).filter((id) =>
+        const built = await target();
+        const shipped = modulesOf(built).filter((id) =>
             /\/src\/lib\/usb\/(loopback|flat-device)\.ts$|\/test-support\/flat-device\//.test(id),
         );
         expect(shipped).toEqual([]);
+        const wasm = built.filter((item) => item.type === "asset" && item.fileName.endsWith(".wasm"));
+        expect(wasm).toHaveLength(1);
+        const source = wasm[0].source;
+        expect(source).toBeInstanceOf(Uint8Array);
+        const exports = WebAssembly.Module.exports(new WebAssembly.Module(source as Uint8Array<ArrayBuffer>));
+        expect(exports.some((entry) => /flatdevice|devicereaction/.test(entry.name))).toBe(false);
     }, 180_000);
 });

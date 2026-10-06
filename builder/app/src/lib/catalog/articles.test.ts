@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseArticleIndex } from "./articles";
 import { CatalogClient } from "./client";
 import { planCells, downloadCells } from "./download";
-import { cellSquare, parseCellId } from "./grid";
+import { cellSquare, parseCellId } from "../core/grid";
 import { ledgerFor } from "./ledger";
 import { parseRoot } from "./manifest";
 import { resolveSelection } from "./selection";

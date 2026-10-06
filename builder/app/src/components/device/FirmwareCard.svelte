@@ -30,7 +30,7 @@
     import { firmwareCheck } from "../../lib/firmware/check.svelte";
     import { updateStatus, type FirmwareRelease } from "../../lib/firmware/release";
     import { FIRMWARE_ANCHOR } from "../../lib/routes";
-    import { Sha256 } from "../../lib/device/sha256";
+    import { Sha256 } from "../../lib/core/hash";
     import { DeviceError, type FlatStoreClient } from "../../lib/usb/client";
     import type { DeviceInfo } from "../../lib/usb/records";
     import TransferBar from "./TransferBar.svelte";

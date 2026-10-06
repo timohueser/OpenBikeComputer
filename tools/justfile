@@ -533,8 +533,7 @@ desktop *args:
     esac; done
     fe="$OBC_ROOT/builder/app"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
-    # All three wasm bridges are imported by the app: GPX↔OBCR conversion, cell
-    # assembly, and the live skin preview. Generated bindings are gitignored;
+    # The app imports the shared WASM core. Generated bindings are gitignored;
     # existence cannot prove that any bridge matches its Rust source, so always
     # rebuild — warm wasm-pack builds are incremental.
     _say "refreshing the wasm bridges…"; ( cd "$fe" && _run npm run build:wasm )
@@ -861,7 +860,7 @@ check *args:
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
         # and the byte-identity drift guard both fail without the module present. CI
-        # gets all three packages from the `wasm-bridges` job; locally we build them.
+        # gets the core and test device from the `wasm-bridges` job; locally we build them.
         step "wasm bridges"          npm run build:wasm
         step "frontend svelte-check" npm run check
         step "frontend vitest"       npm test

@@ -20,7 +20,7 @@
 // and mixing two would make "the cell north of this one" ambiguous, so it is refused
 // rather than approximated.
 
-import { cellSize, GRID_ORIGIN, GridError, type CellId, type UBox } from "./grid";
+import { cellSize, GRID_ORIGIN, GridError, type CellId, type UBox } from "../core/grid";
 
 /** A vertex of an outline: integer microdegrees, `[lat, lon]` — the catalog's own
  *  order for a boundary ring. */

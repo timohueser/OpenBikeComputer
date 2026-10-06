@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from test_plan import glob_matches as matches  # noqa: E402 — the selector's own glob rule
 
-GUARDS = ("tools/check_*.py", "firmware/tools/check_*.py", "firmware/tools/*_guard.py")
+GUARDS = ("tools/check_*.py", "firmware/tools/check_*.py", "firmware/tools/*_guard.py", "builder/wasm/*_guard.py")
 
 
 def cargo_package(path: str) -> tuple[str, str] | None:

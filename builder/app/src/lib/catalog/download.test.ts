@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BytesVerificationError } from "../download";
 import { downloadCells, planCells, type CellDownloadItem } from "./download";
-import { cellSquare, parseCellId } from "./grid";
+import { cellSquare, parseCellId } from "../core/grid";
 import { resolveSelection, type BoxPart, type SelectionContext } from "./selection";
 import { exampleCatalog, fixtureIndices } from "./testdata";
 

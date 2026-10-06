@@ -47,7 +47,7 @@
         type CellDownloadProgress,
     } from "../../lib/catalog/download";
     import { coverageRings, type RingPoint } from "../../lib/catalog/outline";
-    import type { UBox } from "../../lib/catalog/grid";
+    import type { UBox } from "../../lib/core/grid";
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import type { JobContext } from "../../lib/device/progress";

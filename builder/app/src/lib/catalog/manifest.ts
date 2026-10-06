@@ -14,7 +14,7 @@
 // consumer-side rejection has a `fail()` here with its reason in the message.
 
 import { parseArtifactPin, type ArtifactPin } from "./articles";
-import { GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE } from "./grid";
+import { GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE } from "../core/grid";
 import {
     arr,
     bool,

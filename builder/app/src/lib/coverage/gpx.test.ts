@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GpxError, MAX_ROUTE_POINTS, parseGpx } from "./gpx";
+import { GpxError, MAX_ROUTE_POINTS, parseGpx, readGpx } from "../core/gpx";
 
 const HEADER = '<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">';
 
@@ -50,6 +50,11 @@ describe("parseGpx", () => {
         expect(parseGpx(body, "x").name).toBe("Ride Name");
     });
 
+    it("keeps track-name precedence after a self-closing empty track", () => {
+        const body = `${HEADER}<metadata><name>File</name></metadata><trk/><trk><name>Ride</name><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8.1"/></trk></gpx>`;
+        expect(parseGpx(body, "fallback").name).toBe("Ride");
+    });
+
     it("uses the metadata name when the track has none, and the fallback last", () => {
         const named = `${HEADER}<metadata><name>File Name</name></metadata><trk><trkseg><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/></trkseg></trk></gpx>`;
         expect(parseGpx(named, "fallback").name).toBe("File Name");
@@ -92,5 +97,18 @@ describe("parseGpx", () => {
     it("drops out-of-range coordinates as malformed rather than folding them onto the globe", () => {
         const body = track('<trkpt lat="91" lon="8"/><trkpt lat="47" lon="181"/>');
         expect(() => parseGpx(body, "x")).toThrow(GpxError);
+    });
+});
+
+describe("readGpx", () => {
+    it("preserves full elevation precision, negative ties and waypoint text across the Rust boundary", () => {
+        const body = `${HEADER}<wpt lat="47" lon="8"><name>Water</name><cmt>Open &amp; free</cmt></wpt><wpt lat="48" lon="9"/><trk><name>Track</name><trkpt lat="-0.0000005" lon="-0.0000015"><ele>1.23456789123</ele></trkpt><trkpt lat="47.1" lon="8"/></trk></gpx>`;
+        const imported = readGpx(body, "fallback");
+        expect(imported.name).toBe("Track");
+        expect(imported.points).toEqual([{ lat: -0, lon: -1, ele: 1.23456789123 }, { lat: 47_100_000, lon: 8_000_000 }]);
+        expect(imported.waypoints).toEqual([
+            { lat: 47_000_000, lon: 8_000_000, name: "Water", note: "Open & free" },
+            { lat: 48_000_000, lon: 9_000_000, name: undefined },
+        ]);
     });
 });

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { BASEMAP, basemapResponse } from './basemap-stub.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const EXPECTED = join(REPO, 'apps/obc-web-assemble/tests/fixture/expected/map.obcm');
+const EXPECTED = join(REPO, 'builder/wasm/tests/fixture/expected/map.obcm');
 const CATALOG_LOG = join(REPO, '.artifacts/web-builder/catalog.jsonl');
 const REGION = 'Bridge Fixture';
 

@@ -49,8 +49,9 @@ route = "required"
 triggers = ["specs/vectors/**"]
 
 [[package]]
-name = "obc-web-convert"
-triggers = ["specs/vectors/**"]
+name = "obc-builder-bridge"
+fixtures = true
+triggers = ["specs/vectors/**", "builder/presets/**", "builder/wasm/tests/fixture/**"]
 
 [[package]]
 name = "obc-usb"
@@ -105,10 +106,6 @@ triggers = [
 ]
 
 [[package]]
-name = "obc-skin-preview"
-triggers = ["builder/presets/**"]
-
-[[package]]
 name = "obc-bench"
 triggers = ["host/obc-bench/golden.txt"]
 
@@ -125,12 +122,7 @@ triggers = ["data/sources.toml"]
 [[package]]
 name = "obcm-assemble"
 fixtures = true
-triggers = ["apps/obc-web-assemble/tests/fixture/**"]
-
-[[package]]
-name = "obc-web-assemble"
-fixtures = true
-triggers = ["apps/obc-web-assemble/tests/fixture/**"]
+triggers = ["builder/wasm/tests/fixture/**"]
 
 # The factory ride is built from the app's bundled route.
 [[package]]
@@ -228,7 +220,7 @@ command = "npm test --prefix builder/app/tests/browser"
 jobs = ["web-browser"]
 fixtures = ["checked-in-web-fixtures"]
 platforms = ["linux", "macos"]
-triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/**", "apps/obc-web-assemble/**", "tools/fixture_catalog.py"]
+triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/**", "builder/wasm/**", "tools/fixture_catalog.py"]
 
 [[suite]]
 id = "web.planner-requests"
@@ -472,7 +464,7 @@ foundation = true
 triggers = [
   "builder/app/package-lock.json",
   "builder/build-wasm-bridges.sh",
-  "firmware/tools/wasm_size_guard.py",
+  "builder/wasm/wasm_size_guard.py",
   "host/obc-flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",
@@ -715,10 +707,10 @@ package = "obc-vectors"
 targets = ["regenerate"]
 
 [[suite]]
-id = "manual.obc-web-assemble"
+id = "manual.obc-builder-bridge"
 route = "manual"
-command = "cargo run -p obc-web-assemble --example fixture --release --locked"
-package = "obc-web-assemble"
+command = "cargo run -p obc-builder-bridge --example fixture --release --locked"
+package = "obc-builder-bridge"
 targets = ["fixture"]
 
 [[suite]]
@@ -778,7 +770,7 @@ triggers = [
   "builder/app/src/lib/assemble/**",
   "builder/app/src/lib/cells/store.ts",
   "builder/app/src/components/coverage/DownloadStep.svelte",
-  "apps/obc-web-assemble/**",
+  "builder/wasm/**",
 ]
 
 # `test-weekly.yml` invokes this each Monday, and a maintainer can invoke it by hand. The
@@ -789,7 +781,6 @@ route = "manual"
 command = "companion-ios/scripts/test-application.sh"
 platforms = ["macos"]
 triggers = ["companion-ios/OBCCompanionUITests/**"]
-
 
 [[suite]]
 id = "planner.native-tiles"

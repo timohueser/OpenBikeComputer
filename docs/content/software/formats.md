@@ -1,5 +1,6 @@
 ---
 title: Data formats
+copy: mixed
 description: The binary map, route, ride, terrain, catalog, and map-assembly formats.
 ---
 
@@ -1178,7 +1179,7 @@ a seam merge when their coordinates are equal.
 
 All cells in one assembly share the schema revision and the map version. The assembler writes the
 selected Light and Dark presentation records into one file. The browser runs the
-same engine as the command line, through [`obc-web-assemble`](src:apps/obc-web-assemble), and
+same engine as the command line, through [`obc-builder-bridge`](src:builder/wasm), and
 verifies the result with the production readers. See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md).
 
 ## Source index
