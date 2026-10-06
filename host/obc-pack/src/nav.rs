@@ -618,7 +618,7 @@ pub fn format_summary(g: &NavGraph, stats: &NavStats) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obc_places::routing::classify;
+    use obc_places::routing::{classify, is_routable};
 
     /// Build a `RoutableWay` of kind 0 from `(node_id, lon_udeg, lat_udeg)` triples.
     fn way(pts: &[(i64, i32, i32)]) -> RoutableWay {
