@@ -168,6 +168,10 @@ def configuration(value, directory, release, objects_url, site_origin):
 
 def stage(request, base=BASE, units=UNITS, execute=run):
     value = installed(request["installed"])
+    candidate = request["candidate"]
+    if (value["service"], value["id"]) != (candidate["service"], candidate["id"]):
+        raise ValueError("Candidate service identity differs from the selected slot")
+    request = {**candidate, "installed": value}
     source, directory = Path(request["source"]), destination(value, base)
     origin = urlsplit(request["objects_url"])
     if origin.scheme != "https" or not origin.netloc or origin.query or origin.fragment:
@@ -179,6 +183,8 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     descriptor = json.loads(checked(source, request["runtime"]).read_bytes())
     if descriptor["service"] != value["service"] or descriptor["format"] != 1:
         raise ValueError("Runtime descriptor service differs")
+    if descriptor["target"] != {key: item for key, item in request["target"].items() if item is not None}:
+        raise ValueError("Candidate target differs from the runtime descriptor")
     prerequisites(descriptor)
     if not directory.exists():
         directory.parent.mkdir(parents=True, exist_ok=True)

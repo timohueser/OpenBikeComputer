@@ -35,7 +35,8 @@ class PlannerInstall(unittest.TestCase):
         data.write_bytes(b'{"format":3}')
         self.document = {"format": 1, "region": "test", "files": {"offline/catalog.json": offline.pack_file(data, self.source / "objects")}}
         self.value = {"service": "downloads", "id": "a" * 64, "slot": 1}
-        self.request = {"installed": self.value, "source": str(self.source), "objects_url": "https://maps.openbikecomputer.com/planner/objects", "site_origin": "https://openbikecomputer.com"}
+        self.candidate = {"service": self.value["service"], "id": self.value["id"], "target": self.descriptor["target"], "expected": {"service": "downloads", "catalog": self.document["files"]["offline/catalog.json"]["sha256"]}, "source": str(self.source), "objects_url": "https://maps.openbikecomputer.com/planner/objects", "site_origin": "https://openbikecomputer.com"}
+        self.request = {"installed": self.value, "candidate": self.candidate}
         self.write_metadata()
         self.commands = []
 
@@ -44,7 +45,7 @@ class PlannerInstall(unittest.TestCase):
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(runtime.encoded(document))
-            self.request[field] = {"path": name, "size": path.stat().st_size, "sha256": runtime.digest(path)}
+            self.candidate[field] = {"path": name, "size": path.stat().st_size, "sha256": runtime.digest(path)}
 
     def execute(self, command):
         self.commands.append(command)

@@ -175,36 +175,46 @@ pub fn identities(release: &Release) -> Result<Value, String> {
     Ok(result.into())
 }
 
+pub(super) fn description(service: &str, release: &Release, store: &Store) -> Result<(Value, LayerFile), String> {
+    let layer = release
+        .layers
+        .iter()
+        .find(|layer| layer.step == format!("planner/runtime/{service}"))
+        .ok_or("missing runtime layer")?;
+    let descriptor = release
+        .named
+        .iter()
+        .find(|file| file.path == format!("runtime/{service}.json"))
+        .ok_or("runtime has no named descriptor")?;
+    let recorded =
+        layer.files.iter().find(|file| file.path == "runtime.json").ok_or("runtime receipt has no descriptor")?;
+    if (descriptor.sha256.as_str(), descriptor.size) != (recorded.sha256.as_str(), recorded.size) {
+        return Err("named runtime descriptor differs from its receipt".into());
+    }
+    let path = store.object(&descriptor.sha256);
+    if hash_file(&path)? != (descriptor.sha256.clone(), descriptor.size) {
+        return Err("runtime descriptor differs from its receipt".into());
+    }
+    let body: Value =
+        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let archive = format!("{service}.tar.gz");
+    let payload =
+        layer.client_files().find(|file| file.path == archive).ok_or("runtime payload is not a client artifact")?;
+    if body["format"] != 1
+        || body["service"] != service
+        || body["target"] != layer.options["target"]
+        || body["payload"] != json!({"path": archive, "bytes": payload.size, "sha256": payload.sha256})
+    {
+        return Err("runtime target or payload differs from its receipt".into());
+    }
+    Ok((body, payload.clone()))
+}
+
 pub fn verify(previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
     for service in SERVICES {
         let step = format!("planner/runtime/{service}");
         let Some(layer) = release.layers.iter().find(|layer| layer.step == step) else { continue };
-        let descriptor = release
-            .named
-            .iter()
-            .find(|file| file.path == format!("runtime/{service}.json"))
-            .ok_or("runtime has no named descriptor")?;
-        let recorded =
-            layer.files.iter().find(|file| file.path == "runtime.json").ok_or("runtime receipt has no descriptor")?;
-        if (descriptor.sha256.as_str(), descriptor.size) != (recorded.sha256.as_str(), recorded.size) {
-            return Err("named runtime descriptor differs from its receipt".into());
-        }
-        let path = store.object(&descriptor.sha256);
-        if hash_file(&path)? != (descriptor.sha256.clone(), descriptor.size) {
-            return Err("runtime descriptor differs from its receipt".into());
-        }
-        let body: Value =
-            serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        let archive = format!("{service}.tar.gz");
-        let payload =
-            layer.client_files().find(|file| file.path == archive).ok_or("runtime payload is not a client artifact")?;
-        if body["format"] != 1
-            || body["service"] != service
-            || body["target"] != layer.options["target"]
-            || body["payload"] != json!({"path": archive, "bytes": payload.size, "sha256": payload.sha256})
-        {
-            return Err("runtime target or payload differs from its receipt".into());
-        }
+        let (_, payload) = description(service, release, store)?;
         let unchanged =
             previous.is_some_and(|old| old.layers.iter().any(|old| old.step == step && old.digest == layer.digest));
         if !unchanged && hash_file(&store.object(&payload.sha256))? != (payload.sha256.clone(), payload.size) {
