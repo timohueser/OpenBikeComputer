@@ -18,7 +18,7 @@ pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, Strin
 
 #[derive(Default)]
 pub(super) struct Context {
-    rust: Option<rust::Metadata>,
+    rust: HashMap<Option<String>, rust::Metadata>,
     python: HashMap<Option<String>, python::Identity>,
     packages: HashMap<String, BTreeMap<String, String>>,
 }
@@ -36,10 +36,10 @@ impl Context {
         let (crates, dependencies) = if code.crates.is_empty() {
             (BTreeSet::new(), BTreeMap::new())
         } else {
-            if self.rust.is_none() {
-                self.rust = Some(rust::Metadata::load(&root)?);
+            if !self.rust.contains_key(&code.target) {
+                self.rust.insert(code.target.clone(), rust::Metadata::load(&root, code.target.as_deref())?);
             }
-            self.rust.as_ref().unwrap().selected(&root, &code.crates)?
+            self.rust[&code.target].selected(&root, &code.crates)?
         };
         for dir in &crates {
             let dir =
@@ -76,6 +76,9 @@ impl Context {
             hashes.insert(relative.replace('\\', "/"), hash);
         }
         hashes.extend(dependencies);
+        if let Some(target) = &code.target {
+            hashes.insert("rust/target".into(), crate::store::sha256_hex(target.as_bytes()));
+        }
         if let Some(runtime) = &code.python {
             if !self.python.contains_key(&runtime.group) {
                 self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
