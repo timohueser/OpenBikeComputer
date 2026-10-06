@@ -909,7 +909,7 @@ fn serialize_poi_pool(
 
 /// Pack the hours-pool section: `count u16` then the blobs back to back. An empty pool is just the
 /// `0` count.
-fn pack_hours_pool(pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
+pub(crate) fn pack_hours_pool(pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + pool.len() * POI_HOURS_BLOB_LEN);
     out.extend_from_slice(&(pool.len() as u16).to_le_bytes());
     for blob in pool {

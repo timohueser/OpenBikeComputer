@@ -19,7 +19,7 @@
   <node id="17" version="1" lat="46.545000" lon="8.425000"/>
   <node id="18" version="1" lat="46.545000" lon="8.410000"/>
   <node id="19" version="1" lat="46.565000" lon="8.405000"><tag k="amenity" v="cafe"/><tag k="name" v="Cafe Test"/></node>
-  <node id="20" version="1" lat="46.610000" lon="8.440000"><tag k="natural" v="peak"/><tag k="name" v="Testhorn"/></node>
+  <node id="20" version="1" lat="46.610000" lon="8.440000"><tag k="natural" v="peak"/><tag k="name" v="Testhorn"/><tag k="wikidata" v="Q1"/></node>
   <way id="101" version="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><tag k="highway" v="residential"/><tag k="name" v="Strasse 0"/></way>
   <way id="102" version="1"><nd ref="4"/><nd ref="5"/><nd ref="6"/><tag k="highway" v="residential"/><tag k="name" v="Strasse 1"/></way>
   <way id="103" version="1"><nd ref="7"/><nd ref="8"/><nd ref="9"/><tag k="highway" v="residential"/><tag k="name" v="Strasse 2"/></way>

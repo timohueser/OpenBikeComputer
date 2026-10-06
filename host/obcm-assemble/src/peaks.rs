@@ -8,21 +8,23 @@ use crate::{
 };
 use obc_formats::obcm::peaks::{HEADER_LEN, MAX_RECORDS, RECORD_LEN, VERSION};
 use obc_formats::{
-    io::rd_u32,
-    obcm::{landmarks::*, peaks::*, SourceId, HEADER_PEAK_OFFSET_OFF, SUMMIT_SUBTYPE_ID},
+    io::{ByteSource, WindowSource},
+    obcm::{landmarks::*, peaks::*, SourceId, SUMMIT_SUBTYPE_ID},
 };
 use obc_reader::peaks::{map_section, Directory};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
-pub struct PeakSection {
+pub struct PeakSection<'a> {
     associations: Vec<Association>,
     records: Vec<Record>,
     blobs: Vec<Blob>,
     len: u32,
+    /// The input sections that the blobs are in.
+    sections: Vec<WindowSource<'a>>,
 }
-impl PeakSection {
+impl PeakSection<'_> {
     pub fn section_len(&self) -> u64 {
         if self.associations.is_empty() {
             0
@@ -30,7 +32,7 @@ impl PeakSection {
             crate::emit::align_up(u64::from(self.len))
         }
     }
-    pub fn emit(&self, cells: &[&Cell<'_>], out: &mut MapWriter<'_>) -> Result<()> {
+    pub fn emit(&self, out: &mut MapWriter<'_>) -> Result<()> {
         if self.associations.is_empty() {
             return Ok(());
         }
@@ -51,7 +53,7 @@ impl PeakSection {
         }
         for b in &self.blobs {
             let mut h = Sha256::new();
-            b.copy(cells, |bytes| {
+            b.copy(&self.sections, |bytes| {
                 h.update(bytes);
                 out.put(bytes)
             })?;
@@ -63,24 +65,31 @@ impl PeakSection {
         Ok(())
     }
 }
-pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
+/// The peak sections of `cells` and the peak `artifacts` (OBCC §14.3), selected by the summits of
+/// the merged POIs.
+pub fn merge<'a>(cells: &[&Cell<'a>], artifacts: &[&'a dyn ByteSource], pois: &MergedPois) -> Result<PeakSection<'a>> {
     let summits: BTreeSet<_> =
         pois.pois.iter().filter(|p| p.subtype == SUMMIT_SUBTYPE_ID).map(|p| p.metadata.source).collect();
     let mut associations = BTreeMap::<SourceId, ArticleId>::new();
     let mut records = BTreeMap::<ArticleId, [Option<Blob>; 4]>::new();
-    for (cell_index, cell) in cells.iter().enumerate() {
-        let Some(section) = map_section(cell.src).map_err(malformed)? else {
-            continue;
-        };
-        let d = Directory::read(&section).map_err(malformed)?;
-        let mut off = [0; 4];
-        cell.read_into(HEADER_PEAK_OFFSET_OFF as u64, &mut off)?;
-        let start = crate::emit::SCALE.offset(rd_u32(&off, 0)).bytes();
+    let mut sections = Vec::new();
+    for cell in cells {
+        sections.extend(map_section(cell.src).map_err(malformed)?);
+    }
+    for &src in artifacts {
+        let section = WindowSource::new(src, 0, src.len()).expect("a source is a window onto itself");
+        if u64::from(Directory::read(&section).map_err(malformed)?.len) != src.len() {
+            return Err(Error::Format("a peak artifact is not exactly its section".into()));
+        }
+        sections.push(section);
+    }
+    for (index, section) in sections.iter().enumerate() {
+        let d = Directory::read(section).map_err(malformed)?;
         let mut wanted = BTreeSet::new();
         let mut last = None;
         for i in 0..d.associations {
-            let a = d.association(&section, i).map_err(malformed)?;
-            if last.is_some_and(|s| s >= a.source) || d.record(&section, a.index).map_err(malformed)?.id != a.article {
+            let a = d.association(section, i).map_err(malformed)?;
+            if last.is_some_and(|s| s >= a.source) || d.record(section, a.index).map_err(malformed)?.id != a.article {
                 return Err(Error::Format("invalid peak association index".into()));
             }
             last = Some(a.source);
@@ -93,7 +102,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
         }
         let mut last = None;
         for i in 0..d.records {
-            let r = d.record(&section, i).map_err(malformed)?;
+            let r = d.record(section, i).map_err(malformed)?;
             if last.is_some_and(|id| id >= r.id) {
                 return Err(Error::Format("unordered peak articles".into()));
             }
@@ -105,7 +114,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
                 return Err(Error::Format("peak article with neither text nor a photo".into()));
             }
             if !r.content[1].is_absent() {
-                let bundle = d.content(&section, &r, 1, obc_formats::articles::MAX_BYTES).map_err(malformed)?;
+                let bundle = d.content(section, &r, 1, obc_formats::articles::MAX_BYTES).map_err(malformed)?;
                 obc_reader::articles::select(&bundle, *b"en").map_err(malformed)?;
             }
             let limits =
@@ -115,15 +124,11 @@ pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
                 if j >= 1 && reference.is_absent() {
                     continue;
                 }
-                d.content(&section, &r, j, limits[j]).map_err(malformed)?;
-                let mut b = Blob {
-                    cell: cell_index,
-                    offset: start + u64::from(reference.offset),
-                    len: reference.len,
-                    hash: [0; 32],
-                };
+                d.content(section, &r, j, limits[j]).map_err(malformed)?;
+                let mut b =
+                    Blob { section: index, offset: u64::from(reference.offset), len: reference.len, hash: [0; 32] };
                 let mut h = Sha256::new();
-                b.copy(cells, |bytes| {
+                b.copy(&sections, |bytes| {
                     h.update(bytes);
                     Ok(())
                 })?;
@@ -171,7 +176,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
             let bucket = pool.entry(b.hash).or_default();
             let mut existing = None;
             for &(i, r) in bucket.iter() {
-                if b.same_bytes(&out.blobs[i], cells)? {
+                if b.same_bytes(&out.blobs[i], &sections)? {
                     existing = Some(r);
                     break;
                 }
@@ -188,5 +193,6 @@ pub fn merge(cells: &[&Cell<'_>], pois: &MergedPois) -> Result<PeakSection> {
         }
         out.records.push(Record { id, content });
     }
+    out.sections = sections;
     Ok(out)
 }

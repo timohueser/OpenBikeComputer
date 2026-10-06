@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use super::{check_version, file_name, merge, snapshot_lock, Request};
 use crate::date;
@@ -40,7 +41,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let root = root()?;
     match source.id.as_str() {
-        "wikidata" | "wikipedia" | "commons" => landmarks(store, request, &root),
+        "wikidata" | "wikipedia" | "commons" => wiki(store, request, &root, SELECTOR.get().map(PathBuf::as_path)),
         "modis-snow" | "hr-wsi" => {
             let [bbox, seasons] = values(request, ["bbox", "seasons"])?;
             let bbox = parse_bbox(bbox)?;
@@ -104,46 +105,80 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
     }
 }
 
-/// One run of `tools/landmark_capture.py` captures Wikidata, Wikipedia and Commons for a region:
-/// `boundary=` and `candidates=` are its files, and `select-with=` is the `obc-bake` that selects
-/// the places. [`landmark_owners`] splits the files into the three records.
-fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, String> {
-    let [boundary, candidates, compiler] = values(request, ["boundary", "candidates", "select-with"])?;
-    // The program runs in the repository root, so a path names its file from here.
-    let absolute = |path: &str| std::path::absolute(path).map_err(|e| format!("{path}: {e}"));
-    let (boundary, candidates, compiler) = (absolute(boundary)?, absolute(candidates)?, absolute(compiler)?);
+/// The binary that answers the selection commands of the capture tool, such as
+/// `landmark-content`: the `obc data` binary, which links the compiler. `obc-data-plumbing` has none.
+static SELECTOR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Let the Wikimedia captures of this process select places with `binary`.
+pub fn select_with(binary: PathBuf) {
+    let _ = SELECTOR.set(binary);
+}
+
+/// One run of `tools/landmark_capture.py` captures Wikidata, Wikipedia and Commons for the
+/// landmarks or the peaks of the region `area=<region id>`: `collection=landmarks|peaks`, and the files in the store of
+/// the region's extract, `osm=sha256:<hex>`, and of its `.poly`, `poly=sha256:<hex>`, and `code=`, the
+/// digest of the code that makes the boundary and the candidates or summits. The program
+/// finds the candidates in the extract itself and selects them with `selector`. [`wiki_owners`]
+/// splits the files into the three records.
+fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) -> Result<Snapshot, String> {
+    let [collection, area, osm, poly, code] = values(request, ["collection", "area", "osm", "poly", "code"])?;
+    if !["landmarks", "peaks"].contains(&collection) {
+        return Err(format!("`collection={collection}` is not `landmarks` or `peaks`"));
+    }
+    let (osm_file, poly_file) = (stored(store, "osm", osm)?, stored(store, "poly", poly)?);
+    let selector = selector.ok_or(format!(
+        "source `{}`: the capture selects places with the `obc data` binary; this binary has no step code",
+        request.source.id
+    ))?;
     let policy = root.join("host/obc-pack/src/landmarks/policy.json");
-    // The inputs of the tool's own recipe, and the tool, whose constants are in it too: it refuses
-    // another recipe in the same directory.
     let tool = root.join("tools/landmark_capture.py");
-    let mut digests = String::new();
-    for file in [&boundary, &candidates, &policy, &root.join("specs/content-languages.json"), &tool] {
+    // The tools and the files that decide what a capture asks for: a change is another capture.
+    let mut digests = format!("{collection} {area} {osm} {poly} {code} ");
+    for file in [&policy, &root.join("specs/content-languages.json"), &tool, &root.join("tools/peak_capture.py")] {
         digests += &store::hash_file(file)?.0;
     }
-    let query = format!("recipe={}", &store::sha256_hex(digests.as_bytes())[..16]);
+    let query = format!("{collection}={}", &store::sha256_hex(digests.as_bytes())[..16]);
     let registry = Registry::load(root)?;
     let find = |id: &str| registry.sources.iter().find(|source| source.id == id).ok_or(format!("no source `{id}`"));
     let owners = [find("wikidata")?, find("wikipedia")?, find("commons")?];
-    capture(store, request, &query, &owners, landmark_owners, false, |_, out| {
+    capture(store, request, &query, &owners, wiki_owners, false, |_, out| {
         // The capture needs no package beyond the standard library.
         let mut command = python(root, &[]);
-        command.arg(&tool);
-        command.arg("--boundary").arg(&boundary).arg("--candidates").arg(&candidates).arg("--policy").arg(&policy);
+        command.arg(&tool).arg("--poly").arg(&poly_file);
+        match collection {
+            "peaks" => command.arg("--peaks-osm").arg(&osm_file),
+            _ => command.arg("--osm").arg(&osm_file).arg("--policy").arg(&policy),
+        };
         // A failed run keeps its directory, and each run asks once more for what failed before.
-        command.arg("--select-with").arg(&compiler).arg("--retry-failed").arg("--out").arg(out);
+        command.arg("--select-with").arg(selector).arg("--retry-failed").arg("--out").arg(out);
         command
     })
 }
 
-/// The records of `wikidata` (0), `wikipedia` (1) and `commons` (2) that take a file of the
-/// landmark capture, by its path, so each file has the licence of its source. Every record has the
-/// recipe, which links the three. The copies of the inputs and the archived failures are no
-/// source data, so no record takes them.
-fn landmark_owners(path: &str) -> &'static [usize] {
+/// The object of `<name>=sha256:<hex>`, a file of the store.
+fn stored(store: &Store, name: &str, value: &str) -> Result<PathBuf, String> {
+    let hex = value
+        .strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    let hex = hex.ok_or(format!("`{name}={value}` is not sha256:<64 lowercase hex digits>"))?;
+    let object = store.object(hex);
+    if !object.is_file() {
+        return Err(format!("`{name}={value}`: the store has no such file"));
+    }
+    // The program runs in the repository root.
+    std::path::absolute(&object).map_err(|e| format!("{}: {e}", object.display()))
+}
+
+/// The records of `wikidata` (0), `wikipedia` (1) and `commons` (2) that take a file of a
+/// Wikimedia capture, by its path, so each file has the licence of its source. Every record has
+/// the recipe, which links the three. The copies of the inputs are OSM data, and the archived
+/// failures are no source data, so no record takes them.
+fn wiki_owners(path: &str) -> &'static [usize] {
     match path.split('/').next().unwrap_or_default() {
         "recipe.json" => &[0, 1, 2],
-        "boundary.geojson" | "candidates.json" | "policy.json" | "attempts" => &[],
+        "boundary.geojson" | "candidates.json" | "summits.json" | "policy.json" | "attempts" => &[],
         "articles" => &[1],
+        "links" if path.starts_with("links/wikipedia-") => &[1],
         "images" | "categories" => &[2],
         _ => &[0],
     }
@@ -338,10 +373,10 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::landmark_owners;
+    use super::wiki_owners;
 
     #[test]
-    fn a_landmark_file_goes_to_the_record_of_its_licence() {
+    fn a_wikimedia_file_goes_to_the_record_of_its_licence() {
         for (path, owners) in [
             ("recipe.json", &[0, 1, 2][..]),
             ("entities/batch-1.json", &[0]),
@@ -351,10 +386,13 @@ mod tests {
             ("categories/Foo.json", &[2]),
             ("boundary.geojson", &[]),
             ("candidates.json", &[]),
+            ("summits.json", &[]),
             ("policy.json", &[]),
             ("attempts/abc.response", &[]),
+            ("links/wikidata-Q1.json", &[0]),
+            ("links/wikipedia-abc.json", &[1]),
         ] {
-            assert_eq!(landmark_owners(path), owners, "{path}");
+            assert_eq!(wiki_owners(path), owners, "{path}");
         }
     }
 }

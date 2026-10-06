@@ -12,7 +12,6 @@
 //! re-run, or done on a different machine from the one holding the credentials. The tree in between
 //! is the interface, and it is exactly the tree `obc-pack catalog` walks.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -21,12 +20,9 @@ use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
 usage:
-  obc-bake landmark-candidates --osm FILE --out FILE
-  obc-bake landmark-content --snapshot FILE --boundary GEOJSON --out DIR
-  obc-bake landmark-photo-requests --snapshot FILE --boundary GEOJSON --out DIR [--qids FILE]
-  obc-bake peak-candidates --osm FILE --boundary GEOJSON --out FILE
-  obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
-      Compile pinned article and image captures offline for the map content stage.
+  obc-bake landmark-candidates | landmark-content | landmark-photo-requests | peak-candidates
+           | peaks | boundary
+      The offline selection and compile commands that tools/landmark_capture.py calls back.
 
   obc-bake regions [--regions DIR]
       List the Geofabrik regions in data/regions/: the regions a bake can select.
@@ -130,25 +126,23 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("");
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
-    let result = match command {
-        "landmark-candidates" => run_landmark_candidates(rest),
-        "landmark-content" => run_landmark_content(rest),
-        "landmark-photo-requests" => run_landmark_photo_requests(rest),
-        "landmarks" => run_landmark_stage(rest),
-        "peaks" => run_peaks(rest),
-        "peak-candidates" => run_peak_candidates(rest),
-        "regions" => run_regions(rest),
-        "bake" => run_bake(rest),
-        "terrain" => run_terrain(rest),
-        "publish" => run_publish(rest),
-        "verify" => run_verify(rest),
-        "check-obcm-version" => run_guard(rest),
-        "--help" | "-h" | "help" => {
-            println!("{USAGE}");
-            return ExitCode::SUCCESS;
-        }
-        "" => Err(USAGE.to_string()),
-        other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+    let result = match (command, obc_pack::landmarks::select::run(&args)) {
+        (_, Some(result)) => result,
+        (command, None) => match command {
+            "landmarks" => run_landmark_stage(rest),
+            "regions" => run_regions(rest),
+            "bake" => run_bake(rest),
+            "terrain" => run_terrain(rest),
+            "publish" => run_publish(rest),
+            "verify" => run_verify(rest),
+            "check-obcm-version" => run_guard(rest),
+            "--help" | "-h" | "help" => {
+                println!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "" => Err(USAGE.to_string()),
+            other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -772,104 +766,6 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
         problems.push(format!("{} region(s) failed — see the warning(s) above", summary.warnings.len()));
     }
     Err(problems.join("; "))
-}
-
-fn run_landmark_content(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("landmark-content accepts named flags only".into());
-    }
-    let snapshot = flags.get("snapshot").ok_or("landmark-content requires --snapshot FILE")?;
-    let boundary = flags.get("boundary").ok_or("landmark-content requires --boundary GEOJSON")?;
-    let output = flags.get("out").ok_or("landmark-content requires --out DIR")?;
-    let content = obc_pack::landmarks::compile(
-        Path::new(snapshot),
-        Path::new(boundary),
-        Path::new(output),
-        flags.has("photo-requests"),
-    )?;
-    println!(
-        "{} candidates, {} texts, {} photos ({} RGB222 bytes); {} omissions",
-        content.counts.candidates,
-        content.counts.texts,
-        content.counts.images,
-        content.counts.photo_bytes,
-        content.omissions.len()
-    );
-    Ok(())
-}
-
-fn run_landmark_photo_requests(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out", "qids"])?;
-    if !positional.is_empty() {
-        return Err("landmark-photo-requests accepts named flags only".into());
-    }
-    let qids = flags
-        .get("qids")
-        .map(|path| {
-            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            let values: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
-            let qids: BTreeSet<_> = values.iter().cloned().collect();
-            if qids.len() != values.len()
-                || qids
-                    .iter()
-                    .any(|qid| qid.len() < 2 || !qid.starts_with('Q') || !qid[1..].chars().all(|c| c.is_ascii_digit()))
-            {
-                return Err(String::from("photo request QIDs must be unique Q followed by digits"));
-            }
-            Ok(qids)
-        })
-        .transpose()?;
-    let snapshot = Path::new(flags.get("snapshot").ok_or("landmark-photo-requests requires --snapshot FILE")?);
-    let boundary = Path::new(flags.get("boundary").ok_or("landmark-photo-requests requires --boundary GEOJSON")?);
-    let output = Path::new(flags.get("out").ok_or("landmark-photo-requests requires --out DIR")?);
-    let result = obc_pack::landmarks::photo_requests(snapshot, boundary, output, qids.as_ref())?;
-    println!("{} photo request(s)", result.requests.len());
-    Ok(())
-}
-
-fn run_landmark_candidates(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["osm", "out"])?;
-    if !positional.is_empty() {
-        return Err("landmark-candidates accepts named flags only".into());
-    }
-    obc_pack::landmarks::discover::discover(
-        Path::new(flags.get("osm").ok_or("landmark-candidates requires --osm FILE")?),
-        Path::new(flags.get("out").ok_or("landmark-candidates requires --out FILE")?),
-    )
-}
-
-fn run_peak_candidates(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["osm", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("peak-candidates accepts named flags only".into());
-    }
-    obc_pack::landmarks::peaks::discover(
-        Path::new(flags.get("osm").ok_or("peak-candidates requires --osm FILE")?),
-        Path::new(flags.get("boundary").ok_or("peak-candidates requires --boundary GEOJSON")?),
-        Path::new(flags.get("out").ok_or("peak-candidates requires --out FILE")?),
-    )
-}
-fn run_peaks(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("peaks accepts named flags only".into());
-    }
-    let content = obc_pack::landmarks::peaks::compile(
-        Path::new(flags.get("snapshot").ok_or("peaks requires --snapshot FILE")?),
-        Path::new(flags.get("boundary").ok_or("peaks requires --boundary GEOJSON")?),
-        Path::new(flags.get("out").ok_or("peaks requires --out DIR")?),
-        flags.has("photo-requests"),
-    )?;
-    println!(
-        "{} peak candidates, {} articles, {} photos, {} associations; {} omissions",
-        content.counts.candidates,
-        content.counts.texts,
-        content.counts.images,
-        content.associations.len(),
-        content.omissions.len()
-    );
-    Ok(())
 }
 
 #[cfg(test)]

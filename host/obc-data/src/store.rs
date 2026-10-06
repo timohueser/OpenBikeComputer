@@ -232,8 +232,13 @@ impl Store {
 
     /// Every record of a fetch of `source` with `params`, in any version.
     pub fn requests(&self, source: &str, params: &[(String, String)]) -> Result<Vec<Requested>, String> {
-        let records: Vec<Requested> = read_records(&self.root.join("requests").join(source))?;
+        let records = self.requests_of(source)?;
         Ok(records.into_iter().filter(|record| sorted(&record.params) == sorted(params)).collect())
+    }
+
+    /// Every record of a fetch of `source`, in any version and with any params.
+    pub fn requests_of(&self, source: &str) -> Result<Vec<Requested>, String> {
+        read_records(&self.root.join("requests").join(source))
     }
 
     pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {

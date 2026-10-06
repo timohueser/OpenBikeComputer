@@ -357,7 +357,7 @@ each once, and no other. A `capture` source without a row has no fetcher yet; th
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
-| `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates, `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json` and `tools/landmark_capture.py` |
+| `wikidata`, `wikipedia`, `commons` | `collection`, `area`, `osm`, `poly` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `<collection>=` and 16 hex digits of the SHA-256 of `<collection> <area> <osm> <poly> ` and the joined hex SHA-256 of `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json`, `tools/landmark_capture.py` and `tools/peak_capture.py` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A `dtm-*` file is a raster of the model that covers `bbox`, with its `.prj` when it has one. A
@@ -371,12 +371,16 @@ each once, and no other. A `capture` source without a row has no fetcher yet; th
 - The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
   the ways with `highway=path` or `highway=track` that `bbox` touches.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
-- `boundary` and `candidates` are the files of `landmark_capture.py`, and `select-with` is the
-  `obc-bake` that selects the places. One run captures the three sources, and each record takes
-  the files of its licence: `wikipedia` takes `articles/`, `commons` takes `images/` and
-  `categories/`, and `wikidata` takes the other files. Every record takes `recipe.json`, which
-  links the three. No record takes the copies of the inputs (`boundary.geojson`,
-  `candidates.json`, `policy.json`) or `attempts/`. The program exits with status 2 when the
+- `collection` is `landmarks` or `peaks`, and `area` is the region id. `osm` and `poly` are
+  `sha256:<hex>`: the extract and the `.poly` of the region, files of the store. The program makes the boundary from the `.poly`
+  and finds the landmark candidates or the summits in the extract. It selects the places with
+  the `obc data` binary that runs the fetch, which answers the commands of
+  `obc_pack::landmarks::select`; `obc-data-plumbing` cannot run this fetch. One run captures the
+  three sources, and each record takes the files of its licence: `wikipedia` takes `articles/`
+  and `links/wikipedia-*`, `commons` takes `images/` and `categories/`, and `wikidata` takes the
+  other files. Every record takes `recipe.json`, which links the three. No record takes the
+  copies of the inputs, which are OSM data or the policy (`boundary.geojson`, `candidates.json`,
+  `summits.json`, `policy.json`), or `attempts/`. The program exits with status 2 when the
   capture is not complete; then the fetch fails and the next run asks again for what failed.
 - The version is the day of the fetch, because the service answers with current data. Another
   day comes only from the store.
@@ -732,8 +736,8 @@ edits change, as [Changes of live](#changes-of-live) composes it.
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
 `geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
-steps for a `polygon` region yet. Only a `geofabrik` region has map cells: they read the OSM of
-its area. Another region has terrain only.
+steps for a `polygon` region yet. Only a `geofabrik` region has map cells, landmarks and peaks:
+they read the OSM of its area. Another region has terrain only.
 
 The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), and the step list
 reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -752,9 +756,20 @@ credential.
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
+| `maps/landmark-content`, `maps/peak-content` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<region id>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
+| `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | `maps/landmark-content` and `maps/osm`, the file of the leaf; or `maps/peak-content` | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
-`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id. `maps/osm` and
-`maps/reference/<i>-<j>` are intermediate layers; the other layers are client layers.
+`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
+
+A capture keeps its params while no source of the capture moves: the step list reads the capture
+of the region that the saved plan or live reads, or else the newest capture of the region in the
+store. A new extract alone therefore asks for no new capture. The first capture, a capture that
+moves (stale, or `--move`), and a capture whose extract or `.poly` the store has no more, read the
+extract and the `.poly` of now. `code=` is the digest of the code that makes the boundary and the
+candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
+
+`maps/osm`, `maps/reference/<i>-<j>`, `maps/landmark-content` and `maps/peak-content` are
+intermediate layers; the other layers are client layers.
 
 #### `planner`
 
