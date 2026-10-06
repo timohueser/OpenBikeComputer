@@ -581,7 +581,7 @@ ios-companion *args:
     device="$(ios_phone "${1:-}")"
     ios_install OBCCompanion Release com.openbikecomputer.companion "$device"
 
-# What governs these files: contracts, guards, suites, coverage, frames, budgets. Args: PATH...
+# What governs these files: contracts, guards, suites, frames, budgets. Args: PATH...
 [group('docs')]
 governs *args:
     #!/usr/bin/env bash
@@ -879,7 +879,7 @@ check *args:
           cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
       else _warn "skip wasm engine — no wasm32 target (obc doctor --install)"; SKIPPED+=("wasm-engine"); fi
     fi
-    want docs && step "docs copy and link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
+    want docs && step "docs build and link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
     printf '\n'; _say "check summary"
     (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
     (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
