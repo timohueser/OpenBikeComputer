@@ -5,6 +5,7 @@
 mod api;
 mod apply_cli;
 mod build_cli;
+pub mod commit_cli;
 mod edit_cli;
 mod freshness;
 mod r2_cli;

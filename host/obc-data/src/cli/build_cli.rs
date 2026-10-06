@@ -119,6 +119,8 @@ pub struct LiveRelease {
     pub release: Option<String>,
     /// SHA-256 of the actual client document, excluding only `release` and `applied`.
     pub pointer: Option<String>,
+    /// SHA-256 of the exact pointer bytes that consent observed; None means absent.
+    pub observed: Option<String>,
 }
 
 /// What the environment file changes against the live release of a product.
@@ -152,7 +154,7 @@ pub struct BuiltLayer {
     pub reused: bool,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, serde::Deserialize, Serialize, JsonSchema)]
 pub struct BuiltRelease {
     pub product: String,
     /// The SHA-256 of `releases/<product>/<id>.json` in the store.
@@ -369,6 +371,36 @@ pub(super) fn complete(saved: Option<&EnvPlan>) -> Result<(), Error> {
 pub(super) struct Applying {
     pub(super) live: Live,
     pub(super) next: Live,
+}
+
+/// A saved no-op still needs the current graph and exact pointer observations.
+pub(super) fn recheck_noop(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: &Remote,
+    products: &[&dyn Product],
+    saved: &EnvPlan,
+    run: &mut Run,
+) -> Result<(), Error> {
+    run.record(&Event::Phase { phase: Phase::Prepare })?;
+    let current = planned_run(
+        root,
+        store,
+        http,
+        Some(remote),
+        products,
+        &saved.env,
+        &saved.only,
+        Basis::Saved(saved),
+        false,
+        Some(run),
+    )?
+    .plan;
+    if saved != &current {
+        return Err(outdated());
+    }
+    Ok(())
 }
 
 /// Build `args.env`, or the plan `saved`. A build of live also gives what an apply of it changes.
@@ -737,6 +769,7 @@ fn env_plan(
                 product: product.product.clone(),
                 release: product.release.as_ref().map(|(id, _)| id.clone()),
                 pointer: document_digest(product),
+                observed: product.observed.clone(),
             });
             (releases.collect(), edits)
         }
@@ -922,7 +955,14 @@ fn next(
             _ => now.document.clone(),
         };
         let prefix = now.prefix.clone();
-        next.products.push(LiveProduct { product: name.into(), prefix, release, applied: None, document });
+        next.products.push(LiveProduct {
+            product: name.into(),
+            prefix,
+            release,
+            applied: None,
+            observed: None,
+            document,
+        });
     }
     for read in crate::input_copy::reads(&next)? {
         if !live.inputs.contains_key(&read.key)
@@ -1854,6 +1894,7 @@ pub(crate) mod tests {
                 prefix: "test".into(),
                 release: Some((id.clone(), release.clone())),
                 applied: None,
+                observed: None,
                 document: None,
             }],
             ..Live::default()
@@ -1916,7 +1957,10 @@ pub(crate) mod tests {
             [LiveRelease {
                 product: "test".into(),
                 release: Some(release.id()),
-                pointer: Some(crate::store::sha256_hex(b"{\"schema\":1}"))
+                pointer: Some(crate::store::sha256_hex(b"{\"schema\":1}")),
+                observed: Some(crate::store::sha256_hex(
+                    format!("{{\"schema\": 1, \"release\": \"{}\"}}", release.id()).as_bytes()
+                ))
             }]
         );
         assert_eq!((plan.groups.len(), plan.edits.len(), plan.remove.len(), plan.listed), (0, 0, 0, true));
@@ -1952,6 +1996,7 @@ pub(crate) mod tests {
                 prefix: "test".into(),
                 release: Some((release.id(), release.clone())),
                 applied: None,
+                observed: None,
                 document: None,
             }],
             ..Live::default()

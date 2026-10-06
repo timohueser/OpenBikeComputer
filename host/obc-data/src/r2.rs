@@ -40,7 +40,7 @@ impl Credentials {
 }
 
 /// One object in the bucket.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct Object {
     pub key: String,
     pub bytes: u64,

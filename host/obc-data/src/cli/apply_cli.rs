@@ -17,28 +17,27 @@ use crate::date;
 use crate::engine::runs::{Event, Phase, Publication, Run};
 use crate::fetch::http::Http;
 use crate::live::{Live, Remote, INPUTS};
-use crate::product::{Pointer, Product};
-use crate::r2::{Bucket, Object, Put, Scratch, Upload};
+use crate::product::Product;
+use crate::r2::{Bucket, Object, Scratch, Upload};
 use crate::sources::Source;
 use crate::store::{hash_file, write_atomic, Store};
 
 /// How long the files of the releases before a switch stay on R2: a client that read an old
 /// pointer finishes its downloads.
 #[derive(Clone, Copy)]
-struct Wait {
+pub(super) struct Wait {
     /// After the switch of this apply, and after the time of the newest pointer on R2.
-    pointer: Duration,
+    pub(super) pointer: Duration,
     /// More after the time of a pointer on R2, whose clock is not the clock of this machine.
-    clock: Duration,
+    pub(super) clock: Duration,
 }
 
-const WAIT: Wait = Wait { pointer: Duration::from_secs(600), clock: Duration::from_secs(120) };
+pub(super) const WAIT: Wait = Wait { pointer: Duration::from_secs(600), clock: Duration::from_secs(120) };
 
 /// Seconds before the start of an apply in which a key can be one of another apply.
 const YOUNG: u64 = 300;
 
 /// A pointer is at most this old in a cache, so a switch reaches every client soon.
-const POINTER_CACHE: &str = "public, max-age=60, must-revalidate";
 const JSON: &str = "application/json";
 const IMMUTABLE: Upload<'static> =
     Upload { cache_control: Some("public, max-age=31536000, immutable"), content_type: None, immutable: true };
@@ -132,8 +131,7 @@ fn apply_live(
     ask: impl FnOnce(&EnvPlan) -> Result<(), Error>,
     wait: Wait,
 ) -> Result<Applied, Error> {
-    let start = date::now();
-    let Remote::Bucket(bucket) = remote else {
+    let Remote::Bucket(_) = remote else {
         return Err(Code::Blocked.error("an apply writes R2: the OBC_R2_* variables are not set"));
     };
     committed(root)?;
@@ -165,50 +163,54 @@ fn apply_live(
         ask(plan)?;
     }
     let mut run = super::api::start_run(store, "apply live")?;
-    let result = (|| {
-        if noop {
-            return Ok(Applied { run: run.id().into(), ..Applied::default() });
-        }
+    if noop {
+        let applied = Applied { run: run.id().into(), ..Applied::default() };
+        let result = build_cli::recheck_noop(root, store, http, remote, products, plan, &mut run).map(|()| applied);
+        return super::api::finish_run(run, result, None);
+    }
+    let preparation = (|| {
+        let expected = super::commit_cli::expected(plan, products)?;
         let scratch = Scratch::new()?;
-        let (built, switches, uploaded) =
-            stage(root, store, http, (remote, bucket), products, plan, &scratch, &mut run)?;
+        let (built, next) = stage(root, store, http, remote, products, plan, &mut run)?;
         crate::worker::check(root)?;
-        run.record(&Event::Phase { phase: Phase::Switch })?;
-        let mut switched = Vec::new();
-        for switch in switches {
-            let key = format!("{}/catalog.json", switch.prefix);
-            let mut document = switch.pointer.document;
-            document.insert("release".into(), switch.id.clone().into());
-            document.insert("applied".into(), date::timestamp(date::now()).into());
-            let file = write(&scratch, &key, &serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?)?;
-            let upload = Upload { cache_control: Some(POINTER_CACHE), content_type: Some(JSON), immutable: false };
-            bucket.put(&file, &key, &upload).map_err(r2_failed)?;
-            run.record(&Event::Published {
-                mutation: Publication::Switched { product: switch.product.into(), release: switch.id.clone() },
-            })?;
-            bucket.verify(&file, &key).map_err(|e| Code::VerifyFailed.error(e))?;
-            switched.push(BuiltRelease { product: switch.product.into(), id: switch.id });
-        }
-
-        let switch = (!switched.is_empty()).then(Instant::now);
-        let sources = registry(root)?.sources;
-        let removed = remove(bucket, (remote, products, &sources, store), start, switch, wait, &mut run)?;
-        Ok(Applied { run: run.id().into(), built: Some(built), uploaded, switched, removed })
+        let directory = scratch.0.join("bundle");
+        let digest = super::commit_cli::pack(&directory, store, &run, expected, next, registry(root)?.sources, remote)?;
+        run.sync()?;
+        Ok((built, scratch, directory, digest))
     })();
-    super::api::finish_run(run, result, None)
+    let (built, _scratch, directory, digest) = match preparation {
+        Ok(prepared) => prepared,
+        Err(error) => return super::api::finish_run(run, Err(error), None),
+    };
+    let id = run.id().to_string();
+    drop(run);
+    #[cfg(test)]
+    let committed = super::commit_cli::execute_for_test(&directory, &digest, store, remote, wait)?;
+    #[cfg(not(test))]
+    let committed = {
+        let _ = wait;
+        super::commit_cli::submit(&directory, &digest, &id, store).map_err(|mut error| {
+            error.run = Some(id.clone());
+            error
+        })?
+    };
+    let mut applied = Applied { run: id, built: Some(built), ..Applied::default() };
+    committed.apply(&mut applied);
+    Ok(applied)
 }
 
 /// Remove what no live release uses once no client can still read an older pointer: `wait` after
 /// the newest pointer on R2, and after `switch`, the switch of this apply. Each round reads live
 /// and lists R2 again, and the removal takes the leftovers of the last round only: another apply
 /// can switch during the wait.
-fn remove(
+pub(super) fn remove(
     bucket: &Bucket,
-    reader: (&Remote, &[&dyn Product], &[Source], &Store),
+    reader: (&Remote, &[(&str, &str)], &[Source], &Store),
     start: u64,
     switch: Option<Instant>,
     wait: Wait,
     run: &mut Run,
+    owner: &mut crate::commit::Owner,
 ) -> Result<Vec<Object>, Error> {
     let since = |instant: Instant| wait.pointer.saturating_sub(instant.elapsed());
     let mut unknown = None;
@@ -228,12 +230,7 @@ fn remove(
         let left = by_clock.max(switch.map_or(Duration::ZERO, since));
         if left.is_zero() {
             run.record(&Event::Phase { phase: Phase::Cleanup })?;
-            bucket.delete(&leftovers, "obc data apply live: no live release uses it").map_err(r2_failed)?;
-            for object in &leftovers {
-                run.record(&Event::Published {
-                    mutation: Publication::Removed { key: object.key.clone(), bytes: object.bytes },
-                })?;
-            }
+            delete(bucket, &leftovers, "obc data apply live: no live release uses it", run, owner)?;
             return Ok(leftovers);
         }
         eprintln!("obc data: the old releases stay {} s more for clients that read an old pointer", left.as_secs());
@@ -244,27 +241,21 @@ fn remove(
 
 /// Build `plan`, check its releases and upload what R2 lacks. Live does not change.
 #[allow(clippy::too_many_arguments)]
-fn stage<'a>(
+fn stage(
     root: &Path,
     store: &Store,
     http: &Http,
-    (remote, bucket): (&Remote, &Bucket),
-    products: &[&'a dyn Product],
+    remote: &Remote,
+    products: &[&dyn Product],
     plan: &EnvPlan,
-    scratch: &Scratch,
     run: &mut Run,
-) -> Result<(Built, Vec<Switch<'a>>, Vec<String>), Error> {
+) -> Result<(Built, Live), Error> {
     let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
     let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan), run)?;
     let Applying { live, next } = applying.expect("a build of live gives what an apply changes");
     run.record(&Event::Phase { phase: Phase::Verify })?;
-    let switches = switches(root, products, store, &live, &next)?;
-    let files = files(store, scratch, &next)?;
-    let listed = next.list(remote).map_err(r2_failed)?;
-    crate::worker::check(root)?;
-    run.record(&Event::Phase { phase: Phase::Upload })?;
-    let uploaded = upload(bucket, &listed, &files, run)?;
-    Ok((built, switches, uploaded))
+    switches(root, products, store, &live, &next)?;
+    Ok((built, next))
 }
 
 fn r2_failed(message: String) -> Error {
@@ -272,7 +263,7 @@ fn r2_failed(message: String) -> Error {
 }
 
 /// Write `bytes` for `key` into `scratch`, and give the path.
-fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBuf, Error> {
+pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBuf, Error> {
     let path = scratch.0.join(key);
     write_atomic(&path, bytes)?;
     Ok(path)
@@ -300,24 +291,9 @@ fn committed(root: &Path) -> Result<(), Error> {
         .fix("Commit data/ first: an apply builds live from the committed data/."))
 }
 
-/// A product whose release an apply changes.
-struct Switch<'a> {
-    product: &'a str,
-    prefix: String,
-    id: String,
-    pointer: Pointer,
-}
-
 /// Each product whose release `next` changes, with its pointer. Each release is checked here,
 /// before anything changes on R2.
-fn switches<'a>(
-    root: &Path,
-    products: &[&'a dyn Product],
-    store: &Store,
-    live: &Live,
-    next: &Live,
-) -> Result<Vec<Switch<'a>>, Error> {
-    let mut switches = Vec::new();
+fn switches(root: &Path, products: &[&dyn Product], store: &Store, live: &Live, next: &Live) -> Result<(), Error> {
     for (product, (live, next)) in products.iter().zip(live.products.iter().zip(&next.products)) {
         let Some((id, release)) = next.release.as_ref().filter(|_| build_cli::changed(live, next)) else {
             continue;
@@ -329,27 +305,27 @@ fn switches<'a>(
                 .fix(format!("Correct the steps of product `{name}`, then plan again."))
         };
         product.verify(root, live.release.as_ref().map(|(_, release)| release), release, store).map_err(failed)?;
-        let pointer =
-            Pointer { document: next.document.clone().ok_or_else(|| failed("release has no desired pointer".into()))? };
-        switches.push(Switch { product: name, prefix: next.prefix.clone(), id: id.clone(), pointer });
+        if next.document.is_none() {
+            return Err(failed("release has no desired pointer".into()));
+        }
     }
-    Ok(switches)
+    Ok(())
 }
 
 /// A key that live needs, and the file that holds its bytes.
-struct File {
-    key: String,
-    path: PathBuf,
+pub(super) struct File {
+    pub(super) key: String,
+    pub(super) path: PathBuf,
     /// The size of the key on R2; `None` when any object at the key serves.
-    size: Option<u64>,
+    pub(super) size: Option<u64>,
     /// The SHA-256 of the file, when the key names it.
-    sha256: Option<String>,
-    upload: Upload<'static>,
+    pub(super) sha256: Option<String>,
+    pub(super) upload: Upload<'static>,
 }
 
 /// Every key of `next` but the pointers: the manifests and objects of its releases, the files that
 /// a client finds by name, and the input copies.
-fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec<File>, Error> {
+pub(super) fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec<File>, Error> {
     let mut files = Vec::new();
     for (prefix, id, release) in next.releases() {
         files.push(File {
@@ -405,7 +381,13 @@ fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec<File>, Err
 /// Upload each of `files` that `listed` lacks or holds with another size, and give their keys. A
 /// key with another size goes first: an immutable upload never replaces. Each file is checked
 /// against its SHA-256 before R2 changes, and each key after its upload.
-fn upload(bucket: &Bucket, listed: &[Object], files: &[File], run: &mut Run) -> Result<Vec<String>, Error> {
+pub(super) fn upload(
+    bucket: &Bucket,
+    listed: &[Object],
+    files: &[File],
+    run: &mut Run,
+    owner: &mut crate::commit::Owner,
+) -> Result<Vec<String>, Error> {
     for file in files.iter().filter(|f| {
         let named = f.key.split_once("/releases/").is_some_and(|(_, path)| path.contains('/'));
         (f.key.starts_with(&format!("{INPUTS}/records/")) || named) && listed.iter().any(|object| object.key == f.key)
@@ -441,17 +423,20 @@ fn upload(bucket: &Bucket, listed: &[Object], files: &[File], run: &mut Run) -> 
         }
     }
     if !wrong.is_empty() {
-        bucket.delete(&wrong, "obc data apply live: the key holds another size than live needs").map_err(r2_failed)?;
-        for object in &wrong {
-            run.record(&Event::Published {
-                mutation: Publication::Removed { key: object.key.clone(), bytes: object.bytes },
-            })?;
-        }
+        delete(bucket, &wrong, "obc data apply live: the key holds another size than live needs", run, owner)?;
     }
     for file in missing.values() {
-        if bucket.put(&file.path, &file.key, &file.upload).map_err(r2_failed)? == Put::Uploaded {
-            run.record(&Event::Published { mutation: Publication::Uploaded { key: file.key.clone() } })?;
-        }
+        owner
+            .mutate(
+                run,
+                crate::commit::Intent {
+                    mutation: Publication::Uploaded { key: file.key.clone() },
+                    expected: None,
+                    desired: file.sha256.clone(),
+                },
+                || bucket.put(&file.path, &file.key, &file.upload),
+            )
+            .map_err(r2_failed)?;
     }
     let keys: Vec<String> = missing.keys().map(|key| key.to_string()).collect();
     let found = bucket.stat(&keys).map_err(r2_failed)?;
@@ -468,11 +453,34 @@ fn upload(bucket: &Bucket, listed: &[Object], files: &[File], run: &mut Run) -> 
 /// live that no live release uses and that R2 had [`YOUNG`] before `start`, and the time of the
 /// newest pointer, when one reads. Drift is an error: a listing that lacks a key of live is no
 /// ground for a removal.
-fn leftovers(
-    (remote, products, sources, store): (&Remote, &[&dyn Product], &[Source], &Store),
+fn delete(
+    bucket: &Bucket,
+    objects: &[Object],
+    reason: &str,
+    run: &mut Run,
+    owner: &mut crate::commit::Owner,
+) -> Result<(), Error> {
+    for object in objects {
+        owner
+            .mutate(
+                run,
+                crate::commit::Intent {
+                    mutation: Publication::Removed { key: object.key.clone(), bytes: object.bytes },
+                    expected: Some(format!("{}:{}", object.modified, object.bytes)),
+                    desired: None,
+                },
+                || bucket.delete(std::slice::from_ref(object), reason),
+            )
+            .map_err(r2_failed)?;
+    }
+    Ok(())
+}
+
+pub(super) fn leftovers(
+    (remote, products, sources, store): (&Remote, &[(&str, &str)], &[Source], &Store),
     start: u64,
 ) -> Result<(Vec<Object>, Option<u64>), Error> {
-    let live = Live::read(remote, products, sources, store).map_err(r2_failed)?;
+    let live = Live::read_products(remote, products, sources, store).map_err(r2_failed)?;
     let mut listed = Vec::new();
     for prefix in live.swept() {
         listed.extend(remote.list(&prefix).map_err(r2_failed)?);
@@ -499,7 +507,7 @@ mod tests {
     use crate::cli::build_cli::tests::{upstream, Versioned, SOURCES};
     use crate::engine::tests::{fixture, write, Fixture, JOIN};
     use crate::env::Env;
-    use crate::product::{PointerFn, Unplanned};
+    use crate::product::{Pointer, PointerFn, Unplanned};
     use crate::regions::Regions;
     use crate::sources::parse_sources;
     use crate::store::sha256_hex;
@@ -1079,8 +1087,29 @@ mod tests {
         let plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &products, &[], true).unwrap();
         let scratch = Scratch::new().unwrap();
         let mut run = Run::create(&fixture.store, "stage only").unwrap();
-        let (_, _, staged) =
-            stage(&root, &fixture.store, &http, (&remote, bucket), &products, &plan, &scratch, &mut run).unwrap();
+        let (_, next) = stage(&root, &fixture.store, &http, &remote, &products, &plan, &mut run).unwrap();
+        let expected = super::super::commit_cli::expected(&plan, &products).unwrap();
+        let directory = scratch.0.join("prepared");
+        let digest = super::super::commit_cli::pack(
+            &directory,
+            &fixture.store,
+            &run,
+            expected,
+            next,
+            parse_sources(SOURCES).unwrap(),
+            &remote,
+        )
+        .unwrap();
+        let payload = Store::at(&directory);
+        let (_, next) = stage(&root, &fixture.store, &http, &remote, &products, &plan, &mut run).unwrap();
+        for (_, _, release) in next.releases() {
+            release.write(&payload).unwrap();
+        }
+        let files = super::files(&payload, &scratch, &next).unwrap();
+        let mut owner =
+            crate::commit::Owner::open(&fixture.store.root().join("commits"), run.id(), digest.as_bytes()).unwrap();
+        let staged = super::upload(bucket, &next.list(&remote).unwrap(), &files, &mut run, &mut owner).unwrap();
+        drop(owner);
         drop(run);
         // The process stops here.
         let sources = parse_sources(SOURCES).unwrap();
@@ -1107,6 +1136,63 @@ mod tests {
         assert!(!consent(&args(false, None), true).unwrap(), "a terminal asks");
         assert!(!consent(&args(false, Some("plan.json")), true).unwrap(), "a terminal asks for a plan too");
         assert!(consent(&args(true, Some("plan.json")), true).unwrap());
+    }
+
+    #[test]
+    fn consent_keeps_exact_pointer_bytes_even_when_the_document_is_equivalent() {
+        let (fixture, remote) = repository("apply-exact-consent");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let original = checked(&fixture, &remote).unwrap();
+        age(&fixture);
+        write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        let pointer = fixture.scratch.0.join("bucket/test/catalog.json");
+        let result = apply_live(
+            &fixture.root(),
+            &fixture.store,
+            &Http::new(),
+            &remote,
+            &[&Versioned],
+            None,
+            |_| {
+                let body = std::fs::read(&pointer).unwrap();
+                let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                std::fs::write(&pointer, serde_json::to_vec(&value).unwrap()).unwrap();
+                Ok(())
+            },
+            NO_WAIT,
+        );
+        assert_eq!(result.unwrap_err().code, Code::PlanOutdated);
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(pointer).unwrap()).unwrap();
+        assert_eq!(value["release"], original);
+    }
+
+    #[test]
+    fn the_owner_rechecks_absence_after_preparation_before_any_upload() {
+        let (fixture, remote) = repository("commit-stale-absence");
+        let root = fixture.root();
+        let products = [&Versioned as &dyn Product];
+        let plan = build_cli::plan_live(&root, &fixture.store, &Http::new(), &remote, &products, &[], true).unwrap();
+        let mut run = Run::create(&fixture.store, "prepare commit").unwrap();
+        let (_, next) = stage(&root, &fixture.store, &Http::new(), &remote, &products, &plan, &mut run).unwrap();
+        let scratch = Scratch::new().unwrap();
+        let directory = scratch.0.join("bundle");
+        let digest = super::super::commit_cli::pack(
+            &directory,
+            &fixture.store,
+            &run,
+            super::super::commit_cli::expected(&plan, &products).unwrap(),
+            next,
+            parse_sources(SOURCES).unwrap(),
+            &remote,
+        )
+        .unwrap();
+        drop(run);
+        write(&fixture.scratch.0.join("bucket/test/catalog.json"), "{\"schema\":99}");
+        let before = keys(&fixture);
+        let error = super::super::commit_cli::execute_for_test(&directory, &digest, &fixture.store, &remote, NO_WAIT)
+            .unwrap_err();
+        assert_eq!(error.code, Code::PlanOutdated);
+        assert_eq!(keys(&fixture), before);
     }
 
     #[test]

@@ -808,8 +808,8 @@ A product also gives what clients read of a release: its pointer document, and t
 client finds by name under `<prefix>/releases/<id>/`. A plan, a build and an apply of `live` leave
 out a product without them: it is in `blocked` with the reason "no client document yet", and its
 live release stays. Maps gives a catalog and checks changed selections with the production
-assembler and reader. Planner has no pointer. A product can check a release
-before an apply makes it live.
+assembler and reader. Planner verifies stored grid and runtime artifacts. Its service activation
+remains blocked. A product checks a release before an apply makes it live.
 
 Each step selects the files that clients read: the device, the web planner or a service on the
 VPS. Other files are intermediate: only other layers read them. R2 holds only selected files
@@ -834,7 +834,8 @@ of `live` also has:
 
 - `live`: per product, the id of its live release, or `null` when nothing is live, and `pointer`,
   the SHA-256 of its actual client document with sorted keys. The comparison excludes only
-  `release` and `applied`.
+  `release` and `applied`. `observed` is the SHA-256 of the exact original pointer bytes,
+  including publication fields, or `null` after a successful absent read. Read failures give no plan.
 - `edits`: per product, `region` with `from` (the region of the live release, or `null` when
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
   `on` and `off`.
@@ -1127,8 +1128,8 @@ first writes the status, and the second writes an error.
 
 1. It refuses when `data/` has changes that are not committed, apart from
    `data/env/local.toml`: live builds from a committed `data/`. The steps run the code of the
-   working tree, also code that is not committed. It does not commit or push. One apply of live
-   runs at a time on a machine.
+   working tree, also code that is not committed. It does not commit or push. Build preparation
+   can run on the laptop or VPS. All final R2 writes run in one VPS owner under an exclusive OS lock.
 2. It asks once in a terminal: "Apply M changes to live? removes X GB from R2", with the groups
    and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan; the plan must
    be the plan of now, as for `build --plan`. Without a terminal, `--yes` or `--plan` is the
@@ -1138,28 +1139,38 @@ first writes the status, and the second writes an error.
 3. It builds the plan, as `build live --plan` does.
 4. It checks each release that changes: the check of its product, and its pointer. Each file
    that it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
-5. It uploads each key of the releases after the apply and of their input copies that R2 lacks,
+5. It transfers a bundle of existing release manifests, input-copy records, desired pointers and
+   the original run journal to the owner. Only missing payload bytes move. Under the lock, the
+   owner checks each exact `observed` pointer again before it uploads each key of the releases after the apply and of their input copies that R2 lacks,
    or holds with another size; a key with another size goes first. Then it checks each key.
 6. It writes the pointer of each product whose release changes: the document of the product with
    `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
    `Cache-Control: public, max-age=60, must-revalidate`.
 7. It reads live again and lists its prefixes, and `reference/v1` once live reads a `dtm-*`
    source. With drift, it removes nothing. The leftovers are the keys that no live release uses
-   and that R2 had 5 minutes before the apply started: a key that another apply uploads and has
-   not switched to yet stays.
+   and that R2 had 5 minutes before final publication started. The owner keeps its lock through cleanup.
 8. A client that read an old pointer finishes its downloads first. So while there are leftovers,
    the apply waits until 12 minutes after the time of the newest pointer on R2 (10 minutes, and 2
    for a clock that differs), and 10 minutes after its own switch. When no pointer time reads, it
    waits 10 minutes. Then it reads and lists again, as in step 7, and removes the leftovers of
-   that read only, with a line in `removed.jsonl`: another apply can switch during the wait. An
-   apply that stopped in the wait waits again.
+   that read only, with a line in `removed.jsonl`. An apply that stopped in the wait waits again.
 
 An apply removes the leftovers of step 7, not the `remove` list of the plan, which is an estimate.
 A record on R2 of a version that live reads stays, also when `r2_copy` of its source is off now.
 
-An apply that stops before step 6 leaves live as it was, and the same plan applies again: it
-uploads only what R2 still lacks. The objects, manifests and named files are immutable, with
+An acknowledged failure before step 6 leaves live as it was. A new plan uploads only what R2
+still lacks. An unknown mutation outcome blocks all later commits. The objects, manifests and named files are immutable, with
 `Cache-Control: public, max-age=31536000, immutable`.
+
+The commit owner binds the original run id to the bundle SHA-256. Reusing that id with another
+bundle is refused. Before each remote mutation, it fsyncs one intent and its directory. After
+an acknowledgement, it fsyncs the run event before it clears the intent. A pending intent survives
+owner or machine failure. A later read that looks correct does not clear it. There is no timeout
+or lock takeover. Mutating children inherit the lock; a surviving child still excludes a new owner.
+The owner ignores SSH hangup and finishes its operation after laptop disconnect. Its durable state
+and original run remain on the VPS. Successful replies copy the owner journal to the laptop.
+Planner pointer changes remain blocked until service activation and retirement run under this owner.
+
 
 ## Commands
 
@@ -2803,6 +2814,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
+        "observed": {
+          "description": "SHA-256 of the exact pointer bytes that consent observed; None means absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "pointer": {
           "description": "SHA-256 of the actual client document, excluding only `release` and `applied`.",
           "type": [
@@ -2824,7 +2842,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "product",
         "release",
-        "pointer"
+        "pointer",
+        "observed"
       ],
       "type": "object"
     },

@@ -4,6 +4,7 @@
 //! and writes.
 
 pub mod cli;
+pub mod commit;
 pub mod date;
 pub mod engine;
 pub mod env;
