@@ -290,6 +290,17 @@ fn content_views(request: &Request, dir: &str, doc: &str) -> Result<Vec<PathBuf>
     Ok(documents)
 }
 
+fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec<u8>>) -> Result<(), String> {
+    for (cell, bytes) in artifacts {
+        let width = crate::grid::id_width(cell.log2);
+        let path = request.output.join(format!("{dir}/{:0width$}/{:0width$}.bin", cell.i, cell.j));
+        std::fs::create_dir_all(path.parent().expect("an artifact path has a parent"))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
 fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
