@@ -1,8 +1,9 @@
-//! The map-cell step of `obc data`: the cells of one band in one source leaf. Each cell has the
-//! bytes that [`crate::cut::cut`] writes when it cuts the whole leaf, as the planet bake does.
+//! The device-map steps of `obc data` whose code is the packer: the cells of one band in one
+//! source leaf, with the bytes that [`crate::cut::cut`] writes when it cuts the whole leaf, as the
+//! planet bake does; and the compiled landmarks and peaks of a region and their artifacts per cell.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use obc_data::engine::{view, Request};
 use serde_json::Value;
@@ -113,4 +114,199 @@ pub fn cells(request: &Request) -> Result<(), String> {
     let path = dir.join("empty.json");
     std::fs::write(&path, serde_json::to_string(&empty).expect("strings serialize"))
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The sources of one landmark or peak capture.
+pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
+
+/// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the capture
+/// files, the `.poly` and the `.osm.pbf` that the capture read. The capture keeps no copy of the
+/// boundary or of the candidates, which are OSM data, so the step makes them again, byte for byte.
+pub fn landmark_content(request: &Request) -> Result<(), String> {
+    let (view, boundary, extract) = capture_view(request)?;
+    crate::landmarks::discover::discover(&extract, &view.join("candidates.json"))?;
+    crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)
+        .map(drop)
+}
+
+/// The compiled peaks of a region: `peaks/peaks.json` and its photos, as [`landmark_content`]
+/// makes the landmarks, with the summits in place of the candidates.
+pub fn peak_content(request: &Request) -> Result<(), String> {
+    let (view, boundary, extract) = capture_view(request)?;
+    crate::landmarks::peaks::discover(&extract, &boundary, &view.join("summits.json"))?;
+    crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)
+        .map(drop)
+}
+
+/// The capture files as the capture wrote them, the boundary from the `.poly`, and the `.osm.pbf`.
+fn capture_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let mut capture = BTreeMap::new();
+    let mut other = Vec::new();
+    for (source, files) in &request.snapshots {
+        for (name, object) in files {
+            if !CAPTURES.contains(&source.as_str()) {
+                other.push((name, object));
+                continue;
+            }
+            // A capture file is `#<query>/<path in the capture>`.
+            let path = name.strip_prefix('#').and_then(|name| name.split_once('/')).map(|(_, path)| path);
+            capture.insert(path.ok_or(format!("{source}: {name} is not a capture file"))?.to_string(), object.clone());
+        }
+    }
+    let one = |suffix: &str| match other.iter().filter(|(name, _)| name.ends_with(suffix)).collect::<Vec<_>>()[..] {
+        [(_, object)] => Ok((*object).clone()),
+        ref found => Err(format!("the step reads {} {suffix} files, not one", found.len())),
+    };
+    let (poly, extract) = (one(".poly")?, one(".osm.pbf")?);
+    let view = request.output.with_file_name("view");
+    copied_view(&capture, &view)?;
+    let boundary = request.output.with_file_name("boundary.geojson");
+    let poly = std::fs::read_to_string(&poly).map_err(|e| format!("{}: {e}", poly.display()))?;
+    std::fs::write(&boundary, crate::catalog::boundary::geojson(&poly)?)
+        .map_err(|e| format!("{}: {e}", boundary.display()))?;
+    Ok((view, boundary, extract))
+}
+
+/// The landmark artifacts of one leaf: `landmarks/<i>/<j>.bin` for each cell of the option `cells`
+/// (`[i, j]` on the grid of the option `cell_log2`) that owns a landmark of the compiled content,
+/// joined to the OSM objects of the one `.osm.pbf` that name it.
+pub fn landmarks(request: &Request) -> Result<(), String> {
+    let cells = artifact_cells(request)?;
+    let files: BTreeMap<&String, &PathBuf> = request.layers.values().flatten().collect();
+    let pbfs: Vec<String> = files
+        .iter()
+        .filter(|(path, _)| path.ends_with(".osm.pbf"))
+        .map(|(_, object)| object.to_string_lossy().into_owned())
+        .collect();
+    if pbfs.len() != 1 {
+        return Err(format!("the step reads {} .osm.pbf files, not one", pbfs.len()));
+    }
+    let content = content_view(request, &files, "landmarks", crate::landmarks::CONTENT_DOC)?;
+    let progress = Progress::new(CancelToken::new(), |_, line| eprintln!("{line}"));
+    let (ingested, _) = crate::ingest::ingest_osm_ways(&pbfs, &Config::parse(SCHEMA)?, None, &progress)?;
+    let artifacts = crate::landmark_map::artifacts(&[content], &ingested.landmark_links, &cells)?;
+    write_artifacts(request, "landmarks", artifacts)
+}
+
+/// The peak artifacts of one leaf: `peaks/<i>/<j>.bin` for each cell of the option `cells` that
+/// owns the summit node of an association of the compiled peaks.
+pub fn peaks(request: &Request) -> Result<(), String> {
+    let cells = artifact_cells(request)?;
+    let files: BTreeMap<&String, &PathBuf> = request.layers.values().flatten().collect();
+    let content = content_view(request, &files, "peaks", "peaks.json")?;
+    write_artifacts(request, "peaks", crate::peak_map::artifacts(&[content], &cells)?)
+}
+
+/// The cells of the options `cell_log2` and `cells`.
+fn artifact_cells(request: &Request) -> Result<Vec<CellId>, String> {
+    let log2 = request.options["cell_log2"].as_u64().ok_or("option `cell_log2` is not a number")?;
+    let log2 = u32::try_from(log2).map_err(|_| "option `cell_log2` is too large")?;
+    let cells = request.options["cells"].as_array().ok_or("option `cells` is not a list")?;
+    cells
+        .iter()
+        .map(|cell| match cell.as_array().map(Vec::as_slice) {
+            Some([i, j]) => {
+                CellId::new(log2, i.as_i64().ok_or("a cell is not [i, j]")?, j.as_i64().ok_or("a cell is not [i, j]")?)
+            }
+            _ => Err("a cell is not [i, j]".into()),
+        })
+        .collect()
+}
+
+/// The compiled content of the layer files below `dir`, linked into a directory beside the output,
+/// and the path of its document `doc` there.
+fn content_view(
+    request: &Request,
+    files: &BTreeMap<&String, &PathBuf>,
+    dir: &str,
+    doc: &str,
+) -> Result<PathBuf, String> {
+    let content: BTreeMap<String, PathBuf> = files
+        .iter()
+        .filter(|(path, _)| path.starts_with(&format!("{dir}/")))
+        .map(|(path, object)| ((*path).clone(), (*object).clone()))
+        .collect();
+    let view = request.output.with_file_name("view");
+    copied_view(&content, &view)?;
+    Ok(view.join(dir).join(doc))
+}
+
+fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec<u8>>) -> Result<(), String> {
+    for (cell, bytes) in artifacts {
+        let width = crate::grid::id_width(cell.log2);
+        let path = request.output.join(format!("{dir}/{:0width$}/{:0width$}.bin", cell.i, cell.j));
+        std::fs::create_dir_all(path.parent().expect("an artifact path has a parent"))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
+/// refuses a symbolic link, which could name a file outside its directory.
+fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+    for (path, object) in files {
+        if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+            return Err(format!("{path} is not a relative path"));
+        }
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().expect("a joined path has a parent"))
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+        std::fs::hard_link(object, &file)
+            .or_else(|_| std::fs::copy(object, &file).map(drop))
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::landmarks::peaks::{discover, PeakContent};
+
+    /// The capture keeps no summits, which are OSM data: the step makes them again from the
+    /// extract, byte for byte, or the compiler refuses the digest that the capture pinned.
+    #[test]
+    fn a_peak_capture_compiles_with_the_summits_that_the_step_makes_again() {
+        let dir = obcm_testkit::scratch::scratch_dir("step", "peak-content");
+        let osm = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/peak-discovery.osm.pbf");
+        let poly = dir.join("area.poly");
+        std::fs::write(&poly, "world\n1\n -179 -89\n 179 -89\n 179 89\n -179 89\n -179 -89\nEND\nEND\n").unwrap();
+        let capture = dir.join("capture");
+        std::fs::create_dir_all(&capture).unwrap();
+        let boundary = capture.join("boundary.geojson");
+        std::fs::write(&boundary, crate::catalog::boundary::geojson(&std::fs::read_to_string(&poly).unwrap()).unwrap())
+            .unwrap();
+        let summits = capture.join("summits.json");
+        discover(&osm, &boundary, &summits).unwrap();
+        let bytes = std::fs::read(&summits).unwrap();
+        let sha256: String =
+            <sha2::Sha256 as sha2::Digest>::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        let manifest = capture.join("manifest.json");
+        let source =
+            serde_json::json!({"path": "summits.json", "url": "urn:summits", "bytes": bytes.len(), "sha256": sha256});
+        let document = serde_json::json!({"schema": 1, "sources": [source], "places": [],
+            "peaks": {"summits_path": "summits.json", "resolutions": []}});
+        std::fs::write(&manifest, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let files = |name: &str, path: &Path| BTreeMap::from([(name.to_string(), path.to_path_buf())]);
+        let request = Request {
+            step: "maps/peak-content".into(),
+            snapshots: BTreeMap::from([
+                ("wikidata".to_string(), files("#peaks=0/manifest.json", &manifest)),
+                ("geofabrik-poly".to_string(), files("area.poly", &poly)),
+                ("geofabrik-extracts".to_string(), files("area.osm.pbf", &osm)),
+            ]),
+            layers: BTreeMap::new(),
+            options: serde_json::json!({}),
+            output: dir.join("step/output"),
+            metrics: dir.join("step/metrics.json"),
+        };
+        peak_content(&request).unwrap();
+        let content = std::fs::read(request.output.join("peaks/peaks.json")).unwrap();
+        let content: PeakContent = serde_json::from_slice(&content).unwrap();
+        let summits: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(content.counts.captured > 0);
+        assert_eq!(content.counts.captured, summits["summits"].as_array().unwrap().len());
+    }
 }

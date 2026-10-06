@@ -648,10 +648,21 @@ def sweep(capture: Capture, policy: dict, boundary: dict) -> tuple[set[str], lis
     return qids, queries
 
 
+def generated(args, command: list[str], name: str) -> bytes:
+    """The file `name` that a selection command of the compiler writes with `--out`."""
+    with tempfile.TemporaryDirectory(prefix="obc-landmark-input-") as temporary:
+        path = Path(temporary) / name
+        subprocess.run([str(args.select_with.resolve()), *command, "--out", str(path)], check=True)
+        return path.read_bytes()
+
+
 def run(args) -> int:
     boundary_bytes = args.boundary.read_bytes()
     policy_bytes = args.policy.read_bytes()
-    candidate_bytes = args.candidates.read_bytes()
+    if args.osm:
+        candidate_bytes = generated(args, ["landmark-candidates", "--osm", str(args.osm)], "candidates.json")
+    else:
+        candidate_bytes = args.candidates.read_bytes()
     boundary, policy = json.loads(boundary_bytes), json.loads(policy_bytes)
     candidates = json.loads(candidate_bytes)
     capture = Capture(args.out)
@@ -766,21 +777,30 @@ def run(args) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--boundary", required=True, type=Path)
+    parser.add_argument("--boundary", type=Path, help="GeoJSON boundary; or --poly")
+    parser.add_argument("--poly", type=Path, help="Osmosis .poly; the compiler makes the boundary from it")
     parser.add_argument("--policy", type=Path, help="required for landmark policy discovery")
-    parser.add_argument("--candidates", type=Path, help="QID list from `obc-bake landmark-candidates`; required for landmarks")
+    parser.add_argument("--candidates", type=Path, help="QID list from `obc-bake landmark-candidates`; or --osm")
+    parser.add_argument("--osm", type=Path, help="regional OSM extract; the compiler finds the landmark candidates in it")
     parser.add_argument("--sweep", action="store_true", help=f"also query Wikidata for the {SWEEP_GROUP} group")
     parser.add_argument("--peaks-osm", type=Path, help="capture a separate peak catalogue from this regional OSM extract")
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--select-with", required=True, type=Path, help="built obc-bake binary; it selects entities before asset acquisition")
+    parser.add_argument("--select-with", required=True, type=Path, help="built obc-bake or obc data binary; it selects entities before asset acquisition")
     parser.add_argument("--retry-failed", action="store_true", help="retry failed requests once, retaining their previous outcomes")
     args = parser.parse_args()
     try:
+        if (args.boundary is None) == (args.poly is None):
+            raise ValueError("give one of --boundary and --poly")
+        if args.poly:
+            # The capture keeps its boundary there in any case.
+            args.out.mkdir(parents=True, exist_ok=True)
+            args.boundary = args.out / "boundary.geojson"
+            args.boundary.write_bytes(generated(args, ["boundary", "--poly", str(args.poly)], "boundary.geojson"))
         if args.peaks_osm:
             from peak_capture import run as run_peaks
             return run_peaks(args)
-        if args.policy is None or args.candidates is None:
-            raise ValueError("landmarks require --policy and --candidates")
+        if args.policy is None or (args.candidates is None) == (args.osm is None):
+            raise ValueError("landmarks require --policy and one of --candidates and --osm")
         return run(args)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"landmark capture: {error}\n")

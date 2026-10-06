@@ -975,6 +975,32 @@ pub(crate) mod tests {
         assert!(err.contains("blocked: credential missing: ~/.obc-test-no-such-key"), "{err}");
     }
 
+    /// A Wikimedia capture names its inputs by digest, so its params are the same on every
+    /// machine; only the `obc data` binary, which links the compiler, can select its places.
+    #[test]
+    fn a_wikimedia_capture_reads_stored_files_and_needs_the_compiler() {
+        let scratch = Scratch::new("wikimedia");
+        let store = Store::at(&scratch.0);
+        let mut wikidata = located(FetchKind::Capture, "https://example.org/wikidata");
+        wikidata.id = "wikidata".into();
+        let file = store.partial("poly");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "poly").unwrap();
+        let poly = format!("sha256:{}", sha256_hex(b"poly"));
+        store.insert(&file, &sha256_hex(b"poly")).unwrap();
+        let params = |collection: &str, osm: &str| {
+            let pairs = [("collection", collection), ("osm", osm), ("poly", poly.as_str())];
+            pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec()
+        };
+        let fails =
+            |params| fetch(&store, &quick(), &Request { source: &wikidata, version: None, params }).unwrap_err();
+        assert!(fails(params("landmarks", "/tmp/a.pbf")).contains("is not sha256:"));
+        let missing = format!("sha256:{}", sha256_hex(b"osm"));
+        assert!(fails(params("landmarks", &missing)).contains("the store has no such file"));
+        assert!(fails(params("roads", &poly)).contains("is not `landmarks` or `peaks`"));
+        assert!(fails(params("peaks", &poly)).contains("this binary has no step code"));
+    }
+
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut files = Vec::new();
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {

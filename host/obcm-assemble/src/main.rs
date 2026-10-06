@@ -31,8 +31,8 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore, TerrainCellInput,
-    TerrainJob, TerrainParams,
+    assemble_full, Articles, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore,
+    TerrainCellInput, TerrainJob, TerrainParams,
 };
 
 /// A file this driver reads on demand: an input cell, a terrain cell, or the sealed map the verify
@@ -525,6 +525,9 @@ OPTIONS:
                             Splices the raster into the map's OBCM §1.3 terrain region. Squares the
                             selection covers but the list omits are canonically void and cost four
                             directory bytes each (OBCC §13.6)
+    --landmarks <path>      a landmark artifact (OBCC §14.3) to merge into the landmark region
+                            (repeatable)
+    --peaks <path>          a peak artifact (OBCC §14.3) to merge into the peak region (repeatable)
     --band <id>             only assemble these bands (repeatable)
     --cell <id>             only assemble these cells (repeatable, `<log2>/<i>/<j>`)
     --merge-budget-bytes <n>  the most memory the §4.6 merge's sorted passes may hold (default 64
@@ -563,6 +566,8 @@ fn run() -> std::result::Result<(), String> {
     }
     let mut cells_path: Option<PathBuf> = None;
     let mut terrain_path: Option<PathBuf> = None;
+    let mut landmark_paths: Vec<PathBuf> = Vec::new();
+    let mut peak_paths: Vec<PathBuf> = Vec::new();
     let mut schema_path: Option<PathBuf> = None;
     let mut light_skin_path: Option<PathBuf> = None;
     let mut dark_skin_path: Option<PathBuf> = None;
@@ -581,6 +586,8 @@ fn run() -> std::result::Result<(), String> {
         match args[i].as_str() {
             "--cells" => cells_path = Some(PathBuf::from(value(&mut i)?)),
             "--terrain" => terrain_path = Some(PathBuf::from(value(&mut i)?)),
+            "--landmarks" => landmark_paths.push(PathBuf::from(value(&mut i)?)),
+            "--peaks" => peak_paths.push(PathBuf::from(value(&mut i)?)),
             "--schema" => schema_path = Some(PathBuf::from(value(&mut i)?)),
             "--light-skin" => light_skin_path = Some(PathBuf::from(value(&mut i)?)),
             "--dark-skin" => dark_skin_path = Some(PathBuf::from(value(&mut i)?)),
@@ -660,6 +667,15 @@ fn run() -> std::result::Result<(), String> {
         }
     }
 
+    let open = |paths: &[PathBuf]| -> std::result::Result<Vec<ProfiledSource>, String> {
+        paths.iter().map(|p| ProfiledSource::open(p).map_err(|e| format!("open {}: {e}", p.display()))).collect()
+    };
+    let (landmark_sources, peak_sources) = (open(&landmark_paths)?, open(&peak_paths)?);
+    let articles = Articles {
+        landmarks: landmark_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+        peaks: peak_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+    };
+
     let mut store = FileStore::new(&out_path).map_err(|e| e.to_string())?;
     let job = terrain_sidecar.as_ref().map(|sidecar| TerrainJob {
         params: sidecar.params,
@@ -678,8 +694,9 @@ fn run() -> std::result::Result<(), String> {
     // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap,
     // which is also what makes the `mem-profile` numbers mean anything.
     let scratch = FileScratch::new()?;
-    let summary = assemble_full(inputs, Vec::new(), job, &schema, &map_styles, &opts, &mut store, &clock, &scratch)
-        .map_err(|e| e.to_string())?;
+    let summary =
+        assemble_full(inputs, Vec::new(), job, articles, &schema, &map_styles, &opts, &mut store, &clock, &scratch)
+            .map_err(|e| e.to_string())?;
 
     // The engine returns what a producer reports; the CLI is what has a stderr. Printed before the
     // summary so a long JSON blob cannot bury them.

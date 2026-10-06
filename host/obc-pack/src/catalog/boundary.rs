@@ -128,6 +128,52 @@ pub fn poly_rings(poly_text: &str) -> Result<Vec<Vec<(f64, f64)>>, String> {
     Ok(parse_poly(poly_text)?.into_iter().map(|r| r.points).collect())
 }
 
+/// The `.poly` at full resolution as one GeoJSON MultiPolygon: the even-odd assembly that the
+/// cell selection takes, holes and all. This is the boundary of a landmark or peak capture.
+pub fn geojson(poly_text: &str) -> Result<String, String> {
+    let polys = assemble_multipolygon(&poly_rings(poly_text)?);
+    if polys.is_empty() {
+        return Err("the .poly's rings do not assemble into a polygon".into());
+    }
+    Ok(polygons_geojson(&polys))
+}
+
+/// `polys` as one GeoJSON MultiPolygon, rounded to microdegrees: the text is hashed, so float noise
+/// from another GEOS build must not move it.
+pub fn polygons_geojson(polys: &[Geom]) -> String {
+    use std::fmt::Write;
+    fn collect(geom: &Geom, out: &mut Vec<Vec<Ring>>) {
+        match geom {
+            Geom::Polygon { exterior, interiors } => {
+                let rings: Vec<Ring> =
+                    std::iter::once(exterior).chain(interiors).filter_map(|ring| to_udeg_ring(ring)).collect();
+                if !rings.is_empty() {
+                    out.push(rings);
+                }
+            }
+            Geom::Multi(parts) => parts.iter().for_each(|part| collect(part, out)),
+            Geom::Line(_) | Geom::Empty => {}
+        }
+    }
+    let mut polygons = Vec::new();
+    polys.iter().for_each(|poly| collect(poly, &mut polygons));
+    let mut s = String::from("{\n  \"type\": \"MultiPolygon\",\n  \"coordinates\": [");
+    for (p, polygon) in polygons.iter().enumerate() {
+        let _ = write!(s, "{}\n    [", if p == 0 { "" } else { "," });
+        for (r, ring) in polygon.iter().enumerate() {
+            let _ = write!(s, "{}\n      [", if r == 0 { "" } else { "," });
+            for (i, &[lat, lon]) in ring.iter().enumerate() {
+                let deg = |v: i32| format!("{:.6}", f64::from(v) / 1e6);
+                let _ = write!(s, "{}[{}, {}]", if i == 0 { "" } else { ", " }, deg(lon), deg(lat));
+            }
+            s.push(']');
+        }
+        s.push_str("\n    ]");
+    }
+    s.push_str("\n  ]\n}\n");
+    s
+}
+
 /// A region's outline: assembled, simplified, rounded to microdegrees, ordered.
 ///
 /// `tolerance_udeg` is the GEOS `TopologyPreservingSimplifier` tolerance in

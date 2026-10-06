@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use obc_formats::{
-    io::rd_u32,
-    obcm::{landmarks::*, HEADER_LANDMARK_OFFSET_OFF, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE},
+    io::{rd_u16, ByteSource, WindowSource},
+    obcm::{landmarks::*, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE},
 };
 use obc_reader::landmarks::{map_section, LandmarkDirectory};
 use sha2::{Digest, Sha256};
@@ -14,36 +14,37 @@ use crate::{emit::MapWriter, input::Cell, poi::MergedPois, Error, Result};
 const COPY_BYTES: usize = 4096;
 type Schedule = [u8; POI_HOURS_BLOB_LEN];
 
+/// A run of bytes in one input section: `offset` is relative to the section.
 #[derive(Clone)]
 pub(crate) struct Blob {
-    pub(crate) cell: usize,
+    pub(crate) section: usize,
     pub(crate) offset: u64,
     pub(crate) len: u32,
     pub(crate) hash: [u8; 32],
 }
 
 impl Blob {
-    pub(crate) fn copy(&self, cells: &[&Cell<'_>], mut sink: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    pub(crate) fn copy(&self, sections: &[WindowSource<'_>], mut sink: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
         let mut buffer = [0; COPY_BYTES];
         let mut done = 0;
         while done < self.len {
             let count = (self.len - done).min(COPY_BYTES as u32) as usize;
-            cells[self.cell].read_into(self.offset + u64::from(done), &mut buffer[..count])?;
+            sections[self.section].read_at(self.offset + u64::from(done), &mut buffer[..count]).map_err(Error::Io)?;
             sink(&buffer[..count])?;
             done += count as u32;
         }
         Ok(())
     }
 
-    pub(crate) fn same_bytes(&self, other: &Self, cells: &[&Cell<'_>]) -> Result<bool> {
+    pub(crate) fn same_bytes(&self, other: &Self, sections: &[WindowSource<'_>]) -> Result<bool> {
         if self.len != other.len || self.hash != other.hash {
             return Ok(false);
         }
         let mut buffer = [0; COPY_BYTES];
         let mut done = 0;
         let mut equal = true;
-        self.copy(cells, |bytes| {
-            cells[other.cell].read_into(other.offset + done, &mut buffer[..bytes.len()])?;
+        self.copy(sections, |bytes| {
+            sections[other.section].read_at(other.offset + done, &mut buffer[..bytes.len()]).map_err(Error::Io)?;
             equal &= bytes == &buffer[..bytes.len()];
             done += bytes.len() as u64;
             Ok(())
@@ -71,13 +72,15 @@ impl Candidate {
 
 /// Output records and source-backed content. Memory is bounded by the format's record limit.
 #[derive(Default)]
-pub struct LandmarkSection {
+pub struct LandmarkSection<'a> {
     records: Vec<LandmarkRecord>,
     blobs: Vec<Blob>,
     len: u32,
+    /// The input sections that the blobs are in.
+    sections: Vec<WindowSource<'a>>,
 }
 
-impl LandmarkSection {
+impl LandmarkSection<'_> {
     pub fn section_len(&self) -> u64 {
         if self.records.is_empty() {
             0
@@ -86,7 +89,7 @@ impl LandmarkSection {
         }
     }
 
-    pub fn emit(&self, cells: &[&Cell<'_>], out: &mut MapWriter<'_>) -> Result<()> {
+    pub fn emit(&self, out: &mut MapWriter<'_>) -> Result<()> {
         if self.records.is_empty() {
             return Ok(());
         }
@@ -104,7 +107,7 @@ impl LandmarkSection {
         }
         for blob in &self.blobs {
             let mut hash = Sha256::new();
-            blob.copy(cells, |bytes| {
+            blob.copy(&self.sections, |bytes| {
                 hash.update(bytes);
                 out.put(bytes)
             })?;
@@ -132,21 +135,48 @@ fn set_references(record: &mut LandmarkRecord, refs: [ContentRef; 4]) {
     [record.name, record.articles, record.photo, record.photo_attribution] = refs;
 }
 
-/// Resolve file-local schedules before records or pools are laid out. Content precedence is
-/// independent of cell order.
-pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSection> {
+/// The landmark artifact as a section (OBCC §14.3), and the hours pool after it.
+fn artifact<'a>(src: &'a dyn ByteSource) -> Result<(WindowSource<'a>, Vec<Schedule>)> {
+    let section = WindowSource::new(src, 0, src.len()).expect("a source is a window onto itself");
+    let directory = LandmarkDirectory::read(&section).map_err(malformed)?;
+    let mut count = [0; 2];
+    section.read_at(u64::from(directory.len), &mut count).map_err(Error::Io)?;
+    let count = usize::from(rd_u16(&count, 0));
+    if src.len() != u64::from(directory.len) + 2 + (count * POI_HOURS_BLOB_LEN) as u64 {
+        return Err(Error::Format("a landmark artifact is not its section and its hours pool".into()));
+    }
+    let mut pool = vec![[0; POI_HOURS_BLOB_LEN]; count];
+    for (index, blob) in pool.iter_mut().enumerate() {
+        let at = u64::from(directory.len) + 2 + (index * POI_HOURS_BLOB_LEN) as u64;
+        section.read_at(at, blob).map_err(Error::Io)?;
+    }
+    Ok((section, pool))
+}
+
+/// The landmark sections of `cells` and the landmark `artifacts`. Resolve file-local schedules
+/// before records or pools are laid out. Content precedence is independent of input order.
+pub fn merge<'a>(
+    cells: &[&Cell<'a>],
+    artifacts: &[&'a dyn ByteSource],
+    pois: &mut MergedPois,
+) -> Result<LandmarkSection<'a>> {
+    let mut inputs = Vec::new();
+    for cell in cells {
+        if let Some(section) = map_section(cell.src).map_err(malformed)? {
+            inputs.push((section, crate::poi::read_hours_pool(cell)?));
+        }
+    }
+    for &src in artifacts {
+        inputs.push(artifact(src)?);
+    }
+    let (sections, pools): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
     let mut winners = BTreeMap::<u64, Candidate>::new();
-    for (cell_index, cell) in cells.iter().enumerate() {
-        let Some(section) = map_section(cell.src).map_err(malformed)? else { continue };
-        let directory = LandmarkDirectory::read(&section).map_err(malformed)?;
-        let mut offset = [0; 4];
-        cell.read_into(HEADER_LANDMARK_OFFSET_OFF as u64, &mut offset)?;
-        let start = crate::emit::SCALE.offset(rd_u32(&offset, 0)).bytes();
-        let pool = crate::poi::read_hours_pool(cell)?;
+    for (index, (section, pool)) in sections.iter().zip(&pools).enumerate() {
+        let directory = LandmarkDirectory::read(section).map_err(malformed)?;
         let mut last = None;
-        for index in 0..directory.count {
-            let record = directory.record(&section, index).map_err(malformed)?;
-            directory.article(&section, &record, *b"en").map_err(malformed)?;
+        for record_index in 0..directory.count {
+            let record = directory.record(section, record_index).map_err(malformed)?;
+            directory.article(section, &record, *b"en").map_err(malformed)?;
             if last.is_some_and(|key| key >= record.key()) {
                 return Err(Error::Format("landmark latitude index is not strictly ordered".into()));
             }
@@ -175,10 +205,9 @@ pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSecti
                 let range = reference
                     .range(directory.payload, directory.len, limits[i])
                     .ok_or_else(|| Error::Format("landmark content reference is out of bounds".into()))?;
-                let mut blob =
-                    Blob { cell: cell_index, offset: start + range.start, len: reference.len, hash: [0; 32] };
+                let mut blob = Blob { section: index, offset: range.start, len: reference.len, hash: [0; 32] };
                 let mut hash = Sha256::new();
-                blob.copy(cells, |bytes| {
+                blob.copy(&sections, |bytes| {
                     hash.update(bytes);
                     Ok(())
                 })?;
@@ -233,7 +262,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSecti
             let bucket = interned.entry(blob.hash).or_default();
             let mut existing = None;
             for &(index, reference) in bucket.iter() {
-                if blob.same_bytes(&blobs[index], cells)? {
+                if blob.same_bytes(&blobs[index], &sections)? {
                     existing = Some(reference);
                     break;
                 }
@@ -253,7 +282,7 @@ pub fn merge(cells: &[&Cell<'_>], pois: &mut MergedPois) -> Result<LandmarkSecti
         set_references(&mut candidate.record, refs);
         records.push(candidate.record);
     }
-    Ok(LandmarkSection { records, blobs, len: cursor })
+    Ok(LandmarkSection { records, blobs, len: cursor, sections })
 }
 
 #[cfg(test)]
@@ -266,8 +295,8 @@ mod tests {
     use super::*;
     use crate::{grid::CellId, input::CellInput};
     use obc_formats::{
-        io::{ByteSource, SliceSource},
-        obcm::{PoiApproach, PoiMetadata, SourceId},
+        io::{rd_u32, ByteSource, SliceSource},
+        obcm::{PoiApproach, PoiMetadata, SourceId, HEADER_LANDMARK_OFFSET_OFF},
     };
 
     const WEST: CellId = CellId { log2: 18, i: 1204, j: 1052 };
@@ -292,7 +321,13 @@ mod tests {
         })
     }
 
-    fn run(sources: &[(CellId, Vec<u8>)]) -> (LandmarkSection, MergedPois, Vec<u8>) {
+    /// What a merge kept: its records and the number of its content blobs.
+    struct Kept {
+        records: Vec<LandmarkRecord>,
+        blobs: usize,
+    }
+
+    fn run(sources: &[(CellId, Vec<u8>)]) -> (Kept, MergedPois, Vec<u8>) {
         let cache = obc_reader::MapCache::new_boxed();
         let srcs: Vec<_> = sources.iter().map(|(_, bytes)| SliceSource(bytes)).collect();
         let cells: Vec<_> = sources
@@ -304,18 +339,15 @@ mod tests {
             .collect();
         let cells: Vec<_> = cells.iter().collect();
         let mut pois = crate::poi::merge(&cells).unwrap();
-        let section = merge(&cells, &mut pois).unwrap();
+        let section = merge(&cells, &[], &mut pois).unwrap();
         let mut bytes = Vec::new();
         section
-            .emit(
-                &cells,
-                &mut MapWriter::new(crate::emit::SCALE, 0, &mut |data| {
-                    bytes.extend_from_slice(data);
-                    Ok(())
-                }),
-            )
+            .emit(&mut MapWriter::new(crate::emit::SCALE, 0, &mut |data| {
+                bytes.extend_from_slice(data);
+                Ok(())
+            }))
             .unwrap();
-        (section, pois, bytes)
+        (Kept { blobs: section.blobs.len(), records: section.records }, pois, bytes)
     }
 
     #[test]
@@ -336,7 +368,7 @@ mod tests {
         assert_eq!(section.records[1].hours_ref, 0);
         assert_eq!(section.records[0].photo, section.records[1].photo);
         assert_eq!(section.records[0].articles, section.records[1].articles);
-        assert_eq!(section.blobs.len(), 4);
+        assert_eq!(section.blobs, 4);
         let src = SliceSource(&bytes);
         let directory = LandmarkDirectory::read(&src).unwrap();
         fixture::assert_content(&src);
@@ -391,7 +423,7 @@ mod tests {
             let good =
                 Cell::open(CellInput { id: WEST, band: "network".into(), src: &good, partial: false }, &cache).unwrap();
             let mut pois = crate::poi::merge(&[&good, &cell]).unwrap();
-            assert!(merge(&[&good, &cell], &mut pois).is_err(), "field {field}");
+            assert!(merge(&[&good, &cell], &[], &mut pois).is_err(), "field {field}");
         }
     }
 
@@ -418,9 +450,10 @@ mod tests {
         let cell =
             Cell::open(CellInput { id: WEST, band: "network".into(), src: &src, partial: false }, &cache).unwrap();
         let mut pois = crate::poi::merge(&[&cell]).unwrap();
-        let section = merge(&[&cell], &mut pois).unwrap();
-        src.bytes.borrow_mut()[section.blobs[0].offset as usize] ^= 1;
-        let emit = || section.emit(&[&cell], &mut MapWriter::new(crate::emit::SCALE, 0, &mut |_| Ok(())));
+        let section = merge(&[&cell], &[], &mut pois).unwrap();
+        let at = section.sections[0].offset() + section.blobs[0].offset;
+        src.bytes.borrow_mut()[at as usize] ^= 1;
+        let emit = || section.emit(&mut MapWriter::new(crate::emit::SCALE, 0, &mut |_| Ok(())));
         assert!(matches!(emit(), Err(Error::Verify(_))));
         src.fail.set(true);
         assert!(matches!(emit(), Err(Error::Io(obc_formats::io::Error::Io))));
@@ -445,8 +478,8 @@ mod tests {
         let cell =
             Cell::open(CellInput { id: WEST, band: "network".into(), src: &src, partial: false }, &cache).unwrap();
         let mut pois = crate::poi::merge(&[&cell]).unwrap();
-        let section = merge(&[&cell], &mut pois).unwrap();
-        section.emit(&[&cell], &mut MapWriter::new(crate::emit::SCALE, 0, &mut |_| Ok(()))).unwrap();
+        let section = merge(&[&cell], &[], &mut pois).unwrap();
+        section.emit(&mut MapWriter::new(crate::emit::SCALE, 0, &mut |_| Ok(()))).unwrap();
         let mut absent = src.0;
         absent[49..57].fill(0);
         assert!(run(&[(WEST, absent)]).2.is_empty());
