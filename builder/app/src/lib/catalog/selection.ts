@@ -18,7 +18,7 @@
 //     the union counts them once, which is why per-part bytes need two answers.
 
 import { corridorCells, type LatLon } from "./corridor";
-import { cellsIntersecting, formatCellId, type UBox } from "./grid";
+import { cellsIntersecting, formatCellId, type UBox } from "../core/grid";
 import { lassoCells } from "./lasso";
 import type { BandEntry, Catalog } from "./manifest";
 import {

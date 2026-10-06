@@ -65,27 +65,14 @@ pub fn cell_base_sample(cell: u32, posting_log2: u8, cell_log2: u8) -> u32 {
 /// Number of cells along one axis of the world box at `2^cell_log2` µdeg.
 #[inline]
 pub fn axis_cells(cell_log2: u8) -> u32 {
-    WORLD_SIDE >> cell_log2
+    obc_formats::grid::axis_cells(cell_log2 as u32) as u32
 }
 
 /// Zero-padding width of a cell index in a canonical cell id: `max(4, digits(axis_cells − 1))`.
 ///
-/// The rule lives here, in the one crate both sides of the terrain pipeline depend on, because it
-/// is content addressing and not formatting: `18/1204/52` and `18/01204/1052` are two strings for
-/// one cell, and a store keyed by the string would hold the same square twice. The two producers
-/// cannot see each other, and a second transcription of `max(4, …)` is how they would drift.
+/// The shared format grid owns the cell naming rule.
 pub fn id_width(cell_log2: u8) -> usize {
-    let mut v = axis_cells(cell_log2) - 1;
-    let mut digits = 1;
-    while v >= 10 {
-        v /= 10;
-        digits += 1;
-    }
-    if digits < 4 {
-        4
-    } else {
-        digits
-    }
+    obc_formats::grid::id_width(cell_log2 as u32)
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
  * The drift guard between the browser assembly path and the native one: the fixture cells are
  * assembled here and compared with what `cargo run -p obcm-assemble` wrote from the same input. It
  * proves the wasm build agrees with the native build, not that either is correct. Regenerate the
- * fixture with the two commands in `apps/obc-web-assemble/tests/fixture.rs`.
+ * fixture with the two commands in `builder/wasm/tests/fixture.rs`.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -47,13 +47,13 @@ function assembleCells(
 function repoRoot(): string {
     let dir = dirname(fileURLToPath(import.meta.url));
     for (let up = 0; up < 12; up++) {
-        if (existsSync(join(dir, "apps/obc-web-assemble/tests/fixture/cells.json"))) return dir;
+        if (existsSync(join(dir, "builder/wasm/tests/fixture/cells.json"))) return dir;
         dir = dirname(dir);
     }
     throw new Error("could not locate the repo root from " + import.meta.url);
 }
 
-const FIXTURE = join(repoRoot(), "apps/obc-web-assemble/tests/fixture");
+const FIXTURE = join(repoRoot(), "builder/wasm/tests/fixture");
 
 /** The cutter's provenance sidecar, verbatim. It is also the schema document the engine parses. */
 const sidecar = readFileSync(join(FIXTURE, "cells.json"), "utf8");
@@ -93,7 +93,7 @@ function terrain(): { lattice: AssembleTerrain; cells: AssembleTerrainCell[] } {
 /** `map.obcm` carries the spliced raster; `flat.obcm` is the same selection without terrain. */
 function expectedMap(variant: "map" | "flat"): Uint8Array {
     const path = join(FIXTURE, "expected", `${variant}.obcm`);
-    expect(existsSync(path), `${path} is missing — see apps/obc-web-assemble/tests/fixture.rs`).toBe(true);
+    expect(existsSync(path), `${path} is missing — see builder/wasm/tests/fixture.rs`).toBe(true);
     return new Uint8Array(readFileSync(path));
 }
 
@@ -150,7 +150,7 @@ class Reads {
 beforeAll(async () => {
     // The `--target web` glue fetches the module relative to itself and Node cannot fetch a `file:`
     // URL, so hand it the bytes. A missing artifact is a setup error, never a skip.
-    const wasm = join(dirname(fileURLToPath(import.meta.url)), "pkg", "obc_web_assemble_bg.wasm");
+    const wasm = join(dirname(fileURLToPath(import.meta.url)), "..", "core", "pkg", "obc_builder_bridge_bg.wasm");
     if (!existsSync(wasm)) {
         throw new Error(
             `the wasm bridge is not built (${wasm} missing). Run \`npm run build:wasm\` in ` +
@@ -466,7 +466,7 @@ describe("assembleCells", () => {
  */
 describe("the wire contract with driver.rs", () => {
     it("lists exactly the codes ErrorCode::as_str emits", () => {
-        const driver = readFileSync(join(repoRoot(), "apps/obc-web-assemble/src/driver.rs"), "utf8");
+        const driver = readFileSync(join(repoRoot(), "builder/wasm/src/driver.rs"), "utf8");
         const arms = driver.match(/ErrorCode::\w+ => "([a-z-]+)"/g);
         expect(arms, "ErrorCode::as_str no longer looks the way this test reads it").toBeTruthy();
         const codes = arms!.map((a) => a.replace(/.*"([a-z-]+)"/, "$1"));
@@ -478,7 +478,7 @@ describe("wasmMemoryBytes", () => {
     /** The seam the browser memory gate reads: what the worker reports at `done` has to be the
      *  live instance's own linear memory, not a number this module keeps beside it. */
     it("reports the instantiated module's linear memory", async () => {
-        const { memory } = await (await import("./pkg/obc_web_assemble.js")).default();
+        const { memory } = await (await import("../core/pkg/obc_builder_bridge.js")).default();
         expect(wasmMemoryBytes()).toBe(memory.buffer.byteLength);
         expect(wasmMemoryBytes()).toBeGreaterThan(0);
     });

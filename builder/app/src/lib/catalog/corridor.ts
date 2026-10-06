@@ -17,7 +17,7 @@
 // point that matters to a cell's answer is by definition within the corridor width
 // of it, so it shares the cell's latitude to within a fraction of a degree.
 
-import { cellsIntersecting, cellSize, cellSquare, GridError, type CellId, type UBox } from "./grid";
+import { cellsIntersecting, cellSize, cellSquare, GridError, type CellId, type UBox } from "../core/grid";
 
 /** A coordinate in integer microdegrees, `lat, lon` — the catalog's order. */
 export interface LatLon {

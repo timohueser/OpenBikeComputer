@@ -1,34 +1,3 @@
-//! The hosted builder's assembly bridge: the OBCA engine compiled to wasm and driven from a
-//! browser tab. The cells the builder downloaded go in, and one `.obcm` comes out, byte-for-byte
-//! identical to what the native CLI produces from the same inputs.
-//!
-//! Nothing here names a file. What crosses is a digest, a length and sometimes the bytes; only the
-//! caller knows whether that becomes `MAP.OBCM` on a card or a save dialog's suggestion.
-//!
-//! `.run()` blocks for the whole assembly, about 20 s at country scale, so it belongs in a Web
-//! Worker. `builder/app/src/lib/assemble/bridge.ts` holds that contract and what a cancel button
-//! must do.
-//!
-//! A failure crosses to JS as a thrown `Error` whose `message` is the engine's own and whose `code`
-//! ([`ErrorCode`]) is the stable identifier a caller branches on.
-//!
-//! The driver ([`driver`]) and the memory model ([`estimate`]) are target-independent and tested
-//! natively; only the bindgen shim below is wasm-specific.
-
-pub mod driver;
-pub mod estimate;
-
-pub use driver::{
-    assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions,
-    CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, MapWrites, NoHooks, Outcome, Phase, ScratchWrites,
-    SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
-};
-pub use estimate::{
-    estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, INPUT_READ_CACHE_BYTES,
-    OUTPUT_PER_CELL_BYTE, PRACTICAL_BUDGET, SPILL_PER_NAV_BYTE, VERIFY_READ_CACHE_BYTES, WASM32_ADDRESS_SPACE,
-    WASM_ALLOC_MARGIN,
-};
-
 #[cfg(target_arch = "wasm32")]
 mod web {
     use wasm_bindgen::prelude::*;
@@ -37,12 +6,6 @@ mod web {
         assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, MapWrites,
         Outcome, Phase, ScratchWrites, SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
     };
-
-    /// Module start: surface Rust panics in the console instead of an opaque `unreachable` trap.
-    #[wasm_bindgen(start)]
-    pub fn start() {
-        console_error_panic_hook::set_once();
-    }
 
     #[wasm_bindgen]
     extern "C" {
@@ -83,7 +46,7 @@ mod web {
                     if !self.warned {
                         self.warned = true;
                         console_warn(&format!(
-                            "obc-web-assemble: the progress callback threw ({e:?}). The assembly continues and the \
+                            "obc-builder-bridge: the progress callback threw ({e:?}). The assembly continues and the \
                              callback keeps being called; this is reported once. To cancel, *return* a truthy value \
                              rather than throwing."
                         ));

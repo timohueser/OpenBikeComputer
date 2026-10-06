@@ -7,7 +7,7 @@
 // computes it the same way proves nothing.
 
 import { describe, expect, it } from "vitest";
-import { cellSquare, parseCellId } from "./grid";
+import { cellSquare, parseCellId } from "../core/grid";
 import { CatalogFormatError } from "./parse";
 import { parseRegionCells } from "./satellites";
 import {

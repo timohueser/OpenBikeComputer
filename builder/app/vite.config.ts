@@ -88,6 +88,7 @@ export default defineConfig(({ mode }) => {
         },
         test: {
             environment: "node",
+            setupFiles: ["./test-support/core.ts"],
             // Planner modules read their config on import, as in a planner build.
             env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig) },
             // `test-support/` holds what no tier's build has as an input; its suites run here.

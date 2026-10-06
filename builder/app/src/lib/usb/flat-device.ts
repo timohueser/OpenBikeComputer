@@ -18,7 +18,7 @@
  * not polled for the next record until it does.
  */
 
-import init, { FlatDevice as WasmDevice, type DeviceReaction, type InitInput } from "../../../test-support/flat-device/pkg/obc_flat_device.js";
+import init, { FlatDevice as WasmDevice, type DeviceReaction, type InitInput } from "../../../test-support/flat-device/pkg/obc_builder_bridge.js";
 import { FlatStoreClient } from "./client";
 import { PipeError, type DeviceLink } from "./pipe";
 import { MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD, RecordChannel, type DeviceInfo } from "./records";

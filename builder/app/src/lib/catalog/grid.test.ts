@@ -1,4 +1,4 @@
-// The pinning suite for the TS grid mirror.
+// The browser grid boundary, pinned to the Rust producer.
 //
 // Every vector below is copied from `host/obc-pack/src/grid.rs`'s own tests — the same
 // ids, the same squares, the same edge cases, including the ones that only fail when a
@@ -28,7 +28,7 @@ import {
     onGridLine,
     parseCellId,
     WORLD_SIDE,
-} from "./grid";
+} from "../core/grid";
 
 describe("grid constants", () => {
     it("are OBCA §1.1's, and every permitted size nests", () => {

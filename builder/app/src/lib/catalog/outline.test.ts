@@ -5,7 +5,7 @@
 // stops being a phrase and starts being a decision about a vertex.
 
 import { describe, expect, it } from "vitest";
-import { cellSize, cellSquare, GridError, onGridLine, type CellId } from "./grid";
+import { cellSize, cellSquare, GridError, onGridLine, type CellId } from "../core/grid";
 import { coverageRings, mergeCellRects, type RingPoint } from "./outline";
 
 const LOG2 = 18;

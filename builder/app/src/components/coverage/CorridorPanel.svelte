@@ -13,7 +13,7 @@
     // a route is picked and downloaded, which is the only moment this side can know it.
 
     import { onDestroy, onMount } from "svelte";
-    import { GpxError, parseGpx, type GpxRoute } from "../../lib/coverage/gpx";
+    import { GpxError, parseGpx, type GpxRoute } from "../../lib/core/gpx";
     import { detailBandId, parseCells, patchCount } from "../../lib/coverage/shape";
     import {
         CORRIDOR_RADIUS_MAX_M,
@@ -24,7 +24,7 @@
     import { confirmAction } from "../../lib/ui/confirm.svelte";
     import { deviceHolder } from "../../lib/device/session.svelte";
     import type { CatalogEntry } from "../../lib/usb/protocol";
-    import { MAX_ROUTE_POINTS } from "../../lib/coverage/gpx";
+    import { MAX_ROUTE_POINTS } from "../../lib/core/gpx";
 
     let { store, onclose }: { store: CoverageStore; onclose: () => void } = $props();
 

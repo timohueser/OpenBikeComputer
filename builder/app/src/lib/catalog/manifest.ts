@@ -13,7 +13,7 @@
 // The checks below are the spec's MUSTs, not a taste for strictness. Every
 // consumer-side rejection has a `fail()` here with its reason in the message.
 
-import { GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE } from "./grid";
+import { GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2, WORLD_SIDE } from "../core/grid";
 import {
     arr,
     bool,

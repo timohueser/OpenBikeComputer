@@ -16,7 +16,7 @@ import {
     GridError,
     parseCellId,
     type CellId,
-} from "./grid";
+} from "../core/grid";
 
 const CELL = parseCellId("18/1204/1052");
 const SQUARE = cellSquare(CELL);

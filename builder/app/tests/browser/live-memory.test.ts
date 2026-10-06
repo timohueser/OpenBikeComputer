@@ -50,7 +50,7 @@ import { estimateMemory, initAssemble } from '../../src/lib/assemble/bridge';
 import { BASEMAP, basemapResponse } from './basemap-stub.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const WASM = join(HERE, '../../src/lib/assemble/pkg/obc_web_assemble_bg.wasm');
+const WASM = join(HERE, '../../src/lib/core/pkg/obc_builder_bridge_bg.wasm');
 const DOWNLOAD_STEP = join(HERE, '../../src/components/coverage/DownloadStep.svelte');
 
 /** The host the catalogue must come from: a loopback fixture would make this gate meaningless. */

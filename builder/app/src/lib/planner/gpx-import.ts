@@ -1,4 +1,4 @@
-import { readGpx } from '../coverage/gpx';
+import { readGpx } from '../core/gpx';
 import { emptyTrip, maxRidingDays, type DrawnCoordinate, type RoutePoint, type Trip } from './editor';
 import { kilometres, nearestOnLine, simplify, type Coordinate } from './geo';
 import type { Shape } from './routing';

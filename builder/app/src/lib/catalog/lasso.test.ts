@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { LatLon } from "./corridor";
-import { cellSize, cellSquare, formatCellId, GridError, parseCellId } from "./grid";
+import { cellSize, cellSquare, formatCellId, GridError, parseCellId } from "../core/grid";
 import { lassoCells, MAX_LASSO_LON_SPAN } from "./lasso";
 
 const CELL = parseCellId("18/1204/1052");

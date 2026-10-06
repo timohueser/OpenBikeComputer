@@ -8,7 +8,7 @@
 // would evict half its cache on every frame.
 
 import { CatalogClient } from "../catalog/client";
-import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/grid";
+import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../core/grid";
 import { lassoCells } from "../catalog/lasso";
 import { cellsTouchingHoles, detailBandId } from "./shape";
 import { ledgerFor, type Ledger } from "../catalog/ledger";

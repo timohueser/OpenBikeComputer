@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_EXAMPLES = ROOT / "host/obc-pack/schema"
-ASSEMBLE_FIXTURE = ROOT / "apps/obc-web-assemble/tests/fixture"
+ASSEMBLE_FIXTURE = ROOT / "builder/wasm/tests/fixture"
 
 CONTENT_TYPES = {
     ".json": "application/json",
@@ -146,7 +146,7 @@ def web_assemble() -> dict[str, bytes]:
         id="bridge-fixture",
         revision=SCHEMA_REVISION,
         name="Bridge Fixture",
-        description="The obc-web-assemble bridge fixture's cut, published as a catalog schema.",
+        description="The obc-builder-bridge bridge fixture's cut, published as a catalog schema.",
         styles=[{"id": s["id"], "feature_type": FEATURE_TYPES[s["id"]]} for s in styles],
     )
     schema["routing"] = {**schema.get("routing", {}), "profiles": []}
@@ -219,7 +219,7 @@ def web_assemble() -> dict[str, bytes]:
         "dataset_id": DATASET_ID, "dataset_version": DATASET_VERSION,
         "posting_log2": terrain_doc["posting_log2"], "cell_log2": terrain_doc["cell_log2"],
         "terrain_revision": TERRAIN_REVISION,
-        "attribution": "Synthetic raster cut by apps/obc-web-assemble/examples/fixture.rs.",
+        "attribution": "Synthetic raster cut by builder/wasm/examples/fixture.rs.",
         "cell_index": {"cell_count": len(terrain_cells), "known_empty_count": 0,
                        **_document(objects, f"{PREFIX}/cells/terrain/index.json", terrain_index)},
     }
@@ -256,7 +256,7 @@ def web_assemble() -> dict[str, bytes]:
         "generated_at": GENERATED_AT,
         "source": {
             "dataset_id": "fixture",
-            "attribution": "Synthetic geometry cut by apps/obc-web-assemble/examples/fixture.rs.",
+            "attribution": "Synthetic geometry cut by builder/wasm/examples/fixture.rs.",
             "license": "CC0-1.0",
             "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
         },

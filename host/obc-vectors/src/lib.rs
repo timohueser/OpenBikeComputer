@@ -162,7 +162,7 @@ pub fn track_log() -> Vec<u8> {
 /// Unlike the binary fixtures there is no independent spec to rebuild this from — the exporter's
 /// serialization *is* the contract — so this goes through the real code, exactly like
 /// [`build_route`] does for OBCR. Its value is cross-implementation: the browser bridge
-/// (`obc-web-convert`, compiled to wasm) must reproduce these bytes character-for-character.
+/// (`obc-builder-bridge`, compiled to wasm) must reproduce these bytes character-for-character.
 pub fn track_export_gpx() -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
     obc_route::track_to_gpx(&SliceSource(&ride_v6()), TRACK_NAME, &mut sink).unwrap();
