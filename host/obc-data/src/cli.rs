@@ -158,7 +158,9 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             }
             Ok(())
         }
-        Command::Region { env: Some(env), id: Some(id), .. } => edit_cli::region(&root()?, products, &env, &id, json),
+        Command::Region { env: Some(env), id: Some(id), .. } => {
+            edit_cli::print(edit_cli::region(&root()?, products, &env, &id)?, json)
+        }
         Command::Region { action, .. } => {
             let regions = Regions::load(&root()?).map_err(|e| Code::InvalidData.error(e))?;
             match action {
@@ -166,8 +168,10 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
             }
         }
-        Command::Layer { env, layer, switch } => edit_cli::layer(&root()?, products, &env, &layer, switch, json),
-        Command::Undo { env } => edit_cli::undo(&root()?, &env, json),
+        Command::Layer { env, layer, switch } => {
+            edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
+        }
+        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Build(args) => build_cli::build(&root()?, products, args, json),
         Command::Apply(args) => apply_cli::apply(&root()?, products, args, json),
