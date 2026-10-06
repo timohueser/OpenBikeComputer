@@ -14,19 +14,20 @@ use crate::store::{hash_file, sha256_hex};
 pub(super) struct Context {
     native: Option<(PathBuf, Native)>,
     tools: BTreeMap<PathBuf, (String, String)>,
+    used: BTreeMap<PathBuf, Option<String>>,
+    #[cfg(test)]
+    probes: usize,
 }
 
 struct Native {
     target: String,
     hashes: BTreeMap<String, String>,
     profiles: BTreeMap<String, String>,
+    environment: BTreeMap<OsString, OsString>,
+    inputs: BTreeMap<PathBuf, Option<String>>,
 }
 
 impl Context {
-    pub fn refresh(&mut self) {
-        self.native = None;
-    }
-
     pub fn preflight(&mut self, root: &Path, code: &Code) -> Result<Option<(String, String)>, String> {
         if !code.crates.is_empty() && !matches!(code.rust, Some(Rust::Prepared { .. })) {
             let native = self.native(root)?;
@@ -72,9 +73,52 @@ impl Context {
     }
 
     fn native(&mut self, root: &Path) -> Result<&Native, String> {
-        if self.native.as_ref().is_none_or(|(loaded, _)| loaded != root) {
-            let env: BTreeMap<_, _> = std::env::vars_os().collect();
-            validate_environment(&env)?;
+        let env: BTreeMap<_, _> = std::env::vars_os().collect();
+        validate_environment(&env)?;
+        let environment = env
+            .iter()
+            .filter(|(name, _)| {
+                let name = name.to_string_lossy();
+                name.starts_with("CARGO_PROFILE_")
+                    || matches!(
+                        name.as_ref(),
+                        "HOME"
+                            | "PATH"
+                            | "RUSTC"
+                            | "CARGO"
+                            | "CC"
+                            | "CARGO_HOME"
+                            | "RUSTUP_HOME"
+                            | "RUSTUP_TOOLCHAIN"
+                            | "DEVELOPER_DIR"
+                            | "TOOLCHAINS"
+                            | "RUSTFLAGS"
+                            | "CARGO_ENCODED_RUSTFLAGS"
+                            | "CARGO_INCREMENTAL"
+                            | "LANG"
+                            | "LC_ALL"
+                            | "LC_CTYPE"
+                            | "LC_MESSAGES"
+                    )
+            })
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let unchanged = match &self.native {
+            Some((loaded, native)) if loaded == root && native.environment == environment => native
+                .inputs
+                .iter()
+                .map(|(path, previous)| stamp(path).map(|current| &current == previous))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .all(|same| same),
+            _ => false,
+        };
+        if !unchanged {
+            self.used.clear();
+            let selection = selection_inputs(root, &env)?
+                .into_iter()
+                .map(|path| stamp(&path).map(|stamp| (path, stamp)))
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
             let profiles = env
                 .iter()
                 .filter_map(|(name, value)| {
@@ -93,9 +137,15 @@ impl Context {
                     validate_config(&text).map_err(|e| format!("{}: {e}", path.display()))?;
                 }
             }
+            #[cfg(test)]
+            {
+                self.probes += 1;
+            }
             let mut hashes = BTreeMap::new();
             let rustc = executable(root, env.get(OsStr::new("RUSTC")), "rustc")?;
             let cargo = executable(root, env.get(OsStr::new("CARGO")), "cargo")?;
+            self.watch(&rustc)?;
+            self.watch(&cargo)?;
             native_binary(&rustc)?;
             native_binary(&cargo)?;
             let version = output(root, &rustc, &["-vV"])?;
@@ -106,6 +156,7 @@ impl Context {
                 return Err("RUSTC must select the actual sysroot compiler; remove the compiler wrapper".into());
             }
             // The rustc executable loads its compiler driver and LLVM from the selected toolchain.
+            self.watch(&sysroot.join("lib"))?;
             let libraries = fs::read_dir(sysroot.join("lib")).map_err(|e| format!("compiler libraries: {e}"))?;
             for entry in libraries {
                 let entry = entry.map_err(|e| e.to_string())?;
@@ -118,6 +169,8 @@ impl Context {
             if lld.is_file() {
                 hashes.insert("rust/bundled-linker".into(), self.tool_hash(&lld)?);
             }
+            self.watch(&lld)?;
+            hashes.extend(self.library_hashes(&sysroot.join("lib/rustlib").join(target).join("lib"))?);
             for (name, path, version) in
                 [("compiler", rustc, version.clone()), ("cargo", cargo.clone(), output(root, &cargo, &["-vV"])?)]
             {
@@ -125,10 +178,12 @@ impl Context {
                 hashes.insert(format!("rust/{name}-version"), sha256_hex(version.as_bytes()));
             }
             let cc = executable(root, env.get(OsStr::new("CC")), "cc")?;
+            self.watch(&cc)?;
             native_binary(&cc)?;
             hashes.insert("rust/cc".into(), self.tool_hash(&cc)?);
             hashes.insert("rust/cc-version".into(), sha256_hex(output(root, &cc, &["--version"])?.as_bytes()));
             let link_driver = executable(root, None, "cc")?;
+            self.watch(&link_driver)?;
             native_binary(&link_driver)?;
             hashes.insert("rust/link-driver".into(), self.tool_hash(&link_driver)?);
             hashes.insert(
@@ -139,24 +194,96 @@ impl Context {
             let linker = locate(root, &OsString::from(linker.trim()))?;
             hashes.insert("rust/linker".into(), self.tool_hash(&linker)?);
             hashes.insert("rust/flags".into(), digest(&flags(&env)?));
-            self.native = Some((root.to_path_buf(), Native { target: target.into(), hashes, profiles }));
+            let mut inputs = selection;
+            for (path, stamp) in &self.used {
+                inputs.entry(path.clone()).or_insert_with(|| stamp.clone());
+            }
+            for (path, previous) in &inputs {
+                if &stamp(path)? != previous {
+                    return Err("Rust build tools changed during discovery; retry the plan".into());
+                }
+            }
+            self.native =
+                Some((root.to_path_buf(), Native { target: target.into(), hashes, profiles, environment, inputs }));
         }
         Ok(&self.native.as_ref().unwrap().1)
     }
 
     fn tool_hash(&mut self, path: &Path) -> Result<String, String> {
-        let metadata = fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let stamp = format!("{}:{:?}", metadata.len(), metadata.modified().map_err(|e| e.to_string())?);
-        #[cfg(unix)]
-        let stamp = {
-            use std::os::unix::fs::MetadataExt;
-            format!("{stamp}:{}:{}:{}:{}", metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
-        };
-        if self.tools.get(path).is_none_or(|(previous, _)| previous != &stamp) {
-            self.tools.insert(path.to_path_buf(), (stamp, hash_file(path)?.0));
+        self.watch(path)?;
+        let fingerprint = stamp(path)?.ok_or_else(|| format!("{} is missing", path.display()))?;
+        if self.tools.get(path).is_none_or(|(previous, _)| previous != &fingerprint) {
+            let hash = hash_file(path)?.0;
+            if stamp(path)? != Some(fingerprint.clone()) {
+                return Err("Rust build tool changed while reading; retry the plan".into());
+            }
+            self.tools.insert(path.to_path_buf(), (fingerprint, hash));
         }
         Ok(self.tools[path].1.clone())
     }
+
+    fn watch(&mut self, path: &Path) -> Result<(), String> {
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.used.entry(path.to_path_buf()) {
+            entry.insert(stamp(path)?);
+        }
+        Ok(())
+    }
+
+    fn library_hashes(&mut self, dir: &Path) -> Result<BTreeMap<String, String>, String> {
+        self.watch(dir)?;
+        let mut hashes = BTreeMap::new();
+        for entry in fs::read_dir(dir).map_err(|e| format!("selected Rust sysroot libraries: {e}"))? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.path().is_file() {
+                let name = entry.file_name().to_str().ok_or("Rust library name is not UTF-8")?.to_string();
+                hashes.insert(format!("rust/sysroot-library/{name}"), self.tool_hash(&entry.path())?);
+            }
+        }
+        Ok(hashes)
+    }
+}
+
+fn stamp(path: &Path) -> Result<Option<String>, String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    let stamp = format!("{}:{:?}", metadata.len(), metadata.modified().map_err(|e| e.to_string())?);
+    #[cfg(unix)]
+    let stamp = {
+        use std::os::unix::fs::MetadataExt;
+        format!("{stamp}:{}:{}:{}:{}", metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+    };
+    Ok(Some(stamp))
+}
+
+fn selection_inputs(root: &Path, env: &BTreeMap<OsString, OsString>) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for dir in root.ancestors() {
+        paths.extend(
+            ["rust-toolchain", "rust-toolchain.toml", ".cargo/config", ".cargo/config.toml"].map(|name| dir.join(name)),
+        );
+    }
+    for (name, fallback, files) in [
+        ("CARGO_HOME", ".cargo", ["config", "config.toml"]),
+        ("RUSTUP_HOME", ".rustup", ["settings.toml", "toolchains"]),
+    ] {
+        let home = env
+            .get(OsStr::new(name))
+            .map(|path| root.join(path))
+            .or_else(|| env.get(OsStr::new("HOME")).map(|path| PathBuf::from(path).join(fallback)));
+        if let Some(home) = home {
+            paths.extend(files.map(|file| home.join(file)));
+        }
+    }
+    for (name, default) in [("RUSTC", "rustc"), ("CARGO", "cargo"), ("CC", "cc")] {
+        paths.push(located(root, env.get(OsStr::new(name)).unwrap_or(&OsString::from(default)))?);
+    }
+    paths.push(located(root, &OsString::from("cc"))?);
+    #[cfg(target_os = "macos")]
+    paths.push("/var/db/xcode_select_link".into());
+    Ok(paths)
 }
 
 fn digest(value: &impl serde::Serialize) -> String {
@@ -223,6 +350,10 @@ fn validate_environment(env: &BTreeMap<OsString, OsString>) -> Result<(), String
                     | "AR"
                     | "SDKROOT"
                     | "MACOSX_DEPLOYMENT_TARGET"
+                    | "LD_LIBRARY_PATH"
+                    | "LD_PRELOAD"
+                    | "DYLD_LIBRARY_PATH"
+                    | "DYLD_INSERT_LIBRARIES"
             )
             || name.starts_with("CC_")
             || name.starts_with("CFLAGS_")
@@ -230,7 +361,10 @@ fn validate_environment(env: &BTreeMap<OsString, OsString>) -> Result<(), String
             || name.starts_with("AR_")
             || name.starts_with("CXX_")
             || name.starts_with("RANLIB");
-        if refused {
+        let native_override = name.strip_prefix("HOST_").or_else(|| name.strip_prefix("TARGET_")).is_some_and(|name| {
+            matches!(name, "CC" | "CXX" | "AR" | "RANLIB" | "CFLAGS" | "CXXFLAGS" | "CPPFLAGS" | "ARFLAGS")
+        });
+        if refused || native_override {
             return Err(format!(
                 "data build identity does not support {name}; unset it and configure the declared build"
             ));
@@ -375,6 +509,11 @@ fn validate_config(text: &str) -> Result<(), String> {
 }
 
 fn locate(root: &Path, program: &OsString) -> Result<PathBuf, String> {
+    let found = located(root, program)?;
+    found.canonicalize().map_err(|e| format!("{}: {e}", found.display()))
+}
+
+fn located(root: &Path, program: &OsString) -> Result<PathBuf, String> {
     let path = Path::new(program);
     let found = if path.components().count() > 1 {
         if path.is_absolute() {
@@ -388,7 +527,7 @@ fn locate(root: &Path, program: &OsString) -> Result<PathBuf, String> {
             .find(|path| path.is_file())
             .ok_or_else(|| format!("{} is required for data builds", path.display()))?
     };
-    found.canonicalize().map_err(|e| format!("{}: {e}", found.display()))
+    Ok(found)
 }
 
 fn executable(root: &Path, override_path: Option<&OsString>, name: &str) -> Result<PathBuf, String> {

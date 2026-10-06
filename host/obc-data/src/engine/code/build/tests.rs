@@ -85,6 +85,12 @@ fn cargo_config_discovery_and_refusals_do_not_expose_values() {
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
         "CFLAGS",
         "CC_aarch64_unknown_linux_gnu",
+        "HOST_CC",
+        "HOST_CFLAGS",
+        "TARGET_CC",
+        "TARGET_CXXFLAGS",
+        "TARGET_ARFLAGS",
+        "LD_LIBRARY_PATH",
     ] {
         let env = BTreeMap::from([(name.into(), "secret-value".into())]);
         let error = validate_environment(&env).unwrap_err();
@@ -137,6 +143,7 @@ fn native_dev_alias_profile_changes_and_plan_use_the_same_identity() {
     let explicit = Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..code.clone() };
     assert_eq!(context.identity(&root, &explicit, &packages).unwrap(), implicit);
     assert!(implicit.contains_key("rust/compiler") && implicit.contains_key("rust/target"));
+    assert!(implicit.keys().any(|name| name.starts_with("rust/sysroot-library/libstd")));
     assert!(context.native.is_some());
     let tools = context.tools.len();
     context.identity(&root, &code, &packages).unwrap();
@@ -158,6 +165,17 @@ fn native_dev_alias_profile_changes_and_plan_use_the_same_identity() {
     assert!(!fixture.plan(&steps).unwrap().groups.is_empty());
     let release = Code { rust: Some(Rust::Native { profile: Profile::Release }), ..code };
     assert_ne!(context.identity(&root, &release, &packages).unwrap(), implicit);
+
+    let mut checks = crate::engine::code::Context::default();
+    let files = checks.files(&root, &explicit).unwrap();
+    let probes = checks.build.probes;
+    checks.refresh_python();
+    assert_eq!(checks.files(&root, &explicit).unwrap(), files);
+    assert_eq!(checks.build.probes, probes, "wired pre/post checks reuse tool discovery");
+    write(&root.join(".cargo/config.toml"), "[build]\njobs = 2\n");
+    checks.refresh_python();
+    assert_eq!(checks.files(&root, &explicit).unwrap(), files);
+    assert_eq!(checks.build.probes, probes + 1, "a changed selection/config witness revalidates discovery");
 }
 
 #[test]
@@ -170,8 +188,14 @@ fn tool_cache_detects_replaced_bytes_at_the_check_boundary() {
     let first = context.tool_hash(&compiler).unwrap();
     assert_eq!(context.tool_hash(&compiler).unwrap(), first);
     write(&compiler, "other executable");
-    context.refresh();
     assert_ne!(context.tool_hash(&compiler).unwrap(), first);
+    let lib = fixture.root().join("libstd-fixture.rlib");
+    write(&lib, "standard library first");
+    let first = context.library_hashes(&fixture.root()).unwrap();
+    write(&lib, "standard library other");
+    let second = context.library_hashes(&fixture.root()).unwrap();
+    assert_ne!(first["rust/sysroot-library/libstd-fixture.rlib"], second["rust/sysroot-library/libstd-fixture.rlib"]);
+    assert_eq!(first["rust/sysroot-library/compiler"], second["rust/sysroot-library/compiler"]);
 }
 
 #[cfg(unix)]

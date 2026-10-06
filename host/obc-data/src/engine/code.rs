@@ -34,7 +34,6 @@ impl Context {
     pub fn refresh_python(&mut self) {
         self.python.clear();
         self.packages.clear();
-        self.build.refresh();
     }
 
     pub fn files(&mut self, root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
