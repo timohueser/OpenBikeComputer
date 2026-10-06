@@ -544,6 +544,7 @@ fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Re
         loaded.env.retained = crate::input_copy::retained(live, &store)?;
         let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
         Some(freshness::discover(
+            root,
             products,
             &loaded.env,
             &loaded.regions,

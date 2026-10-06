@@ -660,8 +660,14 @@ mod tests {
         fn name(&self) -> &'static str {
             "test"
         }
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Versioned.steps(env, regions, store)
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
         }
         fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
             let mut files = Versioned.named(release)?;
@@ -728,8 +734,14 @@ mod tests {
         fn name(&self) -> &'static str {
             "test"
         }
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Versioned.steps(env, regions, store)
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
         }
         fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
             Versioned.named(release)
@@ -809,8 +821,14 @@ mod tests {
             "test"
         }
 
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Versioned.steps(env, regions, store)
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
         }
 
         fn pointer(&self) -> Option<PointerFn> {
@@ -855,7 +873,13 @@ mod tests {
             Versioned.pointer()
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(vec![crate::engine::tests::packaged(self.0.clone())].into())
         }
     }
@@ -922,7 +946,13 @@ mod tests {
             "other"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(Vec::new().into())
         }
     }

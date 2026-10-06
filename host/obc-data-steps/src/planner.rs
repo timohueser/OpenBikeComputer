@@ -110,7 +110,13 @@ impl Product for Planner {
         &["climate", "snow", "sun"]
     }
 
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<obc_data::product::Steps, Unplanned> {
+    fn steps(
+        &self,
+        _root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+    ) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let region =
@@ -659,14 +665,18 @@ mod tests {
     #[test]
     fn a_geofabrik_region_reads_its_newest_extract_and_the_tiles_of_its_bounds() {
         let temp = temp("planner-steps");
-        let Err(Unplanned::NeedsFetch(wanted)) = Planner.steps(&env(AREA, &[]), &regions(), &store(&temp, &[])) else {
+        let Err(Unplanned::NeedsFetch(wanted)) =
+            Planner.steps(&root(), &env(AREA, &[]), &regions(), &store(&temp, &[]))
+        else {
             panic!("the store has no extract");
         };
         let area = vec![("area".to_string(), AREA.to_string())];
         assert_eq!(wanted, [Wanted { source: EXTRACTS.into(), version: None, params: area.clone() }]);
 
-        let steps =
-            Planner.steps(&env(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"])).unwrap().steps;
+        let steps = Planner
+            .steps(&root(), &env(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"]))
+            .unwrap()
+            .steps;
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
         let layers = [
             "osm",
@@ -765,7 +775,7 @@ mod tests {
             .all(|(got, expected)| (got - expected).abs() < 1e-12));
 
         for region in ["boxed", "no-countries", "no-time-zone"] {
-            let result = Planner.steps(&env(region, &[]), &regions(), &store(&temp, &["2026-10-01"]));
+            let result = Planner.steps(&root(), &env(region, &[]), &regions(), &store(&temp, &["2026-10-01"]));
             assert!(matches!(result, Err(Unplanned::Invalid(_))), "{region}");
         }
     }
@@ -775,8 +785,8 @@ mod tests {
         let temp = temp("planner-code");
         let store = store(&temp, &["2026-10-01"]);
         crate::maps::tests::without_models(&store, &env(AREA, &[]), &regions());
-        let mut steps = Planner.steps(&env(AREA, &[]), &regions(), &store).unwrap().steps;
-        steps.extend(Maps.steps(&env(AREA, &[]), &regions(), &store).unwrap().steps);
+        let mut steps = Planner.steps(&root(), &env(AREA, &[]), &regions(), &store).unwrap().steps;
+        steps.extend(Maps.steps(&root(), &env(AREA, &[]), &regions(), &store).unwrap().steps);
         for step in &steps {
             let files = step.code.files(&root()).unwrap();
             assert!(!files.contains_key("Cargo.lock"), "{} declares Cargo.lock", step.name);
@@ -830,7 +840,7 @@ mod tests {
     fn climate_changes_only_its_steps_and_the_final_index() {
         let temp = temp("planner-climate");
         let store = store(&temp, &["2026-10-01"]);
-        let steps = |layers: &[&str]| Planner.steps(&env(AREA, layers), &regions(), &store).unwrap().steps;
+        let steps = |layers: &[&str]| Planner.steps(&root(), &env(AREA, layers), &regions(), &store).unwrap().steps;
         let (without, with) = (steps(&[]), steps(&["climate"]));
         let changed: Vec<&str> = with
             .iter()
@@ -891,7 +901,7 @@ mod tests {
     fn a_python_step_declares_each_module_that_it_imports() {
         let temp = temp("planner-python");
         let store = store(&temp, &["2026-10-01"]);
-        let steps = Planner.steps(&env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap().steps;
+        let steps = Planner.steps(&root(), &env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap().steps;
         let mut python = 0;
         for step in &steps {
             let Run::Command(argv) = &step.run else { continue };
