@@ -131,7 +131,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let http = Http::new();
-    let fetch = fetcher(&store, &http, &loaded.sources, &loaded.env);
+    let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env));
     let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     // `Live::read` gives one live product per product, in their order.
@@ -151,6 +151,15 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         ProductStatus { product: product.product.clone(), release, applied, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
+    for layer in
+        products.iter().flat_map(|product| product.layers.iter().flatten()).filter(|l| l.state == State::Blocked)
+    {
+        attention.push(Attention {
+            kind: AttentionKind::Blocked,
+            about: layer.layer.clone(),
+            reason: layer.reason.clone().unwrap_or_default(),
+        });
+    }
     for row in &rows {
         let kind = match row.state {
             State::Stale => AttentionKind::Stale,
@@ -190,6 +199,20 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     Ok(Status { from: remote.describe().into(), products, attention, check })
 }
 
+/// Status can prepare the small files that enumerate a region, but never bulk product inputs.
+fn discovery_fetch(
+    mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+) -> impl FnMut(&Wanted) -> Result<String, Error> {
+    move |wanted| {
+        if !matches!(wanted.source.as_str(), "geofabrik-poly" | "copernicus-glo-30-tiles") {
+            return Err(Code::Blocked
+                .error(format!("source `{}` is not prepared; status does not fetch bulk data", wanted.source))
+                .fix("Run a plan or build to prepare this source."));
+        }
+        fetch(wanted)
+    }
+}
+
 /// The state of each layer of `live`, by product. `Err` with the reason for a product that is
 /// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
 /// rest of `status` does not need its steps.
@@ -203,14 +226,23 @@ fn layer_states(
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
     check_layers(products, env)?;
+    env.fetch_failures.clear();
+    env.stale.extend(
+        environment.sources.iter().filter(|(_, status)| status.state == State::Stale).map(|(id, _)| id.clone()),
+    );
     let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
     for product in products {
         let steps = product_steps(*product, env, regions, store, &mut fetch);
         refused.extend(env.refused.borrow().iter().cloned());
         match steps {
             Ok(Ok(steps)) => {
-                found.insert(product.name().to_string(), Ok(Vec::new()));
-                listed.push((product.name().to_string(), steps));
+                let blocked = steps
+                    .blocked
+                    .into_iter()
+                    .map(|b| LayerStatus { layer: b.layer, state: State::Blocked, reason: Some(b.reason) })
+                    .collect();
+                found.insert(product.name().to_string(), Ok(blocked));
+                listed.push((product.name().to_string(), steps.steps));
             }
             Ok(Err(reason)) => {
                 found.insert(product.name().to_string(), Err(reason));
@@ -334,8 +366,8 @@ mod tests {
             "listed"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
-            Ok(Vec::new())
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Ok(Vec::new().into())
         }
     }
 
@@ -344,7 +376,7 @@ mod tests {
             "test"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
             let wanted = Wanted { source: "index".into(), version: None, params: Vec::new() };
             Err(Unplanned::NeedsFetch(vec![wanted]))
         }
@@ -358,11 +390,83 @@ mod tests {
             "reading"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
             let code = StepCode { paths: Vec::new(), crates: Vec::new() };
             let run = Run::Command(vec!["true".into()]);
-            Ok(vec![step("reading/one", vec![Input::layer("test/one")], code, "out", run)])
+            Ok(vec![step("reading/one", vec![Input::layer("test/one")], code, "out", run)].into())
         }
+    }
+
+    struct Bulk;
+
+    impl Product for Bulk {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, crate::product::Unplanned> {
+            Err(crate::product::Unplanned::NeedsFetch(vec![Wanted {
+                source: "geofabrik-extracts".into(),
+                version: None,
+                params: vec![("area".into(), "europe/test".into())],
+            }]))
+        }
+    }
+
+    #[test]
+    fn status_reports_an_unprepared_bulk_source_without_starting_its_download() {
+        let scratch = Scratch::new("status-bulk");
+        let store = Store::at(scratch.0.join("store"));
+        let regions = Regions::new(Vec::new()).unwrap();
+        let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
+        let fetch = discovery_fetch(|_| panic!("a status must not download an extract"));
+        let found =
+            layer_states(&scratch.0, &store, &[&Bulk], &mut Env::default(), &regions, &environment, fetch).unwrap();
+        assert!(found["test"].as_ref().unwrap_err().contains("geofabrik-extracts` is not prepared"));
+        assert!(!store.root().join("snapshots").exists());
+    }
+
+    struct Partial;
+
+    impl Product for Partial {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, crate::product::Unplanned> {
+            let code = StepCode { paths: Vec::new(), crates: Vec::new() };
+            let run = Run::Command(vec!["true".into()]);
+            let mut listed = crate::product::Steps {
+                steps: vec![
+                    step("test/usable", vec![], code.clone(), "out", Run::Command(vec!["true".into()])),
+                    step("test/reader", vec![Input::layer("test/capture")], code, "out", run),
+                ],
+                blocked: vec![crate::product::BlockedLayer {
+                    layer: "test/capture".into(),
+                    reason: "plan with `--move wikidata`".into(),
+                }],
+            };
+            listed.block_dependents();
+            Ok(listed)
+        }
+    }
+
+    #[test]
+    fn status_keeps_usable_layers_and_reports_precise_blocked_dependents_without_fetching() {
+        let scratch = Scratch::new("status-partial");
+        let store = Store::at(scratch.0.join("store"));
+        let regions = Regions::new(Vec::new()).unwrap();
+        let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
+        let found = layer_states(&scratch.0, &store, &[&Partial], &mut Env::default(), &regions, &environment, |_| {
+            panic!("no capture fetch")
+        })
+        .unwrap();
+        let layers = found["test"].as_ref().unwrap();
+        assert_eq!(layers.len(), 3);
+        assert!(layers.iter().any(|layer| layer.layer == "test/usable" && layer.state == State::NotApplied));
+        assert!(layers.iter().filter(|layer| layer.state == State::Blocked).all(|layer| layer
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("--move wikidata")));
     }
 
     #[test]

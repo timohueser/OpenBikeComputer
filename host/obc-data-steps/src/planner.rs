@@ -81,7 +81,7 @@ impl Product for Planner {
         &["climate", "snow", "sun"]
     }
 
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
+    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let region =
@@ -285,7 +285,7 @@ impl Product for Planner {
             ));
         }
         match wanted.is_empty() {
-            true => Ok(steps),
+            true => Ok(steps.into()),
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
     }
@@ -467,7 +467,8 @@ mod tests {
         let area = vec![("area".to_string(), AREA.to_string())];
         assert_eq!(wanted, [Wanted { source: EXTRACTS.into(), version: None, params: area.clone() }]);
 
-        let steps = Planner.steps(&env(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"])).unwrap();
+        let steps =
+            Planner.steps(&env(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"])).unwrap().steps;
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
         let layers = [
             "osm",
@@ -511,9 +512,15 @@ mod tests {
         );
         // About Baden-Württemberg, and the box of the old planner recipe.
         let old = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
-        assert_eq!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0), old);
+        assert!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0)
+            .into_iter()
+            .zip(old)
+            .all(|(got, expected)| (got - expected).abs() < 1e-12));
         let old = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
-        assert_eq!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0), old);
+        assert!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0)
+            .into_iter()
+            .zip(old)
+            .all(|(got, expected)| (got - expected).abs() < 1e-12));
 
         for region in ["boxed", "no-countries", "no-time-zone"] {
             let result = Planner.steps(&env(region, &[]), &regions(), &store(&temp, &["2026-10-01"]));
@@ -526,8 +533,8 @@ mod tests {
         let temp = temp("planner-code");
         let store = store(&temp, &["2026-10-01"]);
         crate::maps::tests::without_models(&store, &env(AREA, &[]), &regions());
-        let mut steps = Planner.steps(&env(AREA, &[]), &regions(), &store).unwrap();
-        steps.extend(Maps.steps(&env(AREA, &[]), &regions(), &store).unwrap());
+        let mut steps = Planner.steps(&env(AREA, &[]), &regions(), &store).unwrap().steps;
+        steps.extend(Maps.steps(&env(AREA, &[]), &regions(), &store).unwrap().steps);
         for step in &steps {
             let files = step.code.files(&root()).unwrap();
             assert!(!files.contains_key("Cargo.lock"), "{} declares Cargo.lock", step.name);
@@ -581,8 +588,9 @@ mod tests {
     fn climate_adds_one_group_to_the_plan_and_changes_no_other() {
         let temp = temp("planner-climate");
         let store = store(&temp, &["2026-10-01"]);
-        let plan =
-            |layers: &[&str]| plan(&store, &root(), &Planner.steps(&env(AREA, layers), &regions(), &store).unwrap());
+        let plan = |layers: &[&str]| {
+            plan(&store, &root(), &Planner.steps(&env(AREA, layers), &regions(), &store).unwrap().steps)
+        };
         let (without, with) = (plan(&[]).unwrap(), plan(&["climate"]).unwrap());
         let added: Vec<_> = with.groups.iter().filter(|group| !without.groups.contains(group)).collect();
         let [climate] = &added[..] else { panic!("{} groups are new", added.len()) };
@@ -633,7 +641,7 @@ mod tests {
     fn a_python_step_declares_each_module_that_it_imports() {
         let temp = temp("planner-python");
         let store = store(&temp, &["2026-10-01"]);
-        let steps = Planner.steps(&env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap();
+        let steps = Planner.steps(&env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap().steps;
         let mut python = 0;
         for step in &steps {
             let Run::Command(argv) = &step.run else { continue };
