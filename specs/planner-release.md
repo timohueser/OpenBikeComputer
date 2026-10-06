@@ -1,6 +1,6 @@
 # Planner release
 
-A release joins map, routing, search, model, and device catalogue data.
+A release joins map, routing, search and model data.
 `release.json` is UTF-8 JSON. Its SHA-256 is the release ID. The release and
 its files are immutable.
 
@@ -18,16 +18,14 @@ its files are immutable.
 | `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Older releases have none |
 | `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
-| `sources` | Recipe hash, source identities, tool identities, and input provenance |
-| `device_catalog_source` | Original device catalogue URL |
 | `files` | Relative file names, each with `bytes` and `sha256` |
-| `source_files` | Local source mirror names, each with `bytes` and `sha256` |
-| `probe` | Regional route points, search query, and view for service deployment |
 
 File paths stay inside the release directory. File hashes use lowercase
 64-character hex. Maps, search, and routing have the same OSM hash and bounds.
 The terrain inputs cover every routing elevation input. Search metadata contains
-the OSM hash. The map manifest contains terrain input hashes.
+the OSM hash. Terrain TileJSON contains terrain input hashes. The
+[`obc data` release manifest](obc-data.md#releases) records source versions, tool
+identities and layer receipts. These are not client files.
 
 ## Objects and services
 

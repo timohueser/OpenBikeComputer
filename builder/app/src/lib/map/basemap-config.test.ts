@@ -48,10 +48,10 @@ describe("shared basemap hosting", () => {
     });
 
     it.each([
-        [Response.json({ format: 1, active: null }), "no active release"],
-        [Response.json({ format: 1, active: {} }), "no basemap"],
-        [new Response("", { status: 503 }), "catalogue is unavailable"],
-    ])("rejects an unavailable release", async (response, message) => {
+        { response: Response.json({ format: 1, active: null }), message: "no active release" },
+        { response: Response.json({ format: 1, active: {} }), message: "no basemap" },
+        { response: new Response("", { status: 503 }), message: "catalogue is unavailable" },
+    ])("rejects an unavailable release: $message", async ({ response, message }) => {
         vi.stubEnv("VITE_PLANNER_CONFIG", "");
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
         const { basemapConfig } = await import("./basemap-config");
