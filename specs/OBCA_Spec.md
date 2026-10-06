@@ -330,7 +330,7 @@ represent those cells as compact **known-empty** row ranges rather than as compl
 objects.
 
 - The assertion is per `(schema digest, band, cell)` and carries the same
-  source-set identities, snapshot dates, and bake timestamp as an artifact.
+  source-set identities and snapshot dates as an artifact.
 - It is canonical coverage: a partial source MUST NOT produce a known-empty
   assertion. Absence from both the artifact list and the known-empty ranges
   remains a coverage hole.
