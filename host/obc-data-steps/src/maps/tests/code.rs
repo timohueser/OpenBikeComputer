@@ -61,15 +61,19 @@ fn authored_network(request: &Request) -> Result<(), String> {
     std::fs::write(request.output.join("network.obcm"), "network").map_err(|e| e.to_string())
 }
 
+fn map_recipes(store: &Store) -> Vec<Step> {
+    let (env, regions) = freiburg(store);
+    with_osm(store);
+    with_captures(store, "1");
+    without_models(store, &env, &regions);
+    map_steps(&root(), &env, &regions, store).unwrap().steps
+}
+
 #[test]
 fn navigation_edits_reuse_the_actual_source_and_osm_step_recipes() {
     let temporary = temp("source-code-scope");
     let store = Store::at(temporary.0.join("store"));
-    let (env, regions) = freiburg(&store);
-    with_osm(&store);
-    with_captures(&store, "1");
-    without_models(&store, &env, &regions);
-    let mut steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+    let mut steps = map_recipes(&store);
     steps.retain(|step| step.name.starts_with("maps/source/") || step.name == "maps/osm");
     assert_eq!(steps.len(), 2);
     assert!(steps.iter().all(|step| step.code.crates == ["obc-osm"]));
@@ -99,4 +103,61 @@ fn navigation_edits_reuse_the_actual_source_and_osm_step_recipes() {
     assert!(plan(&store, &root, &steps).unwrap().builds().next().is_none());
     std::fs::write(root.join("host/obc-pack/src/nav.rs"), "pub const COST: u32 = 2;\n").unwrap();
     assert_eq!(builds(&plan(&store, &root, &steps).unwrap()), ["maps/network"]);
+}
+
+#[test]
+fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
+    let temporary = temp("catalog-credit-code");
+    let store = Store::at(temporary.0.join("store"));
+    let steps = map_recipes(&store);
+    let catalog = steps.iter().find(|step| step.name == catalog::LAYER).unwrap();
+    assert_eq!(catalog.code.sources, ["osm-planet", "copernicus-glo-30"]);
+    assert!(catalog.outputs.iter().any(|path| path == "LICENSE.txt"));
+    let source = steps.iter().find(|step| step.name.starts_with("maps/source/")).unwrap();
+    let osm = steps.iter().find(|step| step.name == "maps/osm").unwrap();
+    let cells: Vec<_> = steps.iter().filter(|step| step.outputs.iter().any(|path| path == "cells")).collect();
+    assert!(cells.len() > 1);
+    assert!(cells.iter().all(|step| step.code == cells[0].code));
+    let cell = cells[0];
+    let root = temporary.0.join("checkout");
+    recipe_root(&root);
+    copy_tree(&super::root().join("builder/presets"), &root.join("builder/presets"));
+    std::fs::create_dir(root.join("data")).unwrap();
+    let path = root.join("data/sources.toml");
+    let original = std::fs::read_to_string(super::root().join("data/sources.toml")).unwrap();
+    std::fs::write(&path, &original).unwrap();
+    let identity = |step: &Step| obc_data::engine::code::files(&root, &step.code).unwrap();
+    let before = [identity(source), identity(osm), identity(cell)];
+    let catalog_before = identity(catalog);
+    for id in ["osm-planet", "copernicus-glo-30"] {
+        let mut registry: toml::Value = original.parse().unwrap();
+        let record = registry["source"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|source| source["id"].as_str() == Some(id))
+            .unwrap();
+        record["attribution"] =
+            toml::Value::String(format!("{} updated credit", record["attribution"].as_str().unwrap()));
+        std::fs::write(&path, toml::to_string(&registry).unwrap()).unwrap();
+        assert_eq!([identity(source), identity(osm), identity(cell)], before);
+        let after = identity(catalog);
+        assert_ne!(after, catalog_before);
+        let changed: Vec<_> = after.keys().filter(|key| after.get(*key) != catalog_before.get(*key)).collect();
+        assert_eq!(changed, [&format!("data/sources.toml#{id}")]);
+    }
+    let mut registry: toml::Value = original.parse().unwrap();
+    for source in registry["source"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter(|source| ["osm-planet", "copernicus-glo-30"].contains(&source["id"].as_str().unwrap()))
+    {
+        source["refresh"] = toml::Value::Integer(14);
+        source["redistribute"] = toml::Value::Boolean(false);
+        source["r2_copy"] = toml::Value::Boolean(false);
+    }
+    std::fs::write(&path, toml::to_string(&registry).unwrap()).unwrap();
+    assert_eq!([identity(source), identity(osm), identity(cell)], before);
+    assert_eq!(identity(catalog), catalog_before);
 }
