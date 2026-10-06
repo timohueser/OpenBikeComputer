@@ -40,18 +40,18 @@ pub struct PlanArgs {
 #[derive(Args)]
 pub struct BuildArgs {
     /// The environment: `data/env/ENV.toml`.
-    env: String,
+    pub(super) env: String,
     /// Only these groups, by id. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',', conflicts_with = "plan")]
-    only: Vec<String>,
+    pub(super) only: Vec<String>,
     /// Build the groups of this output of `plan ENV --json`, with its versions. Exit status 3 when
     /// live or the plan of now differs.
     #[arg(long)]
-    plan: Option<PathBuf>,
+    pub(super) plan: Option<PathBuf>,
     /// Read this version of a source instead of the version of live; without a version, the newest
     /// version upstream.
     #[arg(long = "move", value_name = "SOURCE[@VERSION]", conflicts_with = "plan")]
-    moves: Vec<String>,
+    pub(super) moves: Vec<String>,
 }
 
 /// What a build of an environment would fetch and build.
@@ -154,6 +154,12 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
     if json {
         return print_json(&plan);
     }
+    print_plan(&plan);
+    Ok(())
+}
+
+/// The plan as text.
+pub(super) fn print_plan(plan: &EnvPlan) {
     let layers = if plan.layers.is_empty() { "—".into() } else { plan.layers.join(", ") };
     println!("PLAN {} · region {} · layers {layers}", plan.env, plan.region);
     for live in &plan.live {
@@ -185,14 +191,6 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
         let unlisted = if plan.listed { "" } else { "; R2 was not listed, so leftovers are unknown" };
         println!("REMOVE FROM R2 {} keys, {size}{unlisted}", plan.remove.len());
     }
-    Ok(())
-}
-
-/// The plan of `live` that the TUI shows: `plan live --only ONLY --json`.
-pub(super) fn plan_live(root: &Path, products: &[&dyn Product], only: &[String]) -> Result<EnvPlan, Error> {
-    let (store, http) = (Store::open()?, Http::new());
-    let remote = super::remote()?;
-    Ok(planned(root, &store, &http, Some(&remote), products, "live", only, Basis::Moves(&[]))?.plan)
 }
 
 /// What groups cost: the download, the build time and the output; `None` when the store does not
@@ -271,23 +269,39 @@ fn run_build(
     products: &[&dyn Product],
     args: &BuildArgs,
 ) -> Result<Built, Error> {
-    let saved = args.plan.as_deref().map(|file| read_plan(file).map(|plan| (file, plan))).transpose()?;
-    let (basis, only) = match &saved {
-        Some((file, saved)) => (Basis::Saved(file, saved), &saved.only),
+    let saved = args.plan.as_deref().map(read_plan).transpose()?;
+    Ok(build_env(root, store, http, remote, products, args, saved.as_ref())?.0)
+}
+
+/// Live, and live after an apply of the plan of a build.
+pub(super) struct Applying {
+    pub(super) live: Live,
+    pub(super) next: Live,
+}
+
+/// Build `args.env`, or the plan `saved`. A build of live also gives what an apply of it changes.
+pub(super) fn build_env(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: Option<&Remote>,
+    products: &[&dyn Product],
+    args: &BuildArgs,
+    saved: Option<&EnvPlan>,
+) -> Result<(Built, Option<Applying>), Error> {
+    let (basis, only) = match saved {
+        Some(saved) => (Basis::Saved(saved), &saved.only),
         None => (Basis::Moves(&args.moves), &args.only),
     };
     let Planned { loaded, steps, plan, live } = planned(root, store, http, remote, products, &args.env, only, basis)?;
-    if let Some((file, saved)) = saved {
+    if let Some(saved) = saved {
         let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
             == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
-        if !unchanged || !(Plan { groups: plan.groups.clone() }).same_work(&Plan { groups: saved.groups }) {
-            return Err(outdated(file));
+        if !unchanged || !(Plan { groups: plan.groups.clone() }).same_work(&Plan { groups: saved.groups.clone() }) {
+            return Err(outdated());
         }
     }
-    if !products.is_empty() && plan.blocked.len() == products.len() {
-        let reasons = plan.blocked.iter().map(|b| format!("product `{}`: {}", b.product, b.reason)).collect::<Vec<_>>();
-        return Err(Code::Blocked.error(reasons.join("; ")));
-    }
+    suits(products, &plan)?;
     let mut built = Built { run: None, layers: Vec::new(), releases: Vec::new(), blocked: plan.blocked.clone() };
     let work = Plan { groups: plan.groups.clone() };
     if work.builds().next().is_some() || !work.fetches().is_empty() {
@@ -304,7 +318,7 @@ fn run_build(
             .collect();
         built.run = Some(id);
     }
-    let Some(live) = &live else {
+    let Some(live) = live else {
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
         for product in unblocked {
             let (name, optional) = (product.name(), optional(*product, &plan.layers));
@@ -312,30 +326,58 @@ fn run_build(
                 built.releases.push(BuiltRelease { product: name.into(), id: release.write(store)? });
             }
         }
-        return Ok(built);
+        return Ok((built, None));
     };
-    let (next, missing) = next(root, store, products, &loaded.sources, live, &steps, &plan)?;
+    let (next, missing) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
     if let Some(layer) = missing.first() {
         return Err(Code::Failed.error(format!("the store lacks the layer `{layer}` after the build")));
     }
     for (next, live) in next.products.iter().zip(&live.products) {
-        let id = |product: &LiveProduct| product.release.as_ref().map(|(id, _)| id.clone());
-        if let Some((_, release)) = next.release.as_ref().filter(|_| id(next) != id(live)) {
-            built.releases.push(BuiltRelease { product: release.product.clone(), id: release.write(store)? });
+        if let Some((id, release)) = next.release.as_ref().filter(|_| changed(live, next)) {
+            release.write(store)?;
+            built.releases.push(BuiltRelease { product: release.product.clone(), id: id.clone() });
         }
     }
-    Ok(built)
+    Ok((built, Some(Applying { live, next })))
+}
+
+/// Fail with `blocked` when no product suits the environment of `plan`.
+pub(super) fn suits(products: &[&dyn Product], plan: &EnvPlan) -> Result<(), Error> {
+    if !products.is_empty() && plan.blocked.len() == products.len() {
+        let reasons = plan.blocked.iter().map(|b| format!("product `{}`: {}", b.product, b.reason)).collect::<Vec<_>>();
+        return Err(Code::Blocked.error(reasons.join("; ")));
+    }
+    Ok(())
+}
+
+/// Whether `next` names another release than `live`.
+pub(super) fn changed(live: &LiveProduct, next: &LiveProduct) -> bool {
+    let id = |product: &LiveProduct| product.release.as_ref().map(|(id, _)| id.clone());
+    id(live) != id(next)
+}
+
+/// The plan of `live` now against the live releases that `remote` holds: `plan live --only ONLY
+/// --json`, which the TUI shows and an apply without `--plan` applies.
+pub(super) fn plan_live(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: &Remote,
+    products: &[&dyn Product],
+    only: &[String],
+) -> Result<EnvPlan, Error> {
+    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(&[]))?.plan)
 }
 
 /// The output of `plan ENV --json` in `file`.
-fn read_plan(file: &Path) -> Result<EnvPlan, Error> {
+pub(super) fn read_plan(file: &Path) -> Result<EnvPlan, Error> {
     let text = std::fs::read_to_string(file).map_err(|e| Code::Usage.error(format!("{}: {e}", file.display())))?;
     serde_json::from_str(&text)
         .map_err(|e| Code::Usage.error(format!("{} is not the output of `obc data plan --json`: {e}", file.display())))
 }
 
-fn outdated(file: &Path) -> Error {
-    Code::PlanOutdated.error(format!("{} is not the plan of now", file.display()))
+fn outdated() -> Error {
+    Code::PlanOutdated.error("the plan is not the plan of now")
 }
 
 /// The groups that `only` names. Against live, `only` names moves, and the plan keeps every group:
@@ -374,7 +416,7 @@ enum Basis<'a> {
     /// The `--move`s, and for live the versions that live reads.
     Moves(&'a [String]),
     /// The plan in a file: its versions and its moves.
-    Saved(&'a Path, &'a EnvPlan),
+    Saved(&'a EnvPlan),
 }
 
 /// The plan of now, with what it was made from.
@@ -405,7 +447,7 @@ fn planned(
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
     let env = &mut loaded.env;
     match basis {
-        Basis::Saved(_, saved) => {
+        Basis::Saved(saved) => {
             let versions = saved.versions.iter().map(|v| ((v.source.clone(), v.params.clone()), v.version.clone()));
             env.planned = Some(versions.collect());
             env.moves = saved.moves.iter().map(|(source, version)| (source.clone(), Some(version.clone()))).collect();
@@ -434,17 +476,17 @@ fn planned(
     }
     let fetch = fetcher(store, http, &loaded.sources, env);
     let (steps, blocked) = match basis {
-        Basis::Moves(_) => steps(products, env, &loaded.regions, store, fetch)?,
+        Basis::Moves(_) => steps(products, env, &loaded.regions, store, live.is_some(), fetch)?,
         // A fetch without a version is one that the plan does not name.
-        Basis::Saved(file, _) => {
+        Basis::Saved(_) => {
             let mut fetch = fetch;
-            steps(products, env, &loaded.regions, store, |wanted| match &wanted.version {
-                None => Err(outdated(file)),
+            steps(products, env, &loaded.regions, store, live.is_some(), |wanted| match &wanted.version {
+                None => Err(outdated()),
                 Some(version) => fetch(wanted).map_err(|e| match e.fix == e.code.fix() {
                     true => {
-                        let (plan, source) = (file.display(), &wanted.source);
+                        let source = &wanted.source;
                         let fix = format!(
-                            "{} Or plan again: {plan} reads `{source}@{version}`, which the store lacks.",
+                            "{} Or plan again: the plan reads `{source}@{version}`, which the store lacks.",
                             e.fix
                         );
                         e.fix(fix)
@@ -463,7 +505,7 @@ fn planned(
         return Ok(Planned { loaded, steps, plan, live: None });
     };
     let edits = edits(products, env, &live, &blocked);
-    let listed = match remote {
+    let mut listed = match remote {
         Some(remote @ Remote::Bucket(_)) => Some(live.list(remote).map_err(|e| Code::R2Failed.error(e))?),
         _ => None,
     };
@@ -472,6 +514,13 @@ fn planned(
     let all = changes::changes(store, root, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     let (next, _) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
+    // An apply also removes what it finds under the prefixes that it makes live, and the retired ones.
+    if let (Some(listed), Some(remote)) = (listed.as_mut(), remote) {
+        let owned = live.prefixes();
+        for prefix in next.swept().into_iter().filter(|prefix| !owned.contains(prefix)) {
+            listed.extend(remote.list(&prefix).map_err(|e| Code::R2Failed.error(e))?);
+        }
+    }
     (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
@@ -642,12 +691,13 @@ fn next(
         Input::Snapshot { source, version, .. } => Some((source.clone(), version.clone())),
         Input::Layer { .. } => None,
     }));
-    // A read that live does not have, such as a moved version, has the record of the store.
-    let copied = reads.into_iter().filter(|(source, _)| sources.iter().any(|s| &s.id == source && s.r2_copy));
-    for (source, version) in copied {
+    // A record that R2 holds stays. A read of a source with `r2_copy` whose record R2 lacks, such
+    // as a moved version, has the record of the store.
+    for (source, version) in reads {
         let record = match live.inputs.get(&(source.clone(), version.clone())) {
-            Some(record) => record.clone(),
-            None => store.snapshot(&source, &version)?,
+            Some(Some(record)) => Some(record.clone()),
+            _ if sources.iter().any(|s| s.id == source && s.r2_copy) => store.snapshot(&source, &version)?,
+            _ => continue,
         };
         next.inputs.insert((source, version), record);
     }
@@ -725,7 +775,8 @@ fn product_bug(name: &str, message: String) -> Error {
 /// The fetch rounds of one product: a loop guard, far above the two that the planner needs.
 const ROUNDS: usize = 8;
 
-/// The steps of every product, and the products that give `Unplanned::Invalid`. A product whose
+/// The steps of every product, and the products that give `Unplanned::Invalid`; against `live`,
+/// also the products without a pointer, whose release an apply cannot make live. A product whose
 /// step list reads snapshots that the store lacks gets them fetched, as [`product_steps`] says. The
 /// fetch for a `--move SOURCE` names its version in `env`, so every product reads that one version.
 pub(super) fn steps(
@@ -733,11 +784,17 @@ pub(super) fn steps(
     env: &mut Env,
     regions: &Regions,
     store: &Store,
+    live: bool,
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
 ) -> Result<(Vec<Step>, Vec<BlockedProduct>), Error> {
     check_layers(products, env)?;
     let (mut all, mut blocked) = (Vec::new(), Vec::new());
     for product in products {
+        if live && product.pointer().is_none() {
+            let reason = "no client document yet, so an apply cannot make its release live".into();
+            blocked.push(BlockedProduct { product: product.name().into(), reason });
+            continue;
+        }
         match product_steps(*product, env, regions, store, &mut fetch)? {
             Ok(steps) => all.extend(steps),
             Err(reason) => blocked.push(BlockedProduct { product: product.name().into(), reason }),
@@ -819,7 +876,7 @@ pub(super) fn product_steps(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::cell::Cell;
 
     use super::*;
@@ -870,18 +927,20 @@ mod tests {
             fetches.set(fetches.get() + 1);
             Ok("1".into())
         };
-        let (listed, _) = steps(&[&Indexed], &mut env(&["extra"]), &regions, &fixture.store, fetch).unwrap();
+        let (listed, _) = steps(&[&Indexed], &mut env(&["extra"]), &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!((listed.len(), fetches.get()), (3, 1));
-        let (listed, _) = steps(&[&Indexed], &mut env(&[]), &regions, &fixture.store, |_| unreachable!()).unwrap();
+        let (listed, _) =
+            steps(&[&Indexed], &mut env(&[]), &regions, &fixture.store, false, |_| unreachable!()).unwrap();
         assert_eq!(listed.len(), 3, "the store has it now");
 
-        let err = steps(&[&Indexed], &mut env(&[]), &regions, &empty.store, |_| Ok("1".into())).err().unwrap();
+        let err = steps(&[&Indexed], &mut env(&[]), &regions, &empty.store, false, |_| Ok("1".into())).err().unwrap();
         assert_eq!(err.message, "product `test` still needs index@1 after the fetch");
         assert!(err.fix.contains("product `test`"), "a product bug points at its code: {}", err.fix);
         let blocked = |_: &Wanted| Err(Code::Blocked.error("credential missing"));
-        let err = steps(&[&Indexed], &mut env(&[]), &regions, &empty.store, blocked).err().unwrap();
+        let err = steps(&[&Indexed], &mut env(&[]), &regions, &empty.store, false, blocked).err().unwrap();
         assert_eq!(err.code, Code::Blocked, "a failed fetch keeps its code");
-        let err = steps(&[&Indexed], &mut env(&["snow"]), &regions, &fixture.store, |_| Ok("1".into())).err().unwrap();
+        let err =
+            steps(&[&Indexed], &mut env(&["snow"]), &regions, &fixture.store, false, |_| Ok("1".into())).err().unwrap();
         let message = "data/env/live.toml: no product has the optional layer `snow`";
         assert_eq!((err.code, err.message.as_str()), (Code::InvalidData, message));
     }
@@ -917,7 +976,7 @@ mod tests {
             fetched.borrow_mut().push(wanted.source.clone());
             Ok("1".into())
         };
-        let (listed, _) = steps(&[&Chained], &mut env(&[]), &regions, &fixture.store, fetch).unwrap();
+        let (listed, _) = steps(&[&Chained], &mut env(&[]), &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!((listed.len(), fetched.into_inner()), (3, vec!["index".to_string(), "box".to_string()]));
     }
 
@@ -947,7 +1006,7 @@ mod tests {
         let (regions, http) = (Regions::new(Vec::new()).unwrap(), quick());
         let mut live = env(&[]);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live);
-        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, fetch).err().unwrap();
+        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.fix.as_str()),
             (Code::Blocked, "Plan with `--move land@VERSION`."),
@@ -958,7 +1017,7 @@ mod tests {
 
         live.moves.insert("land".into(), None);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live);
-        steps(&[&Outlined], &mut live, &regions, &fixture.store, fetch).unwrap();
+        steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(
             live.moves["land"].as_deref(),
             Some("2026-10-05"),
@@ -969,12 +1028,12 @@ mod tests {
         let land = Source { refresh: Refresh::Days(30), ..manual };
         let mut live = env(&[]);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
-        steps(&[&Outlined], &mut live, &regions, &fixture.store, fetch).unwrap();
+        steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(log.lock().unwrap().len(), requests, "without a move or live, the store serves");
 
         live.moves.insert("qrank".into(), None);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
-        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, fetch).err().unwrap();
+        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.message.as_str()),
             (Code::Usage, "--move qrank: no step list of `live` reads `qrank`")
@@ -984,12 +1043,20 @@ mod tests {
         assert!(err.message.contains("fetched per `area=`"), "{}", err.message);
     }
 
-    /// The test pipeline, with `head` at the version that `product::version` gives.
-    struct Versioned;
+    /// The test pipeline, with `head` at the version that `product::version` gives. Its pointer
+    /// document is `{"schema": 1}`, and its release has a `LICENSE.txt`.
+    pub(crate) struct Versioned;
 
     impl Product for Versioned {
         fn name(&self) -> &'static str {
             "test"
+        }
+
+        fn pointer(&self) -> Option<crate::product::PointerFn> {
+            Some(|_, _| {
+                let document = [("schema".to_string(), 1.into())].into_iter().collect();
+                Ok(crate::product::Pointer { document, named: [("LICENSE.txt".into(), b"CC0-1.0\n".to_vec())].into() })
+            })
         }
 
         fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
@@ -1013,7 +1080,8 @@ mod tests {
         let regions = Regions::new(Vec::new()).unwrap();
         let mut live = env(&[]);
         live.live.insert(("head".into(), Vec::new()), ["1".to_string(), "2".to_string()].into());
-        let err = steps(&[&Versioned], &mut live.clone(), &regions, &fixture.store, |_| unreachable!()).err().unwrap();
+        let err =
+            steps(&[&Versioned], &mut live.clone(), &regions, &fixture.store, false, |_| unreachable!()).err().unwrap();
         assert_eq!(
             (err.code, err.fix.as_str()),
             (Code::Blocked, "Plan with `--move head@VERSION`."),
@@ -1022,7 +1090,7 @@ mod tests {
         );
 
         live.moves.insert("head".into(), Some("1".into()));
-        let (listed, _) = steps(&[&Versioned], &mut live, &regions, &fixture.store, |_| unreachable!()).unwrap();
+        let (listed, _) = steps(&[&Versioned], &mut live, &regions, &fixture.store, false, |_| unreachable!()).unwrap();
         assert_eq!(listed.len(), 3);
     }
 
@@ -1122,7 +1190,7 @@ mod tests {
         assert_eq!((err.code.exit(), err.message.as_str()), (4, "product `other`: no box region"), "no product suits");
     }
 
-    const SOURCES: &str = r#"
+    pub(crate) const SOURCES: &str = r#"
         [[source]]
         id = "head"
         kind = "data"
@@ -1144,7 +1212,7 @@ mod tests {
     "#;
 
     /// What upstream has of `source`, as a check of now.
-    fn upstream(fixture: &Fixture, source: &str, version: &str) {
+    pub(crate) fn upstream(fixture: &Fixture, source: &str, version: &str) {
         let check = format!("{{\"checked\": {}, \"version\": \"{version}\"}}", crate::date::now());
         write(&fixture.store.root().join(format!("upstream/{source}.json")), &check);
     }

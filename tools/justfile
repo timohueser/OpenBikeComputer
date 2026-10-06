@@ -435,6 +435,15 @@ bake *args:
           _err "catalog is not readable at the configured prefix; refusing to purge it"
           exit 1
         }
+        pointer="$(mktemp)"
+        "${client[@]}" get "$prefix/catalog.json" "$pointer" >/dev/null
+        # Only a catalog that is JSON without `release` passes: one that does not parse can be live.
+        if ! python3 -c 'import json, sys; sys.exit("release" in json.load(open(sys.argv[1])))' "$pointer" 2>/dev/null; then
+          rm -f "$pointer"
+          _err "$prefix/catalog.json names a release of obc data apply live, or is not JSON; apply live instead"
+          exit 1
+        fi
+        rm -f "$pointer"
         if (( apply )); then
           _warn "deleting every object under the catalog prefix: $prefix"
           _run "${client[@]}" delete --prefix "$prefix" --reason "obc bake clean-r2: purge the catalog prefix before a fresh publish"

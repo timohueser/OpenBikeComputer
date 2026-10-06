@@ -8,7 +8,7 @@ import re
 import tempfile
 
 from . import planner_deploy as deploy, r2
-from .planner_runtime import public_metadata, read_url, relative_path, storage_files
+from .planner_runtime import public_metadata, read_url, refuse_applied, relative_path, storage_files
 
 RECIPES = Path(__file__).resolve().parent / "planner-regions"
 
@@ -18,6 +18,7 @@ def catalog(remote):
 
 
 def active_id(current):
+    refuse_applied(current)
     if not isinstance(current, dict) or current.get("format") != 1:
         raise ValueError("Invalid planner catalogue")
     active = current.get("active")

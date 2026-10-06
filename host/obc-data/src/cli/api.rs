@@ -41,7 +41,8 @@ pub enum Code {
     Blocked,
     /// R2 or rclone failed, or refused a key.
     R2Failed,
-    /// After an upload, the object in the bucket is not the file.
+    /// A release failed its check before an apply, or after an upload the object in the bucket is
+    /// not the file.
     VerifyFailed,
     /// A run failed: the build, or the run that `runs RUN --follow` shows.
     RunFailed,
@@ -153,7 +154,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::cli::{build_cli, edit_cli, r2_cli, runs_cli, status_cli};
+    use crate::cli::{apply_cli, build_cli, edit_cli, r2_cli, runs_cli, status_cli};
     use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
@@ -172,6 +173,7 @@ mod tests {
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
             schema("`build`", generator.subschema_for::<build_cli::Built>()),
+            schema("`apply`", generator.subschema_for::<apply_cli::Applied>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN`", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),

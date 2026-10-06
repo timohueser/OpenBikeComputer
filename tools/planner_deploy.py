@@ -10,7 +10,7 @@ from urllib.request import Request
 from urllib.parse import urlsplit
 
 from . import planner_geo as geo, planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
-from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url
+from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url, refuse_applied
 
 RELEASES = "/opt/obc-planner/releases"
 SOURCE = "/opt/obc-planner/source"
@@ -76,6 +76,7 @@ def deploy(args):
     except HTTPError as error:
         if error.code != 404: raise
         current = {"format": 1, "active": None, "previous": None}
+    refuse_applied(current)
     old = current["active"]
     target = 0 if old is None else slot(old)
     # A new release goes into the other slot; the same release restarts in place.
@@ -245,6 +246,10 @@ def verify_services(active, document, origin):
 def activate(public_url, catalog):
     remote = r2.bucket_remote()
     with tempfile.TemporaryDirectory(prefix="planner-activate-") as directory:
+        # An apply can switch the catalogue while a deploy runs: read the bucket, not the CDN.
+        current = r2.fetch_optional(remote, "planner/catalog.json", Path(directory) / "current.json")
+        if current:
+            refuse_applied(json.loads(current.read_bytes()))
         path = Path(directory) / "catalog.json"
         path.write_bytes(encoded(catalog))
         r2.run_rclone(["copyto", str(path), f"{remote.path}/planner/catalog.json", "--header-upload", "Content-Type: application/json",

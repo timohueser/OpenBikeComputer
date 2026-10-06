@@ -6,6 +6,7 @@ use clap::{Args, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
+use crate::live::refuse_owned;
 use crate::r2::{Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
 
 use super::api::confirm;
@@ -97,6 +98,7 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
             Ok(())
         }
         Action::Put { file, key, cache_control, content_type, immutable } => {
+            refuse_owned(&bucket, std::slice::from_ref(&key)).map_err(owned)?;
             let upload =
                 Upload { cache_control: cache_control.as_deref(), content_type: content_type.as_deref(), immutable };
             let uploaded = bucket.put(&file, &key, &upload).map_err(failed)? == Put::Uploaded;
@@ -117,6 +119,11 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
     }
 }
 
+/// A refusal of a key that only an apply writes.
+fn owned(message: String) -> Error {
+    Code::R2Failed.error(message).fix("Once a release is live, only `obc data apply live` changes its keys.")
+}
+
 fn delete(
     bucket: &Bucket,
     keys: Vec<String>,
@@ -133,6 +140,7 @@ fn delete(
         Some(prefix) => bucket.list(&prefix).map_err(failed)?.into_iter().map(|object| object.key).collect(),
         None => keys,
     };
+    refuse_owned(bucket, &keys).map_err(|e| owned(format!("{e}; nothing was deleted")))?;
     let objects = bucket.plan_delete(&keys).map_err(|e| failed(format!("{e}; nothing was deleted")))?;
     let bytes: u64 = objects.iter().map(|object| object.bytes).sum();
     let plan = format!("{} object(s), {bytes} bytes to delete\n{}", objects.len(), listing(bucket, &objects));

@@ -440,10 +440,10 @@ fn user() -> String {
 }
 
 /// A temporary directory that is removed when it goes out of scope.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
-    fn new() -> Result<Self, String> {
+    pub(crate) fn new() -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = format!("obc-r2-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
         let dir = std::env::temp_dir().join(name);

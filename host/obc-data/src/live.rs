@@ -24,6 +24,12 @@ use crate::store::{sha256_hex, write_atomic, Snapshot, Store};
 pub const PUBLIC: &str = "https://maps.openbikecomputer.com";
 /// The prefix of the input copies.
 pub const INPUTS: &str = "inputs";
+/// The prefix of each product, for the plumbing that runs without the products. A test of
+/// `obc-data-steps` holds it equal to the prefixes of its products.
+pub const PRODUCT_PREFIXES: &[&str] = &["cell-catalog", "planner"];
+/// The terrain reference archive of older publishes. An apply removes it once live reads the
+/// national terrain models (`dtm-*`) from their input copies instead.
+pub const REFERENCE: &str = "reference/v1";
 
 /// Where live is read: the bucket of `OBC_R2_*` when `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is
 /// set, or else its public URL.
@@ -73,8 +79,8 @@ impl Remote {
 pub struct Live {
     /// One per product, in the order of the products.
     pub products: Vec<LiveProduct>,
-    /// The record of each input copy that a live release reads, by source and version; `None`
-    /// when R2 does not have it.
+    /// The record that R2 holds of each snapshot that a live release reads, by source and version;
+    /// `None` for a source with `r2_copy` whose record R2 lacks.
     pub inputs: BTreeMap<(String, String), Option<Snapshot>>,
 }
 
@@ -100,13 +106,18 @@ impl Live {
             };
             live.products.push(LiveProduct { product: product.name().into(), prefix: prefix.into(), release });
         }
+        // Each record that R2 holds counts, whatever `sources` says now: a removal depends on R2
+        // alone. Only a record of a source with `r2_copy` that R2 lacks is drift.
         for (source, version) in live.snapshots() {
-            if !sources.iter().any(|s| s.id == source && s.r2_copy) {
-                continue;
-            }
             let key = record_key(&source, &version);
-            let record = remote.get(&key)?.map(|bytes| serde_json::from_slice(&bytes)).transpose();
-            live.inputs.insert((source, version), record.map_err(|e| format!("{key}: {e}"))?);
+            let record: Option<Snapshot> = remote
+                .get(&key)?
+                .map(|bytes| serde_json::from_slice(&bytes))
+                .transpose()
+                .map_err(|e| format!("{key}: {e}"))?;
+            if record.is_some() || sources.iter().any(|s| s.id == source && s.r2_copy) {
+                live.inputs.insert((source, version), record);
+            }
         }
         Ok(live)
     }
@@ -176,6 +187,16 @@ impl Live {
         let mut prefixes: Vec<String> = self.releases().map(|(prefix, _, _)| prefix.to_string()).collect();
         if !prefixes.is_empty() {
             prefixes.push(INPUTS.into());
+        }
+        prefixes
+    }
+
+    /// The prefixes that an apply which makes this live lists for its removals: those that it
+    /// owns, and [`REFERENCE`] once live reads a `dtm-*` source.
+    pub fn swept(&self) -> Vec<String> {
+        let mut prefixes = self.prefixes();
+        if self.snapshots().iter().any(|(source, _)| source.starts_with("dtm-")) {
+            prefixes.push(REFERENCE.into());
         }
         prefixes
     }
@@ -264,6 +285,30 @@ pub struct Removal {
 
 fn record_key(source: &str, version: &str) -> String {
     format!("{INPUTS}/records/{source}/{version}.json")
+}
+
+/// Refuse an older publish to `prefix` once an apply made a release live there: it would replace
+/// the pointer of live, or remove what live uses.
+/// A pointer that is not JSON is refused too: it can be one that an apply wrote.
+pub fn refuse_older_publish(bucket: &Bucket, prefix: &str) -> Result<(), String> {
+    let key = if prefix.is_empty() { "catalog.json".to_string() } else { format!("{prefix}/catalog.json") };
+    let Some(bytes) = bucket.read(&key)? else { return Ok(()) };
+    let pointer: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{key} is not JSON ({e}), so it can name a live release"))?;
+    if pointer.get("release").is_some() {
+        return Err(format!("{key} names a release that `obc data apply live` made live; apply live instead"));
+    }
+    Ok(())
+}
+
+/// Refuse a write to `keys` that only an apply makes: a key under the prefix of a product whose
+/// pointer has `release`, or under `inputs` once any pointer has.
+pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
+    let under = |prefix: &str| keys.iter().any(|key| key.starts_with(&format!("{prefix}/")));
+    for prefix in PRODUCT_PREFIXES.iter().filter(|prefix| under(prefix) || under(INPUTS)) {
+        refuse_older_publish(bucket, prefix)?;
+    }
+    Ok(())
 }
 
 /// The release that the pointer of `prefix` names.
@@ -446,6 +491,49 @@ pub(crate) mod tests {
 
         let conflict = live(vec![reading("0.9.0", &[]), reading("0.10.2", &[])]).versions();
         assert_eq!(conflict[&("land".to_string(), Vec::new())].len(), 2, "a conflict stays");
+    }
+
+    #[test]
+    fn an_older_publish_is_refused_once_a_release_is_live() {
+        let scratch = Scratch::new("live-older-publish");
+        let dir = scratch.0.join("bucket");
+        let bucket = Bucket::local(&dir);
+        assert!(refuse_older_publish(&bucket, "test-catalog").is_ok(), "no pointer");
+        write(&dir.join("test-catalog/catalog.json"), "{\"schema_version\": 3}");
+        assert!(refuse_older_publish(&bucket, "test-catalog").is_ok(), "the pointer of an older publish");
+        publish(&dir, &release(b"layer"));
+        let err = refuse_older_publish(&bucket, "test-catalog").unwrap_err();
+        assert!(err.contains("apply live"), "{err}");
+        write(&dir.join("test-catalog/catalog.json"), "{\"release\": ");
+        assert!(refuse_older_publish(&bucket, "test-catalog").is_err(), "a pointer that is not JSON");
+
+        let keys = |keys: &[&str]| keys.iter().map(|key| key.to_string()).collect::<Vec<_>>();
+        let (copy, cell) = (keys(&["inputs/objects/a"]), keys(&["cell-catalog/objects/a"]));
+        assert!(refuse_owned(&bucket, &copy).is_ok() && refuse_owned(&bucket, &cell).is_ok(), "nothing live");
+        write(&dir.join("cell-catalog/catalog.json"), &format!("{{\"release\": \"{}\"}}", "a".repeat(64)));
+        assert!(refuse_owned(&bucket, &cell).is_err() && refuse_owned(&bucket, &copy).is_err());
+        assert!(refuse_owned(&bucket, &keys(&["planner/objects/a", "firmware/v1/app.bin"])).is_ok());
+    }
+
+    #[test]
+    fn a_record_on_r2_counts_without_r2_copy_and_the_reference_goes_once_live_reads_a_national_model() {
+        let scratch = Scratch::new("live-record");
+        let (dir, store) = (scratch.0.join("bucket"), Store::at(scratch.0.join("store")));
+        let remote = Remote::Bucket(Bucket::local(&dir));
+        publish(&dir, &release(b"layer"));
+        write(&dir.join("reference/v1/16/1.tif"), "reference");
+        let live = Live::read(&remote, &[&Test], &[], &store).unwrap();
+        let listed: Vec<Object> = live.swept().iter().flat_map(|prefix| remote.list(prefix).unwrap()).collect();
+        let check = live.check(&listed);
+        assert!(check.leftovers.is_empty(), "the record and its object stay whatever `sources` says: {check:?}");
+        assert_eq!(live.swept(), ["test-catalog", "inputs"], "no live layer reads a `dtm-*` source");
+
+        let mut national = release(b"layer");
+        let read = national.layers[0].snapshots.remove("land").unwrap();
+        national.layers[0].snapshots.insert("dtm-ch".into(), read);
+        publish(&dir, &national);
+        let live = Live::read(&remote, &[&Test], &[], &store).unwrap();
+        assert_eq!(live.swept(), ["test-catalog", "inputs", REFERENCE]);
     }
 
     /// A product whose pointer an older publish wrote, without `release`.
