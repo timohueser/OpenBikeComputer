@@ -419,6 +419,7 @@ A step declares:
 | `options` | A JSON object |
 | `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
+| `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
 
 One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
@@ -708,9 +709,10 @@ out a product without them: it is in `blocked` with the reason "no client docume
 live release stays. Neither `maps` nor `planner` gives them yet. A product can check a release
 before an apply makes it live; neither `maps` nor `planner` has a check yet.
 
-Each step says whether a client reads its layer: the device, the web planner or a service on the
-VPS. Another layer is intermediate: only other layers read it, and a build makes it again from
-its inputs. R2 holds the files of a client layer only (see [Releases](#releases)).
+Each step selects the files that clients read: the device, the web planner or a service on the
+VPS. Other files are intermediate: only other layers read them. R2 holds only selected files
+(see [Releases](#releases)). The selection changes the recipe and the release, but not the layer
+key: a change in selection reuses the same bytes.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each source that the plan moves
@@ -823,10 +825,22 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/snow` | `hr-wsi` when its `extent` meets the bounds and its fetch has files, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/sun` | `planner/terrain` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_sha256` is the SHA-256 of the PMTiles archive that the step converts from `terrain.mbtiles` |
 
+Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
+`terrain`, `overlays`, `climate`, `snow` or `sun`. It reads only the archive of its producer.
+It converts terrain MBTiles with the pinned Python PMTiles library. Each tile goes into the
+archive of its zoom 11 parent, or its own tile when its zoom is less than 11. The tile bytes
+stay the same. Each archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
+as `maps/<kind>.json`, with the transport rules of [the offline contract](planner-offline.md).
+The step writes the packed bytes in `objects/<transport sha256>` and selects only `objects`
+for clients. Its local `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`, `source`
+and `metadata`. `files` maps logical names to source and transport hashes, sizes and encoding.
+`source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
+is the TileJSON. Empty terrain has TileJSON and no tile archives.
+
 `climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
-names it. The search and the sun layer use the `time_zone` of the region. `planner/osm`,
-`planner/search/policy`, `planner/search/dump` and `planner/search/records` are intermediate
-layers; the other layers are client layers.
+names it. The search and the sun layer use the `time_zone` of the region. The map producers,
+`planner/osm`, `planner/search/policy`, `planner/search/dump` and `planner/search/records` are
+intermediate layers. Other layers select all their files for clients.
 
 A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --group <group> python
 <entry> --step` in the repository root, with the packages of a dependency group of
@@ -852,10 +866,11 @@ the same layers make the same release. `layers` is sorted by `step`, and each la
 | --- | --- |
 | `step`, `key`, `inputs`, `options`, `code`, `command`, `outputs`, `digest`, `files` | As in the [receipt](#receipt) |
 | `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE` of each snapshot that the layer read |
-| `client` | `true` for a client layer, `false` for an intermediate layer (see [Products](#products)) |
+| `client` | The selected client outputs, as in the step (see [Products](#products)) |
 
-The objects of a release are the `files` of its client layers. The manifest also records each
-intermediate layer, so a plan compares it with live and live names the versions that it read.
+The objects of a release are the selected client files, with one object per distinct SHA-256.
+The manifest records every file of every layer, so a plan compares it with live and live names
+the versions that it read. Uploads, live ownership and cleanup use the same selection.
 
 ### State of a layer
 

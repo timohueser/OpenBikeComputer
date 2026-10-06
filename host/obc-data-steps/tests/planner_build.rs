@@ -85,7 +85,10 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         let mut steps = Planner.steps(&env, &regions, &store).unwrap().steps;
         let rust = ["planner/osm", "planner/terrain", "planner/routing"];
         let other = ["planner/assets", "planner/model", "planner/basemap"];
-        steps.retain(|step| rust.contains(&step.name.as_str()) || python && !other.contains(&step.name.as_str()));
+        steps.retain(|step| {
+            rust.contains(&step.name.as_str())
+                || python && !other.iter().any(|name| step.name == *name || step.name.starts_with(&format!("{name}/")))
+        });
         steps
     };
     let http = Http::new();
@@ -161,10 +164,28 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     let archive = std::fs::read(store.object(&overlays.files[0].sha256)).unwrap();
     assert_eq!((&archive[..7], archive[7]), (&b"PMTiles"[..], 3), "overlays.pmtiles is a PMTiles v3 archive");
     assert!(overlays.metrics["tiles"].as_u64().unwrap() > 0, "the cycle route draws tiles");
+    for kind in ["places", "overlays", "terrain"] {
+        let name = format!("planner/{kind}/grid");
+        let receipt = &built.iter().find(|built| built.receipt.step == name).unwrap().receipt;
+        let index = receipt.files.iter().find(|file| file.path == "index.json").unwrap();
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(store.object(&index.sha256)).unwrap()).unwrap();
+        assert_eq!(index["kind"], kind);
+        assert!(index["files"][format!("maps/{kind}.json")].is_object());
+        for entry in index["files"].as_object().unwrap().values() {
+            let hash = entry["transport"]["sha256"].as_str().unwrap();
+            assert!(receipt.files.iter().any(|file| file.path == format!("objects/{hash}")));
+        }
+    }
 
     assert_eq!(plan(&store, &root, &steps(true)).unwrap().groups.len(), 0);
     let release = release(&store, &root, "planner", AREA, &[], &steps(true)).unwrap();
     assert!(release.is_some(), "the store has every layer");
+    let release = release.unwrap();
+    for layer in release.layers.iter().filter(|layer| layer.step.ends_with("/grid")) {
+        assert!(layer.files.iter().any(|file| file.path == "index.json"));
+        assert!(layer.client_files().all(|file| file.path.starts_with("objects/")));
+    }
 }
 
 /// A stand-in for the Nominatim archive: the settings of Germany, and a country grid in which the

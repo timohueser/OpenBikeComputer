@@ -3,7 +3,7 @@
 pub mod maps;
 pub mod planner;
 
-use obc_data::engine::{Code, Input, Run, Step};
+use obc_data::engine::{Client, Code, Input, Run, Step};
 use obc_data::product::Product;
 use serde_json::Value;
 
@@ -41,7 +41,7 @@ pub(crate) fn python(
         code: Code { paths, crates: Vec::new() },
         outputs: outputs.iter().map(|output| output.to_string()).collect(),
         run: Run::Command(argv),
-        client: true,
+        client: Client::All,
     }
 }
 
