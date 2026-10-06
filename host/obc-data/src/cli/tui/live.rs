@@ -30,9 +30,6 @@ pub(super) enum Fix {
     Plan,
 }
 
-/// The states that a product shows: the first of them that one of its layers has.
-const WORST: [State; 5] = [State::NotApplied, State::CodeChanged, State::InputChanged, State::Stale, State::Blocked];
-
 impl App {
     pub(super) fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = vec![LiveRow::Region];
@@ -93,7 +90,7 @@ impl App {
             Some(LiveRow::Layer(name)) => {
                 format!("obc data layer {LIVE} {name} {}", if self.layer_on(name) { "off" } else { "on" })
             }
-            _ if self.check => "obc data status --check".into(),
+            _ if self.status.as_ref().is_some_and(|status| status.check.is_some()) => "obc data status --check".into(),
             _ => "obc data status".into(),
         }
     }
@@ -134,10 +131,8 @@ impl App {
                     Line::from(vec![Span::from("region  ").dim(), Span::from(region)])
                 }
                 LiveRow::Product(p) => {
-                    let mut spans =
-                        vec![Span::from(row_text(&[&table[p + 1][..], &[String::new()]].concat(), &product_widths))];
-                    spans.extend(product_state(&products[*p]));
-                    Line::from(spans)
+                    let cells = row_text(&[&table[p + 1][..], &[String::new()]].concat(), &product_widths);
+                    Line::from(vec![Span::from(cells), product_state(&products[*p])])
                 }
                 LiveRow::Layer(name) => {
                     let mark = if self.layer_on(name) { "[x]" } else { "[ ]" };
@@ -170,14 +165,9 @@ impl App {
     }
 }
 
-/// The first state of `WORST` that a layer of the product has, with the layers in that state.
-fn product_state(product: &ProductStatus) -> Vec<Span<'static>> {
-    let Some(layers) = &product.layers else { return vec![Span::styled("unknown", Color::Red)] };
-    let Some(state) = WORST.into_iter().find(|&state| layers.iter().any(|layer| layer.state == state)) else {
-        return vec![Span::styled(State::Ok.to_string(), state_style(State::Ok))];
-    };
-    let names = layers.iter().filter(|layer| layer.state == state);
-    let names: Vec<&str> =
-        names.map(|layer| layer.layer.split_once('/').map_or(layer.layer.as_str(), |(_, name)| name)).collect();
-    vec![Span::styled(state.to_string(), state_style(state)), Span::from(format!("  {}", names.join(", "))).dim()]
+/// The state of a product: the first state of its layers in the order of `State`.
+fn product_state(product: &ProductStatus) -> Span<'static> {
+    let Some(layers) = &product.layers else { return Span::styled("unknown", Color::Red) };
+    let state = layers.iter().map(|layer| layer.state).min().unwrap_or(State::Ok);
+    Span::styled(state.to_string(), state_style(state))
 }

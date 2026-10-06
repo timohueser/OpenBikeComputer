@@ -44,7 +44,7 @@ pub struct Read {
 }
 
 /// The state of each layer of `steps`, in dependency order. When more than one state applies, the
-/// first of not applied, code changed, input changed, stale and blocked is the state.
+/// first in the order of `State` is the state.
 pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environment) -> Result<Vec<LayerState>, String> {
     let mut users: HashMap<&str, Vec<String>> = HashMap::new();
     for step in steps {

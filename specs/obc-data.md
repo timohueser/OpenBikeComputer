@@ -3406,14 +3406,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "State": {
-      "description": "The state of a source or a layer. A source is only ok, stale or blocked.",
+      "description": "The state of a source or a layer. A source is only ok, stale or blocked. When more than one\nstate applies to a layer, the first in this order is its state, so the least of several states\nis the one to show for all of them.",
       "enum": [
-        "ok",
-        "stale",
+        "not_applied",
         "code_changed",
         "input_changed",
-        "not_applied",
-        "blocked"
+        "stale",
+        "blocked",
+        "ok"
       ],
       "type": "string"
     },

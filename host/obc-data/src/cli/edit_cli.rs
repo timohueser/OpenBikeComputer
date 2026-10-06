@@ -12,7 +12,6 @@ use super::build_cli::{check_layers, load};
 use super::{print_json, Code, Error};
 use crate::env::Env;
 use crate::product::Product;
-use crate::regions::Regions;
 use crate::store::write_atomic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -53,18 +52,10 @@ pub fn current(root: &Path, name: &str) -> Result<Edited, Error> {
     Ok(Edited { env: env.name, region: env.region, layers: env.layers })
 }
 
-/// How many edits `undo` takes back: the region, and each layer switched on or off. 0 when the file
-/// has no committed version.
-pub fn edits(root: &Path, name: &str) -> usize {
-    let (Ok(now), Ok(text)) = (current(root, name), committed(root, name)) else { return 0 };
-    let parsed = std::str::from_utf8(&text).ok().and_then(|text| {
-        let regions = Regions::load(root).ok()?;
-        Env::parse(name, text, &regions).ok()
-    });
-    // A committed file that is no longer valid differs, but not by a count of edits.
-    let Some(then) = parsed else { return 1 };
-    let switched = |a: &[String], b: &[String]| a.iter().filter(|layer| !b.contains(layer)).count();
-    usize::from(now.region != then.region) + switched(&now.layers, &then.layers) + switched(&then.layers, &now.layers)
+/// Whether `data/env/<name>.toml` differs from its committed version. Not when it has none.
+pub fn edited(root: &Path, name: &str) -> bool {
+    let now = std::fs::read(Env::path(root, name)).ok();
+    committed(root, name).is_ok_and(|committed| Some(committed) != now)
 }
 
 /// `data/env/<name>.toml` as git has it in `HEAD`.
@@ -113,6 +104,7 @@ mod tests {
     use crate::engine::tests::write;
     use crate::engine::Step;
     use crate::product::Unplanned;
+    use crate::regions::Regions;
     use crate::store::tests::Scratch;
     use crate::store::Store;
 
@@ -170,10 +162,7 @@ mod tests {
         write(&root.join("data/env/live.toml"), LIVE);
         git(&root, &["add", "data/env/live.toml"]);
         git(&root, &["-c", "user.name=test", "-c", "user.email=test@example.org", "commit", "--quiet", "-m", "live"]);
-        assert_eq!(edits(&root, "live"), 0);
         region(&root, products, "live", "europe/andorra").unwrap();
-        layer(&root, products, "live", "sun", Switch::On).unwrap();
-        assert_eq!(edits(&root, "live"), 2);
         undo(&root, "live").unwrap();
         assert_eq!(file(), LIVE);
     }

@@ -22,7 +22,6 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
-use crate::live::Remote;
 use crate::product::Product;
 use crate::regions::Regions;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
@@ -33,8 +32,8 @@ use super::edit_cli::{self, Edited, Switch};
 use super::runs_cli::{bytes, duration, mark, step_cells};
 use super::status_cli::{self, Status};
 use super::{
-    clean, clean_plan, live_column, live_unknown, policy, registry, remote, row_text, source_rows, widths, CleanPlan,
-    Code, Error, SourceRow,
+    clean, clean_plan, live_column, live_unknown, policy, registry, row_text, source_rows, widths, CleanPlan, Error,
+    SourceRow,
 };
 use live::{Fix, LiveRow};
 use plan::PlanView;
@@ -108,8 +107,10 @@ enum Effect {
     PlanClean,
     /// `obc data clean --apply` of the plan that Clean shows.
     Clean,
-    /// `obc data status`, and `data/env/live.toml`, for Live.
-    Status,
+    /// `obc data status [--check]`, and `data/env/live.toml`, for Live.
+    Status {
+        check: bool,
+    },
     /// `obc data region live ID`.
     Region(String),
     /// `obc data layer live NAME on|off`.
@@ -120,19 +121,6 @@ enum Effect {
     Plan,
     /// `obc data plan live --only MOVES`: the moves that Plan takes; every move when empty.
     Select(Vec<String>),
-}
-
-impl Effect {
-    /// What the bar shows while the effect runs.
-    fn busy(&self) -> &'static str {
-        match self {
-            Effect::CheckNow => "checking upstream…",
-            Effect::Policy(..) => "reading the sources…",
-            Effect::PlanClean | Effect::Clean => "reading the store…",
-            Effect::Plan | Effect::Select(_) => "planning…",
-            _ => "reading live…",
-        }
-    }
 }
 
 /// A key that works now, with its label and what it does when the bar shows it.
@@ -148,6 +136,7 @@ fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'st
         Screen::Live => &[
             (KeyCode::Char('r'), Action::Open(Overlay::Region), "r", "region"),
             (KeyCode::Char(' '), Action::Toggle, "space", "toggle"),
+            (KeyCode::Char('R'), Action::CheckNow, "R", "check R2"),
         ],
         Screen::Sources => &[
             (KeyCode::Char('e'), Action::Open(Overlay::Policy), "e", "policy"),
@@ -174,22 +163,20 @@ struct App {
     live: Option<std::collections::BTreeMap<String, Vec<String>>>,
     /// Sources shows a check of upstream from now, not from the last hour.
     checked_now: bool,
-    /// What the bar shows while an effect runs.
-    busy: Option<&'static str>,
+    /// An effect runs.
+    busy: bool,
     /// The plan of `clean`, once Store has shown.
     store: Option<CleanPlan>,
     /// Running runs first, then newest first.
     runs: Vec<Details>,
     /// What `status` wrote; `None` until it is read, or when it failed.
     status: Option<Status>,
-    /// `status` was read with `--check`: only the bucket can be listed.
-    check: bool,
     /// `data/env/live.toml`.
     env: Option<Edited>,
-    /// The edits of `data/env/live.toml` that `undo` takes back.
-    edits: usize,
-    /// The id of each region.
-    regions: Vec<String>,
+    /// `data/env/live.toml` differs from its committed version: `undo` takes the edits back.
+    edited: bool,
+    /// The id of each region, or why `data/regions/` could not be read.
+    regions: Result<Vec<String>, String>,
     /// The filter of Region, and whether keys type into it.
     filter: String,
     filtering: bool,
@@ -233,10 +220,9 @@ pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
     let store = Store::open()?;
     let live = live_column(products, &store);
     let mut app = App::new(source_rows(&registry(root)?, live.as_ref().ok(), false)?, list_runs(&store)?);
-    app.notice = live.as_ref().err().map(live_unknown);
-    app.live = live.ok();
-    let regions = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
-    app.regions = regions.iter().map(|region| region.id.clone()).collect();
+    app.live = live.as_ref().ok().cloned();
+    app.regions = Regions::load(root).map(|regions| regions.iter().map(|region| region.id.clone()).collect());
+    app.notice = app.regions.clone().err().or(live.err().as_ref().map(live_unknown));
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
@@ -251,19 +237,19 @@ pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
 fn run_loop(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App, tui: &mut Tui) -> Result<(), Error> {
     let io = |e: std::io::Error| e.to_string();
     let mut read = Instant::now();
-    // Live is the first screen.
-    let mut effect = Effect::Status;
+    // Live is the first screen. Only `R` lists R2.
+    let mut effect = Effect::Status { check: false };
     loop {
         match effect {
             Effect::None => {}
             Effect::Quit => return Ok(()),
             effect => {
-                app.busy = Some(effect.busy());
+                app.busy = true;
                 tui.draw(|frame| app.draw(frame)).map_err(io)?;
                 if let Err(error) = perform(root, products, store, app, effect) {
                     app.notice = Some(error.message);
                 }
-                app.busy = None;
+                app.busy = false;
                 discard_keys()?;
                 // A fetch writes its progress to standard error, over the screen: draw all of it
                 // again. `Terminal::clear` would ask the terminal for the cursor first.
@@ -325,16 +311,16 @@ fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App,
             }
             result
         }
-        Effect::Status => app.read_live(root, products),
+        Effect::Status { check } => app.read_live(root, products, check),
         Effect::Region(id) => {
             let result = edit_cli::region(root, products, LIVE, &id).map(drop);
-            result.and(app.read_live(root, products))
+            result.and(app.read_live(root, products, false))
         }
         Effect::Layer(layer, switch) => {
             let result = edit_cli::layer(root, products, LIVE, &layer, switch).map(drop);
-            result.and(app.read_live(root, products))
+            result.and(app.read_live(root, products, false))
         }
-        Effect::Undo => edit_cli::undo(root, LIVE).and(app.read_live(root, products)),
+        Effect::Undo => edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)),
         Effect::Plan => {
             let plan = plan_live(root, products, &[]).inspect_err(|_| app.overlay = None)?;
             app.plan = Some(PlanView::new(plan));
@@ -384,14 +370,13 @@ impl App {
             sources,
             live: None,
             checked_now: false,
-            busy: None,
+            busy: false,
             store: None,
             runs,
             status: None,
-            check: false,
             env: None,
-            edits: 0,
-            regions: Vec::new(),
+            edited: false,
+            regions: Ok(Vec::new()),
             filter: String::new(),
             filtering: false,
             plan: None,
@@ -414,14 +399,12 @@ impl App {
         Ok(())
     }
 
-    /// Read `data/env/live.toml` and `status` again: with `--check` when the bucket can be listed.
-    fn read_live(&mut self, root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
-        self.edits = edit_cli::edits(root, LIVE);
+    /// Read `data/env/live.toml` and `status [--check]` again.
+    fn read_live(&mut self, root: &Path, products: &[&dyn Product], check: bool) -> Result<(), Error> {
+        self.edited = edit_cli::edited(root, LIVE);
         let env = edit_cli::current(root, LIVE);
         self.env = env.as_ref().ok().cloned();
-        self.status = None;
-        self.check = matches!(remote()?, Remote::Bucket(_));
-        let status = status_cli::read(root, products, self.check);
+        let status = status_cli::read(root, products, check);
         self.status = status.as_ref().ok().cloned();
         self.row = self.row.min(self.live_rows().len() - 1);
         env.and(status).map(drop)
@@ -471,7 +454,8 @@ impl App {
     /// The regions whose id has the filter of Region.
     fn shown_regions(&self) -> Vec<&str> {
         let filter = self.filter.to_lowercase();
-        self.regions.iter().map(String::as_str).filter(|id| id.contains(&filter)).collect()
+        let regions = self.regions.iter().flatten();
+        regions.map(String::as_str).filter(|id| id.contains(&filter)).collect()
     }
 
     /// Keys type into the filter of Region.
@@ -501,13 +485,13 @@ impl App {
                 self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
             }
             Action::Open(Overlay::Clean) => self.store.as_ref().is_some_and(|plan| !plan.is_empty()),
-            Action::Open(Overlay::Region) => !self.regions.is_empty(),
+            Action::Filter => self.regions.is_ok(),
             Action::Choose => self.chooses(),
             Action::Toggle if self.overlay == Some(Overlay::Plan) => self.plan.as_ref().is_some_and(PlanView::toggles),
             Action::Toggle => matches!(self.live_rows().get(self.row), Some(LiveRow::Layer(_))),
             Action::Fix => self.fix().is_some(),
             Action::Steps => self.plan.as_ref().is_some_and(|view| !view.all.groups.is_empty()),
-            Action::Undo => self.edits > 0,
+            Action::Undo => self.edited,
             _ => true,
         }
     }
@@ -568,9 +552,7 @@ impl App {
                 }
                 keys.push(bar(KeyCode::Char('p'), Action::Open(Overlay::Plan), "p", "plan"));
                 if self.works(Action::Undo) {
-                    let edits =
-                        if self.edits == 1 { "undo 1 edit".into() } else { format!("undo {} edits", self.edits) };
-                    keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", &edits));
+                    keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo"));
                 }
                 keys.push(bar(KeyCode::Char('?'), Action::Open(Overlay::Help), "?", "help"));
             }
@@ -643,6 +625,7 @@ impl App {
                 (self.overlay, self.filter, self.filtering) = (None, String::new(), false);
                 return Effect::Region(id);
             }
+            Action::CheckNow if self.screen == Screen::Live => return Effect::Status { check: true },
             Action::CheckNow => return Effect::CheckNow,
             Action::Ask => self.asking = true,
             Action::Clean => {
@@ -822,8 +805,8 @@ impl App {
     }
 
     fn draw_bar(&self, frame: &mut Frame, area: Rect) {
-        if let Some(busy) = self.busy {
-            frame.render_widget(Line::from(busy), area);
+        if self.busy {
+            frame.render_widget(Line::from("working…"), area);
             return;
         }
         let mut spans = Vec::new();
@@ -885,6 +868,9 @@ impl App {
             (true, _) => Span::from(format!("{}▏", self.filter)),
             (false, false) => Span::from(self.filter.clone()),
         };
+        if let Err(error) = &self.regions {
+            return vec![Line::styled(error.clone(), Color::Red)];
+        }
         let mut lines = vec![Line::from(vec![Span::from("/ ").bold(), filter])];
         let current = self.env.as_ref().map(|env| env.region.as_str());
         for (i, id) in self.shown_regions().into_iter().enumerate() {
@@ -1185,8 +1171,8 @@ mod tests {
         app.store = Some(CleanPlan { store, ..CleanPlan::default() });
         app.status = Some(status());
         app.env = Some(Edited { env: LIVE.into(), region: REGION.into(), layers: vec!["sun".into()] });
-        app.edits = 1;
-        app.regions = ["europe/andorra", REGION, "monaco"].map(String::from).to_vec();
+        app.edited = true;
+        app.regions = Ok(["europe/andorra", REGION, "monaco"].map(String::from).to_vec());
         app
     }
 
@@ -1267,7 +1253,7 @@ mod tests {
             "",
             "PRODUCT  RELEASE           SIZE      STATE",
             "maps     release 3f9a2c1e  980.0 MB  unknown",
-            "planner  release 8b0d47a5  2.37 GB   not applied  sun",
+            "planner  release 8b0d47a5  2.37 GB   not applied",
             "",
             "OPTIONAL LAYERS",
             "[ ] climate",
@@ -1277,9 +1263,10 @@ mod tests {
             "stale        osm                   120 d > 90 d",
             "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
             "unreachable  maps                  a fetch that the step list needs failed",
-            "r region   p plan   u undo 1 edit   ? help                  obc data region list",
+            "r region   R check R2   p plan   u undo   ? help            obc data region list",
         ];
         assert_eq!(drawn, live, "{drawn:#?}");
+        assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
         // 0 region, 1 maps, 2 planner, 3 climate, 4 sun, 5 stale, 6 old cache, 7 unreachable.
         app.row = 3;
         assert_eq!(app.command(), "obc data layer live climate on");
@@ -1309,6 +1296,11 @@ mod tests {
         assert_eq!(app.command(), "obc data region live europe/andorra");
         assert_eq!(app.key(KeyCode::Enter), Effect::Region("europe/andorra".into()));
         assert_eq!(app.overlay, None);
+
+        let mut broken = App { regions: Err("data/regions/monaco.toml: no `kind`".into()), ..app };
+        broken.key(KeyCode::Char('r'));
+        assert_eq!(broken.region_lines(), [Line::styled("data/regions/monaco.toml: no `kind`", Color::Red)]);
+        assert!(broken.bindings().iter().all(|binding| binding.key != KeyCode::Char('/')), "nothing to filter");
     }
 
     #[test]
