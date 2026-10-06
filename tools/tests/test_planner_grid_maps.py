@@ -96,6 +96,22 @@ class MapGrid(unittest.TestCase):
                 self.assertEqual(Reader(read).header()["tile_compression"], Compression.NONE)
                 self.assertEqual(Reader(read).header()["tile_type"], TileType.WEBP)
 
+    def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):
+        for kind, zoom, size, metadata in [('snow', 8, 2 * 2 * 256 * 256, {'seasons': 2}),
+                                         ('climate', 8, 183552, {'years': 10}),
+                                         ('climate', 9, 252096, {'years': 10})]:
+            with self.subTest(kind=kind, zoom=zoom), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'archive.pmtiles'
+                for length in (0, size - 1, size):
+                    with write(path) as writer:
+                        writer.write_tile(zxy_to_tileid(zoom, 0, 0), gzip.compress(bytes(length)))
+                        writer.finalize({'tile_type': TileType.UNKNOWN, 'tile_compression': Compression.GZIP}, metadata)
+                    if length == size:
+                        planner_verify.archive(path, kind)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'tile size'):
+                            planner_verify.archive(path, kind)
+
     def test_empty_terrain_has_metadata_and_no_tile_archives(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

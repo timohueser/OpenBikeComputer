@@ -1,25 +1,55 @@
 """Verify stored planner grid artifacts without preparing data or runtimes."""
 
 import argparse
+import base64
+from contextlib import contextmanager, nullcontext
 import gzip
 import json
 from pathlib import Path
+import subprocess
 
 from . import planner_grid_index as index, planner_offline as offline, planner_runtime as runtime
 from .planner_grid_search import search_metadata
 from .planner_map_archive import pixels
 
 
-def archive(path, kind):
+@contextmanager
+def vector_reader():
+    try:
+        process = subprocess.Popen(['node', str(Path(__file__).with_name('planner_mvt_verify.mjs'))],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError as error:
+        raise ValueError('Prepare Node and the locked builder reader before MVT verification') from error
+    try:
+        if process.stdout.readline().strip() != 'ready':
+            raise ValueError(process.stderr.read().strip() or 'Prepared MVT reader failed')
+        def read(data):
+            process.stdin.write(json.dumps(base64.b64encode(data).decode()) + '\n')
+            process.stdin.flush()
+            if process.stdout.readline().strip() != 'ok':
+                raise ValueError(process.stderr.read().strip() or 'Prepared MVT reader failed')
+        yield read
+    finally:
+        process.stdin.close()
+        process.stdout.close()
+        process.stderr.close()
+        process.wait()
+
+
+def archive(path, kind, vector=None):
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import Compression, TileType
 
     with path.open('rb') as stream:
         read = MmapSource(stream)
-        header = Reader(read).header()
+        reader = Reader(read)
+        header, metadata = reader.header(), reader.metadata()
         expected = TileType.WEBP if kind in {'terrain', 'sun'} else TileType.UNKNOWN if kind in {'snow', 'climate'} else TileType.MVT
         if header['tile_type'] != expected:
             raise ValueError(f'Unexpected {kind} tile format')
+        if expected == TileType.MVT and vector is None:
+            with vector_reader() as vector:
+                return archive(path, kind, vector)
         count = 0
         for (z, _x, _y), data in all_tiles(read):
             if not header['min_zoom'] <= z <= header['max_zoom'] or not data:
@@ -30,6 +60,18 @@ def archive(path, kind):
                 raise ValueError('Unsupported tile compression')
             if expected == TileType.WEBP:
                 pixels(data)
+            elif expected == TileType.MVT:
+                vector(data)
+            elif kind == 'snow':
+                seasons = metadata.get('seasons')
+                if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 256 * 256:
+                    raise ValueError('Snow tile size differs')
+            elif kind == 'climate':
+                # The two fixed layouts of specs/planner-climate-tiles.md.
+                sizes = {8: 24 * 16 * (2 + 2 * 12 + 12 * 16 + 5 * 52),
+                         9: 12 * 8 * (2 + 2 * 12 + 5 * 10 * 52)}
+                if len(data) != sizes.get(z):
+                    raise ValueError('Climate tile size differs')
             count += 1
         if not count or count != header['addressed_tiles_count']:
             raise ValueError('Archive tile count differs')
@@ -86,13 +128,15 @@ def verify(source):
                     or metadata['osm_sha256'] != document['osm_sha256']
                     or metadata['time_zone'] != search['metadata']['time_zone']):
                 raise ValueError('Search shard source, component or coverage differs')
-    for name in files:
-        if name.startswith('maps/') and name.endswith('.json') and Path(name).stem in index.MAP_KINDS:
-            kind = Path(name).stem
-            if json.loads((output / name).read_bytes()) != indexes[kind]['metadata']:
-                raise ValueError('Map metadata differs from its grid index')
-        if name.endswith('.pmtiles') and changed(name):
-            archive(output / name, Path(name).parts[2])
+    needs_vector = any(name.endswith('.pmtiles') and changed(name) and Path(name).parts[2] in {'basemap', 'places', 'overlays'} for name in files)
+    with vector_reader() if needs_vector else nullcontext() as vector:
+        for name in files:
+            if name.startswith('maps/') and name.endswith('.json') and Path(name).stem in index.MAP_KINDS:
+                kind = Path(name).stem
+                if json.loads((output / name).read_bytes()) != indexes[kind]['metadata']:
+                    raise ValueError('Map metadata differs from its grid index')
+            if name.endswith('.pmtiles') and changed(name):
+                archive(output / name, Path(name).parts[2], vector)
 
 
 def main():

@@ -134,12 +134,35 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         std::fs::write(source.join("previous.json"), serde_json::to_vec(&previous).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     }
+    let ready = Command::new("uv")
+        .args([
+            "sync",
+            "--locked",
+            "--offline",
+            "--check",
+            "--inexact",
+            "--no-default-groups",
+            "--no-python-downloads",
+            "--group",
+            "planner-maps",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("planner verification needs the offline uv tooling: {e}"))?;
+    if !ready.status.success() {
+        return Err(format!(
+            "prepare the locked planner-maps tooling before verification: {}",
+            String::from_utf8_lossy(&ready.stderr).trim()
+        ));
+    }
     let output = Command::new("uv")
         .args([
             "run",
             "--locked",
             "--offline",
             "--no-sync",
+            "--no-default-groups",
+            "--no-python-downloads",
             "--group",
             "planner-maps",
             "python",
