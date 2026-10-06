@@ -174,9 +174,7 @@ fn uncertain_empty_catalog_cannot_authorize_default_metadata() {
     assert!(!store.entries_ok());
     assert_eq!(store.entries().count(), 0);
     assert!(!store.entries_ok());
-    let mut metadata = super::metadata::Metadata::new(&store);
-    let mut buffer = [0; super::metadata::MAX_LEN];
-    assert!(metadata.load(&store, &mut buffer).is_err());
+    assert!(super::metadata::read_checkpoint(&store).is_err());
 }
 
 #[test]
