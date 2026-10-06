@@ -15,6 +15,11 @@ path = "src/main.rs"
 external-fixtures = []
 
 [dependencies]
+# Real assembly and reader verification before publishing map picks.
+obcm-assemble = { workspace = true, features = ["cli"] }
+obc-file-source = { workspace = true }
+tempfile = { workspace = true }
+obc-formats = { workspace = true }
 obc-data = { path = "../obc-data" }
 # The step list of the device maps: the outline of a region and its cells.
 obc-bake = { path = "../obc-bake" }
@@ -34,7 +39,6 @@ toml = "0.9"
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
 obc-fixtures = { path = "../obc-fixtures" }
-obc-formats = { path = "../../firmware/obc-formats" }
 route-engine = { path = "../route-engine" }
 # Reads the search databases of the planner build test.
 rusqlite = { version = "0.38", features = ["bundled"] }

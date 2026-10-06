@@ -501,6 +501,7 @@ mod tests {
     /// each of `days`.
     fn store(temp: &Temp, days: &[&str]) -> Store {
         let store = Store::at(temp.0.join("store"));
+        crate::maps::tests::with_index(&store);
         let area = [("area".to_string(), AREA.to_string())];
         let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);

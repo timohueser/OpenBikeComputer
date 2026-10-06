@@ -3,13 +3,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use obc_pack::catalog::{CellSource, KnownEmptyRun};
+use obc_pack::catalog::CellSource;
 use obc_pack::grid::{BandTable, CellId};
 use serde::{Deserialize, Serialize};
 
 use crate::util::write_json;
 
 const STATE_FILE: &str = ".known-empty.json";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct KnownEmptyRun {
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) built_at: String,
+    pub(crate) sources: Vec<CellSource>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EmptyFact {

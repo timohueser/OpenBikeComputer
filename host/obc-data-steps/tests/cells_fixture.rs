@@ -2,8 +2,8 @@
 //! extract (`tests/data/cells.osm`) and synthetic land polygons: each cell has the bytes that one
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
 //! in for the Osmium crop of `maps/osm`. The bands are fine and network, which read the terrain:
-//! the semantic levels of coarse and mid raster the whole leaf, which a debug build takes too long
-//! for. A compiled landmark and a compiled peak on the summit of the extract stand in for the
+//! authored coarse and mid geometry uses the production serializer to avoid a whole-leaf
+//! semantic raster in debug. A compiled landmark and a compiled peak on the summit of the extract stand in for the
 //! compile of a capture, and give one artifact each.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -137,6 +137,10 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     fetched(&store, TILE_LIST, &[], "tileList.txt", &file("tileList.txt", format!("{STEM}\n").as_bytes()));
     let Area::Box { bbox } = parse_region("grimsel-east", REGION).unwrap().area else { unreachable!() };
     let poly = file("area.poly", box_poly(&bbox).as_bytes());
+    let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+        "properties":{"id":"grimsel-east","name":"Grimsel east","parent":null,"urls":{"pbf":format!("https://download.geofabrik.de/{AREA}-latest.osm.pbf")}},
+        "geometry":{"type":"Polygon","coordinates":[[[bbox.west,bbox.south],[bbox.east,bbox.south],[bbox.east,bbox.north],[bbox.west,bbox.north],[bbox.west,bbox.south]]]}}]});
+    fetched(&store, "geofabrik-index", &[], "index-v1.json", &file("index.json", &serde_json::to_vec(&index).unwrap()));
     fetched(&store, "geofabrik-poly", &[("area", AREA)], &format!("{AREA}.poly"), &poly);
     fetched(&store, EXTRACTS, &[("area", AREA)], &format!("{AREA}.osm.pbf"), &pbf);
     let zip = temp.0.join("land.zip");
@@ -170,12 +174,15 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let listed = Maps.steps(&env, &regions, &store).unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
-    steps.retain(|step| !["maps/coarse/", "maps/mid/"].iter().any(|band| step.name.starts_with(band)));
+
     for step in &mut steps {
         match step.name.as_str() {
             "maps/osm" => step.run = Run::Rust(copy),
             "maps/landmark-content" => step.run = Run::Rust(landmark_content),
             "maps/peak-content" => step.run = Run::Rust(peak_content),
+            name if name.starts_with("maps/coarse/") || name.starts_with("maps/mid/") => {
+                step.run = Run::Rust(authored_geometry)
+            }
             _ => {}
         }
     }
@@ -189,6 +196,21 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let objects = |layer: &str| -> BTreeMap<String, PathBuf> {
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
+
+    let release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    Maps.verify(None, &release, &store).unwrap();
+    let pointer = Maps.pointer().unwrap()(&release, &store).unwrap();
+    assert!(pointer.named.contains_key("schema.json") && pointer.named.contains_key("LICENSE.txt"));
+    let catalog: obc_pack::catalog::Catalog = serde_json::from_value(pointer.document.into()).unwrap();
+    assert_eq!(catalog.schema.sha256, obc_data::store::sha256_hex(&pointer.named["schema.json"]));
+    assert_eq!(catalog.regions.len(), 1);
+    assert!(catalog.regions[0].article_bytes.unwrap() > 0);
+    assert!(release
+        .layers
+        .iter()
+        .filter(|layer| layer.step.starts_with("maps/terrain/")
+            || ["coarse", "mid", "fine", "network"].iter().any(|band| layer.step.starts_with(&format!("maps/{band}/"))))
+        .all(|layer| layer.client_files().all(|file| !file.path.starts_with("metadata/"))));
 
     // One cut of every band over the leaf, as the planet bake cuts a leaf.
     let leaf = CellId::new(23, 37, 33).unwrap();
@@ -226,8 +248,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         let layer = objects(&format!("maps/{}/0037-0033", cell.band));
         if cell.empty {
             let empty: Vec<String> =
-                serde_json::from_slice(&std::fs::read(&layer[&format!("cells/{}/empty.json", cell.band)]).unwrap())
-                    .unwrap();
+                serde_json::from_slice(&std::fs::read(&layer["metadata/empty.json"]).unwrap()).unwrap();
             assert!(empty.contains(&cell.id.to_string()), "{} {}", cell.band, cell.id);
             continue;
         }
@@ -260,6 +281,27 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     assert_eq!((record.qid, record.osm.map(|osm| osm.source)), (1, Some(SourceId::osm(1, 20))));
     let peaks = artifact("maps/peaks/0037-0033", "peaks");
     assert_eq!(u32::from_le_bytes(peaks[4..8].try_into().unwrap()), 1, "one association");
+    // Reuse is selected from receipts. An unchanged selection reads no binary payload again.
+    let network = layers["maps/network/0037-0033"].files.iter().find(|file| file.path.ends_with(".obcm")).unwrap();
+    let path = store.object(&network.sha256);
+    let backup = temp.0.join("retained-network.obcm");
+    std::fs::rename(&path, &backup).unwrap();
+    Maps.verify(Some(&release), &release, &store).unwrap();
+    assert!(Maps.verify(None, &release, &store).unwrap_err().contains("artifact"));
+    std::fs::rename(backup, path).unwrap();
+    for step in &mut steps {
+        if step.name == "maps/network/0037-0033" {
+            step.options["malformed_fixture"] = true.into();
+            step.run = Run::Rust(malformed_network);
+        }
+    }
+    let changed = obc_data::engine::plan::plan(&store, &root, &steps).unwrap();
+    let mut run = RunLog::create(&store, "build changed fixture").unwrap();
+    run.build(&context, &steps, &changed).unwrap();
+    run.finish(None).unwrap();
+    let next = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    let error = Maps.verify(Some(&release), &next, &store).unwrap_err();
+    assert!(error.contains("not a readable OBCM"), "{error}");
 }
 
 /// The credit of an article of the stand-in compiles.
@@ -296,4 +338,74 @@ fn peak_content(request: &Request) -> Result<(), String> {
             "variants": [{"language": "en", "text_pages": ["A summit."], "attribution": credit()}]}],
         "associations": [{"node_id": 20, "article_id": "Q1", "latitude": 46.61, "longitude": 8.44}]});
     write_content(request, "peaks/peaks.json", content)
+}
+
+/// Authored coarse/mid geometry, serialized with the same style/profile tables as the real cuts.
+fn authored_geometry(request: &Request) -> Result<(), String> {
+    use obc_pack::serialize::{serialize_lods, Feature, Kind, LodLayer, Node};
+    let config = Config::parse(include_str!("../../../builder/presets/schema.json"))?;
+    let band = request.options["band"].as_str().ok_or("missing band")?;
+    let table = BandTable::recommended();
+    let band = table.bands.iter().find(|definition| definition.id == band).ok_or("missing band definition")?;
+    for pair in request.options["cells"].as_array().ok_or("missing cells")? {
+        let id = CellId::new(
+            band.cell_log2,
+            pair[0].as_i64().ok_or("invalid row")?,
+            pair[1].as_i64().ok_or("invalid column")?,
+        )?;
+        let square = id.square();
+        let feature = Feature {
+            style_id: config.styles()[0].id,
+            kind: Kind::Line,
+            rings: vec![vec![
+                ((square.0 + 100) as f64 / 1e6, (square.1 + 100) as f64 / 1e6),
+                ((square.2 - 100) as f64 / 1e6, (square.3 - 100) as f64 / 1e6),
+            ]],
+        };
+        let lods: Vec<_> = config
+            .lods
+            .iter()
+            .enumerate()
+            .map(|(level, lod)| LodLayer {
+                max_mpp: lod.max_mpp,
+                chunk_size: config.chunk_size,
+                root: Node::Leaf {
+                    bbox: square,
+                    features: if band.lods.contains(&level) { vec![feature.clone()] } else { Vec::new() },
+                },
+            })
+            .collect();
+        let (body, dropped) = serialize_lods(
+            &lods,
+            &config.styles(),
+            config.marker_color,
+            square,
+            &[],
+            &Default::default(),
+            &config.routing.profiles,
+            &mut obc_elevation::NullElevation,
+        );
+        assert_eq!(dropped, 0);
+        let path = request.output.join(format!("cells/{}/{:04}/{:04}.obcm", band.id, id.i, id.j));
+        write_atomic(&path, &body)?;
+    }
+    write_atomic(&request.output.join("metadata/empty.json"), b"[]")
+}
+
+/// A structurally invalid payload whose valid header lets metadata generation complete.
+fn malformed_network(request: &Request) -> Result<(), String> {
+    obc_pack::step::cells(request)?;
+    let width = obc_pack::grid::id_width(18);
+    let pair = &request.options["cells"][0];
+    let path = request.output.join(format!(
+        "cells/network/{:0width$}/{:0width$}.obcm",
+        pair[0].as_i64().ok_or("row")?,
+        pair[1].as_i64().ok_or("column")?
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| e.to_string())?
+        .set_len(obc_formats::obcm::HEADER_LEN as u64)
+        .map_err(|e| e.to_string())
 }

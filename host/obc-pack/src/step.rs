@@ -15,7 +15,7 @@ use crate::grid::{Band, BandTable, CellId};
 use crate::progress::{CancelToken, Progress};
 
 /// The schema that every cell is cut with.
-const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"));
+pub(crate) const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"));
 /// The source of the land polygons, which every cell reads.
 pub const LAND: &str = "land-polygons";
 
@@ -27,7 +27,7 @@ pub fn reads_terrain(band: &Band) -> Result<bool, String> {
 /// The options name the `band` of the recommended table, the source `leaf` as `[log2, i, j]`, and
 /// the `cells` of the band to write, as `[i, j]`. The step reads the one `.osm.pbf` and every
 /// `.obcd` of its layers, and the zip of `land-polygons`. The layer is
-/// `cells/<band>/<i>/<j>.obcm` for each cell with content, and `cells/<band>/empty.json`: the ids
+/// `cells/<band>/<i>/<j>.obcm` for each cell with content, and `metadata/empty.json`: the ids
 /// of the other cells.
 pub fn cells(request: &Request) -> Result<(), String> {
     let options = &request.options;
@@ -112,7 +112,9 @@ pub fn cells(request: &Request) -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         std::fs::rename(artifact_path(&tree, artifact), &path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
-    let path = dir.join("empty.json");
+    let metadata = request.output.join("metadata");
+    std::fs::create_dir_all(&metadata).map_err(|e| e.to_string())?;
+    let path = metadata.join("empty.json");
     std::fs::write(&path, serde_json::to_string(&empty).expect("strings serialize"))
         .map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -338,6 +340,7 @@ mod tests {
                     ("geofabrik-extracts".to_string(), BTreeMap::from([files("area.osm.pbf", &osm)])),
                 ]),
                 layers: BTreeMap::new(),
+                layer_files: BTreeMap::new(),
                 options: serde_json::json!({}),
                 output: dir.join(name).join("output"),
                 metrics: dir.join(name).join("metrics.json"),

@@ -51,7 +51,7 @@ describe("parseCellIndex", () => {
     it.each<[string, (d: LooseDoc) => void]>([
         // Assembly copies chunk bytes between files, which is only meaningful
         // within one schema revision.
-        ["a schema revision the root does not carry", (d) => (d.schema_revision = 6)],
+        ["a schema digest the root does not carry", (d) => (d.schema_sha256 = "f".repeat(64))],
         ["another envelope version", (d) => (d.schema_version = 1)],
         ["a band the root did not pin", (d) => (d.band = "mid")],
         ["a cell of another band's size", (d) => (d.cells[0].id = "19/0602/0526")],
@@ -111,7 +111,7 @@ describe("parseRegionCells", () => {
 
     it.each<[string, (d: LooseDoc) => void]>([
         ["another region's list", (d) => (d.region_id = "europe/switzerland/basel-stadt")],
-        ["a schema revision the root does not carry", (d) => (d.schema_revision = 6)],
+        ["a schema digest the root does not carry", (d) => (d.schema_sha256 = "f".repeat(64))],
         ["a band the schema lacks", (d) => (d.cells.vivid = [])],
         ["a cell of another band's size in a band", (d) => (d.cells.fine[0] = "19/0602/0526")],
         ["ids out of order", (d) => d.cells.fine.reverse()],

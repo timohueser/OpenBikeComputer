@@ -7,6 +7,8 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod geofabrik;
+
 /// Degrees, longitude first.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, JsonSchema)]
 pub struct Bbox {

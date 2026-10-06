@@ -320,7 +320,7 @@ fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App,
         }
         Effect::Undo => edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)),
         Effect::Plan => {
-            let plan = plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &[]);
+            let plan = plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &[], false);
             let plan = plan.inspect_err(|_| app.overlay = None)?;
             app.plan = Some(PlanView::new(plan));
             Ok(())
@@ -329,7 +329,7 @@ fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App,
             let Some(view) = app.plan.as_mut() else { return Ok(()) };
             let taken = match only.is_empty() {
                 true => Ok(view.all.clone()),
-                false => plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &only),
+                false => plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &only, false),
             };
             view.taken = taken.inspect_err(|_| app.overlay = None)?;
             Ok(())

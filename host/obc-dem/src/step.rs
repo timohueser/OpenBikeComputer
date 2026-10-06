@@ -18,8 +18,8 @@ pub const GLO30: &str = "copernicus-glo-30";
 /// The options name the pairing, `posting_log2` and `cell_log2`, and the cells, as `[ci, cj]`.
 /// The layer input, when the request has one, is the reference archive of the leaf below
 /// `reference/`. The layer is `terrain/<i>/<j>.obcd` for each cell with a height,
-/// `terrain/empty.json`: the ids of the cells without one, so a leaf at sea is a layer too, and,
-/// when a cell reads a national model, `terrain/credits.json`: the credit of each such model.
+/// `metadata/empty.json`: the ids of the cells without one, so a leaf at sea is a layer too, and,
+/// when a cell reads a national model, `metadata/credits.json`: the credit of each such model.
 pub fn terrain(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let log2 = |name: &str| {
@@ -66,8 +66,10 @@ pub fn terrain(request: &Request) -> Result<(), String> {
         }
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let metadata = request.output.join("metadata");
+    std::fs::create_dir_all(&metadata).map_err(|e| e.to_string())?;
     let write = |name: &str, value: Value| {
-        let path = dir.join(name);
+        let path = metadata.join(name);
         std::fs::write(&path, value.to_string()).map_err(|e| format!("{}: {e}", path.display()))
     };
     write("empty.json", empty.into())?;

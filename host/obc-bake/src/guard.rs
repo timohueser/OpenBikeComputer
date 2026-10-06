@@ -96,7 +96,7 @@ pub fn evaluate(body: &str) -> Result<GuardOutcome, String> {
         Ok(GuardOutcome::Current { cells, obcm_version: expected })
     } else {
         let found = vec![(
-            format!("schema `{}` revision {} ({cells} cells)", root.schema.id, root.schema.revision),
+            format!("schema `{}` digest {} ({cells} cells)", root.schema.id, root.schema.sha256),
             root.schema.obcm_version,
         )];
         Ok(GuardOutcome::Stale { expected, found, cells })

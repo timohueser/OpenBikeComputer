@@ -43,6 +43,19 @@ redistribute = true
 r2_copy = true
 
 [[source]]
+id = "geofabrik-index"
+kind = "data"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+attribution = "© OpenStreetMap contributors"
+obligations = "Credit OpenStreetMap; offer a derived database under the ODbL"
+fetch = { kind = "http", url = "https://download.geofabrik.de/index-v1.json" }
+version = "date"
+refresh = 90
+redistribute = true
+r2_copy = true
+
+[[source]]
 id = "geofabrik-poly"
 kind = "data"
 licence = "ODbL-1.0"

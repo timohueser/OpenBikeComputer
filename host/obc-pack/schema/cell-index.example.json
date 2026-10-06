@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "schema_revision": 7,
+  "schema_sha256": "80c632a3a0d8cc7185df9070dc234025a34d93cb5f663d79d7f2c4211777b11e",
   "band": "fine",
   "cells": [
     {
@@ -8,7 +8,6 @@
       "bytes": 583,
       "sha256": "863c9862cad2dff5b4633c082eb613078287a03085b1c6cd3ce0a997faf7b747",
       "url": "https://maps.example.org/catalog/cells/fine/1204/1052.863c9862cad2dff5b4633c082eb613078287a03085b1c6cd3ce0a997faf7b747.obcm",
-      "built_at": "2026-07-30T02:12:55Z",
       "sources": [
         {
           "extract_id": "europe/switzerland",
@@ -22,7 +21,6 @@
       "bytes": 455,
       "sha256": "091b4a0158b9c546bdd8cb47877094c02a69226fba4c6a47c3416d7edd6c1b5c",
       "url": "https://maps.example.org/catalog/cells/fine/1204/1053.091b4a0158b9c546bdd8cb47877094c02a69226fba4c6a47c3416d7edd6c1b5c.obcm",
-      "built_at": "2026-07-30T02:13:07Z",
       "sources": [
         {
           "extract_id": "europe/germany/baden-wuerttemberg",
@@ -40,7 +38,6 @@
     {
       "start": "18/1204/1055",
       "end": "18/1204/1055",
-      "built_at": "2026-07-30T02:13:11Z",
       "sources": [
         {
           "extract_id": "planet",

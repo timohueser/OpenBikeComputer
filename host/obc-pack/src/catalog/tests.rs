@@ -12,11 +12,9 @@ use std::fs;
 
 use serde_json::Value;
 
-use super::cells::{KnownEmptyState, CELL_EXT, CELL_SIDECAR_EXT};
+use super::cells::{KnownEmptyState, LegacyEmptyRun as KnownEmptyRun, CELL_EXT, CELL_SIDECAR_EXT};
 use super::regions::{REGIONS_DIR, REGION_DOC, REGION_POLY};
-use super::schema::{
-    read_schema_doc, skin_styles, CELL_ID_PATTERN, ID_PATTERN, PINNED_URL_PATTERN, SHA256_PATTERN, TIMESTAMP_PATTERN,
-};
+use super::schema::{read_schema_doc, skin_styles, CELL_ID_PATTERN, ID_PATTERN, PINNED_URL_PATTERN, SHA256_PATTERN};
 use super::terrain::{TERRAIN_DOC, TERRAIN_EXT, TERRAIN_SIDECAR_EXT};
 use super::*;
 
@@ -493,7 +491,7 @@ fn example_tree(tree: &Path) {
 }
 
 fn opts() -> CatalogOptions {
-    CatalogOptions::new("https://maps.example.org/catalog/", "2026-07-30T09:00:00Z")
+    CatalogOptions::new("https://maps.example.org/catalog/")
 }
 
 fn generated(tree: &Path) -> GeneratedCatalog {
@@ -540,7 +538,7 @@ fn walks_a_tree_into_a_root_and_its_satellites() {
 
     assert_eq!(g.root.schema_version, CATALOG_SCHEMA_VERSION);
     assert_eq!(g.root.schema.id, "bikepacking");
-    assert_eq!(g.root.schema.revision, 7);
+    assert_eq!(g.root.schema.sha256, hash_str(&schema_doc(EXAMPLE_REVISION)).1);
     assert_eq!(g.root.schema.obcm_version, OBCM_VERSION, "read from the cells' own headers");
     assert_eq!(g.root.schema.chunk_size, 4_096);
     assert_eq!(g.root.schema.routing.min_component_edges, 50);
@@ -604,7 +602,7 @@ fn a_cell_entry_states_the_bake_and_carries_no_bbox() {
     let doc = cell_index_doc(&g, "fine");
 
     assert_eq!(doc.schema_version, CATALOG_SCHEMA_VERSION);
-    assert_eq!(doc.schema_revision, 7);
+    assert_eq!(doc.schema_sha256, hash_str(&schema_doc(EXAMPLE_REVISION)).1);
     assert_eq!(doc.band, "fine");
     assert_eq!(doc.cells.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["18/1204/1052", "18/1204/1053"]);
 
@@ -612,7 +610,6 @@ fn a_cell_entry_states_the_bake_and_carries_no_bbox() {
     assert_eq!(west.bytes, (HEADER_LEN + 512) as u64);
     assert_eq!(west.sha256.len(), 64);
     assert_eq!(west.url, format!("https://maps.example.org/catalog/cells/fine/1204/1052.{}.obcm", west.sha256));
-    assert_eq!(west.built_at, "2026-07-30T02:12:55Z");
     assert!(!west.partial);
     assert_eq!(
         doc.cells[1].sources,
@@ -677,7 +674,7 @@ fn a_region_prices_its_cell_set_per_band() {
     let cells: RegionCellsDocument =
         serde_json::from_str(&satellite(&g, "regions/europe/switzerland/cells.json").body).expect("cells doc");
     assert_eq!(cells.region_id, "europe/switzerland");
-    assert_eq!(cells.schema_revision, 7);
+    assert_eq!(cells.schema_sha256, hash_str(&schema_doc(EXAMPLE_REVISION)).1);
     assert_eq!(
         cells.cells["fine"],
         ["18/1204/1052", "18/1204/1053", "18/1204/1055"],
@@ -901,18 +898,18 @@ fn generation_is_deterministic_for_a_given_tree() {
 }
 
 #[test]
-fn only_generated_at_carries_a_clock() {
+fn catalog_content_has_no_wall_clock() {
     let t = TempTree::new("clock");
     example_tree(t.path());
-    let mut o = opts();
-    o.generated_at = "2030-01-01T00:00:00Z".into();
-    let later = generate(t.path(), &o).expect("generates");
     let base = generated(t.path());
-    assert_ne!(base.root.generated_at, later.root.generated_at);
-    assert_eq!(base.root.schema, later.root.schema, "nothing but generated_at may move with the clock");
-    assert_eq!(base.root.regions, later.root.regions);
-    assert_eq!(base.root.cell_index, later.root.cell_index);
-    assert_eq!(base.satellites, later.satellites, "a satellite carries no clock at all");
+    for band in ["coarse", "mid", "fine", "network"] {
+        let doc = serde_json::to_value(cell_index_doc(&base, band)).unwrap();
+        assert!(doc["cells"].as_array().unwrap().iter().all(|cell| cell.get("built_at").is_none()));
+        assert!(doc["known_empty"].as_array().unwrap().iter().all(|run| run.get("built_at").is_none()));
+    }
+    let root = serde_json::to_value(&base.root).unwrap();
+    assert!(root.get("generated_at").is_none());
+    assert_eq!(base.root.schema.sha256, hash_str(&schema_doc(EXAMPLE_REVISION)).1);
 }
 
 #[test]
@@ -1504,9 +1501,6 @@ fn base_urls_are_checked_before_a_tree_is_walked() {
     let mut o = opts();
     o.base_url = "maps.example.org".into();
     assert!(generate(t.path(), &o).unwrap_err().contains("must be absolute"));
-    let mut o = opts();
-    o.generated_at = "2026-07-30T09:00:00+02:00".into();
-    assert!(generate(t.path(), &o).unwrap_err().contains("generated_at"));
 }
 
 /// JSON is self-delimiting, so no proper prefix of a valid document parses — the
@@ -1552,7 +1546,6 @@ fn the_catalog_schema_pins_the_envelope_version_and_the_field_patterns() {
     assert_eq!(s["$defs"]["CellEntry"]["properties"]["sha256"]["pattern"].as_str(), Some(SHA256_PATTERN));
     assert_eq!(s["$defs"]["KnownEmptyRun"]["properties"]["start"]["pattern"].as_str(), Some(CELL_ID_PATTERN));
     assert_eq!(s["$defs"]["KnownEmptyRun"]["properties"]["end"]["pattern"].as_str(), Some(CELL_ID_PATTERN));
-    assert_eq!(s["$defs"]["KnownEmptyRun"]["properties"]["built_at"]["pattern"].as_str(), Some(TIMESTAMP_PATTERN));
     assert!(
         s["$defs"]["CellEntry"]["properties"].get("bbox").is_none(),
         "§11.6: a cell entry has no bbox — the id determines the square"
@@ -1975,7 +1968,7 @@ fn pinned(g: &GeneratedCatalog) -> (BTreeSet<String>, BTreeSet<String>) {
 }
 
 #[test]
-fn the_root_carries_a_terrain_block_with_its_own_revision() {
+fn the_root_carries_terrain_grid_and_reference_credits() {
     let t = TempTree::new("terrain-root");
     example_tree(t.path());
     let g = generated(t.path());
@@ -1984,11 +1977,6 @@ fn the_root_carries_a_terrain_block_with_its_own_revision() {
     assert_eq!(terrain.dataset_id, "copernicus-glo-30");
     assert_eq!(terrain.dataset_version, TERRAIN_DATASET_VERSION);
     assert_eq!((terrain.posting_log2, terrain.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
-    assert_eq!(terrain.terrain_revision, TERRAIN_REVISION);
-    assert_ne!(
-        terrain.terrain_revision, g.root.schema.revision,
-        "the two revisions are unrelated numbers, and the worked example says so"
-    );
     // The credit is data a consumer reads, not a string a builder hard-codes.
     assert!(terrain.attribution.contains("Copernicus"), "{}", terrain.attribution);
     assert!(terrain.attribution.contains("ESA"), "{}", terrain.attribution);
@@ -2009,25 +1997,22 @@ fn the_root_carries_a_terrain_block_with_its_own_revision() {
     assert_eq!((pin.bytes, pin.sha256.as_str()), (index.bytes, index.sha256.as_str()));
 
     // The one coupling, recorded — and this example is consistent, so nothing is warned.
-    assert_eq!(g.root.network_terrain_revision, Some(TERRAIN_REVISION));
     assert!(g.warnings.is_empty(), "{:?}", g.warnings);
 }
 
 #[test]
-fn the_terrain_index_lists_cells_and_ocean_runs_and_carries_no_schema_revision() {
+fn the_terrain_index_lists_cells_and_ocean_runs_without_a_schema_binding() {
     let t = TempTree::new("terrain-index");
     example_tree(t.path());
     let g = generated(t.path());
     let doc = terrain_index_doc(&g);
 
     assert_eq!(doc.schema_version, CATALOG_SCHEMA_VERSION);
-    assert_eq!(doc.terrain_revision, TERRAIN_REVISION);
     assert_eq!(doc.cells.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["13/38528/33664", "13/38528/33665"]);
     let nw = &doc.cells[0];
     // 32-byte header + a one-entry directory + one 512-byte tile: the smallest legal container.
     assert_eq!(nw.bytes, (obct::HEADER_LEN + obct::DIR_ENTRY_LEN + 512) as u64);
     assert_eq!(nw.url, format!("https://maps.example.org/catalog/cells/terrain/38528/33664.{}.obcd", nw.sha256));
-    assert_eq!(nw.built_at, "2026-08-01T04:00:00Z");
     // The ocean square: canonical zero-byte coverage, with no object to fetch.
     assert_eq!(doc.known_empty.len(), 1);
     assert_eq!(doc.known_empty[0].start, terrain_sea().to_string());
@@ -2087,7 +2072,7 @@ fn a_schema_revision_bump_republishes_no_terrain_object() {
     let after = generated(t.path());
     let (terrain_after, obcm_after) = pinned(&after);
 
-    assert_eq!(after.root.schema.revision, EXAMPLE_REVISION + 1, "the OBCM store really did move");
+    assert_ne!(after.root.schema.sha256, before.root.schema.sha256, "schema content changed");
     assert_ne!(obcm_after, obcm_before, "…and its satellites really were re-published");
     assert_eq!(terrain_after, terrain_before, "not one terrain object may be re-published by a schema bump");
     assert_eq!(
@@ -2118,7 +2103,6 @@ fn a_terrain_rebake_republishes_no_obcm_object_and_flags_the_network_band() {
     let after = generated(t.path());
     let (terrain_after, obcm_after) = pinned(&after);
 
-    assert_eq!(after.root.terrain.as_ref().expect("terrain").terrain_revision, TERRAIN_REVISION + 1);
     assert_ne!(terrain_after, terrain_before, "the terrain store really did move");
     assert_eq!(obcm_after, obcm_before, "not one OBCM object may be re-published by a terrain re-bake");
     for band in ["coarse", "mid", "fine", "network"] {
@@ -2132,7 +2116,6 @@ fn a_terrain_rebake_republishes_no_obcm_object_and_flags_the_network_band() {
     assert_eq!(after.root.schema, before.root.schema, "and the schema entry is untouched");
 
     // The coupling, stated: the cells still record the previous revision.
-    assert_eq!(after.root.network_terrain_revision, Some(TERRAIN_REVISION));
     let warning = after.warnings.iter().find(|w| w.contains("network band")).expect("a stale network band is loud");
     assert!(warning.contains(&format!("terrain revision {TERRAIN_REVISION},")), "{warning}");
     assert!(warning.contains(&format!("terrain revision {}", TERRAIN_REVISION + 1)), "{warning}");

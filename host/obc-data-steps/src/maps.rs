@@ -22,6 +22,8 @@ use obc_dem::step::GLO30;
 use obc_pack::grid::{id_width, Band, BandTable, CellId};
 use obc_pack::step::{CAPTURES, LAND};
 
+mod catalog;
+
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_bake::planet::SOURCE_LEAF_LOG2;
 const POLY: &str = "geofabrik-poly";
@@ -40,6 +42,19 @@ impl Product for Maps {
         "cell-catalog"
     }
 
+    fn pointer(&self) -> Option<obc_data::product::PointerFn> {
+        Some(catalog::pointer())
+    }
+
+    fn verify(
+        &self,
+        previous: Option<&obc_data::engine::release::Release>,
+        release: &obc_data::engine::release::Release,
+        store: &Store,
+    ) -> Result<(), String> {
+        catalog::verify(previous, release, store)
+    }
+
     fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
@@ -53,6 +68,14 @@ impl Product for Maps {
                 snapshot_version(env, store, LAND, &[], &mut wanted)?,
             ),
             false => (None, None),
+        };
+        let catalog_index = if geofabrik {
+            let body = text(env, store, catalog::INDEX, &[], &mut wanted)?;
+            let version =
+                if body.is_some() { snapshot_version(env, store, catalog::INDEX, &[], &mut wanted)? } else { None };
+            body.zip(version)
+        } else {
+            None
         };
         // The version of the tiles: the fetch of a tile is in the plan of the step that reads it.
         let glo30 = snapshot_version(env, store, GLO30, &[], &mut wanted)?;
@@ -85,6 +108,10 @@ impl Product for Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let (Some(extract), Some(land_polygons)) = osm_sources else {
+            blocked.push(BlockedLayer {
+                layer: catalog::LAYER.into(),
+                reason: "complete maps require one Geofabrik area; box and multi-area sources are not prepared".into(),
+            });
             return Ok(Steps { steps, blocked });
         };
         let captures = captures(env, store, &extract, &area, &mut blocked)?;
@@ -108,8 +135,27 @@ impl Product for Maps {
                 steps.push(artifacts(collection, leaf, cells));
             }
         }
-        let extract = Input::Snapshot { source: EXTRACTS.into(), version: extract, params: area, files: Vec::new() };
-        steps.push(osm(extract, &osm_leaves));
+        steps.push(osm(
+            Input::Snapshot { source: EXTRACTS.into(), version: extract.clone(), params: area, files: Vec::new() },
+            &osm_leaves,
+        ));
+        if blocked.is_empty() {
+            let (body, version) =
+                catalog_index.ok_or_else(|| Unplanned::Failed("catalog index was not fetched".into()))?;
+            match catalog::step(env, store, &outlines, &steps, &extract, &glo30, version, &body) {
+                Ok(step) => steps.push(step),
+                Err(Unplanned::Invalid(reason)) => blocked.push(BlockedLayer { layer: catalog::LAYER.into(), reason }),
+                Err(error) => return Err(error),
+            }
+        } else {
+            blocked.push(BlockedLayer {
+                layer: catalog::LAYER.into(),
+                reason: format!(
+                    "catalog requires all map, terrain and article layers: {}",
+                    blocked.iter().map(|layer| layer.reason.as_str()).collect::<Vec<_>>().join("; ")
+                ),
+            });
+        }
         let mut listed = Steps { steps, blocked };
         listed.block_dependents();
         Ok(listed)
@@ -406,9 +452,9 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
-        outputs: vec!["cells".into()],
+        outputs: vec!["cells".into(), "metadata".into()],
         run: Run::Rust(obc_pack::step::cells),
-        client: Client::All,
+        client: Client::Paths(vec!["cells".into()]),
     }
 }
 
@@ -528,9 +574,9 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
         code: Code { paths: Vec::new(), crates: vec!["obc-dem".into()] },
-        outputs: vec!["terrain".into()],
+        outputs: vec!["terrain".into(), "metadata".into()],
         run: Run::Rust(obc_dem::step::terrain),
-        client: Client::All,
+        client: Client::Paths(vec!["terrain".into()]),
     }
 }
 
@@ -640,6 +686,7 @@ pub(crate) mod tests {
     fn freiburg(store: &Store) -> (Env, Regions) {
         let area = [("area".to_string(), "europe/test".to_string())];
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), FREIBURG.into())]);
+        with_index(store);
         with_tile_list(store, &["N47_00_E007", "N48_00_E007"]);
         let region = obc_data::regions::parse_region("europe/test", "name = \"Test\"\nkind = \"geofabrik\"\n").unwrap();
         let live = BTreeMap::from([
@@ -648,6 +695,13 @@ pub(crate) mod tests {
         ]);
         let env = Env { name: "test".into(), region: "europe/test".into(), live, ..Env::default() };
         (env, Regions::new(vec![region]).unwrap())
+    }
+
+    pub(crate) fn with_index(store: &Store) {
+        let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+            "properties":{"id":"test","name":"Test","parent":null,"urls":{"pbf":"https://download.geofabrik.de/europe/test-latest.osm.pbf"}},
+            "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+        fetched(store, catalog::INDEX, "1", &[], &[("index-v1.json".into(), index.to_string())]);
     }
 
     /// The extract of the Freiburg region and the land polygons.
@@ -747,7 +801,8 @@ pub(crate) mod tests {
 
     fn fake(request: &Request) -> Result<(), String> {
         std::fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
-        std::fs::write(request.output.join("terrain/empty.json"), "[]").map_err(|e| e.to_string())
+        std::fs::create_dir(request.output.join("metadata")).map_err(|e| e.to_string())?;
+        std::fs::write(request.output.join("metadata/empty.json"), "[]").map_err(|e| e.to_string())
     }
 
     fn builds(plan: &Plan) -> Vec<&str> {
@@ -853,7 +908,7 @@ pub(crate) mod tests {
         let listed = Maps.steps(&env, &regions, &store).unwrap();
         assert_eq!(
             listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
-            ["maps/landmark-content", "maps/landmarks/0037-0032"]
+            ["maps/landmark-content", "maps/catalog", "maps/landmarks/0037-0032"]
         );
         assert!(listed.blocked.iter().all(|b| b.reason.contains("--move wikidata")));
         for name in ["maps/terrain/0037-0032", "maps/network/0037-0032", "maps/peak-content", "maps/peaks/0037-0032"] {
@@ -1078,9 +1133,14 @@ pub(crate) mod tests {
                 assert!(!token.present());
                 assert_eq!(
                     listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
-                    ["maps/reference/0038-0032", "maps/terrain/0038-0032"]
+                    ["maps/reference/0038-0032", "maps/terrain/0038-0032", "maps/catalog"]
                 );
-                assert!(listed.blocked.iter().all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                assert!(listed
+                    .blocked
+                    .iter()
+                    .filter(|b| b.layer != "maps/catalog")
+                    .all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                assert!(listed.blocked.last().unwrap().reason.contains("box and multi-area"));
                 assert!(listed.steps.is_empty());
             }
             // A machine with the token fetches the model.

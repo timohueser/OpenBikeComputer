@@ -36,7 +36,7 @@ pub trait Product {
     }
 
     /// Check a release from the store before an apply makes it live.
-    fn verify(&self, _release: &Release, _store: &Store) -> Result<(), String> {
+    fn verify(&self, _previous: Option<&Release>, _release: &Release, _store: &Store) -> Result<(), String> {
         Ok(())
     }
 }

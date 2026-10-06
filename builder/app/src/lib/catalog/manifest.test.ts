@@ -23,7 +23,7 @@ describe("parseRoot", () => {
         const catalog = parseRoot(EXAMPLE_ROOT);
         expect(catalog.schema_version).toBe(3);
         expect(catalog.schema.id).toBe("bikepacking");
-        expect(catalog.schema.revision).toBe(7);
+        expect(catalog.schema.sha256).toMatch(/^[a-f0-9]{64}$/);
         // The generated example is self-sourced from the format crate's version constant, so this
         // pin is what makes an OBCM bump walk past the site's own catalog reader.
         expect(catalog.schema.obcm_version).toBe(19);
@@ -105,8 +105,6 @@ describe("parseRoot", () => {
         ["an envelope version it does not implement", (d) => (d.schema_version = 4)],
         ["a missing schema_version", (d) => delete d.schema_version],
         ["a missing schema", (d) => delete d.schema],
-        ["a timestamp in another spelling", (d) => (d.generated_at = "2026-07-30T09:00:00.5Z")],
-        ["a date that does not exist", (d) => (d.generated_at = "2026-02-30T09:00:00Z")],
     ])("rejects %s", (_what, edit) => {
         expect(() => parseRoot(mutated(edit))).toThrow(CatalogFormatError);
     });

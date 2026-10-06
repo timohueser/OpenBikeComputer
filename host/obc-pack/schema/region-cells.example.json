@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "schema_revision": 7,
+  "schema_sha256": "80c632a3a0d8cc7185df9070dc234025a34d93cb5f663d79d7f2c4211777b11e",
   "region_id": "europe/switzerland",
   "cells": {
     "coarse": [

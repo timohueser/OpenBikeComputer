@@ -38,18 +38,53 @@ fn obc_data(temp: &Temp, args: &[&str]) -> Output {
 }
 
 #[test]
-fn live_leaves_out_each_product_without_a_client_document() {
+fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
     let temp = Temp::new("blocked");
+    let store = obc_data::store::Store::at(temp.0.join("store"));
+    let region = "europe/germany/baden-wuerttemberg";
+    let index = serde_json::json!({"type":"FeatureCollection","features":[{"type":"Feature",
+        "properties":{"id":"bw","name":"Baden-Württemberg","parent":null,"urls":{"pbf":format!("https://download.geofabrik.de/{region}-latest.osm.pbf")}},
+        "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+    for (source, name, body, params) in [
+        (
+            "geofabrik-poly",
+            format!("{region}.poly"),
+            "box\n1\n7.79 47.99\n7.82 47.99\n7.82 48.02\n7.79 48.02\n7.79 47.99\nEND\nEND\n".to_string(),
+            vec![("area".into(), region.into())],
+        ),
+        ("copernicus-glo-30-tiles", "tileList.txt".into(), String::new(), Vec::new()),
+        ("geofabrik-index", "index-v1.json".into(), index.to_string(), Vec::new()),
+    ] {
+        let file = store.partial(&name);
+        obc_data::store::write_atomic(&file, body.as_bytes()).unwrap();
+        let sha256 = obc_data::store::sha256_hex(body.as_bytes());
+        store.insert(&file, &sha256).unwrap();
+        let version = "2026-10-06".to_string();
+        store
+            .put_snapshot(&obc_data::store::Snapshot {
+                source: source.into(),
+                version: version.clone(),
+                files: vec![obc_data::store::FileRecord {
+                    name: name.clone(),
+                    sha256,
+                    size: body.len() as u64,
+                    url: format!("https://example.org/{name}"),
+                    retrieved: String::new(),
+                }],
+            })
+            .unwrap();
+        if !params.is_empty() {
+            store.put_requested(source, &obc_data::store::Requested { version, params, files: vec![name] }).unwrap();
+        }
+    }
     let out = obc_data(&temp, &["plan", "live", "--json"]);
-    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
-    let plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let blocked: Vec<&str> =
-        plan["blocked"].as_array().unwrap().iter().map(|blocked| blocked["product"].as_str().unwrap()).collect();
-    assert_eq!(blocked, ["maps", "planner"], "neither product has a pointer yet");
-    assert_eq!(plan["groups"], serde_json::json!([]));
-
-    let out = obc_data(&temp, &["build", "live", "--json"]);
     assert_eq!(out.status.code(), Some(4), "{}", String::from_utf8_lossy(&out.stderr));
-    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(error["error"]["code"], "blocked");
+    let response: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(response["error"]["code"], "blocked");
+    assert!(response["error"]["message"].as_str().unwrap().contains("do not fetch bulk data"));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("fetching"));
+
+    for source in ["geofabrik-extracts", "land-polygons", "copernicus-glo-30"] {
+        assert!(store.snapshot(source, "2026-10-06").unwrap().is_none());
+    }
 }

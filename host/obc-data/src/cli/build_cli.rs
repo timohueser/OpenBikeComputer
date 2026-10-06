@@ -151,7 +151,9 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
     let (store, http) = (Store::open()?, Http::new());
     let remote = live_remote(&args.env)?;
     let basis = Basis::Moves(&args.moves);
-    let plan = planned(root, &store, &http, remote.as_ref(), products, &args.env, &args.only, basis)?.plan;
+    let plan =
+        planned(root, &store, &http, remote.as_ref(), products, &args.env, &args.only, basis, !args.moves.is_empty())?
+            .plan;
     if json {
         return print_json(&plan);
     }
@@ -306,7 +308,8 @@ pub(super) fn build_env(
         Some(saved) => (Basis::Saved(saved), &saved.only),
         None => (Basis::Moves(&args.moves), &args.only),
     };
-    let Planned { loaded, steps, plan, live } = planned(root, store, http, remote, products, &args.env, only, basis)?;
+    let Planned { loaded, steps, plan, live } =
+        planned(root, store, http, remote, products, &args.env, only, basis, true)?;
     if let Some(saved) = saved {
         let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
             == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
@@ -372,6 +375,7 @@ pub(super) fn changed(live: &LiveProduct, next: &LiveProduct) -> bool {
 
 /// The plan of `live` now against the live releases that `remote` holds: `plan live --only ONLY
 /// --json`, which the TUI shows and an apply without `--plan` applies.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_live(
     root: &Path,
     store: &Store,
@@ -379,8 +383,9 @@ pub(super) fn plan_live(
     remote: &Remote,
     products: &[&dyn Product],
     only: &[String],
+    prepare: bool,
 ) -> Result<EnvPlan, Error> {
-    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(&[]))?.plan)
+    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(&[]), prepare)?.plan)
 }
 
 /// The output of `plan ENV --json` in `file`.
@@ -464,6 +469,7 @@ fn planned(
     name: &str,
     only: &[String],
     basis: Basis,
+    prepare: bool,
 ) -> Result<Planned, Error> {
     let mut loaded = load(root, name)?;
     let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
@@ -497,7 +503,7 @@ fn planned(
             }
         }
     }
-    let fetch = fetcher(store, http, &loaded.sources, env);
+    let fetch = super::status_cli::discovery_fetch(fetcher(store, http, &loaded.sources, env), prepare);
     let (steps, blocked) = match basis {
         Basis::Moves(_) => steps(products, env, &loaded.regions, store, live.is_some(), fetch)?,
         // A fetch without a version is one that the plan does not name.
@@ -964,7 +970,7 @@ pub(crate) mod tests {
 
     /// The plan of `live` without live, as `plan live --json` writes it.
     fn plan_of(root: &Path, store: &Store, products: &[&dyn Product]) -> EnvPlan {
-        planned(root, store, &Http::new(), None, products, "live", &[], Basis::Moves(&[])).unwrap().plan
+        planned(root, store, &Http::new(), None, products, "live", &[], Basis::Moves(&[]), true).unwrap().plan
     }
 
     fn env(layers: &[&str]) -> Env {
@@ -1349,7 +1355,7 @@ pub(crate) mod tests {
     fn live_plan(fixture: &Fixture, remote: &Remote, only: &[&str]) -> Result<EnvPlan, Error> {
         let only: Vec<String> = only.iter().map(|id| id.to_string()).collect();
         let (root, http, moves) = (fixture.root(), Http::new(), Basis::Moves(&[]));
-        Ok(planned(&root, &fixture.store, &http, Some(remote), &[&Versioned], "live", &only, moves)?.plan)
+        Ok(planned(&root, &fixture.store, &http, Some(remote), &[&Versioned], "live", &only, moves, true)?.plan)
     }
 
     #[test]

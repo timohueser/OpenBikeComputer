@@ -176,7 +176,7 @@ describe("cellStoreRevision", () => {
         expect(cellStoreRevision(rebaked)).not.toBe(base);
 
         // …while a retouched skin or a renamed region does not republish a cell.
-        const retouched: Catalog = { ...exampleCatalog, generated_at: "2099-01-01T00:00:00Z", regions: [] };
+        const retouched: Catalog = { ...exampleCatalog, regions: [] };
         expect(cellStoreRevision(retouched)).toBe(base);
     });
 });
