@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use crate::BboxUdeg;
 
 const SOURCE: &str = "copernicus-glo-30";
+/// The version of `SOURCE` that this fetch reads, so a bake of the older bake tools keeps its bytes.
+const VERSION: &str = "2022-05-09";
 
 /// One GLO-30 tile, named by the integer degree of its south-west corner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -107,10 +109,9 @@ pub fn fetch_tiles(
     Ok(present)
 }
 
-/// Fetch one tile into the store at its live pin, or else at its newest version, and link it as
-/// `path`.
+/// Fetch one tile into the store at [`VERSION`], and link it as `path`.
 fn link(tile: &TileId, path: &Path) -> Result<Fetched, String> {
-    let fetched = match obc_data::fetch::live(SOURCE, None, vec![("tile".into(), tile.stem())]) {
+    let fetched = match obc_data::fetch::live(SOURCE, Some(VERSION), vec![("tile".into(), tile.stem())]) {
         Ok(fetched) => fetched,
         // The square has no tile, which is a fact about the world rather than a failure.
         Err(obc_data::fetch::LiveError::NotFound(_)) => return Ok(Fetched::Absent),

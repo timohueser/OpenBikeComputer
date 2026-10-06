@@ -1,15 +1,13 @@
-"""The data registry for the Python tools: the credit of a source, its pin in data/env/live.toml,
-the box of a region, and the files of a source from the store. An `obc data` step gets what it
-needs in its request instead.
+"""The data registry for Python steps: the credit of a source, the box of a region, and the files of
+a source from the store.
 
-specs/obc-data.md defines the files and `obc data` checks them. This module reads only what the
-Python tools need, so it adds no rule of its own. Shell scripts call it as
+specs/obc-data.md defines the files and `obc data` checks them. This module reads only what
+Python steps need, so it adds no rule of its own. Shell scripts call it as
 
     python3 tools/data_registry.py box REGION [--lat-first]
     python3 tools/data_registry.py attribution SOURCE
 """
 
-from functools import cache
 import json
 import subprocess
 import sys
@@ -26,18 +24,8 @@ def attribution(source, **fill):
     return SOURCES[source]["attribution"].format(**fill)
 
 
-def pin(source):
-    """The version of `source` that live is built from."""
-    return live_pins()[source]
-
-
-@cache
-def live_pins():
-    return tomllib.loads((ROOT / "data/env/live.toml").read_text())["pins"]
-
-
 def fetch(source, *params):
-    """The store path of each file of `source` at its live pin: `obc data fetch SOURCE NAME=VALUE… --json`."""
+    """The store path of each file of `source`, as SOURCE or SOURCE@VERSION: `obc data fetch SOURCE NAME=VALUE… --json`."""
     done = subprocess.run([*OBC_DATA, "fetch", source, *params, "--json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
     if done.returncode:
         # With --json, the error document is on standard output.

@@ -149,7 +149,7 @@ pub struct ObcCutter {
     pub chunk_size: Option<usize>,
 }
 
-/// The `land-polygons` zip of the store: at its live pin, or else the newest one upstream.
+/// The `land-polygons` zip of the store: the newest one upstream.
 fn land_polygons() -> Result<PathBuf, String> {
     let fetched = obc_data::fetch::live("land-polygons", None, Vec::new())?;
     fetched.paths.into_iter().next().ok_or_else(|| "the land-polygons snapshot has no file".into())

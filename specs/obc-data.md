@@ -1,7 +1,7 @@
 # obc data
 
 `obc data` reads the data registry: the external sources that a bake uses, the regions, and
-the pins of an environment. It fetches sources into the store. The crate is `host/obc-data`.
+the environments. It fetches sources into the store. The crate is `host/obc-data`.
 All files under `data/` are TOML. A file with an unknown key is refused.
 
 ## Files
@@ -18,12 +18,12 @@ One `[[source]]` table per source.
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
 | `obligations` | string | no | What the licence asks for, in words; `none` when it asks for nothing |
-| `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose pin is the base day. See below |
+| `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose version is the base day. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `refresh` | integer or string | yes | `7`, `30`, `90` or `365` days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
-| `r2_copy` | boolean | no, `false` | R2 keeps a copy of the pinned version, because upstream cannot give it again |
+| `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 
 `fetch.kind` is one of:
@@ -41,7 +41,7 @@ One `[[source]]` table per source.
 | `installed` | A person installs it, or another source's build brings it. It has no `url` |
 
 `fetch.url` is an `https://` URL template. `{name}` stands for a value the fetcher fills:
-`{version}` is the pin, `{yymmdd}` a date pin as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
+`{version}` is the version, `{yymmdd}` a date version as `YYMMDD`, `{area}` a Geofabrik area, `{tile}` a
 tile name. In `attribution`,
 `{year}` and `{month}` are the year and month of the data, which the step that writes the
 credit fills.
@@ -50,7 +50,7 @@ Rules:
 
 - An id is listed once.
 - Each kind of fetch but `installed` has a `url`, and the `url` starts with `https://`.
-- `refresh` in days needs `version = "date"`, because only a date pin has an age.
+- `refresh` in days needs `version = "date"`, because only a date version has an age.
 - `r2_copy = true` needs `redistribute = true`, because R2 is public.
 - A credential has `env` or `file`, not both.
 - An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
@@ -88,10 +88,10 @@ The environment name is lowercase kebab-case.
 | --- | --- | --- |
 | `region` | string | The region of both products: a region id of `data/regions/`. `plan` and `build` refuse a file without it |
 | `layers` | array of strings | The optional layers that are on, each once. Each is an optional layer of a product |
-| `[pins]` | table | A source id to the version that the environment is built from |
 
-Each pin names a source of `data/sources.toml`. A pin of a source with `version = "date"` is a
-`YYYY-MM-DD` date. `obc data sources` reads `data/env/live.toml`, and the file must exist.
+An environment names what it contains, not the versions of its sources: a file with `[pins]` is
+refused. The live release manifests record the version of each source that live reads, see
+[Versions](#versions). `data/env/live.toml` must exist.
 
 ### `data/regions/<id>.toml`
 
@@ -148,10 +148,11 @@ The options of the [planner layers](#planner) that are the same for each region.
 | State | When |
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, or its credential is not on this machine |
-| `stale` | The pin is a date, `refresh` is in days, the pin is older than `refresh`, and the newest upstream version is later than the pin. Or the pin is before the pin of the source that `fetch.from` names |
-| `ok` | Otherwise. A source with no pin is never stale, and a source with `refresh = "manual"` is never stale by age |
+| `stale` | The live version, the first in order when live reads more (for a date, the oldest), is a date, `refresh` is in days, the live version is older than `refresh`, and the newest upstream version is later than the live version. Or the live version is before the live version of the source that `fetch.from` names |
+| `ok` | Otherwise. A source that live does not read is never stale, and a source with `refresh = "manual"` is never stale by age |
 
-The age of a pin is the number of days from its date to today (UTC). When a pin is older than
+The live version of a source is the version that the live releases read, see [Live](#live). Its
+age is the number of days from its date to today (UTC). When the live version is older than
 `refresh` and the newest upstream version is not known, the state is `ok` and the reason says
 `upstream unknown`, and whether the source cannot be checked or the check failed.
 
@@ -189,7 +190,7 @@ A snapshot record is a JSON object:
 | Key | Meaning |
 | --- | --- |
 | `source` | The source id |
-| `version` | The version, as a pin names it |
+| `version` | The version, as `SOURCE@VERSION` names it |
 | `files` | One item per file: `name`, `url`, `size` in bytes, `sha256` and `retrieved` (`YYYY-MM-DDTHH:MM:SSZ`) |
 
 The `name` of a file is the part of its URL that identifies it in the source. For an `osm`,
@@ -238,16 +239,16 @@ The import moves the cache directories of the older bake tools into the store:
 The import record has one JSON object per line: `dir` (without symbolic links), `path` (below
 `dir`, with `/`), `size` and `sha256`.
 
-The collection deletes what no live release, pin or fixture reaches. Its roots are the live
+The collection deletes what no live release or fixture reaches. Its roots are the live
 releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
 
-- A snapshot record is reached when a layer of a live release read its source and version, or
-  when `[pins]` of a `data/env/*.toml` file names them. The newest record of each source, by the latest `retrieved` of its files, is also
-  reached: a bake without a pin reads it, and a source whose upstream gives only its newest file
-  cannot give it again. So is the newest version of each request record (`requests/`), by the
+- A snapshot record is reached when a layer of a live release read its source and version. The
+  newest record of each source, by the latest `retrieved` of its files, is also reached: a plan
+  reads it when nothing else names a version (see [Versions](#versions)), and a source whose
+  upstream gives only its newest file cannot give it again. So is the newest version of each request record (`requests/`), by the
   latest `retrieved` of its files, such as the extract of each Geofabrik area.
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of a live layer, or is in a pin, `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
+  SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
   planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import
   record releases its objects.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
@@ -256,10 +257,10 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   `files` of the input, or all files when it names none.
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
-reached snapshot record, with the reasons: `live PRODUCT, …`, `pin of ENV, …`,
-`newest of the source`, `newest of a request`. Then one entry for the reached layers of each step
-(`inputs kept`). Then one entry for each kind of root that names objects that no reached record
-or layer has: `live release`, `pin`, `fixture`, `planner recipe` or `import record`. The size of
+reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the source`,
+`newest of a request`. Then one entry for the reached layers of each step (`inputs kept`). Then
+one entry for each kind of root that names objects that no reached record or layer has:
+`live release`, `fixture`, `planner recipe` or `import record`. The size of
 an entry is the size of its files. The collection takes the store lock alone, or refuses to start
 while a fetch, a build or an import holds it. Then it deletes each snapshot record and each object
 that is not reached. Receipts, release manifests, import records and upstream checks stay. A
@@ -311,13 +312,12 @@ fetch reads the day from the `timestamp` of `<area>-updates/state.txt`; for more
 it takes the earliest day.
 
 The OSM planet is two sources with date versions. `osm-planet` is the weekly planet file of one
-day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Both pins together fix
-the bytes of the OSM data.
+day, an `http` URL with `{yymmdd}`. `osm-replication` is the daily diffs. Their two versions
+together fix the bytes of the OSM data.
 
 An `osm` URL is an Osmosis replication directory that ends with `/`, such as
-`<server>/replication/day/`. A fetch of version `E` takes `from=B` and no other `NAME=VALUE`.
-Without `from=`, `B` is the pin of the `fetch.from` source: the live pin for `fetch`, the
-`--env` pin for `refresh`. An explicit `from=` must be that pin, unless there is none. `B` is on or before `E`. The sequence
+`<server>/replication/day/`. A fetch of version `E` takes `from=B`, a version of the
+`fetch.from` source, and no other `NAME=VALUE`. `B` is on or before `E`. The sequence
 of a day is the one diff whose `state.txt` has the `timestamp` of that day; a day with two
 diffs has no sequence. The snapshot is the
 `state.txt` of the sequence of `B`, and the diff and the `state.txt` of each sequence after it up
@@ -334,9 +334,8 @@ to the sequence of `E`, in order.
   store, so a fetch of a later `E` from the same `B` downloads only the new days.
 
 A late or missing weekly planet does not block a version of `osm-replication`, because its base
-is the planet that is pinned. The fetch does not apply the diffs. A step does that with
-`osmium apply-changes`: it reads the planet of the `osm-planet` pin and the diffs of the
-`osm-replication` pin from that day.
+is a version of `osm-planet`. The fetch does not apply the diffs. No product reads the two
+sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
 
 A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
 <packages> python`: `--no-project --python '>=3.12' --with-requirements <file>` for a requirements file, and
@@ -582,6 +581,33 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 | `step_failed` | `step` and `error` |
 | `finished` | `ok`, `error` (`null` when `ok`) and `wall_ms` |
 
+### Versions
+
+A step list gets the version of each fetch that it reads, a source with its `NAME=VALUE`s, from
+one function (`obc_data::product::version`), in this order:
+
+1. `--move SOURCE@VERSION` of the plan or the build. `--move SOURCE` without a version is the
+   newest version upstream. A `--move` of a source that no step list reads is refused.
+2. For the environment `live`, the version that the live releases read for the fetch. A fetch
+   without `NAME=VALUE`s of a source that live reads only with them, such as the GLO-30 tiles that
+   one version names, reads the version of all of them. A fetch with `NAME=VALUE`s that live does
+   not read, such as the extract of a new region, goes on to step 3. When the live layers read one
+   fetch at two versions, no order of versions chooses: a step list that reads it without a
+   `--move` fails the command with `blocked` and the fix `Plan with --move SOURCE@VERSION`, and
+   `status` shows the source as blocked. Another environment has no live release.
+3. The newest version of the fetch in the store.
+4. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it. A
+   source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest version: a
+   fetch of it without that value fails with `usage` and the fix `Plan with --move
+   SOURCE@VERSION`.
+
+A source with `refresh = "manual"` moves only with `--move`: step 4 does not fetch it, and the
+command fails with `blocked` and the fix `Plan with --move SOURCE@VERSION`. Before the first apply,
+nothing is live, so a plan takes the versions of the store and of upstream. The fetch of a
+`--move SOURCE` names its version, and every product of the plan reads that version. Upstream can
+stop serving an old version, such as a Geofabrik extract of an earlier day: when the fetch of a
+version that live reads fails, the fix names `--move SOURCE`.
+
 ### Products
 
 A product is a set of steps that makes one release, such as `planner` or `maps`. The
@@ -605,12 +631,16 @@ environment, `build` fails with `blocked`. An error of the store, a file or the 
 in a step list fails the command with `failed`.
 
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
-`region` and `layers` of the environment, and `only`, the groups that `--only` selected or `[]`
-for every group. `build ENV --plan FILE` builds the groups of that file, or those of them that
-its own `--only` selects. It refuses the file, with exit status 3, before it fetches or builds:
+`region` and `layers` of the environment, `moves`, the version of each `--move` (a `--move SOURCE`
+has the version that its fetch gave), `versions`, the version of each fetch that the step lists
+read, and `only`, the groups that `--only` selected or `[]` for every group. `build ENV --plan
+FILE` builds the groups of that file, or those of them that its own `--only` selects; it takes no
+`--move` and does not read live. Its step lists read the `versions` of the file and no other
+version. A version that the store lacks is fetched; when that fetch fails, the command fails with
+its code, and a fix that says to plan again when the fetch gives none. It refuses the file, with exit status 3, before it builds:
 
 - when `env`, `region`, `layers` or `blocked` differ from the environment and its products;
-- when a product names a fetch: `plan` fetched what each step list reads;
+- when a step list reads a fetch that `versions` does not name;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
   apart from `estimate` and `bytes`.
 
@@ -622,12 +652,12 @@ release of that product.
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
 `geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
-steps for a `polygon` region yet. The environment pins `copernicus-glo-30`. Only a `geofabrik`
-region has map cells: they read the OSM of its area. Another region has terrain only.
+steps for a `polygon` region yet. Only a `geofabrik` region has map cells: they read the OSM of
+its area. Another region has terrain only.
 
-A file that the step list reads, such as a `.poly` or the GLO-30 tile list, is at the version
-of the environment. Without one, the product names a fetch of the newest version upstream, and
-then reads the newest version of that fetch in the store.
+The steps read `copernicus-glo-30`, and the step list reads files such as a `.poly` and the GLO-30
+tile list, each at its version (see [Versions](#versions)). `copernicus-glo-30` and its tile list
+are `manual`.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
@@ -640,11 +670,10 @@ then reads the newest version of that fetch in the store.
 #### `planner`
 
 The planner has steps for a `geofabrik` region that names its `countries` and its `time_zone`:
-its OSM is the extract of that one area. The bounds of the region are the box around its `.poly`. The
-environment pins `copernicus-glo-30`. Every other snapshot, such as the extract, the `.poly`
-and the GLO-30 tile list, is at the version of the environment, or else the newest version in the
-store, as for `maps`. The
-other options come from [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
+its OSM is the extract of that one area. The bounds of the region are the box around its `.poly`.
+Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
+at its version (see [Versions](#versions)), as for `maps`. The other options come from
+[`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
 of each 1° square that its box touches and that `copernicus-glo-30-tiles` names; a box at sea
 reads no snapshot. No layer reads a national terrain model yet.
 
@@ -757,15 +786,17 @@ first writes the status, and the second writes an error.
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
 | `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live) and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
-| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live pin, newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
-| `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the live pin, or else the newest file upstream. Writes the store path of each file |
-| `obc data refresh SOURCE [NAME=VALUE…] [--env ENV] [--json]` | Fetches the newest upstream version, checked now, and writes it to `[pins]` of `data/env/ENV.toml` (default `live`). `ENV` is lowercase kebab-case. The edit keeps comments, line order and CRLF line ends. Writes the store path of each file. A version after the pin of a source whose `fetch.from` names `SOURCE` is refused before the fetch: refresh that source first |
+| `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE 7\|30\|90\|365\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
+| `obc data region ENV ID [--json]` | Writes `region` of `data/env/ENV.toml`. Writes the environment |
+| `obc data layer ENV NAME on\|off [--json]` | Adds the optional layer to `layers` of `data/env/ENV.toml`, or removes it. A layer that no product has is refused. Writes the environment |
+| `obc data undo ENV [--json]` | Writes `data/env/ENV.toml` as git has it in `HEAD`: the edits that are not applied go. Writes the environment |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the old cache directories with their files and sizes. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
-| `obc data plan ENV [--only GROUP,…] [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products) |
-| `obc data build ENV [--only GROUP,…] [--plan FILE] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built. It uploads nothing |
+| `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products). `--move` is in [Versions](#versions) |
+| `obc data build ENV [--only GROUP,…] [--plan FILE \| --move SOURCE[@VERSION]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built. It uploads nothing |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
@@ -774,7 +805,11 @@ first writes the status, and the second writes an error.
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
 addition:
 
-- `fetch` and `refresh` list only the requested files.
+- `fetch` lists only the requested files.
+- `region ENV ID`, `layer` and `undo` write `data/env/ENV.toml` and nothing else, and they never
+  commit. `region` and `layer` keep its comments and its other lines, write `region` and `layers`
+  on one line each, and end each line with `\r\n` when the file has one, or else `\n`. A refused
+  edit changes nothing.
 - `runs` lists a run file that cannot be read as `failed`, or as `running` while its lock is
   held.
 - `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
@@ -878,10 +913,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Command | Schema |
 | --- | --- |
 | `sources` | `Sources` |
-| `fetch`, `refresh` | `Fetched` |
+| `fetch` | `Fetched` |
 | `policy` | `Source` |
 | `region`, `region list` | `RegionList` |
 | `region show` | `RegionDetail` |
+| `region ENV ID`, `layer`, `undo` | `Edited` |
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
@@ -1318,6 +1354,29 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Edited": {
+      "description": "An environment file after an edit.",
+      "properties": {
+        "env": {
+          "type": "string"
+        },
+        "layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "env",
+        "region",
+        "layers"
+      ],
+      "type": "object"
+    },
     "EnvPlan": {
       "additionalProperties": false,
       "description": "What a build of an environment would fetch and build.",
@@ -1344,6 +1403,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "moves": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The version of each source that `--move` names. A `--move SOURCE` has the newest version\nupstream that the plan fetched.",
+          "type": "object"
+        },
         "only": {
           "description": "The groups that `--only` selected, or none for every group.",
           "items": {
@@ -1353,12 +1419,21 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "region": {
           "type": "string"
+        },
+        "versions": {
+          "description": "The version of each fetch that the step lists read. `build --plan` reads exactly these.",
+          "items": {
+            "$ref": "#/$defs/FetchVersion"
+          },
+          "type": "array"
         }
       },
       "required": [
         "env",
         "region",
         "layers",
+        "moves",
+        "versions",
         "only",
         "groups",
         "blocked"
@@ -1681,7 +1756,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "properties": {
         "from": {
-          "description": "Only for `osm`: the source whose pin is the base day, `from=`.",
+          "description": "Only for `osm`: the source whose version is the base day, `from=`.",
           "type": [
             "string",
             "null"
@@ -1727,6 +1802,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "FetchVersion": {
+      "additionalProperties": false,
+      "properties": {
+        "params": {
+          "description": "The `NAME=VALUE`s of the fetch, sorted.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "params",
+        "version"
+      ],
+      "type": "object"
     },
     "Fetched": {
       "description": "The requested files of a snapshot.",
@@ -1949,7 +2058,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`live PRODUCT, …`, `pin of ENV, …`, `newest of the source`, `newest of a request`,\n`inputs kept`, `live release`, `pin`, `fixture`, `planner recipe` or `import record`.",
+          "description": "`live PRODUCT, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`live release`, `fixture`, `planner recipe` or `import record`.",
           "items": {
             "type": "string"
           },
@@ -2349,7 +2458,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Refresh": {
-      "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
+      "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale.",
       "enum": [
         7,
         30,
@@ -2796,7 +2905,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "SourceRow": {
-      "description": "A source of `data/sources.toml` with its live pin, its snapshots and its state.",
+      "description": "A source of `data/sources.toml` with its live version, its snapshots and its state.",
       "properties": {
         "age_days": {
           "format": "int64",
@@ -2850,13 +2959,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
-        "obligations": {
+        "live": {
+          "description": "The versions that the live releases read, in order; `null` when R2 could not be read.",
+          "items": {
+            "type": "string"
+          },
           "type": [
-            "string",
+            "array",
             "null"
           ]
         },
-        "pin": {
+        "obligations": {
           "type": [
             "string",
             "null"
@@ -2908,7 +3021,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "refresh",
         "redistribute",
         "r2_copy",
-        "pin",
+        "live",
         "upstream",
         "age_days",
         "state",
@@ -2919,6 +3032,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "Sources": {
       "properties": {
+        "live_unknown": {
+          "description": "R2 could not be read: `live` of each source is `null`.",
+          "type": "boolean"
+        },
         "sources": {
           "items": {
             "$ref": "#/$defs/SourceRow"
@@ -2927,6 +3044,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
+        "live_unknown",
         "sources"
       ],
       "type": "object"
@@ -3068,7 +3186,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "VersionScheme": {
-      "description": "How upstream names a version, and so what a pin of the source looks like.",
+      "description": "How upstream names a version, and so what a version of the source looks like.",
       "oneOf": [
         {
           "enum": [
@@ -3079,7 +3197,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "date",
-          "description": "`YYYY-MM-DD`: the only scheme that gives a pin an age.",
+          "description": "`YYYY-MM-DD`: the only scheme that gives a version an age.",
           "type": "string"
         },
         {

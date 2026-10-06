@@ -67,7 +67,8 @@ impl Code {
         }
     }
 
-    fn fix(self) -> &'static str {
+    /// The fix of an error that gives no other.
+    pub(super) fn fix(self) -> &'static str {
         match self {
             Code::Usage => "Correct the command. `obc data --help` lists the commands and their arguments.",
             Code::NoTerminal => "Show the plan to a person. When they agree, run the command again with `--yes`.",
@@ -152,7 +153,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::cli::{build_cli, r2_cli, runs_cli, status_cli};
+    use crate::cli::{build_cli, edit_cli, r2_cli, runs_cli, status_cli};
     use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
@@ -162,10 +163,11 @@ mod tests {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`fetch`, `refresh`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
             schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
             schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
+            schema("`region ENV ID`, `layer`, `undo`", generator.subschema_for::<edit_cli::Edited>()),
             schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),

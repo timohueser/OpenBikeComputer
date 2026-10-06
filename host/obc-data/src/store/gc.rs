@@ -1,5 +1,5 @@
 //! The collection of `obc data clean`: delete the objects and the snapshot records that no live
-//! release, pin or fixture reaches. Receipts and import records stay: they are history.
+//! release or fixture reaches. Receipts and import records stay: they are history.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -16,31 +16,18 @@ use crate::live::Live;
 /// What live and the repository keep.
 #[derive(Debug, Default)]
 pub struct Roots {
-    /// `(source, version)` from `[pins]` of every `data/env/*.toml`, with the environments.
-    pub pins: BTreeMap<(String, String), Vec<String>>,
     /// `(source, version)` that a layer of a live release read, with the products.
     pub live: BTreeMap<(String, String), Vec<String>>,
-    /// Each SHA-256 that a live layer, a pin, a fixture or a planner region recipe names, with
-    /// which of them.
+    /// Each SHA-256 that a live layer, a fixture or a planner region recipe names, with which of
+    /// them.
     pub sha256s: BTreeMap<String, &'static str>,
 }
 
 impl Roots {
-    /// The pins of every environment file, and the SHA-256 values in the fixture catalog, the
-    /// fixture build records and the planner region recipes.
+    /// The SHA-256 values in the fixture catalog, the fixture build records and the planner region
+    /// recipes.
     pub fn from_repo(root: &Path) -> Result<Self, String> {
         let mut roots = Roots::default();
-        for path in files(&root.join("data/env"), &["toml"])? {
-            let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let table: toml::Table = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-            let env = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-            for (source, version) in table.get("pins").and_then(|pins| pins.as_table()).into_iter().flatten() {
-                let version =
-                    version.as_str().ok_or_else(|| format!("{}: pin {source} is not text", path.display()))?;
-                roots.name(sha256s(version), "pin");
-                roots.pins.entry((source.clone(), version.to_string())).or_default().push(env.clone());
-            }
-        }
         let fixtures = files(&root.join("fixtures/sources"), &["json", "toml"])?;
         let recipes = files(&root.join("tools/planner-regions"), &["json"])?;
         let mut named = vec![(root.join("fixtures/catalog.toml"), "fixture")];
@@ -105,14 +92,14 @@ pub struct Kept {
     pub entry: String,
     /// The size of its files.
     pub bytes: u64,
-    /// `live PRODUCT, …`, `pin of ENV, …`, `newest of the source`, `newest of a request`,
-    /// `inputs kept`, `live release`, `pin`, `fixture`, `planner recipe` or `import record`.
+    /// `live PRODUCT, …`, `newest of the source`, `newest of a request`, `inputs kept`,
+    /// `live release`, `fixture`, `planner recipe` or `import record`.
     pub because: Vec<String>,
 }
 
-/// What a collection deletes. A snapshot record is reached when a live layer read it, when a pin
-/// names it, or when it is the newest record of its source or of a request. An object is reached
-/// when a live layer, a pin, a fixture, a planner recipe or an import record names it, or a
+/// What a collection deletes. A snapshot record is reached when a live layer read it, or when it is
+/// the newest record of its source or of a request. An object is reached when a live layer, a
+/// fixture, a planner recipe or an import record names it, or a
 /// reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
 /// its source, and a layer input whose digest is of the files that it selects (all when it names
@@ -133,7 +120,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     for (source, version) in records(store)? {
         snapshots.extend(store.snapshot(&source, &version)?);
     }
-    // The newest record of a source is what a bake without a pin reads, and what a source whose
+    // The newest record of a source is what a plan without a version reads, and what a source whose
     // upstream serves only its newest file cannot give again.
     let retrieved = |snapshot: &Snapshot| snapshot.files.iter().map(|file| file.retrieved.clone()).max();
     let mut newest: HashMap<&str, Option<String>> = HashMap::new();
@@ -165,10 +152,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let (source, version) = (&snapshot.source, &snapshot.version);
         let key = (source.clone(), version.clone());
         let live = roots.live.get(&key).map(|products| format!("live {}", products.join(", ")));
-        let pinned = roots.pins.get(&key).map(|envs| format!("pin of {}", envs.join(", ")));
         let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
         let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
-        let because: Vec<String> = [live, pinned, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        let because: Vec<String> = [live, newest_of_source, newest_of_request].into_iter().flatten().collect();
         if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
@@ -422,25 +408,17 @@ mod tests {
     }
 
     #[test]
-    fn a_collection_keeps_what_a_pin_or_a_fixture_reaches() {
+    fn a_collection_keeps_the_newest_records_and_what_a_fixture_reaches() {
         let scratch = Scratch::new("gc");
         let (repo, store) = (scratch.0.join("repo"), Store::at(scratch.0.join("store")));
-        let pinned_digest = sha256_hex(b"digest pin");
         let fixture = sha256_hex(b"fixture");
-        let write = |path: &str, text: String| {
-            fs::create_dir_all(repo.join(path).parent().unwrap()).unwrap();
-            fs::write(repo.join(path), text).unwrap();
-        };
-        write("data/env/live.toml", format!("[pins]\nland = \"2026-09-01\"\nnatural = \"{pinned_digest}\"\n"));
-        write("data/env/local.toml", "[pins]\nosm = \"release/1\"\n".into());
-        write("fixtures/catalog.toml", format!("[packages.a]\nsha256 = \"{fixture}\"\n"));
+        fs::create_dir_all(repo.join("fixtures")).unwrap();
+        fs::write(repo.join("fixtures/catalog.toml"), format!("[packages.a]\nsha256 = \"{fixture}\"\n")).unwrap();
         let roots = Roots::from_repo(&repo).unwrap();
 
-        // The pinned record of `land` is older than the other one.
         snapshot(&store, "land", "2026-09-01", "2026-09-01", &[("a.zip", b"land new"), ("b.zip", b"land b")]);
         snapshot(&store, "land", "2026-08-01", "2026-08-01", &[("a.zip", b"land old"), ("b.zip", b"land b")]);
         snapshot(&store, "osm", "release/1", "2026-10-05", &[("planet.pbf", b"planet")]);
-        // No pin names `extract`: its newest record stays.
         snapshot(&store, "extract", "2026-08-01", "2026-08-01", &[("a.pbf", b"extract old")]);
         snapshot(&store, "extract", "2026-09-30", "2026-09-30", &[("a.pbf", b"extract new")]);
         // Area `b` was last fetched on an older day than area `a`.
@@ -450,7 +428,6 @@ mod tests {
             let files = vec![format!("{area}.pbf")];
             store.put_requested("extract", &Requested { version: version.into(), params, files }).unwrap();
         }
-        object(&store, b"digest pin");
         object(&store, b"fixture");
         object(&store, b"imported, unused");
         object(&store, b"imported, kept");
@@ -483,19 +460,18 @@ mod tests {
             [
                 "extract@2026-09-20: newest of a request",
                 "extract@2026-09-30: newest of the source · newest of a request",
-                "land@2026-09-01: pin of live · newest of the source",
-                "osm@release/1: pin of local · newest of the source",
+                "land@2026-09-01: newest of the source",
+                "osm@release/1: newest of the source",
                 "cells: inputs kept",
                 "joined: inputs kept",
                 "one: inputs kept",
                 "1 object: fixture",
                 "1 object: import record",
-                "1 object: pin",
             ]
         );
         assert_eq!(
-            plan.keep_objects, 11,
-            "pinned files, the newest of each source and request, the digest pin, the fixture, an import and three layers"
+            plan.keep_objects, 10,
+            "the newest of each source and request, the fixture, an import and three layers"
         );
 
         let using = store.using().unwrap();
@@ -507,7 +483,7 @@ mod tests {
         let applied = apply(&store, &roots, &plan).unwrap().unwrap();
         assert_eq!(applied.objects, plan.objects, "it deletes what the plan names");
         assert!(store.snapshot("land", "2026-08-01").unwrap().is_none());
-        assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the pinned record stays");
+        assert!(store.object(&sha256_hex(b"land b")).is_file(), "a file of the newest record stays");
         assert!(!store.object(&sha256_hex(b"stale")).exists());
         assert!(store.layer("stale").unwrap().is_some(), "a receipt is history and stays");
         let again = super::plan(&store, &roots).unwrap();

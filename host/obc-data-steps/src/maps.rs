@@ -48,15 +48,16 @@ impl Product for Maps {
             ),
             false => (None, None),
         };
-        let (Some(outlines), Some(tile_list), true) = (outlines, tile_list, wanted.is_empty()) else {
+        // The version of the tiles: the fetch of a tile is in the plan of the step that reads it.
+        let glo30 = snapshot_version(env, store, GLO30, &[], &mut wanted)?;
+        let (Some(outlines), Some(tile_list), Some(glo30), true) = (outlines, tile_list, glo30, wanted.is_empty())
+        else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let glo30 =
-            env.version(GLO30).ok_or_else(|| invalid(format!("data/env/{}.toml pins no `{GLO30}`", env.name)))?;
         let terrain_cells = leaves(&outlines, V1_CELL_LOG2.into());
         let mut steps: Vec<Step> =
-            terrain_cells.iter().map(|(&leaf, cells)| terrain(leaf, cells, &land, glo30)).collect();
+            terrain_cells.iter().map(|(&leaf, cells)| terrain(leaf, cells, &land, &glo30)).collect();
         let (Some(extract), Some(land_polygons)) = osm_sources else {
             return Ok(steps);
         };
@@ -260,8 +261,11 @@ pub(crate) mod tests {
 
     /// The Grimsel box of `data/regions/`, which the leaf edge at 8.388608° cuts in two.
     fn grimsel(glo30: &str) -> (Env, Regions) {
-        let pins = BTreeMap::from([(GLO30.to_string(), glo30.to_string()), (TILE_LIST.to_string(), "1".to_string())]);
-        let env = Env { name: "test".into(), region: "grimsel".into(), layers: Vec::new(), pins };
+        let live = BTreeMap::from([
+            ((GLO30.into(), Vec::new()), [glo30.to_string()].into()),
+            ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
+        ]);
+        let env = Env { name: "test".into(), region: "grimsel".into(), live, ..Env::default() };
         (env, Regions::load(&root()).unwrap())
     }
 
@@ -273,8 +277,11 @@ pub(crate) mod tests {
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), poly.into())]);
         with_tile_list(store, &["N47_00_E007", "N48_00_E007"]);
         let region = obc_data::regions::parse_region("europe/test", "name = \"Test\"\nkind = \"geofabrik\"\n").unwrap();
-        let pins = BTreeMap::from([(GLO30.to_string(), "1".to_string()), (TILE_LIST.to_string(), "1".to_string())]);
-        let env = Env { name: "test".into(), region: "europe/test".into(), layers: Vec::new(), pins };
+        let live = BTreeMap::from([
+            ((GLO30.into(), Vec::new()), ["1".to_string()].into()),
+            ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
+        ]);
+        let env = Env { name: "test".into(), region: "europe/test".into(), live, ..Env::default() };
         (env, Regions::new(vec![region]).unwrap())
     }
 

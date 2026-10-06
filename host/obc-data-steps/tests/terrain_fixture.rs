@@ -18,7 +18,7 @@ use obc_elevation::{TerrainReader, TileCache, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
-const PIN: &str = "2022-05-09";
+const VERSION: &str = "2022-05-09";
 /// The Grimsel east of the leaf edge at 8.388608°: one terrain cell, whose source box lies in the
 /// one captured tile.
 const REGION: &str = "name = \"Grimsel east\"\nkind = \"box\"\nbox = [8.39, 46.48261, 8.46007, 46.66]\n";
@@ -31,7 +31,7 @@ impl Drop for Temp {
     }
 }
 
-/// A store whose record of the GLO-30 pin has the captured tile, as a fetch of its tile gives it.
+/// A store whose record of the GLO-30 version has the captured tile, as a fetch of its tile gives it.
 fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     let store = Store::at(dir.join("store"));
     let copy = store.partial("tile");
@@ -43,8 +43,9 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     let url = format!("https://copernicus-dem-30m.s3.amazonaws.com/{name}");
     let retrieved = "2026-09-14T21:39:44Z".into();
     let file = FileRecord { name: name.clone(), url, size, sha256, retrieved };
-    store.put_snapshot(&Snapshot { source: GLO30.into(), version: PIN.into(), files: vec![file] }).unwrap();
-    let requested = Requested { version: PIN.into(), params: vec![("tile".into(), STEM.into())], files: vec![name] };
+    store.put_snapshot(&Snapshot { source: GLO30.into(), version: VERSION.into(), files: vec![file] }).unwrap();
+    let requested =
+        Requested { version: VERSION.into(), params: vec![("tile".into(), STEM.into())], files: vec![name] };
     store.put_requested(GLO30, &requested).unwrap();
 
     let list = store.partial("list");
@@ -53,7 +54,7 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     store.insert(&list, &sha256).unwrap();
     let url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt".into();
     let file = FileRecord { name: "tileList.txt".into(), url, size, sha256, retrieved: String::new() };
-    store.put_snapshot(&Snapshot { source: TILE_LIST.into(), version: PIN.into(), files: vec![file] }).unwrap();
+    store.put_snapshot(&Snapshot { source: TILE_LIST.into(), version: VERSION.into(), files: vec![file] }).unwrap();
     store
 }
 
@@ -79,8 +80,11 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
     let region = parse_region("grimsel-east", REGION).unwrap();
     let Area::Box { bbox } = region.area else { unreachable!() };
     let regions = Regions::new(vec![region]).unwrap();
-    let pins = BTreeMap::from([(GLO30.to_string(), PIN.to_string()), (TILE_LIST.to_string(), PIN.to_string())]);
-    let env = Env { name: "test".into(), region: "grimsel-east".into(), layers: Vec::new(), pins };
+    let live = BTreeMap::from([
+        ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),
+        ((TILE_LIST.into(), Vec::new()), [VERSION.to_string()].into()),
+    ]);
+    let env = Env { name: "test".into(), region: "grimsel-east".into(), live, ..Env::default() };
     let built = layer(&store_with_tile(&temp.0, &tile), &root, &regions, &env);
 
     let (sources, extracts, out) = (temp.0.join("sources"), temp.0.join("extracts"), temp.0.join("tree"));

@@ -55,23 +55,22 @@ fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
 }
 
 /// Fetch the source `id` of the repository above the current directory, or else above the running
-/// program: at `version`, or else at its live pin, or else at the newest version upstream. Each
-/// file comes with its object. This is `obc data fetch` for code that links the library.
+/// program: at `version`, or else at the newest version upstream. Each file comes with its object.
+/// This is `obc data fetch` for code that links the library.
 ///
-/// Without a version or a pin, when the request for the newest version upstream gets no connection
+/// Without a version, when the request for the newest version upstream gets no connection
 /// or times out, the newest version in the store that has the requested files serves, with a
 /// warning, so a bake works offline. Every other error stays an error.
 pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, LiveError> {
     let registry = Registry::live()?;
     let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
-    let version = version.map(str::to_string).or_else(|| registry.pins.get(id).cloned());
-    let params = osm::with_base(source, &registry.pins, params)?;
+    let version = version.map(str::to_string);
     let store = Store::open()?;
-    let unpinned = version.is_none();
+    let newest = version.is_none();
     let snapshot = match fetch(&store, &Http::new(), &Request { source, version, params: params.clone() }) {
         Ok(snapshot) => snapshot,
         Err(error) if http::not_found(&error) => return Err(LiveError::NotFound(error)),
-        Err(error) if unpinned && http::unreachable(&error) => match newest_stored(&store, id, &params)? {
+        Err(error) if newest && http::unreachable(&error) => match newest_stored(&store, id, &params)? {
             Some(snapshot) => {
                 eprintln!("obc data: {error}; using `{id}` {} from the store", snapshot.version);
                 snapshot
@@ -142,7 +141,7 @@ pub struct Fetched {
 /// Whether `version` has the form of the source's version scheme. Every version also names a
 /// path in the store: segments of letters, digits, `.`, `_`, `+` and `-`, joined by `/`, none
 /// starting with `.`.
-fn check_version(source: &Source, version: &str) -> Result<(), String> {
+pub(crate) fn check_version(source: &Source, version: &str) -> Result<(), String> {
     let path = version.split('/').all(|segment| {
         !segment.is_empty()
             && !segment.starts_with('.')
@@ -325,9 +324,8 @@ fn fixed(name: &str) -> bool {
     name == "version" || name == "yymmdd"
 }
 
-/// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
-/// from a date version, every other name from `params`.
-fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+/// Each `{name}` of `template`, once, in order.
+fn placeholders(template: &str) -> Vec<&str> {
     let mut names: Vec<&str> = Vec::new();
     for piece in template.split('{').skip(1) {
         let name = piece.split_once('}').map_or(piece, |(name, _)| name);
@@ -335,6 +333,19 @@ fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) ->
             names.push(name);
         }
     }
+    names
+}
+
+/// The names of the `NAME=VALUE`s that a fetch of `source` needs.
+pub(crate) fn params(source: &Source) -> Vec<&str> {
+    let names = placeholders(source.fetch.url.as_deref().unwrap_or_default());
+    names.into_iter().filter(|name| !fixed(name)).collect()
+}
+
+/// The URLs of `template` with every `{name}` filled: `{version}` from the version, `{yymmdd}`
+/// from a date version, every other name from `params`.
+fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) -> Result<Vec<String>, String> {
+    let names = placeholders(template);
     if let Some((name, _)) = params.iter().find(|(name, _)| fixed(name) || !names.contains(&name.as_str())) {
         return Err(format!("`{name}=` names no placeholder of {template}"));
     }
@@ -640,9 +651,9 @@ pub(crate) mod tests {
         let later = Request { params: from("2026-09-29"), ..wednesday };
         assert_eq!(fetch(&store, &quick(), &later).unwrap().files, snapshot.files[2..]);
         assert_eq!(log.lock().unwrap().len(), asked, "a record that has the diffs needs no request");
-        // A refresh keeps the base and downloads the diff of the new day only.
-        let refresh = Request { source: &diffs, version: None, params: from("2026-09-28") };
-        let refreshed = fetch(&store, &quick(), &refresh).unwrap();
+        // The newest version keeps the base and downloads the diff of the new day only.
+        let newest = Request { source: &diffs, version: None, params: from("2026-09-28") };
+        let refreshed = fetch(&store, &quick(), &newest).unwrap();
         assert_eq!(refreshed.version, "2026-10-01");
         assert_eq!(refreshed.files[..5], snapshot.files);
         let log = log.lock().unwrap();
@@ -652,7 +663,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn replication_takes_the_base_pin_and_any_day_that_has_a_diff() {
+    fn replication_takes_any_day_that_has_a_diff() {
         // 2026-10-01 has no diff.
         let (diffs, log) = replication(&[
             (5128, "2026-09-27"),
@@ -661,17 +672,12 @@ pub(crate) mod tests {
             (5131, "2026-09-30"),
             (5132, "2026-10-02"),
         ]);
-        let pins = std::collections::BTreeMap::from([("osm-planet".to_string(), "2026-09-28".to_string())]);
-        assert_eq!(osm::with_base(&diffs, &pins, vec![]).unwrap(), from("2026-09-28"));
-        let err = osm::with_base(&diffs, &pins, from("2026-09-29")).unwrap_err();
-        assert!(err.contains("not the `osm-planet` pin 2026-09-28"), "{err}");
-        assert_eq!(osm::with_base(&diffs, &Default::default(), from("2026-09-29")).unwrap(), from("2026-09-29"));
         let scratch = Scratch::new("gaps");
         let store = Store::at(&scratch.0);
         let get = |version: &str, params: Vec<(String, String)>| {
             fetch(&store, &quick(), &Request { source: &diffs, version: Some(version.into()), params })
         };
-        assert!(get("2026-09-30", vec![]).unwrap_err().contains("the `osm-planet` pin"));
+        assert!(get("2026-09-30", vec![]).unwrap_err().contains("a version of `osm-planet`"));
         assert!(get("2026-09-30", from("2026-10-01")).unwrap_err().contains("after the version"));
         assert!(log.lock().unwrap().is_empty());
         let err = get("2026-10-01", from("2026-09-28")).unwrap_err();

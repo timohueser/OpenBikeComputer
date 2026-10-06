@@ -98,9 +98,8 @@ impl Product for Planner {
             return Err(invalid(format!("region `{}` names no `time_zone`, which the search needs", region.id)));
         };
         let on = |layer: &str| env.layers.iter().any(|name| name == layer);
-        let glo30 =
-            env.version(GLO30).ok_or_else(|| invalid(format!("data/env/{}.toml pins no `{GLO30}`", env.name)))?;
         let mut wanted = Vec::new();
+        let glo30 = version(env, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
         let area = vec![("area".to_string(), region.id.clone())];
@@ -111,7 +110,7 @@ impl Product for Planner {
         ];
         let model = snapshot(env, store, "query-model", Vec::new(), &mut wanted)?;
         let country_data = snapshot(env, store, "nominatim-country-data", Vec::new(), &mut wanted)?;
-        let (Some(outlines), Some(tile_list)) = (outlines, tile_list) else {
+        let (Some(outlines), Some(tile_list), Ok(glo30)) = (outlines, tile_list, glo30) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
@@ -129,7 +128,7 @@ impl Product for Planner {
         };
         let terrain = Step {
             name: "planner/terrain".into(),
-            inputs: tiles(coverage, &land, glo30),
+            inputs: tiles(coverage, &land, &glo30),
             options: json!({"bounds": coverage}),
             code: Code { paths: vec!["data/sources.toml".into()], crates: vec!["obc-dem".into()] },
             outputs: vec!["terrain.mbtiles".into()],
@@ -139,7 +138,7 @@ impl Product for Planner {
         let name = region.id.rsplit('/').next();
         let routing = Step {
             name: "planner/routing".into(),
-            inputs: std::iter::once(Input::layer(osm.name.clone())).chain(tiles(bounds, &land, glo30)).collect(),
+            inputs: std::iter::once(Input::layer(osm.name.clone())).chain(tiles(bounds, &land, &glo30)).collect(),
             options: json!({
                 "region": name,
                 "bounds": bounds,
@@ -394,14 +393,21 @@ mod tests {
 
     const AREA: &str = "europe/test";
 
-    /// An environment with `layers` on that pins every source the planner reads but the extract.
+    /// An environment with `layers` on that names a version of every source the planner reads but
+    /// the extract: live reads the sources without params, and the captures move.
     fn env(region: &str, layers: &[&str]) -> Env {
-        let pins = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"]
-            .map(|source| (source, "1"));
-        let captures = ["era5-land", "hr-wsi"].map(|source| (source, "2026-10-01"));
-        let pins = pins.into_iter().chain(captures).map(|(source, version)| (source.into(), version.into()));
+        let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
+        let live = read.map(|source| ((source.into(), Vec::new()), BTreeSet::from(["1".into()])));
+        let moves = ["era5-land", "hr-wsi"].map(|source| (source.into(), Some("2026-10-01".into())));
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
-        Env { name: "test".into(), region: region.into(), layers, pins: pins.collect() }
+        Env {
+            name: "test".into(),
+            region: region.into(),
+            layers,
+            live: live.into(),
+            moves: moves.into(),
+            ..Env::default()
+        }
     }
 
     fn regions() -> Regions {
@@ -585,7 +591,8 @@ mod tests {
                     pending.extend(imports(&file));
                 }
             }
-            // `tools/planner_maps.py` reads the pins of data/env/live.toml when it is imported.
+            // `tools/planner_maps.py` runs the processes of the older planner bake. A step gets its
+            // inputs in its request, so no step imports it.
             assert!(!seen.contains("tools/planner_maps.py"), "{} imports tools/planner_maps.py", step.name);
             for file in seen {
                 assert!(step.code.paths.contains(&file), "{} runs {file}, which its code does not declare", step.name);

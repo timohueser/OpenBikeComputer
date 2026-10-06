@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use crate::engine::{snapshot_files, Step};
 use crate::env::Env;
 use crate::regions::Regions;
-use crate::store::Store;
+use crate::store::{sorted, Store};
 
 pub trait Product {
     /// Kebab-case. Each of its layer names starts with `<name>/`.
@@ -34,8 +34,8 @@ pub trait Product {
 pub enum Unplanned {
     /// The step list reads these snapshots. `obc data` fetches them and asks once more.
     NeedsFetch(Vec<Wanted>),
-    /// The product does not suit the environment, such as a kind of region that it does not read,
-    /// or a pin that it needs. `obc data` reports the product as blocked and plans the others.
+    /// The product does not suit the environment, such as a kind of region that it does not read.
+    /// `obc data` reports the product as blocked and plans the others.
     Invalid(String),
     /// The store, a file or the data of a fetch failed. The command fails.
     Failed(String),
@@ -50,22 +50,33 @@ pub struct Wanted {
     pub params: Vec<(String, String)>,
 }
 
-/// The version of the fetch of `source` with `params` that a step list reads: the version of
-/// `env`, or else the newest version of that fetch in the store. `Err(Wanted)` while the store has
-/// no fetch of it.
+/// The version of the fetch of `source` with `params` that a step list reads: the version that
+/// `env` names (a saved plan, a `--move`, or the version that live reads), or else the newest
+/// version of that fetch in the store. `Err(Wanted)` names a fetch of the newest version upstream:
+/// for a `--move SOURCE`, while the store has no fetch of it, or when a saved plan lacks it. Every
+/// step list gets its versions here, so one function decides where they come from, and `env`
+/// records each version that it gives. `Err` for a fetch that live reads at more versions and
+/// that no `--move` names.
 pub fn version(
     env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
 ) -> Result<Result<String, Wanted>, String> {
-    let pinned = env.version(source).map(str::to_string);
-    let version = match &pinned {
+    let named = env.version(source, params).inspect_err(|_| {
+        env.refused.borrow_mut().insert(source.into());
+    })?;
+    let named = named.map(str::to_string);
+    let version = match &named {
         Some(version) => Some(version.clone()),
+        None if env.planned.is_some() || env.moves_to_newest(source) => None,
         None if params.is_empty() => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).max(),
         None => store.requests(source, params)?.into_iter().map(|request| request.version).max(),
     };
-    Ok(version.ok_or(Wanted { source: source.into(), version: pinned, params: params.to_vec() }))
+    if let Some(version) = &version {
+        env.read.borrow_mut().insert((source.into(), sorted(params)), version.clone());
+    }
+    Ok(version.ok_or(Wanted { source: source.into(), version: named, params: params.to_vec() }))
 }
 
 /// The files of the fetch of `source` with `params` that a step list reads, at its [`version`].
@@ -76,11 +87,11 @@ pub fn read(
     source: &str,
     params: &[(String, String)],
 ) -> Result<Result<BTreeMap<String, PathBuf>, Wanted>, String> {
-    let wanted =
-        || Wanted { source: source.into(), version: env.version(source).map(str::to_string), params: params.to_vec() };
     let version = match version(env, store, source, params)? {
         Ok(version) => version,
         Err(wanted) => return Ok(Err(wanted)),
     };
+    let named = env.version(source, params)?.map(str::to_string);
+    let wanted = || Wanted { source: source.into(), version: named, params: params.to_vec() };
     Ok(snapshot_files(store, source, &version, params, &[])?.ok_or_else(wanted))
 }

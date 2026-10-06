@@ -578,8 +578,9 @@ def step():
 
 
 def main():
-    # The step gets its credit in its options, so only this command line reads the registry.
-    from . import data_registry
+    # The step gets its credit and its versions in its options, so only this command line reads
+    # the registry and the versions.
+    from . import data_registry, planner_sources
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
@@ -613,7 +614,7 @@ def main():
         source = lambda chunk: (planes, grid)
     if SOURCES[args.source]["canopy"]:
         credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
-        canopy = data_registry.pin("hansen-gfc")
+        canopy = planner_sources.VERSIONS["hansen-gfc"]
     else:
         credit, canopy = data_registry.attribution("hr-wsi", year=dt.date.today().year), None
     count = bake(source, seasons.start, len(seasons), args.source, bounds, output, credit, canopy)

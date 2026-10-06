@@ -1,37 +1,16 @@
 //! OSM files named by the day of their data: the daily replication diffs and the dated Geofabrik
 //! extracts.
 
-use std::collections::BTreeMap;
-
 use super::http::Http;
 use super::upstream;
 use super::{check_version, expand, files, get, record, Request};
 use crate::date;
-use crate::sources::Source;
 use crate::store::{FileRecord, Snapshot, Store};
-
-/// `params` with `from=` the pin in `pins` of the source that `fetch.from` names. An explicit
-/// `from=` must be that pin, unless `pins` has none.
-pub fn with_base(
-    source: &Source,
-    pins: &BTreeMap<String, String>,
-    mut params: Vec<(String, String)>,
-) -> Result<Vec<(String, String)>, String> {
-    let Some((base, pin)) = source.fetch.from.as_ref().and_then(|id| Some((id, pins.get(id)?))) else {
-        return Ok(params);
-    };
-    match params.iter().find(|(name, _)| name == "from") {
-        None => params.push(("from".into(), pin.clone())),
-        Some((_, value)) if value == pin => {}
-        Some((_, value)) => return Err(format!("source `{}`: from={value} is not the `{base}` pin {pin}", source.id)),
-    }
-    Ok(params)
-}
 
 /// The daily diffs of version `E` from `from=B`: the diff and the `state.txt` of each sequence
 /// after the sequence of `B` up to the sequence of `E`, and the `state.txt` of `B`. The states
-/// name the day of each sequence, so a record of any `E` serves any start. A step applies the
-/// diffs to the planet of `B` with `osmium apply-changes`; the fetch does not.
+/// name the day of each sequence, so a record of any `E` serves any start. The fetch does not
+/// apply the diffs.
 pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let directory = source.fetch.url.as_deref().unwrap_or_default();
@@ -44,7 +23,7 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
     };
     let Some(from) = from else {
         return Err(format!(
-            "source `{}` takes from=YYYY-MM-DD, the `{}` pin, and no other NAME=VALUE",
+            "source `{}` takes from=YYYY-MM-DD, a version of `{}`, and no other NAME=VALUE",
             source.id,
             source.fetch.from.as_deref().unwrap_or_default()
         ));

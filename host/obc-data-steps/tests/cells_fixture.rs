@@ -25,7 +25,7 @@ use obc_pack::grid::{BandTable, CellId};
 use obc_pack::progress::Progress;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
-const PIN: &str = "2022-05-09";
+const VERSION: &str = "2022-05-09";
 const AREA: &str = "europe/grimsel-east";
 /// The Grimsel east of the leaf edge at 8.388608°: one terrain cell, whose source box lies in the
 /// one captured tile.
@@ -47,16 +47,16 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
     let (sha256, size) = hash_file(&copy).unwrap();
     store.insert(&copy, &sha256).unwrap();
     let url = format!("https://example.org/{name}");
-    let mut snapshot = store.snapshot(source, PIN).unwrap().unwrap_or_else(|| Snapshot {
+    let mut snapshot = store.snapshot(source, VERSION).unwrap().unwrap_or_else(|| Snapshot {
         source: source.into(),
-        version: PIN.into(),
+        version: VERSION.into(),
         files: Vec::new(),
     });
     snapshot.files.push(FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() });
     store.put_snapshot(&snapshot).unwrap();
     if !params.is_empty() {
         let params = params.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
-        store.put_requested(source, &Requested { version: PIN.into(), params, files: vec![name.into()] }).unwrap();
+        store.put_requested(source, &Requested { version: VERSION.into(), params, files: vec![name.into()] }).unwrap();
     }
 }
 
@@ -132,8 +132,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     let region = parse_region(AREA, "name = \"Grimsel east\"\nkind = \"geofabrik\"\n").unwrap();
     let regions = Regions::new(vec![region]).unwrap();
-    let pins = BTreeMap::from([(GLO30.to_string(), PIN.to_string()), (TILE_LIST.to_string(), PIN.to_string())]);
-    let env = Env { name: "test".into(), region: AREA.into(), layers: Vec::new(), pins };
+    let live = BTreeMap::from([
+        ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),
+        ((TILE_LIST.into(), Vec::new()), [VERSION.to_string()].into()),
+    ]);
+    let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     let mut steps = Maps.steps(&env, &regions, &store).unwrap();
     steps.retain(|step| !["maps/coarse/", "maps/mid/"].iter().any(|band| step.name.starts_with(band)));

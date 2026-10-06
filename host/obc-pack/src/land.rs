@@ -78,7 +78,7 @@ fn reproject_geom(g: &mut Geom) {
 
 /// Land polygons for `bbox_deg = (min_lon, min_lat, max_lon, max_lat)`, clipped and
 /// reprojected to degrees. One [`Geom::Polygon`] per face. `zip` is the dataset from the store;
-/// without it, the store fetches the source `land-polygons` at its live pin, or else the newest one.
+/// without it, the store fetches the newest `land-polygons`.
 pub fn get_land_polygons(
     bbox_deg: (f64, f64, f64, f64),
     zip: Option<&Path>,

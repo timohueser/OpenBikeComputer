@@ -3,7 +3,7 @@
 //! overlays derive from it, the search finds the places and the address, and a second plan builds
 //! nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,9 +63,9 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     let text = "name = \"Test\"\nkind = \"geofabrik\"\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
     let regions = Regions::new(vec![parse_region(AREA, text).unwrap()]).unwrap();
-    let pins = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
-    let pins = pins.map(|id| (id.into(), "1".into()));
-    let env = Env { name: "test".into(), region: AREA.into(), layers: Vec::new(), pins: BTreeMap::from(pins) };
+    let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
+    let live = read.map(|id| ((id.to_string(), Vec::new()), BTreeSet::from(["1".to_string()])));
+    let env = Env { name: "test".into(), region: AREA.into(), live: BTreeMap::from(live), ..Env::default() };
     // The assets and the model read no layer, so this build leaves them out.
     let steps = |python: bool| {
         let mut steps = Planner.steps(&env, &regions, &store).unwrap();

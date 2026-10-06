@@ -13,6 +13,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::engine::release::{Layer, Release};
+use crate::env::LiveVersions;
 use crate::fetch::http::{self, Http};
 use crate::product::Product;
 use crate::r2::{Bucket, Credentials, Object};
@@ -127,6 +128,26 @@ impl Live {
         let layers = self.releases().flat_map(|(_, _, release)| &release.layers);
         let reads = layers.flat_map(|layer| &layer.snapshots);
         reads.map(|(source, read)| (source.clone(), read.version.clone())).collect()
+    }
+
+    /// The versions of each fetch that the live layers read. Two layers can read one fetch at two
+    /// versions: no order of versions chooses, so they stay for a `--move` to resolve.
+    pub fn versions(&self) -> LiveVersions {
+        let mut versions = LiveVersions::new();
+        let layers = self.releases().flat_map(|(_, _, release)| &release.layers);
+        for (source, read) in layers.flat_map(|layer| &layer.snapshots) {
+            versions.entry((source.clone(), read.params.clone())).or_default().insert(read.version.clone());
+        }
+        versions
+    }
+
+    /// Source id to every version that the live layers read of it, in order.
+    pub fn by_source(&self) -> BTreeMap<String, Vec<String>> {
+        let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (source, version) in self.snapshots() {
+            sources.entry(source).or_default().push(version);
+        }
+        sources
     }
 
     /// The keys that live uses, with their size: `None` for a pointer, which changes, and for a
@@ -357,6 +378,34 @@ pub(crate) mod tests {
         assert_eq!(check.drift, [Drift { key: object, expected: Some(4), found: None }]);
         let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
         assert_eq!(leftovers, ["test-catalog/objects/old"]);
+    }
+
+    #[test]
+    fn live_reads_the_versions_of_each_fetch() {
+        let reading = |version: &str, params: &[(&str, &str)]| {
+            let mut release = release(b"layer");
+            let read = release.layers[0].snapshots.get_mut("land").unwrap();
+            read.version = version.into();
+            read.params = params.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect();
+            release
+        };
+        let live = |releases: Vec<Release>| {
+            let products = releases.into_iter().map(|release| LiveProduct {
+                product: "test".into(),
+                prefix: "test-catalog".into(),
+                release: Some((release.id(), release)),
+            });
+            Live { products: products.collect(), ..Live::default() }
+        };
+        let (a, b) = ([("area", "a")], [("area", "b")]);
+        let areas = live(vec![reading("2026-10-02", &a), reading("2026-10-01", &b), reading("2026-10-02", &a)]);
+        let versions: Vec<Vec<String>> =
+            areas.versions().into_values().map(|read| read.into_iter().collect()).collect();
+        assert_eq!(versions, [["2026-10-02"], ["2026-10-01"]], "one per params");
+        assert_eq!(areas.by_source()["land"], ["2026-10-01", "2026-10-02"], "every version");
+
+        let conflict = live(vec![reading("0.9.0", &[]), reading("0.10.2", &[])]).versions();
+        assert_eq!(conflict[&("land".to_string(), Vec::new())].len(), 2, "a conflict stays");
     }
 
     /// A product whose pointer an older publish wrote, without `release`.

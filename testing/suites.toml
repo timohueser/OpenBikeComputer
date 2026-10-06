@@ -263,8 +263,7 @@ triggers = [
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
-  # The planner tools read their pinned versions, credits and region boxes from them.
-  "data/env/live.toml",
+  # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
   "data/regions/**",
   # The footers that test_data_registry.py compares with the registry.

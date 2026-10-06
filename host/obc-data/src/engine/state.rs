@@ -248,7 +248,7 @@ mod tests {
         );
 
         fixture.fetched_version("head", "2", "head.txt", b"head 2\n");
-        // The environment pins a version or params that live was not built from.
+        // The environment reads a version or params that live was not built from.
         let tile = Input::Snapshot {
             source: "head".into(),
             version: "1".into(),
