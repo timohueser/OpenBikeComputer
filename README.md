@@ -108,18 +108,18 @@ The simulator is the best way to explore the project without hardware. It runs t
 application in a desktop window and downloads the map, route, terrain, and ride data for the Grimsel
 Pass demo on first use.
 
-Use [Rust](https://rustup.rs/), Git, Python 3.12+ and uv 0.8.17+. Then run:
+Install [Rust](https://rustup.rs/), Git, Python 3.12+, uv 0.8.17+ and just 1.57+:
 
 ```sh
 git clone https://github.com/timohueser/OpenBikeComputer.git
 cd OpenBikeComputer
 cargo install just
-./tools/obc sim
+just sim
 ```
 
-The first build can take a few minutes. The fixture download is cached for later runs. Run
-`./tools/obc setup` once to install the shorter `obc` command, or see the
-[simulator guide](apps/obc-sim/README.md) for controls, other scenarios, and headless rendering.
+First builds take a few minutes; fixture downloads are cached. `just --list` lists tasks;
+`just --show TASK` shows a recipe. Run `./tools/obc setup` for the `obc` alias and completion.
+See the [simulator guide](apps/obc-sim/README.md) for controls and rendering.
 
 ## Roadmap
 

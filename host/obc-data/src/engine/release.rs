@@ -22,6 +22,8 @@ pub struct Release {
     pub optional: Vec<String>,
     /// Sorted by `step`.
     pub layers: Vec<Layer>,
+    /// Exact files under `releases/<id>/`, sorted by path. Their identity is part of the release id.
+    pub named: Vec<LayerFile>,
 }
 
 /// A layer of a release: its receipt without the cost fields, and what it read of each source.
@@ -99,7 +101,38 @@ impl Release {
         layers.sort_by(|a, b| a.step.cmp(&b.step));
         let mut optional = optional.to_vec();
         optional.sort();
-        Release { product: product.into(), region: region.into(), optional, layers }
+        Release { product: product.into(), region: region.into(), optional, layers, named: Vec::new() }
+    }
+
+    /// Finalize the named publication files from receipt metadata before calculating the id.
+    pub fn name_files(&mut self, mut files: Vec<LayerFile>) -> Result<(), String> {
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        self.named = files;
+        self.check_named()
+    }
+
+    pub fn check_named(&self) -> Result<(), String> {
+        for (at, file) in self.named.iter().enumerate() {
+            if file.path.contains('\\') || file.path.split('/').any(|part| matches!(part, "" | "." | "..")) {
+                return Err(format!("named file `{}` is not a normalized relative path", file.path));
+            }
+            if file.sha256.len() != 64 || !file.sha256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(format!("named file `{}` has no SHA-256", file.path));
+            }
+            if at > 0 && self.named[at - 1].path >= file.path {
+                return Err("named files have duplicate or unsorted paths".into());
+            }
+            if !self
+                .layers
+                .iter()
+                .flat_map(|layer| &layer.files)
+                .any(|stored| (stored.size, &stored.sha256) == (file.size, &file.sha256))
+            {
+                return Err(format!("named file `{}` has no receipt", file.path));
+            }
+        }
+        Ok(())
     }
 
     /// The manifest as compact JSON with the keys of each object in byte order.
@@ -121,6 +154,7 @@ impl Release {
     /// Write the manifest to `releases/<product>/<id>.json` in its canonical form, so the SHA-256
     /// of the file is the id. Returns the id.
     pub fn write(&self, store: &Store) -> Result<String, String> {
+        self.check_named()?;
         let id = self.id();
         write_atomic(&store.release(&self.product, &id), &self.canonical())?;
         Ok(id)
@@ -129,7 +163,9 @@ impl Release {
     pub fn read(store: &Store, product: &str, id: &str) -> Result<Release, String> {
         let path = store.release(product, id);
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+        let release: Release = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        release.check_named()?;
+        Ok(release)
     }
 }
 
@@ -172,6 +208,31 @@ mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, write, JOIN};
     use crate::store::hash_file;
+
+    #[test]
+    fn named_files_bind_identity_and_require_normalized_unique_receipt_paths() {
+        let fixture = fixture("release-named");
+        fixture.build(&pipeline()).unwrap();
+        let mut release =
+            release(&fixture.store, &fixture.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
+        let original = release.id();
+        let mut file = release.layers[0].files[0].clone();
+        file.path = "regions/monaco.json".into();
+        release.name_files(vec![file.clone()]).unwrap();
+        let named = release.id();
+        assert_ne!(named, original, "the named identity is in the manifest");
+        file.path = "regions/andorra.json".into();
+        release.name_files(vec![file.clone()]).unwrap();
+        assert_ne!(release.id(), named, "the published path is immutable too");
+        assert!(release.name_files(vec![file.clone(), file.clone()]).unwrap_err().contains("duplicate"));
+        for path in ["", "/schema.json", "../schema.json", "regions/./x", "regions//x", "regions\\x"] {
+            file.path = path.into();
+            assert!(release.name_files(vec![file.clone()]).unwrap_err().contains("normalized"), "{path}");
+        }
+        file.path = "schema.json".into();
+        file.sha256 = "a".repeat(64);
+        assert!(release.name_files(vec![file]).unwrap_err().contains("no receipt"));
+    }
 
     #[test]
     fn selected_client_outputs_reuse_bytes_keep_provenance_and_deduplicate_objects() {

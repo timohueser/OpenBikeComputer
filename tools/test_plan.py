@@ -130,6 +130,7 @@ TEST_POLICY_PATTERNS = (
     "tools/ci_aggregate.py",
     "docs/testing.md",
     "CONTRIBUTING.md",
+    "justfile",
     "tools/justfile",
     "tools/obc",
     "tools/obc-dev.sh",

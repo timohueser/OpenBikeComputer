@@ -518,7 +518,13 @@ mod tests {
         // A layer file whose receipt the store does not have.
         object(&store, b"layer");
         let release = Some((String::new(), release(b"layer")));
-        let product = LiveProduct { product: "test".into(), prefix: "test-catalog".into(), release, applied: None };
+        let product = LiveProduct {
+            product: "test".into(),
+            prefix: "test-catalog".into(),
+            release,
+            applied: None,
+            document: None,
+        };
         let mut roots = Roots::default();
         roots.add_live(&Live { products: vec![product], ..Live::default() });
 

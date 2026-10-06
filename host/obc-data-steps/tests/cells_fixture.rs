@@ -204,12 +204,16 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
 
-    let release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    let mut release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    release.name_files(Maps.named(&release).unwrap()).unwrap();
     Maps.verify(None, &release, &store).unwrap();
     let pointer = Maps.pointer().unwrap()(&release, &store).unwrap();
-    assert!(pointer.named.contains_key("schema.json") && pointer.named.contains_key("LICENSE.txt"));
+    assert!(
+        release.named.iter().any(|file| file.path == "schema.json")
+            && release.named.iter().any(|file| file.path == "LICENSE.txt")
+    );
     let catalog: obc_pack::catalog::Catalog = serde_json::from_value(pointer.document.into()).unwrap();
-    assert_eq!(catalog.schema.sha256, obc_data::store::sha256_hex(&pointer.named["schema.json"]));
+    assert_eq!(catalog.schema.sha256, release.named.iter().find(|file| file.path == "schema.json").unwrap().sha256);
     assert_eq!(catalog.regions.len(), 1);
     assert!(catalog.regions[0].article_bytes.unwrap() > 0);
     assert!(release

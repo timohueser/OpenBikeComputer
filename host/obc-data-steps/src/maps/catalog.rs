@@ -136,26 +136,18 @@ fn poly(area: &obc_data::regions::geofabrik::Area) -> String {
     text
 }
 
+pub fn named(release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
+    let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no maps catalog")?;
+    Ok(layer.files.iter().filter(|file| !file.path.starts_with("objects/")).cloned().collect())
+}
+
 pub fn pointer() -> PointerFn {
     |release, store| {
-        let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no maps catalog")?;
-        let mut named = BTreeMap::new();
-        let mut document = None;
-        for file in &layer.files {
-            if file.path.starts_with("objects/") {
-                continue;
-            }
-            let body = std::fs::read(store.object(&file.sha256)).map_err(|e| format!("{}: {e}", file.path))?;
-            if file.path == "catalog.json" {
-                document = Some(
-                    serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&body)
-                        .map_err(|e| e.to_string())?,
-                );
-            } else {
-                named.insert(file.path.clone(), body);
-            }
-        }
-        Ok(Pointer { document: document.ok_or("catalog receipt has no root")?, named })
+        let file =
+            release.named.iter().find(|file| file.path == "catalog.json").ok_or("release has no catalog root")?;
+        let body = std::fs::read(store.object(&file.sha256)).map_err(|e| format!("{}: {e}", file.path))?;
+        let document = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+        Ok(Pointer { document })
     }
 }
 
