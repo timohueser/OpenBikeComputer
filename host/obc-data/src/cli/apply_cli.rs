@@ -176,11 +176,11 @@ fn apply_live(
         let directory = scratch.0.join("bundle");
         let sources = registry(root)?.sources;
         let previous = Live::read(remote, products, &sources, store).map_err(r2_failed)?;
-        if previous
-            .products
-            .iter()
-            .any(|product| expected.get(&format!("{}/catalog.json", product.prefix)) != Some(&product.observed))
-        {
+        if previous.products.iter().any(|product| {
+            expected
+                .get(&format!("{}/catalog.json", product.prefix))
+                .is_some_and(|observed| observed != &product.observed)
+        }) {
             return Err(Code::PlanOutdated.error("live changed while preparing service metadata"));
         }
         previous.restore_named(remote, store).map_err(r2_failed)?;

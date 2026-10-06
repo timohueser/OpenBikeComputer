@@ -286,8 +286,10 @@ for cell in search['cells']:
                 assert db.execute("SELECT source FROM places WHERE name='Bäckerei'").fetchone() == ('n10',)
             else:
                 assert db.execute('SELECT house,source FROM addresses').fetchone() == ('3', 'n13')
-service = downloads.Downloads(source / 'runtime/offline', source / 'selections', 1000000, 'https://example.org/objects')
+public = 'https://api.example/planner-api/services/' + 'a' * 64 + '/downloads'
+service = downloads.Downloads(source / 'runtime/offline', source / 'selections', 1000000, 'https://example.org/objects', public)
 selection = service.prepare({'bounds': document['bounds']})
+assert selection['source'] == public + '/bundles/' + selection['id']
 bundle = json.loads((source / 'selections' / selection['id'] / 'bundle.json').read_bytes())
 assert any(name.startswith('search/tiles/pois/') for name in bundle['files'])
 assert any(name.startswith('search/tiles/addresses/') for name in bundle['files'])
