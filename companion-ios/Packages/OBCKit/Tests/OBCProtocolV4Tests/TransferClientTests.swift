@@ -8,7 +8,7 @@ struct TransferClientTests {
     func midTransferDisconnectReconciles() async throws {
         let payload = Data("protocol v4 replacement".utf8)
         let link = DisconnectingLink(payload: payload)
-        let client = TransferClient(link: link, firstRequestID: 0x2A00)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(
             payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
@@ -27,7 +27,7 @@ struct TransferClientTests {
     @Test("Store identity stops after the first LIST page")
     func storeIdentityDoesNotWalkTheCatalog() async throws {
         let link = PagedIdentityLink()
-        let client = TransferClient(link: link, firstRequestID: 0x4100)
+        let client = TransferClient(link: link)
 
         let storeID = try await client.storeID()
         let requests = await link.listRequests
@@ -40,7 +40,7 @@ struct TransferClientTests {
     func freshCreateDoesNotWalkTheCatalog() async throws {
         let payload = Data("new route".utf8)
         let link = FreshCreateLink(payload: payload)
-        let client = TransferClient(link: link, firstRequestID: 0x4200)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(payload, kind: .route, displayName: "New Route")
         let opcodes = await link.opcodes
@@ -55,7 +55,7 @@ struct TransferClientTests {
     func streamDropWithNoAnswerReconciles() async throws {
         let payload = Data("protocol v4 replacement".utf8)
         let link = AbandonedAnswerLink(payload: payload)
-        let client = TransferClient(link: link, firstRequestID: 0x5300)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(
             payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
@@ -76,7 +76,7 @@ struct TransferClientTests {
     func lateAnswerToAnAbandonedRequestIsSkipped() async throws {
         let payload = Data("protocol v4 replacement".utf8)
         let link = AbandonedAnswerLink(payload: payload, answersTheAbandonedRequest: true)
-        let client = TransferClient(link: link, firstRequestID: 0x6100)
+        let client = TransferClient(link: link)
 
         let result = try await client.put(
             payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
@@ -488,6 +488,10 @@ struct ArchiveGetTests {
             case .store: #expect(error == .storeChanged(previous: link.storeID, current: link.otherStoreID))
             }
         }
+        let trace = await link.opcodes
+        let expected: [Opcode] = fault == .checksum || fault == .revision ? [.list, .get, .cancel] : [.list, .get, .list]
+        #expect(trace == expected)
+        print("Pinned GET \(fault) request trace: \(trace)")
     }
 }
 
@@ -498,10 +502,11 @@ private actor ArchiveGetLink: TransferLink {
     nonisolated let otherStoreID = try! StoreID(bytes: Data(repeating: 0xB6, count: 16))
     nonisolated let payload = Data("verified ride bytes".utf8)
     let fault: Fault
+    var opcodes: [Opcode] = []
     var pending: ControlFrame?
     var getID: RequestID?
     var sentStream = false
-    var listCount = 0
+    var controlWaiter: CheckedContinuation<Data, Error>?
     var streamWaiter: CheckedContinuation<Data, Error>?
     var streamCancelled = false
 
@@ -509,24 +514,39 @@ private actor ArchiveGetLink: TransferLink {
 
     func sendControlRecord(_ record: Data) async throws {
         let frame = try ControlFrame(decoding: record, direction: .request)
+        opcodes.append(frame.opcode)
         pending = frame
         if frame.opcode == .get { getID = frame.requestID }
+        if let waiter = controlWaiter {
+            controlWaiter = nil
+            pending = nil
+            waiter.resume(returning: try response(frame))
+        }
     }
 
     func receiveControlRecord() async throws -> Data {
-        guard let frame = pending else { throw TransferClientError.unexpectedResponse }
+        try Task.checkCancellation()
+        guard let frame = pending else {
+            return try await withCheckedThrowingContinuation { controlWaiter = $0 }
+        }
         pending = nil
+        return try response(frame)
+    }
+
+    private func response(_ frame: ControlFrame) throws -> Data {
         var body = Data()
         switch frame.opcode {
         case .list:
-            listCount += 1
-            body.append(fault == .store && listCount == 3 ? otherStoreID.bytes : storeID.bytes)
+            body.append(fault == .store && sentStream ? otherStoreID.bytes : storeID.bytes)
             body.appendLE(UInt64(1))
         case .get:
             body.appendLE(UInt64(fault == .revision ? 4 : 3))
             body.appendLE(UInt64(payload.count))
             body.appendLE(CRC32.checksum(payload) ^ (fault == .checksum ? 1 : 0))
             body.appendLE(UInt32(0))
+        case .cancel:
+            // This fixture has already sent its terminal GET answer and all payload bytes.
+            body.append(CancelResult.noSuchTransfer.rawValue)
         default: throw TransferClientError.unexpectedResponse
         }
         return ControlFrame(opcode: frame.opcode, flags: ControlFrame.responseFlag,
@@ -548,6 +568,121 @@ private actor ArchiveGetLink: TransferLink {
         streamWaiter = nil
     }
     func sendStreamRecord(_ record: Data) async throws { throw TransferClientError.unexpectedStream }
-    func cancelControlReceive() async {}
+    func cancelControlReceive() async {
+        controlWaiter?.resume(throwing: CancellationError())
+        controlWaiter = nil
+    }
+    func restore() async throws { throw TransferLinkLost() }
+}
+
+@Suite("Receive cancellation barrier")
+struct ReceiveCancellationBarrierTests {
+    @Test("A retired receive's physical cleanup finishes before the next FIFO GET",
+          .timeLimit(.minutes(1)))
+    func drainsPhysicalCancellationBeforeReuse() async throws {
+        let link = CancellationDrainLink()
+        let client = TransferClient(link: link)
+        let first = Task { try await client.get(objectID: ObjectID(rawValue: 1)) }
+        await link.waitUntilStreamParks()
+        let second = Task { try await client.get(objectID: ObjectID(rawValue: 2)) }
+        first.cancel()
+        await link.waitUntilCleanupStarts()
+        // The receive has settled, but the physical cancellation is still held by the link.
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await link.getRequests == 1)
+        await link.finishCleanup()
+        await #expect(throws: CancellationError.self) { try await first.value }
+        let result = try await second.value
+        #expect(result.payload == link.payload)
+        #expect(await link.getRequests == 2)
+        #expect(await link.reusedBeforeCleanup == false)
+    }
+}
+
+private actor CancellationDrainLink: TransferLink {
+    nonisolated let maximumStreamPayload = 512
+    nonisolated let payload = Data([3, 4, 5])
+    private let store = Data(repeating: 0x71, count: 16)
+    private var controls: [Data] = []
+    private var controlWaiter: CheckedContinuation<Data, Error>?
+    private var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation?
+    private var streamParked = false
+    private var parkObserver: CheckedContinuation<Void, Never>?
+    private var cleanupStarted = false
+    private var cleanupObserver: CheckedContinuation<Void, Never>?
+    private var cleanupGate: CheckedContinuation<Void, Never>?
+    private var cleanupFinished = false
+    private var getID: RequestID?
+    var getRequests = 0
+    var reusedBeforeCleanup = false
+
+    func sendControlRecord(_ bytes: Data) async throws {
+        let frame = try ControlFrame(decoding: bytes, direction: .request)
+        var body = Data()
+        switch frame.opcode {
+        case .list: body.append(store); body.appendLE(UInt64(1))
+        case .get:
+            getRequests += 1
+            getID = frame.requestID
+            if getRequests > 1 { reusedBeforeCleanup = !cleanupFinished }
+            body.appendLE(UInt64(1))
+            body.appendLE(UInt64(payload.count))
+            body.appendLE(CRC32.checksum(payload))
+            body.appendLE(UInt32(0))
+        case .cancel: body.append(0)
+        default: throw TransferClientError.unexpectedResponse
+        }
+        let response = ControlFrame(opcode: frame.opcode, flags: ControlFrame.responseFlag,
+                                    requestID: frame.requestID, payload: body).encode()
+        if let waiter = controlWaiter {
+            controlWaiter = nil
+            waiter.resume(returning: response)
+        } else { controls.append(response) }
+    }
+
+    func receiveControlRecord() async throws -> Data {
+        if !controls.isEmpty { return controls.removeFirst() }
+        return try await withCheckedThrowingContinuation { controlWaiter = $0 }
+    }
+    func cancelControlReceive() async {
+        controlWaiter?.resume(throwing: CancellationError())
+        controlWaiter = nil
+    }
+
+    func receiveStreamRecord() async throws -> Data {
+        guard let getID else { throw TransferClientError.unexpectedStream }
+        if getRequests > 1 {
+            return try StreamRecord(requestID: getID, offset: 0, payload: payload).encode()
+        }
+        // AsyncThrowingStream settles its parked iterator on task cancellation. The physical
+        // channel cleanup below remains independent and must also belong to the barrier.
+        let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
+        streamContinuation = continuation
+        streamParked = true
+        parkObserver?.resume(); parkObserver = nil
+        var iterator = stream.makeAsyncIterator()
+        guard let record = try await iterator.next() else { throw CancellationError() }
+        return record
+    }
+    func cancelStreamReceive() async {
+        cleanupStarted = true
+        cleanupObserver?.resume(); cleanupObserver = nil
+        await withCheckedContinuation { cleanupGate = $0 }
+        cleanupFinished = true
+        streamContinuation?.finish()
+        streamContinuation = nil
+    }
+    func waitUntilStreamParks() async {
+        if streamParked { return }
+        await withCheckedContinuation { parkObserver = $0 }
+    }
+    func waitUntilCleanupStarts() async {
+        if cleanupStarted { return }
+        await withCheckedContinuation { cleanupObserver = $0 }
+    }
+    func finishCleanup() {
+        cleanupGate?.resume(); cleanupGate = nil
+    }
+    func sendStreamRecord(_ bytes: Data) async throws { throw TransferClientError.unexpectedStream }
     func restore() async throws { throw TransferLinkLost() }
 }

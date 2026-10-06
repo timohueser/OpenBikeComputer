@@ -1147,3 +1147,81 @@ fn aborting_the_cancel_waiter_keeps_its_real_primary_cancellation_intent() {
         assert!(s.device.is_quiet());
     }
 }
+
+#[test]
+fn idle_timeout_policy_is_opt_in_and_preserves_cancellation() {
+    let mut client = introduced();
+    client.set_timeout_ms(None).unwrap();
+    client.start(Request::Status(StatusRequest { id: ObjectId(5), revision: Revision(2) }), 3).unwrap();
+    let (token, _) = take_control(&mut client);
+    client.event(Event::Written(token), 4);
+    assert_eq!(client.next_deadline_ms(), None);
+    assert_eq!(client.set_timeout_ms(Some(10)), Err(Error::Busy));
+    client.event(Event::Tick, 1_000_000);
+    assert!(client.is_busy());
+    assert_eq!(client.next_action(), None);
+    client.event(Event::IoFailed(token), 1_000_001);
+    assert!(client.is_busy()); // The settled write token is stale.
+    client.event(Event::Cancel, 1_000_002);
+    assert_eq!(client.next_action(), Some(Action::ResetChannels));
+    assert_eq!(client.next_action(), Some(Action::Complete(Err(Error::Cancelled))));
+    client.set_timeout_ms(Some(10)).unwrap();
+    client.start(Request::Status(StatusRequest { id: ObjectId(5), revision: Revision(2) }), 1_000_003).unwrap();
+    take_control(&mut client);
+    assert_eq!(client.next_deadline_ms(), Some(1_000_013));
+    client.event(Event::Tick, 1_000_013);
+    assert_eq!(client.next_action(), Some(Action::ResetChannels));
+    assert_eq!(client.next_action(), Some(Action::Complete(Err(Error::Timeout))));
+}
+
+#[test]
+fn receive_expectations_follow_settled_writes_and_correlated_answers() {
+    let disk = formatted_card(TOTAL_BLOCKS, 81);
+    let mut session = Session::new(&disk);
+    let query = session.client.query(Request::List(ListRequest { kind: None, cursor: None }), None, 0).unwrap();
+    assert!(!session.client.awaiting_control());
+    assert!(!session.client.awaiting_stream());
+    let Action::Send { token, record, channel: Channel::Control } = session.client.next_action().unwrap() else {
+        panic!("query announces on control");
+    };
+    let Reaction::Send { channel: Channel::Control, bytes } = session.device.on_control(&record) else {
+        panic!("device answers the page");
+    };
+    session.client.event(Event::Written(token), 1);
+    assert!(session.client.awaiting_control());
+    let mut late = bytes.clone();
+    late[12..16].copy_from_slice(&999_u32.to_le_bytes());
+    session.client.event(Event::Control(&late), 2);
+    assert!(session.client.awaiting_control());
+    session.client.event(Event::Control(&bytes), 3);
+    assert!(!session.client.awaiting_control());
+    assert_eq!(session.client.next_query_result().unwrap().0, query);
+
+    let entry = session.device.seed(ObjectKind::Route as u16, &[8, 9, 10], "Ridge");
+    session
+        .client
+        .start(Request::Get(GetRequest { id: ObjectId(entry.id.0), revision: Revision(entry.revision.0) }), 4)
+        .unwrap();
+    assert!(matches!(session.client.next_action(), Some(Action::ResetSink)));
+    let Action::Send { token, record, .. } = session.client.next_action().unwrap() else { panic!("GET announce") };
+    assert!(!session.client.awaiting_control());
+    assert!(!session.client.awaiting_stream());
+    let stream = session.device.on_control(&record);
+    assert!(matches!(stream, Reaction::Send { channel: Channel::Stream, .. }));
+    let answer = session.device.poll();
+    assert!(matches!(answer, Reaction::Send { channel: Channel::Control, .. }));
+    session.client.event(Event::Written(token), 5);
+    assert!(session.client.awaiting_control());
+    assert!(session.client.awaiting_stream());
+    // Independent channels may deliver the final control answer before the queued stream.
+    session.deliver(answer);
+    assert!(!session.client.awaiting_control());
+    assert!(session.client.awaiting_stream());
+    session.deliver(stream);
+    assert!(!session.client.awaiting_stream());
+    let Action::WriteSink { token, offset, bytes } = session.client.next_action().unwrap() else { panic!("GET sink") };
+    session.client.event(Event::SinkWritten { token, offset, len: bytes.len() }, 6);
+    assert!(!session.client.awaiting_control());
+    assert!(!session.client.awaiting_stream());
+    assert!((0..4).any(|_| matches!(session.client.next_action(), Some(Action::Complete(_)))));
+}

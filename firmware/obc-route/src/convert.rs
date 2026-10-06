@@ -157,6 +157,69 @@ pub fn gpx_to_obcr_attributed(
     em.finish(sink, name, &mut wps)
 }
 
+/// Encode authored geometry with waypoint distances measured on the raw line. The emitter
+/// remaps those distances through each retained and densified segment. Unsupported capacities
+/// return an error; no waypoint is dropped. Discard the sink after any error.
+#[cfg(feature = "alloc")]
+pub fn points_to_obcr(
+    points: &[crate::RoutePoint],
+    waypoints: &[(crate::Waypoint, f64)],
+    name: &str,
+    bike: BikeType,
+    sink: &mut dyn ByteSink,
+) -> Result<RouteStats, Error> {
+    if waypoints.len() > u16::MAX as usize {
+        return Err(Error::TooLarge);
+    }
+    let valid_position =
+        |lon, lat| (-180_000_000..=180_000_000).contains(&lon) && (-90_000_000..=90_000_000).contains(&lat);
+    if points.iter().any(|p| !valid_position(p.lon, p.lat) || p.surface > 7)
+        || waypoints
+            .iter()
+            .any(|(w, distance)| !valid_position(w.lon, w.lat) || !distance.is_finite() || *distance < 0.0)
+    {
+        return Err(Error::BadOffset);
+    }
+    let mut placements = alloc::vec::Vec::with_capacity(waypoints.len());
+    let mut remap = DistanceRemap { positions: alloc::vec::Vec::with_capacity(waypoints.len()), previous_raw: 0 };
+    for (waypoint, distance) in waypoints {
+        placements.push(WpPlace::from_stored(waypoint, 0));
+        remap.positions.push((*distance, None));
+    }
+    let mut emitter = ObcrEmitter::new(sink)?;
+    emitter.set_bike_type(bike);
+    if !waypoints.is_empty() {
+        emitter.enc.remap = Some(alloc::boxed::Box::new(remap));
+    }
+    for point in points {
+        emitter.set_surface(point.surface);
+        emitter.set_elevation_incomplete(point.elevation_incomplete);
+        emitter.push(sink, point.lon, point.lat, point.ele)?;
+    }
+    emitter.finish(sink, name, &mut placements)
+}
+
+#[cfg(feature = "alloc")]
+struct DistanceRemap {
+    positions: alloc::vec::Vec<(f64, Option<u32>)>,
+    previous_raw: u32,
+}
+
+#[cfg(feature = "alloc")]
+impl DistanceRemap {
+    fn emit(&mut self, raw: u32, before: f64, after: f64) {
+        let span = f64::from(raw) - f64::from(self.previous_raw);
+        for (distance, mapped) in self.positions.iter_mut() {
+            if mapped.is_none() && *distance <= f64::from(raw) {
+                let fraction =
+                    if span > 0.0 { ((*distance - f64::from(self.previous_raw)) / span).clamp(0.0, 1.0) } else { 0.0 };
+                *mapped = Some((before + (after - before) * fraction) as u32);
+            }
+        }
+        self.previous_raw = raw;
+    }
+}
+
 /// The streaming OBCR writer shared by [`gpx_to_obcr`] and the nav router's emit
 /// ([`crate::nav`]). It owns every format and geometry invariant, so the two OBCR producers stay
 /// byte-compatible by construction.
@@ -360,7 +423,7 @@ impl ObcrEmitter {
         &mut self,
         sink: &mut dyn ByteSink,
         name: &str,
-        wps: &mut Vec<WpPlace, MAX_WAYPOINTS>,
+        wps: &mut [WpPlace],
     ) -> Result<RouteStats, Error> {
         // The final point is always kept.
         self.flush_pending(sink)?;
@@ -369,6 +432,12 @@ impl ObcrEmitter {
         }
 
         self.enc.finish(sink)?;
+        #[cfg(feature = "alloc")]
+        if let Some(remap) = &self.enc.remap {
+            for (waypoint, (_, mapped)) in wps.iter_mut().zip(remap.positions.iter()) {
+                waypoint.along_m = mapped.unwrap_or(self.enc.distance as u32);
+            }
+        }
         let index_offset = self.enc.write_index(sink)?;
         let wpt_offset =
             write_waypoints(sink, wps, index_offset + self.enc.index.len() as u32 * CHUNK_META_LEN as u32)?;
@@ -465,11 +534,14 @@ fn signed_offset_m(d2: f32, cross: f32) -> i16 {
 /// Sort the placed waypoints by position along the route and write the fixed-record table at
 /// `offset`, right after the chunk index. Returns the table's file offset for the header
 /// extension, or 0 when there are no waypoints.
-fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
+fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut [WpPlace], offset: u32) -> Result<u32, Error> {
     if wps.is_empty() {
         return Ok(0);
     }
-    // Insertion sort by `along_m`: stable, bounded by MAX_WAYPOINTS, and needs no allocator.
+    // Stable order keeps waypoints at the same distance in their input order.
+    #[cfg(feature = "alloc")]
+    wps.sort_by_key(|w| w.along_m);
+    #[cfg(not(feature = "alloc"))]
     for i in 1..wps.len() {
         let mut j = i;
         while j > 0 && wps[j - 1].along_m > wps[j].along_m {
@@ -550,6 +622,8 @@ fn lerp(a: Cand, b: Cand, t: f64) -> Cand {
 /// Accumulates kept points into seam-sharing chunks, streams each finished chunk's body out, and
 /// collects its `ChunkMeta` in a bounded resident index.
 struct Encoder {
+    #[cfg(feature = "alloc")]
+    remap: Option<alloc::boxed::Box<DistanceRemap>>,
     index: Vec<ChunkMeta, MAX_ROUTE_CHUNKS>,
     cur: Vec<(i32, i32, i16, u8), MAX_POINTS_PER_CHUNK>,
     data_pos: u32,
@@ -566,6 +640,8 @@ impl Encoder {
     unsafe fn init_in_place(slot: *mut Self) {
         use core::ptr::addr_of_mut;
         unsafe {
+            #[cfg(feature = "alloc")]
+            addr_of_mut!((*slot).remap).write(None);
             addr_of_mut!((*slot).index).write(Vec::new());
             addr_of_mut!((*slot).cur).write(Vec::new());
             addr_of_mut!((*slot).data_pos).write(HEADER_FULL_LEN as u32);
@@ -577,6 +653,8 @@ impl Encoder {
             addr_of_mut!((*slot).min_ele).write(i16::MAX);
             addr_of_mut!((*slot).max_ele).write(i16::MIN);
             let Self {
+                #[cfg(feature = "alloc")]
+                    remap: _,
                 index: _,
                 cur: _,
                 data_pos: _,
@@ -592,6 +670,8 @@ impl Encoder {
     }
     fn new(data_offset: u32) -> Self {
         Encoder {
+            #[cfg(feature = "alloc")]
+            remap: None,
             index: Vec::new(),
             cur: Vec::new(),
             data_pos: data_offset,
@@ -606,12 +686,18 @@ impl Encoder {
     }
 
     fn emit(&mut self, sink: &mut dyn ByteSink, c: Cand) -> Result<(), Error> {
+        #[cfg(feature = "alloc")]
+        let before_distance = self.distance;
         let before = self.distance as u32;
         let first = self.previous.is_none();
         if let Some(previous) = self.previous {
             self.distance += ground_dist_m(previous, (c.lon, c.lat)) as f64;
         }
         self.previous = Some((c.lon, c.lat));
+        #[cfg(feature = "alloc")]
+        if let Some(remap) = &mut self.remap {
+            remap.emit(c.cum_d, before_distance, self.distance);
+        }
         if c.surface & 8 != 0 {
             self.band.pause();
         }
