@@ -3,6 +3,7 @@
 from collections import OrderedDict
 from contextlib import closing
 import argparse
+import json
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -68,7 +69,7 @@ def step(request):
 
     kind = request["options"]["kind"]
     output = Path(request["output"])
-    layer, = request["layers"].values()
+    layer = request["layers"][f"planner/{kind}"]
     if len(layer) != 1:
         raise ValueError("A map grid reads one archive")
     name, source = next(iter(layer.items()))
@@ -98,6 +99,11 @@ def step(request):
                  for path in sorted((work / "tiles" / kind).glob("*.pmtiles"))}
         metadata = {**metadata, "tilejson": "3.0.0", "minzoom": header["min_zoom"],
                     "maxzoom": header["max_zoom"], "bounds": request["options"]["bounds"]}
+        if kind == "overlays":
+            routing = json.loads(Path(request["layers"]["planner/routing/grid"]["index.json"]).read_bytes())
+            if metadata.get("routing_package") != routing["graph"]["source"]:
+                raise ValueError("Overlay tiles use another routing package")
+            metadata["routing_package"] = routing["files"]["routing/blocks.json"]["sha256"]
         tilejson = work / f"{kind}.json"
         tilejson.write_bytes(runtime.encoded(metadata))
         files[f"maps/{kind}.json"] = offline.pack_file(tilejson, objects)
