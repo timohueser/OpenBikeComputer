@@ -28,6 +28,16 @@ fn selected_profile_keeps_applicable_package_and_build_overrides() {
     {
         assert!(profile_projection(unsupported, Profile::Dev, &workspace_only).is_err());
     }
+    let hashing = Packages { names: ["sha2".into()].into(), non_workspace: true };
+    let optimized = "[profile.dev.package.sha2]\nopt-level=3\n";
+    assert_ne!(
+        profile_projection(optimized, Profile::Dev, &hashing).unwrap(),
+        profile_projection("", Profile::Dev, &hashing).unwrap()
+    );
+    assert_eq!(
+        profile_projection(optimized, Profile::Release, &hashing).unwrap(),
+        profile_projection("", Profile::Release, &hashing).unwrap()
+    );
 }
 
 #[test]

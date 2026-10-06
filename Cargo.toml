@@ -125,3 +125,7 @@ zip = { version = "8", default-features = false }
 opt-level = 2
 [profile.dev.package.obc-storage]
 opt-level = 2
+
+# Tool identities hash large compiler and sysroot files.
+[profile.dev.package.sha2]
+opt-level = 3
