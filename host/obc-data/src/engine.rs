@@ -4,7 +4,7 @@
 //! receipts, plans, runs and states.
 
 pub mod changes;
-mod code;
+pub(crate) mod code;
 pub mod plan;
 mod process;
 pub mod release;
@@ -106,12 +106,18 @@ pub struct Code {
     pub paths: Vec<String>,
     /// Workspace crates and their resolved normal and build dependencies.
     pub crates: Vec<String>,
+    /// Resolve Rust dependencies for this target; None selects the producer host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// The content settings of these sources. Freshness and access controls are excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
     /// The selected Python runtime and its locked package group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python: Option<Python>,
+    /// A locked Python group packaged for another runtime, without selecting its interpreter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_packages: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -633,8 +639,10 @@ fn build_step(
     step: &Step,
     mut receipt: Receipt,
     mut request: Request,
+    checks: &std::sync::Mutex<code::Context>,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
+    check_code(checks, root, step, &receipt.code)?;
     if let Some(mut stored) = reusable(store, &receipt.key)? {
         stored.inputs = receipt.inputs.clone();
         return Ok(Built { receipt: stored, reused: true });
@@ -643,7 +651,7 @@ fn build_step(
     request.output = work.join("output");
     request.metrics = work.join("metrics.json");
     remove_dir(&work)?;
-    let result = execute(store, root, step, &request, &mut receipt);
+    let result = execute(store, root, step, &request, &mut receipt, checks);
     let removed = remove_dir(&work);
     result?;
     removed?;
@@ -652,7 +660,14 @@ fn build_step(
 }
 
 /// Run the step, move its files into the objects, and record them, its metrics and its cost.
-fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
+fn execute(
+    store: &Store,
+    root: &Path,
+    step: &Step,
+    request: &Request,
+    receipt: &mut Receipt,
+    checks: &std::sync::Mutex<code::Context>,
+) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
@@ -660,6 +675,7 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
             process::run(root, argv, request, step.code.python.as_ref().map(|_| (&step.code, receipt.code.as_str())))
         }
     }?;
+    check_code(checks, root, step, &receipt.code)?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the metrics are not a JSON object: {e}"))?,
@@ -672,6 +688,20 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
     receipt.wall_ms = usage.wall_ms;
     receipt.cpu_ms = usage.cpu_ms;
     receipt.peak_rss_bytes = usage.peak_rss_bytes;
+    Ok(())
+}
+
+fn check_code(
+    checks: &std::sync::Mutex<code::Context>,
+    root: &Path,
+    step: &Step,
+    expected: &str,
+) -> Result<(), String> {
+    let mut context = checks.lock().map_err(|_| "code checking failed")?;
+    context.refresh_python();
+    if code::hash(&context.files(root, &step.code)?) != expected {
+        return Err(format!("the code of {} changed; plan again", step.name));
+    }
     Ok(())
 }
 
@@ -812,7 +842,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     /// A git repository with a workspace of `crates`; each `(name, dependencies)`.
-    fn repository(root: &Path, crates: &[(&str, &str)]) {
+    pub(crate) fn repository(root: &Path, crates: &[(&str, &str)]) {
         let members: Vec<String> = crates.iter().map(|(name, _)| format!("{name:?}")).collect();
         write(
             &root.join("Cargo.toml"),
@@ -1161,6 +1191,35 @@ mod x;
     }
 
     #[test]
+    fn rust_content_identity_follows_explicit_targets_for_normal_and_build_dependencies() {
+        let scratch = Scratch::new("engine-target-code");
+        let app = "[target.'cfg(target_os = \"linux\")'.dependencies]\nlinux-normal = { path = \"../linux-normal\" }\n[target.'cfg(target_os = \"linux\")'.build-dependencies]\nlinux-build = { path = \"../linux-build\" }\n[target.'cfg(target_os = \"macos\")'.dependencies]\nmac-normal = { path = \"../mac-normal\" }\n[target.'cfg(target_os = \"macos\")'.build-dependencies]\nmac-build = { path = \"../mac-build\" }\n";
+        repository(
+            &scratch.0,
+            &[("app", app), ("linux-normal", ""), ("linux-build", ""), ("mac-normal", ""), ("mac-build", "")],
+        );
+        write(&scratch.0.join("app/build.rs"), "fn main() {}\n");
+        let mut context = code::Context::default();
+        let selected =
+            |target: &str| Code { crates: vec!["app".into()], target: Some(target.into()), ..Default::default() };
+        let linux = context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap();
+        let mac = context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap();
+        for kind in ["normal", "build"] {
+            assert!(
+                linux.contains_key(&format!("linux-{kind}/src/lib.rs")),
+                "Linux {kind} is selected from any probe host"
+            );
+            assert!(!linux.contains_key(&format!("mac-{kind}/src/lib.rs")));
+            assert!(mac.contains_key(&format!("mac-{kind}/src/lib.rs")));
+            assert!(!mac.contains_key(&format!("linux-{kind}/src/lib.rs")));
+        }
+        assert_ne!(linux["rust/target"], mac["rust/target"]);
+        write(&scratch.0.join("linux-build/src/lib.rs"), "pub fn changed() {}\n");
+        assert_ne!(context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap(), linux);
+        assert_eq!(context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap(), mac);
+    }
+
+    #[test]
     fn the_engine_is_no_code_of_a_step() {
         let scratch = Scratch::new("engine-not-code");
         repository(
@@ -1168,9 +1227,39 @@ mod x;
             &[("steps", "[dependencies]\nobc-data = { path = \"../obc-data\" }\n"), ("obc-data", "")],
         );
         let code = Code { paths: Vec::new(), crates: vec!["steps".into()], ..Default::default() };
+        write(&scratch.0.join("data/sources.toml"), "source = []\n");
         let before = code_hash(&scratch.0, &code).unwrap();
+        let compiled = code::compiled(&scratch.0, &code.crates).unwrap();
         write(&scratch.0.join("obc-data/src/lib.rs"), "pub fn select() {}\n");
         assert_eq!(code_hash(&scratch.0, &code).unwrap(), before);
+        assert_ne!(code::compiled(&scratch.0, &code.crates).unwrap(), compiled, "the worker also binds its engine");
+    }
+
+    #[test]
+    fn a_persistent_code_change_during_a_rust_or_command_step_leaves_no_output_object_or_receipt() {
+        fn edit(request: &Request) -> Result<(), String> {
+            fs::write(request.options["code"].as_str().unwrap(), "// changed during execution\n")
+                .map_err(|e| e.to_string())?;
+            fs::write(request.output.join("result.txt"), b"unaccepted output").map_err(|e| e.to_string())
+        }
+        for rust in [true, false] {
+            let fixture = fixture(if rust { "rust-drift" } else { "command-drift" });
+            let code = if rust {
+                fixture.root().join("steps/src/lib.rs")
+            } else {
+                let code = fixture.root().join("edit.py");
+                write(&code, "import json, pathlib, sys\nr=json.load(sys.stdin)\npathlib.Path(r['options']['code']).write_text('# changed during execution\\n')\n(pathlib.Path(r['output'])/'result.txt').write_bytes(b'unaccepted output')\n");
+                code
+            };
+            let identity = if rust { steps_crate() } else { Code { paths: vec!["edit.py".into()], ..Code::default() } };
+            let run = if rust { Run::Rust(edit) } else { Run::Command(vec!["python3".into(), "edit.py".into()]) };
+            let mut step = step("test/drift", Vec::new(), identity, "result.txt", run);
+            step.options = json!({"code":code});
+            let error = fixture.build(&[step]).err().unwrap();
+            assert!(error.contains("code of test/drift changed"), "{error}");
+            assert!(!fixture.store.root().join("layers").exists());
+            assert!(!fixture.store.object(&sha256_hex(b"unaccepted output")).exists());
+        }
     }
 
     #[test]

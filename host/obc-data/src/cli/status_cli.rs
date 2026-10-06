@@ -128,6 +128,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     let copies = crate::input_copy::Restore { remote: &remote, live: &live };
     loaded.env.retained = crate::input_copy::retained(&live, &store)?;
     let inventory = super::freshness::discover(
+        root,
         products,
         &loaded.env,
         &loaded.regions,
@@ -255,7 +256,7 @@ fn layer_states(
     );
     let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
     for product in products {
-        let steps = product_steps(*product, env, regions, store, &mut fetch);
+        let steps = product_steps(root, *product, env, regions, store, &mut fetch);
         refused.extend(env.refused.borrow().iter().cloned());
         match steps {
             Ok(Ok(steps)) => {
@@ -389,7 +390,13 @@ mod tests {
             "listed"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(Vec::new().into())
         }
     }
@@ -399,7 +406,13 @@ mod tests {
             "test"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             let wanted = Wanted { source: "index".into(), version: None, params: Vec::new() };
             Err(Unplanned::NeedsFetch(vec![wanted]))
         }
@@ -413,7 +426,13 @@ mod tests {
             "reading"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             let code = StepCode { paths: Vec::new(), crates: Vec::new(), ..Default::default() };
             let run = Run::Command(vec!["true".into()]);
             Ok(vec![step("reading/one", vec![Input::layer("test/one")], code, "out", run)].into())
@@ -426,7 +445,13 @@ mod tests {
         fn name(&self) -> &'static str {
             "test"
         }
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, crate::product::Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, crate::product::Unplanned> {
             Err(crate::product::Unplanned::NeedsFetch(vec![Wanted {
                 source: "geofabrik-extracts".into(),
                 version: None,
@@ -454,7 +479,13 @@ mod tests {
         fn name(&self) -> &'static str {
             "test"
         }
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, crate::product::Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, crate::product::Unplanned> {
             let code = StepCode { paths: Vec::new(), crates: Vec::new(), ..Default::default() };
             let run = Run::Command(vec!["true".into()]);
             let mut listed = crate::product::Steps {

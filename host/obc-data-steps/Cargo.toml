@@ -3,6 +3,7 @@ name = "obc-data-steps"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "obc-data"
 # It links the GPL step code of the products into the MIT library obc-data.
 license = "GPL-3.0-only"
 description = "The `obc data` binary: the commands of obc-data with the steps of each product"
@@ -10,6 +11,10 @@ description = "The `obc data` binary: the commands of obc-data with the steps of
 [[bin]]
 name = "obc-data"
 path = "src/main.rs"
+
+[[bin]]
+name = "obc-data-worker"
+path = "src/bin/obc-data-worker.rs"
 
 [features]
 external-fixtures = []

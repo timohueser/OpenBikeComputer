@@ -88,7 +88,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, env: &Env| {
-        let planned = Planner.steps(env, &regions, &store).unwrap();
+        let planned = Planner.steps(&root, env, &regions, &store).unwrap();
         assert_eq!(planned.blocked.len(), 1);
         assert_eq!(planned.blocked[0].layer, "planner/runtime");
         let mut steps = planned.steps;

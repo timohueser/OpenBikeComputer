@@ -129,7 +129,13 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
     }
 }
 
+/// Report a launcher or worker startup failure with the command's existing error format.
+pub fn failed(message: String) -> ExitCode {
+    Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
+}
+
 fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
+    crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let command = match cli.command {
@@ -544,6 +550,7 @@ fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Re
         loaded.env.retained = crate::input_copy::retained(live, &store)?;
         let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
         Some(freshness::discover(
+            root,
             products,
             &loaded.env,
             &loaded.regions,

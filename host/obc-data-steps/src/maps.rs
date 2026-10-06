@@ -60,7 +60,7 @@ impl Product for Maps {
         catalog::verify(previous, release, store)
     }
 
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+    fn steps(&self, _root: &std::path::Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
@@ -875,7 +875,7 @@ pub(crate) mod tests {
     /// Record a fetch without files of each national model that the step list asks for, as of a
     /// box where the model has no data.
     pub(crate) fn without_models(store: &Store, env: &Env, regions: &Regions) {
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, regions, store) else { return };
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), env, regions, store) else { return };
         for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
             fetched(store, &fetch.source, "1", &fetch.params, &[]);
         }
@@ -918,7 +918,7 @@ pub(crate) mod tests {
         without_models(&store, &env, &regions);
         let steps = |version: &str| {
             let (env, regions) = grimsel(version);
-            let mut steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+            let mut steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
             steps.iter_mut().for_each(|step| step.run = Run::Rust(fake));
             steps
         };
@@ -944,13 +944,15 @@ pub(crate) mod tests {
         let temp = temp("tile-list");
         let store = Store::at(temp.0.join("store"));
         let (env, regions) = grimsel("1");
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no tile list") };
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), &env, &regions, &store) else {
+            panic!("no tile list")
+        };
         assert_eq!(wanted, [Wanted { source: TILE_LIST.into(), version: Some("1".into()), params: Vec::new() }]);
 
         // As if N47_00_E007 were sea.
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
         without_models(&store, &env, &regions);
-        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+        let steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
         let terrain: Vec<&Step> = terrain_steps(&steps).collect();
         assert_eq!(tiles(terrain[0]), ["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
         // The squares of the eastern cells reach no tile west of 8°.
@@ -962,12 +964,14 @@ pub(crate) mod tests {
         let temp = temp("bands");
         let store = Store::at(temp.0.join("store"));
         let (env, regions) = freiburg(&store);
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no extract") };
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), &env, &regions, &store) else {
+            panic!("no extract")
+        };
         assert_eq!(wanted.iter().map(|fetch| fetch.source.as_str()).collect::<Vec<_>>(), [EXTRACTS, LAND]);
         with_osm(&store);
         without_models(&store, &env, &regions);
         with_captures(&store, "1");
-        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+        let steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
@@ -1001,7 +1005,7 @@ pub(crate) mod tests {
         for source in CAPTURES {
             fetched(&store, source, "1", &params, &[("#peaks=0/recipe.json".into(), "1".into())]);
         }
-        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert_eq!(
             listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
             ["maps/landmark-content", "maps/catalog", "maps/landmarks/0037-0032"]
@@ -1017,7 +1021,7 @@ pub(crate) mod tests {
             params: capture_params("landmarks", "europe/test", "osm", FREIBURG),
         };
         env.fetch_failures.push((failed, "service unavailable".into()));
-        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|b| b.reason.contains("service unavailable")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
     }
@@ -1033,7 +1037,7 @@ pub(crate) mod tests {
         let mut params = capture_params("landmarks", "europe/test", "osm", FREIBURG);
         params.iter_mut().find(|(name, _)| name == "code").unwrap().1 = "old".into();
         env.live.insert(("wikidata".into(), params), ["1".into()].into());
-        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed
             .blocked
             .iter()
@@ -1050,13 +1054,13 @@ pub(crate) mod tests {
             "wikidata".into(),
             obc_data::store::sorted(&capture_params("landmarks", "europe/test", "osm", FREIBURG)),
         ));
-        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().all(|b| b.reason.contains("capture stale")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
         assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"), "fresh collection stays available");
         env.stale = ["wikipedia".into(), "commons".into()].into();
         env.moves.insert("wikidata".into(), None);
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), &env, &regions, &store) else {
             panic!("an explicit move overrides stale sibling capture blocking")
         };
         assert_eq!(wanted.len(), 2);
@@ -1066,7 +1070,7 @@ pub(crate) mod tests {
         );
         env.stale.clear();
         env.moves = CAPTURES.map(|source| (source.into(), None)).into();
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), &env, &regions, &store) else {
             panic!("an explicit move prepares captures")
         };
         assert_eq!(wanted.len(), 6);
@@ -1081,7 +1085,9 @@ pub(crate) mod tests {
         with_osm(&store);
         without_models(&store, &env, &regions);
         env.moves.insert("wikidata".into(), None);
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no capture") };
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), &env, &regions, &store) else {
+            panic!("no capture")
+        };
         let fetch = |collection, source: &str| Wanted {
             source: source.into(),
             version: None,
@@ -1092,7 +1098,7 @@ pub(crate) mod tests {
         assert_eq!(wanted, captures.collect::<Vec<_>>());
         with_captures(&store, "1");
         env.moves.clear();
-        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+        let steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
@@ -1128,7 +1134,7 @@ pub(crate) mod tests {
         }
         let clean = |day: &str| std::fs::remove_file(store.root().join(format!("snapshots/{EXTRACTS}/{day}.json")));
         clean("0").unwrap();
-        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+        let steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
         let extract = |name: &str| {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = step.inputs.iter().find_map(|input| match input {
@@ -1144,14 +1150,16 @@ pub(crate) mod tests {
 
         let moved = capture_params("landmarks", "europe/test", "osm 2", FREIBURG);
         let asks_for_a_new_capture = |env: &Env| {
-            let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, &regions, &store) else { panic!("a capture") };
+            let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), env, &regions, &store) else {
+                panic!("a capture")
+            };
             assert!(wanted.iter().any(|fetch| fetch.source == "wikidata" && fetch.params == moved), "{wanted:?}");
         };
         env.moves.insert("wikidata".into(), None);
         asks_for_a_new_capture(&env);
         env.moves.clear();
         clean("1").unwrap();
-        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
         // The live copy metadata identifies the held input without its local request or bytes.
@@ -1229,7 +1237,7 @@ pub(crate) mod tests {
         with_osm(&store);
         with_captures(&store, "1");
         without_models(&store, &env, &regions);
-        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+        let steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
         let by_name: BTreeMap<&str, &Step> = steps.iter().map(|step| (step.name.as_str(), step)).collect();
         let reads = |step: &Step| {
             let (mut read, mut pending) = (BTreeSet::new(), vec![step]);
@@ -1264,7 +1272,9 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E008"]);
         let (env, regions) = grimsel("1");
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no model") };
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&root(), &env, &regions, &store) else {
+            panic!("no model")
+        };
         // Switzerland, and France, whose box reaches 9.6° east: each fetched with the box of a leaf.
         let fetches: BTreeSet<(&str, &str)> =
             wanted.iter().map(|fetch| (fetch.source.as_str(), fetch.params[0].1.as_str())).collect();
@@ -1277,7 +1287,7 @@ pub(crate) mod tests {
         let swiss = wanted.iter().filter(|fetch| fetch.source == "dtm-ch");
         swiss.for_each(|fetch| fetched(&store, &fetch.source, "1", &fetch.params, &dem));
         without_models(&store, &env, &regions);
-        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
+        let steps = Maps.steps(&root(), &env, &regions, &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "maps/reference/0037-0033").unwrap();
         let models = reference.options["models"].as_array().unwrap();
         let read: Vec<(&str, &str)> = models
@@ -1304,7 +1314,7 @@ pub(crate) mod tests {
         let (env, _) = grimsel("1");
         let env = Env { region: "jutland".into(), ..env };
         let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
-        match Maps.steps(&env, &regions, &store) {
+        match Maps.steps(&root(), &env, &regions, &store) {
             Ok(listed) => {
                 assert!(!token.present());
                 assert_eq!(

@@ -164,6 +164,7 @@ fn apply_live(
 
     let scratch = Scratch::new()?;
     let (built, switches, uploaded) = stage(root, store, http, (remote, bucket), products, plan, &scratch)?;
+    crate::worker::check(root)?;
     let mut switched = Vec::new();
     for switch in switches {
         let key = format!("{}/catalog.json", switch.prefix);
@@ -234,7 +235,9 @@ fn stage<'a>(
     let Applying { live, next } = applying.expect("a build of live gives what an apply changes");
     let switches = switches(root, products, store, &live, &next)?;
     let files = files(store, scratch, &next)?;
-    let uploaded = upload(bucket, &next.list(remote).map_err(r2_failed)?, &files)?;
+    let listed = next.list(remote).map_err(r2_failed)?;
+    crate::worker::check(root)?;
+    let uploaded = upload(bucket, &listed, &files)?;
     Ok((built, switches, uploaded))
 }
 
@@ -660,8 +663,14 @@ mod tests {
         fn name(&self) -> &'static str {
             "test"
         }
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Versioned.steps(env, regions, store)
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
         }
         fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
             let mut files = Versioned.named(release)?;
@@ -728,8 +737,14 @@ mod tests {
         fn name(&self) -> &'static str {
             "test"
         }
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Versioned.steps(env, regions, store)
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
         }
         fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
             Versioned.named(release)
@@ -809,8 +824,14 @@ mod tests {
             "test"
         }
 
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Versioned.steps(env, regions, store)
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
         }
 
         fn pointer(&self) -> Option<PointerFn> {
@@ -855,7 +876,13 @@ mod tests {
             Versioned.pointer()
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(vec![crate::engine::tests::packaged(self.0.clone())].into())
         }
     }
@@ -922,7 +949,13 @@ mod tests {
             "other"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(Vec::new().into())
         }
     }

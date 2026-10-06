@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 mod python;
 mod rust;
@@ -18,11 +19,18 @@ pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, Strin
 
 #[derive(Default)]
 pub(super) struct Context {
-    rust: Option<rust::Metadata>,
+    rust: HashMap<Option<String>, Arc<rust::Metadata>>,
     python: HashMap<Option<String>, python::Identity>,
+    packages: HashMap<String, BTreeMap<String, String>>,
+    include_engine: bool,
 }
 
 impl Context {
+    pub fn refresh_python(&mut self) {
+        self.python.clear();
+        self.packages.clear();
+    }
+
     pub fn files(&mut self, root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
         let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
         let mut pathspecs = Vec::new();
@@ -35,10 +43,10 @@ impl Context {
         let (crates, dependencies) = if code.crates.is_empty() {
             (BTreeSet::new(), BTreeMap::new())
         } else {
-            if self.rust.is_none() {
-                self.rust = Some(rust::Metadata::load(&root)?);
+            if self.rust.get(&code.target).map(|metadata| metadata.unchanged(&root)).transpose()? != Some(true) {
+                self.rust.insert(code.target.clone(), Arc::new(rust::Metadata::load(&root, code.target.as_deref())?));
             }
-            self.rust.as_ref().unwrap().selected(&root, &code.crates)?
+            self.rust[&code.target].selected(&root, &code.crates, self.include_engine)?
         };
         for dir in &crates {
             let dir =
@@ -75,11 +83,20 @@ impl Context {
             hashes.insert(relative.replace('\\', "/"), hash);
         }
         hashes.extend(dependencies);
+        if let Some(target) = &code.target {
+            hashes.insert("rust/target".into(), crate::store::sha256_hex(target.as_bytes()));
+        }
         if let Some(runtime) = &code.python {
             if !self.python.contains_key(&runtime.group) {
                 self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
             }
             hashes.extend(self.python[&runtime.group].hashes.clone());
+        }
+        if let Some(group) = &code.python_packages {
+            if !self.packages.contains_key(group) {
+                self.packages.insert(group.clone(), python::packages(&root, Some(group))?);
+            }
+            hashes.extend(self.packages[group].clone());
         }
         if !code.sources.is_empty() {
             let registry = crate::sources::Registry::load(&root)?;
@@ -89,12 +106,10 @@ impl Context {
                     .iter()
                     .find(|source| &source.id == id)
                     .ok_or_else(|| format!("code names no source `{id}`"))?;
-                let mut content = serde_json::to_value(source).map_err(|error| error.to_string())?;
-                for field in ["refresh", "credential", "r2_copy", "redistribute", "hosts"] {
-                    content.as_object_mut().unwrap().remove(field);
-                }
-                let bytes = serde_json::to_vec(&super::sorted(content)).map_err(|error| error.to_string())?;
-                hashes.insert(format!("data/sources.toml#{id}"), crate::store::sha256_hex(&bytes));
+                hashes.insert(
+                    format!("data/sources.toml#{id}"),
+                    source_hash(source, &["refresh", "credential", "r2_copy", "redistribute", "hosts"])?,
+                );
             }
         }
         Ok(hashes)
@@ -116,6 +131,38 @@ pub(super) fn python_command(root: &Path, code: &Code, expected: &str, command: 
 
 pub fn hash(files: &BTreeMap<String, String>) -> String {
     super::digest(files.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str())))
+}
+
+/// The compiled producer closure, including the engine that derives and applies its plans.
+pub fn compiled(root: &Path, crates: &[String]) -> Result<String, String> {
+    let registry = crate::sources::Registry::load(root)?;
+    let code = Code { crates: crates.to_vec(), ..Code::default() };
+    let mut context = Context { include_engine: true, ..Context::default() };
+    let mut files = context.files(root, &code)?;
+    // Embedded credits use the content projection; controls are read from the checkout.
+    files.remove("data/sources.toml");
+    for source in &registry.sources {
+        // Product preflight reads embedded credential descriptors as well as content settings.
+        files.insert(
+            format!("data/sources.toml#{}", source.id),
+            source_hash(source, &["refresh", "r2_copy", "redistribute", "hosts"])?,
+        );
+    }
+    for path in ["Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"] {
+        if root.join(path).is_file() {
+            files.insert(path.into(), hash_file(&root.join(path))?.0);
+        }
+    }
+    Ok(hash(&files))
+}
+
+fn source_hash(source: &crate::sources::Source, excluded: &[&str]) -> Result<String, String> {
+    let mut content = serde_json::to_value(source).map_err(|error| error.to_string())?;
+    for field in excluded {
+        content.as_object_mut().unwrap().remove(*field);
+    }
+    let bytes = serde_json::to_vec(&super::sorted(content)).map_err(|error| error.to_string())?;
+    Ok(crate::store::sha256_hex(&bytes))
 }
 
 fn is_rust(file: &Path) -> bool {
@@ -223,6 +270,42 @@ fn manifest_hash(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::engine::tests::{fixture, write};
+
+    #[test]
+    fn rust_resolution_is_reused_until_a_workspace_manifest_or_lock_changes() {
+        let fixture = fixture("code-resolution-cache");
+        let root = fixture.root();
+        crate::engine::tests::repository(&root, &[("steps", ""), ("other", "")]);
+        let code = Code { crates: vec!["steps".into()], ..Code::default() };
+        let mut context = Context::default();
+        let before = context.files(&root, &code).unwrap();
+        let loaded = context.rust[&None].clone();
+        assert_eq!(context.files(&root, &code).unwrap(), before);
+        assert!(Arc::ptr_eq(&loaded, &context.rust[&None]));
+
+        let other = root.join("other/Cargo.toml");
+        write(&other, &fs::read_to_string(&other).unwrap().replace("2021", "2024"));
+        assert_eq!(context.files(&root, &code).unwrap(), before);
+        assert!(
+            !Arc::ptr_eq(&loaded, &context.rust[&None]),
+            "an unrelated local manifest can affect Cargo feature unification"
+        );
+        let loaded = context.rust[&None].clone();
+        let lock = root.join("Cargo.lock");
+        write(&lock, &(fs::read_to_string(&lock).unwrap() + "\n# lock comment\n"));
+        assert_eq!(context.files(&root, &code).unwrap(), before);
+        assert!(!Arc::ptr_eq(&loaded, &context.rust[&None]));
+        let loaded = context.rust[&None].clone();
+        let workspace = root.join("Cargo.toml");
+        write(&workspace, &(fs::read_to_string(&workspace).unwrap() + "\n# workspace comment\n"));
+        assert_eq!(context.files(&root, &code).unwrap(), before);
+        assert!(!Arc::ptr_eq(&loaded, &context.rust[&None]));
+        let source = root.join("steps/src/lib.rs");
+        write(&source, "pub fn updated() {}\n");
+        let loaded = context.rust[&None].clone();
+        assert_ne!(context.files(&root, &code).unwrap(), before);
+        assert!(Arc::ptr_eq(&loaded, &context.rust[&None]), "source edits rehash files without running Cargo");
+    }
 
     #[test]
     fn source_content_identity_is_scoped_and_freshness_controls_do_not_change_it() {

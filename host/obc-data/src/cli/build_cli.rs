@@ -342,6 +342,7 @@ pub(super) fn build_env(
         built.run = Some(id);
     }
     let Some(live) = live else {
+        crate::worker::check(root)?;
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
         for product in unblocked {
             let (name, optional) = (product.name(), optional(*product, &plan.layers));
@@ -504,6 +505,7 @@ fn planned(
             if let Some(live) = &live {
                 env.live = live.versions();
                 let inventory = super::freshness::discover(
+                    root,
                     products,
                     env,
                     &loaded.regions,
@@ -545,11 +547,11 @@ fn planned(
     let fetch =
         super::status_cli::discovery_fetch(fetcher(store, http, &loaded.sources, env, copies.as_ref()), prepare);
     let (steps, blocked) = match basis {
-        Basis::Moves(_) => steps(products, env, &loaded.regions, store, live.is_some(), fetch)?,
+        Basis::Moves(_) => steps(root, products, env, &loaded.regions, store, live.is_some(), fetch)?,
         // A fetch without a version is one that the plan does not name.
         Basis::Saved(_) => {
             let mut fetch = fetch;
-            steps(products, env, &loaded.regions, store, live.is_some(), |wanted| match &wanted.version {
+            steps(root, products, env, &loaded.regions, store, live.is_some(), |wanted| match &wanted.version {
                 None => Err(outdated()),
                 Some(version) => fetch(wanted).map_err(|e| match e.fix == e.code.fix() {
                     true => {
@@ -570,6 +572,7 @@ fn planned(
 
     let Some(live) = live else {
         let all = plan::plan(store, root, &steps)?;
+        crate::worker::check(root)?;
         let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
@@ -616,6 +619,7 @@ fn planned(
         }
     }
     (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
+    crate::worker::check(root)?;
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
@@ -774,6 +778,7 @@ fn next(
     steps: &[Step],
     plan: &EnvPlan,
 ) -> Result<(Live, Vec<String>), Error> {
+    crate::worker::check(root)?;
     let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
     let stored = release::stored(store, root, steps, &taken)?;
     let missing: Vec<String> =
@@ -919,6 +924,7 @@ const ROUNDS: usize = 8;
 /// step list reads snapshots that the store lacks gets them fetched, as [`product_steps`] says. The
 /// fetch for a `--move SOURCE` names its version in `env`, so every product reads that one version.
 pub(super) fn steps(
+    root: &Path,
     products: &[&dyn Product],
     env: &mut Env,
     regions: &Regions,
@@ -935,7 +941,7 @@ pub(super) fn steps(
             blocked.push(BlockedProduct { product: product.name().into(), reason, layers: Vec::new() });
             continue;
         }
-        match product_steps(*product, env, regions, store, &mut fetch)? {
+        match product_steps(root, *product, env, regions, store, &mut fetch)? {
             Ok(listed) => {
                 if !listed.blocked.is_empty() {
                     let reason = listed
@@ -978,6 +984,7 @@ pub(super) fn check_layers(products: &[&dyn Product], env: &Env) -> Result<(), E
 /// each round names only new fetches, at most [`ROUNDS`] times. `Ok(Err(reason))` when the
 /// product is blocked (`Unplanned::Invalid`).
 pub(super) fn product_steps(
+    root: &Path,
     product: &dyn Product,
     env: &mut Env,
     regions: &Regions,
@@ -988,7 +995,8 @@ pub(super) fn product_steps(
     let mut failure = None;
     // A refusal belongs to the product that is listed now.
     env.refused.borrow_mut().clear();
-    let mut listed = product.steps(env, regions, store);
+    crate::worker::check(root)?;
+    let mut listed = product.steps(root, env, regions, store);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
     let mut fetched: Vec<Wanted> = Vec::new();
     for _ in 0..ROUNDS {
@@ -1009,7 +1017,8 @@ pub(super) fn product_steps(
             env.resolved.insert((wanted.source.clone(), crate::store::sorted(&wanted.params)), version);
         }
         fetched.extend(fetches.iter().cloned());
-        listed = product.steps(env, regions, store);
+        crate::worker::check(root)?;
+        listed = product.steps(root, env, regions, store);
     }
     let steps = match listed {
         Ok(steps) => steps,
@@ -1061,7 +1070,13 @@ pub(crate) mod tests {
             &["extra"]
         }
 
-        fn steps(&self, _: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Failed)? {
                 Some(_) => Ok(pipeline().into()),
                 None => Err(Unplanned::NeedsFetch(vec![Wanted {
@@ -1093,20 +1108,28 @@ pub(crate) mod tests {
             fetches.set(fetches.get() + 1);
             Ok("1".into())
         };
-        let (listed, _) = steps(&[&Indexed], &mut env(&["extra"]), &regions, &fixture.store, false, fetch).unwrap();
+        let (listed, _) =
+            steps(&fixture.root(), &[&Indexed], &mut env(&["extra"]), &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!((listed.len(), fetches.get()), (3, 1));
         let (listed, _) =
-            steps(&[&Indexed], &mut env(&[]), &regions, &fixture.store, false, |_| unreachable!()).unwrap();
+            steps(&fixture.root(), &[&Indexed], &mut env(&[]), &regions, &fixture.store, false, |_| unreachable!())
+                .unwrap();
         assert_eq!(listed.len(), 3, "the store has it now");
 
-        let err = steps(&[&Indexed], &mut env(&[]), &regions, &empty.store, false, |_| Ok("1".into())).err().unwrap();
+        let err = steps(&fixture.root(), &[&Indexed], &mut env(&[]), &regions, &empty.store, false, |_| Ok("1".into()))
+            .err()
+            .unwrap();
         assert_eq!(err.message, "product `test` still needs index@1 after the fetch");
         assert!(err.fix.contains("product `test`"), "a product bug points at its code: {}", err.fix);
         let blocked = |_: &Wanted| Err(Code::Blocked.error("credential missing"));
-        let err = steps(&[&Indexed], &mut env(&[]), &regions, &empty.store, false, blocked).err().unwrap();
-        assert_eq!(err.code, Code::Blocked, "a failed fetch keeps its code");
         let err =
-            steps(&[&Indexed], &mut env(&["snow"]), &regions, &fixture.store, false, |_| Ok("1".into())).err().unwrap();
+            steps(&fixture.root(), &[&Indexed], &mut env(&[]), &regions, &empty.store, false, blocked).err().unwrap();
+        assert_eq!(err.code, Code::Blocked, "a failed fetch keeps its code");
+        let err = steps(&fixture.root(), &[&Indexed], &mut env(&["snow"]), &regions, &fixture.store, false, |_| {
+            Ok("1".into())
+        })
+        .err()
+        .unwrap();
         let message = "data/env/live.toml: no product has the optional layer `snow`";
         assert_eq!((err.code, err.message.as_str()), (Code::InvalidData, message));
     }
@@ -1119,8 +1142,14 @@ pub(crate) mod tests {
             "test"
         }
 
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            Indexed.steps(env, regions, store)?;
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Indexed.steps(root, env, regions, store)?;
             match snapshot_files(store, "box", "1", &[], &[]).map_err(Unplanned::Failed)? {
                 Some(_) => Ok(pipeline().into()),
                 None => Err(Unplanned::NeedsFetch(vec![Wanted {
@@ -1142,7 +1171,8 @@ pub(crate) mod tests {
             fetched.borrow_mut().push(wanted.source.clone());
             Ok("1".into())
         };
-        let (listed, _) = steps(&[&Chained], &mut env(&[]), &regions, &fixture.store, false, fetch).unwrap();
+        let (listed, _) =
+            steps(&fixture.root(), &[&Chained], &mut env(&[]), &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!((listed.len(), fetched.into_inner()), (3, vec!["index".to_string(), "box".to_string()]));
     }
 
@@ -1154,7 +1184,13 @@ pub(crate) mod tests {
             "test"
         }
 
-        fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            env: &Env,
+            _: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             let area = [("area".to_string(), "europe/monaco".to_string())];
             match crate::product::read(env, store, "land", &area).map_err(Unplanned::Failed)? {
                 Ok(_) => Ok(Vec::new().into()),
@@ -1170,7 +1206,13 @@ pub(crate) mod tests {
             fn name(&self) -> &'static str {
                 "test"
             }
-            fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+            fn steps(
+                &self,
+                _root: &std::path::Path,
+                env: &Env,
+                _: &Regions,
+                store: &Store,
+            ) -> Result<crate::product::Steps, Unplanned> {
                 let mut wanted = Vec::new();
                 for area in ["a", "b"] {
                     if let Err(request) = crate::product::version(env, store, "land", &[("area".into(), area.into())])
@@ -1195,7 +1237,7 @@ pub(crate) mod tests {
             fetched.push(wanted.clone());
             Ok(if wanted.params[0].1 == "a" { "2026-10-01" } else { "2026-10-02" }.into())
         };
-        product_steps(&Areas, &mut env, &regions, &fixture.store, &mut fetch).unwrap().unwrap();
+        product_steps(&fixture.root(), &Areas, &mut env, &regions, &fixture.store, &mut fetch).unwrap().unwrap();
         assert_eq!(fetched.len(), 2);
         assert_eq!(env.moves["land"], None, "source intent stays unresolved");
         assert_eq!(env.read.borrow().len(), 2);
@@ -1203,7 +1245,7 @@ pub(crate) mod tests {
         let mut saved = env.clone();
         saved.resolved.clear();
         saved.planned = Some(pins);
-        product_steps(&Areas, &mut saved, &regions, &fixture.store, &mut |_| {
+        product_steps(&fixture.root(), &Areas, &mut saved, &regions, &fixture.store, &mut |_| {
             panic!("saved exact pins fetch no new versions")
         })
         .unwrap()
@@ -1223,7 +1265,8 @@ pub(crate) mod tests {
         let (regions, http) = (Regions::new(Vec::new()).unwrap(), quick());
         let mut live = env(&[]);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
-        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
+        let err =
+            steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.fix.as_str()),
             (Code::Blocked, "Plan with `--move land@VERSION`."),
@@ -1234,7 +1277,7 @@ pub(crate) mod tests {
 
         live.moves.insert("land".into(), None);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
-        steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
+        steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(
             live.resolved[&("land".into(), vec![("area".into(), "europe/monaco".into())])].as_str(),
             "2026-10-05",
@@ -1245,12 +1288,13 @@ pub(crate) mod tests {
         let land = Source { refresh: Refresh::Days(30), ..manual };
         let mut live = env(&[]);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
-        steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
+        steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(log.lock().unwrap().len(), requests, "without a move or live, the store serves");
 
         live.moves.insert("qrank".into(), None);
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
-        let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
+        let err =
+            steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.message.as_str()),
             (Code::Usage, "--move qrank: no step list of `live` reads `qrank`")
@@ -1284,7 +1328,13 @@ pub(crate) mod tests {
             Ok(vec![file])
         }
 
-        fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            env: &Env,
+            _: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             let head = crate::product::version(env, store, "head", &[]).map_err(Unplanned::Invalid)?;
             let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
             let mut steps = pipeline();
@@ -1305,8 +1355,17 @@ pub(crate) mod tests {
         let regions = Regions::new(Vec::new()).unwrap();
         let mut live = env(&[]);
         live.live.insert(("head".into(), Vec::new()), ["1".to_string(), "2".to_string()].into());
-        let err =
-            steps(&[&Versioned], &mut live.clone(), &regions, &fixture.store, false, |_| unreachable!()).err().unwrap();
+        let err = steps(
+            &fixture.root(),
+            &[&Versioned],
+            &mut live.clone(),
+            &regions,
+            &fixture.store,
+            false,
+            |_| unreachable!(),
+        )
+        .err()
+        .unwrap();
         assert_eq!(
             (err.code, err.fix.as_str()),
             (Code::Blocked, "Plan with `--move head@VERSION`."),
@@ -1315,7 +1374,9 @@ pub(crate) mod tests {
         );
 
         live.moves.insert("head".into(), Some("1".into()));
-        let (listed, _) = steps(&[&Versioned], &mut live, &regions, &fixture.store, false, |_| unreachable!()).unwrap();
+        let (listed, _) =
+            steps(&fixture.root(), &[&Versioned], &mut live, &regions, &fixture.store, false, |_| unreachable!())
+                .unwrap();
         assert_eq!(listed.len(), 3);
     }
 
@@ -1387,8 +1448,14 @@ pub(crate) mod tests {
         fn pointer(&self) -> Option<crate::product::PointerFn> {
             Versioned.pointer()
         }
-        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-            let mut listed = Versioned.steps(env, regions, store)?;
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            let mut listed = Versioned.steps(root, env, regions, store)?;
             listed.blocked.push(crate::product::BlockedLayer {
                 layer: "test/missing".into(),
                 reason: "capture needs `--move wikidata`".into(),
@@ -1419,7 +1486,13 @@ pub(crate) mod tests {
             "other"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Err(Unplanned::Invalid("no box region".into()))
         }
     }

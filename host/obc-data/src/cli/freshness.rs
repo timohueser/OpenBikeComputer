@@ -28,6 +28,7 @@ pub(super) struct RequestStatus {
 /// Discover only the small metadata needed to enumerate requests, before applying stale moves.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn discover(
+    root: &std::path::Path,
     products: &[&dyn Product],
     env: &Env,
     regions: &Regions,
@@ -47,7 +48,7 @@ pub(super) fn discover(
     inventory.fetch_failures.clear();
     let mut fetch = status_cli::discovery_fetch(build_cli::fetcher(store, http, sources, &inventory, copies), false);
     for product in products {
-        match build_cli::product_steps(*product, &mut inventory, regions, store, &mut fetch) {
+        match build_cli::product_steps(root, *product, &mut inventory, regions, store, &mut fetch) {
             Ok(_) => (),
             Err(error) if matches!(error.code, Code::Blocked | Code::FetchFailed) => (),
             Err(error) => return Err(error),
@@ -109,7 +110,13 @@ mod tests {
             fn name(&self) -> &'static str {
                 "test"
             }
-            fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+            fn steps(
+                &self,
+                _root: &std::path::Path,
+                env: &Env,
+                _: &Regions,
+                store: &Store,
+            ) -> Result<crate::product::Steps, Unplanned> {
                 for collection in ["landmarks", "peaks"] {
                     let _ = version(env, store, "capture", &[("collection".into(), collection.into())])
                         .map_err(Unplanned::Failed)?;
@@ -122,7 +129,8 @@ mod tests {
         env.live.insert(("extract".into(), Vec::new()), ["2020-01-01".into()].into());
         env.live.insert(("capture".into(), vec![("collection".into(), "peaks".into())]), ["2026-10-01".into()].into());
         let regions = Regions::new(Vec::new()).unwrap();
-        let inventory = discover(&[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None).unwrap();
+        let inventory =
+            discover(&fixture.root(), &[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None).unwrap();
         assert_eq!(inventory.requests.borrow().len(), 2);
         assert!(inventory.requests.borrow().iter().all(|(source, _)| source == "capture"));
         assert_eq!(inventory.read.borrow().len(), 1, "missing requests remain inventoried without an invented version");

@@ -25,9 +25,9 @@ pub trait Product {
         &[]
     }
 
-    /// Its steps for `env`. A step list that reads a snapshot, such as the `.poly` of a region or
+    /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
+    fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
 
     /// What clients read of a release. `None` while the product has no client document: a plan of
     /// `live` leaves the product out, because an apply cannot make its release live.
