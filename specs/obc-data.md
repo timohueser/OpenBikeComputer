@@ -969,6 +969,18 @@ grid and model content, or the offline index for downloads. They do not bind rec
 or unrelated optional layers. The required `planner/runtime` readiness gate stays blocked
 until installation and service readiness are verified. Data producers can build independently.
 
+Staging uses two slots per service. The current publication identifies the active slot;
+running units do not establish traffic ownership. Unknown or conflicting ownership blocks
+staging. A healthy slot with the same runtime and data identity is reused. A changed service
+uses the other slot. Staging does not activate traffic or retire another slot.
+
+Installation verifies the runtime archive and every materialized service file against their
+immutable identities. Archives contain only unique regular files with normalized relative
+paths. Host architecture, glibc, shared libraries and interpreter versions must satisfy the
+runtime descriptor. Search uses packaged Python dependencies with site packages disabled.
+Readiness reports the opened routing package, search grid and model file hashes, or downloads
+catalogue hash. An expected identity in an environment variable is not readiness evidence.
+
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
 byte order.

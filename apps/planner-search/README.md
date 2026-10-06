@@ -48,6 +48,13 @@ its filtered records.
 
 One process serves the one region that `OBC_SEARCH_REGIONS` names.
 
+Stored services use the [runtime target](../../specs/obc-data.md#service-runtimes).
+The downloads archive carries `tools.planner_install` for slot staging and probes.
+Run it with the configured CPython and `-S` from the extracted archive.
+The commit worker must verify and extract this archive before it invokes the helper.
+Staging does not switch traffic. Publication stays blocked until the commit worker
+integrates installation and readiness.
+
 ## Runtime and data limits
 
 [`query/`](query/README.md) parses sentences with the pinned int8 model.
