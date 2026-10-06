@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+mod build;
 mod python;
 mod rust;
 
@@ -24,6 +25,8 @@ pub(super) struct Context {
     rust: HashMap<Option<String>, Arc<rust::Metadata>>,
     python: HashMap<Option<String>, python::Identity>,
     packages: HashMap<String, BTreeMap<String, String>>,
+    build: build::Context,
+    native: Option<(PathBuf, String)>,
     include_engine: bool,
 }
 
@@ -35,6 +38,14 @@ impl Context {
 
     pub fn files(&mut self, root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
         let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
+        let native = self.build.preflight(&root, code)?;
+        if let Some((_, identity)) = &native {
+            let current = (root.clone(), identity.clone());
+            if self.native.as_ref() != Some(&current) {
+                self.rust.clear();
+                self.native = Some(current);
+            }
+        }
         let mut pathspecs = Vec::new();
         for path in &code.paths {
             if !root.join(path).exists() {
@@ -42,11 +53,12 @@ impl Context {
             }
             pathspecs.push(PathBuf::from(path));
         }
-        let (crates, dependencies) = if code.crates.is_empty() {
-            (BTreeSet::new(), BTreeMap::new())
+        let (crates, dependencies, packages) = if code.crates.is_empty() {
+            (BTreeSet::new(), BTreeMap::new(), rust::Packages::default())
         } else {
             if self.rust.get(&code.target).map(|metadata| metadata.unchanged(&root)).transpose()? != Some(true) {
-                self.rust.insert(code.target.clone(), Arc::new(rust::Metadata::load(&root, code.target.as_deref())?));
+                let target = code.target.as_deref().or_else(|| native.as_ref().map(|(target, _)| target.as_str()));
+                self.rust.insert(code.target.clone(), Arc::new(rust::Metadata::load(&root, target)?));
             }
             self.rust[&code.target].selected(&root, &code.crates, self.include_engine)?
         };
@@ -85,8 +97,8 @@ impl Context {
             hashes.insert(relative.replace('\\', "/"), hash);
         }
         hashes.extend(dependencies);
-        if let Some(target) = &code.target {
-            hashes.insert("rust/target".into(), crate::store::sha256_hex(target.as_bytes()));
+        if !packages.names.is_empty() {
+            hashes.extend(self.build.identity(&root, code, &packages)?);
         }
         if let Some(runtime) = &code.python {
             if !self.python.contains_key(&runtime.group) {
@@ -150,7 +162,7 @@ pub fn compiled(root: &Path, crates: &[String]) -> Result<String, String> {
             source_hash(source, &["refresh", "r2_copy", "redistribute", "hosts"])?,
         );
     }
-    for path in ["Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"] {
+    for path in ["Cargo.toml", "rust-toolchain.toml"] {
         if root.join(path).is_file() {
             files.insert(path.into(), hash_file(&root.join(path))?.0);
         }

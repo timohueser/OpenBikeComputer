@@ -20,6 +20,14 @@ struct Binding {
 
 static BINDING: OnceLock<Binding> = OnceLock::new();
 
+/// Cargo runtime search paths do not select the libraries of native compilation tools.
+pub fn compiler_command(command: &mut std::process::Command) -> &mut std::process::Command {
+    for name in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+        command.env_remove(name);
+    }
+    command
+}
+
 pub fn fingerprint(root: &Path) -> Result<String, String> {
     code::compiled(root, &PRODUCERS.iter().map(|name| (*name).into()).collect::<Vec<_>>())
 }
@@ -99,6 +107,18 @@ mod tests {
         );
         assert!(verify(&binding, &scratch.0).unwrap_err().contains("quit and restart"));
         write(&scratch.0.join("data/sources.toml"), sources);
+        let manifest = scratch.0.join("Cargo.toml");
+        let original = std::fs::read_to_string(&manifest).unwrap();
+        write(&manifest, &(original.clone() + "\n[profile.dev.package.obc-data-steps]\nopt-level=2\n"));
+        assert!(verify(&binding, &scratch.0).unwrap_err().contains("quit and restart"));
+        write(&manifest, &original);
+        write(&scratch.0.join(".cargo/config.toml"), "[build]\njobs=2\ntarget-dir='/tmp/build-cache'\n");
+        verify(&binding, &scratch.0).unwrap();
+        write(&scratch.0.join(".cargo/config.toml"), "[build]\njobs=4\ntarget-dir='/tmp/other-cache'\n");
+        verify(&binding, &scratch.0).unwrap();
+        write(&scratch.0.join(".cargo/config.toml"), "[build]\nrustc-wrapper='unsupported'\n");
+        assert!(verify(&binding, &scratch.0).unwrap_err().contains("Cargo config [build]"));
+        std::fs::remove_file(scratch.0.join(".cargo/config.toml")).unwrap();
         write(&scratch.0.join("obc-data/src/lib.rs"), "pub fn new_steps() {}\n");
         assert!(verify(&binding, &scratch.0).unwrap_err().contains("quit and restart"));
         assert!(verify(&binding, scratch.0.parent().unwrap()).is_err());
