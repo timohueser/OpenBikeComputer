@@ -157,7 +157,7 @@ fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
     {
         source["refresh"] = toml::Value::Integer(14);
         source["redistribute"] = toml::Value::Boolean(false);
-        source["r2_copy"] = toml::Value::Boolean(false);
+        source.as_table_mut().unwrap().insert("r2_copy".into(), toml::Value::Boolean(false));
     }
     std::fs::write(&path, toml::to_string(&registry).unwrap()).unwrap();
     assert_eq!([identity(source), identity(osm), identity(cell)], before);
