@@ -241,3 +241,74 @@ fn no_elevation_anywhere_yields_zero_range() {
     let pts = decode(&r, 0);
     assert!(pts.iter().all(|p| p.elevation().is_none()));
 }
+
+#[cfg(feature = "alloc")]
+#[test]
+fn authored_points_use_the_gpx_emitter_and_reject_unsupported_capacity() {
+    use obc_route::{
+        convert::points_to_obcr, BikeType, Waypoint, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
+    };
+    let points: Vec<_> = [200, 210, 225, 215]
+        .into_iter()
+        .enumerate()
+        .map(|(k, ele)| RoutePoint {
+            lon: 7_800_000 + k as i32 * 3_000,
+            lat: 48_000_000,
+            ele,
+            surface: 0,
+            elevation_incomplete: false,
+        })
+        .collect();
+    let mut sink = VecSink::default();
+    points_to_obcr(&points, &[], "Rhine Path", BikeType::Road, &mut sink).unwrap();
+    assert_eq!(sink.buf, convert("Rhine Path", STRAIGHT));
+
+    let waypoint = Waypoint {
+        dist_along_m: 0,
+        lon: 7_800_000,
+        lat: 48_000_000,
+        ele: i16::MIN,
+        category_id: 0,
+        lateral_offset_m: 0,
+        name: Default::default(),
+        provenance: None,
+    };
+    let mut sink = VecSink::default();
+    assert_eq!(
+        points_to_obcr(&points, &vec![(waypoint, 0.0); MAX_WAYPOINTS + 1], "Too Many", BikeType::Road, &mut sink),
+        Err(Error::TooLarge)
+    );
+    assert!(sink.buf.is_empty());
+
+    let points: Vec<_> = (0..MAX_ROUTE_CHUNKS * (MAX_POINTS_PER_CHUNK - 1) + 2)
+        .map(|k| RoutePoint { lon: k as i32 * 9, lat: 0, ele: (k % 2) as i16, surface: 0, elevation_incomplete: false })
+        .collect();
+    assert_eq!(points_to_obcr(&points, &[], "Too Long", BikeType::Road, &mut sink), Err(Error::TooLarge));
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn authored_waypoint_distances_follow_the_simplified_line() {
+    use obc_route::{convert::points_to_obcr, for_each_waypoint, BikeType, Waypoint};
+    let points: Vec<_> = (0..1001)
+        .map(|k| RoutePoint { lon: k * 9, lat: (k % 2) * 8, ele: 100, surface: 0, elevation_incomplete: false })
+        .collect();
+    let waypoint = Waypoint {
+        dist_along_m: 0,
+        lon: 6_732,
+        lat: 0,
+        ele: i16::MIN,
+        category_id: 3,
+        lateral_offset_m: -120,
+        name: "Water".try_into().unwrap(),
+        provenance: None,
+    };
+    let mut sink = VecSink::default();
+    points_to_obcr(&points, &[(waypoint, 1000.0)], "Zigzag", BikeType::Road, &mut sink).unwrap();
+    let mut stored = None;
+    for_each_waypoint(&SliceSource(&sink.buf), |w| stored = Some(w.clone())).unwrap();
+    let stored = stored.unwrap();
+    assert!((500..900).contains(&stored.dist_along_m), "raw distance must remap, not clamp: {:?}", stored);
+    assert_eq!(stored.name.as_str(), "Water");
+    assert_eq!((stored.lon, stored.lat, stored.category_id, stored.lateral_offset_m), (6_732, 0, 3, -120));
+}
