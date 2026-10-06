@@ -270,10 +270,11 @@ private actor RecordingSource: PlannerDataSource {
 private final class OfflineQuoteHTTP: URLProtocol, @unchecked Sendable {
     static let jobID = String(repeating: "d", count: 64)
     static let source = URL(string: "https://pinned.test/planner-api/services/" + String(repeating: "f", count: 64) + "/downloads/bundles/" + jobID)!
+    private static let quote = try! fixture().0
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let quote = try! fixture().0
+        let quote = Self.quote
         let url = request.url!
         let data: Data
         let code: Int
