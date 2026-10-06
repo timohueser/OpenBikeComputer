@@ -294,15 +294,16 @@ triggers = [
   "firmware/ui-snapshots.sha256",
 ]
 
-# The ingest tool needs rasterio and pyproj, which no other suite wants, so the `test` job
-# installs `tools/requirements-bake.txt` for this one. The tests write their own rasters: no
+# The ingest tool needs rasterio and pyproj, which no other suite wants, so the suite runs
+# under the locked uv group `terrain-reference`. The tests write their own rasters: no
 # service, no credential and no captured fixture.
 [[suite]]
 id = "python.dem-reference"
 route = "ordinary"
-command = "rm -rf .artifacts/python/dem-reference && python3 -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
+command = "rm -rf .artifacts/python/dem-reference && uv run --locked --group terrain-reference --with-requirements tools/requirements-test.txt python -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
 jobs = ["test"]
-triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["host/obc-dem/reference/**", ".python-version", "pyproject.toml", "uv.lock",
+  "tools/requirements-test.txt", "data/sources.toml", "tools/data_registry.py", "tools/step_request.py"]
 
 [[suite]]
 id = "python.builder"

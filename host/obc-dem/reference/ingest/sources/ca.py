@@ -10,7 +10,6 @@ The server advertises WCS 2.0.1 and answers 1.1.1, and its coverage ids are `dtm
 `dsm`. `dtm` is the bare-earth model, which is what a reference must be.
 """
 
-from .base import registry_credit
 from .protocols import Wcs11Source
 
 # The product specification states it plainly: "Elevations are orthometric and expressed
@@ -20,8 +19,7 @@ from .protocols import Wcs11Source
 CA = Wcs11Source(
     "ca", "Canada", "HRDEM DTM 1 m", 1.0,
     "Open Government Licence – Canada 2.0",
-    registry_credit("dtm-ca"),
-    "CGVD2013", (-141.0, 41.6, -52.6, 83.2),
+    "CGVD2013",
     url="https://datacube.services.geo.ca/ows/elevation",
     coverage="dtm",
     epsg=3979,

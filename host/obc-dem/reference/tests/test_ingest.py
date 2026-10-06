@@ -10,8 +10,10 @@ carry a one-pixel rock tower without spreading it over its neighbours.
 import hashlib
 import json
 import os
+import shutil
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -23,6 +25,7 @@ from rasterio.warp import transform_bounds
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
+import merge  # noqa: E402
 
 LV95 = CRS.from_epsg(2056)
 # A 200 m square of 1 m posts near Engelberg, high enough that no rounding hides a defect.
@@ -88,8 +91,7 @@ def wgs84_grid(step_u, ti=4812, tj=4223, row=100, col=100):
 
 
 def local_source(key, country="Testland"):
-    return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", f"© {key}", "EGM2008",
-                         (-180, -90, 180, 90))
+    return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", "EGM2008")
 
 
 class ArchiveCase(unittest.TestCase):
@@ -412,8 +414,7 @@ class BoxService(ingest.Source):
     """A service that answers a box with the columns of one EPSG:4326 raster inside it."""
 
     def __init__(self, raster):
-        super().__init__("ch", "Testland", "box service", 1.0, "CC0", "© box", "EGM2008",
-                         (-180, -90, 180, 90))
+        super().__init__("ch", "Testland", "box service", 1.0, "CC0", "EGM2008")
         self.raster, self.boxes = raster, []
 
     def fetch(self, bbox, workdir):
@@ -441,14 +442,13 @@ class Fetch(ArchiveCase):
             def fetch(self, bbox, workdir):
                 (workdir / "a.d").mkdir(parents=True)
                 (workdir / "a.zip").write_bytes(b"download")
-                (workdir / "a.d/a.prj").write_text("crs")
+                (workdir / "a.d/a.prj").write_text(LV95.to_wkt())
                 raster = workdir / "a.d/a.asc"
-                raster.write_text("grid")
+                raster.write_text(f"ncols 1\nnrows 1\nxllcorner {EAST}\nyllcorner {NORTH}\ncellsize 1\n1000\n")
                 return [raster]
 
         real = ingest.SOURCES["ch"]
-        ingest.SOURCES["ch"] = Delivered("ch", "Testland", "test", 1.0, "CC0", "© ch", "EGM2008",
-                                         (-180, -90, 180, 90))
+        ingest.SOURCES["ch"] = Delivered("ch", "Testland", "test", 1.0, "CC0", "EGM2008")
         self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
         work, out = self.root / "work", self.root / "out"
         code = ingest.main(["fetch", "ch", "--bbox", "8,46,9,47", "--work", str(work), "--out", str(out)])
@@ -456,6 +456,107 @@ class Fetch(ArchiveCase):
         moved = sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
         self.assertEqual(moved, ["a.d/a.asc", "a.d/a.prj"])
         self.assertTrue((work / "a.zip").is_file())
+
+    def fetch(self, key, bbox):
+        """`ingest.py fetch` of `key` and `bbox`: its exit code and the files it wrote."""
+
+        out = self.root / "out"
+        shutil.rmtree(out, ignore_errors=True)
+        code = ingest.main(["fetch", key, "--bbox", bbox, "--work", str(self.root / "work"), "--out", str(out)])
+        return code, sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
+
+    def test_a_box_without_data_is_a_fetch_without_files(self):
+        """A STAC search that finds no item, as Lower Saxony answers a box where it has no tile."""
+
+        empty = json.dumps({"type": "FeatureCollection", "features": [], "links": []}).encode()
+        with unittest.mock.patch.object(ingest.sources.stac, "http_get", return_value=empty) as search:
+            self.assertEqual(self.fetch("de-ni", "9,53.9,9.1,54"), (0, []))
+        self.assertIn("bbox=9.0,53.9,9.1,54.0", search.call_args.args[0])
+
+    def test_a_raster_without_a_height_is_no_data_and_a_box_asks_only_inside_the_extent(self):
+        """A service answers a box outside its model with a raster of voids."""
+
+        class Service(ingest.Source):
+            boxes = []
+
+            def fetch(self, bbox, workdir):
+                self.boxes.append(bbox)
+                workdir.mkdir(parents=True, exist_ok=True)
+                void = np.full((SIDE, SIDE), -9999.0, dtype="float32")
+                return [source_raster(workdir / "void.tif", void, nodata=-9999.0),
+                        source_raster(workdir / "data.tif", plateau_with_tower())]
+
+        real = ingest.SOURCES["ch"]
+        ingest.SOURCES["ch"] = Service("ch", "Testland", "test", 1.0, "CC0", "EGM2008")
+        self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
+        # The row `dtm-ch` has the extent [5.9, 45.8, 10.5, 47.9].
+        self.assertEqual(self.fetch("ch", "10,47,11,48"), (0, ["data.tif"]))
+        self.assertEqual(self.fetch("ch", "11,47,12,48"), (0, []))
+        self.assertEqual(Service.boxes, [(10.0, 47.0, 10.5, 47.9)])
+
+    def test_a_delivery_is_fetched_from_the_directory_that_the_environment_names(self):
+        """A row without a service reads its delivery like a credential, and leaves it as it is."""
+
+        (self.inputs / "order").mkdir()
+        raster = source_raster(self.inputs / "order" / "dem.tif", plateau_with_tower())
+        out = self.root / "out"
+        fetch = ["fetch", "au", "--bbox", bbox_of(raster), "--work", str(self.root / "work"), "--out", str(out)]
+        with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_AU_INPUT": str(self.inputs)}):
+            self.assertEqual(ingest.main(fetch), 1, "the datum of the order is not confirmed")
+            os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
+            self.assertEqual(ingest.main(fetch), 0)
+            os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
+            self.assertEqual(ingest.main(fetch), 1, "a relative path names another directory in the step")
+        self.assertEqual([path.relative_to(out) for path in out.rglob("*.tif")], [Path("order/dem.tif")])
+        self.assertTrue(raster.is_file())
+
+
+class MergeStep(ArchiveCase):
+    """The step of a map leaf: its models, best first, into an empty archive."""
+
+    def request(self, output, models, tiles):
+        """The request of a step with `models` as (source, version, files), whose output is in a
+        directory of its own, as the engine gives it."""
+
+        output.mkdir(parents=True)
+        snapshots = {source: {f"#bbox=1,2,3,4/{path.name}": str(path) for path in paths}
+                     for source, _, paths in models}
+        options = {"models": [{"source": source, "version": version, "credit": f"credit of {source}"}
+                              for source, version, _ in models],
+                   "tiles": tiles}
+        return {"options": options, "snapshots": snapshots, "output": str(output)}
+
+    def test_the_step_writes_the_archive_of_ingest_best_first_dated_by_each_fetch(self):
+        coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
+        (self.root / "corner").mkdir()
+        corner = source_raster(self.root / "corner" / "corner.tif",
+                               np.full((SIDE // 2, SIDE // 2), 900.0, dtype="float32"))
+        # What `ingest` of each model, the better one first, writes.
+        self.ingest("nl", corner, inputs=corner.parent)
+        self.ingest("es", coarse)
+        tile, path = self.only_tile()
+        with rasterio.open(path) as src:
+            expected = src.read(1)
+
+        # The request names the worse model first, and a model whose box has no data.
+        models = [("dtm-es", "2026-01-02", [coarse]), ("dtm-nl", "2026-02-03", [corner]),
+                  ("dtm-dk", "2026-05-06", [])]
+        output = self.root / "step" / "output"
+        metrics = merge.merge(self.request(output, models, [tile, "0000/0000"]))
+        layer = output / "reference"
+        self.assertEqual(metrics, {"tiles": 1, "sources": ["es", "nl"]})
+        index = ingest.read_index(layer)
+        self.assertEqual(index["contributors"], {tile: ["nl", "es"]})
+        with rasterio.open(ingest.tile_path(layer, *map(int, tile.split("/")))) as src:
+            self.assertTrue((src.read(1) == expected).all())
+        self.assertEqual((index["sources"]["nl"]["fetched"], index["sources"]["nl"]["attribution"]),
+                         ("2026-02-03", "credit of dtm-nl"))
+        dk = json.loads((layer / "sources" / "dk.json").read_text(encoding="utf-8"))
+        self.assertEqual((dk["fetched"], dk["tiles"]), ("2026-05-06", []))
+
+        # A tile that no terrain cell of the leaf reads stays out.
+        output = self.root / "other" / "output"
+        self.assertEqual(merge.merge(self.request(output, models, ["0000/0000"]))["tiles"], 0)
 
 
 class PerTile(ArchiveCase):

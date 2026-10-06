@@ -8,7 +8,7 @@ use obc_bake::terrain::{DemCutter, TerrainBakeOptions, TerrainBakery, TerrainCel
 use obc_data::engine::runs::{Context, Limits, Run};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
-use obc_data::product::Product;
+use obc_data::product::{Product, Unplanned};
 use obc_data::regions::{parse_region, Area, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::maps::{box_poly, Maps, TILE_LIST};
@@ -58,8 +58,19 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     store
 }
 
+/// Record a fetch without files of each national model that the step list asks for: the store has
+/// no national data of the Grimsel, so the terrain reads GLO-30 alone.
+fn without_models(store: &Store, env: &Env, regions: &Regions) {
+    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, regions, store) else { return };
+    for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
+        let requested = Requested { version: VERSION.into(), params: fetch.params.clone(), files: Vec::new() };
+        store.put_requested(&fetch.source, &requested).unwrap();
+    }
+}
+
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
 fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<String, Vec<u8>> {
+    without_models(store, env, regions);
     let steps = Maps.steps(env, regions, store).unwrap();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();

@@ -4,7 +4,6 @@ The coverage is geographic (ETRS89), so its subsets carry the `long` and `lat` a
 the capabilities document names, and not `x` and `y`.
 """
 
-from .base import registry_credit
 from .protocols import Wcs20Source
 
 # IGN publishes MDT05 as orthometric heights on REDNAP, the Spanish levelling network,
@@ -12,8 +11,8 @@ from .protocols import Wcs20Source
 # European levelling network, so the datum is EVRS-aligned without being EVRF2000 itself.
 ES = Wcs20Source(
     "es", "Spain", "MDT05 / PNOA LiDAR 5 m", 5.0,
-    "CC BY 4.0", registry_credit("dtm-es"),
-    "REDNAP (Alicante mean sea level), EVRS-aligned", (-18.2, 27.6, 4.4, 43.9),
+    "CC BY 4.0",
+    "REDNAP (Alicante mean sea level), EVRS-aligned",
     url="https://servicios.idee.es/wcs-inspire/mdt",
     coverage="Elevacion4258_5",
     epsg=4326,

@@ -129,7 +129,8 @@ version = "date"
 refresh = "manual"
 redistribute = false
 
-# The national terrain models of the reference archive, one per product of the reference ingest.
+# The national terrain models, one per product of the reference ingest. `extent` is the box that
+# a model covers: a map leaf reads each model whose box meets the box of its terrain cells.
 
 [[source]]
 id = "dtm-at"
@@ -137,8 +138,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "Bundesamt für Eich- und Vermessungswesen (BEV)"
 fetch = { kind = "dtm", url = "https://data.bev.gv.at/download/ALS/DTM/20250915/" }
+extent = [9.5, 46.3, 17.2, 49.1]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -149,10 +151,13 @@ licence = "CC-BY-4.0"
 attribution = "Sourced from ELVIS – Elevation and Depth, © the contributing agency"
 obligations = "The licensor is the contributing agency named in the order"
 fetch = { kind = "by-hand", url = "https://elevation.fsdf.org.au" }
+extent = [112.0, -44.0, 154.0, -9.0]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
+# The directory of the delivered order, and the vertical datum that its metadata states.
+credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"] }
 
 [[source]]
 id = "dtm-ca"
@@ -160,8 +165,9 @@ kind = "data"
 licence = "OGL-Canada-2.0"
 attribution = "Contains information licensed under the Open Government Licence – Canada"
 fetch = { kind = "dtm", url = "https://datacube.services.geo.ca/ows/elevation" }
+extent = [-141.0, 41.6, -52.6, 83.2]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -172,8 +178,9 @@ licence = "LicenseRef-swisstopo-open-data"
 attribution = "© swisstopo"
 obligations = "Open data, attribution required"
 fetch = { kind = "dtm", url = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items" }
+extent = [5.9, 45.8, 10.5, 47.9]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -183,8 +190,9 @@ kind = "data"
 licence = "DL-DE-BY-2.0"
 attribution = "Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0"
 fetch = { kind = "dtm", url = "https://opengeodata.lgl-bw.de/data/dgm/" }
+extent = [7.5, 47.5, 10.5, 49.8]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -194,8 +202,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "Bayerische Vermessungsverwaltung – www.geodaten.bayern.de"
 fetch = { kind = "dtm", url = "https://download1.bayernwolke.de/a/dgm/dgm1/" }
+extent = [8.9, 47.2, 13.9, 50.6]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -205,8 +214,9 @@ kind = "data"
 licence = "DL-DE-ZERO-2.0"
 attribution = "© HLBG Hessen"
 fetch = { kind = "dtm", url = "https://inspire-hessen.de/raster/dgm1/ows" }
+extent = [7.7, 49.3, 10.3, 51.7]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -217,8 +227,9 @@ licence = "LicenseRef-GeoBasis-DE-MV-open-data"
 attribution = "© GeoBasis-DE/M-V"
 obligations = "Open data, attribution required"
 fetch = { kind = "dtm", url = "https://www.geodaten-mv.de/dienste/dgm_wcs" }
+extent = [10.5, 53.0, 14.5, 54.8]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -228,8 +239,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "© LGLN"
 fetch = { kind = "dtm", url = "https://dgm.stac.lgln.niedersachsen.de/search" }
+extent = [6.5, 51.2, 11.7, 54.0]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -239,8 +251,9 @@ kind = "data"
 licence = "DL-DE-ZERO-2.0"
 attribution = "© Geobasis NRW"
 fetch = { kind = "dtm", url = "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm" }
+extent = [5.8, 50.3, 9.5, 52.6]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -250,8 +263,9 @@ kind = "data"
 licence = "DL-DE-BY-2.0"
 attribution = "GeoSN"
 fetch = { kind = "dtm", url = "https://geocloud.landesvermessung.sachsen.de/public.php/dav/files/JCcXyifaNdLDnxZ/" }
+extent = [11.8, 50.1, 15.1, 51.7]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -261,8 +275,9 @@ kind = "data"
 licence = "DL-DE-BY-2.0"
 attribution = "© GeoBasis-DE / LVermGeo LSA"
 fetch = { kind = "dtm", url = "https://geodatenportal.sachsen-anhalt.de/ows_INSPIRE_LVermGeo_ATKIS_EL_DGM_WCS" }
+extent = [10.5, 50.9, 13.2, 53.1]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -272,8 +287,9 @@ kind = "data"
 licence = "DL-DE-BY-2.0"
 attribution = "© GDI-Th, Freistaat Thüringen"
 fetch = { kind = "dtm", url = "https://geoportal.geoportal-th.de/hoehendaten/DGM/dgm_2020-2025/" }
+extent = [9.8, 50.2, 12.7, 51.7]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -283,9 +299,10 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "Indeholder data fra Klimadatastyrelsen, Danmarks Højdemodel, {month} {year}"
 fetch = { kind = "dtm", url = "https://api.dataforsyningen.dk/dhm_wcs_DAF" }
+extent = [8.008, 54.435, 15.598, 57.769]
 hosts = ["dataforsyningen.dk"]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 credential = { env = ["OBC_REFERENCE_DK_TOKEN"] }
@@ -296,8 +313,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "© Instituto Geográfico Nacional"
 fetch = { kind = "dtm", url = "https://servicios.idee.es/wcs-inspire/mdt" }
+extent = [-18.2, 27.6, 4.4, 43.9]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -307,9 +325,10 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "© Maanmittauslaitos"
 fetch = { kind = "dtm", url = "https://avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wcs/v2" }
+extent = [19.0, 59.7, 31.6, 70.1]
 hosts = ["*.maanmittauslaitos.fi"]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 credential = { env = ["OBC_REFERENCE_FI_TOKEN"] }
@@ -320,8 +339,9 @@ kind = "data"
 licence = "LicenseRef-Licence-Ouverte"
 attribution = "© IGN"
 fetch = { kind = "dtm", url = "https://data.geopf.fr/wms-r/wms" }
+extent = [-5.3, 41.3, 9.6, 51.1]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -331,8 +351,9 @@ kind = "data"
 licence = "CC0-1.0"
 attribution = "Autonome Provinz Bozen – Provincia autonoma di Bolzano"
 fetch = { kind = "dtm", url = "https://geoservices9.civis.bz.it/geoserver/ows" }
+extent = [10.3, 46.2, 12.5, 47.1]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -342,8 +363,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "Provincia autonoma di Trento"
 fetch = { kind = "dtm", url = "https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/" }
+extent = [10.4, 45.6, 12.0, 46.6]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -353,8 +375,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "© Rijkswaterstaat / AHN"
 fetch = { kind = "dtm", url = "https://service.pdok.nl/rws/ahn/wcs/v1_0" }
+extent = [3.2, 50.7, 7.3, 53.6]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -364,8 +387,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "© Kartverket"
 fetch = { kind = "dtm", url = "https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25833" }
+extent = [4.0, 57.8, 31.5, 71.5]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -375,8 +399,9 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "Sourced from the LINZ Data Service and licensed by Toitū Te Whenua Land Information New Zealand, for re-use under CC BY 4.0"
 fetch = { kind = "dtm", url = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dem_1m/2193/" }
+extent = [166.3, -47.4, 178.9, -34.0]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -386,9 +411,10 @@ kind = "data"
 licence = "CC-BY-4.0"
 attribution = "© Lantmäteriet"
 fetch = { kind = "dtm", url = "https://api.lantmateriet.se/stac-hojd/v1/search" }
+extent = [9.08, 55.16, 25.54, 69.07]
 hosts = ["*.lantmateriet.se"]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"] }
@@ -399,8 +425,9 @@ kind = "data"
 licence = "OGL-UK-3.0"
 attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
 fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs" }
+extent = [-6.5, 49.8, 2.0, 55.9]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
@@ -410,8 +437,9 @@ kind = "data"
 licence = "LicenseRef-public-domain"
 attribution = "USGS 3DEP"
 fetch = { kind = "dtm", url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage" }
+extent = [-179.0, 17.0, -65.0, 72.0]
 version = "date"
-refresh = 365
+refresh = "manual"
 redistribute = true
 r2_copy = true
 
