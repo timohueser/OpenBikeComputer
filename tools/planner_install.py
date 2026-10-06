@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -224,22 +225,51 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     execute(["systemctl", "restart", unit(value)])
 
 
-def probe(value, base=BASE, execute=run, read=None):
-    value = installed(value)
+def running(value, candidate, directory, execute, proc):
+    pid = execute(["systemctl", "show", unit(value), "--property=MainPID", "--value"])
+    if not re.fullmatch(r"[1-9][0-9]*", pid): raise ValueError("Service has no running process")
+    process = proc / pid
+    environment = dict(item.decode(errors="replace").split("=", 1) for item in (process / "environ").read_bytes().split(b"\0") if b"=" in item)
+    args = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
+    code, data = directory / "code", directory / "data"
+    executable = code / "bin/route-server" if value["service"] == "routing" else Path(shutil.which("node")) if value["service"] == "search" else Path(sys.executable)
+    if (process / "cwd").resolve() != code.resolve() or (process / "exe").resolve() != executable.resolve() or environment.get("OBC_PLANNER_SERVICE_ID") != value["id"]:
+        raise ValueError("Running process belongs to another runtime identity")
+    name = value["service"]
+    port = str(SERVICES[name][value["slot"]])
+    if name == "routing" and (len(args) < 2 or args[1] != str(data / "routing") or environment.get("ROUTE_LISTEN") != f"127.0.0.1:{port}" or environment.get("ROUTE_ORIGIN") != candidate["site_origin"]):
+        raise ValueError("Running routing configuration differs")
+    if name == "search" and (len(args) < 2 or args[1] != str(code / "server.mjs") or environment.get("OBC_SEARCH_DATA") != str(data / "search") or environment.get("OBC_SEARCH_PYTHON") != str(directory / "python") or environment.get("OBC_SEARCH_PORT") != port or environment.get("OBC_SEARCH_ORIGINS") != candidate["site_origin"]):
+        raise ValueError("Running search configuration differs")
+    if name == "downloads":
+        def option(key):
+            return args[args.index(key) + 1] if args.count(key) == 1 and args.index(key) + 1 < len(args) else None
+        if args[1:4] != ["-S", "-m", "tools.planner_downloads"] or option("--source") != str(data / "offline") or option("--port") != port or option("--objects-url") != candidate["objects_url"] or environment.get("PYTHONPATH") != str(code):
+            raise ValueError("Running downloads configuration differs")
+    return environment, pid
+
+
+def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
+    value = installed(request["installed"])
+    candidate = request["candidate"]
+    if (value["service"], value["id"]) != (candidate["service"], candidate["id"]):
+        raise ValueError("Candidate service identity differs from the selected slot")
     directory = destination(value, base)
-    environment = dict(item.split("=", 1) for item in shlex.split(execute(["systemctl", "show", unit(value), "--property=Environment", "--value"])))
-    if execute(["systemctl", "show", unit(value), "--property=WorkingDirectory", "--value"]) != str(directory / "code"):
-        raise ValueError("Service slot belongs to another identity")
+    environment, pid = running(value, candidate, directory, execute, proc)
+    if environment.get("OBC_PLANNER_RUNTIME_SHA") != candidate["runtime"]["sha256"]:
+        raise ValueError("Running runtime descriptor differs")
     expected = {"installed": value,
                 "release": {"size": (directory / "release.json").stat().st_size, "sha256": identity(environment["OBC_PLANNER_RELEASE_SHA"])},
                 "runtime": {"size": (directory / "runtime.json").stat().st_size, "sha256": identity(environment["OBC_PLANNER_RUNTIME_SHA"])}}
     release, descriptor = documents(directory, expected)
+    if descriptor["target"] != {key: item for key, item in candidate["target"].items() if item is not None}:
+        raise ValueError("Candidate target differs from the running runtime")
     prerequisites(descriptor)
     name, port = value["service"], SERVICES[value["service"]][value["slot"]]
     waiting = read is None
     if waiting:
         def read(path):
-            origin = environment.get("ROUTE_ORIGIN", environment.get("OBC_SEARCH_ORIGINS"))
+            origin = candidate["site_origin"] if name != "downloads" else None
             request = Request(f"http://127.0.0.1:{port}{path}", headers={"Origin": origin} if origin else {})
             with urlopen(request, timeout=5) as response:
                 if origin and response.headers.get("Access-Control-Allow-Origin") != origin:
@@ -248,12 +278,16 @@ def probe(value, base=BASE, execute=run, read=None):
     deadline = time.monotonic() + 120
     while True:
         try:
-            if name == "routing": return {"service": name, "package": read("/v1/region")["package"]}
-            if name == "downloads": return {"service": name, "catalog": read("/catalog")["sha256"]}
-            status = read("/api/planner-search/status")
-            if not status["parser"]["ready"] or len(status["regions"]) != 1 or status["regions"][0]["id"] != release["region"]:
-                raise ValueError("Search service is not ready for this region")
-            return {"service": name, "grid": status["regions"][0]["grid"], "model": status["parser"]["model"]}
+            if name == "routing": result = {"service": name, "package": read("/v1/region")["package"]}
+            elif name == "downloads": result = {"service": name, "catalog": read("/catalog")["sha256"]}
+            else:
+                status = read("/api/planner-search/status")
+                if not status["parser"]["ready"] or len(status["regions"]) != 1 or status["regions"][0]["id"] != release["region"]:
+                    raise ValueError("Search service is not ready for this region")
+                result = {"service": name, "grid": status["regions"][0]["grid"], "model": status["parser"]["model"]}
+            if execute(["systemctl", "show", unit(value), "--property=MainPID", "--value"]) != pid:
+                raise ValueError("Service process changed during its probe")
+            return result
         except (OSError, ValueError, KeyError):
             if not waiting or time.monotonic() >= deadline: raise
             time.sleep(1)

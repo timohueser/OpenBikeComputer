@@ -2,6 +2,8 @@
 
 import io
 import json
+import shlex
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
@@ -39,6 +41,9 @@ class PlannerInstall(unittest.TestCase):
         self.request = {"installed": self.value, "candidate": self.candidate}
         self.write_metadata()
         self.commands = []
+        self.proc = self.root / "proc"
+        (self.proc / "42").mkdir(parents=True)
+        self.start_process = True
 
     def write_metadata(self):
         for field, name, document in [("release", "release.json", self.document), ("runtime", "runtime/downloads.json", self.descriptor)]:
@@ -49,8 +54,23 @@ class PlannerInstall(unittest.TestCase):
 
     def execute(self, command):
         self.commands.append(command)
+        if command[:2] == ["systemctl", "restart"]:
+            if not self.start_process: raise ValueError("restart interrupted")
+            lines = (self.units / command[2]).read_text().splitlines()
+            environment = [line.removeprefix("Environment=") for line in lines if line.startswith("Environment=")]
+            args = shlex.split(next(line.removeprefix("ExecStart=") for line in lines if line.startswith("ExecStart=")))
+            cwd = next(line.removeprefix("WorkingDirectory=") for line in lines if line.startswith("WorkingDirectory="))
+            process = self.proc / "42"
+            for name, target in [("cwd", cwd), ("exe", Path(sys.executable).resolve())]:
+                (process / name).unlink(missing_ok=True)
+                (process / name).symlink_to(target)
+            (process / "environ").write_bytes(b'\0'.join(item.encode() for item in environment))
+            (process / "cmdline").write_bytes(b'\0'.join(item.encode() for item in args))
+        if "--property=MainPID" in command: return "42"
         if "--property=WorkingDirectory" in command:
-            return str(install.destination(self.value, self.base) / "code")
+            path = self.units / command[2]
+            if not path.exists(): return ""
+            return next(line.removeprefix("WorkingDirectory=") for line in path.read_text().splitlines() if line.startswith("WorkingDirectory="))
         if "--property=Environment" in command:
             lines = (self.units / install.unit(self.value)).read_text().splitlines()
             return " ".join(line.removeprefix("Environment=") for line in lines if line.startswith("Environment="))
@@ -71,11 +91,46 @@ class PlannerInstall(unittest.TestCase):
         self.assertIn(" -S -m tools.planner_downloads", contents)
         self.assertIn("DynamicUser=yes", contents)
         with patch.object(install, "host", return_value=HOST):
-            actual = install.probe(self.value, self.base, self.execute, lambda _: {"sha256": "b" * 64})
+            actual = install.probe(self.request, self.base, self.execute, lambda _: {"sha256": "b" * 64}, self.proc)
         self.assertEqual(actual, {"service": "downloads", "catalog": "b" * 64}, "readiness must report opened data, not requested id")
         (directory / "data/offline/catalog.json").write_bytes(b'corrupt')
         with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "checksum"):
-            install.probe(self.value, self.base, self.execute, lambda _: self.fail("corrupt data must not be accepted"))
+            install.probe(self.request, self.base, self.execute, lambda _: self.fail("corrupt data must not be accepted"), self.proc)
+
+    def test_reuse_checks_desired_object_pool_and_origin_against_the_running_process(self):
+        self.stage()
+        self.candidate['objects_url'] = 'https://other.example/planner/objects'
+        with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "downloads configuration"):
+            install.probe(self.request, self.base, self.execute, lambda _: self.fail("wrong pool must not be reused"), self.proc)
+        directory = install.destination(self.value, self.base)
+        routing = {"service": "routing", "id": "a" * 64, "slot": 0}
+        (self.proc / '42/cmdline').write_bytes(b'\0'.join(str(item).encode() for item in [directory / 'code/bin/route-server', directory / 'data/routing']))
+        (self.proc / '42/exe').unlink()
+        (self.proc / '42/exe').symlink_to(directory / 'code/bin/route-server')
+        (self.proc / '42/environ').write_bytes(b'OBC_PLANNER_SERVICE_ID=' + b'a' * 64 + b'\0ROUTE_LISTEN=127.0.0.1:8787\0ROUTE_ORIGIN=https://old.example')
+        with self.assertRaisesRegex(ValueError, "routing configuration"):
+            install.running(routing, {"site_origin": "https://new.example"}, directory, self.execute, self.proc)
+
+    def test_reloaded_configuration_cannot_report_an_old_process_as_new_runtime(self):
+        self.stage()
+        payload = self.root / 'new.tar.gz'
+        with tarfile.open(payload, 'w:gz') as archive:
+            body = b'new runtime code'
+            entry = tarfile.TarInfo('entry.py')
+            entry.size, entry.mode = len(body), 0o644
+            archive.addfile(entry, io.BytesIO(body))
+        sha = runtime.digest(payload)
+        (self.source / 'objects' / sha).write_bytes(payload.read_bytes())
+        self.value['id'] = self.candidate['id'] = 'b' * 64
+        self.descriptor['payload'].update(sha256=sha, bytes=payload.stat().st_size)
+        self.write_metadata()
+        self.start_process = False
+        with self.assertRaisesRegex(ValueError, "restart interrupted"):
+            self.stage()
+        loaded = self.execute(['systemctl', 'show', install.unit(self.value), '--property=WorkingDirectory', '--value'])
+        self.assertIn('b' * 64, loaded, "systemd has the new configuration")
+        with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "another runtime identity"):
+            install.probe(self.request, self.base, self.execute, lambda _: {"sha256": self.candidate['expected']['catalog']}, self.proc)
 
     def test_wrong_target_and_archive_traversal_fail_before_any_slot_restart(self):
         with patch.object(install, "host", return_value={**HOST, "python": "3.13.0"}), self.assertRaisesRegex(ValueError, "prerequisites"):

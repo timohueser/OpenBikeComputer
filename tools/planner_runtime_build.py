@@ -185,7 +185,7 @@ def routing_notices(triple):
 
 
 def elf_requirements(directory, wanted):
-    libraries = set()
+    libraries, provided = set(), set()
     for path in sorted(directory.rglob("*")):
         if not path.is_file():
             continue
@@ -201,7 +201,9 @@ def elf_requirements(directory, wanted):
             raise ValueError(f"Runtime ELF exceeds the glibc baseline: {path.name}")
         dynamic = run(["readelf", "-d", str(path)], env=env)
         libraries.update(re.findall(r"\(NEEDED\).*?\[(.*?)\]", dynamic))
-    return sorted(libraries)
+        provided.update(re.findall(r"\(SONAME\).*?\[(.*?)\]", dynamic))
+        provided.add(path.name)
+    return sorted(libraries - provided)
 
 
 def archive(directory, output):

@@ -96,7 +96,7 @@ pub enum Ready {
 pub trait Vps {
     fn inspect(&mut self) -> Result<State, String>;
     fn stage(&mut self, staged: &Stage) -> Result<(), String>;
-    fn probe(&mut self, installed: &Installed) -> Result<Ready, String>;
+    fn probe(&mut self, staged: &Stage) -> Result<Ready, String>;
 }
 
 /// The current publication supplies active slots. This operation does not activate them.
@@ -158,7 +158,7 @@ pub fn stage(candidates: &[Candidate], current: &[Installed], vps: &mut impl Vps
             .filter(|unit| unit.service == candidate.service && unit.id == candidate.id)
             .min_by_key(|unit| active != Some(*unit));
         if let Some(installed) = installed {
-            if vps.probe(installed)? != candidate.expected {
+            if vps.probe(&Stage { installed: installed.clone(), candidate: candidate.clone() })? != candidate.expected {
                 return Err(format!("installed {} reports different data", candidate.service.name()));
             }
             result.push(installed.clone());
@@ -170,7 +170,7 @@ pub fn stage(candidates: &[Candidate], current: &[Installed], vps: &mut impl Vps
             slot: active.map_or(0, |unit| 1 - unit.slot),
         };
         vps.stage(&Stage { installed: installed.clone(), candidate: candidate.clone() })?;
-        if vps.probe(&installed)? != candidate.expected {
+        if vps.probe(&Stage { installed: installed.clone(), candidate: candidate.clone() })? != candidate.expected {
             return Err(format!("candidate {} reports different data", candidate.service.name()));
         }
         result.push(installed);

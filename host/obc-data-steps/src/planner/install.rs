@@ -160,7 +160,11 @@ mod tests {
             self.staged.push(staged.installed.clone());
             Ok(())
         }
-        fn probe(&mut self, installed: &Installed) -> Result<Ready, String> {
+        fn probe(&mut self, staged: &Stage) -> Result<Ready, String> {
+            let installed = &staged.installed;
+            if staged.candidate.site_origin != "https://openbikecomputer.com" {
+                return Err("site origin needs configuration".into());
+            }
             if self.failed == Some(installed.service) {
                 return Err("candidate is not healthy".into());
             }
@@ -293,6 +297,10 @@ mod tests {
         std::fs::remove_file(store.object(&sha256_hex(b"routing"))).unwrap();
         assert_eq!(staged(&release, &first, &mut fake).unwrap(), first);
         assert!(fake.staged.is_empty());
+        let prepared =
+            prepare(&release, &store, "https://maps.openbikecomputer.com/planner/objects", "https://other.example")
+                .unwrap();
+        assert!(stage(prepared.candidates(), &first, &mut fake).unwrap_err().contains("site origin"));
         let offline = put("offline/catalog.json", b"catalog with an optional map");
         document["files"][&offline.path] = json!({"bytes": offline.size, "sha256": offline.sha256, "transport": {"bytes": offline.size, "sha256": offline.sha256, "encoding": "identity"}});
         release.layers[4].files.retain(|file| file.path != offline.path);
