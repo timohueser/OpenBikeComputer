@@ -65,6 +65,9 @@ TEST_SOURCE_PATTERNS = (
 #: The documentation surface each documentation gate reads.
 DOCS = "docs/"
 
+#: This known delegate renders with stdlib Python and does not build a product.
+DOCS_CHECK = "just check-docs"
+
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
 
@@ -232,7 +235,7 @@ def plan(
     )
     gates.append(
         Gate(
-            "just check-docs",
+            DOCS_CHECK,
             f"documentation changed: {docs}" if docs else f"nothing under {DOCS} changed",
             bool(docs),
             covered_by="ci.docs",
@@ -291,7 +294,7 @@ def plan(
             spoken.add(gate.covered_by)
             gate = (
                 replace(gate, reason=f"{gate.reason}, and it runs {gate.covered_by}")
-                if builds_nothing(gate.command)
+                if gate.command == DOCS_CHECK or builds_nothing(gate.command)
                 else replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
             )
         kept.append(gate)
