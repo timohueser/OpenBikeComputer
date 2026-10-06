@@ -30,3 +30,22 @@ Inspect `/var/lib/obc-data/store/runs/RUN.jsonl` for acknowledged writes. A pend
 blocks every later commit. Do not delete it or retry from a later object read alone.
 There is no automatic reconciliation or timeout takeover. Reusing a run id with another
 bundle is refused. Planner activation stays blocked until its service switch runs in the owner.
+
+
+## Terminal controls
+
+Run `obc data` in a terminal. Checks and edits run in the background. Press `q` to quit;
+an admitted check or edit finishes before the terminal closes.
+
+| View | Keys |
+| --- | --- |
+| Live region | `r` opens saved regions; `/` filters; Enter selects |
+| Region editor | `n` creates an area selection; `b` creates a Box; `d` reviews deletion |
+| Area selection | F5 loads the public area list; arrows and Space select; F3 shows selected areas |
+| Region fields | Tab and Shift-Tab move; F2 saves the file; Esc keeps the draft |
+| Sources | `f` changes scope; `/` filters; Enter shows details; `R` checks upstream |
+| Source policy | `e` opens presets; `c` enters 1..65535 whole days |
+| Error | `!` opens the full message and fix; `x` dismisses it outside an input |
+
+Region and policy writes save files for review and commit. `u` resets only the live environment;
+it does not reset region files or source policies. Opening a region view does not fetch inputs.
