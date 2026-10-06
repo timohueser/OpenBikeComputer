@@ -8,9 +8,9 @@ description = "Pure no_std sensor chip/protocol decoders — the host-testable h
 [dependencies]
 # The dependency-light semantic sample types the decoders emit (`Fix`, `DateTime`, `GpsTime`, …) —
 # the foundation port contract, never an upward app/UI dependency.
-obc-ports = { path = "../obc-ports" }
+obc-ports = { workspace = true }
 
 # `powf`/`atan2f` for the BMP581 barometric pressure→altitude formula and the compass heading: no
 # `std` in this no_std crate, so transcendental math goes through libm — the same 0.2 obc-render /
 # obc-route already use.
-libm = { version = "0.2", default-features = false } # no arch asm — see the obc-reader edge (Miri tripwire)
+libm = { workspace = true } # no arch asm — see the obc-reader edge (Miri tripwire)

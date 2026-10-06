@@ -61,6 +61,34 @@ members = [
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
 
+[workspace.dependencies]
+obc-crc = { path = "firmware/obc-crc" }
+obc-data = { path = "host/obc-data" }
+obc-display = { path = "firmware/obc-display" }
+obc-elevation = { path = "firmware/obc-elevation" }
+obc-fixtures = { path = "host/obc-fixtures" }
+obc-flat-device = { path = "host/obc-flat-device" }
+obc-formats = { path = "firmware/obc-formats" }
+obc-link = { path = "firmware/obc-link" }
+obc-map-scene = { path = "firmware/obc-map-scene" }
+obc-pack = { path = "host/obc-pack" }
+obc-ports = { path = "firmware/obc-ports" }
+obc-reader = { path = "firmware/obc-reader" }
+obc-render = { path = "firmware/obc-render" }
+obc-route = { path = "firmware/obc-route" }
+obc-storage = { path = "firmware/obc-storage" }
+obc-vectors = { path = "host/obc-vectors" }
+obcm-testkit = { path = "host/obcm-testkit" }
+
+embedded-graphics = "0.8"
+heapless = "0.8"
+libm = { version = "0.2", default-features = false }
+miniz_oxide = { version = "0.8.9", default-features = false }
+pollster = "0.3"
+serde_json = "1"
+sha2 = { version = "0.11", default-features = false }
+zlib-rs = "0.6.7"
+
 # Optimize CRC and storage crash-matrix loops in development and tests.
 [profile.dev.package.obc-crc]
 opt-level = 2
