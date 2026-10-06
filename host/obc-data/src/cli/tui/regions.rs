@@ -1,6 +1,6 @@
 //! Keyboard editing of saved coverage, through the same verified region API as the CLI.
 
-use super::{App, Effect, LIVE};
+use super::{App, Effect};
 use crate::cli::regions_cli::{Create, Deletion, Suggestions};
 use ratatui::{
     crossterm::event::KeyCode,
