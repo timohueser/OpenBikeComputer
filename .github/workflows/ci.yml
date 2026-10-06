@@ -754,8 +754,11 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
-      - name: build_docs.py --check-links
-        run: python3 docs/build_docs.py --check-links
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: "1.57.0"
+      - name: Documentation build and link check
+        run: just check-docs
 
   # iOS companion, fast tier: the OBCKit package suite on the macOS host (no simulator).
   # This is what enforces the architecture rules that are otherwise only "test-enforced"
