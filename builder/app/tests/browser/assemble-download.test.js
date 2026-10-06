@@ -150,7 +150,10 @@ test('assembles the fixture region in the tab and downloads the pinned map', asy
     // The server's log: its first record names what it published, the rest are the requests.
     const records = (await readFile(CATALOG_LOG, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
     const requested = new Set(records.slice(1).filter((r) => r.kind === 'object').map((r) => r.path));
-    expect([...records[0].served].filter((path) => !requested.has(path))).toEqual([]);
+    // The standalone schema is reference metadata; this client reads the root's inline schema.
+    expect(records[0].served).toContain('/catalog/schema.json');
+    const required = records[0].served.filter((path) => path !== '/catalog/schema.json');
+    expect(required.filter((path) => !requested.has(path))).toEqual([]);
     expect(records.slice(1).filter((r) => r.kind === 'missing' && r.path.startsWith('/catalog/'))).toEqual([]);
     await page.waitForTimeout(500);
     expect(downloads).toEqual([saved]);
