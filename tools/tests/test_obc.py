@@ -56,3 +56,34 @@ class ObcTests(unittest.TestCase):
                         cwd=cwd, env=env, capture_output=True, text=True, check=True,
                     )
                     self.assertEqual(completion.stdout.strip(), str(selected / "tools"))
+
+    def test_native_and_installed_entry_points_preserve_root_and_caller_paths(self):
+        source = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory(prefix="obc native ") as directory:
+            root = Path(directory)
+            (root / "tools").mkdir()
+            (root / "firmware/obc-app").mkdir(parents=True)
+            caller = root / "nested caller"
+            caller.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            shutil.copyfile(source / "justfile", root / "justfile")
+            for name in ("justfile", "obc", "obc-dev.sh"):
+                shutil.copyfile(source / "tools" / name, root / "tools" / name)
+            (root / "tools/req.py").write_text(
+                "import json,os,sys\nfrom pathlib import Path\n"
+                "print(json.dumps([os.environ['OBC_ROOT'],os.environ['OBC_TOOLS'],str(Path.cwd()),sys.argv[1:]]))\n"
+            )
+            args = ["../a map.obcm", "--check"]
+            commands = [
+                ["just", "req", *args],
+                ["just", "--justfile", str(root / "tools/justfile"), "req", *args],
+                ["bash", str(root / "tools/obc"), "req", *args],
+            ]
+            env = dict(os.environ)
+            env.pop("OBC_DRY_RUN", None)
+            for command in commands:
+                with self.subTest(entry=command[:2]):
+                    result = subprocess.run(command, cwd=caller, env=env,
+                                            capture_output=True, text=True, check=True)
+                    self.assertEqual(json.loads(result.stdout),
+                                     [str(root), str(root / "tools"), str(caller), args])

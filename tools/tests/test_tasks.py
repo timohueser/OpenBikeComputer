@@ -9,7 +9,7 @@ from tools import tasks
 
 
 SCRIPT = Path(__file__).parents[1] / "tasks.py"
-REAL_JUSTFILE = SCRIPT.parent / "justfile"
+REAL_JUSTFILE = SCRIPT.parent.parent / "justfile"
 
 
 class TasksTests(unittest.TestCase):

@@ -57,7 +57,7 @@ def render(tasks, keep, pointer: str = "") -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--justfile", type=Path, default=Path(__file__).parent / "justfile")
+    parser.add_argument("--justfile", type=Path, default=Path(__file__).parents[1] / "justfile")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--agent", action="store_true", help="the agent tasks only")
     scope.add_argument("--all", action="store_true", help="every task")
