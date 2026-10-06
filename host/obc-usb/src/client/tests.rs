@@ -255,7 +255,7 @@ async fn native_cancel_and_bad_source_crc_preserve_committed_map() {
     let mut source = PayloadFile::new(&bytes);
     let (stop, cancel) = watch::channel(false);
     let outcome = session
-        .execute(put(&bytes), None, Some(&mut source.file), None, &cancel, |done, _| {
+        .execute(Request::Put(replacement), None, Some(&mut source.file), None, &cancel, |done, _| {
             if done > 0 {
                 stop.send_replace(true);
             }

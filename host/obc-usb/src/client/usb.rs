@@ -55,6 +55,24 @@ impl Records {
     }
 }
 
+async fn read_or_stop<F: std::future::Future>(
+    read: F,
+    stop: &mut watch::Receiver<bool>,
+    cancel: impl FnOnce(),
+) -> Option<F::Output> {
+    tokio::pin!(read);
+    tokio::select! {
+        // The sole IN reader has an uncontended lock. Its first poll subscribes before cancel.
+        biased;
+        result = &mut read => Some(result),
+        _ = stop.changed() => {
+            cancel();
+            let _ = read.await;
+            None
+        }
+    }
+}
+
 struct Readers {
     stop: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -79,15 +97,8 @@ impl Readers {
                         if *stop.borrow() {
                             return;
                         }
-                        let read = pipe.read();
-                        tokio::pin!(read);
-                        let received = tokio::select! {
-                            result = &mut read => result,
-                            _ = stop.changed() => {
-                                pipe.cancel(Some(Dir::In));
-                                let _ = read.await;
-                                return;
-                            }
+                        let Some(received) = read_or_stop(pipe.read(), &mut stop, || pipe.cancel(Some(Dir::In))).await else {
+                            return;
                         };
                         let result = match received {
                             Ok(chunk) => {
@@ -249,5 +260,59 @@ impl Transport for UsbTransport {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
+        task::{Context, Poll, Waker},
+    };
+
+    struct Read {
+        epoch: Arc<AtomicUsize>,
+        subscribed: Option<usize>,
+        polls: Arc<AtomicUsize>,
+        wake: Arc<Mutex<Option<Waker>>>,
+    }
+
+    impl Future for Read {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            let subscribed = *self.subscribed.get_or_insert(epoch);
+            if subscribed != epoch {
+                return Poll::Ready(());
+            }
+            *self.wake.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn already_signalled_stop_arms_and_drains_the_unpolled_read() {
+        let (stop, mut stopped) = watch::channel(false);
+        assert!(!*stopped.borrow());
+        let epoch = Arc::new(AtomicUsize::new(0));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let wake = Arc::new(Mutex::new(None::<Waker>));
+        let read = Read { epoch: epoch.clone(), subscribed: None, polls: polls.clone(), wake: wake.clone() };
+        stop.send_replace(true);
+        let result = read_or_stop(read, &mut stopped, || {
+            assert_eq!(polls.load(Ordering::SeqCst), 1);
+            epoch.fetch_add(1, Ordering::SeqCst);
+            wake.lock().unwrap().take().unwrap().wake();
+        })
+        .await;
+        assert!(result.is_none());
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
     }
 }
