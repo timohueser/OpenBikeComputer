@@ -28,7 +28,7 @@ export type NativeOutcome = { kind: string } & Record<string, unknown>;
 type NativeError = { kind: string; refusal?: { code: number; detail: number; context: string } };
 type Result = { ok: true; outcome: NativeOutcome } | { ok: false; error: NativeError };
 type Action =
-    | { kind: "send"; token: string; channel: "control" | "stream"; opcode: number | null; requestId: number | null }
+    | { kind: "send"; token: string; channel: "control" | "stream"; opcode: number | null; requestId: number | null; cancelTransfer: number | null }
     | { kind: "readSource"; token: string; offset: string; maxLength: number }
     | { kind: "writeSink"; token: string; offset: string }
     | { kind: "progress"; done: string; total: string }
@@ -249,7 +249,10 @@ export class ClientIO {
             if (this.frames.length >= this.recordsPerBatch) this.flush();
             return;
         }
-        if (action.opcode === Opcode.Cancel) { this.frames = []; this.operation?.writes.abort(); }
+        if (action.cancelTransfer !== null && action.cancelTransfer === this.liveTransfer) {
+            this.frames = [];
+            this.operation?.writes.abort();
+        }
         const operation = this.operation;
         void this.control.send(bytes, this.reads.signal).then(() => {
             if (this.closed) return;

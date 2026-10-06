@@ -158,7 +158,7 @@ export class FlatStoreClient {
     }
 
     async cancel(transferRequestId: number, signal?: AbortSignal): Promise<boolean> {
-        return body<{ cancelled: boolean }>(await this.io.run({ op: "cancel", transfer: transferRequestId }, Opcode.Cancel, { signal })).cancelled;
+        return body<{ cancelled: boolean }>(await this.io.query({ op: "cancel", transfer: transferRequestId }, Opcode.Cancel, signal)).cancelled;
     }
 
     async arm(ref: { objectId: bigint; expectedRevision: bigint }, signal?: AbortSignal): Promise<ArmResponse> {

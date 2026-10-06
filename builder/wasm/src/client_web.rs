@@ -186,15 +186,17 @@ impl From<Action> for JsAction {
         let mut bytes = Vec::new();
         let metadata = match action {
             Action::Send { token, channel, record } => {
-                let header = if channel == Channel::Control {
-                    decode_request(&record).ok().map(|(header, _)| header)
-                } else {
-                    None
-                };
+                let request = if channel == Channel::Control { decode_request(&record).ok() } else { None };
+                let header = request.map(|(header, _)| header);
+                let cancel_transfer = request.and_then(|(_, request)| match request {
+                    Request::Cancel(cancel) => Some(cancel.transfer.0),
+                    _ => None,
+                });
                 bytes = record;
                 json!({"kind": "send", "token": token.to_string(), "channel": match channel {
                     Channel::Control => "control", Channel::Stream => "stream",
-                }, "opcode": header.map(|h| h.opcode as u8), "requestId": header.map(|h| h.request.0)})
+                }, "opcode": header.map(|h| h.opcode as u8), "requestId": header.map(|h| h.request.0),
+                "cancelTransfer": cancel_transfer})
             }
             Action::ReadSource { token, offset, max_len } => json!({
                 "kind": "readSource", "token": token.to_string(), "offset": offset.to_string(), "maxLength": max_len,
@@ -291,6 +293,7 @@ impl JsClient {
                             "more": more, "entries": entries.into_iter().map(entry).collect::<Vec<_>>(),
                         }),
                         QueryOutcome::Status(status) => outcome(Outcome::Status(status)),
+                        QueryOutcome::Cancel(cancelled) => outcome(Outcome::Cancel(cancelled)),
                         QueryOutcome::Catalog { store, sequence, entries } => {
                             outcome(Outcome::Catalog { store, sequence, entries })
                         }
