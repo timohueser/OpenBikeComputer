@@ -213,7 +213,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
     release.name_files(Maps.named(&release).unwrap()).unwrap();
     Maps.verify(&root, None, &release, &store).unwrap();
-    let pointer = Maps.pointer().unwrap()(&release, &store).unwrap();
+    let pointer = Maps.pointer().unwrap()(&root, &release, &store).unwrap();
     assert!(
         release.named.iter().any(|file| file.path == "schema.json")
             && release.named.iter().any(|file| file.path == "LICENSE.txt")

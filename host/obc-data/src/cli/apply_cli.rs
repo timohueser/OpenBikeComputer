@@ -174,7 +174,44 @@ fn apply_live(
         let (built, next) = stage(root, store, http, remote, products, plan, &mut run)?;
         crate::worker::check(root)?;
         let directory = scratch.0.join("bundle");
-        let digest = super::commit_cli::pack(&directory, store, &run, expected, next, registry(root)?.sources, remote)?;
+        let sources = registry(root)?.sources;
+        let previous = Live::read(remote, products, &sources, store).map_err(r2_failed)?;
+        if previous
+            .products
+            .iter()
+            .any(|product| expected.get(&format!("{}/catalog.json", product.prefix)) != Some(&product.observed))
+        {
+            return Err(Code::PlanOutdated.error("live changed while preparing service metadata"));
+        }
+        previous.restore_named(remote, store).map_err(r2_failed)?;
+        let views = |live: &Live, folder: &str| -> Result<Vec<crate::vps::Candidate>, Error> {
+            let mut services = Vec::new();
+            for product in products {
+                let Some(now) = live.products.iter().find(|now| now.product == product.name()) else { continue };
+                let Some((_, release)) = &now.release else { continue };
+                let mut candidates = product.services(root, release, store, &directory.join(folder))?;
+                if !candidates.is_empty() {
+                    let origins: crate::vps::Origins = serde_json::from_value(
+                        now.document
+                            .as_ref()
+                            .and_then(|document| document.get("origins"))
+                            .cloned()
+                            .ok_or_else(|| Code::VerifyFailed.error("service view has no pointer origins"))?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    origins.check()?;
+                    for candidate in &mut candidates {
+                        candidate.site_origin = origins.site_origin.clone();
+                        candidate.api_origin = origins.api_origin.clone();
+                        candidate.objects_url = origins.objects_url();
+                    }
+                }
+                services.extend(candidates);
+            }
+            Ok(services)
+        };
+        let services = (views(&next, "services")?, views(&previous, "previous-services")?);
+        let digest = super::commit_cli::pack(&directory, store, &run, expected, next, sources, remote, services)?;
         run.sync()?;
         Ok((built, scratch, directory, digest))
     })();
@@ -802,7 +839,7 @@ mod tests {
             Versioned.named(release)
         }
         fn pointer(&self) -> Option<PointerFn> {
-            Some(|release, _| {
+            Some(|_, release, _| {
                 Ok(Pointer {
                     document: [("schema".into(), 2.into()), ("bound".into(), release.id().into())]
                         .into_iter()
@@ -1098,6 +1135,7 @@ mod tests {
             next,
             parse_sources(SOURCES).unwrap(),
             &remote,
+            (Vec::new(), Vec::new()),
         )
         .unwrap();
         let payload = Store::at(&directory);
@@ -1184,6 +1222,7 @@ mod tests {
             next,
             parse_sources(SOURCES).unwrap(),
             &remote,
+            (Vec::new(), Vec::new()),
         )
         .unwrap();
         drop(run);
