@@ -393,6 +393,14 @@ A publish MUST make all referenced content available before replacing the root:
 4. replace `catalog.json` last.
 
 A failure before step 4 leaves the previously published root authoritative.
+An explicit catalog refresh replaces the complete accepted root and its satellite
+client. It MUST NOT combine objects or schema bytes from two roots in one assembly.
+The builder stops and drains old preparation before it accepts a replacement. It
+MUST NOT replace the builder during an active device transfer. Refresh keeps the
+coverage parts and corridor radius. It resolves them against the new catalog and
+shows unavailable coverage without dropping parts. Chosen skins remain selected
+when they are compatible with the new schema.
+
 `catalog.json` SHOULD use a short cache lifetime (at most 60 seconds or
 revalidation). Digest-addressed cells, satellites, and previews SHOULD use a long
 immutable cache lifetime.
