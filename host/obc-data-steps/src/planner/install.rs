@@ -239,9 +239,11 @@ mod tests {
             files.insert(path.into(), json!({"bytes": file.size, "sha256": file.sha256, "transport": {"bytes": file.size, "sha256": file.sha256, "encoding": "identity"}}));
             release.layers[4].files.push(file);
         }
+        release.layers[4].client = Client::Paths(files.keys().cloned().collect());
         let mut document =
             json!({"region": "test", "routing_package": files["routing/blocks.json"]["sha256"], "files": files});
         release.named.push(put("release.json", &serde_json::to_vec(&document).unwrap()));
+        release.layers[4].files.push(release.named[0].clone());
         for service in [Service::Routing, Service::Search, Service::Downloads] {
             let name = service.name();
             let payload = put(&format!("{name}.tar.gz"), name.as_bytes());
@@ -307,6 +309,8 @@ mod tests {
         release.layers[4].files.push(offline);
         release.named.retain(|file| file.path != "release.json");
         release.named.insert(0, put("release.json", &serde_json::to_vec(&document).unwrap()));
+        release.layers[4].files.retain(|file| file.path != "release.json");
+        release.layers[4].files.push(release.named[0].clone());
         fake.expected[2] = ready(Service::Downloads, &document).unwrap();
         release.layers[4].digest = sha256_hex(b"index with optional map");
         let changed = staged(&release, &first, &mut fake).unwrap();
