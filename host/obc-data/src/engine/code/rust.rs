@@ -94,7 +94,7 @@ impl Metadata {
         Ok(metadata)
     }
 
-    pub fn selected(&self, root: &Path, crates: &[String]) -> Result<Selected, String> {
+    pub fn selected(&self, root: &Path, crates: &[String], include_engine: bool) -> Result<Selected, String> {
         let packages: HashMap<_, _> = self.packages.iter().map(|package| (package.id.as_str(), package)).collect();
         let nodes: HashMap<_, _> = self.resolve.nodes.iter().map(|node| (node.id.as_str(), node)).collect();
         let mut pending = Vec::new();
@@ -110,7 +110,7 @@ impl Metadata {
         while let Some(id) = pending.pop() {
             let package = packages.get(id).ok_or_else(|| format!("cargo has no resolved package `{id}`"))?;
             // Engine plumbing is not producer code. Selected content settings have their own projection.
-            if package.name == env!("CARGO_PKG_NAME") || !seen.insert(id) {
+            if (!include_engine && package.name == env!("CARGO_PKG_NAME")) || !seen.insert(id) {
                 continue;
             }
             let node = nodes.get(id).ok_or_else(|| format!("cargo has no resolved node `{id}`"))?;
@@ -197,32 +197,36 @@ mod tests {
             metadata.checksums.insert((name.into(), "1.0.0".into(), "registry+test".into()), name.into());
         }
         let names = vec!["producer".into()];
-        let before = metadata.selected(&root, &names).unwrap();
+        let before = metadata.selected(&root, &names, false).unwrap();
         assert_eq!(before.0, BTreeSet::from([dir]));
         assert_eq!(before.1.len(), 3);
         for name in ["dev", "unrelated"] {
             metadata.checksums.insert((name.into(), "1.0.0".into(), "registry+test".into()), "changed".into());
         }
-        assert_eq!(metadata.selected(&root, &names).unwrap(), before);
+        assert_eq!(metadata.selected(&root, &names, false).unwrap(), before);
         for name in ["normal", "build"] {
             let key = (name.into(), "1.0.0".into(), "registry+test".into());
             let old = metadata.checksums.insert(key.clone(), "changed".into()).unwrap();
-            assert_ne!(metadata.selected(&root, &names).unwrap().1, before.1, "{name}");
+            assert_ne!(metadata.selected(&root, &names, false).unwrap().1, before.1, "{name}");
             metadata.checksums.insert(key, old);
         }
         metadata.packages[0].settings.insert("license".into(), serde_json::json!("MIT"));
         assert_ne!(
-            metadata.selected(&root, &names).unwrap().1,
+            metadata.selected(&root, &names, false).unwrap().1,
             before.1,
             "resolved inherited package settings bind code"
         );
         metadata.packages[0].settings.clear();
         metadata.packages[1].source = Some("git+test#first".into());
-        let git = metadata.selected(&root, &names).unwrap().1;
+        let git = metadata.selected(&root, &names, false).unwrap().1;
         metadata.packages[1].source = Some("git+test#second".into());
-        assert_ne!(metadata.selected(&root, &names).unwrap().1, git, "resolved git revisions bind bytes");
+        assert_ne!(metadata.selected(&root, &names, false).unwrap().1, git, "resolved git revisions bind bytes");
         metadata.packages[1].source = Some("registry+test".into());
         metadata.resolve.nodes[1].features.push("format-affecting".into());
-        assert_ne!(metadata.selected(&root, &names).unwrap().1, before.1, "resolved build features are real inputs");
+        assert_ne!(
+            metadata.selected(&root, &names, false).unwrap().1,
+            before.1,
+            "resolved build features are real inputs"
+        );
     }
 }

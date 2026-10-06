@@ -21,6 +21,7 @@ pub(super) struct Context {
     rust: Option<rust::Metadata>,
     python: HashMap<Option<String>, python::Identity>,
     packages: HashMap<String, BTreeMap<String, String>>,
+    include_engine: bool,
 }
 
 impl Context {
@@ -39,7 +40,7 @@ impl Context {
             if self.rust.is_none() {
                 self.rust = Some(rust::Metadata::load(&root)?);
             }
-            self.rust.as_ref().unwrap().selected(&root, &code.crates)?
+            self.rust.as_ref().unwrap().selected(&root, &code.crates, self.include_engine)?
         };
         for dir in &crates {
             let dir =
@@ -123,6 +124,26 @@ pub(super) fn python_command(root: &Path, code: &Code, expected: &str, command: 
 
 pub fn hash(files: &BTreeMap<String, String>) -> String {
     super::digest(files.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str())))
+}
+
+/// The compiled producer closure, including the engine that derives and applies its plans.
+pub fn compiled(root: &Path, crates: &[String]) -> Result<String, String> {
+    let registry = crate::sources::Registry::load(root)?;
+    let code = Code {
+        crates: crates.to_vec(),
+        sources: registry.sources.iter().map(|s| s.id.clone()).collect(),
+        ..Code::default()
+    };
+    let mut context = Context { include_engine: true, ..Context::default() };
+    let mut files = context.files(root, &code)?;
+    // Embedded credits use the content projection; controls are read from the checkout.
+    files.remove("data/sources.toml");
+    for path in ["Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"] {
+        if root.join(path).is_file() {
+            files.insert(path.into(), hash_file(&root.join(path))?.0);
+        }
+    }
+    Ok(hash(&files))
 }
 
 fn is_rust(file: &Path) -> bool {

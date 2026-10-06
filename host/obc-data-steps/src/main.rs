@@ -1,21 +1,13 @@
-//! `obc data` with the products whose steps make the releases. It also answers the selection
-//! commands that the Wikimedia captures call back (`obc_pack::landmarks::select`).
+//! Build and launch the producer worker from the current checkout.
 
-use std::process::ExitCode;
+mod launcher;
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(result) = obc_pack::landmarks::select::run(&args) {
-        return match result {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("obc data: {e}");
-                ExitCode::FAILURE
-            }
-        };
+fn main() -> std::process::ExitCode {
+    match launcher::run() {
+        Ok(code) => std::process::ExitCode::from(code),
+        Err(error) => {
+            eprintln!("obc data: {error}");
+            std::process::ExitCode::FAILURE
+        }
     }
-    if let Ok(binary) = std::env::current_exe() {
-        obc_data::fetch::capture::select_with(binary);
-    }
-    obc_data::cli::main(obc_data_steps::PRODUCTS)
 }

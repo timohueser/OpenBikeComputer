@@ -153,6 +153,7 @@ impl Run {
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
+        crate::worker::check(root)?;
         let _using = store.using()?;
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
@@ -162,6 +163,7 @@ impl Run {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
         self.fetch(context, plan)?;
+        crate::worker::check(root)?;
 
         // A step whose peak is not known reserves the whole memory, so it runs alone.
         let cost = |peak: Option<u64>| limits.memory_bytes.map_or(0, |memory| peak.unwrap_or(memory));

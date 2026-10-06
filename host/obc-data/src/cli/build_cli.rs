@@ -775,6 +775,7 @@ fn next(
     steps: &[Step],
     plan: &EnvPlan,
 ) -> Result<(Live, Vec<String>), Error> {
+    crate::worker::check(root)?;
     let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
     let stored = release::stored(store, root, steps, &taken)?;
     let missing: Vec<String> =
@@ -991,6 +992,7 @@ pub(super) fn product_steps(
     let mut failure = None;
     // A refusal belongs to the product that is listed now.
     env.refused.borrow_mut().clear();
+    crate::worker::check(root)?;
     let mut listed = product.steps(root, env, regions, store);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
     let mut fetched: Vec<Wanted> = Vec::new();
@@ -1012,6 +1014,7 @@ pub(super) fn product_steps(
             env.resolved.insert((wanted.source.clone(), crate::store::sorted(&wanted.params)), version);
         }
         fetched.extend(fetches.iter().cloned());
+        crate::worker::check(root)?;
         listed = product.steps(root, env, regions, store);
     }
     let steps = match listed {

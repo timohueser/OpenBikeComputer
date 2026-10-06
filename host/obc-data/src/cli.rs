@@ -130,6 +130,7 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
 }
 
 fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
+    crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let command = match cli.command {

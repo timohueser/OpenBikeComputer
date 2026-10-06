@@ -38,6 +38,22 @@ fn obc_data(temp: &Temp, args: &[&str]) -> Output {
 }
 
 #[test]
+fn a_private_worker_cannot_dispatch_cli_or_capture_callbacks_without_the_launcher() {
+    for args in [vec!["--help"], vec!["landmark-candidates", "--help"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_obc-data-worker"))
+            .args(args)
+            .env_remove(obc_data::worker::ROOT)
+            .env_remove(obc_data::worker::CODE)
+            .env_remove(obc_data::worker::EXE)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("start this worker through obc data"));
+    }
+}
+
+#[test]
 fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
     let temp = Temp::new("blocked");
     let store = obc_data::store::Store::at(temp.0.join("store"));

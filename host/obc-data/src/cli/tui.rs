@@ -282,6 +282,7 @@ fn run_loop(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App
 
 /// Do what `effect` names, with the function of its command.
 fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App, effect: Effect) -> Result<(), Error> {
+    crate::worker::check(root)?;
     match effect {
         Effect::None | Effect::Quit => Ok(()),
         Effect::Policy(id, refresh) => {

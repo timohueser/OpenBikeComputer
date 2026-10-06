@@ -496,10 +496,22 @@ An input layer enters a key with its digest, not with its key. A rebuild that gi
 files gives the same digest, so the keys of the layers that read it do not change, and the
 engine reuses them. A snapshot version enters a key the same way, by the digest of its files.
 
-A Rust step runs the code of the running binary, but its code hash comes from the checkout.
-`obc data` runs with `cargo run` in that checkout. Code identity does not bind the running
-binary or detect a source change during a run. External prepared tools enter through their
-selected snapshot bytes.
+`obc data` builds its private producer worker with locked, offline Cargo. Cargo's JSON artifact
+record selects the executable. The launcher checks the compiled Rust closure before and after
+the build, copies the executable to a temporary directory, and gives the child its checkout,
+code and executable hashes. The worker checks them before CLI or capture selection dispatch.
+It derives the plan from its fresh product code. Its compiled closure includes the engine and
+uses the source content projection. A source refresh policy change does not require a restart.
+An action in a long-lived worker rejects a persistent Rust source change with a restart message.
+
+The engine checks the whole declared step code before execution and after execution, before it
+accepts output objects or a receipt. These checks detect persistent concurrent edits. They do
+not detect an edit that is restored between checks or provide an immutable source snapshot.
+The launcher removes the copied worker after normal child exit, including on Windows. Abrupt
+launcher termination does not cancel the worker and can leave its copy in the operating
+system's temporary directory. The launch hashes
+guard accidental stale invocation; they are not an authentication protocol. External prepared
+tools enter through their selected snapshot bytes.
 
 The recipe of a step is the SHA-256 of the same object, with each input as `{"kind", "name", "files"}`
 for a layer and `{"kind", "name", "version", "params", "files"}` for a snapshot, `params` and
