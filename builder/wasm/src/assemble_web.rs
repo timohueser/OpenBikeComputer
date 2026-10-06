@@ -289,6 +289,8 @@ mod web {
         /// terrain region empty, which is a complete map with flat profiles.
         terrain: Option<TerrainLattice>,
         terrain_cells: Vec<TerrainCellBytes>,
+        landmarks: Vec<Vec<u8>>,
+        peaks: Vec<Vec<u8>>,
         outcome: Option<Outcome>,
         /// Whether the bytes were already moved out to JS. An emptied buffer looks the same as a
         /// legitimately empty one, and [`Assembler::take_file`] must tell them apart.
@@ -322,6 +324,8 @@ mod web {
                 known_empty: Vec::new(),
                 terrain: None,
                 terrain_cells: Vec::new(),
+                landmarks: Vec::new(),
+                peaks: Vec::new(),
                 outcome: None,
                 taken: false,
             })
@@ -387,6 +391,18 @@ mod web {
         #[wasm_bindgen(js_name = addTerrainCell)]
         pub fn add_terrain_cell(&mut self, id: String, sha256: String, bytes: Vec<u8>) {
             self.terrain_cells.push(TerrainCellBytes { id, sha256, bytes });
+        }
+
+        /// Add a detached landmark section from a verified catalog object.
+        #[wasm_bindgen(js_name = addLandmarks)]
+        pub fn add_landmarks(&mut self, bytes: Vec<u8>) {
+            self.landmarks.push(bytes);
+        }
+
+        /// Add a detached peak section from a verified catalog object.
+        #[wasm_bindgen(js_name = addPeaks)]
+        pub fn add_peaks(&mut self, bytes: Vec<u8>) {
+            self.peaks.push(bytes);
         }
 
         /// How many selected cells are waiting, in either form, including zero-byte coverage.
@@ -476,6 +492,8 @@ mod web {
                 known_empty: core::mem::take(&mut self.known_empty),
                 terrain: self.terrain,
                 terrain_cells: core::mem::take(&mut self.terrain_cells),
+                landmarks: core::mem::take(&mut self.landmarks),
+                peaks: core::mem::take(&mut self.peaks),
                 sink: map_sink.as_ref().map(|s| s as &dyn MapWrites),
                 scratch: js_scratch.as_ref().map(|s| s as &dyn ScratchWrites),
             };
@@ -560,6 +578,8 @@ mod web {
             self.source_cells = Vec::new();
             self.known_empty = Vec::new();
             self.terrain_cells = Vec::new();
+            self.landmarks = Vec::new();
+            self.peaks = Vec::new();
         }
     }
 

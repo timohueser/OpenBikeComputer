@@ -167,7 +167,7 @@ pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option
         Some("command")
     } else if live.outputs != step.sorted_outputs() {
         Some("outputs")
-    } else if live.client != step.client {
+    } else if live.client != step.client.sorted() {
         Some("client")
     } else if live.code != code_hash {
         Some("code")

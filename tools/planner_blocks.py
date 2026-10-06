@@ -1,6 +1,5 @@
 """Build the canonical planner grid from one verified regional release."""
 import argparse
-from collections import OrderedDict
 from contextlib import closing
 import gzip
 import json
@@ -10,9 +9,9 @@ import subprocess
 import sys
 
 from . import planner_runtime, planner_geo, planner_maps, planner_mvt as mvt
+from .planner_grid_maps import MAP_ZOOM, map_kinds, map_tiles
 
 ZOOM = 9
-MAP_ZOOM = 11
 # A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` and `planner-poi-icons`
 # in `map-style.ts`. A style, `lang` or protomaps change must update it. `planner-network-labels`
 # draws the overlay `ref` that `glyph_ranges` reads.
@@ -38,55 +37,6 @@ def cells(bounds):
             clipped = [max(b[0], bounds[0]), max(b[1], bounds[1]), min(b[2], bounds[2]), min(b[3], bounds[3])]
             if clipped[0] < clipped[2] and clipped[1] < clipped[3]:
                 yield f"{ZOOM}-{x}-{y}", clipped
-
-
-def map_kinds(maps):
-    """The tile archives of a map bundle; a data layer is present only when its recipe asks for it."""
-    return ["basemap", "places", "overlays", "terrain"] + [layer for layer in planner_runtime.DATA_LAYERS if (maps / f"{layer}.pmtiles").exists()]
-
-
-def map_tiles(source, output, kinds=None):
-    from pmtiles.reader import Reader, MmapSource, all_tiles
-    from pmtiles.tile import zxy_to_tileid
-    from pmtiles.writer import Writer
-    import struct
-    import tempfile
-
-    output.mkdir(parents=True, exist_ok=True)
-    for kind in kinds or map_kinds(source):
-        target = output / kind
-        target.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".tiles-", dir=output) as temporary:
-            cache = OrderedDict()
-            try:
-                with (source / f"{kind}.pmtiles").open("rb") as file:
-                    read = MmapSource(file)
-                    reader = Reader(read)
-                    header, metadata = reader.header(), reader.metadata()
-                    for (z, x, y), data in all_tiles(read):
-                        level = min(z, MAP_ZOOM)
-                        name = f"{level}-{x >> (z-level)}-{y >> (z-level)}"
-                        stream = cache.pop(name, None)
-                        if stream is None: stream = (Path(temporary) / name).open("ab")
-                        stream.write(struct.pack("<QI", zxy_to_tileid(z, x, y), len(data)))
-                        stream.write(data)
-                        cache[name] = stream
-                        if len(cache) > 16: cache.popitem(last=False)[1].close()
-            finally:
-                for stream in cache.values(): stream.close()
-            for path in sorted(Path(temporary).iterdir()):
-                with path.open("rb") as records, (target / f"{path.name}.pmtiles").open("wb") as destination:
-                    writer = Writer(destination)
-                    try:
-                        while record := records.read(12):
-                            tile_id, length = struct.unpack("<QI", record)
-                            data = records.read(length)
-                            if len(data) != length: raise ValueError("Incomplete tile staging file")
-                            writer.write_tile(tile_id, data)
-                        writer.finalize(dict(header), dict(metadata))
-                    finally:
-                        writer.tile_f.close()
-                path.unlink()
 
 
 def label_texts(tile):

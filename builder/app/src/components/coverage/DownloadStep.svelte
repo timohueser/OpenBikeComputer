@@ -727,10 +727,11 @@
         phase = "downloading";
         if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
-        const plan = planCells(resolution, store.catalog, indices, store.terrain);
+        const plan = planCells(resolution, store.catalog, indices, store.terrain, store.articles);
         const cells: WorkerCell[] = [];
         const sourceCells: WorkerSourceCell[] = [];
         const terrainCells: WorkerTerrainCell[] = [];
+        const articles = { landmarks: [] as Uint8Array[], peaks: [] as Uint8Array[] };
         const runAbort = new AbortController();
         abortCtl = runAbort;
         const assertActive = () => assertRunActive(runId, out, runAbort);
@@ -802,10 +803,9 @@
                 downloadCells(fetchPlan, {
                     fetchImpl: store.client.fetchImpl,
                     onCell: async (item, bytes) => {
-                            // `band === null` is what a terrain cell is — a second artifact
-                            // class, not a band — and it is the only thing that decides
-                            // which door it goes in.
-                        if (item.band === null) {
+                        if (item.article) {
+                            articles[item.article].push(bytes);
+                        } else if (item.band === null) {
                             terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
                         } else if (cellStore) {
                                 // Verified once, on the way in: the file's name is the digest
@@ -878,6 +878,7 @@
                 ? { postingLog2: store.terrain.posting_log2, cellLog2: store.terrain.cell_log2 }
                 : undefined,
             terrainCells: store.terrain ? terrainCells : undefined,
+            articles,
             schemaJson: store.rootBody,
             lightSkinJson: JSON.stringify(store.lightSkin),
             darkSkinJson: JSON.stringify(store.darkSkin),
@@ -1002,13 +1003,14 @@
         }
         const networkBandBytes = l.core.bytes;
         const totalCellBytes = l.totalBytes;
-        const terrainBytes = l.terrain?.bytes ?? 0;
+        // Both artifact classes stay resident even when map cells stream from disk.
+        const terrainBytes = (l.terrain?.bytes ?? 0) + (l.articleBytes ?? 0);
         const reuseCells = keepCells;
         const resolution = store.resolution;
         const indices = store.indices;
         const catalog = store.catalog;
         const plan = reuseCells && resolution && indices
-            ? planCells(resolution, catalog, indices, store.terrain)
+            ? planCells(resolution, catalog, indices, store.terrain, store.articles)
             : null;
         const revision = cellStoreRevision(catalog);
         estimatePending = true;

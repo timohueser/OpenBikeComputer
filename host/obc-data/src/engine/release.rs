@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::plan::walk;
-use super::{sorted, Input, InputRecord, LayerFile, Receipt, Step};
+use super::{sorted, Client, Input, InputRecord, LayerFile, Receipt, Step};
 use crate::store::{self, sha256_hex, write_atomic, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -39,9 +39,8 @@ pub struct Layer {
     pub files: Vec<LayerFile>,
     /// Source id to the fetch that the layer read: a receipt holds digests, not versions.
     pub snapshots: BTreeMap<String, SnapshotRead>,
-    /// Whether a client reads the layer. The release records an intermediate layer too, so a plan
-    /// compares it with live and live names the versions that it read, but R2 lacks its files.
-    pub client: bool,
+    /// The published outputs. The release records every file for provenance.
+    pub client: Client,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -72,8 +71,13 @@ impl Layer {
             digest: receipt.digest.clone(),
             files: receipt.files.clone(),
             snapshots: snapshots.collect(),
-            client: step.client,
+            client: step.client.sorted(),
         }
+    }
+
+    /// Only these files reach R2. All publication and reachability checks use this selection.
+    pub fn client_files(&self) -> impl Iterator<Item = &LayerFile> {
+        self.files.iter().filter(|file| self.client.includes(&file.path))
     }
 }
 
@@ -110,7 +114,7 @@ impl Release {
 
     /// The objects of its client layers, which R2 holds: SHA-256 to size.
     pub fn objects(&self) -> BTreeMap<&str, u64> {
-        let files = self.layers.iter().filter(|layer| layer.client).flat_map(|layer| &layer.files);
+        let files = self.layers.iter().flat_map(Layer::client_files);
         files.map(|file| (file.sha256.as_str(), file.size)).collect()
     }
 
@@ -170,6 +174,31 @@ mod tests {
     use crate::store::hash_file;
 
     #[test]
+    fn selected_client_outputs_reuse_bytes_keep_provenance_and_deduplicate_objects() {
+        let fixture = fixture("release-selection");
+        let mut steps = vec![crate::engine::tests::packaged(Client::All)];
+        fixture.build(&steps).unwrap();
+        let all = release(&fixture.store, &fixture.root(), "test", "monaco", &[], &steps).unwrap().unwrap();
+        let before = super::super::recipe(&steps[0], "code");
+        steps[0].client = Client::Paths(vec!["published".into()]);
+        assert_ne!(super::super::recipe(&steps[0], "code"), before);
+        assert!(fixture.plan(&steps).unwrap().groups.is_empty(), "visibility changes reuse byte artifacts");
+        let selected = release(&fixture.store, &fixture.root(), "test", "monaco", &[], &steps).unwrap().unwrap();
+        assert_eq!(selected.layers[0].key, all.layers[0].key);
+        assert_eq!(selected.layers[0].files.len(), 4, "private files stay in provenance");
+        assert_eq!(
+            selected.layers[0].client_files().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            ["published/a", "published/b"]
+        );
+        assert_eq!(selected.objects().len(), 1, "equal selected payloads share one object");
+        assert_ne!(selected.id(), all.id());
+        steps[0].client = Client::Paths(vec!["published/a".into()]);
+        assert!(fixture.plan(&steps).unwrap_err().contains("not a declared output"));
+        steps[0].client = Client::Paths(Vec::new());
+        assert!(fixture.plan(&steps).unwrap_err().contains("client paths is empty"));
+    }
+
+    #[test]
     fn two_stores_that_build_the_same_layers_give_the_same_release() {
         let (one, two) = (fixture("release-one"), fixture("release-two"));
         assert_eq!(
@@ -194,7 +223,7 @@ mod tests {
         assert_eq!(objects, expected);
 
         let mut steps = pipeline();
-        steps.iter_mut().filter(|step| step.name == "test/join").for_each(|step| step.client = false);
+        steps.iter_mut().filter(|step| step.name == "test/join").for_each(|step| step.client = Client::None);
         let lean = release(&one.store, &one.root(), "test", "monaco", &[], &steps).unwrap().unwrap();
         assert_eq!(lean.layers.len(), 3, "the release records an intermediate layer");
         let mut client = first.objects();

@@ -125,6 +125,11 @@ export interface AssembleTerrainCell {
     readonly bytes: Uint8Array;
 }
 
+export interface AssembleArticles {
+    readonly landmarks: readonly Uint8Array[];
+    readonly peaks: readonly Uint8Array[];
+}
+
 /** What an assembly can be told to do differently. Every field optional. */
 export interface AssembleOptions {
     /** Proceed although a selected cell is missing. */
@@ -360,6 +365,7 @@ export async function assembleCells(
     sources?: AssembleSources,
     sink?: AssembleMapSink,
     scratch?: AssembleScratchStore,
+    articles?: AssembleArticles,
 ): Promise<AssembleResult> {
     if (assembling) {
         throw new AssembleError(
@@ -393,6 +399,8 @@ export async function assembleCells(
             assembler.setTerrain(terrain.lattice.postingLog2, terrain.lattice.cellLog2);
             for (const cell of terrain.cells) assembler.addTerrainCell(cell.id, cell.sha256, cell.bytes);
         }
+        for (const bytes of articles?.landmarks ?? []) assembler.addLandmarks(bytes);
+        for (const bytes of articles?.peaks ?? []) assembler.addPeaks(bytes);
         if (sink) {
             // Checked before a byte is written: a half-wired sink is a defect in the caller
             // (`internal`), not a storage failure (`io`).
