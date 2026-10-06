@@ -160,7 +160,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &env, &regions);
-    let mut steps = Maps.steps(&env, &regions, &store).unwrap();
+    let mut steps = Maps.steps(&env, &regions, &store).unwrap().steps;
     steps.retain(|step| !["maps/coarse/", "maps/mid/"].iter().any(|band| step.name.starts_with(band)));
     for step in &mut steps {
         match step.name.as_str() {

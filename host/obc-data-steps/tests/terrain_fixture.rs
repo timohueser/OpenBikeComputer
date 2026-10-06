@@ -71,7 +71,7 @@ fn without_models(store: &Store, env: &Env, regions: &Regions) {
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
 fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<String, Vec<u8>> {
     without_models(store, env, regions);
-    let steps = Maps.steps(env, regions, store).unwrap();
+    let steps = Maps.steps(env, regions, store).unwrap().steps;
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();

@@ -102,7 +102,6 @@ pub fn print(edited: Edited, json: bool) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::engine::tests::write;
-    use crate::engine::Step;
     use crate::product::Unplanned;
     use crate::regions::Regions;
     use crate::store::tests::Scratch;
@@ -119,8 +118,8 @@ mod tests {
             &["climate", "sun"]
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<Vec<Step>, Unplanned> {
-            Ok(Vec::new())
+        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Ok(Vec::new().into())
         }
     }
 

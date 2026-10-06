@@ -12,7 +12,7 @@ use obc_bake::coverage::Coverage;
 use obc_bake::planet::LeafId;
 use obc_data::engine::{snapshot_files, Code, Input, Run, Step};
 use obc_data::env::Env;
-use obc_data::product::{read, version, Product, Unplanned, Wanted};
+use obc_data::product::{read, version, BlockedLayer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{Area, Bbox, Regions};
 use obc_data::sources::{self, attribution, Source};
 use obc_data::store::Store;
@@ -40,7 +40,7 @@ impl Product for Maps {
         "cell-catalog"
     }
 
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned> {
+    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
@@ -62,8 +62,17 @@ impl Product for Maps {
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let mut steps = Vec::new();
+        let mut blocked = Vec::new();
         for (&leaf, cells) in &leaves(&outlines, V1_CELL_LOG2.into()) {
-            let reference = reference(env, store, leaf, cells, &mut wanted)?;
+            let reference = match reference(env, store, leaf, cells, &mut wanted) {
+                Ok(reference) => reference,
+                Err(Unplanned::Invalid(reason)) => {
+                    blocked.push(BlockedLayer { layer: leaf_layer("maps/reference", leaf), reason: reason.clone() });
+                    blocked.push(BlockedLayer { layer: leaf_layer("maps/terrain", leaf), reason });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
             steps.extend(reference);
             steps.push(terrain);
@@ -72,9 +81,9 @@ impl Product for Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let (Some(extract), Some(land_polygons)) = osm_sources else {
-            return Ok(steps);
+            return Ok(Steps { steps, blocked });
         };
-        let captures = captures(env, store, &extract, &area)?;
+        let captures = captures(env, store, &extract, &area, &mut blocked)?;
         let mut osm_leaves = BTreeSet::new();
         let mut network = BTreeMap::new();
         for band in BandTable::recommended().bands {
@@ -89,24 +98,29 @@ impl Product for Maps {
         }
         for (collection, inputs) in captures {
             steps.push(content(collection, inputs));
+        }
+        for collection in ["landmarks", "peaks"] {
             for (&leaf, cells) in &network {
                 steps.push(artifacts(collection, leaf, cells));
             }
         }
         let extract = Input::Snapshot { source: EXTRACTS.into(), version: extract, params: area, files: Vec::new() };
         steps.push(osm(extract, &osm_leaves));
-        Ok(steps)
+        let mut listed = Steps { steps, blocked };
+        listed.block_dependents();
+        Ok(listed)
     }
 }
 
 /// The two Wikimedia captures of a region, `landmarks` and `peaks`, with the files of [`CAPTURES`],
-/// and the extract and the `.poly` that each read, by digest. `Err` names the fetches of the
-/// captures that the store lacks.
+/// and the extract and the `.poly` that each read, by digest. Only an explicit move fetches a
+/// missing capture; other unavailable captures add blocked content layers.
 fn captures(
     env: &Env,
     store: &Store,
     extract: &str,
     area: &[(String, String)],
+    blocked: &mut Vec<BlockedLayer>,
 ) -> Result<Vec<(&'static str, Vec<Input>)>, Unplanned> {
     let poly = version(env, store, POLY, area).map_err(Unplanned::Failed)?;
     let poly = poly.map_err(|_| Unplanned::Failed(format!("the store has no {POLY} of {area:?}")))?;
@@ -116,13 +130,45 @@ fn captures(
     let mut wanted = Vec::new();
     let mut captures = Vec::new();
     for collection in ["landmarks", "peaks"] {
-        let (params, read) = capture_params(env, store, collection, area, (&osm, &poly))?;
+        let (params, read) = match capture_params(env, store, collection, area, (&osm, &poly)) {
+            Ok(params) => params,
+            Err(Unplanned::Invalid(reason)) => {
+                blocked.push(BlockedLayer { layer: content_layer(collection), reason });
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some((_, error)) = env
+            .fetch_failures
+            .iter()
+            .find(|(wanted, _)| CAPTURES.contains(&wanted.source.as_str()) && wanted.params == params)
+        {
+            blocked.push(BlockedLayer {
+                layer: content_layer(collection),
+                reason: format!("capture fetch failed: {error}; plan with `--move wikidata`"),
+            });
+            continue;
+        }
         let mut inputs = Vec::new();
+        let mut missing = Vec::new();
         for source in CAPTURES {
-            if let Some(version) = snapshot_version(env, store, source, &params, &mut wanted)? {
+            if let Some(version) = snapshot_version(env, store, source, &params, &mut missing)? {
+                if snapshot_files(store, source, &version, &params, &[]).map_err(Unplanned::Failed)?.is_none() {
+                    missing.push(Wanted { source: source.into(), version: Some(version), params: params.clone() });
+                    continue;
+                }
                 let params = params.clone();
                 inputs.push(Input::Snapshot { source: source.into(), version, params, files: Vec::new() });
             }
+        }
+        if !missing.is_empty() {
+            if CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
+                wanted.extend(missing);
+            } else {
+                let reason = format!("{collection} capture missing; plan with `--move wikidata`");
+                blocked.push(BlockedLayer { layer: content_layer(collection), reason });
+            }
+            continue;
         }
         inputs.extend(read);
         captures.push((collection, inputs));
@@ -138,9 +184,9 @@ type Params = Vec<(String, String)>;
 
 /// The params of the capture of `collection` for the region `area`, and the extract and the `.poly`
 /// that it reads: those of the capture that `env` reads (a saved plan, or live), or else of the
-/// newest capture in the store, until a source of [`CAPTURES`] moves or the store has its extract
-/// or `.poly` no more. A new extract alone asks for no new capture. A moved capture, or the first
-/// one, reads the extract and the `.poly` of `now`, with the code of now.
+/// newest capture in the store. Missing inputs or stale discovery code block the capture until
+/// an explicit source move. A new extract alone asks for no new capture. A moved capture reads
+/// the extract and the `.poly` of `now`, with the code of now.
 fn capture_params(
     env: &Env,
     store: &Store,
@@ -156,6 +202,9 @@ fn capture_params(
             && value(params, "area").as_deref() == Some(area[0].1.as_str())
     };
     let mut kept = None;
+    if CAPTURES.iter().any(|source| env.stale.contains(*source)) {
+        return Err(invalid(format!("{collection} capture stale; plan with `--move wikidata`")));
+    }
     if !CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
         let named: Vec<&Vec<(String, String)>> = match &env.planned {
             Some(planned) => planned.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
@@ -182,10 +231,14 @@ fn capture_params(
         Ok(Some(inputs))
     };
     if let Some(params) = kept {
+        if value(&params, "code").as_deref() != Some(obc_pack::step::capture_code().as_str()) {
+            return Err(invalid(format!("{collection} capture code changed; plan with `--move wikidata`")));
+        }
         let (osm, poly) = (value(&params, "osm").unwrap_or_default(), value(&params, "poly").unwrap_or_default());
         if let Some(read) = reads(&osm, &poly)? {
             return Ok((params, read));
         }
+        return Err(invalid(format!("{collection} capture inputs missing; plan with `--move wikidata`")));
     }
     let read =
         reads(now.0, now.1)?.ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
@@ -359,7 +412,7 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
 /// model is the fetch of that box; a fetch without files, of a box where the model has no data,
 /// adds nothing. `None` when no model has data for the cells, or while the store lacks a fetch;
 /// then `wanted` has it. A missing fetch of a model behind a credential that this machine lacks
-/// blocks the product.
+/// blocks the reference layer and its dependents.
 fn reference(
     env: &Env,
     store: &Store,
@@ -388,8 +441,17 @@ fn reference(
         match version(env, store, &source.id, &params).map_err(Unplanned::Failed)? {
             Ok(version) => {
                 let files = snapshot_files(store, &source.id, &version, &params, &[]).map_err(Unplanned::Failed)?;
-                if files.is_some_and(|files| files.is_empty()) {
+                if files.as_ref().is_some_and(|files| files.is_empty()) {
                     continue;
+                }
+                if files.is_none() {
+                    if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
+                        return Err(invalid(format!(
+                            "{name} reads `{}`, which is blocked: credential missing: {}",
+                            source.id,
+                            credential.describe()
+                        )));
+                    }
                 }
                 models.push(serde_json::json!({
                     "source": source.id,
@@ -701,7 +763,7 @@ pub(crate) mod tests {
         without_models(&store, &env, &regions);
         let steps = |version: &str| {
             let (env, regions) = grimsel(version);
-            let mut steps = Maps.steps(&env, &regions, &store).unwrap();
+            let mut steps = Maps.steps(&env, &regions, &store).unwrap().steps;
             steps.iter_mut().for_each(|step| step.run = Run::Rust(fake));
             steps
         };
@@ -732,7 +794,7 @@ pub(crate) mod tests {
         // As if N47_00_E007 were sea.
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
         without_models(&store, &env, &regions);
-        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
         let terrain: Vec<&Step> = terrain_steps(&steps).collect();
         assert_eq!(tiles(terrain[0]), ["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
         // The squares of the eastern cells reach no tile west of 8°.
@@ -749,7 +811,7 @@ pub(crate) mod tests {
         with_osm(&store);
         without_models(&store, &env, &regions);
         with_captures(&store, "1");
-        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
@@ -770,12 +832,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn missing_or_failed_capture_blocks_only_its_content_and_artifacts() {
+        let temp = temp("capture-blocked");
+        let store = Store::at(temp.0.join("store"));
+        let (mut env, regions) = freiburg(&store);
+        with_osm(&store);
+        without_models(&store, &env, &regions);
+        let params = capture_params("peaks", "europe/test", "osm", FREIBURG);
+        for source in CAPTURES {
+            fetched(&store, source, "1", &params, &[("#peaks=0/recipe.json".into(), "1".into())]);
+        }
+        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        assert_eq!(
+            listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
+            ["maps/landmark-content", "maps/landmarks/0037-0032"]
+        );
+        assert!(listed.blocked.iter().all(|b| b.reason.contains("--move wikidata")));
+        for name in ["maps/terrain/0037-0032", "maps/network/0037-0032", "maps/peak-content", "maps/peaks/0037-0032"] {
+            assert!(listed.steps.iter().any(|step| step.name == name), "{name}");
+        }
+        env.moves.insert("wikidata".into(), Some("1".into()));
+        let failed = Wanted {
+            source: "wikidata".into(),
+            version: None,
+            params: capture_params("landmarks", "europe/test", "osm", FREIBURG),
+        };
+        env.fetch_failures.push((failed, "service unavailable".into()));
+        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        assert!(listed.blocked.iter().any(|b| b.reason.contains("service unavailable")));
+        assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+    }
+
+    #[test]
+    fn stale_capture_code_requires_an_explicit_move() {
+        let temp = temp("capture-code");
+        let store = Store::at(temp.0.join("store"));
+        let (mut env, regions) = freiburg(&store);
+        with_osm(&store);
+        without_models(&store, &env, &regions);
+        with_captures(&store, "1");
+        let mut params = capture_params("landmarks", "europe/test", "osm", FREIBURG);
+        params.iter_mut().find(|(name, _)| name == "code").unwrap().1 = "old".into();
+        env.live.insert(("wikidata".into(), params), ["1".into()].into());
+        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        assert!(listed
+            .blocked
+            .iter()
+            .any(|b| b.layer == "maps/landmark-content" && b.reason.contains("capture code changed")));
+        assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"));
+        env.live.retain(|(source, _), _| source != "wikidata");
+        env.stale.insert("wikidata".into());
+        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        assert!(listed.blocked.iter().all(|b| b.reason.contains("capture stale")));
+        assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+    }
+
+    #[test]
     fn a_capture_names_the_extract_and_the_poly_by_digest_and_its_steps_read_it() {
         let temp = temp("captures");
         let store = Store::at(temp.0.join("store"));
-        let (env, regions) = freiburg(&store);
+        let (mut env, regions) = freiburg(&store);
         with_osm(&store);
         without_models(&store, &env, &regions);
+        env.moves.insert("wikidata".into(), None);
         let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no capture") };
         let fetch = |collection, source: &str| Wanted {
             source: source.into(),
@@ -786,7 +905,8 @@ pub(crate) mod tests {
             ["landmarks", "peaks"].into_iter().flat_map(|collection| CAPTURES.map(|source| fetch(collection, source)));
         assert_eq!(wanted, captures.collect::<Vec<_>>());
         with_captures(&store, "1");
-        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        env.moves.clear();
+        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
@@ -806,8 +926,8 @@ pub(crate) mod tests {
     }
 
     /// A new extract asks for no new capture: the compile keeps reading the extract that its
-    /// capture read, and the map cells read the new one. A capture that moves, or whose extract a
-    /// clean deleted, reads the new one.
+    /// capture read, and the map cells read the new one. An explicit move reads the new extract;
+    /// a deleted capture input blocks the content until that move.
     #[test]
     fn a_capture_keeps_its_extract_until_it_moves_or_a_clean_deletes_the_extract() {
         let temp = temp("capture-extract");
@@ -822,7 +942,7 @@ pub(crate) mod tests {
         }
         let clean = |day: &str| std::fs::remove_file(store.root().join(format!("snapshots/{EXTRACTS}/{day}.json")));
         clean("0").unwrap();
-        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
         let extract = |name: &str| {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = step.inputs.iter().find_map(|input| match input {
@@ -845,7 +965,9 @@ pub(crate) mod tests {
         asks_for_a_new_capture(&env);
         env.moves.clear();
         clean("1").unwrap();
-        asks_for_a_new_capture(&env);
+        let listed = Maps.steps(&env, &regions, &store).unwrap();
+        assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
+        assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
     }
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
@@ -861,7 +983,7 @@ pub(crate) mod tests {
         with_osm(&store);
         with_captures(&store, "1");
         without_models(&store, &env, &regions);
-        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
         let by_name: BTreeMap<&str, &Step> = steps.iter().map(|step| (step.name.as_str(), step)).collect();
         let reads = |step: &Step| {
             let (mut read, mut pending) = (BTreeSet::new(), vec![step]);
@@ -909,7 +1031,7 @@ pub(crate) mod tests {
         let swiss = wanted.iter().filter(|fetch| fetch.source == "dtm-ch");
         swiss.for_each(|fetch| fetched(&store, &fetch.source, "1", &fetch.params, &dem));
         without_models(&store, &env, &regions);
-        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let steps = Maps.steps(&env, &regions, &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "maps/reference/0037-0033").unwrap();
         let models = reference.options["models"].as_array().unwrap();
         let read: Vec<(&str, &str)> = models
@@ -926,7 +1048,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_model_whose_credential_this_machine_lacks_blocks_the_maps() {
+    fn a_model_whose_credential_this_machine_lacks_blocks_its_reference_and_terrain() {
         let temp = temp("credential");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &[]);
@@ -937,14 +1059,18 @@ pub(crate) mod tests {
         let env = Env { region: "jutland".into(), ..env };
         let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
         match Maps.steps(&env, &regions, &store) {
-            Err(Unplanned::Invalid(reason)) => {
+            Ok(listed) => {
                 assert!(!token.present());
-                let blocked = "maps/reference/0038-0032 reads `dtm-dk`, which is blocked: credential missing";
-                assert_eq!(reason, format!("{blocked}: OBC_REFERENCE_DK_TOKEN"));
+                assert_eq!(
+                    listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
+                    ["maps/reference/0038-0032", "maps/terrain/0038-0032"]
+                );
+                assert!(listed.blocked.iter().all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                assert!(listed.steps.is_empty());
             }
             // A machine with the token fetches the model.
             Err(Unplanned::NeedsFetch(wanted)) => assert!(token.present() && wanted[0].source == "dtm-dk"),
-            other => panic!("{:?}", other.map(|steps| steps.len())),
+            other => panic!("{:?}", other.map(|steps| steps.steps.len())),
         }
     }
 

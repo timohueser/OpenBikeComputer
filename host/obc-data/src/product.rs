@@ -27,7 +27,7 @@ pub trait Product {
 
     /// Its steps for `env`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned>;
+    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
 
     /// What clients read of a release. `None` while the product has no client document: a plan of
     /// `live` leaves the product out, because an apply cannot make its release live.
@@ -39,6 +39,40 @@ pub trait Product {
     fn verify(&self, _release: &Release, _store: &Store) -> Result<(), String> {
         Ok(())
     }
+}
+
+/// Usable steps and the layers whose inputs are unavailable. A blocked required layer prevents
+/// a complete release, but does not prevent independent steps from building.
+#[derive(Default)]
+pub struct Steps {
+    pub steps: Vec<Step>,
+    pub blocked: Vec<BlockedLayer>,
+}
+
+impl Steps {
+    /// Remove steps that read a blocked layer, including their dependents.
+    pub fn block_dependents(&mut self) {
+        while let Some((at, reason)) = self.steps.iter().enumerate().find_map(|(at, step)| {
+            let input = step.layers().find_map(|name| self.blocked.iter().find(|b| b.layer == name))?;
+            Some((at, format!("reads blocked layer `{}`: {}", input.layer, input.reason)))
+        }) {
+            let step = self.steps.remove(at);
+            self.blocked.push(BlockedLayer { layer: step.name, reason });
+        }
+    }
+}
+
+impl From<Vec<Step>> for Steps {
+    fn from(steps: Vec<Step>) -> Self {
+        Self { steps, blocked: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedLayer {
+    pub layer: String,
+    pub reason: String,
 }
 
 /// Gives the pointer of a release from the store.
