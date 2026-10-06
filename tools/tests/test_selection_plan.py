@@ -567,7 +567,7 @@ class ShippedPlanTests(unittest.TestCase):
 
         steps = yaml.safe_load((self.root / ".github/workflows/ci.yml").read_text())["jobs"]["ios-unit"]["steps"]
         cases = [
-            ("apps/planner-native/tests/PMTilesArchiveTests.swift", {"Planner PMTiles reader"}),
+            ("companion-ios/PlannerNative/tests/PMTilesArchiveTests.swift", {"Planner PMTiles reader"}),
             ("companion-ios/ReplayAssets/test/camera.test.js", {"Prepare replay assets", "Test camera engine"}),
             ("companion-ios/Packages/OBCKit/Tests/DomainTests.swift", {"Prepare replay assets", "OBCKit package tests (XCTest and Swift Testing, host)"}),
         ]

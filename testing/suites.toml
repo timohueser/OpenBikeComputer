@@ -555,7 +555,7 @@ triggers = [
   "companion-ios/Packages/OBCKit/Sources/**",
   "tools/build-planner-ios.sh",
   "tools/build-ios-host.sh",
-  "apps/planner-native/*.swift",
+  "companion-ios/PlannerNative/*.swift",
   "apps/planner-search/native.mjs",
   "apps/planner-search/native-build.mjs",
   "apps/planner-search/calendar-date.mjs",
@@ -568,7 +568,7 @@ triggers = [
   "apps/planner-search/validation.mjs",
   "apps/planner-search/package.json",
   "apps/planner-search/package-lock.json",
-  "apps/planner-search/native/*.swift",
+  "companion-ios/PlannerSearch/*.swift",
   "apps/planner-search/web/**",
   "apps/planner-search/query/contract.json",
   "apps/planner-search/query/lexicon/kinds.json",
@@ -599,7 +599,7 @@ triggers = [
   "companion-ios/Packages/OBCKit/Sources/**",
   "tools/build-planner-ios.sh",
   "tools/build-ios-host.sh",
-  "apps/planner-native/*.swift",
+  "companion-ios/PlannerNative/*.swift",
   "apps/planner-search/native.mjs",
   "apps/planner-search/native-build.mjs",
   "apps/planner-search/calendar-date.mjs",
@@ -612,7 +612,7 @@ triggers = [
   "apps/planner-search/validation.mjs",
   "apps/planner-search/package.json",
   "apps/planner-search/package-lock.json",
-  "apps/planner-search/native/*.swift",
+  "companion-ios/PlannerSearch/*.swift",
   "apps/planner-search/web/**",
   "apps/planner-search/query/contract.json",
   "apps/planner-search/query/lexicon/kinds.json",
@@ -793,10 +793,10 @@ triggers = ["companion-ios/OBCCompanionUITests/**"]
 id = "planner.native-tiles"
 scoped = true
 route = "ordinary"
-command = "bash apps/planner-native/test-tiles.sh"
+command = "bash companion-ios/PlannerNative/test-tiles.sh"
 jobs = ["ios-unit"]
 platforms = ["macos"]
-triggers = ["apps/planner-native/PMTilesArchive.swift", "apps/planner-native/tests/**", "apps/planner-native/test-tiles.sh", "pyproject.toml"]
+triggers = ["companion-ios/PlannerNative/PMTilesArchive.swift", "companion-ios/PlannerNative/tests/**", "companion-ios/PlannerNative/test-tiles.sh", "pyproject.toml"]
 
 [[suite]]
 id = "planner.search"
@@ -804,7 +804,7 @@ route = "ordinary"
 command = "npm test --prefix apps/planner-search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**"]
+triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
 
 [[suite]]
 id = "planner.tiles"
@@ -828,7 +828,7 @@ route = "manual"
 command = "npm run test:data --prefix apps/planner-search"
 fixtures = ["local-photon-search-packages"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**"]
+triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
 
 [[suite]]
 id = "planner.query-model"
