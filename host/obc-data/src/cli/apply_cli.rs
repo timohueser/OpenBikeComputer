@@ -507,7 +507,7 @@ mod tests {
     use crate::cli::build_cli::tests::{upstream, Versioned, SOURCES};
     use crate::engine::tests::{fixture, write, Fixture, JOIN};
     use crate::env::Env;
-    use crate::product::{PointerFn, Unplanned};
+    use crate::product::{Pointer, PointerFn, Unplanned};
     use crate::regions::Regions;
     use crate::sources::parse_sources;
     use crate::store::sha256_hex;

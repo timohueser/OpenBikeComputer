@@ -406,7 +406,7 @@ type ReadPointer = (String, Option<String>, serde_json::Map<String, serde_json::
 fn pointer(bytes: Option<&[u8]>, prefix: &str) -> Result<Option<ReadPointer>, String> {
     let key = format!("{prefix}/catalog.json");
     let Some(bytes) = bytes else { return Ok(None) };
-    let pointer: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
+    let pointer: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("{key}: {e}"))?;
     match pointer.get("release") {
         None => Ok(None),
         Some(serde_json::Value::String(id))

@@ -14,7 +14,8 @@ use crate::fetch::{
 use crate::live::{Live, Remote, INPUTS};
 use crate::store::{hash_file, sorted, FileRecord, Requested, Snapshot, Store};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Key {
     pub source: String,
     pub version: String,

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+#[cfg(not(test))]
 use std::process::Command;
 use std::time::Instant;
 
@@ -64,7 +65,7 @@ pub(super) fn expected(
                 .live
                 .iter()
                 .find(|observed| observed.product == product.name())
-                .ok_or("saved plan has no original pointer observation")?;
+                .ok_or_else(|| Code::PlanOutdated.error("saved plan has no original pointer observation"))?;
             Ok((format!("{}/catalog.json", product.prefix()), observed.observed.clone()))
         })
         .collect()
@@ -234,7 +235,8 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         for product in &bundle.next.products {
             let Some((id, _)) = &product.release else { continue };
             let key = format!("{}/catalog.json", product.prefix);
-            let mut document = product.document.clone().ok_or("missing desired pointer")?;
+            let mut document =
+                product.document.clone().ok_or_else(|| Code::VerifyFailed.error("missing desired pointer"))?;
             if same_pointer(remote, product)? {
                 continue;
             }
@@ -311,11 +313,12 @@ fn same_pointer(remote: &Remote, product: &crate::live::LiveProduct) -> Result<b
     if let Some(observed) = &mut observed {
         observed.remove("applied");
     }
-    let mut wanted = product.document.clone().ok_or("missing desired pointer")?;
+    let mut wanted = product.document.clone().ok_or_else(|| Code::VerifyFailed.error("missing desired pointer"))?;
     wanted.insert("release".into(), id.clone().into());
     Ok(observed == Some(wanted))
 }
 
+#[cfg(not(test))]
 pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -> Result<Committed, Error> {
     let host = std::env::var("OBC_COMMIT_HOST")
         .map_err(|_| Code::Blocked.error("set OBC_COMMIT_HOST to the configured VPS, or local on that VPS"))?;
@@ -327,7 +330,7 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
     let incoming = format!("/var/lib/obc-data/incoming/{run}/{digest}");
     if host == "local" {
         let output = Command::new(worker)
-            .args(["commit", directory.to_str().ok_or("bundle path is not UTF-8")?, digest])
+            .args(["commit", directory.to_str().ok_or_else(|| Code::Usage.error("bundle path is not UTF-8"))?, digest])
             .output()
             .map_err(|e| e.to_string())?;
         return response(output, store, run);
@@ -364,6 +367,7 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
     })
 }
 
+#[cfg(not(test))]
 fn response(output: std::process::Output, store: &Store, run: &str) -> Result<Committed, Error> {
     match serde_json::from_slice(&output.stdout) {
         Ok(Reply::Done { result, journal }) if output.status.success() => {
