@@ -109,6 +109,8 @@ pub struct LiveRelease {
     pub product: String,
     /// `None` when nothing is live.
     pub release: Option<String>,
+    /// SHA-256 of the actual client document, excluding only `release` and `applied`.
+    pub pointer: Option<String>,
 }
 
 /// What the environment file changes against the live release of a product.
@@ -236,6 +238,7 @@ pub(super) fn change(group: &Group, edits: &[Edit]) -> String {
         }
         Some(Cause::Code { paths, crates }) if paths.is_empty() && crates.is_empty() => "no step makes it".into(),
         Some(Cause::Code { paths, crates }) => format!("code of {}", [&paths[..], crates].concat().join(", ")),
+        Some(Cause::Pointer { product, .. }) => format!("client document of {product}"),
         Some(Cause::Repair { keys }) => format!("{} keys that R2 lacks", keys.len()),
     }
 }
@@ -343,7 +346,8 @@ pub(super) fn build_env(
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
         for product in unblocked {
             let (name, optional) = (product.name(), optional(*product, &plan.layers));
-            if let Some(release) = release::release(store, root, name, &plan.region, &optional, &steps)? {
+            if let Some(mut release) = release::release(store, root, name, &plan.region, &optional, &steps)? {
+                release.name_files(product.named(&release)?)?;
                 built.releases.push(BuiltRelease { product: name.into(), id: release.write(store)? });
             }
         }
@@ -371,10 +375,16 @@ pub(super) fn suits(products: &[&dyn Product], plan: &EnvPlan) -> Result<(), Err
     Ok(())
 }
 
-/// Whether `next` names another release than `live`.
+/// Whether the release id or the actual client document differs.
 pub(super) fn changed(live: &LiveProduct, next: &LiveProduct) -> bool {
     let id = |product: &LiveProduct| product.release.as_ref().map(|(id, _)| id.clone());
-    id(live) != id(next)
+    id(live) != id(next) || live.document != next.document
+}
+
+fn document_digest(product: &LiveProduct) -> Option<String> {
+    let document = product.document.as_ref()?;
+    let value = crate::engine::sorted(serde_json::to_value(document).expect("JSON values serialize"));
+    Some(crate::store::sha256_hex(&serde_json::to_vec(&value).expect("JSON values serialize")))
 }
 
 /// The plan of `live` now against the live releases that `remote` holds: `plan live --only ONLY
@@ -478,6 +488,9 @@ fn planned(
     let mut loaded = load(root, name)?;
     let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
+    if let (Some(live), Some(remote)) = (&live, remote) {
+        live.restore_named(remote, store).map_err(|e| Code::VerifyFailed.error(e))?;
+    }
     let env = &mut loaded.env;
     match basis {
         Basis::Saved(saved) => {
@@ -546,10 +559,26 @@ fn planned(
         _ => None,
     };
     let check = listed.as_deref().map(|listed| live.check(listed));
-    let against = against(&live, env, &edits, &blocked, check.as_ref());
+    let against = against(&live, env, &edits, &blocked, check.as_ref(), store);
     let all = changes::changes(store, root, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     let (next, _) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
+    for (now, next) in live.products.iter().zip(&next.products) {
+        if now.release.as_ref().map(|(id, _)| id) == next.release.as_ref().map(|(id, _)| id)
+            && next.document.is_some()
+            && now.document != next.document
+        {
+            let document = document_digest(next).expect("a desired document exists");
+            plan.groups.push(Group {
+                id: format!("pointer:{}", next.product),
+                cause: Some(Cause::Pointer { product: next.product.clone(), document }),
+                layers: Vec::new(),
+                drops: Vec::new(),
+                fetches: Vec::new(),
+                builds: Vec::new(),
+            });
+        }
+    }
     // An apply also removes what it finds under the prefixes that it makes live, and the retired ones.
     if let (Some(listed), Some(remote)) = (listed.as_mut(), remote) {
         let owned = live.prefixes();
@@ -581,6 +610,7 @@ fn env_plan(
             let releases = live.products.iter().map(|product| LiveRelease {
                 product: product.product.clone(),
                 release: product.release.as_ref().map(|(id, _)| id.clone()),
+                pointer: document_digest(product),
             });
             (releases.collect(), edits)
         }
@@ -642,6 +672,7 @@ fn against<'a>(
     edits: &[Edit],
     blocked: &[BlockedProduct],
     check: Option<&Check>,
+    store: &Store,
 ) -> Against<'a> {
     let planned = live.products.iter().filter(|product| !blocked.iter().any(|b| b.product == product.product));
     let releases = planned.filter_map(|product| product.release.as_ref().map(|(_, release)| release));
@@ -652,7 +683,18 @@ fn against<'a>(
     });
     let drift = check.map(|check| {
         let keys: Vec<String> = check.drift.iter().map(|drift| drift.key.clone()).collect();
-        let owners = live.owners(&keys);
+        let local_named: BTreeSet<String> = live
+            .releases()
+            .flat_map(|(prefix, id, release)| {
+                release
+                    .named
+                    .iter()
+                    .filter(|file| store.object(&file.sha256).is_file())
+                    .map(move |file| format!("{prefix}/releases/{id}/{}", file.path))
+            })
+            .collect();
+        let unavailable: Vec<_> = keys.iter().filter(|key| !local_named.contains(*key)).cloned().collect();
+        let owners = live.owners(&unavailable);
         (keys, owners)
     });
     Against {
@@ -721,8 +763,32 @@ fn next(
             let release = Release::compose(name, &plan.region, &optional(*product, &plan.layers), live, new, &dropped);
             Some((release.id(), release))
         };
+        let blocked = plan.blocked.iter().any(|b| b.product == name);
+        let release = release
+            .map(|(_, mut release)| -> Result<_, Error> {
+                if !blocked && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) {
+                    release.name_files(product.named(&release)?)?;
+                }
+                Ok((release.id(), release))
+            })
+            .transpose()?;
+        let document = match &release {
+            Some((_, release))
+                if !blocked
+                    && release.named.iter().all(|file| store.object(&file.sha256).is_file())
+                    && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) =>
+            {
+                let pointer = product.pointer().expect("unblocked live product has a pointer");
+                let pointer = pointer(release, store).map_err(|e| Code::VerifyFailed.error(e))?;
+                if pointer.document.contains_key("release") || pointer.document.contains_key("applied") {
+                    return Err(product_bug(name, "pointer includes publication fields".into()));
+                }
+                Some(pointer.document)
+            }
+            _ => now.document.clone(),
+        };
         let prefix = now.prefix.clone();
-        next.products.push(LiveProduct { product: name.into(), prefix, release, applied: None });
+        next.products.push(LiveProduct { product: name.into(), prefix, release, applied: None, document });
     }
     for read in crate::input_copy::reads(&next)? {
         if !live.inputs.contains_key(&read.key)
@@ -1112,7 +1178,7 @@ pub(crate) mod tests {
     }
 
     /// The test pipeline, with `head` at the version that `product::version` gives. Its pointer
-    /// document is `{"schema": 1}`, and its release has a `LICENSE.txt`.
+    /// document is `{"schema": 1}`, and its release has a `COUNT.txt`.
     pub(crate) struct Versioned;
 
     impl Product for Versioned {
@@ -1123,8 +1189,16 @@ pub(crate) mod tests {
         fn pointer(&self) -> Option<crate::product::PointerFn> {
             Some(|_, _| {
                 let document = [("schema".to_string(), 1.into())].into_iter().collect();
-                Ok(crate::product::Pointer { document, named: [("LICENSE.txt".into(), b"CC0-1.0\n".to_vec())].into() })
+                Ok(crate::product::Pointer { document })
             })
+        }
+
+        fn named(&self, release: &Release) -> Result<Vec<crate::engine::LayerFile>, String> {
+            let mut file =
+                release.layers.iter().find(|layer| layer.step == "test/count").ok_or("no count layer")?.files[0]
+                    .clone();
+            file.path = "COUNT.txt".into();
+            Ok(vec![file])
         }
 
         fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
@@ -1324,7 +1398,7 @@ pub(crate) mod tests {
     /// Make `release` live in the local bucket, with the input copy of `head@2020-01-01`.
     fn publish(fixture: &Fixture, release: &Release) {
         let (bucket, id) = (fixture.scratch.0.join("bucket"), release.id());
-        write(&bucket.join("test/catalog.json"), &format!("{{\"release\": \"{id}\"}}"));
+        write(&bucket.join("test/catalog.json"), &format!("{{\"schema\": 1, \"release\": \"{id}\"}}"));
         write(&bucket.join(format!("test/releases/{id}.json")), &String::from_utf8(release.canonical()).unwrap());
         let head = fixture.store.snapshot("head", "2020-01-01").unwrap().unwrap();
         let live = Live {
@@ -1333,12 +1407,18 @@ pub(crate) mod tests {
                 prefix: "test".into(),
                 release: Some((id.clone(), release.clone())),
                 applied: None,
+                document: None,
             }],
             ..Live::default()
         };
         for read in crate::input_copy::reads(&live).unwrap().into_iter().filter(|r| r.key.source == "head") {
             let copy = crate::input_copy::Record::local(&fixture.store, &read).unwrap().unwrap();
             write(&bucket.join(read.key.path()), &String::from_utf8(copy.canonical()).unwrap());
+        }
+        for file in &release.named {
+            let to = bucket.join(format!("test/releases/{id}/{}", file.path));
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(fixture.store.object(&file.sha256), to).unwrap();
         }
         let layers = release.objects().into_keys().map(|sha256| ("test", sha256));
         for (prefix, sha256) in layers.chain(head.files.iter().map(|file| ("inputs", file.sha256.as_str()))) {
@@ -1381,7 +1461,14 @@ pub(crate) mod tests {
     fn a_plan_of_live_has_one_group_per_cause_and_the_keys_that_an_apply_removes() {
         let (fixture, remote, release) = live("cli-live-plan");
         let plan = live_plan(&fixture, &remote, &[]).unwrap();
-        assert_eq!(plan.live, [LiveRelease { product: "test".into(), release: Some(release.id()) }]);
+        assert_eq!(
+            plan.live,
+            [LiveRelease {
+                product: "test".into(),
+                release: Some(release.id()),
+                pointer: Some(crate::store::sha256_hex(b"{\"schema\":1}"))
+            }]
+        );
         assert_eq!((plan.groups.len(), plan.edits.len(), plan.remove.len(), plan.listed), (0, 0, 0, true));
 
         // Head is stale, and its new version keeps the file of the old one beside a new file. The
@@ -1415,6 +1502,7 @@ pub(crate) mod tests {
                 prefix: "test".into(),
                 release: Some((release.id(), release.clone())),
                 applied: None,
+                document: None,
             }],
             ..Live::default()
         })
@@ -1430,6 +1518,7 @@ pub(crate) mod tests {
             upper,
             "test/objects/old".into(),
             manifest,
+            format!("test/releases/{}/COUNT.txt", release.id()),
             format!("inputs/objects/{}", crate::store::sha256_hex(b"head\n")),
         ];
         every.sort();

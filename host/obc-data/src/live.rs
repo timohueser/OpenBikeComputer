@@ -60,8 +60,8 @@ impl Remote {
     pub(crate) fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         match self {
             Remote::Bucket(bucket) => bucket.read(key),
-            Remote::Public(url) => match Http::new().text(&format!("{url}/{key}"), "application/json") {
-                Ok(text) => Ok(Some(text.into_bytes())),
+            Remote::Public(url) => match Http::new().bytes(&format!("{url}/{key}"), "application/octet-stream") {
+                Ok(bytes) => Ok(Some(bytes)),
                 Err(e) if http::not_found(&e) => Ok(None),
                 Err(e) => Err(e),
             },
@@ -95,6 +95,8 @@ pub struct LiveProduct {
     pub release: Option<(String, Release)>,
     /// `applied` of the pointer: the time of the switch to its release, which an apply writes.
     pub applied: Option<String>,
+    /// The actual client document, without the publication id and time.
+    pub document: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Live {
@@ -104,13 +106,19 @@ impl Live {
         let mut live = Live::default();
         for product in products {
             let prefix = product.prefix();
-            let (release, applied) = match pointer(remote, prefix)? {
-                Some((id, applied)) => {
-                    (Some((id.clone(), manifest(remote, store, product.name(), prefix, &id)?)), applied)
+            let (release, applied, document) = match pointer(remote, prefix)? {
+                Some((id, applied, document)) => {
+                    (Some((id.clone(), manifest(remote, store, product.name(), prefix, &id)?)), applied, Some(document))
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
-            live.products.push(LiveProduct { product: product.name().into(), prefix: prefix.into(), release, applied });
+            live.products.push(LiveProduct {
+                product: product.name().into(),
+                prefix: prefix.into(),
+                release,
+                applied,
+                document,
+            });
         }
         let mut records: BTreeMap<Key, Option<Record>> = BTreeMap::new();
         for read in input_copy::reads(&live)? {
@@ -182,6 +190,9 @@ impl Live {
             keys.insert(format!("{prefix}/catalog.json"), None);
             keys.insert(format!("{prefix}/releases/{id}.json"), Some(release.canonical().len() as u64));
             keys.extend(
+                release.named.iter().map(|file| (format!("{prefix}/releases/{id}/{}", file.path), Some(file.size))),
+            );
+            keys.extend(
                 release.objects().into_iter().map(|(sha256, size)| (format!("{prefix}/objects/{sha256}"), Some(size))),
             );
         }
@@ -217,8 +228,8 @@ impl Live {
     /// The keys that an apply which makes `next` live removes: those of `listed`, the objects of
     /// a listing, or else those that live uses, that `next` does not use.
     pub fn removed(&self, next: &Live, listed: Option<&[Object]>) -> Vec<Removal> {
-        let (kept, folders) = (next.expected(), next.folders());
-        let stays = |key: &str| kept.contains_key(key) || folders.iter().any(|folder| key.starts_with(folder));
+        let kept = next.expected();
+        let stays = |key: &str| kept.contains_key(key);
         let keys: BTreeMap<String, Option<u64>> = match listed {
             Some(listed) => listed.iter().map(|object| (object.key.clone(), Some(object.bytes))).collect(),
             None => self.expected().into_iter().collect(),
@@ -229,17 +240,48 @@ impl Live {
     /// The layers of the live releases whose files `keys` hold.
     pub fn owners(&self, keys: &[String]) -> BTreeSet<String> {
         let mut owners = BTreeSet::new();
-        for (prefix, _, release) in self.releases() {
+        for (prefix, id, release) in self.releases() {
+            let named: BTreeSet<_> = release
+                .named
+                .iter()
+                .filter(|file| keys.contains(&format!("{prefix}/releases/{id}/{}", file.path)))
+                .map(|file| file.sha256.as_str())
+                .collect();
             let holds = |sha256: &str| keys.contains(&format!("{prefix}/objects/{sha256}"));
-            let layers = release.layers.iter().filter(|layer| layer.client_files().any(|file| holds(&file.sha256)));
+            let layers = release.layers.iter().filter(|layer| {
+                layer.client_files().any(|file| holds(&file.sha256))
+                    || layer.files.iter().any(|file| named.contains(file.sha256.as_str()))
+            });
             owners.extend(layers.map(|layer| layer.step.clone()));
         }
         owners
     }
 
-    /// The folder of the files that a client finds by name, of each live release.
-    fn folders(&self) -> Vec<String> {
-        self.releases().map(|(prefix, id, _)| format!("{prefix}/releases/{id}/")).collect()
+    /// Restore missing local publication metadata from its exact immutable remote key.
+    pub fn restore_named(&self, remote: &Remote, store: &Store) -> Result<(), String> {
+        let _using = store.using()?;
+        for (prefix, id, release) in self.releases() {
+            for file in &release.named {
+                let key = format!("{prefix}/releases/{id}/{}", file.path);
+                let object = store.object(&file.sha256);
+                let _lock = store.lock(&format!("named-{}", file.sha256))?;
+                if object.is_file() {
+                    let (hash, size) = crate::store::hash_file(&object)?;
+                    if (hash, size) != (file.sha256.clone(), file.size) {
+                        return Err(format!("{key}: local named bytes have another SHA-256 or size"));
+                    }
+                    continue;
+                }
+                let Some(bytes) = remote.get(&key)? else { continue };
+                if bytes.len() as u64 != file.size || sha256_hex(&bytes) != file.sha256 {
+                    return Err(format!("{key}: named bytes have another SHA-256 or size"));
+                }
+                let part = store.partial(&format!("named-{}", file.sha256));
+                write_atomic(&part, &bytes)?;
+                store.insert(&part, &file.sha256)?;
+            }
+        }
+        Ok(())
     }
 
     /// Every object under the prefixes that live owns.
@@ -261,8 +303,7 @@ impl Live {
             })
         });
         let drift = drift.collect();
-        let folders = self.folders();
-        let used = |key: &str| expected.contains_key(key) || folders.iter().any(|folder| key.starts_with(folder));
+        let used = |key: &str| expected.contains_key(key);
         let leftovers = listed.into_values().filter(|object| !used(&object.key)).cloned();
         Check { prefixes: self.prefixes(), drift, leftovers: leftovers.collect() }
     }
@@ -321,7 +362,9 @@ pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
 }
 
 /// The release that the pointer of `prefix` names, and its `applied`.
-fn pointer(remote: &Remote, prefix: &str) -> Result<Option<(String, Option<String>)>, String> {
+type ReadPointer = (String, Option<String>, serde_json::Map<String, serde_json::Value>);
+
+fn pointer(remote: &Remote, prefix: &str) -> Result<Option<ReadPointer>, String> {
     let key = format!("{prefix}/catalog.json");
     let Some(bytes) = remote.get(&key)? else { return Ok(None) };
     let pointer: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
@@ -331,7 +374,10 @@ fn pointer(remote: &Remote, prefix: &str) -> Result<Option<(String, Option<Strin
             if id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
         {
             let applied = pointer.get("applied").and_then(|applied| applied.as_str()).map(str::to_string);
-            Ok(Some((id.clone(), applied)))
+            let mut document = pointer.as_object().expect("a release field belongs to an object").clone();
+            document.remove("release");
+            document.remove("applied");
+            Ok(Some((id.clone(), applied, document)))
         }
         Some(other) => Err(format!("{key}: `release` is {other}, not the SHA-256 of a manifest")),
     }
@@ -361,6 +407,7 @@ fn verified(bytes: &[u8], product: &str, id: &str, name: &str) -> Result<Release
     if release.product != product {
         return Err(format!("{name}: the manifest is of product `{}`, not `{product}`", release.product));
     }
+    release.check_named()?;
     Ok(release)
 }
 
@@ -430,7 +477,13 @@ pub(crate) mod tests {
             snapshots: [("land".to_string(), read)].into(),
             client: Client::All,
         };
-        Release { product: "test".into(), region: "monaco".into(), optional: Vec::new(), layers: vec![layer] }
+        Release {
+            product: "test".into(),
+            region: "monaco".into(),
+            optional: Vec::new(),
+            layers: vec![layer],
+            named: Vec::new(),
+        }
     }
 
     /// A bucket in which `release` is live, with its objects and its input copy.
@@ -441,7 +494,6 @@ pub(crate) mod tests {
             &bucket.join(format!("test-catalog/releases/{id}.json")),
             &String::from_utf8(release.canonical()).unwrap(),
         );
-        write(&bucket.join(format!("test-catalog/releases/{id}/LICENSE.txt")), "named");
         write(&bucket.join(format!("test-catalog/objects/{}", sha256_hex(b"layer"))), "layer");
         let file = FileRecord {
             name: "land.zip".into(),
@@ -511,6 +563,7 @@ pub(crate) mod tests {
                 prefix: "test-catalog".into(),
                 release: Some((release.id(), release)),
                 applied: None,
+                document: None,
             });
             Live { products: products.collect(), ..Live::default() }
         };

@@ -107,12 +107,17 @@ impl Http {
 
     /// A small document, such as an index or an API answer.
     pub fn text(&self, url: &str, accept: &str) -> Result<String, String> {
+        String::from_utf8(self.bytes(url, accept)?).map_err(|e| format!("GET {url}: {e}"))
+    }
+
+    /// A small metadata file, with its exact bytes.
+    pub fn bytes(&self, url: &str, accept: &str) -> Result<Vec<u8>, String> {
         let request = self.agent.get(url).header("accept", accept).config().timeout_global(Some(SMALL)).build();
         let mut response = request.call().map_err(|e| no_answer("GET", url, e))?;
         if !response.status().is_success() {
             return Err(format!("GET {url}: HTTP {}", response.status().as_u16()));
         }
-        response.body_mut().read_to_string().map_err(|e| format!("GET {url}: {e}"))
+        response.body_mut().read_to_vec().map_err(|e| format!("GET {url}: {e}"))
     }
 
     /// The lock that a download of `url` needs. One process at a time downloads a URL.

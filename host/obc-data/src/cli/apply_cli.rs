@@ -233,7 +233,7 @@ fn stage<'a>(
     let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan))?;
     let Applying { live, next } = applying.expect("a build of live gives what an apply changes");
     let switches = switches(products, store, &live, &next)?;
-    let files = files(store, scratch, &next, &switches)?;
+    let files = files(store, scratch, &next)?;
     let uploaded = upload(bucket, &next.list(remote).map_err(r2_failed)?, &files)?;
     Ok((built, switches, uploaded))
 }
@@ -299,8 +299,8 @@ fn switches<'a>(
                 .fix(format!("Correct the steps of product `{name}`, then plan again."))
         };
         product.verify(live.release.as_ref().map(|(_, release)| release), release, store).map_err(failed)?;
-        let pointer = product.pointer().expect("a plan of live blocks a product without a pointer");
-        let pointer = pointer(release, store).map_err(failed)?;
+        let pointer =
+            Pointer { document: next.document.clone().ok_or_else(|| failed("release has no desired pointer".into()))? };
         switches.push(Switch { product: name, prefix: next.prefix.clone(), id: id.clone(), pointer });
     }
     Ok(switches)
@@ -318,8 +318,8 @@ struct File {
 }
 
 /// Every key of `next` but the pointers: the manifests and objects of its releases, the files that
-/// a client finds by name of the releases of `switches`, and the input copies.
-fn files(store: &Store, scratch: &Scratch, next: &Live, switches: &[Switch]) -> Result<Vec<File>, Error> {
+/// a client finds by name, and the input copies.
+fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec<File>, Error> {
     let mut files = Vec::new();
     for (prefix, id, release) in next.releases() {
         files.push(File {
@@ -329,6 +329,13 @@ fn files(store: &Store, scratch: &Scratch, next: &Live, switches: &[Switch]) -> 
             sha256: Some(id.into()),
             upload: Upload { content_type: Some(JSON), ..IMMUTABLE },
         });
+        files.extend(release.named.iter().map(|file| File {
+            key: format!("{prefix}/releases/{id}/{}", file.path),
+            path: store.object(&file.sha256),
+            size: Some(file.size),
+            sha256: Some(file.sha256.clone()),
+            upload: IMMUTABLE,
+        }));
         files.extend(release.objects().into_iter().map(|(sha256, size)| File {
             key: format!("{prefix}/objects/{sha256}"),
             path: store.object(sha256),
@@ -336,13 +343,6 @@ fn files(store: &Store, scratch: &Scratch, next: &Live, switches: &[Switch]) -> 
             sha256: Some(sha256.into()),
             upload: IMMUTABLE,
         }));
-    }
-    for switch in switches {
-        for (path, bytes) in &switch.pointer.named {
-            let key = format!("{}/releases/{}/{path}", switch.prefix, switch.id);
-            let size = Some(bytes.len() as u64);
-            files.push(File { path: write(scratch, &key, bytes)?, key, size, sha256: None, upload: IMMUTABLE });
-        }
     }
     for (read, record) in &next.inputs {
         let (source, version) = (&read.source, &read.version);
@@ -376,17 +376,17 @@ fn files(store: &Store, scratch: &Scratch, next: &Live, switches: &[Switch]) -> 
 /// key with another size goes first: an immutable upload never replaces. Each file is checked
 /// against its SHA-256 before R2 changes, and each key after its upload.
 fn upload(bucket: &Bucket, listed: &[Object], files: &[File]) -> Result<Vec<String>, Error> {
-    for file in files
-        .iter()
-        .filter(|f| f.key.starts_with(&format!("{INPUTS}/records/")) && listed.iter().any(|object| object.key == f.key))
-    {
+    for file in files.iter().filter(|f| {
+        let named = f.key.split_once("/releases/").is_some_and(|(_, path)| path.contains('/'));
+        (f.key.starts_with(&format!("{INPUTS}/records/")) || named) && listed.iter().any(|object| object.key == f.key)
+    }) {
         let bytes = bucket
             .read(&file.key)
             .map_err(r2_failed)?
             .ok_or_else(|| Code::R2Failed.error(format!("{} disappeared", file.key)))?;
         if file.sha256.as_deref() != Some(crate::store::sha256_hex(&bytes).as_str()) {
             return Err(Code::VerifyFailed
-                .error(format!("{} already holds different immutable copy metadata; nothing changed", file.key)));
+                .error(format!("{} already holds different immutable metadata; nothing changed", file.key)));
         }
     }
     let listed: BTreeMap<&str, &Object> = listed.iter().map(|object| (object.key.as_str(), object)).collect();
@@ -563,7 +563,10 @@ mod tests {
         assert_eq!(pointer, serde_json::json!({"schema": 1, "release": id}));
         let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
         assert_eq!(live.products[0].applied.as_ref(), Some(&applied), "status reads it");
-        assert_eq!(keys[&format!("test/releases/{id}/LICENSE.txt")], b"CC0-1.0\n");
+        assert_eq!(
+            keys[&format!("test/releases/{id}/COUNT.txt")],
+            std::fs::read(fixture.store.object(&live.products[0].release.as_ref().unwrap().1.named[0].sha256)).unwrap()
+        );
         assert_eq!(keys[&format!("inputs/objects/{}", sha256_hex(b"head\n"))], b"head\n", "the input copy");
         assert_eq!(keys["firmware/v1/app.bin"], b"firmware", "an apply never touches another prefix");
         let log = String::from_utf8(keys["removed.jsonl"].clone()).unwrap();
@@ -599,6 +602,108 @@ mod tests {
     }
 
     #[test]
+    fn named_metadata_repairs_without_builds_and_extra_active_release_files_are_removed() {
+        let (fixture, remote) = repository("apply-named");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let dir = fixture.scratch.0.join("bucket");
+        let id = checked(&fixture, &remote).unwrap();
+        let key = format!("test/releases/{id}/COUNT.txt");
+        let bytes = std::fs::read(dir.join(&key)).unwrap();
+        std::fs::remove_file(dir.join(&key)).unwrap();
+        let extra = format!("test/releases/{id}/extra.json");
+        write(&dir.join(&extra), "{}");
+        age(&fixture);
+        let repaired = apply(&fixture, &remote, &[&Versioned]).unwrap();
+        assert!(repaired.built.as_ref().unwrap().run.is_none(), "local receipt bytes repair without a build");
+        assert_eq!(repaired.uploaded, std::slice::from_ref(&key));
+        assert!(repaired.switched.is_empty());
+        assert_eq!(repaired.removed.iter().map(|object| object.key.as_str()).collect::<Vec<_>>(), [extra]);
+        assert_eq!(std::fs::read(dir.join(&key)).unwrap(), bytes);
+        checked(&fixture, &remote);
+
+        let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        let named = &live.products[0].release.as_ref().unwrap().1.named[0];
+        let local = fixture.store.object(&named.sha256);
+        std::fs::remove_file(&local).unwrap();
+        live.restore_named(&remote, &fixture.store).unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), bytes, "published metadata restores exact local bytes");
+
+        std::fs::remove_file(&local).unwrap();
+        std::fs::remove_file(dir.join(&key)).unwrap();
+        let rebuilt = apply(&fixture, &remote, &[&Versioned]).unwrap();
+        assert_eq!(
+            rebuilt.built.as_ref().unwrap().layers.iter().map(|layer| layer.step.as_str()).collect::<Vec<_>>(),
+            ["test/count"],
+            "only the missing named file's producer builds"
+        );
+        assert_eq!(rebuilt.uploaded, std::slice::from_ref(&key));
+        assert!(rebuilt.switched.is_empty());
+
+        std::fs::write(dir.join(&key), vec![b'x'; bytes.len()]).unwrap();
+        let before = keys(&fixture);
+        let err = apply(&fixture, &remote, &[&Root]).unwrap_err();
+        assert_eq!(err.code, Code::VerifyFailed, "existing immutable named bytes cannot be silently replaced");
+        assert_eq!(keys(&fixture), before);
+
+        std::fs::remove_file(&local).unwrap();
+        let before = keys(&fixture);
+        let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
+        assert_eq!(err.code, Code::VerifyFailed);
+        assert_eq!(keys(&fixture), before, "a bad immutable metadata digest does not mutate R2");
+        assert!(!local.exists());
+    }
+
+    struct Root;
+
+    impl Product for Root {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(env, regions, store)
+        }
+        fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
+            Versioned.named(release)
+        }
+        fn pointer(&self) -> Option<PointerFn> {
+            Some(|release, _| {
+                Ok(Pointer {
+                    document: [("schema".into(), 2.into()), ("bound".into(), release.id().into())]
+                        .into_iter()
+                        .collect(),
+                })
+            })
+        }
+    }
+
+    #[test]
+    fn a_pointer_only_change_is_planned_and_verified_without_a_layer_build() {
+        let (fixture, remote) = repository("apply-pointer");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let id = checked(&fixture, &remote).unwrap();
+        let plan =
+            build_cli::plan_live(&fixture.root(), &fixture.store, &Http::new(), &remote, &[&Root], &[], false).unwrap();
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].id, "pointer:test");
+        assert!(plan.groups[0].builds.is_empty());
+        assert!(matches!(plan.groups[0].cause, Some(crate::engine::plan::Cause::Pointer { .. })));
+        let applied = apply(&fixture, &remote, &[&Root]).unwrap();
+        assert!(applied.built.as_ref().unwrap().run.is_none());
+        assert!(applied.uploaded.is_empty() && applied.removed.is_empty());
+        assert_eq!(applied.switched[0].id, id);
+        let document: serde_json::Value = serde_json::from_slice(&keys(&fixture)["test/catalog.json"]).unwrap();
+        assert_eq!((document["schema"].as_u64(), document["bound"].as_str()), (Some(2), Some(id.as_str())));
+        assert!(apply(&fixture, &remote, &[&Root]).unwrap().built.is_none());
+
+        let dir = fixture.scratch.0.join("bucket");
+        write(&dir.join("test/catalog.json"), &format!("{{\"schema\": 99, \"release\": \"{id}\"}}"));
+        let before = keys(&fixture);
+        let err = apply(&fixture, &remote, &[&Failing]).unwrap_err();
+        assert_eq!(err.code, Code::VerifyFailed);
+        assert_eq!(keys(&fixture), before, "pointer-only changes also pass verification before mutation");
+    }
+
+    #[test]
     fn an_apply_that_moves_a_source_removes_unread_input_files_and_the_old_record() {
         let (fixture, remote) = repository("apply-move");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
@@ -624,7 +729,7 @@ mod tests {
             !keys.contains_key(&format!("inputs/objects/{}", sha256_hex(b"head\n"))),
             "an unread file of the new snapshot is not copied"
         );
-        assert!(!keys.contains_key(&format!("test/releases/{old}/LICENSE.txt")));
+        assert!(!keys.contains_key(&format!("test/releases/{old}/COUNT.txt")));
     }
 
     /// The test product, whose release fails its check.
@@ -641,6 +746,10 @@ mod tests {
 
         fn pointer(&self) -> Option<PointerFn> {
             Versioned.pointer()
+        }
+
+        fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
+            Versioned.named(release)
         }
 
         fn verify(
@@ -675,6 +784,7 @@ mod tests {
         fn pointer(&self) -> Option<PointerFn> {
             Versioned.pointer()
         }
+
         fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
             Ok(vec![crate::engine::tests::packaged(self.0.clone())].into())
         }

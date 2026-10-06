@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::engine::release::Release;
-use crate::engine::{snapshot_files, Step};
+use crate::engine::{snapshot_files, LayerFile, Step};
 use crate::env::Env;
 use crate::regions::Regions;
 use crate::store::{sorted, Store};
@@ -33,6 +33,11 @@ pub trait Product {
     /// `live` leaves the product out, because an apply cannot make its release live.
     fn pointer(&self) -> Option<PointerFn> {
         None
+    }
+
+    /// The named publication files, from release receipts. Their identity precedes the release id.
+    fn named(&self, _release: &Release) -> Result<Vec<LayerFile>, String> {
+        Ok(Vec::new())
     }
 
     /// Check a release from the store before an apply makes it live.
@@ -82,8 +87,6 @@ pub type PointerFn = fn(&Release, &Store) -> Result<Pointer, String>;
 pub struct Pointer {
     /// The document of `<prefix>/catalog.json`, without `release` and `applied`: an apply adds them.
     pub document: serde_json::Map<String, serde_json::Value>,
-    /// The files of `<prefix>/releases/<id>/`, by path.
-    pub named: BTreeMap<String, Vec<u8>>,
 }
 
 /// Why a product gives no steps.
