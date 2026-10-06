@@ -36,6 +36,7 @@ pub(super) fn discover(
     http: &Http,
     sources: &[Source],
     copies: Option<&crate::input_copy::Restore<'_>>,
+    run: Option<&mut crate::engine::runs::Run>,
 ) -> Result<Env, Error> {
     let mut inventory = env.clone();
     inventory.moves.clear();
@@ -46,7 +47,8 @@ pub(super) fn discover(
     inventory.requests.borrow_mut().clear();
     inventory.read.borrow_mut().clear();
     inventory.fetch_failures.clear();
-    let mut fetch = status_cli::discovery_fetch(build_cli::fetcher(store, http, sources, &inventory, copies), false);
+    let mut fetch =
+        status_cli::discovery_fetch(build_cli::fetcher_recorded(store, http, sources, &inventory, copies, run), false);
     for product in products {
         match build_cli::product_steps(root, *product, &mut inventory, regions, store, &mut fetch) {
             Ok(_) => (),
@@ -104,6 +106,79 @@ mod tests {
     use crate::product::{version, Unplanned};
 
     #[test]
+    fn mutating_discovery_records_its_first_metadata_fetch_but_keeps_the_bulk_guard() {
+        use crate::engine::runs::{Event, Run};
+        use crate::fetch::tests::{quick, serve, source, whole};
+        use crate::product::Wanted;
+        struct Metadata;
+        impl Product for Metadata {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn steps(
+                &self,
+                _: &std::path::Path,
+                _: &Env,
+                _: &Regions,
+                store: &Store,
+            ) -> Result<crate::product::Steps, Unplanned> {
+                for source in ["geofabrik-poly", "bulk"] {
+                    if crate::engine::snapshot_files(store, source, "1", &[], &[]).map_err(Unplanned::Failed)?.is_none()
+                    {
+                        return Err(Unplanned::NeedsFetch(vec![Wanted {
+                            source: source.into(),
+                            version: Some("1".into()),
+                            params: Vec::new(),
+                        }]));
+                    }
+                }
+                Ok(Vec::new().into())
+            }
+        }
+        let (url, requests) = serve(|_, _| whole(b"metadata"));
+        let fixture = fixture("inventory-run-metadata");
+        let sources = [
+            Source { id: "geofabrik-poly".into(), ..source(&url, "release") },
+            Source { id: "bulk".into(), ..source(&url, "release") },
+        ];
+        let regions = Regions::new(Vec::new()).unwrap();
+        let mut run = Run::create(&fixture.store, "prepare live").unwrap();
+        let id = run.id().to_string();
+        let inventory = discover(
+            &fixture.root(),
+            &[&Metadata],
+            &Env::default(),
+            &regions,
+            &fixture.store,
+            &quick(),
+            &sources,
+            None,
+            Some(&mut run),
+        )
+        .unwrap();
+        assert_eq!(inventory.fetch_failures[0].0.source, "bulk");
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        let events = crate::engine::runs::events(&fixture.store, &id).unwrap();
+        assert!(events.iter().any(|event| matches!(event, Event::FetchFinished { source, bytes: 8, resolved, .. } if source == "geofabrik-poly" && resolved == "1")));
+        assert!(!events.iter().any(|event| matches!(event, Event::FetchStarted { source, .. } if source == "bulk")));
+        discover(
+            &fixture.root(),
+            &[&Metadata],
+            &Env::default(),
+            &regions,
+            &fixture.store,
+            &quick(),
+            &sources,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1, "a later observational pass reuses this metadata");
+        assert_eq!(crate::engine::runs::events(&fixture.store, &id).unwrap(), events);
+        run.finish(None).unwrap();
+    }
+
+    #[test]
     fn discovery_keeps_unprepared_active_requests_and_excludes_held_inputs() {
         struct Captures;
         impl Product for Captures {
@@ -130,7 +205,8 @@ mod tests {
         env.live.insert(("capture".into(), vec![("collection".into(), "peaks".into())]), ["2026-10-01".into()].into());
         let regions = Regions::new(Vec::new()).unwrap();
         let inventory =
-            discover(&fixture.root(), &[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None).unwrap();
+            discover(&fixture.root(), &[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None, None)
+                .unwrap();
         assert_eq!(inventory.requests.borrow().len(), 2);
         assert!(inventory.requests.borrow().iter().all(|(source, _)| source == "capture"));
         assert_eq!(inventory.read.borrow().len(), 1, "missing requests remain inventoried without an invented version");

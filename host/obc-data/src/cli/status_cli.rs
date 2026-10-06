@@ -136,6 +136,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         &http,
         &loaded.sources,
         Some(&copies),
+        None,
     )?;
     let rows = source_rows(&registry, Some(&live.by_source()), Some(&inventory), false)?;
     let statuses = rows.iter().flat_map(|row| {

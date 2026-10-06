@@ -174,31 +174,48 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
 pub fn prepare(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) -> Result<(), Error> {
     let (store, http, remote) = (Store::open()?, Http::new(), live_remote(&args.env)?);
     let mut run = super::api::start_run(&store, &format!("prepare {}", args.env))?;
-    let result: Result<Prepared, Error> = (|| {
-        run.record(&Event::Phase { phase: Phase::Prepare })?;
-        let prepared = planned_run(
-            root,
-            &store,
-            &http,
-            remote.as_ref(),
-            products,
-            &args.env,
-            &args.only,
-            Basis::Moves(&args.moves),
-            true,
-            Some(&mut run),
-        )?;
-        Ok(Prepared { run: run.id().into(), plan: prepared.plan })
-    })();
-    let incomplete =
-        result.as_ref().ok().filter(|prepared| prepared.plan.needs_prepare).map(|_| "inputs remain unresolved");
-    let prepared = super::api::finish_run(run, result, incomplete)?;
+    let result = prepare_plan(root, &store, &http, remote.as_ref(), products, &args, &mut run);
+    let prepared = super::api::finish_run(run, result, None)?;
     if json {
         return print_json(&prepared);
     }
     println!("run {}", prepared.run);
     print_plan(&prepared.plan);
     Ok(())
+}
+
+fn prepare_plan(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: Option<&Remote>,
+    products: &[&dyn Product],
+    args: &PlanArgs,
+    run: &mut Run,
+) -> Result<Prepared, Error> {
+    run.record(&Event::Phase { phase: Phase::Prepare })?;
+    let prepared = planned_run(
+        root,
+        store,
+        http,
+        remote,
+        products,
+        &args.env,
+        &args.only,
+        Basis::Moves(&args.moves),
+        true,
+        Some(run),
+    )?;
+    if let Some((wanted, message)) = prepared.loaded.env.fetch_failures.first() {
+        let source = prepared
+            .loaded
+            .sources
+            .iter()
+            .find(|source| source.id == wanted.source)
+            .ok_or_else(|| Code::InvalidData.error(format!("no source `{}`", wanted.source)))?;
+        return Err(fetched(source, Err(format!("source `{}`: {message}", wanted.source))).unwrap_err());
+    }
+    Ok(Prepared { run: run.id().into(), plan: prepared.plan })
 }
 
 /// The plan as text.
@@ -557,7 +574,7 @@ fn planned_run(
     only: &[String],
     basis: Basis,
     prepare: bool,
-    run: Option<&mut Run>,
+    mut run: Option<&mut Run>,
 ) -> Result<Planned, Error> {
     let mut loaded = load(root, name)?;
     let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
@@ -587,6 +604,7 @@ fn planned_run(
                     http,
                     &loaded.sources,
                     copies.as_ref(),
+                    run.as_deref_mut(),
                 )?;
                 for source in &loaded.sources {
                     if source.refresh == Refresh::Manual || env.moves.contains_key(&source.id) {
@@ -955,7 +973,7 @@ pub(super) fn fetcher<'a>(
     fetcher_recorded(store, http, sources, env, copies, None)
 }
 
-fn fetcher_recorded<'a>(
+pub(super) fn fetcher_recorded<'a>(
     store: &'a Store,
     http: &'a Http,
     sources: &'a [Source],
@@ -1323,6 +1341,52 @@ pub(crate) mod tests {
         assert!(matches!(events.last(), Some(Event::Finished { ok: true, .. })));
         assert_eq!(events.iter().filter(|event| matches!(event, Event::FetchFinished { .. })).count(), 1);
         assert!(!fixture.store.root().join("layers").exists(), "prepare makes no layer receipts");
+    }
+
+    #[test]
+    fn preparation_fails_when_a_product_keeps_usable_steps_after_a_failed_fetch() {
+        use crate::fetch::tests::{quick, serve, whole, Reply};
+        struct Softened;
+        impl Product for Softened {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn steps(&self, _: &Path, env: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+                if env.fetch_failures.is_empty() {
+                    return Err(Unplanned::NeedsFetch(vec![Wanted {
+                        source: "index".into(),
+                        version: Some("1".into()),
+                        params: Vec::new(),
+                    }]));
+                }
+                let mut listed: crate::product::Steps = pipeline().into();
+                listed.blocked.push(crate::product::BlockedLayer {
+                    layer: "test/content".into(),
+                    reason: env.fetch_failures[0].1.clone(),
+                });
+                Ok(listed)
+            }
+        }
+        let (url, requests) = serve(|_, _| Reply { status: 404, ..whole(b"missing") });
+        let fixture = fixture("prepare-softened-fetch");
+        let root = fixture.root();
+        write(&root.join("data/sources.toml"), &format!(
+            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\n"));
+        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        let mut run = Run::create(&fixture.store, "prepare live").unwrap();
+        let id = run.id().to_string();
+        let args = PlanArgs { env: "live".into(), only: Vec::new(), moves: vec!["index@1".into()] };
+        let result = prepare_plan(&root, &fixture.store, &quick(), None, &[&Softened], &args, &mut run);
+        let error = super::super::api::finish_run(run, result, None).unwrap_err();
+        assert_eq!((error.code, error.code.exit()), (Code::FetchFailed, 1));
+        assert_eq!(error.run.as_ref(), Some(&id));
+        assert!(error.message.contains("index") && error.message.contains("404"), "{}", error.message);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        let events = crate::engine::runs::events(&fixture.store, &id).unwrap();
+        assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::Finished { .. })).count(), 1);
+        assert!(!events.iter().any(|event| matches!(event, Event::StepStarted { .. })));
     }
 
     /// The test pipeline, once the store has `index@1` and then `box@1`, which only the index names.

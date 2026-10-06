@@ -561,6 +561,7 @@ fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Re
             &Http::new(),
             &loaded.sources,
             Some(&copies),
+            None,
         )?)
     } else {
         eprintln!("obc data: {}", live_unknown(live.as_ref().unwrap_err()));
