@@ -19,6 +19,16 @@ const SERVICES: [&str; 3] = ["routing", "search", "downloads"];
 #[serde(deny_unknown_fields)]
 struct Config {
     target: Option<Value>,
+    publication: Option<obc_data::vps::Origins>,
+}
+
+pub(super) fn publication(root: &Path) -> Result<obc_data::vps::Origins, String> {
+    let config: Config =
+        toml::from_str(&std::fs::read_to_string(root.join(RECIPE)).map_err(|e| format!("{RECIPE}: {e}"))?)
+            .map_err(|e| format!("{RECIPE}: {e}"))?;
+    let origins = config.publication.ok_or("configure [publication] origins in data/planner-runtime.toml")?;
+    origins.check()?;
+    Ok(origins)
 }
 
 #[derive(Deserialize)]
@@ -98,7 +108,7 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
                 let artifact = format!("{service}.tar.gz");
                 let mut run = argv();
                 run.push("--step".into());
-                let mut paths = vec![BUILD.into(), "tools/step_request.py".into(), RECIPE.into()];
+                let mut paths = vec![BUILD.into(), "tools/step_request.py".into()];
                 paths.extend(probe.paths);
                 result.steps.push(Step {
                     name,
@@ -120,10 +130,9 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
             Err(reason) => result.blocked.push(BlockedLayer { layer: format!("planner/runtime/{service}"), reason }),
         }
     }
-    result.blocked.push(BlockedLayer {
-        layer: "planner/runtime".into(),
-        reason: "service installation and readiness are not verified".into(),
-    });
+    if let Err(reason) = publication(root) {
+        result.blocked.push(BlockedLayer { layer: "planner/runtime".into(), reason });
+    }
     result
 }
 
@@ -252,6 +261,20 @@ mod tests {
         assert_eq!(found.steps[0].code.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
         assert_eq!(found.steps[1].code.python_packages.as_deref(), Some("search-runtime"));
         assert!(found.steps[1].code.python.as_ref().unwrap().group.is_none());
+        let target_only = std::fs::read_to_string(&recipe).unwrap();
+        std::fs::write(&recipe, format!("{target_only}\n[publication]\nsite_origin='https://site.example'\napi_origin='https://api.example'\nobjects_origin='https://objects.example'\n")).unwrap();
+        let configured = listed(&fixture.0, |_, _, _| {
+            Ok(Probe { builder: json!({"kind":"native"}), paths: Vec::new(), files: Vec::new() })
+        });
+        assert!(configured.blocked.is_empty());
+        assert_eq!(
+            configured.steps.iter().map(|step| &step.options).collect::<Vec<_>>(),
+            found.steps.iter().map(|step| &step.options).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            configured.steps.iter().map(|step| &step.code).collect::<Vec<_>>(),
+            found.steps.iter().map(|step| &step.code).collect::<Vec<_>>()
+        );
     }
 
     fn layer(step: &str) -> Layer {

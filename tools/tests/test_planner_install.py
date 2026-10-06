@@ -37,7 +37,8 @@ class PlannerInstall(unittest.TestCase):
         data.write_bytes(b'{"format":3}')
         self.document = {"format": 1, "region": "test", "files": {"offline/catalog.json": offline.pack_file(data, self.source / "objects")}}
         self.value = {"service": "downloads", "id": "a" * 64, "slot": 1}
-        self.candidate = {"service": self.value["service"], "id": self.value["id"], "target": self.descriptor["target"], "expected": {"service": "downloads", "catalog": self.document["files"]["offline/catalog.json"]["sha256"]}, "source": str(self.source), "objects_url": "https://maps.openbikecomputer.com/planner/objects", "site_origin": "https://openbikecomputer.com"}
+        self.candidate = {"service": self.value["service"], "id": self.value["id"], "target": self.descriptor["target"], "expected": {"service": "downloads", "catalog": self.document["files"]["offline/catalog.json"]["sha256"]}, "source": str(self.source), "objects_url": "https://maps.openbikecomputer.com/planner/objects", "site_origin": "https://openbikecomputer.com", "api_origin": "https://releases.openbikecomputer.com"}
+        self.value["binding"] = install.binding(self.candidate)
         self.request = {"installed": self.value, "candidate": self.candidate}
         self.write_metadata()
         self.commands = []
@@ -85,11 +86,13 @@ class PlannerInstall(unittest.TestCase):
         directory = install.destination(self.value, self.base)
         self.assertEqual((directory / "data/offline/catalog.json").read_bytes(), b'{"format":3}')
         self.assertTrue((directory / "code/entry.py").is_file())
-        self.assertEqual([command for command in self.commands if command[:2] == ["systemctl", "restart"]], [["systemctl", "restart", "obc-planner-downloads-1.service"]])
-        self.assertFalse(any("caddy" in command or "enable" in command for command in self.commands))
+        self.assertEqual(self.commands, [["systemctl", "daemon-reload"],
+                                        ["systemctl", "enable", "obc-planner-downloads-1.service"],
+                                        ["systemctl", "restart", "obc-planner-downloads-1.service"]])
         contents = (self.units / install.unit(self.value)).read_text()
         self.assertIn(" -S -m tools.planner_downloads", contents)
         self.assertIn("DynamicUser=yes", contents)
+        self.assertIn("[Install]\nWantedBy=multi-user.target\n", contents)
         with patch.object(install, "host", return_value=HOST):
             actual = install.probe(self.request, self.base, self.execute, lambda _: {"sha256": "b" * 64}, self.proc)
         self.assertEqual(actual, {"service": "downloads", "catalog": "b" * 64}, "readiness must report opened data, not requested id")
@@ -100,14 +103,15 @@ class PlannerInstall(unittest.TestCase):
     def test_reuse_checks_desired_object_pool_and_origin_against_the_running_process(self):
         self.stage()
         self.candidate['objects_url'] = 'https://other.example/planner/objects'
-        with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "downloads configuration"):
+        self.value['binding'] = install.binding(self.candidate)
+        with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "another runtime identity"):
             install.probe(self.request, self.base, self.execute, lambda _: self.fail("wrong pool must not be reused"), self.proc)
         directory = install.destination(self.value, self.base)
-        routing = {"service": "routing", "id": "a" * 64, "slot": 0}
+        routing = {"service": "routing", "id": "a" * 64, "slot": 0, "binding": "b" * 64}
         (self.proc / '42/cmdline').write_bytes(b'\0'.join(str(item).encode() for item in [directory / 'code/bin/route-server', directory / 'data/routing']))
         (self.proc / '42/exe').unlink()
         (self.proc / '42/exe').symlink_to(directory / 'code/bin/route-server')
-        (self.proc / '42/environ').write_bytes(b'OBC_PLANNER_SERVICE_ID=' + b'a' * 64 + b'\0ROUTE_LISTEN=127.0.0.1:8787\0ROUTE_ORIGIN=https://old.example')
+        (self.proc / '42/environ').write_bytes(b'OBC_PLANNER_SERVICE_ID=' + b'a' * 64 + b'\0OBC_PLANNER_BINDING=' + b'b' * 64 + b'\0ROUTE_LISTEN=127.0.0.1:8787\0ROUTE_ORIGIN=https://old.example')
         with self.assertRaisesRegex(ValueError, "routing configuration"):
             install.running(routing, {"site_origin": "https://new.example"}, directory, self.execute, self.proc)
 
@@ -122,6 +126,7 @@ class PlannerInstall(unittest.TestCase):
         sha = runtime.digest(payload)
         (self.source / 'objects' / sha).write_bytes(payload.read_bytes())
         self.value['id'] = self.candidate['id'] = 'b' * 64
+        self.value['binding'] = install.binding(self.candidate)
         self.descriptor['payload'].update(sha256=sha, bytes=payload.stat().st_size)
         self.write_metadata()
         self.start_process = False

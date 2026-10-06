@@ -1015,6 +1015,9 @@ in its options, so it needs no source content projection.
 and `python`. Supported triples are `x86_64-unknown-linux-gnu` and
 `aarch64-unknown-linux-gnu`. The glibc baseline is `major.minor`; Node and CPython
 versions are exact `major.minor.patch`. Without this table, all runtime producers are blocked.
+The optional `[publication]` table names HTTPS `site_origin`, `api_origin` and `objects_origin`.
+Without it, planner publication is blocked. Origins affect endpoint bindings, not runtime bytes.
+The shared pool is `<objects_origin>/planner/objects`. Tile URLs keep the tile Worker origin.
 
 `planner/runtime/routing`, `planner/runtime/search` and `planner/runtime/downloads` use
 prepared native Linux tools or a local pinned container. Probes read tool and image metadata.
@@ -1035,13 +1038,14 @@ and require no newer glibc than the baseline.
 
 The pointer's `services` identities bind runtime content to routing grid content, search
 grid and model content, or the offline index for downloads. They do not bind receipt keys
-or unrelated optional layers. The required `planner/runtime` readiness gate stays blocked
-until installation and service readiness are verified. Data producers can build independently.
+or unrelated optional layers. The owner verifies installation and actual service readiness before
+publishing the planner pointer. Data producers can build independently.
 
 Staging uses two slots per service. The current publication identifies the active slot;
 running units do not establish traffic ownership. Unknown or conflicting ownership blocks
-staging. A healthy slot with the same runtime and data identity is reused. A changed service
-uses the other slot. Staging does not activate traffic or retire another slot.
+staging. A healthy slot with the same content and endpoint binding is reused. A changed service
+or approved origin configuration uses the other slot. The full desired pointer holds those
+choices; preview and the owner derive them without unit discovery during preview.
 
 Installation verifies the runtime archive and every materialized service file against their
 immutable identities. Archives contain only unique regular files with normalized relative
@@ -1051,6 +1055,23 @@ Readiness reports the opened routing package, search grid and model file hashes,
 catalogue hash. An expected identity in an environment variable is not readiness evidence.
 Probes bind these results to the running process, its runtime files, and the requested site
 origin or shared object pool. Reloaded unit configuration alone cannot prove runtime readiness.
+
+The owner uploads artifacts, stages and probes slots, then reloads routes for old and new
+bindings. Public endpoint probes must pass before its planner pointer switches. Each unit and
+route mutation uses the same durable intent as R2 writes. Immutable release metadata contains
+no mutable slot choice. Old slots and pinned routes stay for the reader window, even when
+object cleanup has no leftovers. Retirement checks exact slot ownership again.
+
+An acknowledged partial activation can occupy the next inactive slot. Before replacing it,
+the owner restores entry routes to the exact current published bindings and probes them.
+It keeps the conflicting pinned binding through a full reader window, then retires and stages.
+An unknown mutation outcome remains blocked; this wait never clears that barrier.
+
+Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
+bundle, release and objects through that source, so a stable entry switch cannot mix releases.
+The private selection key binds the object pool as well as the catalog and bounds. Old quotes
+remain available while their service slot is retained. After retirement, a missing bundle
+requires a new quote. Job creation completes synchronously; there is no mutable polling path.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
@@ -1172,7 +1193,8 @@ first writes the status, and the second writes an error.
    the original run journal to the owner. Only missing payload bytes move. Under the lock, the
    owner checks each exact `observed` pointer again before it uploads each key of the releases after the apply and of their input copies that R2 lacks,
    or holds with another size; a key with another size goes first. Then it checks each key.
-6. It writes the pointer of each product whose release changes: the document of the product with
+6. For planner changes, it activates and publicly probes the approved service endpoints first.
+   It writes the pointer of each product whose full desired document changes: the document with
    `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
    `Cache-Control: public, max-age=60, must-revalidate`.
 7. It reads live again and lists its prefixes, and `reference/v1` once live reads a `dtm-*`
@@ -1198,7 +1220,7 @@ owner or machine failure. A later read that looks correct does not clear it. The
 or lock takeover. Mutating children inherit the lock; a surviving child still excludes a new owner.
 The owner ignores SSH hangup and finishes its operation after laptop disconnect. Its durable state
 and original run remain on the VPS. Successful replies copy the owner journal to the laptop.
-Planner pointer changes remain blocked until service activation and retirement run under this owner.
+Planner service activation and retirement run under this same owner and mutation barrier.
 
 
 ## Commands
@@ -3393,6 +3415,74 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "kind",
             "key",
             "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "binding": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "service_staged",
+              "type": "string"
+            },
+            "service": {
+              "type": "string"
+            },
+            "slot": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "service",
+            "slot",
+            "binding"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bindings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "services_activated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bindings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bindings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "services_retired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bindings"
           ],
           "type": "object"
         }

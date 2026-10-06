@@ -94,6 +94,17 @@ impl Product for Planner {
         Some(catalog::pointer)
     }
 
+    fn services(
+        &self,
+        root: &std::path::Path,
+        release: &obc_data::engine::release::Release,
+        store: &Store,
+        destination: &std::path::Path,
+    ) -> Result<Vec<obc_data::vps::Candidate>, String> {
+        let origins = runtime::publication(root)?;
+        install::prepare_into(release, store, &origins, destination)
+    }
+
     fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
         let mut files = catalog::named(release)?;
         files.extend(runtime::named(release)?);

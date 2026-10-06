@@ -946,7 +946,11 @@ fn next(
                     && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) =>
             {
                 let pointer = product.pointer().expect("unblocked live product has a pointer");
-                let pointer = pointer(release, store).map_err(|e| Code::VerifyFailed.error(e))?;
+                let mut pointer = pointer(root, release, store).map_err(|e| Code::VerifyFailed.error(e))?;
+                if name == "planner" {
+                    crate::vps::document(&mut pointer.document, now.document.as_ref())
+                        .map_err(|e| Code::VerifyFailed.error(e))?;
+                }
                 if pointer.document.contains_key("release") || pointer.document.contains_key("applied") {
                     return Err(product_bug(name, "pointer includes publication fields".into()));
                 }
@@ -1623,7 +1627,7 @@ pub(crate) mod tests {
         }
 
         fn pointer(&self) -> Option<crate::product::PointerFn> {
-            Some(|_, _| {
+            Some(|_, _, _| {
                 let document = [("schema".to_string(), 1.into())].into_iter().collect();
                 Ok(crate::product::Pointer { document })
             })

@@ -120,6 +120,9 @@ class RuntimeBuild(unittest.TestCase):
                                        cwd=installed, env={**env, "PYTHONPATH": str(installed)}, capture_output=True, check=False)
                 self.assertEqual(ready.returncode, 0, ready.stderr.decode())
                 self.assertIn(option, ready.stdout)
+            activation = subprocess.run([sys.executable, "-S", "-c", "from tools import planner_activation"],
+                                        cwd=installed, env={**env, "PYTHONPATH": str(installed)}, capture_output=True)
+            self.assertEqual(activation.returncode, 0, activation.stderr.decode())
             self.assertFalse((installed / "pyproject.toml").exists())
 
     def test_elf_architecture_and_required_glibc_are_checked_with_readelf(self):
