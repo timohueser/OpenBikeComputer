@@ -739,8 +739,8 @@ impl CatalogState {
         matches!(self.pending, Some(CatalogIntent::ClearPersonalData { .. }))
     }
 
-    pub(crate) fn accepts(&self, outcome: CatalogOutcome) -> bool {
-        self.ops.is_current(outcome.token())
+    pub(crate) fn accepts(&self, token: OperationToken<CatalogTag>) -> bool {
+        self.ops.is_current(token)
     }
 
     /// The last catalog read failed and its retry waits.
@@ -984,6 +984,29 @@ impl CatalogState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_catalog_read_is_current_until_answered_or_store_changes() {
+        let mut catalogs = CatalogState::new();
+        catalogs.note_store_moved();
+        let read = catalogs.next_effect().unwrap();
+        assert!(catalogs.accepts(read.token()));
+        assert!(catalogs.next_effect().is_none());
+        catalogs.change_store();
+        assert!(!catalogs.accepts(read.token()));
+        catalogs
+            .admit_intent(CatalogIntent::ClearPersonalData { store: crate::device_core::StoreIdentity::new(2) })
+            .unwrap();
+        let clear = catalogs.next_effect().unwrap();
+        assert!(matches!(clear, CatalogEffect::ClearPersonalData { .. }));
+        assert!(catalogs.accepts(clear.token()));
+        assert!(!catalogs.accepts(read.token()));
+        catalogs.apply_outcome(CatalogOutcome::PersonalDataCleared { token: clear.token(), done: true });
+        assert!(!catalogs.accepts(clear.token()));
+        let refresh = catalogs.next_effect().unwrap();
+        assert!(matches!(refresh, CatalogEffect::ReadCatalog { .. }));
+        assert!(catalogs.accepts(refresh.token()));
+    }
 
     #[test]
     fn assistant_and_whole_route_shapes_have_separate_keys() {

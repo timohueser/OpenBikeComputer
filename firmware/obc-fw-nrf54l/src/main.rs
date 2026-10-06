@@ -972,8 +972,13 @@ async fn main(_spawner: Spawner) {
             // loop reports the store's live `sequence()`, and the first pass sees that move from "no
             // store" to a revision, which arms exactly one catalog read. This snapshot is what the
             // menu shows until that read lands.
-            let _ = flat_store::load_routes(flat, app);
-            let _ = flat_store::load_trips(flat, app);
+            if let Some(mut catalogs) = arena::claim_catalogs(
+                #[cfg(has_nav)]
+                None,
+            ) {
+                let _ = flat_store::load_routes(flat, app, &mut catalogs);
+                let _ = flat_store::load_trips(flat, app, &mut catalogs);
+            }
             let _ = flat_store::load_rides(flat, app);
             // Device info for the System settings screen: the running firmware version and the
             // loaded map's name and OBCM version.

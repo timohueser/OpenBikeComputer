@@ -236,7 +236,7 @@ pub fn planner_original(
         store.source(id, Some(*revision))
     })
 }
-pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App) {
+pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App, _: &mut ()) {
     let mut summaries = Vec::new();
     let mut ids = Vec::new();
     for meta in store.entries().filter(|m| m.kind == ObjectKind::Route && m.flags.is_route_head()) {

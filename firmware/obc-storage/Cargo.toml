@@ -26,6 +26,8 @@ obc-link = { path = "../obc-link" }
 # reader to write.
 obc-reader = { path = "../obc-reader" }
 obcm-testkit = { path = "../../host/obcm-testkit" }
+# Catalog-load equivalence uses the production route and trip decoders.
+obc-route = { path = "../obc-route" }
 
 [features]
 default = []

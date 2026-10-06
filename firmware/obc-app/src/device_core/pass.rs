@@ -11,8 +11,8 @@ use crate::App;
 use super::connections::Connections;
 use super::derived::{DerivedInputs, DerivedNeeds, DerivedTargets};
 use super::{
-    Capabilities, DeviceFacts, EffectSlots, ExternalFacts, OutcomeSlots, PlatformSupport, SlotFull, StoreRevision,
-    TransferState, UpdateResult,
+    Capabilities, CatalogTag, DeviceFacts, EffectSlots, ExternalFacts, OperationToken, OutcomeSlots, PlatformSupport,
+    SlotFull, StoreRevision, TransferState, UpdateResult,
 };
 
 /// The pass stages, in the order [`App::run_pass`] runs them. Each runs exactly once.
@@ -259,7 +259,7 @@ impl App {
     fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots, now_ms: u32) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
-            if self.catalogs.accepts(outcome) {
+            if self.catalogs.accepts(outcome.token()) {
                 if self.catalogs.reset_running() {
                     use crate::catalog_state::CatalogOutcome;
                     let finished = match outcome {
@@ -483,6 +483,11 @@ impl App {
     /// Invalidates admission before any catalog feeder mutates the resident projection.
     pub fn begin_catalog_refresh(&mut self) {
         self.catalogs.loaded_scope = None;
+    }
+
+    /// Deferred work must still name the current catalog operation before it publishes.
+    pub fn catalog_operation_current(&self, token: OperationToken<CatalogTag>) -> bool {
+        self.catalogs.accepts(token)
     }
     fn stage_catalog(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Catalog);

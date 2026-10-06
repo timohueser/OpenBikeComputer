@@ -149,7 +149,7 @@ impl Harness {
         flat_store::mount_sources(store, &original, &map);
         let tables = obc_reader::MapTables::parse(&map).unwrap();
         let mut app = obc_app::App::new_idle(obc_app::AppState::new(500_000, 500_000, 10.0));
-        flat_store::load_routes(store, &mut app);
+        flat_store::load_routes(store, &mut app, &mut ());
         Self {
             executor: detour::Executor::new(),
             app,

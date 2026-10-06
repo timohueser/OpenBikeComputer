@@ -37,6 +37,10 @@ pub fn claim_nav(_: obc_app::MapQuiesced) -> Result<NavGuard, ()> {
         measure: Box::default(),
     })
 }
+// Catalog stages use independent heap storage in this facade.
+pub fn claim_catalogs(_: Option<&mut NavGuard>) -> Option<()> {
+    Some(())
+}
 impl Drop for NavGuard {
     fn drop(&mut self) {
         if !std::thread::panicking() {

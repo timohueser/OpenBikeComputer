@@ -585,7 +585,9 @@ impl Executor {
                 if self.release.is_some() {
                     return None;
                 }
-                crate::flat_store::load_routes(store, app);
+                if let Some(mut catalogs) = crate::arena::claim_catalogs(guard.as_mut()) {
+                    crate::flat_store::load_routes(store, app, &mut catalogs);
+                }
                 self.token.take().map(|token| NavigatorOutcome::DetourCommitted { token, route: id.0 })
             }
             (After::Compensate, answer) => {
