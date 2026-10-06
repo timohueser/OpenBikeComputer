@@ -503,7 +503,11 @@ pub(crate) mod tests {
         let (url, _log) = serve(move |index, _| match index {
             0 => Reply { body: old[..40_000].to_vec(), ..whole(&old) },
             // Upstream changed between the tries, so If-Range gets the whole new file.
-            _ => Reply { headers: vec![("ETag", "\"v2\"".into())], ..whole(&served) },
+            _ => {
+                let mut reply = whole(&served);
+                reply.headers[0].1 = "\"v2\"".into();
+                reply
+            }
         });
         let scratch = Scratch::new("restart");
         let store = Store::at(&scratch.0);

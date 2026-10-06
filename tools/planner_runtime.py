@@ -17,6 +17,12 @@ def encoded(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
 
+def refuse_applied(catalog):
+    """Once `obc data apply live` wrote the catalogue, only an apply changes live."""
+    if isinstance(catalog, dict) and "release" in catalog:
+        raise ValueError("planner/catalog.json names a release of obc data apply live; apply live instead")
+
+
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()

@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::engine::release::Release;
 use crate::engine::{snapshot_files, Step};
 use crate::env::Env;
 use crate::regions::Regions;
@@ -27,6 +28,28 @@ pub trait Product {
     /// Its steps for `env`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
     fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned>;
+
+    /// What clients read of a release. `None` while the product has no client document: an apply
+    /// refuses a plan that changes its release, because it cannot make that release live.
+    fn pointer(&self) -> Option<PointerFn> {
+        None
+    }
+
+    /// Check a release from the store before an apply makes it live.
+    fn verify(&self, _release: &Release, _store: &Store) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Gives the pointer of a release from the store.
+pub type PointerFn = fn(&Release, &Store) -> Result<Pointer, String>;
+
+/// What clients read of a release.
+pub struct Pointer {
+    /// The document of `<prefix>/catalog.json`, without `release`: an apply adds it.
+    pub document: serde_json::Map<String, serde_json::Value>,
+    /// The files of `<prefix>/releases/<id>/`, by path.
+    pub named: BTreeMap<String, Vec<u8>>,
 }
 
 /// Why a product gives no steps.

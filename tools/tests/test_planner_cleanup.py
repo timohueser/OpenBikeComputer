@@ -92,6 +92,17 @@ class CleanupTests(unittest.TestCase):
                         cleanup.verify_public_catalogue(self.active, "https://maps.example")
                 read.assert_called_once_with("https://maps.example/planner/catalog.json")
 
+    def test_a_catalogue_that_an_apply_wrote_refuses_publish_and_cleanup(self):
+        applied = {**self.current, "release": "c" * 64}
+        def fetch(_remote, _key, path):
+            path.write_text(json.dumps(applied))
+            return path
+        with patch.object(r2, "run_rclone", side_effect=AssertionError("no transfer")):
+            with self.assertRaisesRegex(ValueError, "apply live"):
+                cleanup.plan(self.remote, applied)
+            with patch.object(r2, "fetch_optional", side_effect=fetch), self.assertRaisesRegex(ValueError, "apply live"):
+                cleanup.before_publish(self.remote, self.identity)
+
     def test_apply_rechecks_catalog_and_deletes_only_planned_objects(self):
         stale = [r2.Target(key, 100, "2000-01-01T00:00:00Z") for key in [
             "planner/releases/" + "b" * 64 + "/old.bin", "planner/sources/current.pbf ",

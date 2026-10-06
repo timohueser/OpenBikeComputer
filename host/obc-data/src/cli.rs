@@ -3,6 +3,7 @@
 //! `data/`. Without a command, a terminal gets the TUI.
 
 mod api;
+mod apply_cli;
 mod build_cli;
 mod edit_cli;
 mod r2_cli;
@@ -81,6 +82,9 @@ enum Command {
     /// Fetch and build the environment into the store, and write the release of each product
     /// whose every layer is built. Nothing uploads.
     Build(build_cli::BuildArgs),
+    /// Build the plan of live, upload what R2 lacks, switch the pointers, and remove from R2 what no
+    /// live release uses. Asks once; without a terminal, `--yes` or `--plan` is required.
+    Apply(apply_cli::ApplyArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
     /// Clean the local store: delete what no live release or fixture reaches, and move the
@@ -166,6 +170,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Undo { env } => edit_cli::undo(&root()?, &env, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Build(args) => build_cli::build(&root()?, products, args, json),
+        Command::Apply(args) => apply_cli::apply(&root()?, products, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

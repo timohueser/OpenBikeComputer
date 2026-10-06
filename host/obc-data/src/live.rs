@@ -24,6 +24,8 @@ use crate::store::{sha256_hex, write_atomic, Snapshot, Store};
 pub const PUBLIC: &str = "https://maps.openbikecomputer.com";
 /// The prefix of the input copies.
 pub const INPUTS: &str = "inputs";
+/// What older publishes left that no product reads: an apply removes it.
+pub const RETIRED: &[&str] = &["reference/v1"];
 
 /// Where live is read: the bucket of `OBC_R2_*` when `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is
 /// set, or else its public URL.
@@ -180,6 +182,16 @@ impl Live {
         prefixes
     }
 
+    /// The prefixes that an apply which makes this live lists for its removals: those that it
+    /// owns, and the retired ones once anything is live.
+    pub fn swept(&self) -> Vec<String> {
+        let mut prefixes = self.prefixes();
+        if !prefixes.is_empty() {
+            prefixes.extend(RETIRED.iter().map(|prefix| prefix.to_string()));
+        }
+        prefixes
+    }
+
     /// The keys that an apply which makes `next` live removes: those of `listed`, the objects of
     /// a listing, or else those that live uses, that `next` does not use.
     pub fn removed(&self, next: &Live, listed: Option<&[Object]>) -> Vec<Removal> {
@@ -264,6 +276,17 @@ pub struct Removal {
 
 fn record_key(source: &str, version: &str) -> String {
     format!("{INPUTS}/records/{source}/{version}.json")
+}
+
+/// Refuse an older publish to `prefix` once an apply made a release live there: it would replace
+/// the pointer of live, or remove what live uses.
+pub fn refuse_older_publish(bucket: &Bucket, prefix: &str) -> Result<(), String> {
+    let key = if prefix.is_empty() { "catalog.json".to_string() } else { format!("{prefix}/catalog.json") };
+    let pointer = bucket.read(&key)?.and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if pointer.is_some_and(|pointer| pointer.get("release").is_some()) {
+        return Err(format!("{key} names a release that `obc data apply live` made live; apply live instead"));
+    }
+    Ok(())
 }
 
 /// The release that the pointer of `prefix` names.
@@ -446,6 +469,19 @@ pub(crate) mod tests {
 
         let conflict = live(vec![reading("0.9.0", &[]), reading("0.10.2", &[])]).versions();
         assert_eq!(conflict[&("land".to_string(), Vec::new())].len(), 2, "a conflict stays");
+    }
+
+    #[test]
+    fn an_older_publish_is_refused_once_a_release_is_live() {
+        let scratch = Scratch::new("live-older-publish");
+        let dir = scratch.0.join("bucket");
+        let bucket = Bucket::local(&dir);
+        assert!(refuse_older_publish(&bucket, "test-catalog").is_ok(), "no pointer");
+        write(&dir.join("test-catalog/catalog.json"), "{\"schema_version\": 3}");
+        assert!(refuse_older_publish(&bucket, "test-catalog").is_ok(), "the pointer of an older publish");
+        publish(&dir, &release(b"layer"));
+        let err = refuse_older_publish(&bucket, "test-catalog").unwrap_err();
+        assert!(err.contains("apply live"), "{err}");
     }
 
     /// A product whose pointer an older publish wrote, without `release`.

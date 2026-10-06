@@ -668,6 +668,12 @@ the other products and writes no release of a blocked product. When no product s
 environment, `build` fails with `blocked`. An error of the store, a file or the data of a fetch
 in a step list fails the command with `failed`.
 
+A product also gives what clients read of a release: its pointer document, and the files that a
+client finds by name under `<prefix>/releases/<id>/`. `apply live` fails with `blocked`, before it
+builds, when the plan changes the release of a product without them; neither `maps` nor `planner`
+gives them yet. A product can check a release before an apply makes it live; neither `maps` nor
+`planner` has a check yet.
+
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each source that the plan moves
 (a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
@@ -679,8 +685,8 @@ of `live` also has:
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
   `on` and `off`.
 - `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: each key of the
-  listing of the owned prefixes, or without a listing each key that live uses, that the releases
-  after the plan do not use. Those are the keys of their layers and input copies, the pointers and
+  listing, or without a listing each key that live uses, that the releases after the plan do not
+  use. The listing has the prefixes that live owns after the apply, and `reference/v1`. Those are the keys of their layers and input copies, the pointers and
   the files under `<prefix>/releases/<id>/`. A layer that the store lacks counts with all the
   objects of its live layer, because its new objects are not known yet; an apply keeps an object
   that a new release uses.
@@ -834,6 +840,34 @@ the product.
 Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
 first writes the status, and the second writes an error.
 
+### Apply
+
+`apply live` makes the plan of live live. It needs the bucket, and it changes R2 in this order:
+
+1. It refuses when `data/` has changes that are not committed, apart from
+   `data/env/local.toml`: live builds from a committed `data/`. It does not commit or push. One
+   apply of live runs at a time on a machine.
+2. It asks once in a terminal: "Apply M changes to live? removes X GB from R2", with the groups
+   and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan and does not
+   ask; the plan must be the plan of now, as for `build --plan`. When live has every change and
+   nothing is to be removed, it applies nothing.
+3. It builds the plan, as `build live --plan` does.
+4. It checks each release that changes: the check of its product, and its pointer. Each file
+   that it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
+5. It uploads each key of the releases after the apply and of their input copies that R2 lacks,
+   or holds with another size; a key with another size goes first. Then it checks each key.
+6. It writes the pointer of each product whose release changes: the document of the product with
+   `"release": "<id>"`, and `Cache-Control: public, max-age=60, must-revalidate`.
+7. When a pointer changed, it waits 10 minutes: a client that read the old pointer finishes its
+   downloads.
+8. It reads live again, lists its prefixes and `reference/v1`, and removes each key that no live
+   release uses, with a line in `removed.jsonl`. With drift, it removes nothing. It removes only
+   under the prefixes of live products, `inputs` and `reference/v1`.
+
+An apply that stops before step 6 leaves live as it was, and the same plan applies again: it
+uploads only what R2 still lacks. The objects, manifests and named files are immutable, with
+`Cache-Control: public, max-age=31536000, immutable`.
+
 ## Commands
 
 | Command | Output |
@@ -851,6 +885,7 @@ first writes the status, and the second writes an error.
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products). `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
 | `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
+| `obc data apply live [--plan FILE] [--yes] [--json]` | Builds the plan of live, uploads what R2 lacks, switches the pointers and removes what no live release uses, as [Apply](#apply) says. Writes what it uploaded, switched and removed |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
 | `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
@@ -875,7 +910,9 @@ The R2 client in `host/obc-data` reaches the bucket for `obc bake publish --targ
 `obc bake clean-r2`, `obc r2 rm`, `obc fixtures publish` and the firmware publish workflow.
 rclone moves the bytes. The planner publish, deploy and finalize, and the reference archive
 ingest, still use the remote of `tools/r2.py`. `obc data r2` is plumbing for scripts: those
-commands call it. It does not change the state of a release.
+commands call it. It does not change the state of a release. `obc bake publish --target r2`, `obc
+bake clean-r2` and the planner publish, deploy and finalize refuse to run when the pointer of
+their prefix has `release`: after an apply, only an apply changes live.
 
 ### Credentials
 
@@ -953,7 +990,8 @@ another command must run first. | Correct the command. `obc data --help` lists t
 | `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
 variables are not set. Or `build` has no product that suits the environment. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
-| `verify_failed` | 5 | After an upload, the object in the bucket is not the file. | Upload the file again. |
+| `verify_failed` | 5 | A release failed its check before an apply, or after an upload the object in the bucket is
+not the file. | Upload the file again. |
 | `run_failed` | 1 | A run failed: the build, or the run that `runs RUN --follow` shows. | `obc data runs RUN` shows the step that failed and its error. |
 | `plan_outdated` | 3 | The plan file is not the plan of now: live, the steps or the store changed after it was made. | Make the plan again with `obc data plan ENV --json`, read it, and pass the new file. |
 | `failed` | 1 | The store or the file system failed. | Correct the file or the directory that the message names, then run again. |
@@ -976,6 +1014,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
 | `build` | `Built` |
+| `apply` | `Applied` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
@@ -987,6 +1026,50 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 ```json
 {
   "$defs": {
+    "Applied": {
+      "description": "What an apply did.",
+      "properties": {
+        "built": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Built"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The build of the plan; `null` when live had every change."
+        },
+        "removed": {
+          "description": "The keys that it removed: no live release used them.",
+          "items": {
+            "$ref": "#/$defs/Object"
+          },
+          "type": "array"
+        },
+        "switched": {
+          "description": "The release of each product whose pointer it switched.",
+          "items": {
+            "$ref": "#/$defs/BuiltRelease"
+          },
+          "type": "array"
+        },
+        "uploaded": {
+          "description": "The keys that it uploaded.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "built",
+        "uploaded",
+        "switched",
+        "removed"
+      ],
+      "type": "object"
+    },
     "Attention": {
       "description": "Something that needs a person.",
       "properties": {
@@ -1251,7 +1334,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "verify_failed",
-          "description": "After an upload, the object in the bucket is not the file.",
+          "description": "A release failed its check before an apply, or after an upload the object in the bucket is\nnot the file.",
           "type": "string"
         },
         {

@@ -10,7 +10,7 @@ from urllib.request import Request
 from urllib.parse import urlsplit
 
 from . import planner_geo as geo, planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
-from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url
+from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url, refuse_applied
 
 RELEASES = "/opt/obc-planner/releases"
 SOURCE = "/opt/obc-planner/source"
@@ -76,6 +76,7 @@ def deploy(args):
     except HTTPError as error:
         if error.code != 404: raise
         current = {"format": 1, "active": None, "previous": None}
+    refuse_applied(current)
     old = current["active"]
     target = 0 if old is None else slot(old)
     # A new release goes into the other slot; the same release restarts in place.
