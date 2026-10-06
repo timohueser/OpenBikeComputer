@@ -1277,7 +1277,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_explicit_move_preview_stays_read_only_until_preparation_resolves_its_graph() {
-        use crate::fetch::tests::{quick, serve, whole};
+        use crate::fetch::tests::{serve, whole};
         struct MovedIndex;
         impl Product for MovedIndex {
             fn name(&self) -> &'static str {
@@ -1294,14 +1294,15 @@ pub(crate) mod tests {
                 Indexed.steps(root, env, regions, store)
             }
         }
-        let (url, requests) = serve(|_, _| whole(b"index\n"));
+        let (actual, requests) = serve(|_, _| whole(b"index\n"));
+        let url = actual.replacen("http://", "https://", 1);
         let fixture = fixture("cli-preview-prepare");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
-            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\n"));
+            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
         write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
-        let http = quick();
+        let http = Http::loopback(&actual);
         let moves = ["index@1".into()];
         let preview =
             planned(&root, &fixture.store, &http, None, &[&MovedIndex], "live", &[], Basis::Moves(&moves), false)
@@ -1346,7 +1347,7 @@ pub(crate) mod tests {
 
     #[test]
     fn preparation_fails_when_a_product_keeps_usable_steps_after_a_failed_fetch() {
-        use crate::fetch::tests::{not_found, quick, serve};
+        use crate::fetch::tests::{not_found, serve};
         struct Softened;
         impl Product for Softened {
             fn name(&self) -> &'static str {
@@ -1368,17 +1369,18 @@ pub(crate) mod tests {
                 Ok(listed)
             }
         }
-        let (url, requests) = serve(|_, _| not_found());
+        let (actual, requests) = serve(|_, _| not_found());
+        let url = actual.replacen("http://", "https://", 1);
         let fixture = fixture("prepare-softened-fetch");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
-            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\n"));
+            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
         write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         let mut run = Run::create(&fixture.store, "prepare live").unwrap();
         let id = run.id().to_string();
         let args = PlanArgs { env: "live".into(), only: Vec::new(), moves: vec!["index@1".into()] };
-        let result = prepare_plan(&root, &fixture.store, &quick(), None, &[&Softened], &args, &mut run);
+        let result = prepare_plan(&root, &fixture.store, &Http::loopback(&actual), None, &[&Softened], &args, &mut run);
         let error = super::super::api::finish_run(run, result, None).unwrap_err();
         assert_eq!((error.code, error.code.exit()), (Code::FetchFailed, 1));
         assert_eq!(error.run.as_ref(), Some(&id));
