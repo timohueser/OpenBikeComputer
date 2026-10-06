@@ -786,3 +786,49 @@ fn a_single_page_query_preserves_cursor_refusal_without_restarting_the_catalog()
     );
     assert_eq!(s.client.next_action(), None);
 }
+
+#[test]
+fn cancelled_upload_with_authoritative_commit_preserves_an_unsent_query() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    s.client.set_upload_window(8, 32).unwrap();
+    s.source = (0..900).map(|n| n as u8).collect();
+    s.client.start(put(ObjectId::NONE, Revision::HEAD, &s.source), 0).unwrap();
+    let mut commit = None;
+    while let Some(action) = s.client.next_action() {
+        match action {
+            Action::Send { token, channel, record } => {
+                let reaction = match channel {
+                    Channel::Control => s.device.on_control(&record),
+                    Channel::Stream => s.device.on_stream(&record),
+                };
+                if matches!(&reaction, Reaction::Send { channel: Channel::Control, bytes }
+                    if matches!(decode_response(bytes).unwrap().1, Response::Put(_)))
+                {
+                    commit = Some(reaction);
+                } else {
+                    s.deliver(reaction);
+                }
+                s.client.event(Event::Written(token), s.now);
+            }
+            Action::ReadSource { token, offset, max_len } => {
+                let start = offset as usize;
+                let bytes = &s.source[start..start + max_len];
+                s.client.event(Event::Source { token, offset, bytes }, s.now);
+            }
+            Action::Progress { .. } => {}
+            _ => panic!("unexpected upload action"),
+        }
+    }
+    let query = s.client.query(Request::List(ListRequest { kind: None, cursor: None }), None, s.now).unwrap();
+    s.client.event(Event::Cancel, s.now);
+    s.deliver(commit.expect("device commits before cancellation"));
+    let Outcome::Put(installed) = s.pump().unwrap() else {
+        panic!("authoritative commit");
+    };
+    assert!(matches!(s.client.next_query_result(), Some((id, Ok(QueryOutcome::Page { entries, .. })))
+        if id == query && entries.iter().any(|entry| entry.id == installed.id)));
+    assert_eq!(s.client.next_query_result(), None);
+    assert_eq!(s.client.next_deadline_ms(), None);
+    assert_eq!(s.device.read_object(installed.id.0, 0), Some(s.source.clone()));
+}
