@@ -22,6 +22,7 @@ fn recipe_root(target: &Path) {
     manifest["workspace"]["members"] =
         toml::Value::Array(members.into_iter().map(|name| toml::Value::String(name.into())).collect());
     std::fs::create_dir_all(target).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(target).status().unwrap().success());
     std::fs::write(target.join("Cargo.toml"), toml::to_string(&manifest).unwrap()).unwrap();
     for name in ["host/obc-osm", "firmware/obc-formats", "firmware/obc-ports"] {
         std::fs::create_dir_all(target.join(name)).unwrap();
