@@ -1281,6 +1281,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
+| `prepare` | `Prepared` |
 | `build` | `Built` |
 | `apply` | `Applied` |
 | `runs` | `RunList` |
@@ -1315,6 +1316,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "run": {
+          "type": "string"
+        },
         "switched": {
           "description": "The release of each product whose pointer it switched.",
           "items": {
@@ -1331,6 +1335,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
+        "run",
         "built",
         "uploaded",
         "switched",
@@ -1485,11 +1490,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "run": {
-          "description": "`None` when there was nothing to fetch or build.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "The operation journal, including preparation and release creation.",
+          "type": "string"
         }
       },
       "required": [
@@ -1701,6 +1703,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "outcome": {
           "$ref": "#/$defs/Outcome"
         },
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Phase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "published": {
+          "items": {
+            "$ref": "#/$defs/Publication"
+          },
+          "type": "array"
+        },
         "started": {
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
           "type": "string"
@@ -1731,6 +1749,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "bytes_fetched",
         "bytes_built",
         "error",
+        "phase",
+        "published",
         "fetches",
         "steps"
       ],
@@ -1925,6 +1945,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "Source move intent: an explicit version, or each request's newest version. Exact resolved\nversions are in `versions`; fetching never changes this intent.",
           "type": "object"
         },
+        "needs_prepare": {
+          "description": "Discovery could not resolve the step graph. Prepare and review a new plan before replay.",
+          "type": "boolean"
+        },
         "only": {
           "description": "The groups that `--only` selected: none for every group, `[\"none\"]` for no group.",
           "items": {
@@ -1962,7 +1986,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "groups",
         "blocked",
         "remove",
-        "listed"
+        "listed",
+        "needs_prepare"
       ],
       "type": "object"
     },
@@ -1977,6 +2002,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "message": {
           "type": "string"
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2037,6 +2068,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "event",
             "command",
             "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "phase",
+              "type": "string"
+            },
+            "phase": {
+              "$ref": "#/$defs/Phase"
+            }
+          },
+          "required": [
+            "event",
+            "phase"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "published",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/Publication"
+            }
+          },
+          "required": [
+            "event",
+            "mutation"
           ],
           "type": "object"
         },
@@ -2107,6 +2172,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               },
               "type": "array"
             },
+            "resolved": {
+              "type": "string"
+            },
             "source": {
               "type": "string"
             },
@@ -2124,6 +2192,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "source",
             "version",
             "params",
+            "resolved",
             "bytes",
             "wall_ms"
           ],
@@ -2793,6 +2862,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Phase": {
+      "enum": [
+        "prepare",
+        "build",
+        "verify",
+        "upload",
+        "switch",
+        "wait",
+        "cleanup"
+      ],
+      "type": "string"
+    },
     "PlanBuild": {
       "additionalProperties": false,
       "properties": {
@@ -3074,6 +3155,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Prepared": {
+      "description": "Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/EnvPlan"
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "plan"
+      ],
+      "type": "object"
+    },
     "ProductStatus": {
       "properties": {
         "applied": {
@@ -3129,6 +3226,72 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers"
       ],
       "type": "object"
+    },
+    "Publication": {
+      "description": "A remote write that acknowledged success. Verification can still fail afterward.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "uploaded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "switched",
+              "type": "string"
+            },
+            "product": {
+              "type": "string"
+            },
+            "release": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "product",
+            "release"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "bytes"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Receipt": {
       "additionalProperties": false,
@@ -3590,6 +3753,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "resolved": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "type": "string"
         },
@@ -3608,6 +3777,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "source",
         "version",
+        "resolved",
         "params",
         "bytes",
         "wall_ms",
