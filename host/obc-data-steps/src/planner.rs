@@ -132,7 +132,7 @@ impl Product for Planner {
         regions: &Regions,
         store: &Store,
     ) -> Result<obc_data::product::Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_bake::planet::OsmiumRunner::default().identity())
+        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().identity())
     }
 }
 

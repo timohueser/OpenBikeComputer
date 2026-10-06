@@ -146,7 +146,7 @@ fn all_checks_osmium_before_touching_the_planet_source() {
         .expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("is required for `obc bake --all`"), "{err}");
+    assert!(err.contains("/definitely/not/an/osmium-binary is required for OSM preparation"), "{err}");
 }
 
 #[test]

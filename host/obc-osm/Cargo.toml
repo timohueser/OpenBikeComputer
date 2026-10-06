@@ -1,0 +1,13 @@
+[package]
+name = "obc-osm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "Native OSM source preparation"
+
+[dependencies]
+obc-data = { workspace = true }
+obc-formats = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

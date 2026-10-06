@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub use obc_osm::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
+
 use obc_pack::catalog::CellSource;
 use obc_pack::cut::{CellArtifact, CutOptions, SourceExtent};
 use obc_pack::grid::{BandTable, CellId, UBox, GRID_ORIGIN};
@@ -26,12 +28,7 @@ use crate::regions::Region;
 use crate::source::ExtractSource;
 use crate::util::{human_bytes, write_json};
 
-/// An 8.39° leaf contains at most 32×32 fine cells. Dense leaves remain practical
-/// for the retained Rust ingest while the source shard count stays below one
-/// thousand. Every shipped band divides this size exactly.
-pub const SOURCE_LEAF_LOG2: u32 = 23;
 const SHARD_STATE_VERSION: u32 = 1;
-const SHARD_HALO_UDEG: i64 = 1;
 const PLANET_STATUS_FILE: &str = ".planet-bake/status.json";
 
 #[derive(Debug, Clone)]
@@ -97,23 +94,6 @@ fn local_snapshot(path: &Path) -> Result<String, String> {
     Ok(obc_pack::catalog::format_timestamp(secs)[..10].to_string())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct LeafId {
-    pub i: i64,
-    pub j: i64,
-}
-
-impl LeafId {
-    pub fn cell(self) -> CellId {
-        CellId::new(SOURCE_LEAF_LOG2, self.i, self.j).expect("planned leaf is in the grid")
-    }
-
-    /// The box that Osmium extracts the leaf with: its square and a halo.
-    pub fn extract_bbox(self) -> [f64; 4] {
-        LeafRect { i0: self.i, i1: self.i + 1, j0: self.j, j1: self.j + 1 }.extract_bbox()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct PlanetLeaf {
     pub id: LeafId,
@@ -173,13 +153,7 @@ impl LeafRect {
     }
 
     fn extract_bbox(self) -> [f64; 4] {
-        let (w, s, e, n) = self.bbox();
-        [
-            ((w - SHARD_HALO_UDEG).max(-180_000_000) as f64) / 1e6,
-            ((s - SHARD_HALO_UDEG).max(-90_000_000) as f64) / 1e6,
-            ((e + SHARD_HALO_UDEG).min(180_000_000) as f64) / 1e6,
-            ((n + SHARD_HALO_UDEG).min(90_000_000) as f64) / 1e6,
-        ]
+        obc_osm::extract_bbox(self.bbox())
     }
 
     fn slug(self) -> String {
@@ -195,122 +169,6 @@ struct LeafState {
     leaf_sha256: String,
     bytes: u64,
     logical_bbox: [i64; 4],
-}
-
-#[derive(Debug, Clone)]
-pub struct ExtractRequest {
-    pub output: String,
-    pub bbox: [f64; 4],
-}
-
-/// Injectable because CI must prove the hierarchy without downloading or
-/// requiring Osmium. Production uses [`OsmiumRunner`].
-pub trait ShardRunner: Sync {
-    fn check(&self) -> Result<(), String>;
-    fn split(
-        &self,
-        input: &Path,
-        output_dir: &Path,
-        requests: &[ExtractRequest],
-        progress: &Progress,
-    ) -> Result<(), String>;
-}
-
-pub struct OsmiumRunner {
-    binary: PathBuf,
-}
-
-impl Default for OsmiumRunner {
-    fn default() -> Self {
-        Self { binary: std::env::var_os("OBC_OSMIUM").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("osmium")) }
-    }
-}
-
-impl ShardRunner for OsmiumRunner {
-    fn check(&self) -> Result<(), String> {
-        let out = Command::new(&self.binary)
-            .arg("--version")
-            .output()
-            .map_err(|e| format!("{} is required for `obc bake --all`: {e}", self.binary.display()))?;
-        if !out.status.success() {
-            return Err(format!("{} --version failed with {}", self.binary.display(), out.status));
-        }
-        Ok(())
-    }
-
-    fn split(
-        &self,
-        input: &Path,
-        output_dir: &Path,
-        requests: &[ExtractRequest],
-        _progress: &Progress,
-    ) -> Result<(), String> {
-        #[derive(Serialize)]
-        struct Config<'a> {
-            extracts: Vec<ConfigExtract<'a>>,
-        }
-        #[derive(Serialize)]
-        struct ConfigExtract<'a> {
-            output: &'a str,
-            bbox: [f64; 4],
-        }
-        std::fs::create_dir_all(output_dir).map_err(|e| format!("{}: {e}", output_dir.display()))?;
-        let config =
-            Config { extracts: requests.iter().map(|r| ConfigExtract { output: &r.output, bbox: r.bbox }).collect() };
-        let config_path = output_dir.join("extracts.json");
-        write_json(&config_path, &config)?;
-        // `-F pbf`: a planet from the store is an object without a file extension.
-        let status = Command::new(&self.binary)
-            .args(["extract", "-F", "pbf", "--config"])
-            .arg(&config_path)
-            .args(["--directory"])
-            .arg(output_dir)
-            .args(["--strategy", "smart", "--set-bounds", "--overwrite", "--verbose"])
-            .arg(input)
-            .status()
-            .map_err(|e| format!("run {} extract: {e}", self.binary.display()))?;
-        if !status.success() {
-            return Err(format!("{} extract failed with {status}", self.binary.display()));
-        }
-        for request in requests {
-            let path = output_dir.join(&request.output);
-            if !path.is_file() {
-                return Err(format!("{} did not produce {}", self.binary.display(), path.display()));
-            }
-        }
-        Ok(())
-    }
-}
-
-impl OsmiumRunner {
-    /// The prepared executable and its version. Discovery only reads local tooling.
-    pub fn identity(&self) -> Result<serde_json::Value, String> {
-        let binary = if self.binary.components().count() > 1 {
-            self.binary.clone()
-        } else {
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                .map(|directory| directory.join(&self.binary))
-                .find(|path| path.is_file())
-                .ok_or("prepare Osmium, or set OBC_OSMIUM to its executable")?
-        };
-        let binary = binary.canonicalize().map_err(|e| e.to_string())?;
-        let (sha256, _) = obc_data::store::hash_file(&binary)?;
-        let output = Command::new(&binary).arg("--version").output().map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err("prepared Osmium --version failed".into());
-        }
-        Ok(serde_json::json!({"sha256": sha256, "version": String::from_utf8_lossy(&output.stdout).trim()}))
-    }
-
-    /// The first line of `osmium --version`.
-    pub fn version(&self) -> Result<String, String> {
-        let out = Command::new(&self.binary).arg("--version").output();
-        let out = out.map_err(|e| format!("{} --version: {e}", self.binary.display()))?;
-        if !out.status.success() {
-            return Err(format!("{} --version failed with {}", self.binary.display(), out.status));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string())
-    }
 }
 
 pub struct PlanetSharder<'a> {
@@ -444,7 +302,7 @@ impl PlanetSharder<'_> {
             requests.len(),
             ids.iter().filter(|id| !shard_progress.current.contains(id)).count()
         ));
-        self.runner.split(input, &dir, &requests, progress)?;
+        self.runner.split(input, &dir, &requests)?;
         for (k, child) in needed.iter().enumerate() {
             self.ensure(*child, &dir.join(format!("child-{k}.osm.pbf")), true, shard_progress, progress)?;
         }
@@ -509,7 +367,7 @@ impl PlanetSharder<'_> {
         if state.state_version != SHARD_STATE_VERSION || !path.is_file() {
             return Ok(None);
         }
-        let expected_bbox = id.cell().square();
+        let expected_bbox = id.square();
         if state.logical_bbox != [expected_bbox.0, expected_bbox.1, expected_bbox.2, expected_bbox.3] {
             return Ok(None);
         }
@@ -820,13 +678,13 @@ impl PlanetBake<'_> {
             ));
         }
         for leaf in self.leaves {
-            if leaf.logical_bbox != leaf.id.cell().square() {
+            if leaf.logical_bbox != leaf.id.square() {
                 return Err(format!(
                     "planet leaf {}/{} has logical bbox {:?}, expected {:?}",
                     leaf.id.i,
                     leaf.id.j,
                     leaf.logical_bbox,
-                    leaf.id.cell().square()
+                    leaf.id.square()
                 ));
             }
         }
@@ -1180,7 +1038,7 @@ mod tests {
         root.leaves(&mut leaves);
         assert!(leaves.len() > 900 && leaves.len() < 1100, "unexpected leaf count {}", leaves.len());
         for id in leaves {
-            let bbox = id.cell().square();
+            let bbox = id.square();
             for band_log2 in [18, 19, 20] {
                 let step = 1i64 << band_log2;
                 assert_eq!((bbox.0 - GRID_ORIGIN) % step, 0);
@@ -1218,13 +1076,7 @@ mod tests {
             Ok(())
         }
 
-        fn split(
-            &self,
-            _input: &Path,
-            output_dir: &Path,
-            requests: &[ExtractRequest],
-            _progress: &Progress,
-        ) -> Result<(), String> {
+        fn split(&self, _input: &Path, output_dir: &Path, requests: &[ExtractRequest]) -> Result<(), String> {
             self.calls.lock().unwrap().push(requests.len());
             let mutated_leaf = *self.mutated_leaf.lock().unwrap();
             std::fs::create_dir_all(output_dir).unwrap();
@@ -1234,64 +1086,6 @@ mod tests {
             }
             Ok(())
         }
-    }
-
-    #[test]
-    fn installed_osmium_accepts_the_generated_binary_split_config() {
-        let runner = OsmiumRunner::default();
-        if runner.check().is_err() {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("obc-osmium-config-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let requests = [
-            ExtractRequest { output: "teningen.osm.pbf".into(), bbox: [7.0, 47.0, 8.5, 49.0] },
-            ExtractRequest { output: "empty.osm.pbf".into(), bbox: [20.0, 20.0, 21.0, 21.0] },
-        ];
-        runner.split(&repo("builder/tests/corpus/data/tiny.osm.pbf"), &dir, &requests, &Progress::silent()).unwrap();
-        assert!(requests.iter().all(|request| dir.join(&request.output).is_file()));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn installed_osmium_keeps_identical_leaf_bytes_across_replication_headers() {
-        let runner = OsmiumRunner::default();
-        if runner.check().is_err() {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("obc-osmium-replication-headers-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = repo("builder/tests/corpus/data/tiny.osm.pbf");
-        let make = |name: &str, sequence: &str, timestamp: &str| {
-            let path = dir.join(name);
-            let status = Command::new(&runner.binary)
-                .arg("cat")
-                .arg(&source)
-                .arg("-o")
-                .arg(&path)
-                .arg("--overwrite")
-                .arg(format!("--output-header=osmosis_replication_sequence_number={sequence}"))
-                .arg(format!("--output-header=osmosis_replication_timestamp={timestamp}"))
-                .arg("--output-header=osmosis_replication_base_url=https://planet.openstreetmap.org/replication/hour/")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            path
-        };
-        let first = make("first.osm.pbf", "10", "2026-08-01T10:00:00Z");
-        let second = make("second.osm.pbf", "11", "2026-08-01T11:00:00Z");
-        let request = [ExtractRequest { output: "leaf.osm.pbf".into(), bbox: [7.0, 47.0, 8.5, 49.0] }];
-        let first_out = dir.join("first");
-        let second_out = dir.join("second");
-        runner.split(&first, &first_out, &request, &Progress::silent()).unwrap();
-        runner.split(&second, &second_out, &request, &Progress::silent()).unwrap();
-        assert_eq!(
-            crate::hash::file(&first_out.join("leaf.osm.pbf")).unwrap(),
-            crate::hash::file(&second_out.join("leaf.osm.pbf")).unwrap(),
-            "replication-only source header changes must not invalidate every geographic leaf"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1580,7 +1374,7 @@ mod tests {
                 path: PathBuf::from("unused.osm.pbf"),
                 bytes: 0,
                 sha256: "0".repeat(64),
-                logical_bbox: id.cell().square(),
+                logical_bbox: id.square(),
             })
             .collect();
         let input = PlanetInput {

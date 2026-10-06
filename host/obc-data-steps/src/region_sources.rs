@@ -206,9 +206,9 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
                 }))
                 .collect(),
             options: json!({}),
-            code: Code { crates: vec!["obc-bake".into()], ..Default::default() },
+            code: Code { crates: vec!["obc-osm".into()], ..Default::default() },
             outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
-            run: Run::Rust(obc_bake::step::area),
+            run: Run::Rust(obc_osm::step::area),
             client: Client::None,
         })
         .collect()
