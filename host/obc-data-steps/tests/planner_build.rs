@@ -63,14 +63,28 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     let text = "name = \"Test\"\nkind = \"geofabrik\"\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
     let regions = Regions::new(vec![parse_region(AREA, text).unwrap()]).unwrap();
-    let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
+    let read = [
+        GLO30,
+        TILE_LIST,
+        "protomaps-assets",
+        "tangrams-icons",
+        "query-model",
+        "nominatim-country-data",
+        "protomaps-basemaps",
+        "natural-earth",
+        "water-polygons",
+        "land-polygons",
+        "daylight-landcover",
+        "qrank",
+        "pgf-encoding",
+    ];
     let live = read.map(|id| ((id.to_string(), Vec::new()), BTreeSet::from(["1".to_string()])));
     let env = Env { name: "test".into(), region: AREA.into(), live: BTreeMap::from(live), ..Env::default() };
     // The assets and the model read no layer, so this build leaves them out.
     let steps = |python: bool| {
         let mut steps = Planner.steps(&env, &regions, &store).unwrap();
         let rust = ["planner/osm", "planner/terrain", "planner/routing"];
-        let other = ["planner/assets", "planner/model"];
+        let other = ["planner/assets", "planner/model", "planner/basemap"];
         steps.retain(|step| rust.contains(&step.name.as_str()) || python && !other.contains(&step.name.as_str()));
         steps
     };

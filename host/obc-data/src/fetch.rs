@@ -4,7 +4,10 @@
 pub mod capture;
 pub mod http;
 pub mod osm;
+mod tools;
 pub mod upstream;
+
+pub use tools::basemap_jar;
 
 use std::path::PathBuf;
 
@@ -40,6 +43,7 @@ pub fn fetch(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, 
 fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     match source.fetch.kind {
+        FetchKind::Github if source.id == "protomaps-basemaps" => tools::basemap(store, http, request),
         FetchKind::Http | FetchKind::Glo30 | FetchKind::Github => files(store, http, request),
         FetchKind::Geofabrik => osm::extract(store, http, request),
         FetchKind::Osm => osm::replication(store, http, request),

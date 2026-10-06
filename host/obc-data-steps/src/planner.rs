@@ -1,6 +1,6 @@
 //! The planner. Its layers cover the region of the environment: `planner/osm` is the OSM of the
-//! region, `planner/terrain` the terrain of the maps, `planner/routing` the routing package with
-//! its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
+//! region, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
+//! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
 //! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
 //! `planner/osm`, `planner/search/policy`, `planner/search/dump` and `planner/search/records` are
@@ -28,6 +28,15 @@ const SEARCH: &str = "apps/planner-search";
 /// contract, and the POI kinds of the web planner, which the places also read.
 const RECORDS: [&str; 3] = ["apps/planner-search/records.py", "apps/planner-search/query/contract.json", POI_KINDS];
 const POI_KINDS: &str = "builder/app/src/lib/planner/poi-kinds.json";
+const BASEMAP_SOURCES: [&str; 7] = [
+    "protomaps-basemaps",
+    "natural-earth",
+    "water-polygons",
+    "land-polygons",
+    "daylight-landcover",
+    "qrank",
+    "pgf-encoding",
+];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +137,25 @@ impl Product for Planner {
             run: Run::Rust(obc_data::engine::pass),
             client: false,
         };
+        let mut inputs = vec![Input::layer(osm.name.clone())];
+        for source in BASEMAP_SOURCES {
+            let mut input = snapshot(env, store, source, Vec::new(), &mut wanted)?;
+            if let Input::Snapshot { files, .. } = &mut input {
+                if source == "protomaps-basemaps" {
+                    *files = vec![obc_data::fetch::basemap_jar()];
+                }
+            }
+            inputs.push(input);
+        }
+        let credit = ["osm-planet", "natural-earth", "daylight-landcover"].map(attribution).join("; ");
+        let basemap = python(
+            "planner/basemap",
+            inputs,
+            json!({"bounds": bounds, "attribution": credit}),
+            ("tools.planner_basemap", None),
+            &["tools/planner_basemap.py"],
+            &["basemap.pmtiles"],
+        );
         let terrain = Step {
             name: "planner/terrain".into(),
             inputs: tiles(coverage, &land, &glo30),
@@ -245,8 +273,9 @@ impl Product for Planner {
             &["tools/planner_places.py", "tools/planner_mvt.py", POI_KINDS],
             &["places.pmtiles"],
         );
-        let mut steps =
-            vec![osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places];
+        let mut steps = vec![
+            osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
+        ];
         if on("climate") {
             let first_year = config.climate.first_year;
             let params = vec![bbox, ("first-year".to_string(), first_year.to_string())];
@@ -417,11 +446,14 @@ mod tests {
     /// the extract: live reads the sources without params, and the captures move.
     fn env(region: &str, layers: &[&str]) -> Env {
         let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
-        let live = read.map(|source| ((source.into(), Vec::new()), BTreeSet::from(["1".into()])));
+        let live = read
+            .into_iter()
+            .chain(BASEMAP_SOURCES)
+            .map(|source| ((source.into(), Vec::new()), BTreeSet::from(["1".into()])));
         let moves = ["era5-land", "hr-wsi", "modis-snow"].map(|source| (source.into(), Some("2026-10-01".into())));
         let moves = moves.into_iter().chain([("hansen-gfc".into(), Some("v1.11".into()))]).collect();
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
-        Env { name: "test".into(), region: region.into(), layers, live: live.into(), moves, ..Env::default() }
+        Env { name: "test".into(), region: region.into(), layers, live: live.collect(), moves, ..Env::default() }
     }
 
     fn regions() -> Regions {
@@ -446,6 +478,7 @@ mod tests {
         let list = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
         fetched(&store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list.into())]);
         fetched(&store, obc_pack::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
+        fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
         for day in days {
             fetched(&store, EXTRACTS, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), (*day).into())]);
             crate::maps::tests::captured(&store, "1", AREA, day, poly);
@@ -482,6 +515,7 @@ mod tests {
             "search/pois",
             "search/addresses",
             "places",
+            "basemap",
         ];
         assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
         let intermediate: Vec<&str> = steps.iter().filter(|step| !step.client).map(|step| step.name.as_str()).collect();
@@ -489,7 +523,8 @@ mod tests {
             intermediate,
             ["planner/osm", "planner/search/policy", "planner/search/dump", "planner/search/records"]
         );
-        let [osm, terrain, routing, .., pois, _, _] = &steps[..] else { unreachable!() };
+        let [osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
         let Input::Snapshot { source, version, params, .. } = &osm.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
         // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
@@ -509,6 +544,22 @@ mod tests {
             (&pois.options["bounds"], &pois.options["time_zone"]),
             (&routing.options["bounds"], &json!("Europe/Berlin"))
         );
+        let basemap = steps.iter().find(|step| step.name == "planner/basemap").unwrap();
+        let sources: Vec<&str> = basemap
+            .inputs
+            .iter()
+            .filter_map(|input| match input {
+                Input::Snapshot { source, .. } => Some(source.as_str()),
+                Input::Layer { .. } => None,
+            })
+            .collect();
+        assert_eq!(sources, BASEMAP_SOURCES);
+        assert!(
+            matches!(&basemap.inputs[1], Input::Snapshot { files, .. } if files == &[obc_data::fetch::basemap_jar()])
+        );
+        assert_eq!(basemap.options["bounds"], routing.options["bounds"]);
+        assert!(basemap.options["attribution"].as_str().unwrap().contains("Natural Earth"));
+        assert!(!basemap.code.paths.iter().any(|path| path == "data/sources.toml"));
         // About Baden-Württemberg, and the box of the old planner recipe.
         let old = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
         assert!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0)
@@ -662,6 +713,6 @@ mod tests {
                 assert!(step.code.paths.contains(&file), "{} runs {file}, which its code does not declare", step.name);
             }
         }
-        assert_eq!(python, 11, "overlays, assets, model, four search layers, places, climate, snow and sun");
+        assert_eq!(python, 12, "basemap, overlays, assets, model, four search layers, places, climate, snow and sun");
     }
 }
