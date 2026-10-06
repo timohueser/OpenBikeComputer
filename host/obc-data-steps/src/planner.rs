@@ -3,9 +3,9 @@
 //! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
 //! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
-//! `planner/osm`, `planner/search/policy`, `planner/search/dump` and `planner/search/records` are
-//! intermediate layers: no client reads them. `data/planner.toml` holds the options that are the
-//! same for each region.
+//! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
+//! Grid indexes are local inputs for the offline catalog. `data/planner.toml` holds the options
+//! that are the same for each region.
 
 use std::collections::HashSet;
 
@@ -313,10 +313,39 @@ impl Product for Planner {
                 &["sun.pmtiles"],
             ));
         }
+        let maps = ["basemap", "places", "terrain", "overlays", "climate", "snow", "sun"];
+        let grids = steps
+            .iter_mut()
+            .filter_map(|step| {
+                let kind = step.name.strip_prefix("planner/")?;
+                if !maps.contains(&kind) {
+                    return None;
+                }
+                step.client = Client::None;
+                Some(map_grid(step, kind, bounds))
+            })
+            .collect::<Vec<_>>();
+        steps.extend(grids);
         match wanted.is_empty() {
             true => Ok(steps.into()),
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
+    }
+}
+
+/// A map's transport objects ship; the small index is input to the offline catalog only.
+fn map_grid(source: &Step, kind: &str, bounds: [f64; 4]) -> Step {
+    let bounds = source.options.get("bounds").cloned().unwrap_or_else(|| json!(bounds));
+    Step {
+        client: Client::Paths(vec!["objects".into()]),
+        ..python(
+            &format!("{}/grid", source.name),
+            vec![Input::Layer { name: source.name.clone(), files: source.outputs.clone() }],
+            json!({"kind": kind, "bounds": bounds}),
+            ("tools.planner_grid_maps", Some("planner-maps")),
+            &["tools/planner_grid_maps.py", "tools/planner_offline.py", "tools/planner_runtime.py"],
+            &["objects", "index.json"],
+        )
     }
 }
 
@@ -517,13 +546,26 @@ mod tests {
             "search/addresses",
             "places",
             "basemap",
+            "terrain/grid",
+            "overlays/grid",
+            "places/grid",
+            "basemap/grid",
         ];
         assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
         let intermediate: Vec<&str> =
             steps.iter().filter(|step| step.client.is_none()).map(|step| step.name.as_str()).collect();
         assert_eq!(
             intermediate,
-            ["planner/osm", "planner/search/policy", "planner/search/dump", "planner/search/records"]
+            [
+                "planner/osm",
+                "planner/terrain",
+                "planner/overlays",
+                "planner/search/policy",
+                "planner/search/dump",
+                "planner/search/records",
+                "planner/places",
+                "planner/basemap"
+            ]
         );
         let [osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
@@ -647,7 +689,7 @@ mod tests {
         let added: Vec<_> = with.groups.iter().filter(|group| !without.groups.contains(group)).collect();
         let [climate] = &added[..] else { panic!("{} groups are new", added.len()) };
         let builds: Vec<&str> = climate.builds.iter().map(|build| build.step.as_str()).collect();
-        assert_eq!((climate.id.as_str(), builds), ("planner/climate", vec!["planner/climate"]));
+        assert_eq!((climate.id.as_str(), builds), ("planner/climate", vec!["planner/climate", "planner/climate/grid"]));
         assert_eq!(with.groups.len(), without.groups.len() + 1);
     }
 
@@ -716,6 +758,6 @@ mod tests {
                 assert!(step.code.paths.contains(&file), "{} runs {file}, which its code does not declare", step.name);
             }
         }
-        assert_eq!(python, 12, "basemap, overlays, assets, model, four search layers, places, climate, snow and sun");
+        assert_eq!(python, 19, "twelve producers and seven map grids");
     }
 }

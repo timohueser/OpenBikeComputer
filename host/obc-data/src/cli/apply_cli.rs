@@ -666,7 +666,7 @@ mod tests {
         let live = Live::read(&remote, &[&product], &[], &fixture.store).unwrap();
         assert!(live.owners(&[selected]).contains("test/package"));
         let private = format!("test/objects/{}", sha256_hex(b"metadata"));
-        assert!(live.owners(&[private.clone()]).is_empty());
+        assert!(live.owners(std::slice::from_ref(&private)).is_empty());
         age(&fixture);
         let expanded = apply(&fixture, &remote, &[&Selected(Client::All)]).unwrap();
         assert!(expanded.built.as_ref().unwrap().run.is_none());
