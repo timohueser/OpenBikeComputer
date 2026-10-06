@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+type Task<'a> = std::thread::ScopedJoinHandle<'a, (Effect, Option<App>, Result<(), Error>)>;
+
 type ViewContext = (
     Result<crate::cli::edit_cli::Edited, String>,
     Result<Vec<crate::sources::Source>, String>,
@@ -42,7 +44,7 @@ pub(super) fn run_loop(
 ) -> Result<(), Error> {
     let io = |error: std::io::Error| error.to_string();
     std::thread::scope(|scope| {
-        let mut task: Option<std::thread::ScopedJoinHandle<'_, (Effect, Option<App>, Result<(), Error>)>> = None;
+        let mut task: Option<Task<'_>> = None;
         let mut effect = Effect::Initial;
         let mut finishing = false;
         let mut read = Instant::now();

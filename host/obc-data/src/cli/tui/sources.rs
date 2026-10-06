@@ -140,7 +140,7 @@ impl App {
                 Line::from(row.source.id.clone()).bold(),
                 Line::from(format!(
                     "Policy {} · R2 copy {} · credential {}",
-                    row.source.refresh.to_string(),
+                    row.source.refresh,
                     if row.source.r2_copy { "yes" } else { "no" },
                     if row.credential_missing { "missing for a new fetch" } else { "available or not needed" }
                 )),
