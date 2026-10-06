@@ -29,8 +29,16 @@ for target in aarch64-apple-ios aarch64-apple-ios-sim "$mac_target"; do
   fi
   slices+=(-library "$library" -headers apps/obc-ios-host/include)
 done
+build_dir="$(cd "$build_dir" && pwd -P)"
 framework="$build_dir/OBCHost.xcframework"
 rm -rf "$framework"
 xcodebuild -create-xcframework "${slices[@]}" -output "$framework"
+# Xcode's OBCDevice target links this canonical path even when Cargo uses another cache.
+mkdir -p "$root/target"
+canonical="$(cd "$root/target" && pwd -P)/OBCHost.xcframework"
+if [[ "$framework" != "$canonical" ]]; then
+  rm -rf "$canonical"
+  ln -s "$framework" "$canonical"
+fi
 mkdir -p companion-ios/Packages/OBCKit/.swiftpm
 ln -sfn "$framework" companion-ios/Packages/OBCKit/.swiftpm/OBCHost.xcframework
