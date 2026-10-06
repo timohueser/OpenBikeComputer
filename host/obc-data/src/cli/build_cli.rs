@@ -919,6 +919,7 @@ const ROUNDS: usize = 8;
 /// also the products without a pointer, whose release an apply cannot make live. A product whose
 /// step list reads snapshots that the store lacks gets them fetched, as [`product_steps`] says. The
 /// fetch for a `--move SOURCE` names its version in `env`, so every product reads that one version.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn steps(
     root: &Path,
     products: &[&dyn Product],

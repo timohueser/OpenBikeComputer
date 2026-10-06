@@ -80,6 +80,7 @@ struct Routing {
 }
 
 mod catalog;
+mod runtime;
 
 pub struct Planner;
 
@@ -93,7 +94,9 @@ impl Product for Planner {
     }
 
     fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
-        catalog::named(release)
+        let mut files = catalog::named(release)?;
+        files.extend(runtime::named(release)?);
+        Ok(files)
     }
 
     fn verify(
@@ -112,7 +115,7 @@ impl Product for Planner {
 
     fn steps(
         &self,
-        _root: &std::path::Path,
+        root: &std::path::Path,
         env: &Env,
         regions: &Regions,
         store: &Store,
@@ -451,13 +454,11 @@ impl Product for Planner {
             )
         });
         match wanted.is_empty() {
-            true => Ok(obc_data::product::Steps {
-                steps,
-                blocked: vec![obc_data::product::BlockedLayer {
-                    layer: "planner/runtime".into(),
-                    reason: "routing and search runtimes have no stored code receipts or verified readiness".into(),
-                }],
-            }),
+            true => {
+                let mut runtime = runtime::steps(root);
+                steps.append(&mut runtime.steps);
+                Ok(obc_data::product::Steps { steps, blocked: runtime.blocked })
+            }
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
     }
