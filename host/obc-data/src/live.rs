@@ -235,7 +235,7 @@ impl Live {
 }
 
 /// The owned prefixes of R2 against live.
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Check {
     /// The prefixes that were listed.
     pub prefixes: Vec<String>,
@@ -245,7 +245,7 @@ pub struct Check {
     pub leftovers: Vec<Object>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Drift {
     pub key: String,
     /// The size that live needs, when it is known.

@@ -168,16 +168,14 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
     } else {
         let mut table = vec![cells(["GROUP", "CHANGE", "FETCH", "BUILD", "TIME", "OUTPUT"])];
         for group in &plan.groups {
-            let fetch = group.fetches.iter().map(|fetch| fetch.bytes).sum::<Option<u64>>();
-            let estimates: Option<Vec<Estimate>> = group.builds.iter().map(|build| build.estimate).collect();
-            let total = |cost: fn(&Estimate) -> u64| estimates.as_ref().map(|all| all.iter().map(cost).sum::<u64>());
+            let cost = Cost::of(std::slice::from_ref(group));
             table.push(vec![
                 group.id.clone(),
                 change(group, &plan.edits),
-                if group.fetches.is_empty() { String::new() } else { fetch.map_or("—".into(), bytes) },
+                if group.fetches.is_empty() { String::new() } else { cost.fetch.map_or("—".into(), bytes) },
                 group.builds.iter().map(|build| build.step.as_str()).collect::<Vec<_>>().join(", "),
-                total(|estimate| estimate.wall_ms).map_or("—".into(), duration),
-                total(|estimate| estimate.bytes_out).map_or("—".into(), bytes),
+                cost.wall_ms.map_or("—".into(), duration),
+                cost.bytes_out.map_or("—".into(), bytes),
             ]);
         }
         print_table(&table);
@@ -190,8 +188,38 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
     Ok(())
 }
 
+/// The plan of `live` that the TUI shows: `plan live --only ONLY --json`.
+pub(super) fn plan_live(root: &Path, products: &[&dyn Product], only: &[String]) -> Result<EnvPlan, Error> {
+    let (store, http) = (Store::open()?, Http::new());
+    let remote = super::remote()?;
+    Ok(planned(root, &store, &http, Some(&remote), products, "live", only, Basis::Moves(&[]))?.plan)
+}
+
+/// What groups cost: the download, the build time and the output; `None` when the store does not
+/// know one of the parts. A fetch or a build that two groups need counts once.
+pub(super) struct Cost {
+    pub fetch: Option<u64>,
+    pub wall_ms: Option<u64>,
+    pub bytes_out: Option<u64>,
+}
+
+impl Cost {
+    pub fn of(groups: &[Group]) -> Cost {
+        let plan = Plan { groups: groups.to_vec() };
+        let mut steps = BTreeSet::new();
+        let builds = plan.builds().filter(|build| steps.insert(build.step.as_str()));
+        let estimates: Option<Vec<Estimate>> = builds.map(|build| build.estimate).collect();
+        let total = |cost: fn(&Estimate) -> u64| estimates.as_ref().map(|all| all.iter().map(cost).sum::<u64>());
+        Cost {
+            fetch: plan.fetches().iter().map(|fetch| fetch.bytes).sum(),
+            wall_ms: total(|estimate| estimate.wall_ms),
+            bytes_out: total(|estimate| estimate.bytes_out),
+        }
+    }
+}
+
 /// What a group changes, in a few words.
-fn change(group: &Group, edits: &[Edit]) -> String {
+pub(super) fn change(group: &Group, edits: &[Edit]) -> String {
     let edits = |region: bool| {
         let edits = edits.iter().filter(|edit| matches!(edit, Edit::Region { .. }) == region);
         edits.map(Edit::text).collect::<Vec<_>>().join("; ")
