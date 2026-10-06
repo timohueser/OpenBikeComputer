@@ -1,5 +1,6 @@
 ---
 title: Packer and routing
+copy: mixed
 description: How OpenBikeComputer builds maps, navigation graphs, routes, and route matches.
 ---
 
@@ -792,7 +793,7 @@ region's texts and photos are under. Each place keeps its own notices.
 - Navigation graph: [`nav.rs`](src:host/obc-pack/src/nav.rs)
 - Quadtree: [`quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
 - Builder: [`builder/`](src:builder)
-- Web assembler: [`obc-web-assemble`](src:apps/obc-web-assemble)
+- Web assembler: [`obc-builder-bridge`](src:builder/wasm)
 - Device router: [`nav.rs`](src:firmware/obc-route/src/nav.rs)
 - Route matcher: [`matcher.rs`](src:firmware/obc-route/src/matcher.rs)
 - GPX converter: [`convert.rs`](src:firmware/obc-route/src/convert.rs)
