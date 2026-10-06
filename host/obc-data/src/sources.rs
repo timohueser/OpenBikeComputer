@@ -71,7 +71,7 @@ pub enum Refresh {
 }
 
 impl Refresh {
-    /// Every policy that `refresh` allows.
+    /// Common policies offered as shortcuts.
     pub const ALL: [Refresh; 5] =
         [Refresh::Days(7), Refresh::Days(30), Refresh::Days(90), Refresh::Days(365), Refresh::Manual];
 }
@@ -91,12 +91,12 @@ impl TryFrom<RefreshRepr> for Refresh {
             RefreshRepr::Word(word) => (word == "manual").then_some(Refresh::Manual),
         };
         refresh
-            .filter(|refresh| Refresh::ALL.contains(refresh))
-            .ok_or("`refresh` is 7, 30, 90 or 365 days, or \"manual\"".into())
+            .filter(|refresh| !matches!(refresh, Refresh::Days(0)))
+            .ok_or("`refresh` is 1..65535 whole days, or \"manual\"".into())
     }
 }
 
-/// `7`, `30`, `90`, `365` or `manual`, as a command takes it.
+/// Positive whole days or `manual`, as a command takes it.
 impl std::str::FromStr for Refresh {
     type Err = String;
     fn from_str(text: &str) -> Result<Self, String> {
@@ -119,11 +119,9 @@ impl JsonSchema for Refresh {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let values: Vec<serde_json::Value> =
-            Refresh::ALL.iter().map(|refresh| serde_json::to_value(refresh).expect("a policy serializes")).collect();
         schemars::json_schema!({
             "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale.",
-            "enum": values
+            "anyOf": [{"type":"integer", "minimum":1, "maximum":65535}, {"const":"manual"}]
         })
     }
 }
@@ -491,10 +489,10 @@ mod tests {
     }
 
     #[test]
-    fn a_refresh_in_days_needs_a_date_version_and_a_known_policy() {
+    fn a_refresh_in_days_needs_a_date_version_and_positive_whole_days() {
         let release = OSM.replace("version = \"date\"", "version = \"release\"");
         assert!(parse_sources(&release).unwrap_err().contains("needs `version = \"date\"`"));
-        assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = 14")).is_err());
+        assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = 14")).is_ok());
         assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = \"manual\"")).is_ok());
     }
 
@@ -602,7 +600,12 @@ mod tests {
         assert_eq!(parse_sources(&edited).unwrap()[1].refresh, Refresh::Manual);
         assert_eq!(set_refresh(&text, "qrank", Refresh::Manual).unwrap_err(), "no source `qrank`");
         assert_eq!("30".parse(), Ok(Refresh::Days(30)));
-        assert!("14".parse::<Refresh>().is_err());
+        for days in [1, 14, 65535] {
+            assert_eq!(days.to_string().parse(), Ok(Refresh::Days(days)));
+        }
+        for invalid in ["0", "-1", "65536", "1.5"] {
+            assert!(invalid.parse::<Refresh>().is_err());
+        }
     }
 
     #[test]
