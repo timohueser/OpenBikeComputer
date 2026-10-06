@@ -119,11 +119,13 @@ fn append_visible_polygon(
         }
 
         let start = out_points.len();
-        out_points.push(ScreenPoint::checked(viewport.to_screen(ring[0].0, ring[0].1))?).map_err(|_| ())?;
+        let first = viewport.to_screen(ring[0].0, ring[0].1);
+        out_points.push(ScreenPoint::checked(first)?).map_err(|_| ())?;
+        let mut b = viewport.to_screen(ring[1].0, ring[1].1);
         for index in 1..ring.len() {
             let a = out_points.last().ok_or(())?.tuple();
-            let b = viewport.to_screen(ring[index].0, ring[index].1);
-            let c = viewport.to_screen(ring[(index + 1) % ring.len()].0, ring[(index + 1) % ring.len()].1);
+            let c =
+                if index + 1 == ring.len() { first } else { viewport.to_screen(ring[index + 1].0, ring[index + 1].1) };
             let remaining = ring.len() - index - 1;
             let kept = out_points.len() - start;
             let screen_redundant = point_on_screen_segment(a, b, c);
@@ -135,6 +137,7 @@ fn append_visible_polygon(
             if (!screen_redundant && !outside_equivalent) || kept + remaining < 4 {
                 out_points.push(ScreenPoint::checked(b)?).map_err(|_| ())?;
             }
+            b = c;
         }
         out_ring_lens.push((out_points.len() - start) as u16).map_err(|_| ())?;
     }
@@ -157,16 +160,17 @@ fn append_visible_line(
         let start = out_points.len();
         let Some((&first, rest)) = ring.split_first() else { return Err(()) };
         out_points.push(ScreenPoint::checked(viewport.to_screen(first.0, first.1))?).map_err(|_| ())?;
-        for index in 0..rest.len().saturating_sub(1) {
-            let previous = out_points.last().ok_or(())?.tuple();
-            let current = viewport.to_screen(rest[index].0, rest[index].1);
-            let next = viewport.to_screen(rest[index + 1].0, rest[index + 1].1);
-            if !point_on_screen_segment(previous, current, next) {
-                out_points.push(ScreenPoint::checked(current)?).map_err(|_| ())?;
+        if let Some((&second, tail)) = rest.split_first() {
+            let mut current = viewport.to_screen(second.0, second.1);
+            for &(lon, lat) in tail {
+                let previous = out_points.last().ok_or(())?.tuple();
+                let next = viewport.to_screen(lon, lat);
+                if !point_on_screen_segment(previous, current, next) {
+                    out_points.push(ScreenPoint::checked(current)?).map_err(|_| ())?;
+                }
+                current = next;
             }
-        }
-        if let Some(&last) = rest.last() {
-            out_points.push(ScreenPoint::checked(viewport.to_screen(last.0, last.1))?).map_err(|_| ())?;
+            out_points.push(ScreenPoint::checked(current)?).map_err(|_| ())?;
         }
         out_ring_lens.push((out_points.len() - start) as u16).map_err(|_| ())?;
     }
