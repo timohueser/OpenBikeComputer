@@ -14,25 +14,25 @@ crate-type = ["cdylib", "rlib"]
 # The conversion and export algorithms themselves — the same `no_std` route decoder and finished
 # ride-v6 reader shared with firmware. The nRF54L records final ride bytes directly; this crate is a
 # byte-buffer adapter plus an error vocabulary.
-obc-route = { path = "../../firmware/obc-route" }
+obc-route = { workspace = true }
 # The byte-I/O seam (`ByteSource`/`ByteSink`/`Error`) and the recorded-track record width — the
 # byte authority, imported directly rather than through the route algorithms.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }
 
 [dev-dependencies]
 # `TrackPoint` — tests hand-encode ride samples to drive the finished-ride → GPX path.
-obc-ports = { path = "../../firmware/obc-ports" }
+obc-ports = { workspace = true }
 
 # --- Web (wasm32) surface — the only target this crate actually ships on. The conversion core
 # above stays target-independent so `cargo test` exercises it natively in the workspace, exactly
 # like obc-web-demo's demo core.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
+wasm-bindgen = { workspace = true }
 # `js_sys::Error` + `Reflect::set`: a failure crosses to JS as a real `Error` instance carrying a
 # stable `code` property, so callers can branch on the cause without matching on message text.
-js-sys = "0.3"
+js-sys = { workspace = true }
 # Surface Rust panics in the browser console instead of an opaque trap.
-console_error_panic_hook = "0.1"
+console_error_panic_hook = { workspace = true }
 
 # wasm-pack drives wasm-opt over the release artifact; `-Oz` is the size-first setting, and the
 # bundle-size budget CI enforces (firmware/tools/wasm_size_guard.py) is measured on its output.

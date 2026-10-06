@@ -7,4 +7,4 @@ license = "GPL-3.0-only"
 description = "Shared OSM place selection and coordinates for planner and device builders"
 
 [dependencies]
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }

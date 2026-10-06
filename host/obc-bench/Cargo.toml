@@ -6,22 +6,22 @@ publish = false # host-only bench harness — never shipped or published
 description = "Host render benchmark harness + CI pixel-hash and read-counter golden gate over the real obc-reader → obc-render pipeline"
 
 [dependencies]
-obc-map-scene = { path = "../../firmware/obc-map-scene" }
-obc-reader = { path = "../../firmware/obc-reader" }
-obc-render = { path = "../../firmware/obc-render" }
+obc-map-scene = { workspace = true }
+obc-reader = { workspace = true }
+obc-render = { workspace = true }
 # The OBCR route reader — the corridor bench (epic #946 U2) drives `Reader::corridor_pois` against a
 # real converted route rather than a fixture polyline, so the measured cost includes the chunk decode.
-obc-route = { path = "../../firmware/obc-route" }
+obc-route = { workspace = true }
 # The `ByteSource` / `ByteSink` seam the corridor bench's read-counting source implements.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }
 # The app owns the route-overlay draw params; the route scene imports the stroke colour + weight
 # from here so the bench can't silently drift from what the Map screen actually draws.
-obc-app = { path = "../../firmware/obc-app" }
+obc-app = { workspace = true }
 # `Framebuffer565` — the same RGB565 DrawTarget the banded device path renders into (obc-display, #807).
-obc-display = { path = "../../firmware/obc-display" }
+obc-display = { workspace = true }
 # The deterministic bench fixture (`build_bench_map`) the committed frame hashes are computed over.
-obcm-testkit = { path = "../obcm-testkit" }
+obcm-testkit = { workspace = true }
 # Same 0.8 the render path uses, so `Rgb565`/`DrawTarget` unify.
-embedded-graphics = "0.8"
+embedded-graphics = { workspace = true }
 # Same 0.8 the firmware uses — the corridor query fills a caller-owned `heapless::Vec`.
-heapless = "0.8"
+heapless = { workspace = true }

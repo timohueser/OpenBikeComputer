@@ -38,13 +38,13 @@ required-features = ["terrarium"]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
 # lattice sample into a byte offset. Transcribing any of it here is exactly the drift `obc-formats`
 # exists to prevent — this crate writes the bytes that module names.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }
 # The **shared** lattice arithmetic and the **shared** reader. A baker that re-derived "which cell
 # owns sample i" from the prose would be a second implementation of the one thing `OBCT_Spec.md` §5
 # says two implementations must agree on — so this crate does the shifts with `obc_elevation::grid`
 # and every test reads its own output back through `obc_elevation::TerrainReader`. Depending on a
 # `no_std` foundation crate from a host tool is the allowed direction (`dependency_rules.json`).
-obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-elevation = { workspace = true }
 # The GeoTIFF decoder. **Pure Rust** — this is what the #1070 spike proved against a real GLO-30
 # tile: float32 samples (`SampleFormat = 3`), Adobe DEFLATE (`Compression = 8`) with the
 # *floating-point* horizontal predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
@@ -55,18 +55,18 @@ tiff = { version = "0.11", default-features = false, features = ["deflate"], opt
 # sources contributed to each of them. Read as a `Value` rather than through derived structs,
 # because the index grows fields (`sha256`, `contributors`) that this reader must tolerate rather
 # than refuse. Already in the workspace lockfile (`obc-pack` and `obc-bake` both use it).
-serde_json = { version = "1", optional = true }
+serde_json = { workspace = true, optional = true }
 # `fetch` only: the store and its fetcher for the tiles. The binary also prints the Copernicus
 # credit from data/sources.toml.
-obc-data = { path = "../obc-data", optional = true }
-image = { version = "0.25", default-features = false, features = ["webp"], optional = true }
-rusqlite = { version = "0.38", features = ["bundled"], optional = true }
+obc-data = { workspace = true, optional = true }
+image = { workspace = true, features = ["webp"], optional = true }
+rusqlite = { workspace = true, features = ["bundled"], optional = true }
 
 [dev-dependencies]
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
 # than asserted. Already in the workspace lockfile (`obc-pack` publishes catalog digests with it).
-sha2 = "0.11"
-obc-fixtures = { path = "../obc-fixtures" }
+sha2 = { workspace = true, default-features = true }
+obc-fixtures = { workspace = true }
 
 [[test]]
 name = "assets"
