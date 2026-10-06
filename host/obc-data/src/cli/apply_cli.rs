@@ -653,6 +653,74 @@ mod tests {
         assert!(!local.exists());
     }
 
+    struct Named(&'static str);
+
+    impl Product for Named {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(env, regions, store)
+        }
+        fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
+            let mut files = Versioned.named(release)?;
+            files[0].path = self.0.into();
+            Ok(files)
+        }
+        fn pointer(&self) -> Option<PointerFn> {
+            Versioned.pointer()
+        }
+    }
+
+    #[test]
+    fn a_named_path_change_plans_publication_without_rebuilding_the_receipt() {
+        let (fixture, remote) = repository("apply-named-path");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let previous = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        let old = previous.products[0].release.as_ref().unwrap();
+        let plan = build_cli::plan_live(
+            &fixture.root(),
+            &fixture.store,
+            &Http::new(),
+            &remote,
+            &[&Named("TOTAL.txt")],
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].id, "pointer:test");
+        assert!(plan.groups[0].builds.is_empty() && plan.groups[0].layers.is_empty());
+        let Some(crate::engine::plan::Cause::Pointer { release, .. }) = &plan.groups[0].cause else {
+            panic!("no publication cause")
+        };
+        assert_ne!(release, &old.0);
+        let other = build_cli::plan_live(
+            &fixture.root(),
+            &fixture.store,
+            &Http::new(),
+            &remote,
+            &[&Named("OTHER.txt")],
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(
+            !crate::engine::plan::Plan { groups: plan.groups.clone() }
+                .same_work(&crate::engine::plan::Plan { groups: other.groups }),
+            "a saved plan fixes the desired named identity too"
+        );
+        age(&fixture);
+        let applied = apply(&fixture, &remote, &[&Named("TOTAL.txt")]).unwrap();
+        assert!(applied.built.as_ref().unwrap().run.is_none());
+        assert_eq!(&applied.switched[0].id, release);
+        let live = Live::read(&remote, &[&Named("TOTAL.txt")], &[], &fixture.store).unwrap();
+        assert_eq!(live.products[0].release.as_ref().unwrap().1.layers, old.1.layers);
+        assert_eq!(live.products[0].document, previous.products[0].document, "the inline root body is unchanged");
+        assert!(keys(&fixture).contains_key(&format!("test/releases/{release}/TOTAL.txt")));
+        assert!(!keys(&fixture).contains_key(&format!("test/releases/{}/COUNT.txt", old.0)));
+    }
+
     struct Root;
 
     impl Product for Root {

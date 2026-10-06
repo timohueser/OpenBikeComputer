@@ -564,14 +564,23 @@ fn planned(
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     let (next, _) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
     for (now, next) in live.products.iter().zip(&next.products) {
-        if now.release.as_ref().map(|(id, _)| id) == next.release.as_ref().map(|(id, _)| id)
-            && next.document.is_some()
-            && now.document != next.document
-        {
+        let layered = plan.groups.iter().any(|group| {
+            group
+                .layers
+                .iter()
+                .map(|layer| &layer.step)
+                .chain(&group.drops)
+                .any(|layer| layer.split('/').next() == Some(next.product.as_str()))
+        });
+        if !layered && next.document.is_some() && changed(now, next) {
             let document = document_digest(next).expect("a desired document exists");
             plan.groups.push(Group {
                 id: format!("pointer:{}", next.product),
-                cause: Some(Cause::Pointer { product: next.product.clone(), document }),
+                cause: Some(Cause::Pointer {
+                    product: next.product.clone(),
+                    release: next.release.as_ref().expect("a desired document has a release").0.clone(),
+                    document,
+                }),
                 layers: Vec::new(),
                 drops: Vec::new(),
                 fetches: Vec::new(),
