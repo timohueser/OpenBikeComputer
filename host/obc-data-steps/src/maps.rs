@@ -2,7 +2,8 @@
 //! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`, `maps/<band>/<i>-<j>`
 //! its map cells of one band, and `maps/landmarks/<i>-<j>` and `maps/peaks/<i>-<j>` its landmark
 //! and peak artifacts per network cell. `maps/osm` holds the OSM of each leaf, and
-//! `maps/landmark-content` and `maps/peak-content` the compiled Wikimedia captures of the region.
+//! `maps/landmark-content` and `maps/peak-content` the compiled Wikimedia captures of the region:
+//! intermediate layers, which no client reads.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -228,7 +229,8 @@ fn snapshot_version(
     })
 }
 
-/// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo.
+/// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo. Only
+/// the map cells read it.
 fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
     Step {
         name: "maps/osm".into(),
@@ -237,6 +239,7 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
         code: Code { paths: Vec::new(), crates: vec!["obc-bake".into()] },
         outputs: vec!["osm".into()],
         run: Run::Rust(obc_bake::step::osm),
+        client: false,
     }
 }
 
@@ -261,6 +264,7 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()] },
         outputs: vec!["cells".into()],
         run: Run::Rust(obc_pack::step::cells),
+        client: true,
     }
 }
 
@@ -287,6 +291,7 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str) ->
         code: Code { paths: Vec::new(), crates: vec!["obc-dem".into()] },
         outputs: vec!["terrain".into()],
         run: Run::Rust(obc_dem::step::terrain),
+        client: true,
     }
 }
 
@@ -561,6 +566,7 @@ pub(crate) mod tests {
         };
         let osm = r#"maps/osm ["osm/0037-0032.osm.pbf"]"#;
         assert_eq!(reads("maps/osm"), [EXTRACTS]);
+        assert!(steps.iter().all(|step| step.client == (step.name != "maps/osm")), "no client reads the OSM");
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
         for band in ["mid", "fine", "network"] {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");

@@ -39,6 +39,9 @@ pub struct Layer {
     pub files: Vec<LayerFile>,
     /// Source id to the fetch that the layer read: a receipt holds digests, not versions.
     pub snapshots: BTreeMap<String, SnapshotRead>,
+    /// Whether a client reads the layer. The release records an intermediate layer too, so a plan
+    /// compares it with live and live names the versions that it read, but R2 lacks its files.
+    pub client: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -69,6 +72,7 @@ impl Layer {
             digest: receipt.digest.clone(),
             files: receipt.files.clone(),
             snapshots: snapshots.collect(),
+            client: step.client,
         }
     }
 }
@@ -104,9 +108,9 @@ impl Release {
         sha256_hex(&self.canonical())
     }
 
-    /// The objects of its layers: SHA-256 to size.
+    /// The objects of its client layers, which R2 holds: SHA-256 to size.
     pub fn objects(&self) -> BTreeMap<&str, u64> {
-        let files = self.layers.iter().flat_map(|layer| &layer.files);
+        let files = self.layers.iter().filter(|layer| layer.client).flat_map(|layer| &layer.files);
         files.map(|file| (file.sha256.as_str(), file.size)).collect()
     }
 
@@ -188,6 +192,14 @@ mod tests {
             built.iter().flat_map(|b| &b.receipt.files).map(|file| (file.sha256.as_str(), file.size)).collect();
         expected.sort();
         assert_eq!(objects, expected);
+
+        let mut steps = pipeline();
+        steps.iter_mut().filter(|step| step.name == "test/join").for_each(|step| step.client = false);
+        let lean = release(&one.store, &one.root(), "test", "monaco", &[], &steps).unwrap().unwrap();
+        assert_eq!(lean.layers.len(), 3, "the release records an intermediate layer");
+        let mut client = first.objects();
+        client.retain(|sha256, _| first.layers[1].files.iter().all(|file| file.sha256 != *sha256));
+        assert_eq!(lean.objects(), client, "R2 lacks the files of an intermediate layer");
 
         let id = first.write(&one.store).unwrap();
         assert_eq!(hash_file(&one.store.release("test", &id)).unwrap().0, id, "the file is canonical");

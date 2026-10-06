@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::Line;
 
-use super::{bytes, duration, row_text, widths, App, LIVE};
-use crate::cli::build_cli::{change, Cost, EnvPlan};
+use super::{bytes, duration, row_text, widths, App};
+use crate::cli::build_cli::{change, Cost, EnvPlan, NONE};
 use crate::cli::status_cli::keys;
 use crate::engine::plan::{Cause, Group, Plan};
 
@@ -33,23 +33,23 @@ impl PlanView {
         PlanView { taken: plan.clone(), all: plan, skipped: BTreeSet::new(), steps: false, group: 0 }
     }
 
-    /// The `--only` of the moves that Plan takes; empty when it takes every move.
+    /// The `--only` of the moves that Plan takes: empty when it takes every move, `none` when it
+    /// takes none.
     pub fn only(&self) -> Vec<String> {
         if self.skipped.is_empty() {
             return Vec::new();
         }
         let taken = self.all.groups.iter().filter(|group| is_move(group) && !self.skipped.contains(&group.id));
-        taken.map(|group| group.id.clone()).collect()
+        let only: Vec<String> = taken.map(|group| group.id.clone()).collect();
+        if only.is_empty() {
+            return vec![NONE.into()];
+        }
+        only
     }
 
-    /// Whether `space` takes or leaves the selected group: a move, but not the last move that Plan
-    /// takes, because no `--only` names none.
+    /// Whether `space` takes or leaves the selected group: a move.
     pub fn toggles(&self) -> bool {
-        let Some(group) = self.all.groups.get(self.group).filter(|group| !self.steps && is_move(group)) else {
-            return false;
-        };
-        let moves = self.all.groups.iter().filter(|group| is_move(group)).count();
-        self.skipped.contains(&group.id) || moves - self.skipped.len() > 1
+        self.all.groups.get(self.group).is_some_and(|group| !self.steps && is_move(group))
     }
 
     /// Take or leave the selected move, and give the `--only` of the moves that Plan takes then.
@@ -59,13 +59,6 @@ impl PlanView {
             self.skipped.insert(id);
         }
         self.only()
-    }
-
-    pub fn command(&self) -> String {
-        match self.only() {
-            only if only.is_empty() => format!("obc data plan {LIVE}"),
-            only => format!("obc data plan {LIVE} --only {}", only.join(",")),
-        }
     }
 }
 

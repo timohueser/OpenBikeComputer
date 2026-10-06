@@ -1,6 +1,5 @@
-//! The TUI of `obc data`. Each screen shows what a command writes with `--json`, and the bar
-//! names that command. Each change goes through the function of its command: `region`, `layer`,
-//! `undo`, `policy` and `clean --apply`.
+//! The TUI of `obc data`. Each screen shows what a command writes with `--json`. Each change goes
+//! through the function of its command: `region`, `layer`, `undo`, `policy` and `clean --apply`.
 
 mod live;
 mod plan;
@@ -162,8 +161,6 @@ struct App {
     sources: Vec<SourceRow>,
     /// Source id to the versions that the live releases read; `None` when R2 could not be read.
     live: Option<std::collections::BTreeMap<String, Vec<String>>>,
-    /// Sources shows a check of upstream from now, not from the last hour.
-    checked_now: bool,
     /// An effect runs.
     busy: bool,
     /// The plan of `clean`, once Store has shown.
@@ -374,7 +371,6 @@ impl App {
             overlay: None,
             sources,
             live: None,
-            checked_now: false,
             busy: false,
             store: None,
             runs,
@@ -400,7 +396,6 @@ impl App {
     /// Read the sources again; with `check_now`, after a check of upstream now.
     fn reload(&mut self, root: &Path, check_now: bool) -> Result<(), Error> {
         self.sources = source_rows(&registry(root)?, self.live.as_ref(), check_now)?;
-        self.checked_now = check_now;
         Ok(())
     }
 
@@ -450,10 +445,6 @@ impl App {
             (None, Screen::Store) => &mut self.kept,
             (None, Screen::Runs) => &mut self.run,
         }
-    }
-
-    fn run_id(&self) -> Option<&str> {
-        self.runs.get(self.run).map(|run| run.summary.id.as_str())
     }
 
     /// The regions whose id has the filter of Region.
@@ -673,30 +664,6 @@ impl App {
         }
     }
 
-    /// The command that shows the same, or does the same.
-    fn command(&self) -> String {
-        let id = self.sources.get(self.source).map_or("", |row| row.source.id.as_str());
-        match (self.overlay, self.screen) {
-            (Some(Overlay::Help), _) => "obc data --help".into(),
-            (Some(Overlay::Attribution), _) => "obc data sources --json".into(),
-            (Some(Overlay::Policy), _) => match Refresh::ALL[self.choice] {
-                Refresh::Days(days) => format!("obc data policy {id} {days}"),
-                Refresh::Manual => format!("obc data policy {id} manual"),
-            },
-            (Some(Overlay::Clean), _) if self.asking => "obc data clean --apply".into(),
-            (Some(Overlay::Clean), _) | (None, Screen::Store) => "obc data clean".into(),
-            (Some(Overlay::Region), _) if self.chooses() => {
-                format!("obc data region {LIVE} {}", self.shown_regions()[self.choice])
-            }
-            (Some(Overlay::Region), _) => "obc data region list".into(),
-            (Some(Overlay::Plan), _) => self.plan.as_ref().map_or(format!("obc data plan {LIVE}"), PlanView::command),
-            (None, Screen::Live) => self.live_command(),
-            (None, Screen::Sources) if self.checked_now => "obc data sources --check-now".into(),
-            (None, Screen::Sources) => "obc data sources".into(),
-            (None, Screen::Runs) => self.run_id().map_or("obc data runs".into(), |id| format!("obc data runs {id}")),
-        }
-    }
-
     fn draw(&mut self, frame: &mut Frame) {
         self.hits.clear();
         let [tabs, body, bar] =
@@ -821,12 +788,7 @@ impl App {
         if let Some(notice) = &self.notice {
             spans.push(Span::styled(notice.clone(), Color::Red));
         }
-        let keys = Line::from(spans);
-        let command = self.command();
-        if keys.width() + 1 + command.chars().count() <= area.width as usize {
-            frame.render_widget(Line::from(command).dim().right_aligned(), area);
-        }
-        frame.render_widget(keys, area);
+        frame.render_widget(Line::from(spans), area);
     }
 
     fn draw_overlay(&mut self, frame: &mut Frame, body: Rect, overlay: Overlay) {
@@ -1000,8 +962,8 @@ fn help() -> Vec<Line<'static>> {
     let mut lines = vec![
         line(&format!("{} tab", numbers.join(" ")), "screens".into()),
         line("↑ ↓ j k", "move".into()),
-        line("p", format!("plan: obc data plan {LIVE}")),
-        line("u", format!("undo the edits of data/env/{LIVE}.toml: obc data undo {LIVE}")),
+        line("p", "plan".into()),
+        line("u", format!("undo the edits of data/env/{LIVE}.toml")),
         line("esc", "close".into()),
         line("q", "quit".into()),
         line("?", "help".into()),
@@ -1063,13 +1025,15 @@ mod tests {
             state,
             reason: Some(reason.into()).filter(|reason: &String| !reason.is_empty()),
         };
-        let product = |product: &str, release: &str, bytes, optional: &[&str], layers| ProductStatus {
-            product: product.into(),
-            release: Some(release.repeat(8)),
-            bytes: Some(bytes),
-            optional: optional.iter().map(|layer| layer.to_string()).collect(),
-            layers,
-        };
+        let product =
+            |product: &str, release: &str, applied: Option<&str>, bytes, optional: &[&str], layers| ProductStatus {
+                product: product.into(),
+                release: Some(release.repeat(8)),
+                applied: applied.map(str::to_string),
+                bytes: Some(bytes),
+                optional: optional.iter().map(|layer| layer.to_string()).collect(),
+                layers,
+            };
         let planner = vec![
             layer("planner/basemap", State::Stale, "osm: 120 d > 90 d"),
             layer("planner/routing", State::CodeChanged, "host/route-build/src/main.rs"),
@@ -1081,8 +1045,15 @@ mod tests {
         Status {
             from: "https://maps.openbikecomputer.com".into(),
             products: vec![
-                product("maps", "3f9a2c1e", 980_000_000, &[], None),
-                product("planner", "8b0d47a5", 2_370_000_000, &["climate", "sun"], Some(planner)),
+                product("maps", "3f9a2c1e", None, 980_000_000, &[], None),
+                product(
+                    "planner",
+                    "8b0d47a5",
+                    Some("2026-10-02T09:14:05Z"),
+                    2_370_000_000,
+                    &["climate", "sun"],
+                    Some(planner),
+                ),
             ],
             attention: vec![
                 attention(AttentionKind::Stale, "osm", "120 d > 90 d"),
@@ -1256,9 +1227,9 @@ mod tests {
             "LIVE from https://maps.openbikecomputer.com",
             "region  europe/germany/baden-wuerttemberg",
             "",
-            "PRODUCT  RELEASE           SIZE      STATE",
-            "maps     release 3f9a2c1e  980.0 MB  unknown",
-            "planner  release 8b0d47a5  2.37 GB   not applied",
+            "PRODUCT  RELEASE           APPLIED     SIZE      STATE",
+            "maps     release 3f9a2c1e  —           980.0 MB  unknown",
+            "planner  release 8b0d47a5  2026-10-02  2.37 GB   not applied",
             "",
             "OPTIONAL LAYERS",
             "[ ] climate",
@@ -1268,13 +1239,12 @@ mod tests {
             "stale        osm                   120 d > 90 d",
             "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
             "unreachable  maps                  a fetch that the step list needs failed",
-            "r region   R check R2   p plan   u undo   ? help            obc data region list",
+            "r region   R check R2   p plan   u undo   ? help",
         ];
         assert_eq!(drawn, live, "{drawn:#?}");
         assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
         // 0 region, 1 maps, 2 planner, 3 climate, 4 sun, 5 stale, 6 old cache, 7 unreachable.
         app.row = 3;
-        assert_eq!(app.command(), "obc data layer live climate on");
         assert_eq!(app.key(KeyCode::Char(' ')), Effect::Layer("climate".into(), Switch::On));
         app.row = 4;
         assert_eq!(app.key(KeyCode::Char(' ')), Effect::Layer("sun".into(), Switch::Off));
@@ -1298,7 +1268,6 @@ mod tests {
         app.key(KeyCode::Backspace);
         "and".chars().for_each(|c| drop(app.key(KeyCode::Char(c))));
         assert_eq!(app.shown_regions(), ["europe/andorra"]);
-        assert_eq!(app.command(), "obc data region live europe/andorra");
         assert_eq!(app.key(KeyCode::Enter), Effect::Region("europe/andorra".into()));
         assert_eq!(app.overlay, None);
 
@@ -1331,14 +1300,15 @@ mod tests {
             "          └──────────────────────────────────────────────────────────────────────────────┘",
         ];
         assert_eq!(drawn[4..16], [&changes[..], &footer[..]].concat(), "{drawn:#?}");
-        assert!(drawn[17].starts_with("d steps   esc close "), "{}", drawn[17]);
+        assert_eq!(drawn[17], "d steps   esc close", "only keys");
         assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "an edit always goes");
         app.key(KeyCode::Down);
         assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["move:osm".into()]));
-        assert_eq!(app.command(), "obc data plan live --only move:osm");
         app.key(KeyCode::Down);
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "no `--only` leaves out every move");
+        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["none".into()]), "the last move too");
         app.key(KeyCode::Up);
+        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["move:land".into()]));
+        app.key(KeyCode::Down);
         assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(Vec::new()));
         for key in [KeyCode::Enter, KeyCode::Char('a')] {
             assert_eq!(app.key(key), Effect::None);
@@ -1364,7 +1334,6 @@ mod tests {
         assert_eq!(app.key(KeyCode::Char('e')), Effect::None);
         assert_eq!((app.overlay, app.choice), (Some(Overlay::Policy), 0));
         app.key(KeyCode::Down);
-        assert_eq!(app.command(), "obc data policy osm 30");
         assert_eq!(app.key(KeyCode::Enter), Effect::Policy("osm".into(), Refresh::Days(30)));
         let mut tool = App { source: 1, ..app };
         tool.key(KeyCode::Char('e'));
@@ -1375,12 +1344,12 @@ mod tests {
     fn a_clean_needs_a_then_y() {
         let mut app = App { screen: Screen::Store, ..app() };
         assert_eq!(app.key(KeyCode::Char('c')), Effect::PlanClean, "the plan of now");
-        assert_eq!((app.overlay, app.command().as_str()), (Some(Overlay::Clean), "obc data clean"));
+        assert_eq!(app.overlay, Some(Overlay::Clean));
         for key in [KeyCode::Enter, KeyCode::Char('y')] {
             assert_eq!(app.key(key), Effect::None);
         }
         app.key(KeyCode::Char('a'));
-        assert_eq!(app.command(), "obc data clean --apply");
+        assert!(app.asking);
         app.key(KeyCode::Esc);
         assert_eq!((app.overlay, app.asking), (Some(Overlay::Clean), false));
         app.key(KeyCode::Char('a'));
