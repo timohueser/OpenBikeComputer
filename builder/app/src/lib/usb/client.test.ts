@@ -440,6 +440,66 @@ describe("GET", () => {
 });
 
 describe("CANCEL", () => {
+    it("answers true and settles a live download when cancelled by its identifier", async () => {
+        await withDevice(SMALL_RECORDS, async ({ client, device }) => {
+            const bytes = payload(400_000);
+            device.seed({ kind: ObjectKind.MapShard, bytes });
+            let cancellation: Promise<boolean> | undefined;
+            const download = client.get({ objectId: 1n, revision: 0n }, {
+                onProgress(done) {
+                    if (done > 20_000 && !cancellation) cancellation = client.cancel(client.liveTransfer!);
+                },
+            });
+            await expect(download).rejects.toMatchObject({ code: "cancelled" });
+            expect(cancellation).toBeDefined();
+            await expect(cancellation).resolves.toBe(true);
+            expect((await client.get({ objectId: 1n, revision: 0n })).bytes).toEqual(bytes);
+        });
+    });
+
+    it("answers true and discards a live upload when cancelled by its identifier", async () => {
+        await withDevice({}, async ({ client }) => {
+            let cancellation: Promise<boolean> | undefined;
+            const upload = client.put({ kind: ObjectKind.MapShard, displayName: "cancel me" }, payload(400_000), {
+                onProgress(done) {
+                    if (done > 0 && !cancellation) cancellation = client.cancel(client.liveTransfer!);
+                },
+            });
+            await expect(upload).rejects.toMatchObject({ code: "cancelled" });
+            expect(cancellation).toBeDefined();
+            await expect(cancellation).resolves.toBe(true);
+            expect((await client.list()).entries).toEqual([]);
+        });
+    });
+
+    it("answers false for an unknown identifier without interrupting another upload", async () => {
+        await withDevice({}, async ({ client }) => {
+            const bytes = payload(400_000);
+            let cancellation: Promise<boolean> | undefined;
+            const uploaded = await client.put({ kind: ObjectKind.MapShard, displayName: "keep going" }, bytes, {
+                onProgress(done) {
+                    if (done > 0 && !cancellation) cancellation = client.cancel(0x0dead);
+                },
+            });
+            expect(cancellation).toBeDefined();
+            await expect(cancellation).resolves.toBe(false);
+            expect((await client.get({ objectId: uploaded.objectId, revision: uploaded.revision })).bytes).toEqual(bytes);
+        });
+    });
+
+    it("answers false for a committed upload and preserves its bytes", async () => {
+        await withDevice({}, async ({ client }) => {
+            const bytes = payload(40_000);
+            let transfer: number | null = null;
+            const uploaded = await client.put({ kind: ObjectKind.MapShard, displayName: "committed" }, bytes, {
+                onProgress(done) { if (done > 0) transfer = client.liveTransfer; },
+            });
+            expect(transfer).not.toBeNull();
+            await expect(client.cancel(transfer!)).resolves.toBe(false);
+            expect((await client.get({ objectId: uploaded.objectId, revision: uploaded.revision })).bytes).toEqual(bytes);
+        });
+    });
+
     it("stops a running download and answers the transfer with `cancelled`", async () => {
         await withDevice(SMALL_RECORDS, async ({ client, device }) => {
             device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(400_000) });
