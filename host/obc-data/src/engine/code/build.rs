@@ -348,6 +348,7 @@ fn validate_environment(env: &BTreeMap<OsString, OsString>) -> Result<(), String
                     | "LDFLAGS"
                     | "CXX"
                     | "AR"
+                    | "ARFLAGS"
                     | "SDKROOT"
                     | "MACOSX_DEPLOYMENT_TARGET"
                     | "LD_LIBRARY_PATH"
@@ -362,7 +363,10 @@ fn validate_environment(env: &BTreeMap<OsString, OsString>) -> Result<(), String
             || name.starts_with("CXX_")
             || name.starts_with("RANLIB");
         let native_override = name.strip_prefix("HOST_").or_else(|| name.strip_prefix("TARGET_")).is_some_and(|name| {
-            matches!(name, "CC" | "CXX" | "AR" | "RANLIB" | "CFLAGS" | "CXXFLAGS" | "CPPFLAGS" | "ARFLAGS")
+            matches!(
+                name,
+                "CC" | "CXX" | "AR" | "RANLIB" | "CFLAGS" | "CXXFLAGS" | "CPPFLAGS" | "ARFLAGS" | "RANLIBFLAGS"
+            )
         });
         if refused || native_override {
             return Err(format!(

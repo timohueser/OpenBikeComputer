@@ -90,6 +90,9 @@ fn cargo_config_discovery_and_refusals_do_not_expose_values() {
         "TARGET_CC",
         "TARGET_CXXFLAGS",
         "TARGET_ARFLAGS",
+        "ARFLAGS",
+        "HOST_RANLIBFLAGS",
+        "TARGET_RANLIBFLAGS",
         "LD_LIBRARY_PATH",
     ] {
         let env = BTreeMap::from([(name.into(), "secret-value".into())]);
