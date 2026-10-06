@@ -69,13 +69,16 @@ class SunIndexTest(unittest.TestCase):
             self.assertEqual(list(Path(request["output"]).iterdir()), [Path(request["output"]) / "sun"])
 
     def test_missing_or_invalid_empty_terrain_is_an_error(self):
-        for invalid in ("missing", "database", "format", "coverage", "bounds"):
+        for invalid in ("missing", "database", "schema", "format", "coverage", "bounds"):
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temporary:
                 source, request = self.terrain(Path(temporary))
                 if invalid == "missing":
                     source.unlink()
                 elif invalid == "database":
                     source.write_bytes(b"invalid")
+                elif invalid == "schema":
+                    with sqlite3.connect(source) as db:
+                        db.executescript("DROP TABLE tiles; CREATE TABLE tiles(id INTEGER);")
                 else:
                     with sqlite3.connect(source) as db:
                         db.execute("UPDATE metadata SET value=? WHERE name=?",
