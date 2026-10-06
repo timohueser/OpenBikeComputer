@@ -497,6 +497,13 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   overrides, enter only their selected profile identity. `CARGO_INCREMENTAL` also enters it.
   Cargo validates these raw values and applies its override precedence.
   Errors identify the setting, not its value. Discovery does not install a toolchain.
+- `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` stay in the worker runtime environment.
+  Native tool discovery, Cargo metadata and worker builds clear loader search paths in their
+  child environment, including the refused `DYLD_LIBRARY_PATH` priority override. A declared native Rust
+  `cargo` or `rustc` command uses the same policy. Ordinary runtime commands, Python commands
+  and prepared builders retain their environment. These search paths add no byte identity.
+  Preload, injection and link-time library search overrides are refused. A compiler installation
+  that needs custom runtime loader paths is unsupported.
 - A `.rs` file of a selected crate adds each file that it names in `include_str!`,
   `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs` file adds its own.
   The name is a string literal, normal or raw, relative to the file, or a `concat!` of string
