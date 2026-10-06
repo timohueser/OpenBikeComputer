@@ -65,17 +65,28 @@ struct Locked {
 }
 
 impl Metadata {
-    pub fn load(root: &Path) -> Result<Self, String> {
-        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-        let host = Command::new(rustc).arg("-vV").output().map_err(|error| format!("rustc: {error}"))?;
-        if !host.status.success() {
-            return Err(format!("rustc: {}", String::from_utf8_lossy(&host.stderr).trim()));
-        }
-        let host = String::from_utf8_lossy(&host.stdout);
-        let host = host.lines().find_map(|line| line.strip_prefix("host: ")).ok_or("rustc names no host target")?;
+    pub fn load(root: &Path, target: Option<&str>) -> Result<Self, String> {
+        let target = match target {
+            Some(target) => target.to_string(),
+            None => {
+                let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+                let host = Command::new(rustc)
+                    .arg("-vV")
+                    .current_dir(root)
+                    .output()
+                    .map_err(|error| format!("rustc: {error}"))?;
+                if !host.status.success() {
+                    return Err(format!("rustc: {}", String::from_utf8_lossy(&host.stderr).trim()));
+                }
+                String::from_utf8_lossy(&host.stdout)
+                    .lines()
+                    .find_map(|line| line.strip_prefix("host: ").map(str::to_string))
+                    .ok_or("rustc names no host target")?
+            }
+        };
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let output = Command::new(cargo)
-            .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", host])
+            .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", &target])
             .current_dir(root)
             .output()
             .map_err(|error| format!("cargo metadata: {error}"))?;

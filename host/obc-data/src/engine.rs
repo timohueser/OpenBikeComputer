@@ -106,6 +106,9 @@ pub struct Code {
     pub paths: Vec<String>,
     /// Workspace crates and their resolved normal and build dependencies.
     pub crates: Vec<String>,
+    /// Resolve Rust dependencies for this target; None selects the producer host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     /// The content settings of these sources. Freshness and access controls are excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
@@ -1171,6 +1174,35 @@ mod x;
         write(&scratch.0.join("gen/deep.bin"), "2\n");
         assert_ne!(hash(&[]), changed, "a file that a module file includes is code");
         assert_ne!(hash(&["Cargo.lock"]), hash(&[]));
+    }
+
+    #[test]
+    fn rust_content_identity_follows_explicit_targets_for_normal_and_build_dependencies() {
+        let scratch = Scratch::new("engine-target-code");
+        let app = "[target.'cfg(target_os = \"linux\")'.dependencies]\nlinux-normal = { path = \"../linux-normal\" }\n[target.'cfg(target_os = \"linux\")'.build-dependencies]\nlinux-build = { path = \"../linux-build\" }\n[target.'cfg(target_os = \"macos\")'.dependencies]\nmac-normal = { path = \"../mac-normal\" }\n[target.'cfg(target_os = \"macos\")'.build-dependencies]\nmac-build = { path = \"../mac-build\" }\n";
+        repository(
+            &scratch.0,
+            &[("app", app), ("linux-normal", ""), ("linux-build", ""), ("mac-normal", ""), ("mac-build", "")],
+        );
+        write(&scratch.0.join("app/build.rs"), "fn main() {}\n");
+        let mut context = code::Context::default();
+        let selected =
+            |target: &str| Code { crates: vec!["app".into()], target: Some(target.into()), ..Default::default() };
+        let linux = context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap();
+        let mac = context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap();
+        for kind in ["normal", "build"] {
+            assert!(
+                linux.contains_key(&format!("linux-{kind}/src/lib.rs")),
+                "Linux {kind} is selected from any probe host"
+            );
+            assert!(!linux.contains_key(&format!("mac-{kind}/src/lib.rs")));
+            assert!(mac.contains_key(&format!("mac-{kind}/src/lib.rs")));
+            assert!(!mac.contains_key(&format!("linux-{kind}/src/lib.rs")));
+        }
+        assert_ne!(linux["rust/target"], mac["rust/target"]);
+        write(&scratch.0.join("linux-build/src/lib.rs"), "pub fn changed() {}\n");
+        assert_ne!(context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap(), linux);
+        assert_eq!(context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap(), mac);
     }
 
     #[test]
