@@ -1295,7 +1295,8 @@ pub(crate) mod tests {
             }
         }
         let (actual, requests) = serve(|_, _| whole(b"index\n"));
-        let url = actual.replacen("http://", "https://", 1);
+        let actual = actual.replacen("/data/", "/data/1/", 1);
+        let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("cli-preview-prepare");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
@@ -1370,7 +1371,8 @@ pub(crate) mod tests {
             }
         }
         let (actual, requests) = serve(|_, _| not_found());
-        let url = actual.replacen("http://", "https://", 1);
+        let actual = actual.replacen("/data/", "/data/1/", 1);
+        let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("prepare-softened-fetch");
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(

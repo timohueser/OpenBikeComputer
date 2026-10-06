@@ -136,6 +136,7 @@ mod tests {
             }
         }
         let (url, requests) = serve(|_, _| whole(b"metadata"));
+        let url = url.replacen("/data/", "/data/{version}/", 1);
         let fixture = fixture("inventory-run-metadata");
         let sources = [
             Source { id: "geofabrik-poly".into(), ..source(&url, "release") },
