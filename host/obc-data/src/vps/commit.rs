@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn conflicting_inactive_slot_drains_before_staging_and_optional_data_preserves_other_services() {
-        let temporary = tempfile::tempdir().unwrap();
-        let store = Store::at(temporary.path().join("store"));
+        let temporary = crate::store::tests::Scratch::new("commit-services");
+        let store = Store::at(temporary.0.join("store"));
         let mut run = Run::create(&store, "commit services").unwrap();
         let mut owner = Owner::open(&store.root().join("commits"), run.id(), b"services").unwrap();
         let previous = candidates();
