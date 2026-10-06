@@ -247,11 +247,10 @@ triggers = [
 [[suite]]
 id = "python.repository-tools"
 route = "required"
-command = "rm -rf .artifacts/python/repository-tools && python3 -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
+command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
-  "tools/requirements-test.txt",
-  "pyproject.toml",
+  "pyproject.toml", "uv.lock",
   "tools/*.py",
   "tools/**/*.py",
   "tools/planner-regions/**",
@@ -276,10 +275,10 @@ triggers = [
 [[suite]]
 id = "python.firmware-tools"
 route = "ordinary"
-command = "rm -rf .artifacts/python/firmware-tools && python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
+command = "rm -rf .artifacts/python/firmware-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools"
 jobs = ["test"]
 triggers = [
-  "tools/requirements-test.txt",
+  "pyproject.toml", "uv.lock",
   "firmware/tools/*.py",
   "firmware/tools/**/*.py",
   "firmware/ui-frames.toml",
@@ -292,15 +291,15 @@ triggers = [
 [[suite]]
 id = "python.dem-reference"
 route = "ordinary"
-command = "rm -rf .artifacts/python/dem-reference && uv run --locked --group terrain-reference --with-requirements tools/requirements-test.txt python -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
+command = "rm -rf .artifacts/python/dem-reference && uv run --locked --group terrain-reference --group dev python -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
 jobs = ["test"]
 triggers = ["host/obc-dem/reference/**", ".python-version", "pyproject.toml", "uv.lock",
-  "tools/requirements-test.txt", "data/sources.toml", "tools/data_registry.py", "tools/step_request.py"]
+  "data/sources.toml", "tools/data_registry.py", "tools/step_request.py"]
 
 [[suite]]
 id = "python.builder"
 route = "ordinary"
-command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. python3 -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml"
+command = "rm -f .artifacts/python/builder.xml && PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/ -v --junitxml=.artifacts/python/builder.xml"
 jobs = ["builder-python"]
 fixtures = ["builder-corpus"]
 triggers = [
@@ -308,7 +307,7 @@ triggers = [
   "builder/presets/**",
   "builder/server/*.py",
   "builder/server/**/*.py",
-  "builder/requirements*.txt",
+  "pyproject.toml", "uv.lock",
 ]
 
 [[suite]]
@@ -640,10 +639,11 @@ triggers = [
 [[suite]]
 id = "e2e.desktop-linux-launch"
 route = "ordinary"
-command = "xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py"
+command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py"
 jobs = ["desktop-launch"]
 platforms = ["linux"]
 triggers = [
+  "pyproject.toml", "uv.lock",
   "apps/obc-desktop/**",
   "builder/app/**",
   "host/obc-pack/schema/*.example.json",
@@ -813,7 +813,7 @@ route = "ordinary"
 command = "npm run test:query --prefix apps/planner-search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/query/**", "apps/planner-search/package.json"]
+triggers = ["apps/planner-search/query/**", "apps/planner-search/package.json", "pyproject.toml", "uv.lock"]
 
 [[suite]]
 id = "planner.search-data"

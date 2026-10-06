@@ -165,12 +165,21 @@ def builds_nothing(command: str) -> bool:
     except ValueError:
         return False
     executables, expect = [], True
-    for word in words:
+    tokens = iter(words)
+    for word in tokens:
         if word in SEPARATORS:
             expect = True
         elif expect and "=" in word and not word.startswith(("./", "/")):
             continue  # an environment prefix, not the executable
         elif expect:
+            if word == "uv":
+                if next(tokens, None) != "run":
+                    return False
+                word = next(tokens, None)
+                while word in {"--locked", "--group"}:
+                    if word == "--group":
+                        next(tokens, None)
+                    word = next(tokens, None)
             executables.append(word)
             expect = False
     return bool(executables) and all(word in FREE_EXECUTABLES for word in executables)
