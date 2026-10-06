@@ -3417,6 +3417,74 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "bytes"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "binding": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "service_staged",
+              "type": "string"
+            },
+            "service": {
+              "type": "string"
+            },
+            "slot": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "service",
+            "slot",
+            "binding"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bindings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "services_activated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bindings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bindings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "services_retired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "bindings"
+          ],
+          "type": "object"
         }
       ]
     },
