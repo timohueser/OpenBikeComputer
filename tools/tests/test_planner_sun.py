@@ -1,14 +1,89 @@
 """The sun index bounds every bilinear patch and retains unknown terrain."""
 import io
+import json
+from pathlib import Path
+import sqlite3
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
 from tools import planner_sun as sun
 from tools import planner_sun_horizons as horizons
+from tools import planner_grid_maps as grid, planner_offline as offline
 
 
 class SunIndexTest(unittest.TestCase):
+    def terrain(self, root, tiles=False):
+        source = root / "terrain.mbtiles"
+        with sqlite3.connect(source) as db:
+            db.executescript("CREATE TABLE metadata(name TEXT, value TEXT);"
+                             "CREATE TABLE tiles(zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);")
+            db.executemany("INSERT INTO metadata VALUES (?,?)", [("format", "webp"), ("minzoom", "0"),
+                ("maxzoom", "12"), ("bounds", "7,47,9,49"), ("attribution", "Terrain credit")])
+            if tiles:
+                db.execute("INSERT INTO tiles VALUES (12,0,0,?)", (sun.encode(np.zeros((2, 2), np.int16)),))
+        output = root / "output"
+        output.mkdir()
+        return source, {"output": str(output), "layers": {"planner/terrain": {source.name: str(source)}},
+            "options": {"bounds": [7.9,47.9,8.1,48.1], "time_zone": "Europe/Berlin", "distance_m": 30000,
+                        "horizon_samples": 32, "horizon_directions": 72}}
+
+    def test_empty_terrain_keeps_unknown_sun_coverage_without_an_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, request = self.terrain(root)
+            with patch.object(sun, "bake", side_effect=AssertionError("Empty terrain must not bake tiles")):
+                sun.step(request)
+            output = Path(request["output"])
+            self.assertEqual([path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()],
+                             ["sun/empty.json"])
+            metadata = json.loads((output / "sun/empty.json").read_bytes())
+            self.assertEqual((metadata["sun_format"], metadata["coverage"], metadata["terrain_sha256"]),
+                             (3, [7,47,9,49], offline.item(source)["sha256"]))
+            self.assertEqual((metadata["horizon_step"], metadata["attribution"]), (horizons.ANGLE_STEP, "Terrain credit"))
+            for kind, paths in [("terrain", {source.name: str(source)}),
+                                ("sun", {"sun/empty.json": str(output / "sun/empty.json")})]:
+                packed = root / kind
+                packed.mkdir()
+                grid.step({"output": str(packed), "metrics": str(root / f"{kind}.metrics.json"),
+                           "layers": {f"planner/{kind}": paths}, "options": {"kind": kind, "bounds": request["options"]["bounds"]}})
+                index = json.loads((packed / "index.json").read_bytes())
+                self.assertEqual(set(index["files"]), {f"maps/{kind}.json"})
+
+    def test_nonempty_step_uses_the_same_converted_terrain_bytes(self):
+        from pmtiles.convert import mbtiles_to_pmtiles
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, request = self.terrain(root, tiles=True)
+            expected = root / "expected.pmtiles"
+            mbtiles_to_pmtiles(source, expected, None)
+            def bake(terrain, output, *options):
+                self.assertEqual(terrain.read_bytes(), expected.read_bytes())
+                self.assertEqual(output.relative_to(Path(request["output"])).as_posix(), "sun/sun.pmtiles")
+                output.write_bytes(b"baked archive")
+            with patch.object(sun, "bake", side_effect=bake):
+                sun.step(request)
+            self.assertEqual((Path(request["output"]) / "sun/sun.pmtiles").read_bytes(), b"baked archive")
+            self.assertEqual(list(Path(request["output"]).iterdir()), [Path(request["output"]) / "sun"])
+
+    def test_missing_or_invalid_empty_terrain_is_an_error(self):
+        for invalid in ("missing", "database", "format", "coverage", "bounds"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temporary:
+                source, request = self.terrain(Path(temporary))
+                if invalid == "missing":
+                    source.unlink()
+                elif invalid == "database":
+                    source.write_bytes(b"invalid")
+                else:
+                    with sqlite3.connect(source) as db:
+                        db.execute("UPDATE metadata SET value=? WHERE name=?",
+                                   ("png", "format") if invalid == "format" else
+                                   ("invalid", "bounds") if invalid == "bounds" else ("7.9,47.9,8.1,48.1", "bounds"))
+                with self.assertRaises((sqlite3.Error, ValueError)):
+                    sun.step(request)
+
     def test_bounds_include_shared_far_edges_and_unknown_vertices(self):
         vertices = np.zeros((9, 9), np.int16)
         vertices[4, 4] = 1400
