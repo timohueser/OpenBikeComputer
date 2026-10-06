@@ -858,9 +858,24 @@ and `metadata`. `files` maps logical names to source and transport hashes, sizes
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
 `climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
-names it. The search and the sun layer use the `time_zone` of the region. The map producers,
-`planner/osm`, `planner/search/policy`, `planner/search/dump` and `planner/search/records` are
-intermediate layers. Other layers select all their files for clients.
+names it. The search and the sun layer use the `time_zone` of the region. All producers are
+intermediate layers. Grid steps select only their `objects/`; their `index.json` stays local.
+
+| Layer | Reads | Files |
+| --- | --- | --- |
+| `planner/routing/grid` | `planner/routing` | Packed `routing/blocks.json`, `routing/packs/<sha256>/pages.bin` and `pages.idx`, `offline/routing-cells/<cell>.json`, and `routes/tiles/<cell>.json`. It does not build the routing blocks again. Its index records the source graph and cell descriptors |
+| `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
+| `planner/assets/grid`, `planner/model/grid` | `planner/assets` or `planner/model` | The input files, packed as `maps/assets/` or `search/model/`. The index maps logical paths to file and transport identities |
+| `planner/fonts/grid` | `planner/basemap`, `basemap.pmtiles`; `planner/places`, `places.pmtiles`; `planner/routing`, `routing/overlays.sqlite`; `planner/assets` | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
+| `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` and `offline/catalog.json` in `objects/`; `release.json` and the small tile pointers in `public/`. It selects those three outputs. Its own `index.json` stays local |
+
+The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
+package and changes its TileJSON `routing_package` to the grid package hash. The final index
+checks the OSM source, region, coverage, search schema and time zone, routing cell bounds, terrain
+inputs and sun terrain identity. It reads no payload to compose metadata. A climate change builds
+only its producer, its grid and the final index. The engine release manifest holds source versions
+and preparation provenance; the client manifest holds the [planner release](planner-release.md)
+data. It contains no deployment probe, device catalogue snapshot or source mirror.
 
 A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --group <group> python
 <entry> --step` in the repository root, with the packages of a dependency group of

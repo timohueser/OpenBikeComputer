@@ -326,11 +326,105 @@ impl Product for Planner {
             })
             .collect::<Vec<_>>();
         steps.extend(grids);
+        for kind in ["routing", "assets", "model", "search/pois", "search/addresses"] {
+            let source = steps.iter_mut().find(|step| step.name == format!("planner/{kind}")).unwrap();
+            source.client = Client::None;
+            let source = source.name.clone();
+            let search = kind.strip_prefix("search/");
+            let (module, group, code) = match search {
+                Some(_) => (
+                    "tools.planner_grid_search",
+                    Some("planner-search"),
+                    vec![
+                        "tools/planner_grid_search.py",
+                        "tools/planner_grid.py",
+                        "tools/planner_geo.py",
+                        "tools/planner_offline.py",
+                        "tools/planner_runtime.py",
+                        "apps/planner-search/storage.py",
+                        "apps/planner-search/index.py",
+                        "apps/planner-search/schema.sql",
+                        "apps/planner-search/indexes.sql",
+                        "apps/planner-search/web/address-terms.json",
+                    ],
+                ),
+                None => ("tools.planner_grid_pack", None, PACK.to_vec()),
+            };
+            let options = match search {
+                Some(component) => json!({"kind": component, "component": component, "bounds": bounds}),
+                None => json!({"kind": kind}),
+            };
+            steps.push(Step {
+                client: Client::Paths(vec!["objects".into()]),
+                ..python(
+                    &format!("{source}/grid"),
+                    vec![Input::layer(source)],
+                    options,
+                    (module, group),
+                    &code,
+                    &["objects", "index.json"],
+                )
+            });
+        }
+        steps.push(Step {
+            client: Client::Paths(vec!["objects".into()]),
+            ..python(
+                "planner/fonts/grid",
+                vec![
+                    layer_files("planner/basemap", &["basemap.pmtiles"]),
+                    layer_files("planner/places", &["places.pmtiles"]),
+                    layer_files("planner/routing", &["routing/overlays.sqlite"]),
+                    Input::layer("planner/assets"),
+                ],
+                json!({"kind": "fonts"}),
+                ("tools.planner_grid_fonts", Some("planner-maps")),
+                &PACK
+                    .iter()
+                    .copied()
+                    .chain(["tools/planner_grid_fonts.py", "tools/planner_mvt.py"])
+                    .collect::<Vec<_>>(),
+                &["objects", "index.json"],
+            )
+        });
+        let overlays = steps.iter_mut().find(|step| step.name == "planner/overlays/grid").unwrap();
+        overlays.inputs.push(layer_files("planner/routing/grid", &["index.json"]));
+        let indexes = steps
+            .iter()
+            .filter(|step| step.name.ends_with("/grid"))
+            .map(|step| layer_files(&step.name, &["index.json"]))
+            .collect();
+        steps.push(Step {
+            client: Client::Paths(vec!["objects".into(), "release.json".into(), "public".into()]),
+            ..python(
+                "planner/index",
+                indexes,
+                json!({
+                    "region": name, "bounds": bounds,
+                    "attribution": attribution("osm-planet"),
+                    "landcover_attribution": attribution("daylight-landcover"),
+                }),
+                ("tools.planner_grid_index", None),
+                &[
+                    "tools/planner_grid_index.py",
+                    "tools/planner_grid.py",
+                    "tools/planner_geo.py",
+                    "tools/planner_offline.py",
+                    "tools/planner_runtime.py",
+                ],
+                &["objects", "release.json", "public", "index.json"],
+            )
+        });
         match wanted.is_empty() {
             true => Ok(steps.into()),
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
     }
+}
+
+const PACK: [&str; 3] = ["tools/planner_grid_pack.py", "tools/planner_offline.py", "tools/planner_runtime.py"];
+
+fn layer_files(name: &str, files: &[&str]) -> Input {
+    Input::Layer { name: name.into(), files: files.iter().map(|file| (*file).into()).collect() }
 }
 
 /// A map's transport objects ship; the small index is input to the offline catalog only.
@@ -462,7 +556,6 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    use obc_data::engine::plan::plan;
     use obc_data::regions::parse_region;
 
     use super::*;
@@ -551,6 +644,13 @@ mod tests {
             "overlays/grid",
             "places/grid",
             "basemap/grid",
+            "routing/grid",
+            "assets/grid",
+            "model/grid",
+            "search/pois/grid",
+            "search/addresses/grid",
+            "fonts/grid",
+            "index",
         ];
         assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
         let intermediate: Vec<&str> =
@@ -560,10 +660,15 @@ mod tests {
             [
                 "planner/osm",
                 "planner/terrain",
+                "planner/routing",
                 "planner/overlays",
+                "planner/assets",
+                "planner/model",
                 "planner/search/policy",
                 "planner/search/dump",
                 "planner/search/records",
+                "planner/search/pois",
+                "planner/search/addresses",
                 "planner/places",
                 "planner/basemap"
             ]
@@ -680,18 +785,26 @@ mod tests {
     }
 
     #[test]
-    fn climate_adds_one_group_to_the_plan_and_changes_no_other() {
+    fn climate_changes_only_its_steps_and_the_final_index() {
         let temp = temp("planner-climate");
         let store = store(&temp, &["2026-10-01"]);
-        let plan = |layers: &[&str]| {
-            plan(&store, &root(), &Planner.steps(&env(AREA, layers), &regions(), &store).unwrap().steps)
-        };
-        let (without, with) = (plan(&[]).unwrap(), plan(&["climate"]).unwrap());
-        let added: Vec<_> = with.groups.iter().filter(|group| !without.groups.contains(group)).collect();
-        let [climate] = &added[..] else { panic!("{} groups are new", added.len()) };
-        let builds: Vec<&str> = climate.builds.iter().map(|build| build.step.as_str()).collect();
-        assert_eq!((climate.id.as_str(), builds), ("planner/climate", vec!["planner/climate", "planner/climate/grid"]));
-        assert_eq!(with.groups.len(), without.groups.len() + 1);
+        let steps = |layers: &[&str]| Planner.steps(&env(AREA, layers), &regions(), &store).unwrap().steps;
+        let (without, with) = (steps(&[]), steps(&["climate"]));
+        let changed: Vec<&str> = with
+            .iter()
+            .filter(|step| {
+                without.iter().find(|before| before.name == step.name).is_none_or(|before| {
+                    obc_data::engine::recipe(before, "code") != obc_data::engine::recipe(step, "code")
+                })
+            })
+            .map(|step| step.name.as_str())
+            .collect();
+        assert_eq!(changed, ["planner/climate", "planner/climate/grid", "planner/index"]);
+        let index = with.iter().find(|step| step.name == "planner/index").unwrap();
+        assert!(index
+            .inputs
+            .iter()
+            .all(|input| matches!(input, Input::Layer { files, .. } if files == &["index.json"])));
     }
 
     /// The Python files of the repository that the Python file `file` imports, except in `main()`:
@@ -759,6 +872,6 @@ mod tests {
                 assert!(step.code.paths.contains(&file), "{} runs {file}, which its code does not declare", step.name);
             }
         }
-        assert_eq!(python, 19, "twelve producers and seven map grids");
+        assert_eq!(python, 26, "twelve producers, thirteen grid steps and the final index");
     }
 }

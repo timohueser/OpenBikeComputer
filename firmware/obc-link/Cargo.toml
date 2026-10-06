@@ -35,6 +35,8 @@ obc-formats = { workspace = true }
 
 [features]
 default = []
+# Transport-free host client with owned records and catalog results.
+client = []
 # Host-only fixture producer for specs/vectors/flat-store-v4/.
 # Unit tests also enable the producer through cfg(test).
 std = ["dep:sha2"]

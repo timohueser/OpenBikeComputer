@@ -8,21 +8,8 @@ import sqlite3
 import tempfile
 
 from . import data_registry, planner_cleanup as cleanup, planner_maps as maps, r2
+from .planner_grid_search import search_metadata
 from .planner_runtime import DATA_LAYERS, digest, encoded, public_metadata, read_url, release, storage_files
-
-
-def search_metadata(database, full=False):
-    with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
-        metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if metadata.get("schema") != 5:
-            raise ValueError(f"Rebuild search package {database}: incompatible schema.")
-        try:
-            db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
-        except sqlite3.Error as error:
-            raise ValueError(f"Rebuild search package {database}: missing address index.") from error
-        if full and db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-            raise ValueError("Search database failed verification")
-    return metadata
 
 
 def archive_metadata(path):

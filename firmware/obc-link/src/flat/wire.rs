@@ -6,11 +6,18 @@
 //! nothing here panics on hostile bytes. Encoding writes into a caller-provided slice and reports
 //! the length; nothing is allocated.
 //!
-//! The codec holds no state and knows no policy. Those are [`super::engine`]'s.
+//! The codec holds no state and knows no policy.
 
 use super::ids::{DisplayName, EntryMeta, ObjectId, ObjectKind, Revision, StoreId, NAME_CAPACITY};
 
 use super::store::{ArchiveResult, ArchiveSource};
+
+#[cfg(feature = "client")]
+mod client;
+#[cfg(feature = "client")]
+pub use client::{
+    decode_response, encode_request, ListPage, Response, ResponseError, TransferResponse, MAX_REQUEST_LEN,
+};
 
 /// The wire major this module implements. It is never negotiated.
 pub const WIRE_MAJOR: u8 = 4;

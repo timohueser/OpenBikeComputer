@@ -115,8 +115,8 @@ RUST_FOUNDATION_PATHS = {
     ".cargo/config.toml",
     ".cargo/config",
 }
-# A change to how this repository decides or executes verification selects every declared
-# suite: the decision itself is what changed. Agent prose (CLAUDE.md, AGENTS.md) is not on
+# Broad policy changes select unscoped suites. Scoped suites follow their own inputs and
+# the shared selector, aggregate and CI workflow. Agent prose (CLAUDE.md, AGENTS.md) is not on
 # this list: it instructs an agent, it does not decide or execute anything. It is owned by the
 # documentation route so it is not an unowned path; the check that reads it is the
 # unconditional `guards` job, not a platform build.
@@ -142,6 +142,8 @@ PUBLICATION_WORKFLOWS = {
     ".github/workflows/deploy-site.yml",
     ".github/workflows/deploy-verification.yml",
 }
+SCOPED_POLICY_PATHS = {"tools/test_plan.py", "tools/ci_aggregate.py", ".github/workflows/ci.yml"}
+
 CODE_OR_POLICY_SUFFIXES = {
     ".c", ".h", ".js", ".json", ".py", ".rs", ".sh", ".swift", ".toml", ".ts", ".tsx", ".yaml", ".yml",
 }
@@ -168,6 +170,7 @@ class Package:
     ordinary_targets: tuple[str, ...]
     fixture_targets: tuple[str, ...]
     example_targets: tuple[str, ...]
+    build_dependencies: frozenset[str] = frozenset()
 
 @dataclass(frozen=True)
 class CargoGraph:
@@ -187,6 +190,19 @@ class CargoGraph:
                 reached[consumer] = dependency
                 pending.append(consumer)
         return reached
+
+    def build_closure(self, packages: Iterable[str]) -> frozenset[str]:
+        reached: set[str] = set()
+        pending = list(packages)
+        while pending:
+            name = pending.pop()
+            if name in reached:
+                continue
+            if name not in self.packages:
+                raise PlanError(f"suite links unknown Cargo package: {name}")
+            reached.add(name)
+            pending.extend(self.packages[name].build_dependencies)
+        return frozenset(reached)
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -243,6 +259,7 @@ def build_cargo_graph(
                 "manifest": relative,
                 "product_root": product_root,
                 "dependencies": {edge["name"] for edge in package.get("dependencies", [])},
+                "build_dependencies": {edge["name"] for edge in package.get("dependencies", []) if edge.get("kind") != "dev"},
                 "ordinary": ordinary,
                 "fixtures": fixtures,
                 "examples": examples,
@@ -261,6 +278,7 @@ def build_cargo_graph(
             entry["ordinary"],
             entry["fixtures"],
             entry["examples"],
+            frozenset(entry["build_dependencies"] & names),
         )
         for dependency in dependencies:
             reverse[dependency].add(name)
@@ -291,6 +309,9 @@ class Unit:
     foundation: bool = False
     ci_only: bool = False
     declared: bool = False
+    scoped: bool = False
+    rust_packages: frozenset[str] = frozenset()
+    rust_excludes: tuple[str, ...] = ()
     package: str = ""
     reasons: list[str] = field(default_factory=list)
 
@@ -351,6 +372,9 @@ def build_units(graph: CargoGraph, document: Mapping[str, Any]) -> list[Unit]:
                 foundation=bool(suite.get("foundation")),
                 ci_only=bool(suite.get("ci_only")),
                 declared=True,
+                scoped=bool(suite.get("scoped")),
+                rust_packages=graph.build_closure(suite.get("rust_packages", ())),
+                rust_excludes=tuple(suite.get("rust_excludes", ())),
                 package=suite.get("package", ""),
             )
         )
@@ -418,6 +442,26 @@ def working_tree_paths(root: Path) -> list[str]:
     lines += _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
     return sorted({value.strip() for value in lines if value.strip()})
 
+def changed_suite_ids(root: Path, base: str, document: Mapping[str, Any], head: str = "HEAD") -> set[str]:
+    ancestor = _git(root, "merge-base", base, head).strip()
+    before = tomllib.loads(_git(root, "show", f"{ancestor}:testing/suites.toml"))
+    previous = {suite["id"]: suite for suite in before.get("suite", [])}
+    return {suite["id"] for suite in document.get("suite", []) if suite != previous.get(suite["id"])}
+
+def package_build_input(path: str, package: Package) -> bool:
+    prefix = f"{package.root}/"
+    if not path.startswith(prefix):
+        return False
+    relative = path[len(prefix):]
+    parts = Path(relative).parts
+    return (
+        "tests" not in parts
+        and parts[-1] != "tests.rs"
+        and relative != "src/main.rs"
+        and not relative.endswith(".md")
+        and not relative.startswith(("examples/", "benches/", "src/bin/"))
+    )
+
 def is_policy_path(path: str) -> bool:
     return path not in PUBLICATION_WORKFLOWS and any(
         glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS
@@ -437,6 +481,7 @@ def select(
     changed_paths: Sequence[str],
     *,
     deleted: Iterable[str] = (),
+    changed_suites: Iterable[str] = (),
     base: str = "",
     head: str = "HEAD",
 ) -> Plan:
@@ -463,13 +508,17 @@ def select(
         if name in by_package:
             claim(by_package[name], reason)
 
+    for identifier in changed_suites:
+        if identifier in by_id:
+            claim(by_id[identifier], f"suite definition changed: {identifier}")
+
     orphaned: list[str] = []
     for path in sorted(set(changed_paths)):
         owned = False
         if is_policy_path(path):
             owned = True
             for unit in units:
-                if unit.declared:
+                if unit.declared and (not unit.scoped or path in SCOPED_POLICY_PATHS):
                     claim(unit, f"{POLICY_CHANGED} {path}")
 
         if path in RUST_FOUNDATION_PATHS:
@@ -480,7 +529,7 @@ def select(
                     continue
                 claim_package(name, reason)
             for unit in units:
-                if unit.foundation:
+                if unit.foundation or (unit.rust_packages and path != "rustfmt.toml"):
                     claim(unit, reason)
 
         for name, package in sorted(graph.packages.items()):
@@ -488,6 +537,10 @@ def select(
             if path != package.manifest and not (prefix and path.startswith(prefix)):
                 continue
             owned = True
+            if package_build_input(path, package):
+                for unit in units:
+                    if name in unit.rust_packages and not any(glob_matches(path, pattern) for pattern in unit.rust_excludes):
+                        claim(unit, f"linked Rust package {name}: {path}")
             claim_package(name, f"changed Rust package {name}: {path}")
             for consumer, dependency in graph.reverse_closure(name).items():
                 claim_package(
@@ -518,7 +571,7 @@ def select(
             )
 
     # The owner may have been deleted with these paths, and the base tree's Cargo graph is
-    # not available here, so any unowned deletion runs the whole graph rather than nothing.
+    # not available here, so an unowned deletion selects the unscoped graph.
     # One reason covers them all, and names three: a reason per path multiplies by every
     # package and unit, and a branch that deletes a directory writes a plan too large for the
     # `ci` gate to read at all. The plan already lists every changed path.
@@ -531,7 +584,7 @@ def select(
         for name in graph.packages:
             claim_package(name, reason)
         for unit in units:
-            if unit.declared and unit.jobs:
+            if unit.declared and unit.jobs and not unit.scoped:
                 claim(unit, reason)
 
     # The snapshot sweep has an explicit rendering-input budget: broad policy and fixture
@@ -792,7 +845,7 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
         if entry["name"] not in graph.packages:
             errors.append(f"package facts name an unknown Cargo package: {entry['name']}")
     for unit in units:
-        for pattern in unit.triggers:
+        for pattern in unit.triggers + unit.rust_excludes:
             if not any(root.glob(pattern)):
                 errors.append(f"{unit.id}: trigger matches no maintained path: {pattern!r}")
         for platform in unit.platforms:
@@ -911,9 +964,10 @@ def load(root: Path) -> tuple[CargoGraph, dict[str, Any], list[Unit]]:
 
 def command_select(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
-    graph, _, units = load(root)
+    graph, document, units = load(root)
     changed, deleted = git_changed_paths(root, args.base, args.head)
-    plan = select(units, graph, changed, deleted=deleted, base=args.base, head=args.head)
+    definitions = changed_suite_ids(root, args.base, document, args.head) if "testing/suites.toml" in changed else ()
+    plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     if args.release:
         plan = select_release(plan)
     data = plan_data(plan)
@@ -930,7 +984,8 @@ def command_run(args: argparse.Namespace) -> int:
     changed, deleted = git_changed_paths(root, args.base, args.head)
     if args.head == "HEAD":
         changed = sorted(set(changed) | set(working_tree_paths(root)))
-    plan = select(units, graph, changed, deleted=deleted, base=args.base, head=args.head)
+    definitions = changed_suite_ids(root, args.base, document, args.head) if "testing/suites.toml" in changed else ()
+    plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     return run_plan(plan, graph, root, carved_targets(document), dry_run=args.dry_run)
 
 def command_cargo_filter(args: argparse.Namespace) -> int:
