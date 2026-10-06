@@ -61,6 +61,63 @@ members = [
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
 
+[workspace.dependencies]
+obc-app = { path = "firmware/obc-app" }
+obc-bake = { path = "host/obc-bake" }
+obc-bench = { path = "host/obc-bench" }
+obc-ble = { path = "firmware/obc-ble" }
+obc-crc = { path = "firmware/obc-crc" }
+obc-data = { path = "host/obc-data" }
+obc-data-steps = { path = "host/obc-data-steps" }
+obc-dem = { path = "host/obc-dem" }
+obc-dfu = { path = "firmware/obc-dfu" }
+obc-display = { path = "firmware/obc-display" }
+obc-elevation = { path = "firmware/obc-elevation" }
+obc-file-source = { path = "host/obc-file-source" }
+obc-fixtures = { path = "host/obc-fixtures" }
+obc-flat-device = { path = "host/obc-flat-device" }
+obc-formats = { path = "firmware/obc-formats" }
+obc-host-core = { path = "host/obc-host-core" }
+obc-inspect = { path = "host/obc-inspect" }
+obc-ios-host = { path = "apps/obc-ios-host" }
+obc-link = { path = "firmware/obc-link" }
+obc-map-scene = { path = "firmware/obc-map-scene" }
+obc-mkimage = { path = "host/obc-mkimage" }
+obc-pack = { path = "host/obc-pack" }
+obc-places = { path = "host/obc-places" }
+obc-platform = { path = "firmware/obc-platform" }
+obc-ports = { path = "firmware/obc-ports" }
+obc-reader = { path = "firmware/obc-reader" }
+obc-render = { path = "firmware/obc-render" }
+obc-replay = { path = "host/obc-replay" }
+obc-route = { path = "firmware/obc-route" }
+obc-search-bake = { path = "host/obc-search-bake" }
+obc-sensors = { path = "firmware/obc-sensors" }
+obc-sim = { path = "apps/obc-sim" }
+obc-skin-preview = { path = "apps/obc-skin-preview" }
+obc-storage = { path = "firmware/obc-storage" }
+obc-tree-walk = { path = "host/obc-tree-walk" }
+obc-usb = { path = "host/obc-usb" }
+obc-usb-host = { path = "host/obc-usb-host" }
+obc-vectors = { path = "host/obc-vectors" }
+obc-web-assemble = { path = "apps/obc-web-assemble" }
+obc-web-convert = { path = "apps/obc-web-convert" }
+obc-web-demo = { path = "apps/obc-web-demo" }
+obcm-assemble = { path = "host/obcm-assemble" }
+obcm-testkit = { path = "host/obcm-testkit" }
+route-build = { path = "host/route-build" }
+route-engine = { path = "host/route-engine" }
+route-server = { path = "apps/route-server" }
+
+embedded-graphics = "0.8"
+heapless = "0.8"
+libm = { version = "0.2", default-features = false }
+miniz_oxide = { version = "0.8.9", default-features = false }
+pollster = "0.3"
+serde_json = "1"
+sha2 = { version = "0.11", default-features = false }
+zlib-rs = "0.6.7"
+
 # Optimize CRC and storage crash-matrix loops in development and tests.
 [profile.dev.package.obc-crc]
 opt-level = 2
