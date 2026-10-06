@@ -64,8 +64,12 @@ impl Product for Maps {
         let mut steps = Vec::new();
         let mut blocked = Vec::new();
         for (&leaf, cells) in &leaves(&outlines, V1_CELL_LOG2.into()) {
-            let reference = match reference(env, store, leaf, cells, &mut wanted) {
-                Ok(reference) => reference,
+            let mut leaf_wanted = Vec::new();
+            let reference = match reference(env, store, leaf, cells, &mut leaf_wanted) {
+                Ok(reference) => {
+                    wanted.extend(leaf_wanted);
+                    reference
+                }
                 Err(Unplanned::Invalid(reason)) => {
                     blocked.push(BlockedLayer { layer: leaf_layer("maps/reference", leaf), reason: reason.clone() });
                     blocked.push(BlockedLayer { layer: leaf_layer("maps/terrain", leaf), reason });
@@ -202,7 +206,8 @@ fn capture_params(
             && value(params, "area").as_deref() == Some(area[0].1.as_str())
     };
     let mut kept = None;
-    if CAPTURES.iter().any(|source| env.stale.contains(*source)) {
+    let moved = CAPTURES.iter().any(|source| env.moves.contains_key(*source) && !env.stale.contains(*source));
+    if !moved && CAPTURES.iter().any(|source| env.stale.contains(*source)) {
         return Err(invalid(format!("{collection} capture stale; plan with `--move wikidata`")));
     }
     if !CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
@@ -864,7 +869,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stale_capture_code_requires_an_explicit_move() {
+    fn stale_capture_requires_a_move_and_explicit_intent_overrides_related_staleness() {
         let temp = temp("capture-code");
         let store = Store::at(temp.0.join("store"));
         let (mut env, regions) = freiburg(&store);
@@ -885,6 +890,13 @@ pub(crate) mod tests {
         let listed = Maps.steps(&env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().all(|b| b.reason.contains("capture stale")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+        env.stale = ["wikipedia".into(), "commons".into()].into();
+        env.moves = CAPTURES.map(|source| (source.into(), None)).into();
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
+            panic!("an explicit move prepares captures")
+        };
+        assert_eq!(wanted.len(), 6);
+        assert!(wanted.iter().any(|fetch| fetch.source == "wikidata"));
     }
 
     #[test]
@@ -1052,8 +1064,8 @@ pub(crate) mod tests {
         let temp = temp("credential");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &[]);
-        // West Jutland: only the box of `dtm-dk` meets the terrain cells of the leaf.
-        let region = "name = \"Jutland\"\nkind = \"box\"\nbox = [8.2, 56.0, 8.3, 56.1]\n";
+        // The leaf meets Niedersachsen first, then Denmark, whose credential is required.
+        let region = "name = \"Jutland\"\nkind = \"box\"\nbox = [8.2, 53.8, 8.3, 56.1]\n";
         let regions = Regions::new(vec![obc_data::regions::parse_region("jutland", region).unwrap()]).unwrap();
         let (env, _) = grimsel("1");
         let env = Env { region: "jutland".into(), ..env };
@@ -1069,7 +1081,11 @@ pub(crate) mod tests {
                 assert!(listed.steps.is_empty());
             }
             // A machine with the token fetches the model.
-            Err(Unplanned::NeedsFetch(wanted)) => assert!(token.present() && wanted[0].source == "dtm-dk"),
+            Err(Unplanned::NeedsFetch(wanted)) => {
+                assert!(token.present());
+                assert!(wanted.iter().any(|fetch| fetch.source == "dtm-dk"));
+                assert!(wanted.iter().any(|fetch| fetch.source == "dtm-de-ni"));
+            }
             other => panic!("{:?}", other.map(|steps| steps.steps.len())),
         }
     }
