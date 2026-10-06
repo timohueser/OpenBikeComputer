@@ -47,11 +47,7 @@ impl Client {
                     return Err(cancel.cause);
                 }
             }
-            if let Some(cancel) = &self.cancellation {
-                if cancel.answered && cancel.transfer_answered {
-                    self.finish(Err(cancel.cause));
-                }
-            }
+            self.settle_cancellation();
             return Ok(());
         }
         let pending = self.pending.as_ref().ok_or(Error::Protocol)?;
@@ -367,6 +363,37 @@ impl Client {
             Some(Cancellation { id, transfer, cause, answered: false, confirmed: false, transfer_answered });
         self.deadline = now.saturating_add(self.options.cancel_timeout_ms);
         Ok(())
+    }
+
+    pub(super) fn begin_query_cancel(&mut self, id: RequestId, transfer: RequestId, now: u64) {
+        let operation = self.operation.as_ref().unwrap();
+        if let (Request::Put(_), Some(answer)) = (operation.request, operation.answer) {
+            if operation.received == answer.payload_len && operation.crc.finalize() == answer.payload_crc {
+                self.finish(Ok(Outcome::Put(answer)));
+                return;
+            }
+        }
+        self.actions.retain(|action| {
+            matches!(action, Action::Send { token, .. }
+                if self.queries.iter().any(|query| query.token == Some(*token)))
+        });
+        self.cancellation = Some(Cancellation {
+            id,
+            transfer,
+            cause: Error::Cancelled,
+            answered: false,
+            confirmed: false,
+            transfer_answered: operation.answer.is_some(),
+        });
+        self.deadline = now.saturating_add(self.options.cancel_timeout_ms);
+    }
+
+    pub(super) fn settle_cancellation(&mut self) {
+        if let Some(cancel) = &self.cancellation {
+            if cancel.answered && cancel.transfer_answered {
+                self.finish(Err(cancel.cause));
+            }
+        }
     }
 }
 
