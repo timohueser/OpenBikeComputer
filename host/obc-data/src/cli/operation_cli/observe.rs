@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
+#[cfg(not(test))]
 use super::remove_worker;
 use crate::cli::{Code, Error};
 use crate::engine::runs::{self, Run};
@@ -183,6 +184,46 @@ mod tests {
     use crate::cli::commit_cli::{lifetime::Observation, Committed, Reply};
     use crate::engine::runs::{Event, Outcome};
     use crate::store::tests::Scratch;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pre_spawn_log_error_stops_admission_and_finishes_the_same_run() {
+        let scratch = Scratch::new("operation-log-error");
+        let store = Store::at(&scratch.0);
+        let run = Run::create(&store, "prepare local").unwrap();
+        let id = run.id().to_string();
+        drop(run);
+        let request = operation::Request {
+            kind: operation::Kind::Prepare,
+            env: "local".into(),
+            only: Vec::new(),
+            moves: Vec::new(),
+            plan: None,
+        };
+        let control = operation::Control {
+            run: id.clone(),
+            request_sha256: request.digest().unwrap(),
+            request,
+            root: "/checkout".into(),
+            worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
+            code: "b".repeat(64),
+            state: State::Reserved,
+        };
+        operation::reserve(&store, &control).unwrap();
+        let directory = operation::directory(&store, &id).unwrap();
+        std::fs::write(directory.join("worker"), "retained").unwrap();
+        std::fs::create_dir(directory.join("stdout.json")).unwrap();
+        let primary = operation::launch::mac(&mut std::process::Command::new("unused"), &directory).unwrap_err();
+        let error = super::super::unlaunched(&store, &id, Code::Failed.error(primary.clone()));
+        assert_eq!(error.message, primary);
+        assert_eq!(error.run.as_deref(), Some(id.as_str()));
+        assert_eq!(operation::read(&store, &id).unwrap().unwrap().state, State::Stopped);
+        assert!(operation::claim(&store, &id, &control.request_sha256).is_err());
+        assert!(!directory.join("worker").exists());
+        assert!(
+            matches!(runs::events(&store, &id).unwrap().last(), Some(Event::Finished { ok: false, error: Some(message), .. }) if message == &primary)
+        );
+    }
 
     #[test]
     fn local_completion_seals_output_and_failed_sealing_keeps_the_original_error() {

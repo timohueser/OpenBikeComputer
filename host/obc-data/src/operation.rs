@@ -394,7 +394,7 @@ mod tests {
             limits: crate::engine::runs::Limits { jobs: 2, memory_bytes: None },
         };
         let error = run.build(&context, &steps, &plan).unwrap_err();
-        assert!(error.contains("stopped after current work"));
+        assert!(error.contains("stopped after the current work"), "{error}");
         let receipts = fixture.store.layers().unwrap();
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].step, "test/first");

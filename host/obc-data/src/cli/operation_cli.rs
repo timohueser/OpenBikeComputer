@@ -172,15 +172,13 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         .env(crate::worker::EXE, &control.worker.sha256)
         .env("OBC_DATA_STORE", store.root());
     #[cfg(target_os = "macos")]
-    operation::launch::mac(&mut child, &directory)?;
+    if let Err(message) = operation::launch::mac(&mut child, &directory) {
+        return Err(unlaunched(store, &id, Code::Failed.error(message)));
+    }
     let mut spawned = match child.spawn() {
         Ok(child) => child,
         Err(error) => {
-            operation::stop(store, &id)?;
-            let message = format!("detached launch failed: {error}");
-            Run::attach(store, &id, &runs::events(store, &id)?)?.finish(Some(&message))?;
-            remove_worker(store, &id);
-            return Err(Code::Failed.error(message).with_run(&id));
+            return Err(unlaunched(store, &id, Code::Failed.error(format!("detached launch failed: {error}"))));
         }
     };
     #[cfg(target_os = "linux")]
@@ -199,6 +197,20 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         let _ = spawned.wait();
     });
     Ok(handle)
+}
+
+fn unlaunched(store: &Store, run: &str, mut error: Error) -> Error {
+    if let Err(message) = operation::stop(store, run) {
+        error.message += &format!("; stop could not persist: {message}");
+    }
+    let finished = (|| -> Result<(), String> {
+        Run::attach(store, run, &runs::events(store, run)?)?.finish(Some(&error.message))
+    })();
+    if let Err(message) = finished {
+        error.message += &format!("; run journal could not finish: {message}");
+    }
+    remove_worker(store, run);
+    error.with_run(run)
 }
 
 /// A private child can only execute its immutable request through the retained checked binary.
