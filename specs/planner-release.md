@@ -130,8 +130,10 @@ archives are not part of these verification indexes.
 
 Before publication, the verifier checks the packed bytes and named metadata
 against their receipts. It composes the indexes with the same source and coverage
-checks as the producer. It reads the decoded map archives, search shards and
-routing graph with their format validators. A fresh store can restore the named
+checks as the producer. It reads changed decoded map archives, search shards and
+routing graphs with their format validators. Unchanged binary payloads retain their
+previous verification. The Python group and Node reader dependencies must be
+prepared from their locks. A fresh store can restore the named
 indexes and client objects without the producer files. Verification does not
 install tools, download data or build runtimes.
 
