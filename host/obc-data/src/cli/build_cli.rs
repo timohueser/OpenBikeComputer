@@ -1290,7 +1290,10 @@ pub(crate) mod tests {
                 regions: &Regions,
                 store: &Store,
             ) -> Result<crate::product::Steps, Unplanned> {
-                assert_eq!(env.version("index", &[]).map_err(Unplanned::Failed)?, Some("1"));
+                assert_eq!(
+                    crate::product::version(env, store, "index", &[]).map_err(Unplanned::Failed)?,
+                    Ok("1".into())
+                );
                 Indexed.steps(root, env, regions, store)
             }
         }
