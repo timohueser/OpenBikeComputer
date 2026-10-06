@@ -120,6 +120,18 @@ pub fn cells(request: &Request) -> Result<(), String> {
 /// The sources of one landmark or peak capture.
 pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
+/// The digest of the code that makes the boundary and the candidates or the summits, which a
+/// capture pins: the param `code=` of a capture, so a capture with other code is another request.
+pub fn capture_code() -> String {
+    let code = [
+        include_str!("catalog/boundary.rs"),
+        include_str!("geom.rs"),
+        include_str!("landmarks/discover.rs"),
+        include_str!("landmarks/peaks.rs"),
+    ];
+    Sha256::digest(code.concat()).iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the capture
 /// files, the `.poly` and the `.osm.pbf` that the capture read. The capture keeps no copy of the
 /// boundary or of the candidates, which are OSM data, so the step makes them again, byte for byte.
@@ -152,8 +164,8 @@ fn check_pins(view: &Path, boundary: &Path, made: &str) -> Result<(), String> {
         let digest: String = Sha256::digest(read(&path)?).iter().map(|byte| format!("{byte:02x}")).collect();
         if recipe[format!("{name}_sha256")].as_str() != Some(digest.as_str()) {
             return Err(format!(
-                "the capture of `{}` is out of date for this code: its {name} differ from those that this code \
-                 makes. Plan with `--move {}`",
+                "the capture of `{}` is out of date for this code: the {name} that it pinned and the {name} that \
+                 this code makes are not the same. Plan with `--move {}`",
                 CAPTURES[0], CAPTURES[0]
             ));
         }

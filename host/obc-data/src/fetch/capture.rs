@@ -115,11 +115,12 @@ pub fn select_with(binary: PathBuf) {
 
 /// One run of `tools/landmark_capture.py` captures Wikidata, Wikipedia and Commons for the
 /// landmarks or the peaks of the region `area=<region id>`: `collection=landmarks|peaks`, and the files in the store of
-/// the region's extract, `osm=sha256:<hex>`, and of its `.poly`, `poly=sha256:<hex>`. The program
+/// the region's extract, `osm=sha256:<hex>`, and of its `.poly`, `poly=sha256:<hex>`, and `code=`, the
+/// digest of the code that makes the boundary and the candidates or summits. The program
 /// finds the candidates in the extract itself and selects them with `selector`. [`wiki_owners`]
 /// splits the files into the three records.
 fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) -> Result<Snapshot, String> {
-    let [collection, area, osm, poly] = values(request, ["collection", "area", "osm", "poly"])?;
+    let [collection, area, osm, poly, code] = values(request, ["collection", "area", "osm", "poly", "code"])?;
     if !["landmarks", "peaks"].contains(&collection) {
         return Err(format!("`collection={collection}` is not `landmarks` or `peaks`"));
     }
@@ -131,7 +132,7 @@ fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) 
     let policy = root.join("host/obc-pack/src/landmarks/policy.json");
     let tool = root.join("tools/landmark_capture.py");
     // The tools and the files that decide what a capture asks for: a change is another capture.
-    let mut digests = format!("{collection} {area} {osm} {poly} ");
+    let mut digests = format!("{collection} {area} {osm} {poly} {code} ");
     for file in [&policy, &root.join("specs/content-languages.json"), &tool, &root.join("tools/peak_capture.py")] {
         digests += &store::hash_file(file)?.0;
     }

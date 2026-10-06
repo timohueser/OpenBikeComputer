@@ -106,7 +106,7 @@ fn captures(
     let mut wanted = Vec::new();
     let mut captures = Vec::new();
     for collection in ["landmarks", "peaks"] {
-        let params = capture_params(env, store, collection, &area[0].1, (&osm, &poly))?;
+        let (params, read) = capture_params(env, store, collection, area, (&osm, &poly))?;
         let mut inputs = Vec::new();
         for source in CAPTURES {
             if let Some(version) = snapshot_version(env, store, source, &params, &mut wanted)? {
@@ -114,13 +114,7 @@ fn captures(
                 inputs.push(Input::Snapshot { source: source.into(), version, params, files: Vec::new() });
             }
         }
-        // The extract and the `.poly` that the capture read, which need not be those of now. Their
-        // input names the file, not the params: a fetch has one version in a release.
-        for (source, name) in [(EXTRACTS, "osm"), (POLY, "poly")] {
-            let digest = &params.iter().find(|(param, _)| param == name).expect("a capture param").1;
-            let (version, file) = by_digest(store, source, area, digest)?;
-            inputs.push(Input::Snapshot { source: source.into(), version, params: Vec::new(), files: vec![file] });
-        }
+        inputs.extend(read);
         captures.push((collection, inputs));
     }
     match wanted.is_empty() {
@@ -129,22 +123,27 @@ fn captures(
     }
 }
 
-/// The params of the capture of `collection` for the region `area`: those of the capture that `env`
-/// reads (a saved plan, or live), or else of the newest capture in the store, until a source of
-/// [`CAPTURES`] moves. A new extract alone asks for no new capture. A moved capture, or the first
-/// one, reads the extract and the `.poly` of `now`.
+/// The params of a fetch.
+type Params = Vec<(String, String)>;
+
+/// The params of the capture of `collection` for the region `area`, and the extract and the `.poly`
+/// that it reads: those of the capture that `env` reads (a saved plan, or live), or else of the
+/// newest capture in the store, until a source of [`CAPTURES`] moves or the store has its extract
+/// or `.poly` no more. A new extract alone asks for no new capture. A moved capture, or the first
+/// one, reads the extract and the `.poly` of `now`, with the code of now.
 fn capture_params(
     env: &Env,
     store: &Store,
     collection: &str,
-    area: &str,
+    area: &[(String, String)],
     now: (&str, &str),
-) -> Result<Vec<(String, String)>, Unplanned> {
+) -> Result<(Params, Vec<Input>), Unplanned> {
     let value = |params: &[(String, String)], name: &str| {
         params.iter().find(|(param, _)| param == name).map(|(_, value)| value.clone())
     };
     let ours = |params: &[(String, String)]| {
-        value(params, "collection").as_deref() == Some(collection) && value(params, "area").as_deref() == Some(area)
+        value(params, "collection").as_deref() == Some(collection)
+            && value(params, "area").as_deref() == Some(area[0].1.as_str())
     };
     let mut kept = None;
     if !CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
@@ -162,12 +161,27 @@ fn capture_params(
                 .map(|request| request.params);
         }
     }
-    let (osm, poly) = match &kept {
-        Some(params) => (value(params, "osm").unwrap_or_default(), value(params, "poly").unwrap_or_default()),
-        None => (now.0.to_string(), now.1.to_string()),
+    // The extract and the `.poly` that the capture read, which need not be those of now. Their
+    // input names the file, not the params: a fetch has one version in live.
+    let reads = |osm: &str, poly: &str| -> Result<Option<Vec<Input>>, Unplanned> {
+        let mut inputs = Vec::new();
+        for (source, digest) in [(EXTRACTS, osm), (POLY, poly)] {
+            let Some((version, file)) = by_digest(store, source, area, digest)? else { return Ok(None) };
+            inputs.push(Input::Snapshot { source: source.into(), version, params: Vec::new(), files: vec![file] });
+        }
+        Ok(Some(inputs))
     };
-    let pairs = [("collection", collection), ("area", area), ("osm", &osm), ("poly", &poly)];
-    Ok(pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec())
+    if let Some(params) = kept {
+        let (osm, poly) = (value(&params, "osm").unwrap_or_default(), value(&params, "poly").unwrap_or_default());
+        if let Some(read) = reads(&osm, &poly)? {
+            return Ok((params, read));
+        }
+    }
+    let read =
+        reads(now.0, now.1)?.ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
+    let code = obc_pack::step::capture_code();
+    let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", &code)];
+    Ok((pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec(), read))
 }
 
 /// The name and the SHA-256 of the one file that the fetch of `source@version` with `params` gave.
@@ -188,20 +202,24 @@ fn file(
 }
 
 /// The version and the name of the file of a fetch of `source` with `params` whose digest is
-/// `sha256:<hex>`.
+/// `sha256:<hex>`, or `None` when the store has it no more: a clean keeps the request record of a
+/// version whose snapshot record it deletes.
 fn by_digest(
     store: &Store,
     source: &str,
     params: &[(String, String)],
     digest: &str,
-) -> Result<(String, String), Unplanned> {
+) -> Result<Option<(String, String)>, Unplanned> {
     for request in store.requests(source, params).map_err(Unplanned::Failed)? {
+        if store.snapshot(source, &request.version).map_err(Unplanned::Failed)?.is_none() {
+            continue;
+        }
         let (name, sha256) = file(store, source, &request.version, params)?;
         if digest.strip_prefix("sha256:") == Some(sha256.as_str()) {
-            return Ok((request.version, name));
+            return Ok(Some((request.version, name)));
         }
     }
-    Err(Unplanned::Failed(format!("the store has no file of {source} {params:?} with {digest}, which a capture read")))
+    Ok(None)
 }
 
 /// The compiled landmarks or peaks of the region, from their capture, the `.poly` and the extract.
@@ -484,6 +502,7 @@ pub(crate) mod tests {
             ("area".into(), area.into()),
             ("osm".into(), format!("sha256:{}", sha256_hex(osm.as_bytes()))),
             ("poly".into(), format!("sha256:{}", sha256_hex(poly.as_bytes()))),
+            ("code".into(), obc_pack::step::capture_code()),
         ]
     }
 
@@ -672,16 +691,21 @@ pub(crate) mod tests {
     }
 
     /// A new extract asks for no new capture: the compile keeps reading the extract that its
-    /// capture read, and the map cells read the new one. A capture that moves reads the new one.
+    /// capture read, and the map cells read the new one. A capture that moves, or whose extract a
+    /// clean deleted, reads the new one.
     #[test]
-    fn a_capture_keeps_its_extract_until_it_moves() {
+    fn a_capture_keeps_its_extract_until_it_moves_or_a_clean_deletes_the_extract() {
         let temp = temp("capture-extract");
         let store = Store::at(temp.0.join("store"));
         let (mut env, regions) = freiburg(&store);
         with_osm(&store);
         with_captures(&store, "1");
         let area = [("area".to_string(), "europe/test".to_string())];
-        fetched(&store, EXTRACTS, "2", &area, &[("europe/test-2.osm.pbf".into(), "osm 2".into())]);
+        for day in ["0", "2"] {
+            fetched(&store, EXTRACTS, day, &area, &[(format!("europe/test-{day}.osm.pbf"), format!("osm {day}"))]);
+        }
+        let clean = |day: &str| std::fs::remove_file(store.root().join(format!("snapshots/{EXTRACTS}/{day}.json")));
+        clean("0").unwrap();
         let steps = Maps.steps(&env, &regions, &store).unwrap();
         let extract = |name: &str| {
             let step = steps.iter().find(|step| step.name == name).unwrap();
@@ -696,10 +720,16 @@ pub(crate) mod tests {
             assert_eq!(extract(content), Some(("1".into(), vec!["europe/test.osm.pbf".into()])), "{content}");
         }
 
-        env.moves.insert("wikidata".into(), None);
-        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("a new capture") };
         let moved = capture_params("landmarks", "europe/test", "osm 2", FREIBURG);
-        assert!(wanted.iter().any(|fetch| fetch.source == "wikidata" && fetch.params == moved), "{wanted:?}");
+        let asks_for_a_new_capture = |env: &Env| {
+            let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, &regions, &store) else { panic!("a capture") };
+            assert!(wanted.iter().any(|fetch| fetch.source == "wikidata" && fetch.params == moved), "{wanted:?}");
+        };
+        env.moves.insert("wikidata".into(), None);
+        asks_for_a_new_capture(&env);
+        env.moves.clear();
+        clean("1").unwrap();
+        asks_for_a_new_capture(&env);
     }
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
