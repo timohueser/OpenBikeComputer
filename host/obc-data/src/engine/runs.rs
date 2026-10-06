@@ -320,11 +320,12 @@ impl Run {
 
     fn fetch(&mut self, context: &Context, plan: &Plan) -> Result<(), String> {
         for planned in plan.fetches() {
-            let source = context
-                .sources
-                .iter()
-                .find(|known| known.id == planned.source)
-                .ok_or_else(|| format!("no source `{}` in data/sources.toml", planned.source))?;
+            let source = context.sources.iter().find(|known| known.id == planned.source).ok_or_else(|| {
+                format!(
+                    "fetch {}@{}: no source `{}` in data/sources.toml",
+                    planned.source, planned.version, planned.source
+                )
+            })?;
             let request =
                 fetch::Request { source, version: Some(planned.version.clone()), params: planned.params.clone() };
             self.fetch_request(context.store, context.http, context.copies, &request, &planned.files)?;
