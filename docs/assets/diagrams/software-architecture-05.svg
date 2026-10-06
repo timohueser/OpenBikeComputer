@@ -1,0 +1,23 @@
+<svg viewBox="0 0 720 330" role="img" aria-label="The input task recognizes gestures while the map task performs a longer render. A bounded channel delivers gestures to the map task. The map task owns rendering and panel output." xmlns="http://www.w3.org/2000/svg" width="720" height="330" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs><marker id="software-architecture-6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Input stays responsive during rendering</text>
+  <text class="d-title" x="20" y="84" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Input task</text>
+  <text class="d-sub" x="20" y="104" text-anchor="start" fill="#5c5a2e" font-size="12px">Recognize gestures</text>
+<rect class="d-forest" x="220" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="284" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="348" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="412" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="476" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="540" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="604" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+<rect class="d-forest" x="668" y="60" width="22" height="32" rx="4" fill="#a4501e" />
+  <text class="d-title" x="20" y="197" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Map task</text>
+  <text class="d-sub" x="20" y="217" text-anchor="start" fill="#5c5a2e" font-size="12px">Render and present</text>
+  <rect class="d-panel d-focus" x="220" y="170" width="470" height="72" rx="8" fill="#f9f0ee" stroke="#ae4825" stroke-width="2" />
+  <text class="d-title" x="455" y="195" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">One longer frame</text>
+  <text class="d-sub" x="455" y="215" text-anchor="middle" fill="#5c5a2e" font-size="12px">Duration depends on the map and changed rows</text>
+  <path class="d-flow" d="M359 100 L359 165" marker-end="url(#software-architecture-6)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="375" y="132" text-anchor="start" fill="#5c5a2e" font-size="12px">Bounded gesture channel</text>
+  <text class="d-sub" x="20" y="284" text-anchor="start" fill="#5c5a2e" font-size="12px">Input sampling can preempt the map task.</text>
+  <text class="d-sub" x="20" y="305" text-anchor="start" fill="#5c5a2e" font-size="12px">Panel output remains serialized.</text>
+</svg>

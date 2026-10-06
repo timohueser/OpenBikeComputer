@@ -1,0 +1,74 @@
+<svg viewBox="0 0 720 328" role="img" aria-label="A 29-byte schedule contains flags and two time intervals for each weekday. POI records reference deduplicated schedules." xmlns="http://www.w3.org/2000/svg" width="720" height="328" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aH7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">One 29-byte schedule blob — flags + 7 days × 2 slots</text>
+
+  <!-- blob ruler: flags + Mon..Sun (each 2 slots of open_q/close_q) -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="24" y="44" width="22" height="34" class="d-amber" fill="#f4a81d" />
+    <rect x="46" y="44" width="88" height="34" class="d-water" fill="#33575b" />
+    <rect x="134" y="44" width="88" height="34" class="d-forest" fill="#a4501e" />
+    <rect x="222" y="44" width="88" height="34" class="d-water" fill="#33575b" />
+    <rect x="310" y="44" width="88" height="34" class="d-forest" fill="#a4501e" />
+    <rect x="398" y="44" width="88" height="34" class="d-water" fill="#33575b" />
+    <rect x="486" y="44" width="88" height="34" class="d-forest" fill="#a4501e" />
+    <rect x="574" y="44" width="88" height="34" class="d-water" fill="#33575b" />
+  </g>
+  <text class="d-sub" x="35"  y="65" text-anchor="middle" style="fill:#000;font-size:12px" fill="#5c5a2e" font-size="12px">f</text>
+  <text class="d-sub" x="90" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Mon</text>
+  <text class="d-sub" x="178" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Tue</text>
+  <text class="d-sub" x="266" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Wed</text>
+  <text class="d-sub" x="354" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Thu</text>
+  <text class="d-sub" x="442" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Fri</text>
+  <text class="d-sub" x="530" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Sat</text>
+  <text class="d-sub" x="618" y="65" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Sun</text>
+  <text class="d-sub" x="35"  y="92" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">0</text>
+  <text class="d-sub" x="90" y="92" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">1–4</text>
+  <text class="d-sub" x="618" y="92" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">25–28</text>
+
+  <!-- one day exploded into 2 slots × (open_q, close_q) -->
+  <line x1="46"  y1="78" x2="120" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <line x1="134" y1="78" x2="420" y2="110" stroke="#9aa884" stroke-width="1.1" />
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="112" width="76" height="30" class="d-panel" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+    <rect x="196" y="112" width="76" height="30" class="d-panel" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+    <rect x="272" y="112" width="76" height="30" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <rect x="348" y="112" width="76" height="30" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  </g>
+  <text class="d-sub" x="158" y="131" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">open q</text>
+  <text class="d-sub" x="234" y="131" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">close q</text>
+  <text class="d-sub" x="310" y="131" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">open q</text>
+  <text class="d-sub" x="386" y="131" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">close q</text>
+  <text class="d-sub" x="196" y="156" text-anchor="middle" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">slot 0</text>
+  <text class="d-sub" x="348" y="156" text-anchor="middle" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">slot 1</text>
+  <text class="d-sub" x="470" y="126" style="font-size:12px" fill="#5c5a2e" font-size="12px">each byte = quarter-hours</text>
+  <text class="d-sub" x="470" y="140" style="font-size:12px" fill="#5c5a2e" font-size="12px">from midnight, 0…96 (96 = 24:00)</text>
+
+  <!-- dedup pool -->
+  <text class="d-tag" x="20" y="192" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">the pool — identical schedules collapse to one blob</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="30" y="216" style="font-size:12px" fill="#5c5a2e" font-size="12px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="234" style="font-size:12px" fill="#5c5a2e" font-size="12px">POI · HoursRef 0</text>
+    <text class="d-sub" x="30" y="252" style="font-size:12px" fill="#5c5a2e" font-size="12px">POI · HoursRef 2</text>
+    <text class="d-sub" x="30" y="270" style="font-size:12px" fill="#5c5a2e" font-size="12px">POI · HoursRef 0xFFFF</text>
+  </g>
+  <line class="d-flow" x1="180" y1="212" x2="300" y2="221" marker-end="url(#aH7)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="180" y1="230" x2="300" y2="223" marker-end="url(#aH7)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="180" y1="248" x2="300" y2="279" marker-end="url(#aH7)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="30" y="312" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">0xFFFF = no hours (no arrow)</text>
+
+  <!-- pool blobs -->
+  <g stroke="#3c6b39" stroke-width="1.1">
+    <rect x="306" y="210" width="180" height="26" class="d-water" fill="#33575b" />
+    <rect x="306" y="238" width="180" height="26" class="d-muted" fill="#d6d5c8" />
+    <rect x="306" y="266" width="180" height="26" class="d-water" fill="#33575b" />
+  </g>
+  <text class="d-sub" x="316" y="227" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">blob 0 — 29 B</text>
+  <text class="d-sub" x="316" y="255" style="fill:#24331c;font-size:12px" fill="#5c5a2e" font-size="12px">blob 1 — 29 B</text>
+  <text class="d-sub" x="316" y="283" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">blob 2 — 29 B</text>
+  <text class="d-sub" x="504" y="227" style="font-size:12px" fill="#5c5a2e" font-size="12px">count u16, then</text>
+  <text class="d-sub" x="504" y="241" style="font-size:12px" fill="#5c5a2e" font-size="12px">count × 29-byte blobs;</text>
+  <text class="d-sub" x="504" y="255" style="font-size:12px" fill="#5c5a2e" font-size="12px">blob i at</text>
+  <text class="d-sub" x="504" y="269" style="font-size:12px" font-family="var(--mono)" fill="#5c5a2e" font-size="12px">byte_offset + 2 + i·29</text>
+<text class="d-sub" x="470" y="162" text-anchor="start" fill="#5c5a2e" font-size="12px">f: flags · ruler widths are to scale</text></svg>

@@ -1,0 +1,42 @@
+<svg viewBox="0 0 820 278" role="img" aria-label="The packer pipeline as a trail: starting from one or more OSM .pbf files plus a config, the stages are ingest (which also merges and crops), compute bounding box, generate land, trace contours from terrain, build the per-LOD pyramid (simplify then quadtree), and serialize, ending at a .obcm file. Ingest and the per-LOD build are marked as the expensive stages; contour tracing only runs when the config asks for it and terrain was supplied." xmlns="http://www.w3.org/2000/svg" width="820" height="278" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">From OpenStreetMap to a device map</text>
+
+  <!-- trail -->
+  <line x1="96" y1="120" x2="742" y2="120" stroke="#5f7d3d" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round" />
+
+  <!-- start -->
+  <circle cx="58" cy="120" r="7" class="d-forest" fill="#a4501e" />
+  <text class="d-sub" x="58" y="150" text-anchor="middle" fill="#5c5a2e" font-size="12px">.pbf(s) +</text>
+  <text class="d-sub" x="58" y="168" text-anchor="middle" fill="#5c5a2e" font-size="12px">config</text>
+
+  <!-- 1 ingest (below, HOT) — merge + crop happen inside it -->
+  <circle cx="150" cy="120" r="16" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="150" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">1</text>
+  <text class="d-label" x="150" y="160" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">Ingest</text>
+  <text class="d-sub" x="150" y="174" text-anchor="middle" fill="#5c5a2e" font-size="12px">ways · relations</text>
+  <text class="d-sub" x="150" y="188" text-anchor="middle" fill="#5c5a2e" font-size="12px">merge · crop</text>
+  <!-- 2 bbox (above) -->
+  <circle cx="254" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="254" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">2</text>
+  <text class="d-label" x="254" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">BBox</text>
+  <text class="d-sub" x="254" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">truncate µdeg</text>
+  <!-- 3 land (below) -->
+  <circle cx="358" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="358" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">3</text>
+  <text class="d-label" x="358" y="160" text-anchor="middle" fill="#1c1b14" font-size="14px">Land</text>
+  <text class="d-sub" x="358" y="174" text-anchor="middle" fill="#5c5a2e" font-size="12px">clip to bbox</text>
+  <!-- 4 contours (above) — only with terrain + a config that asks -->
+  <circle cx="462" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="462" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">4</text>
+  <text class="d-label" x="462" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">Contours</text>
+  <text class="d-sub" x="462" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">trace · clamp 15 m</text>
+  <!-- 5 per-LOD (below, HOT) -->
+  <circle cx="566" cy="120" r="16" class="d-hot-fill" fill="#ae4825" /><text class="d-num" x="566" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">5</text>
+  <text class="d-label" x="566" y="160" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">Per-LOD</text>
+  <text class="d-sub" x="566" y="174" text-anchor="middle" fill="#5c5a2e" font-size="12px">simplify → quadtree</text>
+  <!-- 6 serialize (above) -->
+  <circle cx="670" cy="120" r="15" class="d-forest" fill="#a4501e" /><text class="d-num" x="670" y="124" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">6</text>
+  <text class="d-label" x="670" y="74" text-anchor="middle" fill="#1c1b14" font-size="14px">Serialize</text>
+  <text class="d-sub" x="670" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">stream out</text>
+
+  <!-- end -->
+  <rect class="d-panel" x="772" y="104" width="40" height="32" rx="5" style="fill:#e7ead8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="792" y="124" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">.obcm</text>
+<text class="d-sub" x="20" y="225" text-anchor="start" fill="#5c5a2e" font-size="12px">Add POIs and navigation before the LOD loop. Write each LOD as it is built.</text><text class="d-sub" x="20" y="250" text-anchor="start" fill="#5c5a2e" font-size="12px">Contours require configuration and terrain input.</text>
+</svg>

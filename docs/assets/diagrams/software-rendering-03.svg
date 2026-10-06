@@ -1,0 +1,40 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="Ground coordinates in microdegrees, relative to the camera, are squashed by cosine of latitude, rotated to heading-up, scaled by zoom and centred, then rounded to the nearest pixel." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aP" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+
+  <!-- ground panel -->
+  <rect class="d-panel-2" x="24" y="44" width="300" height="216" rx="12" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-tag" x="40" y="66" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Ground · µdeg</text>
+  <!-- graticule -->
+  <g stroke="#33575b" stroke-opacity="0.25" stroke-width="1">
+    <line x1="60" y1="90" x2="288" y2="90" /><line x1="60" y1="150" x2="288" y2="150" /><line x1="60" y1="210" x2="288" y2="210" />
+    <line x1="110" y1="80" x2="110" y2="240" /><line x1="174" y1="80" x2="174" y2="240" /><line x1="238" y1="80" x2="238" y2="240" />
+  </g>
+  <!-- camera -->
+  <circle cx="174" cy="150" r="5" class="d-amber" fill="#f4a81d" /><text class="d-sub" x="174" y="138" text-anchor="middle" fill="#5c5a2e" font-size="12px">camera</text>
+  <!-- point P + delta -->
+  <line x1="174" y1="150" x2="252" y2="106" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="3 3" />
+  <circle cx="252" cy="106" r="5" class="d-hot-fill" fill="#ae4825" /><text class="d-label" x="262" y="104" fill="#1c1b14" font-size="14px">P</text>
+  <text class="d-sub" x="208" y="120" style="fill:#a9501c" fill="#5c5a2e" font-size="12px">Δ (lon,lat)</text>
+
+  <!-- arrow to screen -->
+  <line class="d-flow" x1="332" y1="150" x2="392" y2="150" marker-end="url(#aP)" fill="none" stroke="#a4501e" stroke-width="2" />
+
+  <!-- screen panel -->
+  <rect class="d-panel" x="400" y="44" width="200" height="216" rx="12" style="fill:#e7ead8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="416" y="66" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Screen · px</text>
+  <!-- north arrow (heading-up: rotated) -->
+  <line x1="500" y1="150" x2="478" y2="92" stroke="#4d5b3c" stroke-width="1.6" marker-end="url(#aP)" />
+  <text class="d-sub" x="470" y="86" fill="#5c5a2e" font-size="12px">N</text>
+  <!-- projected P -->
+  <circle cx="540" cy="118" r="5" class="d-hot-fill" fill="#ae4825" /><text class="d-label" x="550" y="116" fill="#1c1b14" font-size="14px">P</text>
+  <circle cx="500" cy="150" r="3" class="d-amber" fill="#f4a81d" />
+
+  <!-- steps strip -->
+  <text class="d-sub" x="624" y="120" style="font-size:12px" fill="#5c5a2e" font-size="12px">① Δ vs camera</text>
+  <text class="d-sub" x="624" y="142" style="font-size:12px" fill="#5c5a2e" font-size="12px">② × cos(lat)</text>
+  <text class="d-sub" x="624" y="164" style="font-size:12px" fill="#5c5a2e" font-size="12px">③ rotate</text>
+  <text class="d-sub" x="624" y="186" style="font-size:12px" fill="#5c5a2e" font-size="12px">④ × zoom</text>
+  <text class="d-sub" x="624" y="208" style="font-size:12px" fill="#5c5a2e" font-size="12px">⑤ round</text>
+</svg>

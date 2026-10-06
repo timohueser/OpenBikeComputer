@@ -1,0 +1,31 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="A polygon with a square hole on a pixel grid. A horizontal scanline crosses the outer edge twice and the hole twice; the fill covers the two outer spans and leaves the hole empty, because the even-odd rule pairs the four crossings as two filled spans." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Even-odd rule — holes fall out for free</text>
+  <!-- faint pixel grid -->
+  <g stroke="#9aa884" stroke-opacity="0.25" stroke-width="1">
+    <line x1="60" y1="56" x2="60" y2="256"/><line x1="100" y1="56" x2="100" y2="256"/><line x1="140" y1="56" x2="140" y2="256"/><line x1="180" y1="56" x2="180" y2="256"/><line x1="220" y1="56" x2="220" y2="256"/><line x1="260" y1="56" x2="260" y2="256"/><line x1="300" y1="56" x2="300" y2="256"/><line x1="340" y1="56" x2="340" y2="256"/><line x1="380" y1="56" x2="380" y2="256"/><line x1="420" y1="56" x2="420" y2="256"/>
+    <line x1="60" y1="56" x2="420" y2="56"/><line x1="60" y1="96" x2="420" y2="96"/><line x1="60" y1="136" x2="420" y2="136"/><line x1="60" y1="176" x2="420" y2="176"/><line x1="60" y1="216" x2="420" y2="216"/><line x1="60" y1="256" x2="420" y2="256"/>
+  </g>
+  <!-- outer polygon -->
+  <polygon points="100,90 360,70 400,180 320,240 130,230 80,150" style="fill:#7c9a63;fill-opacity:0.5;stroke:#3c6b39;stroke-width:2" />
+  <!-- hole -->
+  <polygon points="200,130 280,128 285,190 205,195" style="fill:#f3f0df;stroke:#3c6b39;stroke-width:1.6" />
+  <!-- scanline -->
+  <line x1="40" y1="160" x2="440" y2="160" stroke="#cf6a2a" stroke-width="2" />
+  <text class="d-sub" x="40" y="146" style="fill:#a9501c" fill="#5c5a2e" font-size="12px">scanline y + 0.5</text>
+  <!-- crossings -->
+  <g fill="#cf6a2a"><circle cx="86" cy="160" r="4.5"/><circle cx="203" cy="160" r="4.5"/><circle cx="283" cy="160" r="4.5"/><circle cx="395" cy="160" r="4.5"/></g>
+  <text class="d-sub" x="86" y="278" text-anchor="middle" fill="#5c5a2e" font-size="12px">x0</text><text class="d-sub" x="203" y="278" text-anchor="middle" fill="#5c5a2e" font-size="12px">x1</text><text class="d-sub" x="283" y="278" text-anchor="middle" fill="#5c5a2e" font-size="12px">x2</text><text class="d-sub" x="395" y="278" text-anchor="middle" fill="#5c5a2e" font-size="12px">x3</text>
+  <!-- filled spans -->
+  <rect x="86" y="153" width="117" height="14" fill="#cf6a2a" fill-opacity="0.3"/>
+  <rect x="283" y="153" width="112" height="14" fill="#cf6a2a" fill-opacity="0.3"/>
+
+  <!-- right notes -->
+  <text class="d-label" x="470" y="96" fill="#1c1b14" font-size="14px">fill (x0→x1)</text>
+  <text class="d-label" x="470" y="124" fill="#1c1b14" font-size="14px">skip (x1→x2)</text>
+  <text class="d-sub" x="470" y="140" fill="#5c5a2e" font-size="12px">the hole</text>
+  <text class="d-label" x="470" y="168" fill="#1c1b14" font-size="14px">fill (x2→x3)</text>
+  <line class="d-stroke" x1="460" y1="200" x2="690" y2="200" style="stroke:#9aa884" fill="none" stroke="#1c1b14" stroke-width="1.6"/>
+  <text class="d-sub" x="470" y="224" style="font-size:12px" fill="#5c5a2e" font-size="12px">A hole is just another ring in</text>
+  <text class="d-sub" x="470" y="240" style="font-size:12px" fill="#5c5a2e" font-size="12px">the same crossing list — no</text>
+  <text class="d-sub" x="470" y="256" style="font-size:12px" fill="#5c5a2e" font-size="12px">special case needed.</text>
+</svg>

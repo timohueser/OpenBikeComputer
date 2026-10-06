@@ -1,0 +1,41 @@
+<svg viewBox="0 0 720 278" role="img" aria-label="Top: a timeline showing Select pressed down. A release within the 200ms tap window yields a Press; a release after the window but before the 500ms hold threshold is a cancelled long-press and yields nothing; holding past 500ms yields a Hold the instant it crosses. Bottom: a Discard row filling left to right with a warning bar at 0 percent, 60 percent holding, and 100 percent commit." xmlns="http://www.w3.org/2000/svg" width="720" height="278" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif"><text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Hold to confirm — the guarded-action pattern</text><g transform="translate(0 28)">
+
+  <!-- timeline -->
+  <line x1="40" y1="70" x2="540" y2="70" stroke="#9aa884" stroke-width="1.5" />
+  <circle cx="40" cy="70" r="5" class="d-forest" fill="#a4501e" /><text class="d-sub" x="40" y="58" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">down</text>
+  <!-- thresholds: the tap window and the hold threshold -->
+  <line x1="168" y1="56" x2="168" y2="84" stroke="#9aa884" stroke-width="1.4" stroke-dasharray="3 3" />
+  <text class="d-sub" x="168" y="98" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">tap · 200 ms</text>
+  <line x1="360" y1="56" x2="360" y2="84" stroke="#c0492e" stroke-width="1.6" stroke-dasharray="3 3" />
+  <text class="d-sub" x="360" y="98" text-anchor="middle" style="fill:#c0492e;font-size:12px" fill="#5c5a2e" font-size="12px">hold · 500 ms</text>
+  <!-- press branch (release within the tap window) -->
+  <circle cx="108" cy="70" r="5" class="d-amber" fill="#f4a81d" />
+  <text class="d-sub" x="108" y="58" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">release</text>
+  <text class="d-label" x="108" y="36" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">→ Press</text>
+  <!-- cancelled branch (release between the two thresholds) -->
+  <circle cx="264" cy="70" r="5" class="d-muted" fill="#d6d5c8" />
+  <text class="d-sub" x="264" y="58" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">release</text>
+  <text class="d-sub" x="264" y="36" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ nothing</text>
+  <!-- hold branch -->
+  <circle cx="430" cy="70" r="5" class="d-hot-fill" fill="#ae4825" />
+  <text class="d-label" x="470" y="62" style="font-size:12px;fill:#a9501c" fill="#1c1b14" font-size="14px">→ Hold fires</text>
+  <text class="d-sub" x="470" y="78" style="font-size:12px" fill="#5c5a2e" font-size="12px">(commits, still held)</text>
+
+  <!-- confirm fill states -->
+  <text class="d-tag" x="20" y="138" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">the selected row, as you hold</text>
+  <g>
+    <!-- 0% -->
+    <rect x="40" y="152" width="200" height="34" rx="6" class="d-muted" fill="#d6d5c8" />
+    <text class="d-label" x="56" y="174" fill="#1c1b14" font-size="14px">Discard</text>
+    <text class="d-sub" x="140" y="202" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">0% — idle</text>
+    <!-- 60% -->
+    <rect x="260" y="152" width="200" height="34" rx="6" class="d-muted" fill="#d6d5c8" />
+    <rect x="260" y="152" width="120" height="34" rx="6" style="fill:#c0492e" />
+    <text class="d-label" x="276" y="174" style="fill:#fff" fill="#1c1b14" font-size="14px">Discard</text>
+    <text class="d-sub" x="360" y="202" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">holding — release = cancel</text>
+    <!-- 100% -->
+    <rect x="480" y="152" width="200" height="34" rx="6" style="fill:#c0492e" />
+    <text class="d-label" x="496" y="174" style="fill:#fff" fill="#1c1b14" font-size="14px">Discard ✓</text>
+    <text class="d-sub" x="580" y="202" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">100% — committed</text>
+  </g>
+</g></svg>

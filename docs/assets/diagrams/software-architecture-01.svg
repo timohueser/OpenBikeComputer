@@ -1,0 +1,29 @@
+<svg viewBox="0 0 720 486" role="img" aria-label="Hosts depend on the shared application. The application composes map, route, and rendering modules. Foundation crates define data and host interfaces. This is a layer overview, not a complete dependency graph." xmlns="http://www.w3.org/2000/svg" width="720" height="486" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs><marker id="software-architecture-1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Runtime layers</text>
+  <rect class="d-panel" x="20" y="54" width="210" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="125" y="79" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Device host</text>
+  <text class="d-sub" x="125" y="99" text-anchor="middle" fill="#5c5a2e" font-size="12px">obc-fw-nrf54l</text>
+  <rect class="d-panel" x="255" y="54" width="210" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="79" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Simulator host</text>
+  <text class="d-sub" x="360" y="99" text-anchor="middle" fill="#5c5a2e" font-size="12px">obc-sim</text>
+  <rect class="d-panel" x="490" y="54" width="210" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="595" y="79" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Browser host</text>
+  <text class="d-sub" x="595" y="99" text-anchor="middle" fill="#5c5a2e" font-size="12px">obc-web-demo</text>
+  <path class="d-flow" d="M125 126 L125 151" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M360 126 L360 151" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M595 126 L595 151" fill="none" stroke="#a4501e" stroke-width="2" />
+<path class="d-flow" d="M125 151 H595" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M360 151 L360 177" marker-end="url(#software-architecture-1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel d-focus" x="20" y="180" width="680" height="74" rx="8" fill="#f9f0ee" stroke="#ae4825" stroke-width="2" />
+  <text class="d-title" x="360" y="205" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Application · obc-app</text>
+  <text class="d-sub" x="360" y="225" text-anchor="middle" fill="#5c5a2e" font-size="12px">Screens · navigation · ride state · domain effects</text>
+  <path class="d-flow" d="M360 254 L360 283" marker-end="url(#software-architecture-1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="20" y="286" width="680" height="74" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="311" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Shared modules</text>
+  <text class="d-sub" x="360" y="331" text-anchor="middle" fill="#5c5a2e" font-size="12px">obc-render · obc-reader · obc-route</text>
+  <path class="d-flow" d="M360 360 L360 389" marker-end="url(#software-architecture-1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="20" y="392" width="680" height="74" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="417" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Foundations</text>
+  <text class="d-sub" x="360" y="437" text-anchor="middle" fill="#5c5a2e" font-size="12px">obc-map-scene · obc-formats · obc-elevation · obc-ports</text>
+</svg>

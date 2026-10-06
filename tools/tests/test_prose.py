@@ -27,6 +27,7 @@ class WordCountTests(unittest.TestCase):
             "```\ncode code code\n```\n"
             "<!-- four five -->\n"
             "<svg>six</svg>\n"
+            '<img src="diagram.svg" alt="Diagram description" data-inline-svg>\n'
             "seven eight\n"
         )
         self.assertEqual(prose.words(text), 5)

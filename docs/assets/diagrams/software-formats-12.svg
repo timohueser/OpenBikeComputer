@@ -1,0 +1,163 @@
+<svg viewBox="0 0 720 732" role="img" aria-label="A sample lattice expands into a 16 by 16 tile and a 64 by 64 tile cell. Adjacent cells show single ownership of seam samples. A container ribbon shows its directory, optional cross-cell index and cell blocks. Indexed v3 adds progressively coarser samples and conservative bounds while retaining native heights." xmlns="http://www.w3.org/2000/svg" width="720" height="732" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<defs><marker id="r22arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Terrain storage · lattice → tile → cell → indexed container</text>
+<text class="d-title" x="20" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Sample lattice</text>
+<text class="d-title" x="245" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">One tile</text>
+<text class="d-title" x="494" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">One terrain cell</text>
+<path d="M35 90 L160 90" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 90 L35 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 115 L160 115" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M60 90 L60 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 140 L160 140" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M85 90 L85 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 165 L160 165" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M110 90 L110 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M35 190 L160 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M135 90 L135 190" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<circle cx="35" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="35" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="60" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="110" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="135" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="90" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="115" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="140" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="165" r="2" fill="#3c6b39"/>
+<circle cx="160" cy="190" r="2" fill="#3c6b39"/>
+<circle cx="85" cy="140" r="4" fill="#cf6a2a"/>
+<text class="d-sub" x="20" y="222" text-anchor="start" fill="#5c5a2e" font-size="12px">2⁹ µdeg between samples</text>
+<text class="d-sub" x="20" y="242" text-anchor="start" fill="#5c5a2e" font-size="12px">Each height: signed i16 metres</text>
+<path d="M178 139 H222" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<rect x="245" y="83" width="128" height="128" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M253 83 L253 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 91 L373 91" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M261 83 L261 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 99 L373 99" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M269 83 L269 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 107 L373 107" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M277 83 L277 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 115 L373 115" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M285 83 L285 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 123 L373 123" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M293 83 L293 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 131 L373 131" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M301 83 L301 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 139 L373 139" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M309 83 L309 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 147 L373 147" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M317 83 L317 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 155 L373 155" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M325 83 L325 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 163 L373 163" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M333 83 L333 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 171 L373 171" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M341 83 L341 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 179 L373 179" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M349 83 L349 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 187 L373 187" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M357 83 L357 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 195 L373 195" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M365 83 L365 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<path d="M245 203 L373 203" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".45"/>
+<rect x="285" y="147" width="8" height="8" fill="#cf6a2a" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="245" y="232" text-anchor="start" fill="#5c5a2e" font-size="12px">16 × 16 samples = 512 B</text>
+<text class="d-sub" x="245" y="252" text-anchor="start" fill="#5c5a2e" font-size="12px">One aligned storage read</text>
+<path d="M388 139 H469" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<rect x="495" y="83" width="128" height="128" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M511 83 L511 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 99 L623 99" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M527 83 L527 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 115 L623 115" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M543 83 L543 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 131 L623 131" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M559 83 L559 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 147 L623 147" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M575 83 L575 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 163 L623 163" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M591 83 L591 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 179 L623 179" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M607 83 L607 211" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<path d="M495 195 L623 195" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".4"/>
+<rect x="495" y="83" width="2" height="2" fill="#cf6a2a" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M497 84 L644 98" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="642" y="117" text-anchor="start" fill="#5c5a2e" font-size="12px">one tile</text>
+<text class="d-sub" x="494" y="232" text-anchor="start" fill="#5c5a2e" font-size="12px">64 × 64 tiles · 2¹⁹ µdeg</text>
+<text class="d-sub" x="494" y="252" text-anchor="start" fill="#5c5a2e" font-size="12px">1024² samples · 2 MiB native</text>
+<text class="d-sub" x="494" y="270" text-anchor="start" fill="#5c5a2e" font-size="12px">Grid lines shown every 8 tiles</text>
+<text class="d-title" x="20" y="308" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Cell edges · each sample has one owner</text>
+<rect x="24" y="331" width="110" height="75" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="134" y="331" width="110" height="75" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M134 322 L134 414" fill="none" stroke="#cf6a2a" stroke-width="1.3" />
+<circle cx="134" cy="341" r="3" fill="#33575b"/>
+<circle cx="134" cy="361" r="3" fill="#33575b"/>
+<circle cx="134" cy="381" r="3" fill="#33575b"/>
+<circle cx="134" cy="401" r="3" fill="#33575b"/>
+<text class="d-sub" x="63" y="355" text-anchor="middle" fill="#5c5a2e" font-size="12px">west</text>
+<text class="d-sub" x="189" y="355" text-anchor="middle" fill="#5c5a2e" font-size="12px">east</text>
+<text class="d-sub" x="269" y="348" text-anchor="start" fill="#5c5a2e" font-size="12px">The seam belongs to the east cell.</text>
+<text class="d-sub" x="269" y="371" text-anchor="start" fill="#5c5a2e" font-size="12px">Each cell includes its minimum edges; maximum edges belong</text>
+<text class="d-sub" x="269" y="391" text-anchor="start" fill="#5c5a2e" font-size="12px">to the next cell. Sampling can fetch corners across that seam.</text>
+<text class="d-title" x="20" y="449" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Container · directory entries locate geographic cells</text>
+<rect x="20" y="468" width="85" height="56" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="62.5" y="490" text-anchor="middle" fill="#5c5a2e" font-size="12px">Header</text>
+<text class="d-sub" x="62.5" y="509" text-anchor="middle" fill="#5c5a2e" font-size="12px">32 B</text>
+<rect x="105" y="468" width="155" height="56" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="182.5" y="490" text-anchor="middle" fill="#5c5a2e" font-size="12px">Cell directory</text>
+<text class="d-sub" x="182.5" y="509" text-anchor="middle" fill="#5c5a2e" font-size="12px">rows × cols × u32</text>
+<rect x="260" y="468" width="155" height="56" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="337.5" y="490" text-anchor="middle" fill="#5c5a2e" font-size="12px">Cross-cell index</text>
+<text class="d-sub" x="337.5" y="509" text-anchor="middle" fill="#5c5a2e" font-size="12px">v3 · when flagged</text>
+<rect x="415" y="468" width="140" height="56" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="485.0" y="490" text-anchor="middle" fill="#5c5a2e" font-size="12px">Cell block 0</text>
+<text class="d-sub" x="485.0" y="509" text-anchor="middle" fill="#5c5a2e" font-size="12px">height levels</text>
+<rect x="555" y="468" width="145" height="56" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="627.5" y="490" text-anchor="middle" fill="#5c5a2e" font-size="12px">… Cell block k</text>
+<text class="d-sub" x="627.5" y="509" text-anchor="middle" fill="#5c5a2e" font-size="12px">height levels</text>
+<text class="d-sub" x="20" y="548" text-anchor="start" fill="#5c5a2e" font-size="12px">A zero directory offset means absent terrain. The ribbon is not to scale.</text>
+<text class="d-title" x="20" y="581" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Indexed v3 cells keep the native heights, then add coarser samples and bounds.</text>
+<rect x="40" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M50 602 L50 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 612 L120 612" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M60 602 L60 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 622 L120 622" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M70 602 L70 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 632 L120 632" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M80 602 L80 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 642 L120 642" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M90 602 L90 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 652 L120 652" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M100 602 L100 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 662 L120 662" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M110 602 L110 682" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M40 672 L120 672" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<rect x="205" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+
+<rect x="355" y="602" width="80" height="80" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+
+<path d="M131 634 H190" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<path d="M299 634 H340" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r22arrow)"/>
+<text class="d-sub" x="470" y="617" text-anchor="start" fill="#5c5a2e" font-size="12px">Same area; lattice posts farther apart.</text>
+<text class="d-sub" x="470" y="641" text-anchor="start" fill="#5c5a2e" font-size="12px">Conservative height / error bounds</text>
+<text class="d-sub" x="470" y="663" text-anchor="start" fill="#5c5a2e" font-size="12px">let Peak View skip or merge regions.</text>
+<text class="d-sub" x="20" y="710" text-anchor="start" fill="#5c5a2e" font-size="12px">Default lattice sizes shown above. The header stores the posting and cell size.</text>
+<path d="M225 602 L225 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M205 622 L285 622" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M245 602 L245 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M205 642 L285 642" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M265 602 L265 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M205 662 L285 662" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M395 602 L395 682" fill="none" stroke="#9aa884" stroke-width="1.3" /><path d="M355 642 L435 642" fill="none" stroke="#9aa884" stroke-width="1.3" /></svg>
