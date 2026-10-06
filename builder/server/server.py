@@ -26,7 +26,7 @@ PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
 # when the binary isn't built yet. A Rust stale-generation test pins the file's
 # *contents*; test_schema_source.py pins this path, because a string-built path
 # that stops resolving degrades silently (the fallback just never fires).
-SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
+SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-map-core", "schema", "config.schema.json")
 
 app = FastAPI(title="OBC Schema Editor")
 

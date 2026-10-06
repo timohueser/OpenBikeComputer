@@ -15,7 +15,7 @@ import ProfilesTab from "./ProfilesTab.svelte";
 // Resolved from the vitest root (builder/app) — a happy-dom test's
 // `import.meta.url` is not a file: URL.
 const SCHEMA = JSON.parse(
-    readFileSync(resolve(process.cwd(), "../../host/obc-pack/schema/config.schema.json"), "utf8"),
+    readFileSync(resolve(process.cwd(), "../../host/obc-map-core/schema/config.schema.json"), "utf8"),
 );
 const schema = { schema_version: 1, format_version: 12, source: "binary", schema: SCHEMA } as SchemaEnvelope;
 

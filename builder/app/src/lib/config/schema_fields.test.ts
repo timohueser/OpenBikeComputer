@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import generatedConfigSchema from "../../../../../host/obc-pack/schema/config.schema.json";
+import generatedConfigSchema from "../../../../../host/obc-map-core/schema/config.schema.json";
 import {
     enumDisplayValue,
     resolveSchemaField,
