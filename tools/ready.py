@@ -232,7 +232,7 @@ def plan(
     )
     gates.append(
         Gate(
-            "python3 docs/build_docs.py --check-links",
+            "just check-docs",
             f"documentation changed: {docs}" if docs else f"nothing under {DOCS} changed",
             bool(docs),
             covered_by="ci.docs",

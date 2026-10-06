@@ -9,6 +9,31 @@ import unittest
 
 
 class ObcTests(unittest.TestCase):
+    def test_documentation_recipe_uses_checkout_root_and_propagates_failure(self):
+        source = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory(prefix="obc docs ") as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            (root / "tools").mkdir()
+            caller = root / "nested caller"
+            caller.mkdir()
+            shutil.copyfile(source / "justfile", root / "justfile")
+            shutil.copyfile(source / "tools/justfile", root / "tools/justfile")
+            (root / "docs/build_docs.py").write_text(
+                "import json,os,sys\nfrom pathlib import Path\n"
+                "print(json.dumps([str(Path.cwd()),sys.argv[1:]]))\n"
+                "raise SystemExit(int(os.environ['DOCS_EXIT']))\n"
+            )
+            for entry in (root / "justfile", root / "tools/justfile"):
+                for code in (0, 7):
+                    with self.subTest(entry=entry, code=code):
+                        result = subprocess.run(
+                            ["just", "--justfile", str(entry), "check-docs"], cwd=caller,
+                            env={**os.environ, "DOCS_EXIT": str(code)}, capture_output=True, text=True,
+                        )
+                        self.assertEqual(result.returncode, code, result.stderr)
+                        self.assertEqual(json.loads(result.stdout), [str(root), ["--check-links"]])
+
     def test_installed_command_selects_worktree_and_preserves_global_fallback(self):
         with tempfile.TemporaryDirectory(prefix="obc entry ") as temporary:
             root = Path(temporary)
