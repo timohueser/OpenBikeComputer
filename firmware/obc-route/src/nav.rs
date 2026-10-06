@@ -40,7 +40,7 @@ use obc_formats::io::{ByteSink, Error};
 use obc_formats::obcr::NAME_CAP;
 use obc_map_scene::{cos_lat, ground_dist_m};
 use obc_map_scene::{BBox, M_PER_DEG};
-use obc_reader::{NavEdgeCandidate, NavEdgePosition, NavEdgeSnap, NavTileCache, Reader};
+use obc_reader::{NavEdgeCandidate, NavEdgePosition, NavEdgeSnap, NavNeighbor, NavTileCache, Reader};
 
 /// Maximum accepted distance from the requested position to the winning road polyline. The wider
 /// [`SNAP_LOOKUP_RADIUS_M`] only finds candidate edge ids; it does not weaken this limit.
@@ -467,10 +467,10 @@ impl SnappedEndpoint {
         }
     }
 
-    fn node_id(self) -> u32 {
+    fn node_id(self, virtual_id: u32) -> u32 {
         match self {
             Self::Node { id, .. } => id,
-            Self::Edge(_) => 0,
+            Self::Edge(_) => virtual_id,
         }
     }
 
@@ -482,10 +482,53 @@ impl SnappedEndpoint {
     }
 }
 
+/// The expanding lookup shared by both endpoint phases.
+struct EndpointSnap {
+    best: Option<NavEdgeCandidate>,
+    ordinal: u8,
+}
+
+impl EndpointSnap {
+    const fn new() -> Self {
+        Self { best: None, ordinal: 0 }
+    }
+
+    fn step(
+        &mut self,
+        reader: &Reader,
+        tiles: &mut NavTileCache,
+        point: (i32, i32),
+    ) -> Result<Option<SnappedEndpoint>, NavError> {
+        let cap = self.best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
+        let radius = snap_lookup_radius(self.ordinal);
+        if let Some(found) = snap_window(reader, tiles, point, radius, cap).map_err(|_| NavError::NoPath)? {
+            if self.best.is_none_or(|old| snap_candidate_beats(&found, &old)) {
+                self.best = Some(found);
+            }
+        }
+        if !snap_lookup_complete(self.best.as_ref(), radius) {
+            self.ordinal = 1;
+            return Ok(None);
+        }
+        self.ordinal = 0;
+        let candidate = self.best.take().ok_or(NavError::NoPath)?;
+        let edge = reader
+            .resolve_nav_edge_candidate_cached(candidate, tiles)
+            .map_err(|_| NavError::NoPath)?
+            .ok_or(NavError::NoPath)?;
+        Ok(Some(SnappedEndpoint::from_snap(edge)))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Endpoint {
+    Start,
+    Goal,
+}
+
 /// The internal phase. [`NavPhase`] is its public projection.
 enum PhaseState {
-    SnapFrom,
-    SnapTo,
+    Snap(Endpoint),
     Search,
     Emit,
     Finish,
@@ -504,8 +547,7 @@ enum PhaseState {
 /// sink pristine. A cancel during the emit leaves a headerless prefix the caller deletes.
 pub struct NavPlanner {
     phase: PhaseState,
-    from: (i32, i32),
-    to: (i32, i32),
+    requested: [(i32, i32); 2],
     /// The route's name, applied by the finishing header patch.
     name: heapless::String<NAME_CAP>,
     /// Resolved into [`mult`](Self::mult) at the first step, and written into the route header.
@@ -513,17 +555,9 @@ pub struct NavPlanner {
     objective: Objective,
     /// Resolved from the reader at the first step; neutral until then.
     mult: ProfileMult,
-    /// The snapped endpoints, valid once their phase has run.
-    start_id: u32,
-    start_c: (i32, i32),
-    goal_id: u32,
-    goal_c: (i32, i32),
-    /// Interior-edge metadata for the two virtual endpoints, plus the expanding lookup's current
-    /// best candidate and pass.
-    start_edge: Option<NavEdgeSnap>,
-    goal_edge: Option<NavEdgeSnap>,
-    snap_best: Option<NavEdgeCandidate>,
-    snap_ordinal: u8,
+    /// Start and goal, valid once their snap phase completes.
+    snapped: [SnappedEndpoint; 2],
+    snap: EndpointSnap,
     /// Total settles so far, cumulative across [`NAV_EPSILON_LADDER`] rungs.
     settles: u32,
     /// The current [`NAV_EPSILON_LADDER`] rung. It never advances past the last one.
@@ -609,21 +643,14 @@ impl NavPlanner {
         corridor: Option<Corridor>,
     ) {
         unsafe {
-            core::ptr::addr_of_mut!((*slot).phase).write(PhaseState::SnapFrom);
-            core::ptr::addr_of_mut!((*slot).from).write(from);
-            core::ptr::addr_of_mut!((*slot).to).write(to);
+            core::ptr::addr_of_mut!((*slot).phase).write(PhaseState::Snap(Endpoint::Start));
+            core::ptr::addr_of_mut!((*slot).requested).write([from, to]);
             core::ptr::addr_of_mut!((*slot).name).write(heapless::String::new());
             core::ptr::addr_of_mut!((*slot).bike).write(bike);
             core::ptr::addr_of_mut!((*slot).mult).write(ProfileMult::NEUTRAL);
             core::ptr::addr_of_mut!((*slot).objective).write(Objective::Profile);
-            core::ptr::addr_of_mut!((*slot).start_id).write(0);
-            core::ptr::addr_of_mut!((*slot).start_c).write((0, 0));
-            core::ptr::addr_of_mut!((*slot).goal_id).write(0);
-            core::ptr::addr_of_mut!((*slot).goal_c).write((0, 0));
-            core::ptr::addr_of_mut!((*slot).start_edge).write(None);
-            core::ptr::addr_of_mut!((*slot).goal_edge).write(None);
-            core::ptr::addr_of_mut!((*slot).snap_best).write(None);
-            core::ptr::addr_of_mut!((*slot).snap_ordinal).write(0);
+            core::ptr::addr_of_mut!((*slot).snapped).write([SnappedEndpoint::Node { id: 0, coord: (0, 0) }; 2]);
+            core::ptr::addr_of_mut!((*slot).snap).write(EndpointSnap::new());
             core::ptr::addr_of_mut!((*slot).settles).write(0);
             core::ptr::addr_of_mut!((*slot).rung).write(0);
             core::ptr::addr_of_mut!((*slot).table_full).write(false);
@@ -640,20 +667,13 @@ impl NavPlanner {
             ObcrEmitter::init_in_place(core::ptr::addr_of_mut!((*slot).em));
             let Self {
                 phase: _,
-                from: _,
-                to: _,
+                requested: _,
                 name: _,
                 bike: _,
                 mult: _,
                 objective: _,
-                start_id: _,
-                start_c: _,
-                goal_id: _,
-                goal_c: _,
-                start_edge: _,
-                goal_edge: _,
-                snap_best: _,
-                snap_ordinal: _,
+                snapped: _,
+                snap: _,
                 settles: _,
                 rung: _,
                 table_full: _,
@@ -687,7 +707,7 @@ impl NavPlanner {
     /// The phase the next step will work on.
     pub fn phase(&self) -> NavPhase {
         match &self.phase {
-            PhaseState::SnapFrom | PhaseState::SnapTo => NavPhase::Snap,
+            PhaseState::Snap(_) => NavPhase::Snap,
             PhaseState::Search => NavPhase::Search,
             PhaseState::Emit | PhaseState::Finish => NavPhase::Emit,
             PhaseState::Terminal(_) => NavPhase::Done,
@@ -700,10 +720,10 @@ impl NavPlanner {
 
     /// The graph coordinates the two endpoints snapped to, once the search has run.
     pub fn snapped_start(&self) -> (i32, i32) {
-        self.start_c
+        self.snapped[0].coord()
     }
     pub fn snapped_goal(&self) -> (i32, i32) {
-        self.goal_c
+        self.snapped[1].coord()
     }
 
     /// The [`NAV_EPSILON_LADDER`] rung the search is on. After a terminal outcome it reads the
@@ -727,8 +747,12 @@ impl NavPlanner {
         scratch.eps_num = num as u16;
         scratch.eps_den = den as u16;
         self.table_full = false;
-        let (si, _) = scratch.entry(self.start_id, self.start_c.0, self.start_c.1)?;
-        scratch.entries[si].h = sat16(ground_dist_m(self.start_c, self.goal_c) as u32);
+        let (si, _) = scratch.entry(
+            self.snapped[0].node_id(VIRTUAL_START_ID),
+            self.snapped[0].coord().0,
+            self.snapped[0].coord().1,
+        )?;
+        scratch.entries[si].h = sat16(ground_dist_m(self.snapped[0].coord(), self.snapped[1].coord()) as u32);
         scratch.entries[si].came_from = si as u16;
         scratch.heap_push(si);
         Ok(())
@@ -750,73 +774,29 @@ impl NavPlanner {
         sink: &mut dyn ByteSink,
     ) -> Step {
         match self.phase {
-            PhaseState::SnapFrom => {
-                // First step of the plan: claim the caller's buffers and resolve the profile.
-                if self.snap_ordinal == 0 {
+            PhaseState::Snap(endpoint) => {
+                if endpoint == Endpoint::Start && self.snap.ordinal == 0 {
                     scratch.reset();
                     tiles.reset();
                     self.mult = ProfileMult::resolve(reader, self.bike).prefer(self.objective);
                 }
-                let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
-                let lookup_radius = snap_lookup_radius(self.snap_ordinal);
-                match snap_window(reader, tiles, self.from, lookup_radius, cap) {
-                    Err(()) => return self.fail(NavError::NoPath),
-                    Ok(Some(found)) if self.snap_best.is_none_or(|old| snap_candidate_beats(&found, &old)) => {
-                        self.snap_best = Some(found);
+                let snapped = match self.snap.step(reader, tiles, self.requested[endpoint as usize]) {
+                    Err(error) => return self.fail(error),
+                    Ok(None) => return Step::Running,
+                    Ok(Some(snapped)) => snapped,
+                };
+                self.snapped[endpoint as usize] = snapped;
+                if endpoint == Endpoint::Start {
+                    self.phase = PhaseState::Snap(Endpoint::Goal);
+                } else {
+                    if let Some(corridor) = self.corridor.as_mut() {
+                        corridor.set_exempt_nodes(self.snapped[0].coord(), self.snapped[1].coord());
                     }
-                    Ok(_) => {}
-                }
-                if !snap_lookup_complete(self.snap_best.as_ref(), lookup_radius) {
-                    self.snap_ordinal = 1;
-                    return Step::Running;
-                }
-                self.snap_ordinal = 0;
-                let Some(candidate) = self.snap_best.take() else {
-                    return self.fail(NavError::NoPath);
-                };
-                let Ok(Some(edge)) = reader.resolve_nav_edge_candidate_cached(candidate, tiles) else {
-                    return self.fail(NavError::NoPath);
-                };
-                let snapped = SnappedEndpoint::from_snap(edge);
-                self.start_c = snapped.coord();
-                self.start_edge = snapped.edge();
-                self.start_id = if self.start_edge.is_some() { VIRTUAL_START_ID } else { snapped.node_id() };
-                self.phase = PhaseState::SnapTo;
-                Step::Running
-            }
-            PhaseState::SnapTo => {
-                let cap = self.snap_best.map_or(SNAP_RADIUS_M, |best| best.distance_m);
-                let lookup_radius = snap_lookup_radius(self.snap_ordinal);
-                match snap_window(reader, tiles, self.to, lookup_radius, cap) {
-                    Err(()) => return self.fail(NavError::NoPath),
-                    Ok(Some(found)) if self.snap_best.is_none_or(|old| snap_candidate_beats(&found, &old)) => {
-                        self.snap_best = Some(found);
+                    if let Err(error) = self.reseed(scratch) {
+                        return self.fail(error);
                     }
-                    Ok(_) => {}
+                    self.phase = PhaseState::Search;
                 }
-                if !snap_lookup_complete(self.snap_best.as_ref(), lookup_radius) {
-                    self.snap_ordinal = 1;
-                    return Step::Running;
-                }
-                self.snap_ordinal = 0;
-                let Some(candidate) = self.snap_best.take() else {
-                    return self.fail(NavError::NoPath);
-                };
-                let Ok(Some(edge)) = reader.resolve_nav_edge_candidate_cached(candidate, tiles) else {
-                    return self.fail(NavError::NoPath);
-                };
-                let snapped = SnappedEndpoint::from_snap(edge);
-                self.goal_c = snapped.coord();
-                self.goal_edge = snapped.edge();
-                self.goal_id = if self.goal_edge.is_some() { VIRTUAL_GOAL_ID } else { snapped.node_id() };
-                // Both endpoints are snapped, so the corridor exemptions can be set.
-                if let Some(cor) = self.corridor.as_mut() {
-                    cor.set_exempt_nodes(self.start_c, self.goal_c);
-                }
-                if let Err(e) = self.reseed(scratch) {
-                    return self.fail(e);
-                }
-                self.phase = PhaseState::Search;
                 Step::Running
             }
             // The search terminates because a settle either closes a node or strictly lowers an
@@ -839,7 +819,7 @@ impl NavPlanner {
                         let e = if self.table_full { NavError::Exhausted } else { NavError::NoPath };
                         return self.fail(e);
                     };
-                    if scratch.entries[idx].node_id == self.goal_id {
+                    if scratch.entries[idx].node_id == self.snapped[1].node_id(VIRTUAL_GOAL_ID) {
                         // The goal is reached even if the table filled on the way. The path may
                         // then exceed the rung's bound, which is accepted.
                         return match self.stage_chain(scratch, idx) {
@@ -850,101 +830,16 @@ impl NavPlanner {
                             Err(e) => self.fail(e),
                         };
                     }
-                    // An interior start is a virtual node with two partial-edge exits and no
-                    // record of its own. When both endpoints lie on one edge, the direct projected
-                    // connection is added too, so a short mid-block route takes no junction.
-                    if scratch.entries[idx].node_id == VIRTUAL_START_ID {
-                        let Some(start) = self.start_edge else {
-                            return self.fail(NavError::NoPath);
-                        };
-                        let raw_a = start.from_a_m;
-                        self.table_full |= relax_virtual_edge(
-                            scratch,
-                            idx,
-                            start.a.id,
-                            start.a.coord,
-                            start.edge_id,
-                            raw_a,
-                            partial_ascent(start.ascent_ba, raw_a, start.length_m),
-                            start.way_kind,
-                            self.goal_c,
-                            &self.mult,
-                        );
-                        let raw_b = start.length_m.saturating_sub(start.from_a_m);
-                        self.table_full |= relax_virtual_edge(
-                            scratch,
-                            idx,
-                            start.b.id,
-                            start.b.coord,
-                            start.edge_id,
-                            raw_b,
-                            partial_ascent(start.ascent_ab, raw_b, start.length_m),
-                            start.way_kind,
-                            self.goal_c,
-                            &self.mult,
-                        );
-                        if let Some(goal) = self.goal_edge.filter(|goal| goal.edge_id == start.edge_id) {
-                            let raw = start.from_a_m.abs_diff(goal.from_a_m);
-                            let ascent = if goal.from_a_m >= start.from_a_m {
-                                partial_ascent(start.ascent_ab, raw, start.length_m)
-                            } else {
-                                partial_ascent(start.ascent_ba, raw, start.length_m)
-                            };
-                            self.table_full |= relax_virtual_edge(
-                                scratch,
-                                idx,
-                                VIRTUAL_GOAL_ID,
-                                goal.position.coord,
-                                start.edge_id,
-                                raw,
-                                ascent,
-                                start.way_kind,
-                                self.goal_c,
-                                &self.mult,
-                            );
-                        }
-                        scratch.entries[idx].meta |= META_CLOSED;
+                    let virtual_start = scratch.entries[idx].node_id == VIRTUAL_START_ID;
+                    if !virtual_start {
+                        self.settles = self.settles.wrapping_add(1);
+                        settled_this_step += 1;
+                    }
+                    if let Err(error) = self.settle(reader, scratch, tiles, idx) {
+                        return self.fail(error);
+                    }
+                    if virtual_start {
                         continue;
-                    }
-                    self.settles = self.settles.wrapping_add(1);
-                    settled_this_step += 1;
-                    scratch.entries[idx].meta |= META_CLOSED;
-                    // A read failure is the only hard error; a full table latches `table_full`.
-                    if let Err(e) = settle::<N>(
-                        reader,
-                        scratch,
-                        tiles,
-                        idx,
-                        self.goal_c,
-                        &self.mult,
-                        self.corridor.as_ref(),
-                        &mut self.table_full,
-                    ) {
-                        return self.fail(e);
-                    }
-                    if let Some(goal) = self.goal_edge {
-                        let settled_id = scratch.entries[idx].node_id;
-                        let partial = if settled_id == goal.a.id {
-                            Some((goal.from_a_m, goal.ascent_ab))
-                        } else if settled_id == goal.b.id {
-                            Some((goal.length_m.saturating_sub(goal.from_a_m), goal.ascent_ba))
-                        } else {
-                            None
-                        };
-                        if let Some((raw, ascent)) = partial {
-                            self.table_full |= relax_virtual_edge(
-                                scratch,
-                                idx,
-                                VIRTUAL_GOAL_ID,
-                                goal.position.coord,
-                                goal.edge_id,
-                                raw,
-                                partial_ascent(ascent, raw, goal.length_m),
-                                goal.way_kind,
-                                self.goal_c,
-                                &self.mult,
-                            );
-                        }
                     }
                     // The check trails the settle, so a step always makes at least one node of
                     // progress.
@@ -1054,7 +949,7 @@ impl NavPlanner {
             }
             scratch.heap[chain_len] = cur as u16;
             chain_len += 1;
-            if scratch.entries[cur].node_id == self.start_id {
+            if scratch.entries[cur].node_id == self.snapped[0].node_id(VIRTUAL_START_ID) {
                 break;
             }
             cur = scratch.entries[cur].came_from as usize;
@@ -1130,17 +1025,84 @@ impl NavPlanner {
         Ok(())
     }
 
+    /// Synthetic neighbors bypass the corridor, as do its endpoint exemptions. Real graph
+    /// neighbors retain their record order; the synthetic goal follows the complete node walk.
+    /// Keep this frame separate from the step's emit scratch.
+    #[inline(never)]
+    fn settle<const N: usize>(
+        &mut self,
+        reader: &Reader,
+        scratch: &mut NavScratch<N>,
+        tiles: &mut NavTileCache,
+        idx: usize,
+    ) -> Result<(), NavError> {
+        let settled = scratch.entries[idx];
+        let goal_c = self.snapped[1].coord();
+        if settled.node_id == VIRTUAL_START_ID {
+            let start = self.snapped[0].edge().ok_or(NavError::NoPath)?;
+            let mut neighbors = [
+                Some(partial_neighbor(start, start.a.id, start.a.coord, start.from_a_m, start.ascent_ba)),
+                Some(partial_neighbor(
+                    start,
+                    start.b.id,
+                    start.b.coord,
+                    start.length_m.saturating_sub(start.from_a_m),
+                    start.ascent_ab,
+                )),
+                None,
+            ];
+            if let Some(goal) = self.snapped[1].edge().filter(|goal| goal.edge_id == start.edge_id) {
+                let raw = start.from_a_m.abs_diff(goal.from_a_m);
+                let ascent = if goal.from_a_m >= start.from_a_m { start.ascent_ab } else { start.ascent_ba };
+                neighbors[2] = Some(partial_neighbor(start, VIRTUAL_GOAL_ID, goal_c, raw, ascent));
+            }
+            for neighbor in neighbors.into_iter().flatten() {
+                self.table_full |= relax_neighbor(scratch, idx, neighbor, goal_c, &self.mult, None);
+            }
+            scratch.entries[idx].meta |= META_CLOSED;
+            return Ok(());
+        }
+        scratch.entries[idx].meta |= META_CLOSED;
+        let view = BBox { min_lon: settled.lon, min_lat: settled.lat, max_lon: settled.lon, max_lat: settled.lat };
+        reader
+            .for_each_nav_node_cached(&view, tiles, |node| {
+                // A shared chunk can yield a node twice; only this node's record supplies neighbors.
+                if node.id != settled.node_id {
+                    return;
+                }
+                for neighbor in node.neighbors() {
+                    self.table_full |=
+                        relax_neighbor(scratch, idx, neighbor, goal_c, &self.mult, self.corridor.as_ref());
+                }
+            })
+            .map_err(|_| NavError::NoPath)?;
+        if let Some(goal) = self.snapped[1].edge() {
+            let partial = if settled.node_id == goal.a.id {
+                Some((goal.from_a_m, goal.ascent_ab))
+            } else if settled.node_id == goal.b.id {
+                Some((goal.length_m.saturating_sub(goal.from_a_m), goal.ascent_ba))
+            } else {
+                None
+            };
+            if let Some((raw, ascent)) = partial {
+                let neighbor = partial_neighbor(goal, VIRTUAL_GOAL_ID, goal_c, raw, ascent);
+                self.table_full |= relax_neighbor(scratch, idx, neighbor, goal_c, &self.mult, None);
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve a real or virtual entry to its position and raw offset on `edge_id`.
     fn edge_position(&self, edge_id: u32, node_id: u32) -> Option<(NavEdgePosition, u32)> {
         if node_id == VIRTUAL_START_ID {
-            let edge = self.start_edge.filter(|edge| edge.edge_id == edge_id)?;
+            let edge = self.snapped[0].edge().filter(|edge| edge.edge_id == edge_id)?;
             return Some((edge.position, edge.from_a_m));
         }
         if node_id == VIRTUAL_GOAL_ID {
-            let edge = self.goal_edge.filter(|edge| edge.edge_id == edge_id)?;
+            let edge = self.snapped[1].edge().filter(|edge| edge.edge_id == edge_id)?;
             return Some((edge.position, edge.from_a_m));
         }
-        for edge in [self.start_edge, self.goal_edge].into_iter().flatten() {
+        for edge in [self.snapped[0].edge(), self.snapped[1].edge()].into_iter().flatten() {
             if edge.edge_id != edge_id {
                 continue;
             }
@@ -1266,29 +1228,40 @@ fn partial_ascent(total: u16, partial_m: u32, length_m: u32) -> u16 {
     rounded.checked_div(u64::from(length_m)).unwrap_or(0).min(u64::from(u16::MAX)) as u16
 }
 
-/// Relax one synthetic partial-edge adjacency used by an exact projected start or goal.
-#[allow(clippy::too_many_arguments)]
-fn relax_virtual_edge<const N: usize>(
+fn partial_neighbor(edge: NavEdgeSnap, id: u32, coord: (i32, i32), raw_m: u32, ascent: u16) -> NavNeighbor {
+    NavNeighbor {
+        id,
+        lon: coord.0,
+        lat: coord.1,
+        edge_id: edge.edge_id,
+        cost_m: raw_m,
+        ascent_m: partial_ascent(ascent, raw_m, edge.length_m),
+        way_kind: edge.way_kind,
+    }
+}
+
+/// Full tables reject new nodes but still decrease keys and reopen tracked nodes.
+fn relax_neighbor<const N: usize>(
     scratch: &mut NavScratch<N>,
     from: usize,
-    target_id: u32,
-    target_coord: (i32, i32),
-    edge_id: u32,
-    raw_cost_m: u32,
-    ascent_m: u16,
-    way_kind: u8,
+    neighbor: NavNeighbor,
     goal_c: (i32, i32),
     mult: &ProfileMult,
+    corridor: Option<&Corridor>,
 ) -> bool {
-    let Some(weighted) = mult.edge_cost(raw_cost_m, ascent_m, way_kind) else { return false };
+    let Some(weighted) = mult.edge_cost(neighbor.cost_m, neighbor.ascent_m, neighbor.way_kind) else { return false };
+    let source = scratch.entries[from];
+    if corridor.is_some_and(|corridor| corridor.blocks((source.lon, source.lat), (neighbor.lon, neighbor.lat))) {
+        return false;
+    }
     let tentative = sat16((scratch.entries[from].g as u32).saturating_add(weighted));
-    match scratch.entry(target_id, target_coord.0, target_coord.1) {
+    match scratch.entry(neighbor.id, neighbor.lon, neighbor.lat) {
         Ok((j, false)) => {
             if tentative < scratch.entries[j].g {
                 let entry = &mut scratch.entries[j];
                 entry.g = tentative;
                 entry.came_from = from as u16;
-                entry.edge_used = edge_id;
+                entry.edge_used = neighbor.edge_id;
                 if entry.heap_pos() == HEAP_NONE {
                     entry.meta &= !META_CLOSED;
                     scratch.heap_push(j);
@@ -1302,90 +1275,14 @@ fn relax_virtual_edge<const N: usize>(
         Ok((j, true)) => {
             let entry = &mut scratch.entries[j];
             entry.g = tentative;
-            entry.h = sat16(ground_dist_m(target_coord, goal_c) as u32);
+            entry.h = sat16(ground_dist_m((neighbor.lon, neighbor.lat), goal_c) as u32);
             entry.came_from = from as u16;
-            entry.edge_used = edge_id;
+            entry.edge_used = neighbor.edge_id;
             scratch.heap_push(j);
             false
         }
         Err(_) => true,
     }
-}
-
-/// One settle: descend the node quadtree to the settled node's leaf and relax each neighbor
-/// through the plan's profile. A node the walk does not yield, which means a corrupt map, relaxes
-/// nothing and the search continues on the rest of the frontier.
-///
-/// A full scratch drops the new discovery and latches `*table_full`; decrease-key of a tracked
-/// neighbor still relaxes. The only hard error is a read failure.
-///
-/// Must stay `#[inline(never)]`: this is a phase-boundary frame and must not join the step frame.
-#[allow(clippy::too_many_arguments)]
-#[inline(never)]
-fn settle<const N: usize>(
-    reader: &Reader,
-    scratch: &mut NavScratch<N>,
-    tiles: &mut NavTileCache,
-    idx: usize,
-    goal_c: (i32, i32),
-    mult: &ProfileMult,
-    corridor: Option<&Corridor>,
-    table_full: &mut bool,
-) -> Result<(), NavError> {
-    let settled = scratch.entries[idx];
-    let view = BBox { min_lon: settled.lon, min_lat: settled.lat, max_lon: settled.lon, max_lat: settled.lat };
-    reader
-        .for_each_nav_node_cached(&view, tiles, |n| {
-            // A node can be yielded more than once when two leaves share a chunk, so only the
-            // settled node's own record relaxes anything.
-            if n.id != settled.node_id {
-                return;
-            }
-            for nb in n.neighbors() {
-                // A forbidden class is skipped, never relaxed, so the graph stays whole for the
-                // other profiles.
-                let Some(weighted) = mult.edge_cost(nb.cost_m, nb.ascent_m, nb.way_kind) else {
-                    continue;
-                };
-                // A blacklisted edge is skipped exactly like a forbidden class.
-                if corridor.is_some_and(|c| c.blocks((settled.lon, settled.lat), (nb.lon, nb.lat))) {
-                    continue;
-                }
-                let tentative = sat16((settled.g as u32).saturating_add(weighted));
-                match scratch.entry(nb.id, nb.lon, nb.lat) {
-                    Ok((j, false)) => {
-                        if tentative < scratch.entries[j].g {
-                            let e = &mut scratch.entries[j];
-                            e.g = tentative;
-                            e.came_from = idx as u16;
-                            e.edge_used = nb.edge_id;
-                            if e.heap_pos() == HEAP_NONE {
-                                // The inflated `h` makes a better-`g` rediscovery of a closed
-                                // node routine, so it re-opens. The bound still holds.
-                                e.meta &= !META_CLOSED;
-                                scratch.heap_push(j);
-                            } else {
-                                let pos = scratch.entries[j].heap_pos() as usize;
-                                scratch.sift_up(pos);
-                            }
-                        }
-                    }
-                    // A new node is inserted only while the table has room. No new node once it
-                    // is full is what makes the frontier drain.
-                    Ok((j, true)) => {
-                        let e = &mut scratch.entries[j];
-                        e.g = tentative;
-                        e.h = sat16(ground_dist_m((nb.lon, nb.lat), goal_c) as u32);
-                        e.came_from = idx as u16;
-                        e.edge_used = nb.edge_id;
-                        scratch.heap_push(j);
-                    }
-                    Err(_) => *table_full = true,
-                }
-            }
-        })
-        .map_err(|_| NavError::NoPath)?;
-    Ok(())
 }
 
 /// Scan one lookup square and project every candidate edge geometry. The caller tries
