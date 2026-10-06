@@ -228,7 +228,7 @@ pub(super) fn discovery_fetch(
                     "source `{}` is not prepared; status and ordinary plans do not fetch bulk data",
                     wanted.source
                 ))
-                .fix("Use an explicit `plan --move SOURCE` or a build to prepare this source."));
+                .fix("Use `obc data prepare ENV --move SOURCE` or a build to prepare this source."));
         }
         fetch(wanted)
     }

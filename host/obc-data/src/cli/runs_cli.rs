@@ -60,6 +60,9 @@ fn show(run: &Details, json: bool) -> Result<(), Error> {
     let summary = &run.summary;
     let took = summary.wall_ms.map_or("—".into(), duration);
     println!("{}  {}  {}  {took}", summary.id, summary.command, mark(summary.outcome));
+    if let Some(phase) = run.phase {
+        println!("phase {phase:?}; {} remote writes acknowledged", run.published.len());
+    }
     if let Some(error) = &run.error {
         println!("{error}");
     }
@@ -115,6 +118,8 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
             "{}",
             match event {
                 Event::Started { command, at } => format!("started {command} at {at}"),
+                Event::Phase { phase } => format!("phase {phase:?}"),
+                Event::Published { mutation } => serde_json::to_string(mutation).unwrap(),
                 Event::StepStarted { step } => format!("{step} started"),
                 Event::StepFinished { step, reused: true, .. } => format!("{step} reused"),
                 Event::StepFinished { step, receipt, .. } => {
@@ -124,8 +129,13 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
                 Event::FetchStarted { source, version, params } => {
                     format!("{} fetch started", fetched(source, version, params))
                 }
-                Event::FetchFinished { source, version, params, bytes: size, wall_ms } => {
-                    format!("{} fetched in {}, {}", fetched(source, version, params), duration(*wall_ms), bytes(*size))
+                Event::FetchFinished { source, version, params, resolved, bytes: size, wall_ms } => {
+                    format!(
+                        "{} fetched {resolved} in {}, {}",
+                        fetched(source, version, params),
+                        duration(*wall_ms),
+                        bytes(*size)
+                    )
                 }
                 Event::FetchFailed { source, version, params, error } => {
                     format!("{} fetch failed: {error}", fetched(source, version, params))
