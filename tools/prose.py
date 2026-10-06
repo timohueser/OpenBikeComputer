@@ -35,7 +35,7 @@ CAPS = {"guide": 2500, "readme": 800, "guard": 150, "policy": 2000}
 
 POLICY = ("CLAUDE.md", "CONTRIBUTING.md", "docs/testing.md", "docs/README.md")
 
-SVG = re.compile(r"<svg.*?</svg>", re.S)
+SVG = re.compile(r"<svg.*?</svg>|<img\b[^>]*\sdata-inline-svg\s*/?>", re.S)
 FENCE = re.compile(r"```.*?```", re.S)
 COMMENT = re.compile(r"<!--.*?-->", re.S)
 FRONT = re.compile(r"\A---\n.*?\n---\n", re.S)
