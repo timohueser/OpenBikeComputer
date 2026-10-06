@@ -775,6 +775,11 @@ check-device:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
+[doc("Build the documentation and check internal links.")]
+[group('build')]
+check-docs:
+    @cd "$OBC_ROOT" && python3 docs/build_docs.py --check-links
+
 # Run explicitly selected CI gates locally. Each gate names the CI jobs it reproduces;
 # `full` runs every gate in the job table and then names the required suites the run does
 # NOT reproduce. Examples:
@@ -882,7 +887,7 @@ check *args:
           cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
       else _warn "skip wasm engine — no wasm32 target (obc doctor --install)"; SKIPPED+=("wasm-engine"); fi
     fi
-    want docs && step "docs build and link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
+    want docs && step "docs build and link check" just --justfile "$OBC_ROOT/justfile" check-docs
     printf '\n'; _say "check summary"
     (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
     (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"

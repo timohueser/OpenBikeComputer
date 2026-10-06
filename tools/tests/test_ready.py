@@ -63,7 +63,7 @@ class ReadyPlanTests(unittest.TestCase):
         changed = ("docs/content/riding.md",)
         self.assertEqual(
             self.running(*changed),
-            ["python3 docs/build_docs.py --check-links"],
+            ["just check-docs"],
         )
         skipped = self.skipped(*changed)
         self.assertEqual(skipped["cargo fmt --all"], "no Rust source changed")
@@ -138,7 +138,7 @@ class ReadyPlanTests(unittest.TestCase):
         skipped = self.skipped("firmware/obc-app/src/app.rs", "docs/content/riding.md", "Cargo.lock", suites=suites)
         self.assertEqual(skipped["obc shot --check"], "obc test affected runs it as ci.ui-snapshots")
         self.assertEqual(
-            skipped["python3 docs/build_docs.py --check-links"], "obc test affected runs it as ci.docs"
+            skipped["just check-docs"], "obc test affected runs it as ci.docs"
         )
         self.assertEqual(
             skipped["tools/licenses/gen-third-party.sh --check"], "obc test affected runs it as ci.licenses"
@@ -189,7 +189,7 @@ class ReadyPlanTests(unittest.TestCase):
         # A suite no running gate covers keeps its own line; that is the whole point here.
         self.assertEqual(lines["obc check docs"].reason, "ci.docs is left to CI")
         self.assertEqual(
-            lines["python3 docs/build_docs.py --check-links"].reason, "nothing under docs/ changed"
+            lines["just check-docs"].reason, "nothing under docs/ changed"
         )
         # The snapshot sweep stays CI's work: the budget gives it one run, and CI has it.
         self.assertEqual(lines["obc shot --check"].reason, "ci.ui-snapshots is left to CI")

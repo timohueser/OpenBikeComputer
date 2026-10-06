@@ -12,8 +12,8 @@ use crate::store::{sorted, Store};
 
 /// What the state of a layer depends on besides the steps and the store.
 pub struct Environment {
-    /// The status of each source, from `sources::status`.
-    pub sources: BTreeMap<String, Status>,
+    /// The status of each active acquisition request, from `sources::status`.
+    pub sources: BTreeMap<crate::env::RequestKey, Status>,
     /// Each layer that live has, from the live release manifests.
     pub live: BTreeMap<String, Layer>,
 }
@@ -122,8 +122,10 @@ fn judge(
 
     for wanted in [State::Stale, State::Blocked] {
         for input in &step.inputs {
-            let Input::Snapshot { source, .. } = input else { continue };
-            if let Some(status) = environment.sources.get(source).filter(|status| status.state == wanted) {
+            let Input::Snapshot { source, params, .. } = input else { continue };
+            if let Some(status) =
+                environment.sources.get(&(source.clone(), sorted(params))).filter(|status| status.state == wanted)
+            {
                 let reason = status.reason.as_deref().map_or(source.clone(), |reason| format!("{source}: {reason}"));
                 return found(wanted, reason);
             }
@@ -250,8 +252,11 @@ mod tests {
         let fixture = fixture("state-each");
         let mut environment = live(&fixture);
         let status = |state, reason: &str| Status { state, reason: Some(reason.into()), age_days: None };
-        environment.sources.insert("head".into(), status(State::Stale, "14 d > 7 d, upstream 2026-10-04"));
-        environment.sources.insert("tail".into(), status(State::Blocked, "no licence recorded"));
+        environment
+            .sources
+            .insert(("head".into(), Vec::new()), status(State::Stale, "14 d > 7 d, upstream 2026-10-04"));
+        environment.sources.insert(("tail".into(), Vec::new()), status(State::Blocked, "no licence recorded"));
+        let all_live = environment.live.clone();
         environment.live.remove("test/count");
         assert_eq!(
             states(&fixture, &pipeline(), &environment),
@@ -260,6 +265,16 @@ mod tests {
                 ("test/join", State::Blocked, Some("tail: no licence recorded")),
                 ("test/count", State::NotApplied, Some("missing in live")),
             ])
+        );
+
+        let mut unrelated = Environment { sources: BTreeMap::new(), live: all_live };
+        unrelated.sources.insert(
+            ("head".into(), vec![("area".into(), "another".into())]),
+            status(State::Stale, "another area is due"),
+        );
+        assert!(
+            states(&fixture, &pipeline(), &unrelated).iter().all(|(_, state, _)| *state == State::Ok),
+            "held snapshots and unrelated requests do not inherit source-wide freshness"
         );
 
         fixture.fetched_version("head", "2", "head.txt", b"head 2\n");
