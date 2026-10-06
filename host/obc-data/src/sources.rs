@@ -166,7 +166,7 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub id: String,
@@ -192,6 +192,9 @@ pub struct Source {
     pub r2_copy: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<Credential>,
+    /// `[west, south, east, north]` in degrees: the source has no data outside this box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<[f64; 4]>,
 }
 
 impl Source {
@@ -232,7 +235,18 @@ impl Source {
                 return fail("a credential is `env` or `file`");
             }
         }
+        if let Some([west, south, east, north]) = self.coverage {
+            if !(-180.0 <= west && west < east && east <= 180.0 && -90.0 <= south && south < north && north <= 90.0) {
+                return fail("`coverage` is `[west, south, east, north]` in degrees");
+            }
+        }
         Ok(())
+    }
+
+    /// Whether the source can have data in `[west, south, east, north]`: it has no `coverage`, or
+    /// its `coverage` overlaps them.
+    pub fn covers(&self, [west, south, east, north]: [f64; 4]) -> bool {
+        self.coverage.is_none_or(|[w, s, e, n]| west < e && w < east && south < n && s < north)
     }
 }
 
@@ -495,6 +509,19 @@ mod tests {
     fn an_r2_copy_needs_redistribution() {
         let text = OSM.replace("redistribute = true", "redistribute = false\nr2_copy = true");
         assert!(parse_sources(&text).unwrap_err().contains("r2_copy"));
+    }
+
+    #[test]
+    fn a_coverage_is_a_box_that_a_source_covers_where_it_overlaps() {
+        let text =
+            |coverage: &str| OSM.replace("redistribute = true", &format!("redistribute = true\ncoverage = {coverage}"));
+        assert!(parse_sources(&text("[10, 40, 0, 50]")).unwrap_err().contains("coverage"));
+        let source = &parse_sources(&text("[-32, 26, 46, 72]")).unwrap()[0];
+        assert!(source.covers([7.5, 47.5, 10.5, 49.8]));
+        assert!(source.covers([40.0, 20.0, 50.0, 30.0]), "a box that overlaps a corner");
+        assert!(!source.covers([-110.0, 37.0, -104.0, 41.0]));
+        assert!(!source.covers([46.0, 40.0, 50.0, 42.0]), "a box that only touches the edge");
+        assert!(osm().covers([-110.0, 37.0, -104.0, 41.0]), "a source without coverage covers everything");
     }
 
     #[test]

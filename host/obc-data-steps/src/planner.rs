@@ -13,7 +13,7 @@ use obc_data::engine::{Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Regions};
-use obc_data::sources::attribution;
+use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
 use route_build::grid::{mercator, tile_bounds};
@@ -250,7 +250,7 @@ impl Product for Planner {
             vec![osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places];
         if on("climate") {
             let first_year = config.climate.first_year;
-            let params = vec![bbox.clone(), ("first-year".to_string(), first_year.to_string())];
+            let params = vec![bbox, ("first-year".to_string(), first_year.to_string())];
             steps.push(python(
                 "planner/climate",
                 vec![snapshot(env, store, "era5-land", params, &mut wanted)?],
@@ -262,20 +262,7 @@ impl Product for Planner {
             ));
         }
         if on("snow") {
-            let [first, last] = config.snow.seasons;
-            let seasons = ("seasons".to_string(), format!("{first}-{last}"));
-            let snow = snapshot(env, store, "hr-wsi", vec![bbox, seasons], &mut wanted)?;
-            // The credit of HR-WSI names a year: the year of the capture.
-            let Input::Snapshot { version, .. } = &snow else { unreachable!("a fetch is a snapshot input") };
-            let year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
-            steps.push(python(
-                "planner/snow",
-                vec![snow],
-                json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": attribution("hr-wsi")}),
-                ("tools.planner_snow", Some("planner-snow")),
-                &["tools/planner_snow.py", "tools/planner_geo.py"],
-                &["snow.pmtiles"],
-            ));
+            steps.push(snow(env, store, bounds, config.snow.seasons, &mut wanted)?);
         }
         if on("sun") {
             steps.push(python(
@@ -366,6 +353,53 @@ fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
     }
 }
 
+/// The snow layer of `bounds`: HR-WSI where it has data, and MODIS elsewhere. Outside the coverage
+/// of HR-WSI, it reads MODIS only.
+fn snow(
+    env: &Env,
+    store: &Store,
+    bounds: [f64; 4],
+    [first, last]: [u16; 2],
+    wanted: &mut Vec<Wanted>,
+) -> Result<Step, Unplanned> {
+    let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
+    let params = vec![bbox, ("seasons".to_string(), format!("{first}-{last}"))];
+    let tiles = canopy_tiles(bounds).into_iter().map(|tile| ("tile".to_string(), tile)).collect();
+    let mut inputs = vec![
+        snapshot(env, store, "modis-snow", params.clone(), wanted)?,
+        snapshot(env, store, "hansen-gfc", tiles, wanted)?,
+    ];
+    let mut credit = format!("{}; tree canopy: {}", attribution("modis-snow"), attribution("hansen-gfc"));
+    let mut year = None;
+    if embedded("hr-wsi").covers(bounds) {
+        let hr_wsi = snapshot(env, store, "hr-wsi", params, wanted)?;
+        // The credit of HR-WSI names a year: the year of the capture.
+        let Input::Snapshot { version, .. } = &hr_wsi else { unreachable!("a fetch is a snapshot input") };
+        year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
+        credit = format!("{}; {credit}", attribution("hr-wsi"));
+        inputs.insert(0, hr_wsi);
+    }
+    Ok(python(
+        "planner/snow",
+        inputs,
+        json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": credit}),
+        ("tools.planner_snow", Some("planner-snow")),
+        &["tools/planner_snow.py", "tools/planner_geo.py"],
+        &["snow.pmtiles"],
+    ))
+}
+
+/// The 10° Hansen GFC tiles that `bounds` touches, named by their north-west corner.
+fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
+    let lats = (south / 10.0).floor() as i32 + 1..=(north / 10.0).ceil() as i32;
+    let lons = (west / 10.0).floor() as i32..(east / 10.0).ceil() as i32;
+    let name = |lat: i32, lon: i32| {
+        let (ns, ew) = (if lat >= 0 { 'N' } else { 'S' }, if lon >= 0 { 'E' } else { 'W' });
+        format!("{:02}{ns}_{:03}{ew}", (lat * 10).abs(), (lon * 10).abs())
+    };
+    lats.flat_map(|lat| lons.clone().map(move |lon| name(lat, lon))).collect()
+}
+
 /// The terrain of the maps around `bounds`: the zoom 10 tiles that it touches and their
 /// neighbours, because the contours of a tile read a 3 × 3 tile neighbourhood; and at least
 /// `margin_m` metres around `bounds`.
@@ -411,16 +445,10 @@ mod tests {
     fn env(region: &str, layers: &[&str]) -> Env {
         let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
         let live = read.map(|source| ((source.into(), Vec::new()), BTreeSet::from(["1".into()])));
-        let moves = ["era5-land", "hr-wsi"].map(|source| (source.into(), Some("2026-10-01".into())));
+        let moves = ["era5-land", "hr-wsi", "modis-snow"].map(|source| (source.into(), Some("2026-10-01".into())));
+        let moves = moves.into_iter().chain([("hansen-gfc".into(), Some("v1.11".into()))]).collect();
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
-        Env {
-            name: "test".into(),
-            region: region.into(),
-            layers,
-            live: live.into(),
-            moves: moves.into(),
-            ..Env::default()
-        }
+        Env { name: "test".into(), region: region.into(), layers, live: live.into(), moves, ..Env::default() }
     }
 
     fn regions() -> Regions {
@@ -535,6 +563,33 @@ mod tests {
                 assert!(!files.keys().any(|path| path.starts_with("host/route-build/")), "terrain reads route-build");
             }
         }
+    }
+
+    #[test]
+    fn snow_reads_hr_wsi_where_it_covers_the_region_and_modis_and_the_canopy_everywhere() {
+        let temp = temp("planner-snow");
+        let store = store(&temp, &[]);
+        let sources = |bounds: [f64; 4]| {
+            let step = snow(&env(AREA, &["snow"]), &store, bounds, [2016, 2024], &mut Vec::new()).unwrap();
+            let inputs = step.inputs.iter().map(|input| match input {
+                Input::Snapshot { source, params, .. } => (source.clone(), params.clone()),
+                Input::Layer { .. } => panic!("a layer input"),
+            });
+            (inputs.collect::<Vec<_>>(), step.options)
+        };
+        let (inputs, options) = sources([7.5, 47.5, 10.5, 49.8]);
+        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
+        assert_eq!(names, ["hr-wsi", "modis-snow", "hansen-gfc"]);
+        assert_eq!(inputs[2].1, [("tile".to_string(), "50N_000E".to_string()), ("tile".into(), "50N_010E".into())]);
+        assert_eq!(options["year"], 2026);
+        assert!(options["attribution"].as_str().unwrap().starts_with("© European Union"));
+
+        let (inputs, options) = sources([-106.0, 39.5, -105.0, 40.5]);
+        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
+        assert_eq!(names, ["modis-snow", "hansen-gfc"], "Colorado is outside HR-WSI");
+        assert_eq!(inputs[1].1, [("tile".to_string(), "40N_110W".to_string()), ("tile".into(), "50N_110W".into())]);
+        assert_eq!(options["year"], Value::Null);
+        assert!(options["attribution"].as_str().unwrap().starts_with("MODIS"));
     }
 
     #[test]

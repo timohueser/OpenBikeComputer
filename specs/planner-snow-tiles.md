@@ -62,8 +62,8 @@ The archive metadata is a JSON object:
 | `first_season` | Integer year of the first season |
 | `seasons` | Integer count of seasons |
 | `step_days` | `2` |
-| `source` | `nasa-modis` or `copernicus-hr-wsi` |
-| `resolution_m` | Integer source resolution in metres |
+| `source` | The finest source of the archive: `nasa-modis` or `copernicus-hr-wsi` |
+| `resolution_m` | Integer resolution of that source in metres |
 | `attribution` | Text to show with the layer |
 
 ## Sources
@@ -72,6 +72,9 @@ The archive metadata is a JSON object:
 | --- | --- | --- |
 | `nasa-modis` | MODIS Terra and Aqua daily snow cover (MOD10A1, MYD10A1, collection 6.1) | 500 |
 | `copernicus-hr-wsi` | HR-WSI Snow Phenology S2 yearly rasters | 20 |
+
+An archive reads `copernicus-hr-wsi` where it has data and `nasa-modis` elsewhere.
+A region outside the HR-WSI coverage reads `nasa-modis` only.
 
 The max zoom is the zoom whose pixel size at the middle latitude of the bounds is
 nearest to `resolution_m` in log scale. In the Alps, it is 12 for
@@ -103,16 +106,18 @@ for each season:
    melt-out separately, rounded half up.
 
 At the max zoom, the inputs are the four source pixels around the pixel centre
-with bilinear weights. A source pixel outside the source grid is 255.
+with bilinear weights. A source pixel outside the source grid is 255. In each
+season, a pixel takes the first source in which it is not 255:
+`copernicus-hr-wsi`, then `nasa-modis`.
 
-At a lower zoom, the inputs are the 2 × 2 child pixels, with equal weights. For
-`copernicus-hr-wsi`, each child pixel is smoothed first: it takes the blend of its
+At a lower zoom, the inputs are the 2 × 2 child pixels, with equal weights. When
+`source` is `copernicus-hr-wsi`, each child pixel is smoothed first: it takes the blend of its
 3 × 3 neighbourhood in its tile, with equal weights and the median of the dated
 inputs instead of the mean. A neighbour outside the tile repeats the edge pixel.
 
 ## Forest
 
-`nasa-modis`: at the max zoom, a pixel is 255 in all seasons when its mean tree
-canopy cover is more than 75 % in Hansen Global Forest Change `treecover2000`.
+`nasa-modis`: a MODIS pixel is 255 in all seasons when its mean tree canopy
+cover is more than 75 % in Hansen Global Forest Change `treecover2000`.
 
 `copernicus-hr-wsi` has no forest mask.

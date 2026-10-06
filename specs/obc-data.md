@@ -25,6 +25,7 @@ One `[[source]]` table per source.
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
+| `coverage` | array of 4 numbers | no | `[west, south, east, north]` in degrees: the source has no data outside this box |
 
 `fetch.kind` is one of:
 
@@ -53,6 +54,7 @@ Rules:
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
 - `r2_copy = true` needs `redistribute = true`, because R2 is public.
 - A credential has `env` or `file`, not both.
+- A `coverage` box has west < east and south < north, inside ±180° and ±90°.
 - An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
 
 `attribution` is the one copy of a credit. Every product that carries a credit takes it from
@@ -66,7 +68,7 @@ here:
 | Planner release `attribution`, routing package, search, route overlays | `osm-planet` |
 | Planner release `landcover_attribution` | `daylight-landcover`; the basemaps show it after `attribution` |
 | Planner `terrain_attribution` | `copernicus-glo-30`, after the reference models |
-| Planner climate and snow layers | `era5-land`; `modis-snow` and `hansen-gfc`, or `hr-wsi` |
+| Planner climate and snow layers | `era5-land`; `hr-wsi` when the snow layer reads it, `modis-snow` and `hansen-gfc` |
 | Reference archive manifests | `dtm-<key>` for the national model with that key |
 
 A credit that a rider reads is the `attribution` text. An SPDX `licence` id goes only into a
@@ -138,7 +140,7 @@ The options of the [planner layers](#planner) that are the same for each region.
 | `terrain.margin_m` | number | The terrain reaches at least this far around the region, in metres: the horizon of the sun layer |
 | `routing.profiles` | array of strings | The profiles of the routing package. The route catalog needs `touring`, `road`, `gravel`, `mtb` and `hiking` |
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
-| `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI Snow Phenology that the snow layer reads |
+| `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI and MODIS that the snow layer reads |
 | `sun.horizon_samples`, `sun.horizon_directions` | integer | The horizon profiles of the sun layer: [the sun archive](planner-sun-tiles.md) |
 
 ## State of a source
@@ -765,7 +767,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/search/pois`, `planner/search/addresses` | `planner/search/records` | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 5. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | `era5-land`, `bbox=<bounds>`, `first-year=<climate.first_year>` | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10 | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md) |
-| `planner/snow` | `hr-wsi`, `bbox=<bounds>`, `seasons=<snow.seasons>` | `bounds`, `seasons`, `attribution` of `hr-wsi`, and `year`: the year of the `hr-wsi` version, which fills its `{year}` | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md) from HR-WSI |
+| `planner/snow` | `hr-wsi` when its `coverage` overlaps the bounds, and `modis-snow`, each `bbox=<bounds>`, `seasons=<snow.seasons>`; `hansen-gfc`, `tile=` of each 10° tile that the bounds touch | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when it reads it, `modis-snow` and `hansen-gfc`; `year`: the year of the `hr-wsi` version, which fills its `{year}`, or null | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md): HR-WSI where it has data, and MODIS elsewhere |
 | `planner/sun` | `planner/terrain` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_sha256` is the SHA-256 of the PMTiles archive that the step converts from `terrain.mbtiles` |
 
 `climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
@@ -3304,6 +3306,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "coverage": {
+          "description": "`[west, south, east, north]` in degrees: the source has no data outside this box.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "credential": {
           "anyOf": [
             {
@@ -3388,6 +3403,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "attribution": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "coverage": {
+          "description": "`[west, south, east, north]` in degrees: the source has no data outside this box.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
             "null"
           ]
         },
