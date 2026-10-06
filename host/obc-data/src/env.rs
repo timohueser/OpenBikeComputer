@@ -132,7 +132,7 @@ impl Env {
 
     /// Whether a plan moves `source` to its newest upstream version.
     pub fn moves_to_newest(&self, source: &str) -> bool {
-        self.moves.get(source).is_some_and(Option::is_none)
+        !self.stale.contains(source) && self.moves.get(source).is_some_and(Option::is_none)
     }
 
     /// `text`, the file of this environment, with its `region` and `layers`. Comments and the other
@@ -223,6 +223,7 @@ mod tests {
         env.planned = None;
         env.moves.insert("extract".into(), None);
         env.stale.insert("extract".into());
+        assert!(!env.moves_to_newest("extract"), "automatic selection is per request");
         env.resolved.insert(("extract".into(), area("b")), "2026-09-20".into());
         assert_eq!(env.version("extract", &area("a")), Ok(Some("2026-09-01")), "an unrelated request keeps live");
         assert_eq!(env.version("extract", &area("b")), Ok(Some("2026-09-20")), "the selected request moves");

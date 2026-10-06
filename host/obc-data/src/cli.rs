@@ -529,11 +529,9 @@ fn source_rows(
         .collect()
 }
 
-fn source_listing(
-    root: &Path,
-    products: &[&dyn Product],
-    check_now: bool,
-) -> Result<(Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>), Error> {
+type SourceListing = (Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>);
+
+fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Result<SourceListing, Error> {
     let (store, mut loaded) = (Store::open()?, build_cli::load(root, "live")?);
     let registry = Registry { sources: loaded.sources.clone() };
     let remote = remote();

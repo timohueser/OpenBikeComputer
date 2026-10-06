@@ -632,11 +632,16 @@ pub(crate) mod tests {
         assert_eq!(failed.last_success, first.last_success);
         assert_eq!(upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3701), failed);
         let count = log.lock().unwrap().len();
-        land.fetch.url = Some(url);
+        land.fetch.url = Some(url.replace("data/file.bin", "changed/{area}/{file}"));
         let changed = upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3701);
         assert!(matches!(changed.result, Upstream::Failed(_)));
         assert_eq!(changed.last_success, None, "a changed acquisition descriptor invalidates old evidence");
         assert!(log.lock().unwrap().len() > count);
+        let count = log.lock().unwrap().len();
+        land.fetch.kind = FetchKind::Glo30;
+        let changed_kind = upstream::observe(&store, &quick(), &land, &a, upstream::CACHE, 3702);
+        assert_eq!(changed_kind.checked_at, Some(3702));
+        assert!(log.lock().unwrap().len() > count, "fetch kind changes invalidate the same rendered probe");
         land.fetch.kind = FetchKind::Capture;
         let capture = upstream::observe(&store, &quick(), &land, &a, 0, 4000);
         assert_eq!((capture.result, capture.checked_at, capture.last_success), (Upstream::Capture, None, None));

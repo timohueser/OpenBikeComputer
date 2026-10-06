@@ -47,6 +47,8 @@ pub struct Observation {
 
 #[derive(Deserialize, Serialize)]
 struct Cached {
+    fetch: crate::sources::Fetch,
+    version: VersionScheme,
     checks: Vec<Check>,
     observation: Observation,
 }
@@ -84,7 +86,8 @@ pub(crate) fn seed(store: &Store, source: &Source, params: &[(String, String)], 
     };
     store::write_atomic(
         &path(store, &source.id, params),
-        &serde_json::to_vec(&Cached { checks, observation }).unwrap(),
+        &serde_json::to_vec(&Cached { fetch: source.fetch.clone(), version: source.version, checks, observation })
+            .unwrap(),
     )
     .unwrap();
 }
@@ -117,7 +120,8 @@ pub fn observe(
         Err(error) => return immediate(Upstream::Failed(error)),
     };
     let cached = std::fs::read(&path).ok().and_then(|text| serde_json::from_slice::<Cached>(&text).ok());
-    let cached = cached.filter(|cached| cached.checks == checks);
+    let cached = cached
+        .filter(|cached| cached.fetch == source.fetch && cached.version == source.version && cached.checks == checks);
     if let Some(cached) = cached
         .as_ref()
         .filter(|cached| cached.observation.checked_at.is_some_and(|checked| now.saturating_sub(checked) < max_age))
@@ -133,7 +137,12 @@ pub fn observe(
         _ => cached.and_then(|cached| cached.observation.last_success),
     };
     let observation = Observation { checked_at: Some(now), result, last_success };
-    if let Ok(text) = serde_json::to_vec(&Cached { checks, observation: observation.clone() }) {
+    if let Ok(text) = serde_json::to_vec(&Cached {
+        fetch: source.fetch.clone(),
+        version: source.version,
+        checks,
+        observation: observation.clone(),
+    }) {
         let _ = store::write_atomic(&path, &text);
     }
     observation

@@ -56,40 +56,6 @@ pub(super) fn discover(
     Ok(inventory)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::tests::fixture;
-    use crate::product::{version, Unplanned};
-
-    #[test]
-    fn discovery_keeps_unprepared_active_requests_and_excludes_held_inputs() {
-        struct Captures;
-        impl Product for Captures {
-            fn name(&self) -> &'static str {
-                "test"
-            }
-            fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
-                for collection in ["landmarks", "peaks"] {
-                    let _ = version(env, store, "capture", &[("collection".into(), collection.into())])
-                        .map_err(Unplanned::Failed)?;
-                }
-                Err(Unplanned::Invalid("capture bytes not prepared".into()))
-            }
-        }
-        let fixture = fixture("active-request-inventory");
-        let mut env = Env::default();
-        env.live.insert(("extract".into(), Vec::new()), ["2020-01-01".into()].into());
-        env.live.insert(("capture".into(), vec![("collection".into(), "peaks".into())]), ["2026-10-01".into()].into());
-        let regions = Regions::new(Vec::new()).unwrap();
-        let inventory = discover(&[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None).unwrap();
-        assert_eq!(inventory.requests.borrow().len(), 2);
-        assert!(inventory.requests.borrow().iter().all(|(source, _)| source == "capture"));
-        assert_eq!(inventory.read.borrow().len(), 1, "missing requests remain inventoried without an invented version");
-        assert!(env.requests.borrow().is_empty(), "discovery does not mutate source intent");
-    }
-}
-
 pub(super) fn requests(store: &Store, http: &Http, source: &Source, env: &Env, check_now: bool) -> Vec<RequestStatus> {
     let today = crate::date::today();
     let now = crate::date::now();
@@ -128,4 +94,38 @@ pub(super) fn requests(store: &Store, http: &Http, source: &Source, env: &Env, c
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::fixture;
+    use crate::product::{version, Unplanned};
+
+    #[test]
+    fn discovery_keeps_unprepared_active_requests_and_excludes_held_inputs() {
+        struct Captures;
+        impl Product for Captures {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+                for collection in ["landmarks", "peaks"] {
+                    let _ = version(env, store, "capture", &[("collection".into(), collection.into())])
+                        .map_err(Unplanned::Failed)?;
+                }
+                Err(Unplanned::Invalid("capture bytes not prepared".into()))
+            }
+        }
+        let fixture = fixture("active-request-inventory");
+        let mut env = Env::default();
+        env.live.insert(("extract".into(), Vec::new()), ["2020-01-01".into()].into());
+        env.live.insert(("capture".into(), vec![("collection".into(), "peaks".into())]), ["2026-10-01".into()].into());
+        let regions = Regions::new(Vec::new()).unwrap();
+        let inventory = discover(&[&Captures], &env, &regions, &fixture.store, &Http::new(), &[], None).unwrap();
+        assert_eq!(inventory.requests.borrow().len(), 2);
+        assert!(inventory.requests.borrow().iter().all(|(source, _)| source == "capture"));
+        assert_eq!(inventory.read.borrow().len(), 1, "missing requests remain inventoried without an invented version");
+        assert!(env.requests.borrow().is_empty(), "discovery does not mutate source intent");
+    }
 }

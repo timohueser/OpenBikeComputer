@@ -1807,9 +1807,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "moves": {
           "additionalProperties": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "description": "The version of each source that the plan moves: each `--move`, and for `live` each stale\nsource that the step lists read. A move without a version has the version that its fetch\ngave.",
+          "description": "Source move intent: an explicit version, or each request's newest version. Exact resolved\nversions are in `versions`; fetching never changes this intent.",
           "type": "object"
         },
         "only": {
@@ -2624,6 +2627,38 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Observation": {
+      "properties": {
+        "checked_at": {
+          "description": "None for policy-derived capture results and sources without a probe.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_success": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Success"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "$ref": "#/$defs/Upstream"
+        }
+      },
+      "required": [
+        "checked_at",
+        "result",
+        "last_success"
+      ],
+      "type": "object"
+    },
     "Outcome": {
       "oneOf": [
         {
@@ -3319,6 +3354,64 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "RequestStatus": {
+      "properties": {
+        "age_days": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "due": {
+          "type": "boolean"
+        },
+        "live": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/Observation"
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "params",
+        "live",
+        "observation",
+        "due",
+        "state",
+        "reason",
+        "age_days"
+      ],
+      "type": "object"
+    },
     "RunFetch": {
       "additionalProperties": false,
       "properties": {
@@ -3565,6 +3658,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             }
           ]
         },
+        "credential_missing": {
+          "type": "boolean"
+        },
         "extent": {
           "description": "The box outside which the source has no data: west, south, east and north in degrees.",
           "items": {
@@ -3640,6 +3736,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "refresh": {
           "$ref": "#/$defs/Refresh"
         },
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/RequestStatus"
+          },
+          "type": "array"
+        },
         "snapshots": {
           "description": "The versions in the local store, the one fetched last first.",
           "items": {
@@ -3674,7 +3776,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "age_days",
         "state",
         "reason",
-        "snapshots"
+        "snapshots",
+        "requests",
+        "credential_missing"
       ],
       "type": "object"
     },
@@ -3767,6 +3871,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Success": {
+      "properties": {
+        "checked_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "checked_at",
+        "version"
+      ],
+      "type": "object"
+    },
     "Summary": {
       "additionalProperties": false,
       "description": "A run, as `obc data runs` lists it.",
@@ -3832,6 +3953,68 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "uploaded"
       ],
       "type": "object"
+    },
+    "Upstream": {
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "newest",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The service captures current data on demand; no network probe establishes a version.",
+          "properties": {
+            "state": {
+              "const": "capture",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The source has no cheap upstream probe.",
+          "properties": {
+            "state": {
+              "const": "cannot_check",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "state": {
+              "const": "failed",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "VersionScheme": {
       "description": "How upstream names a version, and so what a version of the source looks like.",

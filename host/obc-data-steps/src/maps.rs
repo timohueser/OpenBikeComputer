@@ -1050,6 +1050,16 @@ pub(crate) mod tests {
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
         assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"), "fresh collection stays available");
         env.stale = ["wikipedia".into(), "commons".into()].into();
+        env.moves.insert("wikidata".into(), None);
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
+            panic!("an explicit move overrides stale sibling capture blocking")
+        };
+        assert_eq!(wanted.len(), 2);
+        assert!(
+            wanted.iter().all(|fetch| fetch.source == "wikidata"),
+            "automatic sibling markers do not force newest fetches"
+        );
+        env.stale.clear();
         env.moves = CAPTURES.map(|source| (source.into(), None)).into();
         let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
             panic!("an explicit move prepares captures")
@@ -1163,6 +1173,7 @@ pub(crate) mod tests {
             env.live.insert((source.into(), params.clone()), ["1".into()].into());
         }
         let fresh = Store::at(temp.0.join("fresh"));
+        env.requests.borrow_mut().clear();
         let (params, inputs) =
             super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
         assert_eq!(params, capture_params("landmarks", "europe/test", "osm", FREIBURG));

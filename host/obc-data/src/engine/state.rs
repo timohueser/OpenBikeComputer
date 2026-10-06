@@ -256,6 +256,7 @@ mod tests {
             .sources
             .insert(("head".into(), Vec::new()), status(State::Stale, "14 d > 7 d, upstream 2026-10-04"));
         environment.sources.insert(("tail".into(), Vec::new()), status(State::Blocked, "no licence recorded"));
+        let all_live = environment.live.clone();
         environment.live.remove("test/count");
         assert_eq!(
             states(&fixture, &pipeline(), &environment),
@@ -266,7 +267,7 @@ mod tests {
             ])
         );
 
-        let mut unrelated = live(&fixture);
+        let mut unrelated = Environment { sources: BTreeMap::new(), live: all_live };
         unrelated.sources.insert(
             ("head".into(), vec![("area".into(), "another".into())]),
             status(State::Stale, "another area is due"),
