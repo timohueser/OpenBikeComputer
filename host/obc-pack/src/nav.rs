@@ -24,11 +24,6 @@ use obc_map_scene::ground_dist_m;
 /// equal, while a cycleway drawn over a road survives as a separate edge.
 type EdgeKey = (u32, u32, Vec<(i32, i32)>, u8);
 
-/// Default island-pruning threshold: keep every connected component with at least this many edges,
-/// plus the single largest. The packer threads `routing.min_component_edges` through
-/// [`build_graph_with`] instead; this default is for tests.
-pub const DEFAULT_MIN_COMPONENT_EDGES: usize = 50;
-
 /// Maximum endpoint-to-endpoint lat or lon delta (µdeg) an edge may span before [`build_graph`]
 /// splits it. Each neighbor's coordinate is stored as an `i16` µdeg delta from the record's own
 /// node, so both endpoints of every edge must sit within `i16` range of each other; `32 000` keeps a
@@ -39,41 +34,9 @@ const MAX_ENDPOINT_DELTA_UDEG: i64 = 32_000;
 /// `60 000` keeps a margin below `u16::MAX`.
 const MAX_EDGE_LEN_M: u32 = 60_000;
 
-/// Canonical highway-class names, indexed by the 5-bit class id. Also the profile config's class
-/// keys: a `routing.profiles[*].highway` map is keyed by these exact names, resolved via
-/// [`highway_class_index`]. One source of truth for the packed byte and the config vocabulary.
-pub const HIGHWAY_CLASS_NAMES: [&str; 14] = [
-    "cycleway",      // 0
-    "path",          // 1
-    "track",         // 2
-    "footway",       // 3
-    "steps",         // 4
-    "bridleway",     // 5
-    "living_street", // 6
-    "residential",   // 7
-    "service",       // 8
-    "unclassified",  // 9
-    "tertiary",      // 10
-    "secondary",     // 11
-    "primary",       // 12
-    "trunk_cycl",    // 13
-];
-
-/// Canonical surface-class names, indexed by the 3-bit class id. The other half of the profile
-/// config's class vocabulary, resolved via [`surface_class_index`].
-pub const SURFACE_CLASS_NAMES: [&str; 8] =
-    ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "cobbles", "grass"];
-
-/// Resolve a highway-class name to its 5-bit class id, or `None` for an unknown name. The config's
-/// profile parser uses this to key its per-class multipliers.
-pub fn highway_class_index(name: &str) -> Option<u8> {
-    HIGHWAY_CLASS_NAMES.iter().position(|&n| n == name).map(|i| i as u8)
-}
-
-/// Resolve a surface-class name to its 3-bit class id, or `None`.
-pub fn surface_class_index(name: &str) -> Option<u8> {
-    SURFACE_CLASS_NAMES.iter().position(|&n| n == name).map(|i| i as u8)
-}
+pub use obc_map_core::nav::{
+    highway_class_index, surface_class_index, DEFAULT_MIN_COMPONENT_EDGES, HIGHWAY_CLASS_NAMES, SURFACE_CLASS_NAMES,
+};
 
 /// Map an OSM `highway=*` value to its highway class (5-bit). `None` for a value that carries no
 /// class, including `motorway`, which is always bike-illegal, and `trunk`, which [`classify`]
