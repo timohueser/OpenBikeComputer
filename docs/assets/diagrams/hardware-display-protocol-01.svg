@@ -1,0 +1,38 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="Two independent paths. On the left, the intermittent image-write path — gate scan and source shift — pushes one bit into a subpixel latch on the glass. On the right, the continuous polarity path — VCOM, VB in phase, VA inverse, free-running at about 60 Hz — drives the liquid crystal. The stored bit only selects which rail (VA for white, VB for black) the subpixel follows." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="22" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Two independent signal paths</text>
+
+  <!-- Path A: write -->
+  <text class="d-tag" x="30" y="58" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Path A · image write — intermittent</text>
+  <rect class="d-panel-2" x="30" y="72" width="160" height="46" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="110" y="92" text-anchor="middle" fill="#1c1b14" font-size="14px">gate scan</text>
+  <text class="d-sub" x="110" y="108" text-anchor="middle" fill="#5c5a2e" font-size="12px">GSP · GCK · GEN · INTB</text>
+  <rect class="d-panel-2" x="30" y="130" width="160" height="46" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="110" y="150" text-anchor="middle" fill="#1c1b14" font-size="14px">source shift</text>
+  <text class="d-sub" x="110" y="166" text-anchor="middle" fill="#5c5a2e" font-size="12px">BSP · BCK · R/G/B[0:1]</text>
+  <line class="d-flow" x1="190" y1="96" x2="286" y2="122" marker-end="url(#a1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="190" y1="153" x2="286" y2="140" marker-end="url(#a1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="232" y="88" text-anchor="middle" fill="#5c5a2e" font-size="12px">write 1 bit</text>
+
+  <!-- centre: the latch -->
+  <rect class="d-hot" x="290" y="102" width="120" height="74" rx="12" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-title" x="350" y="130" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-weight="650" font-size="14px">subpixel latch</text>
+  <text class="d-sub" x="350" y="148" text-anchor="middle" fill="#5c5a2e" font-size="12px">one bit, on glass</text>
+  <text class="d-sub" x="350" y="162" text-anchor="middle" fill="#5c5a2e" font-size="12px">held without a scan</text>
+  <line class="d-flow" x1="410" y1="139" x2="494" y2="139" marker-end="url(#a1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="452" y="131" text-anchor="middle" fill="#5c5a2e" font-size="12px">selects</text>
+  <text class="d-sub" x="452" y="154" text-anchor="middle" fill="#5c5a2e" font-size="12px">a rail</text>
+
+  <!-- Path B: polarity -->
+  <text class="d-tag" x="500" y="58" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Path B · polarity — ~60 Hz</text>
+  <text class="d-sub" x="500" y="92" text-anchor="start" fill="#5c5a2e" font-size="12px">VCOM</text>
+  <path d="M540 80 H566 V96 H600 V80 H634 V96 H668 V80 H694" fill="none" stroke="#3c6b39" stroke-width="1.8" />
+  <text class="d-sub" x="500" y="130" text-anchor="start" fill="#5c5a2e" font-size="12px">VB</text>
+  <path d="M540 118 H566 V134 H600 V118 H634 V134 H668 V118 H694" fill="none" stroke="#3c6b39" stroke-width="1.8" />
+  <text class="d-sub" x="500" y="168" text-anchor="start" fill="#5c5a2e" font-size="12px">VA</text>
+  <path d="M540 172 H566 V156 H600 V172 H634 V156 H668 V172 H694" fill="none" stroke="#cf6a2a" stroke-width="1.8" />
+  <text class="d-sub" x="500" y="200" style="font-size:12px" fill="#5c5a2e" font-size="12px">VB in phase with VCOM · VA inverse</text>
+  <text class="d-sub" x="500" y="216" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ drives the LC (never DC)</text>
+</svg>

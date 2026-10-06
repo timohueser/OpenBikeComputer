@@ -1,0 +1,39 @@
+<svg viewBox="0 0 720 344" role="img" aria-label="Four buttons on the left — Up and Down on one flank, Select and Back on the other — feed a shared Gestures recognizer in the middle, which also takes a millisecond clock. It emits gestures and chords on the right: Step of n, Press, Hold, Back, and BackHold." xmlns="http://www.w3.org/2000/svg" width="720" height="344" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aU3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Four buttons → one recognizer → gestures and chords</text>
+
+  <!-- left flank: Up / Down (step controls, auto-repeat) -->
+  <text class="d-sub" x="86" y="52" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">left flank</text>
+  <rect x="46" y="60" width="80" height="30" rx="7" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="86" y="80" text-anchor="middle" fill="#1c1b14" font-size="14px">▲ Up</text>
+  <rect x="46" y="96" width="80" height="30" rx="7" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="86" y="116" text-anchor="middle" fill="#1c1b14" font-size="14px">▼ Down</text>
+  <text class="d-sub" x="86" y="140" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">steps · auto-repeat</text>
+
+  <!-- right flank: Select / Back (timed edges) -->
+  <text class="d-sub" x="86" y="168" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">right flank</text>
+  <rect x="46" y="176" width="80" height="30" rx="7" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="86" y="196" text-anchor="middle" fill="#1c1b14" font-size="14px">Select</text>
+  <rect x="46" y="212" width="80" height="30" rx="7" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="86" y="232" text-anchor="middle" fill="#1c1b14" font-size="14px">Back</text>
+
+  <!-- recognizer -->
+  <line class="d-flow" x1="132" y1="96" x2="246" y2="120" marker-end="url(#aU3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="132" y1="206" x2="246" y2="150" marker-end="url(#aU3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-hot" x="250" y="96" width="170" height="74" rx="12" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-title" x="335" y="126" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-weight="650" font-size="14px">Gestures</text>
+  <text class="d-sub" x="335" y="144" text-anchor="middle" fill="#5c5a2e" font-size="12px">raw events + ms clock</text>
+  <text class="d-sub" x="335" y="158" text-anchor="middle" fill="#5c5a2e" font-size="12px">shared: sim = MCU</text>
+
+  <!-- gestures out -->
+  <line class="d-flow" x1="420" y1="133" x2="486" y2="133" marker-end="url(#aU3)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <g font-family="var(--mono)">
+    <rect x="496" y="50"  width="180" height="26" rx="6" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" /><text class="d-sub" x="506" y="67" fill="#5c5a2e" font-size="12px">Step(n) — up / down</text>
+    <rect x="496" y="82"  width="180" height="26" rx="6" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" /><text class="d-sub" x="506" y="99" fill="#5c5a2e" font-size="12px">Press — short select</text>
+    <rect x="496" y="114" width="180" height="26" rx="6" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" /><text class="d-sub" x="506" y="131" fill="#5c5a2e" font-size="12px">Hold — long select</text>
+    <rect x="496" y="146" width="180" height="26" rx="6" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" /><text class="d-sub" x="506" y="163" fill="#5c5a2e" font-size="12px">Back — short back</text>
+    <rect x="496" y="178" width="180" height="26" rx="6" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" /><text class="d-sub" x="506" y="195" fill="#5c5a2e" font-size="12px">BackHold — long back</text>
+  </g>
+<path d="M20 259 L700 259" fill="none" stroke="#9aa884" stroke-width="1.3" /><text class="d-title" x="20" y="286" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Two-button chords · within 100 ms</text><text class="d-sub" x="20" y="312" text-anchor="start" fill="#5c5a2e" font-size="12px">Up + Select: quick drawer</text><text class="d-sub" x="355" y="312" text-anchor="start" fill="#5c5a2e" font-size="12px">Down + Back: contextual drawer</text></svg>

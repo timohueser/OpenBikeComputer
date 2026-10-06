@@ -41,7 +41,7 @@ pub fn step(
     let terrain_available = source_coverage.cells(V1_CELL_LOG2.into());
     let params = [("area".into(), env.region.clone())];
     let poly_version = version_of_poly(env, store, &params)?;
-    let (_, digest) = file(store, POLY, &poly_version, &params)?;
+    let (_, digest) = file(env, store, POLY, &poly_version, &params)?;
     let primary_poly = std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
     let mut picks = Vec::new();
     let bbox = source_coverage.bbox();

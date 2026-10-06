@@ -30,7 +30,8 @@ pub fn replication(store: &Store, http: &Http, request: &Request) -> Result<Snap
     };
     let version = match &request.version {
         Some(version) => version.clone(),
-        None => upstream::newest(store, http, source, upstream::CACHE)
+        None => upstream::observe(store, http, source, &request.params, upstream::CACHE, date::now())
+            .result
             .version()
             .ok_or_else(|| format!("source `{}`: the newest daily diff is not known: give SOURCE@VERSION", source.id))?
             .to_string(),

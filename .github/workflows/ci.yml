@@ -128,6 +128,9 @@ jobs:
         run: uv sync --locked --group dev --group planner-snow --group planner-sun
       - name: Test plan drift
         run: uv run --locked --group dev python tools/test_plan.py check
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+        with:
+          just-version: "1.57.0"
       - name: Repository tool unit tests
         id: python-repository-tools
         run: |

@@ -186,7 +186,8 @@ fn captures(
 ) -> Result<Vec<(&'static str, Vec<Input>)>, Unplanned> {
     let poly = version(env, store, POLY, area).map_err(Unplanned::Failed)?;
     let poly = poly.map_err(|_| Unplanned::Failed(format!("the store has no {POLY} of {area:?}")))?;
-    let now = [(EXTRACTS, extract), (POLY, poly.as_str())].map(|(source, version)| file(store, source, version, area));
+    let now =
+        [(EXTRACTS, extract), (POLY, poly.as_str())].map(|(source, version)| file(env, store, source, version, area));
     let [osm, poly] = now.map(|file| file.map(|(_, sha256)| format!("sha256:{sha256}")));
     let (osm, poly) = (osm?, poly?);
     let mut wanted = Vec::new();
@@ -274,10 +275,7 @@ fn capture_params(
     };
     let mut kept = None;
     let moved = CAPTURES.iter().any(|source| env.moves.contains_key(*source) && !env.stale.contains(*source));
-    if !moved && CAPTURES.iter().any(|source| env.stale.contains(*source)) {
-        return Err(invalid(format!("{collection} capture stale; plan with `--move wikidata`")));
-    }
-    if !CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
+    if !moved {
         let named: Vec<&Vec<(String, String)>> = match &env.planned {
             Some(planned) => planned.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
             None => env.live.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
@@ -307,6 +305,16 @@ fn capture_params(
         Ok(Some(inputs))
     };
     if let Some(params) = kept {
+        if !moved
+            && CAPTURES
+                .iter()
+                .any(|source| env.stale_requests.contains(&(source.to_string(), obc_data::store::sorted(&params))))
+        {
+            return Err(invalid(format!("{collection} capture stale; plan with `--move wikidata`")));
+        }
+        for source in CAPTURES {
+            let _ = version(env, store, source, &params).map_err(Unplanned::Failed)?;
+        }
         if value(&params, "code").as_deref() != Some(obc_pack::step::capture_code().as_str()) {
             return Err(invalid(format!("{collection} capture code changed; plan with `--move wikidata`")));
         }
@@ -325,19 +333,39 @@ fn capture_params(
 
 /// The name and the SHA-256 of the one file that the fetch of `source@version` with `params` gave.
 fn file(
+    env: &Env,
     store: &Store,
     source: &str,
     version: &str,
     params: &[(String, String)],
 ) -> Result<(String, String), Unplanned> {
     let missing = || Unplanned::Failed(format!("the store has no file of {source}@{version} {params:?}"));
-    let names = store.requested(source, version, params).map_err(Unplanned::Failed)?.ok_or_else(missing)?;
-    let snapshot = store.snapshot(source, version).map_err(Unplanned::Failed)?.ok_or_else(missing)?;
-    let file = match &names[..] {
-        [name] => snapshot.files.into_iter().find(|file| &file.name == name).ok_or_else(missing)?,
-        _ => return Err(Unplanned::Failed(format!("a fetch of {source} with {params:?} gives {} files", names.len()))),
-    };
-    Ok((file.name, file.sha256))
+    let names = store.requested(source, version, params).map_err(Unplanned::Failed)?;
+    let snapshot = store.snapshot(source, version).map_err(Unplanned::Failed)?;
+    if let (Some(names), Some(snapshot)) = (names, snapshot) {
+        let file = match &names[..] {
+            [name] => snapshot.files.into_iter().find(|file| &file.name == name).ok_or_else(missing)?,
+            _ => {
+                return Err(Unplanned::Failed(format!(
+                    "a fetch of {source} with {params:?} gives {} files",
+                    names.len()
+                )))
+            }
+        };
+        return Ok((file.name, file.sha256));
+    }
+    let params = obc_data::store::sorted(params);
+    let files: BTreeSet<_> = env
+        .retained
+        .iter()
+        .filter(|read| read.key.source == source && read.key.version == version && read.params == params)
+        .flat_map(|read| &read.record.files)
+        .map(|file| (file.name.clone(), file.sha256.clone(), file.url.clone(), file.size))
+        .collect();
+    match files.into_iter().collect::<Vec<_>>().as_slice() {
+        [(name, digest, _, _)] => Ok((name.clone(), digest.clone())),
+        _ => Err(missing()),
+    }
 }
 
 /// The version and the name of the file of a fetch of `source` with `params` whose digest is
@@ -380,7 +408,7 @@ fn by_digest(
         if store.snapshot(source, &request.version).map_err(Unplanned::Failed)?.is_none() {
             continue;
         }
-        let (name, sha256) = file(store, source, &request.version, params)?;
+        let (name, sha256) = file(env, store, source, &request.version, params)?;
         if digest.strip_prefix("sha256:") == Some(sha256.as_str()) {
             return Ok(Some((request.version, name)));
         }
@@ -1010,12 +1038,32 @@ pub(crate) mod tests {
             .iter()
             .any(|b| b.layer == "maps/landmark-content" && b.reason.contains("capture code changed")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"));
+        assert!(
+            env.requests.borrow().iter().any(|(source, params)| source == "wikidata"
+                && params.iter().any(|(name, value)| name == "code" && value == "old")),
+            "blocked capture requests remain active"
+        );
         env.live.retain(|(source, _), _| source != "wikidata");
         env.stale.insert("wikidata".into());
+        env.stale_requests.insert((
+            "wikidata".into(),
+            obc_data::store::sorted(&capture_params("landmarks", "europe/test", "osm", FREIBURG)),
+        ));
         let listed = Maps.steps(&env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().all(|b| b.reason.contains("capture stale")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+        assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"), "fresh collection stays available");
         env.stale = ["wikipedia".into(), "commons".into()].into();
+        env.moves.insert("wikidata".into(), None);
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
+            panic!("an explicit move overrides stale sibling capture blocking")
+        };
+        assert_eq!(wanted.len(), 2);
+        assert!(
+            wanted.iter().all(|fetch| fetch.source == "wikidata"),
+            "automatic sibling markers do not force newest fetches"
+        );
+        env.stale.clear();
         env.moves = CAPTURES.map(|source| (source.into(), None)).into();
         let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else {
             panic!("an explicit move prepares captures")
@@ -1129,9 +1177,15 @@ pub(crate) mod tests {
             env.live.insert((source.into(), params.clone()), ["1".into()].into());
         }
         let fresh = Store::at(temp.0.join("fresh"));
+        env.requests.borrow_mut().clear();
         let (params, inputs) =
             super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
         assert_eq!(params, capture_params("landmarks", "europe/test", "osm", FREIBURG));
+        assert_eq!(env.requests.borrow().len(), CAPTURES.len(), "fresh-store capture lookup remains active");
+        assert!(
+            env.requests.borrow().iter().all(|(source, _)| CAPTURES.contains(&source.as_str())),
+            "held extract and poly lookups are provenance only"
+        );
         assert!(inputs.iter().all(|input| matches!(input, Input::Snapshot { version, params, files, .. } if version == "1" && params.is_empty() && files.len() == 1)));
         assert!(!fresh.root().exists(), "metadata lookup downloads no old extract or poly");
         let mut peak_poly = env.retained[1].clone();

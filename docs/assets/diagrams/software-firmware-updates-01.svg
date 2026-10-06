@@ -1,0 +1,27 @@
+<svg viewBox="0 0 720 442" role="img" aria-label="A confirmed install moves Idle to Armed. Installation verifies and flashes the image, then starts Trial. Confirmation returns to Idle; an unconfirmed trial restores an available rollback image." xmlns="http://www.w3.org/2000/svg" width="720" height="442" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs><marker id="software-firmware-updates-1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Install contract</text>
+  <rect class="d-panel d-focus" x="20" y="52" width="680" height="66" rx="8" fill="#f9f0ee" stroke="#ae4825" stroke-width="2" />
+  <text class="d-title" x="360" y="77" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">The rider confirms on the device</text>
+  <text class="d-sub" x="360" y="97" text-anchor="middle" fill="#5c5a2e" font-size="12px">An uploaded package stays staged until then.</text>
+  <rect class="d-panel" x="20" y="164" width="190" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="115" y="189" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Idle</text>
+  <text class="d-sub" x="115" y="209" text-anchor="middle" fill="#5c5a2e" font-size="12px">Current application</text>
+  <path class="d-flow" d="M210 200 L262 200" marker-end="url(#software-firmware-updates-1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="236" y="154" text-anchor="middle" fill="#5c5a2e" font-size="12px">Install confirmed</text>
+  <rect class="d-panel" x="265" y="164" width="190" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="189" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Armed</text>
+  <text class="d-sub" x="360" y="209" text-anchor="middle" fill="#5c5a2e" font-size="12px">Verify · flash · read back</text>
+  <path class="d-flow" d="M455 200 L507 200" marker-end="url(#software-firmware-updates-1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="510" y="164" width="190" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="605" y="189" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Trial</text>
+  <text class="d-sub" x="605" y="209" text-anchor="middle" fill="#5c5a2e" font-size="12px">One boot to confirm</text>
+  <text class="d-sub" x="360" y="272" text-anchor="middle" fill="#5c5a2e" font-size="12px">Power loss during install: remain Armed and retry.</text>
+  <path class="d-flow" d="M605 236 L605 306" fill="none" stroke="#a4501e" stroke-width="2" />
+<path class="d-flow" d="M605 306 H115" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M115 306 L115 239" marker-end="url(#software-firmware-updates-1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="360" y="300" text-anchor="middle" fill="#5c5a2e" font-size="12px">Confirmed → Idle with the new image</text>
+  <rect class="d-panel" x="20" y="344" width="680" height="76" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="369" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Unconfirmed trial: restore an available rollback reserve</text>
+  <text class="d-sub" x="360" y="389" text-anchor="middle" fill="#5c5a2e" font-size="12px">Verify and restore the old image, then return to Idle.</text>
+</svg>

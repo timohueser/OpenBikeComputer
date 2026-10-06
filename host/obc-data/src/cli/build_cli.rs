@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::runs_cli::{bytes, duration};
-use super::{cells, fetched, print_json, print_table, registry, stale, Code, Error};
+use super::{cells, fetched, print_json, print_table, registry, Code, Error};
 use crate::engine::changes::{self, Against};
 use crate::engine::plan::{self, Cause, Estimate, Group, Plan};
 use crate::engine::release::{self, Release};
@@ -63,10 +63,9 @@ pub struct EnvPlan {
     pub env: String,
     pub region: String,
     pub layers: Vec<String>,
-    /// The version of each source that the plan moves: each `--move`, and for `live` each stale
-    /// source that the step lists read. A move without a version has the version that its fetch
-    /// gave.
-    pub moves: BTreeMap<String, String>,
+    /// Source move intent: an explicit version, or each request's newest version. Exact resolved
+    /// versions are in `versions`; fetching never changes this intent.
+    pub moves: BTreeMap<String, Option<String>>,
     /// The version of each fetch that the step lists read. `build --plan` reads exactly these.
     pub versions: Vec<FetchVersion>,
     /// For `live`: the release that each product has live now. Empty for another environment.
@@ -492,20 +491,40 @@ fn planned(
         live.restore_named(remote, store).map_err(|e| Code::VerifyFailed.error(e))?;
     }
     let env = &mut loaded.env;
+    let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
+    env.retained = live.as_ref().map(|live| crate::input_copy::retained(live, store)).transpose()?.unwrap_or_default();
     match basis {
         Basis::Saved(saved) => {
             let versions = saved.versions.iter().map(|v| ((v.source.clone(), v.params.clone()), v.version.clone()));
             env.planned = Some(versions.collect());
-            env.moves = saved.moves.iter().map(|(source, version)| (source.clone(), Some(version.clone()))).collect();
+            env.moves = saved.moves.clone();
         }
         Basis::Moves(args) => {
             env.moves = moves(&loaded.sources, args)?;
             if let Some(live) = &live {
                 env.live = live.versions();
-                for (source, version) in stale(store, http, &loaded.sources, &live.by_source()) {
-                    if !env.moves.contains_key(&source) {
-                        env.moves.insert(source.clone(), version);
-                        env.stale.insert(source);
+                let inventory = super::freshness::discover(
+                    products,
+                    env,
+                    &loaded.regions,
+                    store,
+                    http,
+                    &loaded.sources,
+                    copies.as_ref(),
+                )?;
+                for source in &loaded.sources {
+                    if source.refresh == Refresh::Manual || env.moves.contains_key(&source.id) {
+                        continue;
+                    }
+                    for request in super::freshness::requests(store, http, source, &inventory, false) {
+                        if request.state == crate::sources::State::Stale {
+                            env.stale_requests.insert((source.id.clone(), request.params.clone()));
+                            env.moves.insert(source.id.clone(), None);
+                            env.stale.insert(source.id.clone());
+                            if let Some(version) = request.observation.result.version() {
+                                env.resolved.insert((source.id.clone(), request.params), version.into());
+                            }
+                        }
                     }
                 }
                 if !only.is_empty() {
@@ -516,12 +535,13 @@ fn planned(
                         }
                     }
                     env.moves.retain(|source, _| only.contains(&format!("move:{source}")));
+                    env.resolved.retain(|(source, _), _| env.moves.contains_key(source));
+                    env.stale.retain(|source| env.moves.contains_key(source));
+                    env.stale_requests.retain(|(source, _)| env.moves.contains_key(source));
                 }
             }
         }
     }
-    let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
-    env.retained = live.as_ref().map(|live| crate::input_copy::retained(live, store)).transpose()?.unwrap_or_default();
     let fetch =
         super::status_cli::discovery_fetch(fetcher(store, http, &loaded.sources, env, copies.as_ref()), prepare);
     let (steps, blocked) = match basis {
@@ -606,7 +626,6 @@ fn env_plan(
     blocked: Vec<BlockedProduct>,
     live: Option<(&Live, Vec<Edit>)>,
 ) -> EnvPlan {
-    let moves = env.moves.iter().filter_map(|(source, version)| Some((source.clone(), version.clone()?)));
     let read = env.read.borrow();
     let versions = read.iter().map(|((source, params), version)| FetchVersion {
         source: source.clone(),
@@ -628,7 +647,7 @@ fn env_plan(
         env: env.name.clone(),
         region: env.region.clone(),
         layers: env.layers.clone(),
-        moves: moves.collect(),
+        moves: env.moves.clone(),
         versions: versions.collect(),
         live: releases,
         edits,
@@ -688,7 +707,13 @@ fn against<'a>(
     let by_source = live.by_source();
     let moves = env.moves.iter().filter_map(|(source, version)| {
         let from = by_source.get(source).cloned().unwrap_or_default();
-        Some((source.clone(), (from, version.clone()?)))
+        let to = version.clone().or_else(|| {
+            let read = env.read.borrow();
+            let versions: BTreeSet<_> =
+                read.iter().filter(|((id, _), _)| id == source).map(|(_, v)| v.as_str()).collect();
+            (!versions.is_empty()).then(|| versions.into_iter().collect::<Vec<_>>().join(", "))
+        })?;
+        Some((source.clone(), (from, to)))
     });
     let drift = check.map(|check| {
         let keys: Vec<String> = check.drift.iter().map(|drift| drift.key.clone()).collect();
@@ -981,9 +1006,7 @@ pub(super) fn product_steps(
                 }
                 Err(error) => return Err(error),
             };
-            if env.moves_to_newest(&wanted.source) {
-                env.moves.insert(wanted.source.clone(), Some(version));
-            }
+            env.resolved.insert((wanted.source.clone(), crate::store::sorted(&wanted.params)), version);
         }
         fetched.extend(fetches.iter().cloned());
         listed = product.steps(env, regions, store);
@@ -1141,6 +1164,57 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn one_source_move_resolves_each_area_and_saved_pins_keep_those_versions() {
+        struct Areas;
+        impl Product for Areas {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn steps(&self, env: &Env, _: &Regions, store: &Store) -> Result<crate::product::Steps, Unplanned> {
+                let mut wanted = Vec::new();
+                for area in ["a", "b"] {
+                    if let Err(request) = crate::product::version(env, store, "land", &[("area".into(), area.into())])
+                        .map_err(Unplanned::Failed)?
+                    {
+                        wanted.push(request);
+                    }
+                }
+                if wanted.is_empty() {
+                    Ok(Vec::new().into())
+                } else {
+                    Err(Unplanned::NeedsFetch(wanted))
+                }
+            }
+        }
+        let fixture = fixture("cli-area-versions");
+        let regions = Regions::new(Vec::new()).unwrap();
+        let mut env = env(&[]);
+        env.moves.insert("land".into(), None);
+        let mut fetched = Vec::new();
+        let mut fetch = |wanted: &Wanted| {
+            fetched.push(wanted.clone());
+            Ok(if wanted.params[0].1 == "a" { "2026-10-01" } else { "2026-10-02" }.into())
+        };
+        product_steps(&Areas, &mut env, &regions, &fixture.store, &mut fetch).unwrap().unwrap();
+        assert_eq!(fetched.len(), 2);
+        assert_eq!(env.moves["land"], None, "source intent stays unresolved");
+        assert_eq!(env.read.borrow().len(), 2);
+        let pins = env.read.borrow().clone();
+        let mut saved = env.clone();
+        saved.resolved.clear();
+        saved.planned = Some(pins);
+        product_steps(&Areas, &mut saved, &regions, &fixture.store, &mut |_| {
+            panic!("saved exact pins fetch no new versions")
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved.read, env.read);
+        env.moves.insert("land".into(), Some("2026-10-03".into()));
+        assert_eq!(env.version("land", &[("area".into(), "a".into())]), Ok(Some("2026-10-03")));
+        assert_eq!(env.version("land", &[("area".into(), "b".into())]), Ok(Some("2026-10-03")));
+    }
+
+    #[test]
     fn a_source_that_nothing_names_is_fetched_at_the_newest_version_unless_it_is_manual() {
         use crate::fetch::tests::{quick, serve, source, whole};
         let (url, log) = serve(|_, _| whole(b"outline"));
@@ -1162,9 +1236,9 @@ pub(crate) mod tests {
         let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
         steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(
-            live.moves["land"].as_deref(),
-            Some("2026-10-05"),
-            "the fetch names the move: the Last-Modified day"
+            live.resolved[&("land".into(), vec![("area".into(), "europe/monaco".into())])].as_str(),
+            "2026-10-05",
+            "the fetch resolves only this request"
         );
         let requests = log.lock().unwrap().len();
 
@@ -1400,8 +1474,9 @@ pub(crate) mod tests {
 
     /// What upstream has of `source`, as a check of now.
     pub(crate) fn upstream(fixture: &Fixture, source: &str, version: &str) {
-        let check = format!("{{\"checked\": {}, \"version\": \"{version}\"}}", crate::date::now());
-        write(&fixture.store.root().join(format!("upstream/{source}.json")), &check);
+        let registry = crate::sources::Registry::load(&fixture.root()).unwrap();
+        let source = registry.sources.iter().find(|s| s.id == source).unwrap();
+        crate::fetch::upstream::seed(&fixture.store, source, &[], version);
     }
 
     /// Make `release` live in the local bucket, with the input copy of `head@2020-01-01`.
@@ -1498,7 +1573,7 @@ pub(crate) mod tests {
         let (moved, code, repair) = (&plan.groups[0], &plan.groups[1], &plan.groups[2]);
         let to = "2020-02-01".to_string();
         let cause = Cause::Move { source: "head".into(), from: vec!["2020-01-01".into()], to: to.clone() };
-        assert_eq!((moved.cause.as_ref(), &plan.moves), (Some(&cause), &BTreeMap::from([("head".into(), to)])));
+        assert_eq!((moved.cause.as_ref(), &plan.moves), (Some(&cause), &BTreeMap::from([("head".into(), None)])));
         let steps = |group: &Group| group.layers.iter().map(|layer| layer.step.clone()).collect::<Vec<_>>();
         assert_eq!((steps(moved).join(" "), moved.builds.len()), ("test/upper test/join test/count".into(), 3));
         assert_eq!(steps(code), ["test/join", "test/count"]);

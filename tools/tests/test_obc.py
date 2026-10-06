@@ -17,6 +17,7 @@ class ObcTests(unittest.TestCase):
             (main / "firmware/obc-app").mkdir(parents=True)
             (main / "firmware/obc-app/.keep").touch()
             shutil.copyfile(Path(__file__).parents[1] / "obc", main / "tools/obc")
+            (main / "tools/obc").chmod(0o755)
             (main / "tools/justfile").touch()
             def git(*args):
                 subprocess.run(["git", "-C", str(main), *args], check=True, capture_output=True)
@@ -25,6 +26,8 @@ class ObcTests(unittest.TestCase):
             git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
             worktree = root / "linked checkout"
             git("worktree", "add", "-b", "topic", str(worktree))
+            (worktree / "justfile").write_text("# root recipes\n")
+            (worktree / "tools/justfile").unlink()
             unrelated = root / "unrelated"
             unrelated.mkdir()
             subprocess.run(["git", "init", str(unrelated)], check=True, capture_output=True)
@@ -41,8 +44,46 @@ class ObcTests(unittest.TestCase):
                         ["bash", str(binary / "obc"), "sim", "a map.obcm", "--", "--heading", "90"],
                         cwd=cwd, env=env, capture_output=True, text=True, check=True,
                     )
+                    justfile = selected / ("justfile" if selected == worktree else "tools/justfile")
                     self.assertEqual(json.loads(result.stdout), [
-                        "--justfile", str(selected / "tools/justfile"), "--working-directory", str(cwd),
+                        "--justfile", str(justfile), "--working-directory", str(cwd),
                         "sim", "a map.obcm", "--", "--heading", "90",
                     ])
                     self.assertIn(f"obc: checkout {selected}", result.stderr)
+                    completion = subprocess.run(
+                        ["bash", "-c", 'source "$1"; _obc_toolsdir', "completion",
+                         str(Path(__file__).parents[1] / "obc.bash")],
+                        cwd=cwd, env=env, capture_output=True, text=True, check=True,
+                    )
+                    self.assertEqual(completion.stdout.strip(), str(selected / "tools"))
+
+    def test_native_and_installed_entry_points_preserve_root_and_caller_paths(self):
+        source = Path(__file__).parents[2]
+        with tempfile.TemporaryDirectory(prefix="obc native ") as directory:
+            root = Path(directory)
+            (root / "tools").mkdir()
+            (root / "firmware/obc-app").mkdir(parents=True)
+            caller = root / "nested caller"
+            caller.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            shutil.copyfile(source / "justfile", root / "justfile")
+            for name in ("justfile", "obc", "obc-dev.sh"):
+                shutil.copyfile(source / "tools" / name, root / "tools" / name)
+            (root / "tools/req.py").write_text(
+                "import json,os,sys\nfrom pathlib import Path\n"
+                "print(json.dumps([os.environ['OBC_ROOT'],os.environ['OBC_TOOLS'],str(Path.cwd()),sys.argv[1:]]))\n"
+            )
+            args = ["../a map.obcm", "--check"]
+            commands = [
+                ["just", "req", *args],
+                ["just", "--justfile", str(root / "tools/justfile"), "req", *args],
+                ["bash", str(root / "tools/obc"), "req", *args],
+            ]
+            env = dict(os.environ)
+            env.pop("OBC_DRY_RUN", None)
+            for command in commands:
+                with self.subTest(entry=command[:2]):
+                    result = subprocess.run(command, cwd=caller, env=env,
+                                            capture_output=True, text=True, check=True)
+                    self.assertEqual(json.loads(result.stdout),
+                                     [str(root), str(root / "tools"), str(caller), args])

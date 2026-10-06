@@ -1,0 +1,53 @@
+<svg viewBox="0 0 720 250" role="img" aria-label="Left, a device mock of the Climb screen: a wood CLIMB title bar reading a summit height, a rising elevation profile whose columns are tinted by local gradient from green through red, an amber you-are-here cursor, and four apricot stat tiles. Right, the gradient-to-colour ramp — under 3 percent green, 3 to 6 yellow, 6 to 9 amber, 9 to 12 orange, over 12 red — with notes that the climbs are segmented once at load and drawn from a finer profile scoped to the active climb." xmlns="http://www.w3.org/2000/svg" width="720" height="250" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">The climb panel — gradient shown as colour</text>
+
+  <rect x="40" y="44" width="150" height="192" rx="10" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.5" />
+  <rect x="46" y="50" width="138" height="20" rx="5" style="fill:#aa5500" />
+  <text x="56" y="64" style="fill:#fff;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">CLIMB</text>
+  <text x="178" y="64" text-anchor="end" style="fill:#fff;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">1762 m</text>
+  <g>
+    <rect x="52" y="138" width="9" height="12" style="fill:#00aa00" />
+    <rect x="62.5" y="132" width="9" height="18" style="fill:#00aa00" />
+    <rect x="73" y="126" width="9" height="24" style="fill:#ffff00" />
+    <rect x="83.5" y="120" width="9" height="30" style="fill:#ffff00" />
+    <rect x="94" y="112" width="9" height="38" style="fill:#ffaa00" />
+    <rect x="104.5" y="105" width="9" height="45" style="fill:#ffaa00" />
+    <rect x="115" y="98" width="9" height="52" style="fill:#ff5500" />
+    <rect x="125.5" y="92" width="9" height="58" style="fill:#ff5500" />
+    <rect x="136" y="88" width="9" height="62" style="fill:#ff0000" />
+    <rect x="146.5" y="86" width="9" height="64" style="fill:#ff5500" />
+    <rect x="157" y="84" width="9" height="66" style="fill:#ffaa00" />
+    <rect x="167.5" y="82" width="9" height="68" style="fill:#ffff00" />
+  </g>
+  <line x1="105" y1="78" x2="105" y2="150" stroke="#ffaa00" stroke-width="2" />
+  <circle cx="105" cy="108" r="3.5" style="fill:#000" /><circle cx="105" cy="108" r="2.2" style="fill:#ffaa00" />
+  <line x1="52" y1="151" x2="176" y2="151" stroke="#aaaa55" stroke-width="1" />
+  <rect x="52" y="160" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <rect x="117" y="160" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <rect x="52" y="196" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <rect x="117" y="196" width="59" height="30" rx="4" style="fill:#ffaa55" />
+  <text x="57" y="172" style="fill:#6b5a2a;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">CLIMB</text>
+  <text x="122" y="172" style="fill:#6b5a2a;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">LEFT</text>
+  <text x="57" y="208" style="fill:#6b5a2a;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">GRADE</text>
+  <text x="122" y="208" style="fill:#6b5a2a;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">AVG</text>
+
+  <text class="d-sub" x="300" y="60" style="font-size:12px" fill="#5c5a2e" font-size="12px">local gradient → stripe colour</text>
+  <g>
+    <rect x="300" y="72" width="70" height="26" style="fill:#00aa00" />
+    <rect x="370" y="72" width="70" height="26" style="fill:#ffff00" />
+    <rect x="440" y="72" width="70" height="26" style="fill:#ffaa00" />
+    <rect x="510" y="72" width="70" height="26" style="fill:#ff5500" />
+    <rect x="580" y="72" width="70" height="26" style="fill:#ff0000" />
+  </g>
+  <text class="d-sub" x="335" y="114" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">&lt; 3%</text>
+  <text class="d-sub" x="405" y="114" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">3–6</text>
+  <text class="d-sub" x="475" y="114" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">6–9</text>
+  <text class="d-sub" x="545" y="114" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">9–12</text>
+  <text class="d-sub" x="615" y="114" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">&gt; 12%</text>
+
+  <text class="d-sub" x="300" y="150" style="font-size:12px" fill="#5c5a2e" font-size="12px">· climbs are segmented once, when the route loads</text>
+  <text class="d-sub" x="300" y="170" style="font-size:12px" fill="#5c5a2e" font-size="12px">· a dip is bridged, a deep col splits — plain gates on</text>
+  <text class="d-sub" x="312" y="186" style="font-size:12px" fill="#5c5a2e" font-size="12px">gain, average grade, and length</text>
+  <text class="d-sub" x="300" y="208" style="font-size:12px" fill="#5c5a2e" font-size="12px">· a finer profile, scoped to the active climb, rebuilt</text>
+  <text class="d-sub" x="312" y="224" style="font-size:12px" fill="#5c5a2e" font-size="12px">only when you cross into the next one</text>
+</svg>

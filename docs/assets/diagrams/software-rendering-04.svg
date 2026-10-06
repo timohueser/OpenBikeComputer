@@ -1,0 +1,35 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="A level-of-detail pyramid: coarse tiers at the top are narrow (little, simplified geometry) and cover any zoom; fine tiers at the bottom are wide (dense detail) with a small meters-per-pixel range. A current view of 0.5 meters per pixel selects LOD 3, the finest tier whose range still covers it." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aL" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">LOD selection · illustrative thresholds</text>
+
+  <!-- detail axis (left) -->
+  <text class="d-sub" x="58" y="86" text-anchor="middle" fill="#5c5a2e" font-size="12px">coarse</text>
+  <text class="d-sub" x="58" y="230" text-anchor="middle" fill="#5c5a2e" font-size="12px">fine</text>
+
+  <!-- tier 0 (top, narrowest) -->
+  <polygon points="300,58 420,58 438,98 282,98" style="fill:#cfe0c2;stroke:#3c6b39;stroke-width:1.4" />
+  <text class="d-label" x="360" y="76" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">LOD 0 · coarsest</text>
+  <text class="d-sub" x="360" y="90" text-anchor="middle" fill="#5c5a2e" font-size="12px">covers any zoom</text>
+
+  <!-- tier 1 -->
+  <polygon points="282,102 438,102 458,142 262,142" style="fill:#c3dab4;stroke:#3c6b39;stroke-width:1.4" />
+  <text class="d-label" x="360" y="120" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">LOD 1</text>
+  <text class="d-sub" x="360" y="134" text-anchor="middle" fill="#5c5a2e" font-size="12px">good to ≤ 16 m/px</text>
+
+  <!-- tier 2 -->
+  <polygon points="262,146 458,146 480,186 240,186" style="fill:#b7d4a6;stroke:#3c6b39;stroke-width:1.4" />
+  <text class="d-label" x="360" y="164" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">LOD 2</text>
+  <text class="d-sub" x="360" y="178" text-anchor="middle" fill="#5c5a2e" font-size="12px">good to ≤ 4 m/px</text>
+
+  <!-- tier 3 (bottom, widest) — the selected tier -->
+  <polygon points="240,190 480,190 506,234 214,234" style="fill:#a9cd96;stroke:#cf6a2a;stroke-width:2.6" />
+  <text class="d-label" x="360" y="208" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">LOD 3 · finest</text>
+  <text class="d-sub" x="360" y="222" text-anchor="middle" fill="#5c5a2e" font-size="12px">good to ≤ 1 m/px</text>
+
+  <!-- selector -->
+  <line x1="646" y1="212" x2="500" y2="212" stroke="#cf6a2a" stroke-width="2" marker-end="url(#aL)" />
+  <text class="d-label" x="652" y="206" style="fill:#a9501c" fill="#1c1b14" font-size="14px">this view</text>
+  <text class="d-sub" x="652" y="222" fill="#5c5a2e" font-size="12px">0.5 m/px</text>
+</svg>

@@ -12,10 +12,11 @@ use crate::regions::Regions;
 use crate::store::sorted;
 
 /// The version of each fetch: a source id with its `NAME=VALUE`s, sorted.
-pub type Versions = BTreeMap<(String, Vec<(String, String)>), String>;
+pub type RequestKey = (String, Vec<(String, String)>);
+pub type Versions = BTreeMap<RequestKey, String>;
 /// The versions of each fetch that the live layers read. Two versions of one fetch conflict: only a
 /// `--move` chooses between them.
-pub type LiveVersions = BTreeMap<(String, Vec<(String, String)>), BTreeSet<String>>;
+pub type LiveVersions = BTreeMap<RequestKey, BTreeSet<String>>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Env {
@@ -29,11 +30,18 @@ pub struct Env {
     /// Exact reads with retained input copies. Credentials are needed only for a new fetch.
     pub retained: Vec<crate::input_copy::Retained>,
     /// Source id to the version of a `--move SOURCE@VERSION`. `None` for `--move SOURCE`: the
-    /// newest upstream version, until a fetch names it.
+    /// newest upstream version of each request. This intent never changes during resolution.
     pub moves: BTreeMap<String, Option<String>>,
+    /// Exact versions resolved by a fetch or selected request refresh.
+    pub resolved: Versions,
+    /// Active acquisition requests, including requests without local bytes. Held inputs are
+    /// direct snapshot inputs and never enter this inventory.
+    pub requests: RefCell<BTreeSet<RequestKey>>,
     /// The sources of `moves` that move because they are stale, not by a `--move`. No step list
     /// needs to read them.
     pub stale: BTreeSet<String>,
+    /// Automatic refresh selections, scoped to acquisition requests.
+    pub stale_requests: BTreeSet<RequestKey>,
     /// The versions of a saved plan. A step list then reads exactly these, and a fetch that they
     /// lack is not in the plan.
     pub planned: Option<Versions>,
@@ -99,8 +107,11 @@ impl Env {
         if let Some(planned) = &self.planned {
             return Ok(planned.get(&fetch).map(String::as_str));
         }
-        if let Some(moved) = self.moves.get(source) {
-            return Ok(moved.as_deref());
+        if let Some(moved) = self.moves.get(source).filter(|_| !self.stale.contains(source)) {
+            return Ok(moved.as_deref().or_else(|| self.resolved.get(&fetch).map(String::as_str)));
+        }
+        if let Some(version) = self.resolved.get(&fetch) {
+            return Ok(Some(version));
         }
         let versions: BTreeSet<&str> = match self.live.get(&fetch) {
             Some(read) => read.iter().map(String::as_str).collect(),
@@ -121,7 +132,7 @@ impl Env {
 
     /// Whether a plan moves `source` to its newest upstream version.
     pub fn moves_to_newest(&self, source: &str) -> bool {
-        self.moves.get(source).is_some_and(Option::is_none)
+        !self.stale.contains(source) && self.moves.get(source).is_some_and(Option::is_none)
     }
 
     /// `text`, the file of this environment, with its `region` and `layers`. Comments and the other
@@ -208,6 +219,14 @@ mod tests {
         assert!(env.moves_to_newest("land") && !env.moves_to_newest("osm") && !env.moves_to_newest("qrank"));
         env.planned = Some(Versions::from([(("land".into(), Vec::new()), "2026-09-15".into())]));
         assert_eq!((env.version("land", &[]), env.version("osm", &[])), (Ok(Some("2026-09-15")), Ok(None)));
+
+        env.planned = None;
+        env.moves.insert("extract".into(), None);
+        env.stale.insert("extract".into());
+        assert!(!env.moves_to_newest("extract"), "automatic selection is per request");
+        env.resolved.insert(("extract".into(), area("b")), "2026-09-20".into());
+        assert_eq!(env.version("extract", &area("a")), Ok(Some("2026-09-01")), "an unrelated request keeps live");
+        assert_eq!(env.version("extract", &area("b")), Ok(Some("2026-09-20")), "the selected request moves");
     }
 
     #[test]

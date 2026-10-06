@@ -124,15 +124,27 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     }
     let live = read_live(&remote, &registry, products, &store)?;
     loaded.env.live = live.versions();
-    let rows = source_rows(&registry, Some(&live.by_source()), false)?;
-    let statuses = rows.iter().map(|row| {
-        let status = sources::Status { state: row.state, reason: row.reason.clone(), age_days: row.age_days };
-        (row.source.id.clone(), status)
-    });
-    let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let http = Http::new();
     let copies = crate::input_copy::Restore { remote: &remote, live: &live };
     loaded.env.retained = crate::input_copy::retained(&live, &store)?;
+    let inventory = super::freshness::discover(
+        products,
+        &loaded.env,
+        &loaded.regions,
+        &store,
+        &http,
+        &loaded.sources,
+        Some(&copies),
+    )?;
+    let rows = source_rows(&registry, Some(&live.by_source()), Some(&inventory), false)?;
+    let statuses = rows.iter().flat_map(|row| {
+        row.requests.iter().map(|request| {
+            let status =
+                sources::Status { state: request.state, reason: request.reason.clone(), age_days: request.age_days };
+            ((row.source.id.clone(), request.params.clone()), status)
+        })
+    });
+    let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
     let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
@@ -236,7 +248,10 @@ fn layer_states(
     check_layers(products, env)?;
     env.fetch_failures.clear();
     env.stale.extend(
-        environment.sources.iter().filter(|(_, status)| status.state == State::Stale).map(|(id, _)| id.clone()),
+        environment.sources.iter().filter(|(_, status)| status.state == State::Stale).map(|((id, _), _)| id.clone()),
+    );
+    env.stale_requests.extend(
+        environment.sources.iter().filter(|(_, status)| status.state == State::Stale).map(|(key, _)| key.clone()),
     );
     let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
     for product in products {

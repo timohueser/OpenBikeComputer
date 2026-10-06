@@ -357,7 +357,10 @@ impl Client {
         let mut bytes = vec![0; MAX_REQUEST_LEN];
         let len = encode_request(&mut bytes, id, Request::Cancel(CancelRequest { transfer })).ok_or(Error::Protocol)?;
         bytes.truncate(len);
-        self.actions.clear();
+        self.actions.retain(|action| {
+            matches!(action, Action::Send { token, .. }
+                if self.queries.iter().any(|query| query.token == Some(*token)))
+        });
         self.send(Channel::Control, bytes, Write::Control)?;
         let transfer_answered = self.operation.as_ref().unwrap().answer.is_some();
         self.cancellation =
@@ -367,7 +370,7 @@ impl Client {
     }
 }
 
-fn opcode(request: Request) -> Opcode {
+pub(super) fn opcode(request: Request) -> Opcode {
     match request {
         Request::List(_) => Opcode::List,
         Request::Status(_) => Opcode::Status,

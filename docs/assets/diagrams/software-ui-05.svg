@@ -1,0 +1,38 @@
+<svg viewBox="0 0 720 262" role="img" aria-label="The detour flow in three panels. Panel one, the chooser: the magenta route with an orange inner stroke marking the skipped stretch ahead of the rider and a ring at the candidate rejoin point; Up and Down move the rejoin in 100-metre steps. Panel two, the preview: the planned detour drawn in blue around the skipped stretch, with a panel showing two signed cost figures, here plus 434 metres of distance and 47 metres less climbing. Panel three, the commit: the spliced line — ridden part, detour, and the original route from the rejoin — is written as an ordinary route file and adopted; guidance continues." xmlns="http://www.w3.org/2000/svg" width="720" height="262" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aDT" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Choose a rejoin · preview the cost · commit the splice</text>
+
+  <!-- panel 1: chooser -->
+  <text class="d-sub" x="30" y="52" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">① chooser — Up/Down move the rejoin</text>
+  <rect x="30" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M55 195 C 90 160, 100 120, 130 100 C 160 80, 185 80, 210 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <path d="M95 152 C 110 130, 118 112, 130 100 C 143 91, 152 87, 162 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
+  <path d="M62 188 l8 12 l-8 -4 l-8 4 z" fill="#ff0000" />
+  <circle cx="162" cy="84" r="7" fill="none" stroke="#000" stroke-width="2" />
+  <text class="d-sub" x="120" y="200" style="font-size:12px" fill="#5c5a2e" font-size="12px">skipped stretch</text>
+  <text class="d-sub" x="162" y="112" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">rejoin</text>
+  <text class="d-sub" x="30" y="228" style="font-size:12px" fill="#5c5a2e" font-size="12px">±100 m steps · 600 m minimum</text>
+
+  <!-- panel 2: preview -->
+  <line class="d-flow" x1="238" y1="135" x2="258" y2="135" marker-end="url(#aDT)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="266" y="52" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">② preview — path and cost</text>
+  <rect x="266" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M291 195 C 326 160, 336 120, 366 100 C 396 80, 421 80, 446 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <path d="M331 152 C 346 130, 354 112, 366 100 C 379 91, 388 87, 398 84" fill="none" stroke="#ff5500" stroke-width="2.4" />
+  <path d="M331 152 C 370 160, 410 130, 398 84" fill="none" stroke="#0000aa" stroke-width="3" />
+  <rect x="280" y="178" width="150" height="20" rx="6" style="fill:#f3f0df;stroke:#3d3427;stroke-width:1" />
+  <text x="291" y="192" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#3d3427" fill="#1c1b14">+434 m</text>
+  <path d="M372 194 l6 -9 l6 9 z" fill="#3d3427" />
+  <text x="422" y="192" text-anchor="end" style="font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px;fill:#3d3427" fill="#1c1b14">-47 m</text>
+  <text class="d-sub" x="266" y="228" style="font-size:12px" fill="#5c5a2e" font-size="12px">what it costs: distance · climbing</text>
+
+  <!-- panel 3: commit -->
+  <line class="d-flow" x1="474" y1="135" x2="494" y2="135" marker-end="url(#aDT)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="502" y="52" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">③ commit — use the detour</text>
+  <rect x="502" y="60" width="200" height="150" rx="9" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.4" />
+  <path d="M527 195 C 550 172, 558 152, 564 138 C 592 162, 630 132, 622 96 C 642 82, 662 76, 680 72" fill="none" stroke="#ff00ff" stroke-width="5" />
+  <text class="d-sub" x="502" y="228" style="font-size:12px" fill="#5c5a2e" font-size="12px">an ordinary route file</text>
+  <text class="d-sub" x="30" y="252" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">back cancels at any step · a failed plan suggests the one useful remedy: try a farther rejoin</text>
+</svg>

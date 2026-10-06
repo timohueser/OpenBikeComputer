@@ -1,0 +1,32 @@
+<svg viewBox="0 0 720 384" role="img" aria-label="A gesture reaches the top screen. Its handler returns a transition, which changes the stack. Home remains at the bottom. Back-hold is handled globally before screen dispatch." xmlns="http://www.w3.org/2000/svg" width="720" height="384" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs><marker id="software-ui-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">A screen returns a navigation transition</text>
+  <rect class="d-panel" x="20" y="56" width="195" height="66" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="117.5" y="81" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Gesture</text>
+  <text class="d-sub" x="117.5" y="101" text-anchor="middle" fill="#5c5a2e" font-size="12px">Top screen receives input</text>
+  <path class="d-flow" d="M215 89 L258 89" marker-end="url(#software-ui-2)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel d-focus" x="260" y="56" width="195" height="66" rx="8" fill="#f9f0ee" stroke="#ae4825" stroke-width="2" />
+  <text class="d-title" x="357.5" y="81" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">handle</text>
+  <text class="d-sub" x="357.5" y="101" text-anchor="middle" fill="#5c5a2e" font-size="12px">Returns Transition</text>
+  <path class="d-flow" d="M455 89 L502 89" marker-end="url(#software-ui-2)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="505" y="56" width="195" height="66" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="602.5" y="81" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Apply transition</text>
+  <text class="d-sub" x="602.5" y="101" text-anchor="middle" fill="#5c5a2e" font-size="12px">Update the screen stack</text>
+  <text class="d-title" x="20" y="174" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Stack example</text>
+  <rect class="d-panel" x="20" y="195" width="210" height="50" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="125" y="220" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Up ahead · top</text>
+  <rect class="d-panel" x="20" y="253" width="210" height="50" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="125" y="278" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Map</text>
+  <rect class="d-panel" x="20" y="311" width="210" height="50" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="125" y="336" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Home · root</text>
+  <text class="d-label" x="280" y="210" text-anchor="start" fill="#1c1b14" font-size="14px">Push / Pop</text>
+  <text class="d-sub" x="455" y="210" text-anchor="start" fill="#5c5a2e" font-size="12px">Add / remove a top screen</text>
+  <text class="d-label" x="280" y="242" text-anchor="start" fill="#1c1b14" font-size="14px">Replace</text>
+  <text class="d-sub" x="455" y="242" text-anchor="start" fill="#5c5a2e" font-size="12px">Change the top screen</text>
+  <text class="d-label" x="280" y="274" text-anchor="start" fill="#1c1b14" font-size="14px">Root(screen)</text>
+  <text class="d-sub" x="455" y="274" text-anchor="start" fill="#5c5a2e" font-size="12px">Keep Home, then add screen</text>
+  <text class="d-label" x="280" y="306" text-anchor="start" fill="#1c1b14" font-size="14px">Home</text>
+  <text class="d-sub" x="455" y="306" text-anchor="start" fill="#5c5a2e" font-size="12px">Keep only Home</text>
+  <text class="d-label" x="280" y="338" text-anchor="start" fill="#1c1b14" font-size="14px">None</text>
+  <text class="d-sub" x="455" y="338" text-anchor="start" fill="#5c5a2e" font-size="12px">Keep the current stack</text>
+</svg>
