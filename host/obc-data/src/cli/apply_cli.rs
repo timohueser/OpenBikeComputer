@@ -142,7 +142,7 @@ fn apply_live(
     let plan = match saved {
         Some(plan) => plan,
         None => {
-            now = build_cli::plan_live(root, store, http, remote, products)?;
+            now = build_cli::plan_live(root, store, http, remote, products, &[])?;
             &now
         }
     };
@@ -656,7 +656,7 @@ mod tests {
         let (fixture, remote) = repository("apply-retry");
         let (root, http, products) = (fixture.root(), Http::new(), [&Versioned as &dyn Product]);
         let Remote::Bucket(bucket) = &remote else { unreachable!() };
-        let plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &products).unwrap();
+        let plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &products, &[]).unwrap();
         let scratch = Scratch::new().unwrap();
         let (_, _, staged) =
             stage(&root, &fixture.store, &http, (&remote, bucket), &products, &plan, &scratch).unwrap();

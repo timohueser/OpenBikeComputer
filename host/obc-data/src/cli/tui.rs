@@ -22,6 +22,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
+use crate::fetch::http::Http;
 use crate::product::Product;
 use crate::regions::Regions;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
@@ -322,13 +323,17 @@ fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App,
         }
         Effect::Undo => edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)),
         Effect::Plan => {
-            let plan = plan_live(root, products, &[]).inspect_err(|_| app.overlay = None)?;
+            let plan = plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &[]);
+            let plan = plan.inspect_err(|_| app.overlay = None)?;
             app.plan = Some(PlanView::new(plan));
             Ok(())
         }
         Effect::Select(only) => {
             let Some(view) = app.plan.as_mut() else { return Ok(()) };
-            let taken = if only.is_empty() { Ok(view.all.clone()) } else { plan_live(root, products, &only) };
+            let taken = match only.is_empty() {
+                true => Ok(view.all.clone()),
+                false => plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &only),
+            };
             view.taken = taken.inspect_err(|_| app.overlay = None)?;
             Ok(())
         }

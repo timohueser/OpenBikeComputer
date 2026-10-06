@@ -193,13 +193,6 @@ pub(super) fn print_plan(plan: &EnvPlan) {
     }
 }
 
-/// The plan of `live` that the TUI shows: `plan live --only ONLY --json`.
-pub(super) fn plan_live(root: &Path, products: &[&dyn Product], only: &[String]) -> Result<EnvPlan, Error> {
-    let (store, http) = (Store::open()?, Http::new());
-    let remote = super::remote()?;
-    Ok(planned(root, &store, &http, Some(&remote), products, "live", only, Basis::Moves(&[]))?.plan)
-}
-
 /// What groups cost: the download, the build time and the output; `None` when the store does not
 /// know one of the parts. A fetch or a build that two groups need counts once.
 pub(super) struct Cost {
@@ -363,15 +356,17 @@ pub(super) fn changed(live: &LiveProduct, next: &LiveProduct) -> bool {
     id(live) != id(next)
 }
 
-/// The plan of `live` now, against the live releases that `remote` holds.
+/// The plan of `live` now against the live releases that `remote` holds: `plan live --only ONLY
+/// --json`, which the TUI shows and an apply without `--plan` applies.
 pub(super) fn plan_live(
     root: &Path,
     store: &Store,
     http: &Http,
     remote: &Remote,
     products: &[&dyn Product],
+    only: &[String],
 ) -> Result<EnvPlan, Error> {
-    Ok(planned(root, store, http, Some(remote), products, "live", &[], Basis::Moves(&[]))?.plan)
+    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(&[]))?.plan)
 }
 
 /// The output of `plan ENV --json` in `file`.
