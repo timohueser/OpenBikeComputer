@@ -1,7 +1,7 @@
 //! The host client owns protocol state. JavaScript owns records, payload I/O and time.
 
 use obc_link::flat::{
-    client::{Action, Client, Error, Event, Options, Outcome, QueryOutcome},
+    client::{Action, Client, Error, Event, Options, Outcome, QueryId, QueryOutcome},
     wire::*,
     Ceilings, Channel, DisplayName, EntryMeta, ObjectId, ObjectKind, Revision, StoreId,
 };
@@ -262,6 +262,24 @@ impl JsClient {
             .map_err(|e| JsValue::from_str(&error(e).to_string()))
     }
 
+    #[wasm_bindgen(js_name = queryCatalog)]
+    pub fn query_catalog(
+        &mut self,
+        object_kind: Option<u16>,
+        expected_store: Option<String>,
+        now: u64,
+    ) -> Result<u64, JsValue> {
+        self.inner
+            .query_catalog(object_kind.map(kind).transpose()?, expected_store.as_deref().map(store).transpose()?, now)
+            .map(|id| id.0)
+            .map_err(|e| JsValue::from_str(&error(e).to_string()))
+    }
+
+    #[wasm_bindgen(js_name = cancelQuery)]
+    pub fn cancel_query(&mut self, id: u64) -> bool {
+        self.inner.cancel_query(QueryId(id))
+    }
+
     #[wasm_bindgen(js_name = nextQueryResult)]
     pub fn next_query_result(&mut self) -> Option<String> {
         self.inner.next_query_result().map(|(id, result)| {
@@ -273,6 +291,9 @@ impl JsClient {
                             "more": more, "entries": entries.into_iter().map(entry).collect::<Vec<_>>(),
                         }),
                         QueryOutcome::Status(status) => outcome(Outcome::Status(status)),
+                        QueryOutcome::Catalog { store, sequence, entries } => {
+                            outcome(Outcome::Catalog { store, sequence, entries })
+                        }
                     };
                     json!({"query": id.0.to_string(), "ok": true, "outcome": value})
                 }
