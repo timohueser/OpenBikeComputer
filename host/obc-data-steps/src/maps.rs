@@ -1560,24 +1560,38 @@ pub(crate) mod tests {
         let regions = Regions::new(vec![obc_data::regions::parse_region("jutland", region).unwrap()]).unwrap();
         let (env, _) = grimsel(&store, "1");
         let env = Env { region: "jutland".into(), ..env };
+        let bounds = Bbox { west: 8.2, south: 53.8, east: 8.3, north: 56.1 };
+        let poly = box_poly(&bounds);
+        let coverage = Coverage::parse_poly(&poly).unwrap();
+        let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+            "properties":{"id":"jutland","name":"Jutland","parent":null,
+                "urls":{"pbf":"https://download.geofabrik.de/europe/jutland-latest.osm.pbf"}},
+            "geometry":serde_json::from_str::<serde_json::Value>(&coverage.geojson()).unwrap()}]});
+        fetched(&store, catalog::INDEX, "2", &[], &[("index-2.json".into(), index.to_string())]);
+        let area = [("area".into(), "europe/jutland".into())];
+        fetched(&store, POLY, "1", &area, &[("europe/jutland.poly".into(), poly.clone())]);
+        fetched(&store, EXTRACTS, "1", &area, &[("europe/jutland.osm.pbf".into(), "osm".into())]);
+        captured(&store, "1", "europe/jutland", "osm", &poly);
         let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
         match map_steps(&root(), &env, &regions, &store) {
             Ok(listed) => {
                 assert!(!token.present());
-                assert_eq!(
-                    listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
-                    ["maps/reference/0038-0032", "maps/terrain/0038-0032", "maps/catalog"]
-                );
-                assert!(listed
-                    .blocked
+                for layer in ["maps/reference/0038-0032", "maps/terrain/0038-0032"] {
+                    assert!(listed
+                        .blocked
+                        .iter()
+                        .any(|b| b.layer == layer && b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                }
+                assert!(listed.blocked.iter().any(|b| b.layer == "maps/catalog"));
+                assert!(!listed
+                    .steps
                     .iter()
-                    .filter(|b| b.layer != "maps/catalog")
-                    .all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
-                assert!(listed.blocked.last().unwrap().reason.contains("box and multi-area"));
-                assert!(listed.steps.is_empty());
+                    .any(|step| step.name == "maps/catalog" || step.name == "maps/network/0038-0032"));
+                assert!(
+                    listed.steps.iter().any(|step| step.name == "maps/coarse/0038-0032"),
+                    "independent bands stay usable"
+                );
                 let mut restored_env = env.clone();
-                let coverage =
-                    Coverage::parse_poly(&box_poly(&Bbox { west: 8.2, south: 53.8, east: 8.3, north: 56.1 })).unwrap();
                 let (leaf, cells) = leaves(&[coverage], V1_CELL_LOG2.into()).into_iter().next().unwrap();
                 // Pin the request before reference preflight; the missing credential matters only upstream.
                 let windows: Vec<_> = cells
