@@ -832,3 +832,168 @@ fn cancelled_upload_with_authoritative_commit_preserves_an_unsent_query() {
     assert_eq!(s.client.next_deadline_ms(), None);
     assert_eq!(s.device.read_object(installed.id.0, 0), Some(s.source.clone()));
 }
+
+#[test]
+fn complete_catalog_restarts_changed_pages_beside_a_live_get() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    for _ in 0..3 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), s.now).unwrap();
+    assert!(s.step().is_none());
+    assert!(s.step().is_none());
+    let transfer = s.client.active_transfer_id().unwrap();
+    s.mutate_listing = true;
+    let query = s.client.query_catalog(Some(ObjectKind::Route), Some(StoreId(STORE.0)), s.now).unwrap();
+    let (id, result) = s.query_result();
+    let QueryOutcome::Catalog { store, sequence, entries } = result.unwrap() else {
+        panic!("complete catalogue");
+    };
+    assert_eq!(id, query);
+    assert_eq!(store, StoreId(STORE.0));
+    assert_eq!(entries.len(), 5);
+    assert!(entries.windows(2).all(|pair| pair[0].id < pair[1].id));
+    assert_eq!(s.client.active_transfer_id(), Some(transfer));
+    assert!(!s.client.cancel_query(query));
+    assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, s.source);
+    let Outcome::Catalog { sequence: primary_sequence, entries: primary_entries, .. } =
+        s.run(Request::List(ListRequest { kind: Some(ObjectKind::Route), cursor: None })).unwrap()
+    else {
+        panic!("primary catalogue");
+    };
+    assert_eq!((sequence, entries), (primary_sequence, primary_entries));
+}
+
+#[test]
+fn complete_catalog_runs_while_an_upload_awaits_its_real_source() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    for _ in 0..4 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.source = (0..900).map(|n| n as u8).collect();
+    s.client.start(put(ObjectId::NONE, Revision::HEAD, &s.source), 0).unwrap();
+    let source = loop {
+        match s.client.next_action().expect("upload setup") {
+            Action::Send { token, record, channel: Channel::Control } => {
+                let reply = s.device.on_control(&record);
+                s.deliver(reply);
+                s.client.event(Event::Written(token), s.now);
+            }
+            Action::Progress { .. } => {}
+            Action::ReadSource { token, offset, max_len } => break (token, offset, max_len),
+            _ => panic!("unexpected upload setup action"),
+        }
+    };
+    let query = s.client.query_catalog(Some(ObjectKind::Route), Some(StoreId(STORE.0)), s.now).unwrap();
+    assert!(matches!(s.query_result(), (id, Ok(QueryOutcome::Catalog { entries, .. }))
+        if id == query && entries.len() == 4));
+    assert!(s.client.is_busy());
+    let (token, offset, max_len) = source;
+    let bytes = &s.source[offset as usize..offset as usize + max_len];
+    s.client.event(Event::Source { token, offset, bytes }, s.now);
+    let Outcome::Put(installed) = s.pump().unwrap() else {
+        panic!("upload");
+    };
+    assert_eq!(s.device.read_object(installed.id.0, 0), Some(s.source.clone()));
+}
+
+#[test]
+fn complete_catalog_runs_while_a_remove_reply_is_pending() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    for _ in 0..3 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.client.start(Request::Remove(RemoveRequest { id: installed.id, expected: installed.revision }), s.now).unwrap();
+    let Action::Send { token, record, channel: Channel::Control } = s.client.next_action().unwrap() else {
+        panic!("remove request");
+    };
+    let reply = s.device.on_control(&record);
+    s.client.event(Event::Written(token), s.now);
+    let query = s.client.query_catalog(Some(ObjectKind::Route), Some(StoreId(STORE.0)), s.now).unwrap();
+    assert!(matches!(s.query_result(), (id, Ok(QueryOutcome::Catalog { entries, .. }))
+        if id == query && entries.len() == 3 && entries.iter().all(|entry| entry.id != installed.id)));
+    assert!(s.client.is_busy());
+    s.deliver(reply);
+    assert!(matches!(s.pump(), Ok(Outcome::Remove { .. })));
+    assert_eq!(s.device.read_object(installed.id.0, 0), None);
+}
+
+#[test]
+fn cancelling_a_catalog_page_preserves_other_queries_and_the_get() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    for _ in 0..3 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), s.now).unwrap();
+    assert!(s.step().is_none());
+    assert!(s.step().is_none());
+    let transfer = s.client.active_transfer_id();
+    let cancelled = s.client.query_catalog(None, None, s.now).unwrap();
+    let (token, record) = loop {
+        match s.client.next_action().expect("catalogue first page") {
+            Action::Send { token, record, channel: Channel::Control } => break (token, record),
+            Action::WriteSink { token, offset, bytes } => {
+                assert_eq!(offset, s.sink.len() as u64);
+                s.sink.extend_from_slice(&bytes);
+                s.client.event(Event::SinkWritten { token, offset, len: bytes.len() }, s.now);
+            }
+            Action::Progress { done, total } => s.progress.push((done, total)),
+            _ => panic!("unexpected catalogue setup action"),
+        }
+    };
+    let Reaction::Send { bytes, channel: Channel::Control } = s.device.on_control(&record) else {
+        panic!("catalogue response");
+    };
+    s.client.event(Event::Control(&bytes), s.now);
+    let other = s.client.query_catalog(Some(ObjectKind::Route), None, s.now).unwrap();
+    assert!(s.client.cancel_query(cancelled));
+    assert!(!s.client.cancel_query(cancelled));
+    assert_eq!(s.client.next_query_result(), Some((cancelled, Err(Error::Cancelled))));
+    s.client.event(Event::Control(&bytes), s.now);
+    s.client.event(Event::Written(token), s.now);
+    s.client.event(Event::IoFailed(token), s.now);
+    assert!(matches!(s.query_result(), (id, Ok(QueryOutcome::Catalog { entries, .. }))
+        if id == other && entries.len() == 4));
+    assert_eq!(s.client.next_query_result(), None);
+    assert_eq!(s.client.active_transfer_id(), transfer);
+    assert_eq!(s.client.store_id(), Some(StoreId(STORE.0)));
+    assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, s.source);
+}
+
+#[test]
+fn complete_catalog_scope_and_restart_limit_do_not_change_the_primary() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let previous = StoreId([0xab; 16]);
+    let query = s.client.query_catalog(None, Some(previous), 0).unwrap();
+    assert_eq!(s.query_result(), (query, Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })));
+    assert_eq!(s.client.store_id(), None);
+    s.client = Client::new(s.device.ceilings(), Options { list_restarts: 0, ..Options::default() });
+    let installed = first_put(&mut s);
+    assert_eq!(
+        s.client.query_catalog(None, Some(previous), s.now),
+        Err(Error::StoreChanged { previous, current: StoreId(STORE.0) })
+    );
+    assert_eq!(s.client.next_action(), None);
+    for _ in 0..3 {
+        s.device.seed(ObjectKind::Route as u16, &[1, 2], "another route");
+    }
+    s.client.start(Request::Get(GetRequest { id: installed.id, revision: installed.revision }), s.now).unwrap();
+    assert!(s.step().is_none());
+    assert!(s.step().is_none());
+    s.mutate_listing = true;
+    let query = s.client.query_catalog(None, None, s.now).unwrap();
+    assert_eq!(s.query_result(), (query, Err(Error::CatalogChanged)));
+    assert!(s.client.is_busy());
+    assert!(matches!(s.pump(), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, s.source);
+}
