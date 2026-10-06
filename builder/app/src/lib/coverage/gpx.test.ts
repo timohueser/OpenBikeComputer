@@ -50,6 +50,11 @@ describe("parseGpx", () => {
         expect(parseGpx(body, "x").name).toBe("Ride Name");
     });
 
+    it("keeps track-name precedence after a self-closing empty track", () => {
+        const body = `${HEADER}<metadata><name>File</name></metadata><trk/><trk><name>Ride</name><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8.1"/></trk></gpx>`;
+        expect(parseGpx(body, "fallback").name).toBe("Ride");
+    });
+
     it("uses the metadata name when the track has none, and the fallback last", () => {
         const named = `${HEADER}<metadata><name>File Name</name></metadata><trk><trkseg><trkpt lat="47" lon="8"/><trkpt lat="47.1" lon="8"/></trkseg></trk></gpx>`;
         expect(parseGpx(named, "fallback").name).toBe("File Name");

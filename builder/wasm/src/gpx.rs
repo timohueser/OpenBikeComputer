@@ -167,6 +167,23 @@ fn first_text(text: &str, tag: &str) -> Option<String> {
     )
 }
 
+fn scoped_name(text: &str) -> Option<String> {
+    for (at, _) in text.match_indices('<') {
+        let rest = &text[at + 1..];
+        if !["trk", "rte"]
+            .iter()
+            .any(|tag| rest.starts_with(tag) && !rest.as_bytes().get(tag.len()).is_some_and(|c| word(*c)))
+        {
+            continue;
+        }
+        // A self-closing opener can precede the named track in this text scope.
+        let body = &rest[rest.find('>')? + 1..];
+        let end = [body.find("</trk>"), body.find("</rte>")].into_iter().flatten().min()?;
+        return first_text(&body[..end], "name");
+    }
+    None
+}
+
 pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
     let entries = elements(text, &["trkpt", "rtept"]);
     let mut tracks = Vec::new();
@@ -216,7 +233,7 @@ pub fn read(text: &str, fallback: &str) -> Result<Import, String> {
             })
         })
         .collect();
-    let scoped = elements(text, &["trk", "rte"]).first().and_then(|e| first_text(e.body, "name"));
+    let scoped = scoped_name(text);
     let mut file = String::new();
     let mut at = 0;
     for w in wpts {
