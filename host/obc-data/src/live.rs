@@ -438,7 +438,13 @@ pub(crate) mod tests {
             "test-catalog"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(Vec::new().into())
         }
     }
@@ -630,7 +636,13 @@ pub(crate) mod tests {
             "old"
         }
 
-        fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+        fn steps(
+            &self,
+            _root: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
             Ok(Vec::new().into())
         }
     }

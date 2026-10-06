@@ -66,7 +66,11 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
 /// Record a fetch without files of each national model that the step list asks for: the store has
 /// no national data of the Grimsel, so the terrain reads GLO-30 alone.
 fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, regions, store) else { return };
+    let Err(Unplanned::NeedsFetch(wanted)) =
+        Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store)
+    else {
+        return;
+    };
     for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
         let requested = Requested { version: VERSION.into(), params: fetch.params.clone(), files: Vec::new() };
         store.put_requested(&fetch.source, &requested).unwrap();
@@ -171,7 +175,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &env, &regions);
-    let listed = Maps.steps(&env, &regions, &store).unwrap();
+    let listed = Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &env, &regions, &store).unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 

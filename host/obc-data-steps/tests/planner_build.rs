@@ -88,7 +88,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     };
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, env: &Env| {
-        let mut steps = Planner.steps(env, &regions, &store).unwrap().steps;
+        let mut steps = Planner.steps(&root, env, &regions, &store).unwrap().steps;
         let rust = ["planner/osm", "planner/terrain", "planner/routing"];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {

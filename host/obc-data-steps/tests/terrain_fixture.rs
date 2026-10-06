@@ -61,7 +61,11 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
 /// Record a fetch without files of each national model that the step list asks for: the store has
 /// no national data of the Grimsel, so the terrain reads GLO-30 alone.
 fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, regions, store) else { return };
+    let Err(Unplanned::NeedsFetch(wanted)) =
+        Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store)
+    else {
+        return;
+    };
     for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
         let requested = Requested { version: VERSION.into(), params: fetch.params.clone(), files: Vec::new() };
         store.put_requested(&fetch.source, &requested).unwrap();
@@ -71,7 +75,7 @@ fn without_models(store: &Store, env: &Env, regions: &Regions) {
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
 fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<String, Vec<u8>> {
     without_models(store, env, regions);
-    let steps = Maps.steps(env, regions, store).unwrap().steps;
+    let steps = Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store).unwrap().steps;
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
