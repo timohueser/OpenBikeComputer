@@ -428,7 +428,7 @@ A step declares:
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
 | `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
 | `options` | A JSON object |
-| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. A Rust step declares the crate of its function |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
@@ -454,7 +454,8 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   dependencies add local crate files, registry checksums or resolved Git revisions. Local
   crates must be inside the checkout. Each selected package adds its name, version, edition,
   resolved package settings and features under `cargo/<name>@<version>#<source>`. Cargo metadata runs locked,
-  offline and for the native host target. Features use Cargo's workspace resolution. This
+  offline and for `target`, or the native host when unset. An explicit target also enters
+  `rust/target`. Features use Cargo's workspace resolution. This
   conservative union can rebuild a step when another producer enables a shared feature.
   Dev-only and unrelated packages add no records. The walk stops at the engine crate
   `obc-data`: its selected inputs enter the input digests.
@@ -479,6 +480,8 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   A no-sync override cannot retain an incompatible interpreter. Discovery does not download,
   install or sync. A missing interpreter
   fails with a request to prepare the runtime.
+- `python_packages` adds the same selected package closure under `python/packages/<group>`.
+  It does not select a host interpreter or install that group for the command.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys
 of each object in byte order:
@@ -918,6 +921,31 @@ of a set out of the bytes. Its code names the selected Python group, each Python
 imports, each file that it reads from the repository and `tools/step_request.py`. The selected
 locked package closure and interpreter enter its code identity. A credit that it writes comes
 in its options, so it needs no source content projection.
+
+### Service runtimes
+
+`data/planner-runtime.toml` has one optional `[target]` table: `triple`, `glibc`, `node`
+and `python`. Supported triples are `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu`. The glibc baseline is `major.minor`; Node and CPython
+versions are exact `major.minor.patch`. Without this table, all runtime producers are blocked.
+
+`planner/runtime/routing`, `planner/runtime/search` and `planner/runtime/downloads` use
+prepared native Linux tools or a local pinned container. Probes read tool and image metadata.
+Builds use locked offline dependencies. The receipt binds the target and actual builder.
+Each step writes `<service>.tar.gz` and `runtime.json`; only the archive is a client file.
+The descriptor is a named release reference under `runtime/<service>.json`. It binds the
+service, target, archive hash and size, required shared libraries and entry point.
+
+Archives retain dependency metadata and licences. They contain no checkout, virtual
+environment, builder paths or recipe key. Search keeps its model in the separate data input.
+Downloads contains its standard-library helper closure. File names are sorted, timestamps
+are zero, and symbolic links are refused. ELF files must match the target architecture
+and require no newer glibc than the baseline.
+
+The pointer's `services` identities bind runtime content to routing grid content, search
+grid and model content, or the offline index for downloads. They do not bind receipt keys
+or unrelated optional layers. The required `planner/runtime` readiness gate stays blocked
+until installation and service readiness are verified. Data producers can build independently.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
