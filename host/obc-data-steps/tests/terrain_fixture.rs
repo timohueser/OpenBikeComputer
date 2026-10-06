@@ -75,7 +75,7 @@ fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<S
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
-    let context = Context { store, root, sources: &[], http: &Http::new(), limits: Limits::machine() };
+    let context = Context { store, root, sources: &[], http: &Http::new(), copies: None, limits: Limits::machine() };
     let built = run.build(&context, &steps, &plan).unwrap();
     run.finish(None).unwrap();
     let files = built[0].receipt.files.iter();

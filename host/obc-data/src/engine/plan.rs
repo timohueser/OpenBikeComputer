@@ -116,7 +116,10 @@ pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<
         let (mut key, mut stored) = (None, None);
         if fetches.is_empty() && step.layers().all(|name| reused.contains_key(name)) {
             let (receipt, _) = prepare(store, step, &reused, &code).map_err(named)?;
-            stored = reusable(store, &receipt.key)?;
+            stored = reusable(store, &receipt.key)?.map(|mut stored| {
+                stored.inputs = receipt.inputs;
+                stored
+            });
             if let Some(stored) = &stored {
                 reused.insert(&step.name, stored.clone());
             }

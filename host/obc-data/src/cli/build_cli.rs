@@ -15,7 +15,9 @@ use crate::engine::changes::{self, Against};
 use crate::engine::plan::{self, Cause, Estimate, Group, Plan};
 use crate::engine::release::{self, Release};
 use crate::engine::runs::{Context, Limits, Run};
-use crate::engine::{Input, Step};
+#[cfg(test)]
+use crate::engine::Input;
+use crate::engine::Step;
 use crate::env::Env;
 use crate::fetch::{self, http::Http, Request};
 use crate::live::{Check, Live, LiveProduct, Remote, Removal};
@@ -321,7 +323,9 @@ pub(super) fn build_env(
         let mut run = Run::create(store, &format!("build {}", loaded.env.name))?;
         let id = run.id().to_string();
         eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
-        let context = Context { store, root, sources: &loaded.sources, http, limits: Limits::machine() };
+        let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
+        let context =
+            Context { store, root, sources: &loaded.sources, http, copies: copies.as_ref(), limits: Limits::machine() };
         let result = run.build(&context, &steps, &work);
         let incomplete = plan.blocked.iter().any(|b| !b.layers.is_empty()).then_some("required layers are blocked");
         run.finish(result.as_ref().err().map(String::as_str).or(incomplete))?;
@@ -497,7 +501,9 @@ fn planned(
             }
         }
     }
-    let fetch = fetcher(store, http, &loaded.sources, env);
+    let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
+    env.retained = live.as_ref().map(|live| crate::input_copy::retained(live, store)).transpose()?.unwrap_or_default();
+    let fetch = fetcher(store, http, &loaded.sources, env, copies.as_ref());
     let (steps, blocked) = match basis {
         Basis::Moves(_) => steps(products, env, &loaded.regions, store, live.is_some(), fetch)?,
         // A fetch without a version is one that the plan does not name.
@@ -711,21 +717,20 @@ fn next(
         let prefix = now.prefix.clone();
         next.products.push(LiveProduct { product: name.into(), prefix, release, applied: None });
     }
-    let unbuilt = steps.iter().filter(|step| missing.contains(&step.name)).flat_map(|step| &step.inputs);
-    let mut reads = next.snapshots();
-    reads.extend(unbuilt.filter_map(|input| match input {
-        Input::Snapshot { source, version, .. } => Some((source.clone(), version.clone())),
-        Input::Layer { .. } => None,
-    }));
-    // A record that R2 holds stays. A read of a source with `r2_copy` whose record R2 lacks, such
-    // as a moved version, has the record of the store.
-    for (source, version) in reads {
-        let record = match live.inputs.get(&(source.clone(), version.clone())) {
-            Some(Some(record)) => Some(record.clone()),
-            _ if sources.iter().any(|s| s.id == source && s.r2_copy) => store.snapshot(&source, &version)?,
-            _ => continue,
+    for read in crate::input_copy::reads(&next)? {
+        if !live.inputs.contains_key(&read.key)
+            && !sources.iter().any(|s| s.id == read.key.source && s.r2_copy && s.redistribute)
+        {
+            continue;
+        }
+        let record = match live.inputs.get(&read.key) {
+            Some(Some(record)) => {
+                record.check_local(store)?;
+                Some(record.clone())
+            }
+            _ => crate::input_copy::Record::local(store, &read)?,
         };
-        next.inputs.insert((source, version), record);
+        next.inputs.insert(read.key, record);
     }
     Ok((next, missing))
 }
@@ -756,6 +761,7 @@ pub(super) fn fetcher<'a>(
     http: &'a Http,
     sources: &'a [Source],
     env: &Env,
+    copies: Option<&'a crate::input_copy::Restore<'a>>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     let newest: BTreeSet<String> = env.moves.keys().filter(|source| env.moves_to_newest(source)).cloned().collect();
     let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
@@ -780,15 +786,15 @@ pub(super) fn fetcher<'a>(
         let request = Request { source, version: wanted.version.clone(), params: wanted.params.clone() };
         let of_live =
             |version: &String| !moved.contains(&source.id) && live.contains(&(source.id.clone(), version.clone()));
-        fetched(source, fetch::fetch(store, http, &request)).map(|snapshot| snapshot.version).map_err(|e| {
-            match e.code == Code::FetchFailed && wanted.version.as_ref().is_some_and(of_live) {
+        fetched(source, crate::input_copy::fetch(store, http, copies, &request, &[]))
+            .map(|snapshot| snapshot.version)
+            .map_err(|e| match e.code == Code::FetchFailed && wanted.version.as_ref().is_some_and(of_live) {
                 true => e.fix(format!(
                     "Upstream can stop serving an old version: plan with `--move {}` to read the newest.",
                     source.id
                 )),
                 false => e,
-            }
-        })
+            })
     }
 }
 
@@ -1060,7 +1066,7 @@ pub(crate) mod tests {
         let manual = source(&url.replace("data/file.bin", "{area}.poly"), "date");
         let (regions, http) = (Regions::new(Vec::new()).unwrap(), quick());
         let mut live = env(&[]);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live);
+        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
         let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.fix.as_str()),
@@ -1071,7 +1077,7 @@ pub(crate) mod tests {
         assert!(log.lock().unwrap().is_empty(), "a manual source does not move by itself");
 
         live.moves.insert("land".into(), None);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live);
+        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
         steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(
             live.moves["land"].as_deref(),
@@ -1082,18 +1088,18 @@ pub(crate) mod tests {
 
         let land = Source { refresh: Refresh::Days(30), ..manual };
         let mut live = env(&[]);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
+        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
         steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(log.lock().unwrap().len(), requests, "without a move or live, the store serves");
 
         live.moves.insert("qrank".into(), None);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
+        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
         let err = steps(&[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.message.as_str()),
             (Code::Usage, "--move qrank: no step list of `live` reads `qrank`")
         );
-        let mut fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live);
+        let mut fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
         let err = fetch(&Wanted { source: "land".into(), version: None, params: Vec::new() }).unwrap_err();
         assert!(err.message.contains("fetched per `area=`"), "{}", err.message);
     }
@@ -1314,7 +1320,19 @@ pub(crate) mod tests {
         write(&bucket.join("test/catalog.json"), &format!("{{\"release\": \"{id}\"}}"));
         write(&bucket.join(format!("test/releases/{id}.json")), &String::from_utf8(release.canonical()).unwrap());
         let head = fixture.store.snapshot("head", "2020-01-01").unwrap().unwrap();
-        write(&bucket.join("inputs/records/head/2020-01-01.json"), &serde_json::to_string(&head).unwrap());
+        let live = Live {
+            products: vec![LiveProduct {
+                product: "test".into(),
+                prefix: "test".into(),
+                release: Some((id.clone(), release.clone())),
+                applied: None,
+            }],
+            ..Live::default()
+        };
+        for read in crate::input_copy::reads(&live).unwrap().into_iter().filter(|r| r.key.source == "head") {
+            let copy = crate::input_copy::Record::local(&fixture.store, &read).unwrap().unwrap();
+            write(&bucket.join(read.key.path()), &String::from_utf8(copy.canonical()).unwrap());
+        }
         let layers = release.objects().into_keys().map(|sha256| ("test", sha256));
         for (prefix, sha256) in layers.chain(head.files.iter().map(|file| ("inputs", file.sha256.as_str()))) {
             let to = bucket.join(format!("{prefix}/objects/{sha256}"));
@@ -1384,11 +1402,36 @@ pub(crate) mod tests {
         assert_eq!(repair.cause, Some(Cause::Repair { keys: vec![count.clone()] }));
         assert!(repair.builds.is_empty(), "the groups make count again");
         let manifest = format!("test/releases/{}.json", release.id());
-        let records = "inputs/records/head/2020-01-01.json".to_string();
-        let mut every = vec![records, join, upper, "test/objects/old".into(), manifest];
+        let records = crate::input_copy::reads(&Live {
+            products: vec![LiveProduct {
+                product: "test".into(),
+                prefix: "test".into(),
+                release: Some((release.id(), release.clone())),
+                applied: None,
+            }],
+            ..Live::default()
+        })
+        .unwrap()
+        .into_iter()
+        .find(|r| r.key.source == "head")
+        .unwrap()
+        .key
+        .path();
+        let mut every = vec![
+            records,
+            join,
+            upper,
+            "test/objects/old".into(),
+            manifest,
+            format!("inputs/objects/{}", crate::store::sha256_hex(b"head\n")),
+        ];
         every.sort();
         let removed = |plan: &EnvPlan| plan.remove.iter().map(|removal| removal.key.clone()).collect::<Vec<_>>();
-        assert_eq!(removed(&plan), every, "not count, which R2 lacks, nor the object that both heads have");
+        assert_eq!(
+            removed(&plan),
+            every,
+            "count is absent; an unread file of the new snapshot does not keep the old input object"
+        );
 
         let err = live_plan(&fixture, &remote, &["code:test/join"]).unwrap_err();
         assert_eq!(err.code, Code::Usage, "against live, --only selects moves only: {}", err.message);

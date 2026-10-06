@@ -290,18 +290,25 @@ fn record(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> R
 }
 
 /// The lock that a writer of the record of `source@version` holds.
-fn snapshot_lock(source: &str, version: &str) -> String {
+pub(crate) fn snapshot_lock(source: &str, version: &str) -> String {
     format!("snapshot-{source}@{version}")
 }
 
 /// The record of the version with `files` added, or `None` when it has them all already. The
 /// caller holds [`snapshot_lock`].
-fn merge(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Result<Option<Snapshot>, String> {
-    let mut snapshot = store.snapshot(source, version)?.unwrap_or_else(|| Snapshot {
-        source: source.into(),
-        version: version.into(),
-        files: Vec::new(),
-    });
+pub(crate) fn merge(
+    store: &Store,
+    source: &str,
+    version: &str,
+    files: &[FileRecord],
+) -> Result<Option<Snapshot>, String> {
+    let old = store.snapshot(source, version)?;
+    let absent = old.is_none();
+    let mut snapshot =
+        old.unwrap_or_else(|| Snapshot { source: source.into(), version: version.into(), files: Vec::new() });
+    if snapshot.source != source || snapshot.version != version {
+        return Err(format!("{source}@{version}: the local snapshot has another source or version"));
+    }
     let before = snapshot.files.len();
     for file in files {
         if let Some(old) = snapshot.file(&file.url).filter(|old| old.sha256 != file.sha256) {
@@ -313,11 +320,14 @@ fn merge(store: &Store, source: &str, version: &str, files: &[FileRecord]) -> Re
         if let Some(old) = snapshot.files.iter().find(|old| old.name == file.name && old.url != file.url) {
             return Err(format!("{source}@{version}: the name {} is of {} and {}", file.name, old.url, file.url));
         }
+        if let Some(old) = snapshot.file(&file.url).filter(|old| old.name != file.name || old.size != file.size) {
+            return Err(format!("{source}@{version}: {} has another name or size than {}", file.url, old.name));
+        }
         if snapshot.file(&file.url).is_none() {
             snapshot.files.push(file.clone());
         }
     }
-    Ok((snapshot.files.len() > before).then_some(snapshot))
+    Ok((absent || snapshot.files.len() > before).then_some(snapshot))
 }
 
 /// Whether a URL template names the version: `{version}`, or `{yymmdd}` for a date.

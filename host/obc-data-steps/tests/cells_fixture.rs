@@ -181,7 +181,14 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     }
     let plan = obc_data::engine::plan::plan(&store, &root, &steps).unwrap();
     let mut run = RunLog::create(&store, "build test").unwrap();
-    let context = Context { store: &store, root: &root, sources: &[], http: &Http::new(), limits: Limits::machine() };
+    let context = Context {
+        store: &store,
+        root: &root,
+        sources: &[],
+        http: &Http::new(),
+        copies: None,
+        limits: Limits::machine(),
+    };
     let built = run.build(&context, &steps, &plan).unwrap();
     run.finish(None).unwrap();
     let layers: BTreeMap<&str, &Receipt> =
