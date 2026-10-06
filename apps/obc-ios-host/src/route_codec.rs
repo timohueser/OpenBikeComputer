@@ -76,7 +76,7 @@ pub unsafe extern "C" fn obc_format_route_encode(
     error: *mut i32,
 ) -> *mut ObcEncodedRoute {
     let encode = || -> Result<ObcEncodedRoute, Error> {
-        if waypoint_count > obc_route::MAX_WAYPOINTS {
+        if waypoint_count > u16::MAX as usize {
             return Err(Error::TooLarge);
         }
         let name = std::str::from_utf8(unsafe { input(name, name_len)? }).map_err(|_| Error::BadOffset)?;

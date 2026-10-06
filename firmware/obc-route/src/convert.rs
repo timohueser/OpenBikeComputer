@@ -168,7 +168,7 @@ pub fn points_to_obcr(
     bike: BikeType,
     sink: &mut dyn ByteSink,
 ) -> Result<RouteStats, Error> {
-    if waypoints.len() > MAX_WAYPOINTS {
+    if waypoints.len() > u16::MAX as usize {
         return Err(Error::TooLarge);
     }
     let valid_position =
@@ -180,11 +180,11 @@ pub fn points_to_obcr(
     {
         return Err(Error::BadOffset);
     }
-    let mut placements = Vec::new();
-    let mut remap = DistanceRemap { positions: Vec::new(), previous_raw: 0 };
+    let mut placements = alloc::vec::Vec::with_capacity(waypoints.len());
+    let mut remap = DistanceRemap { positions: alloc::vec::Vec::with_capacity(waypoints.len()), previous_raw: 0 };
     for (waypoint, distance) in waypoints {
-        placements.push(WpPlace::from_stored(waypoint, 0)).map_err(|_| Error::TooLarge)?;
-        remap.positions.push((*distance, None)).map_err(|_| Error::TooLarge)?;
+        placements.push(WpPlace::from_stored(waypoint, 0));
+        remap.positions.push((*distance, None));
     }
     let mut emitter = ObcrEmitter::new(sink)?;
     emitter.set_bike_type(bike);
@@ -201,7 +201,7 @@ pub fn points_to_obcr(
 
 #[cfg(feature = "alloc")]
 struct DistanceRemap {
-    positions: Vec<(f64, Option<u32>), MAX_WAYPOINTS>,
+    positions: alloc::vec::Vec<(f64, Option<u32>)>,
     previous_raw: u32,
 }
 
@@ -423,7 +423,7 @@ impl ObcrEmitter {
         &mut self,
         sink: &mut dyn ByteSink,
         name: &str,
-        wps: &mut Vec<WpPlace, MAX_WAYPOINTS>,
+        wps: &mut [WpPlace],
     ) -> Result<RouteStats, Error> {
         // The final point is always kept.
         self.flush_pending(sink)?;
@@ -534,11 +534,11 @@ fn signed_offset_m(d2: f32, cross: f32) -> i16 {
 /// Sort the placed waypoints by position along the route and write the fixed-record table at
 /// `offset`, right after the chunk index. Returns the table's file offset for the header
 /// extension, or 0 when there are no waypoints.
-fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut Vec<WpPlace, MAX_WAYPOINTS>, offset: u32) -> Result<u32, Error> {
+fn write_waypoints(sink: &mut dyn ByteSink, wps: &mut [WpPlace], offset: u32) -> Result<u32, Error> {
     if wps.is_empty() {
         return Ok(0);
     }
-    // Insertion sort by `along_m`: stable, bounded by MAX_WAYPOINTS, and needs no allocator.
+    // Stable order keeps waypoints at the same distance in their input order.
     for i in 1..wps.len() {
         let mut j = i;
         while j > 0 && wps[j - 1].along_m > wps[j].along_m {

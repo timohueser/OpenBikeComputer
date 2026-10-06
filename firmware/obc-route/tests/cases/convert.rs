@@ -246,7 +246,8 @@ fn no_elevation_anywhere_yields_zero_range() {
 #[test]
 fn authored_points_use_the_gpx_emitter_and_reject_unsupported_capacity() {
     use obc_route::{
-        convert::points_to_obcr, BikeType, Waypoint, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
+        convert::points_to_obcr, for_each_waypoint, BikeType, Waypoint, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS,
+        MAX_WAYPOINTS,
     };
     let points: Vec<_> = [200, 210, 225, 215]
         .into_iter()
@@ -274,8 +275,20 @@ fn authored_points_use_the_gpx_emitter_and_reject_unsupported_capacity() {
         provenance: None,
     };
     let mut sink = VecSink::default();
+    let stats = points_to_obcr(
+        &points,
+        &vec![(waypoint.clone(), 0.0); MAX_WAYPOINTS + 1],
+        "Beyond Resident Table",
+        BikeType::Road,
+        &mut sink,
+    )
+    .unwrap();
+    assert_eq!(usize::from(stats.waypoint_count), MAX_WAYPOINTS + 1);
+    assert_eq!(for_each_waypoint(&SliceSource(&sink.buf), |_| {}).unwrap(), stats.waypoint_count);
+
+    let mut sink = VecSink::default();
     assert_eq!(
-        points_to_obcr(&points, &vec![(waypoint, 0.0); MAX_WAYPOINTS + 1], "Too Many", BikeType::Road, &mut sink),
+        points_to_obcr(&points, &vec![(waypoint, 0.0); u16::MAX as usize + 1], "Too Many", BikeType::Road, &mut sink),
         Err(Error::TooLarge)
     );
     assert!(sink.buf.is_empty());
