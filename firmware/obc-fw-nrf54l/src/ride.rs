@@ -2455,6 +2455,8 @@ pub(crate) async fn run_app(
                     peak_view.update(app, &Reader::new(flat_map, map_tables, map_cache));
                 }
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
+                #[cfg(feature = "debug-uart")]
+                let peak_open = (app.peak_view_retains_panorama(), Instant::now());
                 // The hub sources are call-expression temporaries: they are stateless one-pointer
                 // drains, and binding them for the loop's lifetime would park one hub pointer per
                 // source in this task's future for no behavioural difference. That is why the three
@@ -2521,6 +2523,10 @@ pub(crate) async fn run_app(
                     derived,
                     targets,
                 });
+                #[cfg(feature = "debug-uart")]
+                if !peak_open.0 && app.peak_view_is_base() {
+                    peak_view.note_opened(peak_open.1);
+                }
                 plan
             };
 
