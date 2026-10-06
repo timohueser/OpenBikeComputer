@@ -3,7 +3,7 @@
  *
  * Removed scratch streams are truncated immediately, so the physical scratch area follows the
  * concurrent streams. The factor is the assembler memory model's conservative bound for those
- * streams (`SPILL_PER_NAV_BYTE` in `apps/obc-web-assemble/src/estimate.rs`).
+ * streams (`SPILL_PER_NAV_BYTE` in `builder/wasm/src/estimate.rs`).
  */
 const SCRATCH_PER_CORE_BYTE = 2.5;
 

@@ -17,7 +17,7 @@
 // Edges are treated as closed against the half-open cell squares; the µdeg of slack that
 // costs errs toward including a cell.
 
-import { cellsIntersecting, cellSquare, GridError, type CellId, type UBox } from "./grid";
+import { cellsIntersecting, cellSquare, GridError, type CellId, type UBox } from "../core/grid";
 import type { LatLon } from "./corridor";
 
 /** The widest a lasso may reach in longitude, µdeg: half the world — the same

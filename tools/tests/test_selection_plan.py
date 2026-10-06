@@ -408,7 +408,7 @@ class ShippedPlanTests(unittest.TestCase):
             "obc-fw-nrf54l": ["embedded", "fmt"],
             "obc-boot": ["boot", "fmt"],
             "obc-desktop": ["desktop", "fmt"],
-            "obc-web-convert": ["clippy", "fmt", "test", "wasm-bridges"],
+            "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
             "obc-pack": ["builder-python", "clippy", "fmt", "test"],
             "obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],

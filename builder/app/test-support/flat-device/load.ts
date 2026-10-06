@@ -18,7 +18,7 @@ let loading: Promise<void> | null = null;
 
 export function loadFlatDevice(): Promise<void> {
     if (!loading) {
-        const wasm = join(dirname(fileURLToPath(import.meta.url)), "pkg", "obc_flat_device_bg.wasm");
+        const wasm = join(dirname(fileURLToPath(import.meta.url)), "pkg", "obc_builder_bridge_bg.wasm");
         try {
             loading = initFlatDevice(readFileSync(wasm));
         } catch (cause) {

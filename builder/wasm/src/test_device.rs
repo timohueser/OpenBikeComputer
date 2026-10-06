@@ -10,19 +10,14 @@
 use obc_storage::flat::{EntryFlags, StoreId};
 use wasm_bindgen::prelude::*;
 
-use crate::json::{catalog_json, trace_json};
-use crate::sim::{SimDevice, SimOptions};
-use crate::Reaction;
+use obc_flat_device::Reaction;
+use obc_flat_device::{catalog_json, trace_json};
+use obc_flat_device::{SimDevice, SimOptions};
 use obc_link::flat::Channel;
 
 /// Bytes §4's rollback reserve asks for when a test allows `ARM`. The size is arbitrary — what the
 /// tests care about is that one reserve is committed and that it holds extents.
 const ARM_RESERVE: u64 = 1024 * 1024;
-
-#[wasm_bindgen(start)]
-pub fn start() {
-    console_error_panic_hook::set_once();
-}
 
 /// What the device wants done next.
 ///

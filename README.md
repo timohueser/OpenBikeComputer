@@ -147,7 +147,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `firmware/` | Device application, rendering, protocols, storage, board image, and bootloader |
 | `host/` | Host tools, map bakers, fixtures, and test support |
 | `apps/` | Desktop simulator, desktop shell, and browser/WebAssembly hosts |
-| `builder/` | Svelte map builder, presets, and maintainer server |
+| `builder/` | Svelte map builder, shared Rust/WASM core, presets, and maintainer server |
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
 | `fixtures/` | Scenario registry, source provenance, and fixture builders |

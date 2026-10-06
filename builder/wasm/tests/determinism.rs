@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_web_assemble::{
+use obc_builder_bridge::{
     assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes,
     CellReads, ErrorCode, Hooks, KnownEmptyCell, MapWrites, NoHooks, Phase, SealedMap, SourceCell, TerrainCellBytes,
     TerrainLattice, Wiring,
@@ -87,7 +87,7 @@ fn terrain_cells() -> Vec<TerrainCellBytes> {
 
 /// The whole fixture assembly, cells and raster, which is what the CLI wrote `expected/map.obcm`
 /// from.
-fn assemble_fixture(opts: &BridgeOptions, hooks: &mut dyn Hooks) -> obc_web_assemble::Outcome {
+fn assemble_fixture(opts: &BridgeOptions, hooks: &mut dyn Hooks) -> obc_builder_bridge::Outcome {
     assemble_everything(
         cells(),
         Vec::new(),
@@ -116,7 +116,7 @@ fn expected(name: &str) -> Vec<u8> {
 }
 
 /// The bytes the run produced, whether it buffered them or the outcome only carries an identity.
-fn taken(out: &obc_web_assemble::Outcome) -> &[u8] {
+fn taken(out: &obc_builder_bridge::Outcome) -> &[u8] {
     out.bytes.as_deref().expect("this assembly buffered its map")
 }
 
@@ -925,7 +925,7 @@ fn assemble_to_disk(
     disk: &Disk,
     opts: &BridgeOptions,
     hooks: &mut dyn Hooks,
-) -> Result<obc_web_assemble::Outcome, obc_web_assemble::AssembleFailure> {
+) -> Result<obc_builder_bridge::Outcome, obc_builder_bridge::AssembleFailure> {
     assemble(
         Wiring {
             cells: cells(),

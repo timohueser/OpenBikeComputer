@@ -2,7 +2,7 @@
 // here is arithmetic over `outline.ts` and `grid.ts` results — no Leaflet, no DOM — so
 // the decisions a drawing embodies are testable without a browser.
 
-import { parseCellId, type CellId, type UBox } from "../catalog/grid";
+import { parseCellId, type CellId, type UBox } from "../core/grid";
 import type { Catalog } from "../catalog/manifest";
 import { coverageRings, mergeCellRects, type RingPoint } from "../catalog/outline";
 

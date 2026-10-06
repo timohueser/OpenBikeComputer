@@ -100,7 +100,7 @@ and a missing expected file fails the upload. Download with
 | --- | --- |
 | `rust-test-ATTEMPT`, `rust-fixtures-ATTEMPT` | nextest JUnit XML for the fast and fixture tiers; the fast artifact also holds `doctests.log` and `formats-default.log` |
 | `python-repository-tools-ATTEMPT`, `python-firmware-tools-ATTEMPT`, `python-builder-ATTEMPT` | unittest and pytest XML |
-| `web-builder-ATTEMPT`, `web-sha256-ATTEMPT` | Vitest JUnit XML |
+| `web-builder-ATTEMPT` | Vitest JUnit XML |
 | `web-builder-browser-ATTEMPT`, `web-demo-browser-ATTEMPT` | the two Chromium journeys, with a screenshot and trace on failure |
 | `ios-tests-coverage-ATTEMPT`, `ios-screenshots-ATTEMPT`, `ios-application-ATTEMPT` | `.xcresult` bundles; restore the suffix and open in Xcode |
 | `desktop-tests-PLATFORM-ATTEMPT` | desktop nextest results |

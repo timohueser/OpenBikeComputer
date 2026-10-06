@@ -6,16 +6,16 @@ import { canonicalSchema, canonicalSkin } from "./testdata";
 import { cloneSkin } from "./custom";
 
 const bridge = vi.hoisted(() => ({ open: vi.fn(), setStyles: vi.fn(), setTheme: vi.fn() }));
-vi.mock("./pkg/obc_skin_preview.js", () => ({
-    default: vi.fn(),
-    SkinPreview: class {
+vi.mock("../core/bridge", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../core/bridge")>();
+    return { ...actual, initCore: async () => ({ ...await actual.initCore(), SkinPreview: class {
         width = 2;
         height = 2;
         constructor() { bridge.open(); }
         set_styles = bridge.setStyles;
         set_theme = bridge.setTheme;
-    },
-}));
+    } }) };
+});
 
 function skin(id: string): SkinEntry {
     return { id } as SkinEntry;

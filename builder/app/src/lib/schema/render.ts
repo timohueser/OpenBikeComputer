@@ -1,6 +1,7 @@
-import type { InitInput } from "../skin/pkg/obc_skin_preview.js";
+import type { InitInput } from "../core/pkg/obc_builder_bridge.js";
+import { initCore } from "../core/bridge";
 
-type Bridge = typeof import("../skin/pkg/obc_skin_preview.js");
+type Bridge = typeof import("../core/pkg/obc_builder_bridge.js");
 type WasmSchemaPreview = InstanceType<Bridge["SchemaPreview"]>;
 
 export interface SchemaRenderStats {
@@ -38,21 +39,9 @@ export interface SchemaRenderer {
     free(): void;
 }
 
-let loading: Promise<Bridge> | null = null;
 
-async function module(source?: InitInput): Promise<Bridge> {
-    if (!loading) {
-        const pending = (async () => {
-            const mod = await import("../skin/pkg/obc_skin_preview.js");
-            await mod.default(source === undefined ? undefined : { module_or_path: source });
-            return mod;
-        })();
-        loading = pending;
-        pending.catch(() => {
-            if (loading === pending) loading = null;
-        });
-    }
-    return loading;
+function module(source?: InitInput): Promise<Bridge> {
+    return initCore(source);
 }
 
 export async function openSchemaRenderer(bytes: Uint8Array, wasm?: InitInput): Promise<SchemaRenderer> {

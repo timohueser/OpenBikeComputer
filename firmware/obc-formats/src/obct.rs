@@ -62,19 +62,18 @@ pub const TILE_BYTES: usize = TILE_SAMPLES * TILE_SAMPLES * SAMPLE_LEN;
 /// orthometric metres, and a producer must not emit `-32768` as a height.
 pub const NODATA: i16 = i16::MIN;
 
-/// Origin of the sample lattice on both axes, µdeg: the OBCA grid origin, restated here because
-/// `obc-elevation` must not depend on a host crate to learn it.
-pub const GRID_ORIGIN: i32 = -(1 << 28);
+/// Origin of the sample lattice on both axes, µdeg, shared with the OBCA grid.
+pub const GRID_ORIGIN: i32 = crate::grid::GRID_ORIGIN as i32;
 /// Side of the world box, µdeg: `2^29`.
-pub const WORLD_SIDE: u32 = 1 << 29;
+pub const WORLD_SIDE: u32 = crate::grid::WORLD_SIDE as u32;
 
 /// Smallest permitted posting as `log2(µdeg)`, finer than any global DEM.
 pub const MIN_POSTING_LOG2: u8 = 4;
 /// Largest permitted posting as `log2(µdeg)`, coarser than any useful terrain.
 pub const MAX_POSTING_LOG2: u8 = 16;
 /// Smallest and largest permitted cell side as `log2(µdeg)`, matching the OBCA cell-size range.
-pub const MIN_CELL_LOG2: u8 = 10;
-pub const MAX_CELL_LOG2: u8 = 28;
+pub const MIN_CELL_LOG2: u8 = crate::grid::MIN_CELL_LOG2 as u8;
+pub const MAX_CELL_LOG2: u8 = crate::grid::MAX_CELL_LOG2 as u8;
 /// Largest permitted `log2` of a cell's tiles per edge. The bound is arithmetic, not taste: `2^11`
 /// tiles per edge already makes a cell block 2 GiB, and one more doubling would push it past the
 /// `uint32` offsets the directory is made of.

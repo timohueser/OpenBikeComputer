@@ -1,22 +1,22 @@
 /**
  * The browser side of the conversion bridge.
  *
- * GPX to OBCR and finished ride to GPX, run client-side by `apps/obc-web-convert` compiled to wasm.
+ * GPX to OBCR and finished ride to GPX, run client-side by `builder/wasm` compiled to wasm.
  * There is no TypeScript re-implementation here on purpose: the bytes a visitor downloads are
  * produced by the same `obc-route` code the device and the CLI run, and `bridge.test.ts` pins that
  * equality against the checked-in `specs/vectors/` fixtures.
  *
- * The wasm module is fetched through a **dynamic import**, so the glue and module land in their own
- * bundle chunk and cost nothing until someone drops a file.
+ * The host initializes the shared builder core before loading the app.
  *
  * Everything this module throws is a {@link ConvertError}, including a failed load or an unexpected
  * wasm trap, which arrive as `code: "internal"`.
  */
 
-import type { InitInput } from "./pkg/obc_web_convert.js";
+import type { InitInput } from "../core/pkg/obc_builder_bridge.js";
+import { initCore } from "../core/bridge";
 
 /**
- * Why a conversion failed. Mirrors `ErrorCode::as_str` in `apps/obc-web-convert/src/convert.rs` —
+ * Why a conversion failed. Mirrors `ErrorCode::as_str` in `builder/wasm/src/convert.rs` —
  * the two are one contract, so add or rename in both.
  *
  * - `empty-file` — the dropped file is zero bytes.
@@ -50,11 +50,7 @@ export class ConvertError extends Error {
     }
 }
 
-type Bridge = typeof import("./pkg/obc_web_convert.js");
-
-/** Memoized so concurrent drops share one fetch; cleared on failure so a transient network error
- *  can be retried rather than cached forever. */
-let loading: Promise<Bridge> | null = null;
+type Bridge = typeof import("../core/pkg/obc_builder_bridge.js");
 
 /**
  * Load and instantiate the wasm module, if it is not already up.
@@ -63,27 +59,15 @@ let loading: Promise<Bridge> | null = null;
  * resolves the module next to itself, which is the form the bundler rewrites to a hashed asset URL.
  * Node has no `fetch` for `file:` URLs, so tests pass the bytes directly.
  *
- * Calling this early — when the drop target is first hovered — turns the first conversion into a
- * plain function call. It is optional; the convert functions load on demand.
  */
 export function initConvert(source?: InitInput): Promise<void> {
-    if (!loading) {
-        const pending = load(source);
-        loading = pending;
-        // Drop the memo if it settles as a failure, so the next call retries. Attached here so a
-        // caller that ignores the returned promise cannot wedge the module into a failed state.
-        pending.catch(() => {
-            if (loading === pending) loading = null;
-        });
-    }
-    return loading.then(() => undefined);
+    return load(source).then(() => undefined);
 }
 
 async function load(source?: InitInput): Promise<Bridge> {
     let mod: Bridge;
     try {
-        mod = await import("./pkg/obc_web_convert.js");
-        await mod.default(source === undefined ? undefined : { module_or_path: source });
+        mod = await initCore(source);
     } catch (cause) {
         throw new ConvertError(
             "internal",
@@ -196,9 +180,7 @@ export async function routeWaypoints(obcr: Uint8Array): Promise<RouteWaypoint[]>
 }
 
 function ensure(): Promise<Bridge> {
-    initConvert();
-    // `initConvert` always assigns before returning; the assertion just tells TypeScript so.
-    return loading as Promise<Bridge>;
+    return load();
 }
 
 const CODES: ReadonlySet<string> = new Set<ConvertErrorCode>([

@@ -16,23 +16,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Origin of the fixed global cell grid, µdeg, on **both** axes.
-///
-/// A power of two, so every permitted cell size divides it exactly — which is the whole reason the
-/// grid is not anchored at −90/−180 (`−90_000_000` is a multiple of no candidate cell size, so no
-/// size would ever make a quadtree midpoint coincide with a cell edge).
-pub const GRID_ORIGIN: i64 = -(1 << 28);
-
-/// Side of the world box, µdeg: `2^29`, about ±268.435456°. Strictly larger than the geographic
-/// domain, and the grid does not wrap — cells may legally overhang ±90 / ±180 and producers MUST
-/// NOT clamp them.
-pub const WORLD_SIDE: i64 = 1 << 29;
-
-/// Smallest permitted cell size as `log2(µdeg)`.
-pub const MIN_CELL_LOG2: u32 = 10;
-
-/// Largest permitted cell size as `log2(µdeg)`.
-pub const MAX_CELL_LOG2: u32 = 28;
+pub use obc_formats::grid::{
+    axis_cells, id_width, on_grid_boundary, on_grid_line, quad_mid, GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2,
+    WORLD_SIDE,
+};
 
 /// A bbox in the packer's own order: `(min_lon, min_lat, max_lon, max_lat)`, µdeg.
 ///
@@ -50,23 +37,6 @@ pub struct CellId {
     pub log2: u32,
     pub i: i64,
     pub j: i64,
-}
-
-/// Cells per axis at size `2^log2`.
-#[inline]
-pub fn axis_cells(log2: u32) -> i64 {
-    WORLD_SIDE >> log2
-}
-
-/// Zero-padding width of a cell id's indices: `max(4, digits(cells_per_axis - 1))`. Four for every
-/// size at or above `2^16`, wider below — producers MUST widen rather than truncate.
-/// Four for every size at or above `2^16`, wider below — producers MUST widen rather than truncate.
-///
-/// The rule itself lives in [`obc_elevation::grid::id_width`]: `obc-dem` names published terrain
-/// cells by the same id and cannot depend on this crate, so the arithmetic has one home in the
-/// `no_std` leaf both reach.
-pub fn id_width(log2: u32) -> usize {
-    obc_elevation::grid::id_width(log2 as u8)
 }
 
 impl CellId {
@@ -91,16 +61,13 @@ impl CellId {
     /// Cell size in µdeg.
     #[inline]
     pub fn size(self) -> i64 {
-        1 << self.log2
+        obc_formats::grid::cell_size(self.log2)
     }
 
     /// The cell's square, half-open on both axes, in [`UBox`] order.
     #[inline]
     pub fn square(self) -> UBox {
-        let s = self.size();
-        let min_lat = GRID_ORIGIN + self.i * s;
-        let min_lon = GRID_ORIGIN + self.j * s;
-        (min_lon, min_lat, min_lon + s, min_lat + s)
+        obc_formats::grid::cell_square(self.log2, self.i, self.j)
     }
 
     /// The cell of size `2^log2` whose half-open square contains `(lat, lon)`.
@@ -109,7 +76,8 @@ impl CellId {
     /// **next** cell, so a point is owned by exactly one cell and no feature is written twice.
     #[inline]
     pub fn containing(log2: u32, lat: i64, lon: i64) -> Self {
-        CellId { log2, i: (lat - GRID_ORIGIN).div_euclid(1 << log2), j: (lon - GRID_ORIGIN).div_euclid(1 << log2) }
+        let (i, j) = obc_formats::grid::containing_indices(log2, lat, lon);
+        CellId { log2, i, j }
     }
 
     /// Whether `(lat, lon)` lies in this cell's half-open square.
@@ -163,29 +131,6 @@ pub fn cells_intersecting(log2: u32, bbox: UBox) -> Vec<CellId> {
         }
     }
     out
-}
-
-/// Whether `v` lies exactly on a grid line of size `2^log2`, that is, on a cell boundary.
-///
-/// This is the seam predicate: every vertex on a boundary line is a junction, and only such a
-/// coordinate is admitted to unification. It is a pure function of the coordinate, which is why two
-/// neighbours cannot disagree about it.
-#[inline]
-pub fn on_grid_line(v: i64, log2: u32) -> bool {
-    (v - GRID_ORIGIN) & ((1 << log2) - 1) == 0
-}
-
-/// Whether `(lat, lon)` lies on any boundary line of the `2^log2` grid.
-#[inline]
-pub fn on_grid_boundary(lat: i64, lon: i64, log2: u32) -> bool {
-    on_grid_line(lat, log2) || on_grid_line(lon, log2)
-}
-
-/// The floor-division midpoint the OBCM quadtree splits at, spelled out once so the alignment
-/// theorem can be tested against the same arithmetic the packer and the reader use.
-#[inline]
-pub fn quad_mid(min: i64, max: i64) -> i64 {
-    (min + max).div_euclid(2)
 }
 
 /// `num / den` rounded **half to even** in exact integer arithmetic (banker's rounding), for any

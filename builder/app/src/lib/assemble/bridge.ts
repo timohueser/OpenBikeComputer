@@ -6,13 +6,14 @@
  * and, when the run buffered it, the bytes. The caller decides what the file is called.
  */
 
-import type { InitInput, InitOutput } from "./pkg/obc_web_assemble.js";
+import type { InitInput } from "../core/pkg/obc_builder_bridge.js";
+import { initCore, coreMemoryBytes } from "../core/bridge";
 
 /** The runtime half of {@link AssembleErrorCode}, so the type and the boundary guard cannot drift apart. */
 export const ASSEMBLE_ERROR_CODES = ["input", "format", "capacity", "verify", "aborted", "io", "internal"] as const;
 
 /**
- * Why an assembly failed. Mirrors `ErrorCode::as_str` in `apps/obc-web-assemble/src/driver.rs`;
+ * Why an assembly failed. Mirrors `ErrorCode::as_str` in `builder/wasm/src/driver.rs`;
  * add or rename in both.
  *
  * - `input` — the selection is wrong: mixed schemas, an unaccepted hole or partial cell.
@@ -36,7 +37,7 @@ export class AssembleError extends Error {
 
 /**
  * Which stage of the assembly is running. Mirrors `Phase::as_str` in
- * `apps/obc-web-assemble/src/driver.rs`. `nav`, `write` and `verify` are the long phases.
+ * `builder/wasm/src/driver.rs`. `nav`, `write` and `verify` are the long phases.
  */
 export type AssemblePhase = "open" | "poi" | "nav" | "plan" | "write" | "verify" | "done";
 
@@ -239,7 +240,7 @@ export interface AssembleSummary {
 /**
  * Projected peak wasm memory for a selection — the answer to "can this be assembled in a tab at
  * all", available before the download. What binds in a tab is the run against wasm32's 4 GiB
- * address space; the model and its constants live in `apps/obc-web-assemble/src/estimate.rs`.
+ * address space; the model and its constants live in `builder/wasm/src/estimate.rs`.
  *
  * How much to trust these numbers: the engine term is a linear fit through two measured runs, and
  * {@link MemoryEstimate.budgetBytes} is a judgement rather than a measurement — browsers do not
@@ -273,14 +274,7 @@ export interface MemoryEstimate {
     readonly fits: boolean;
 }
 
-type Bridge = typeof import("./pkg/obc_web_assemble.js");
-
-/** Memoized so concurrent callers share one fetch; cleared on failure so a transient network error
- *  can be retried rather than cached forever. */
-let loading: Promise<Bridge> | null = null;
-
-/** The instantiated module's own exports, kept for its `memory`. */
-let instantiated: InitOutput | null = null;
+type Bridge = typeof import("../core/pkg/obc_builder_bridge.js");
 
 /**
  * How much linear memory the instance holds right now, or 0 before the module is up.
@@ -290,7 +284,7 @@ let instantiated: InitOutput | null = null;
  * and the worker carries it across so a test can hold the estimator to it.
  */
 export function wasmMemoryBytes(): number {
-    return instantiated?.memory.buffer.byteLength ?? 0;
+    return coreMemoryBytes();
 }
 
 /**
@@ -301,23 +295,13 @@ export function wasmMemoryBytes(): number {
  * Node has no `fetch` for `file:` URLs, so tests pass the bytes directly.
  */
 export function initAssemble(source?: InitInput): Promise<void> {
-    if (!loading) {
-        const pending = load(source);
-        loading = pending;
-        // Drop the memo if it settles as a failure, so the next call retries. Attached here so a
-        // caller that ignores the returned promise cannot wedge the module into a failed state.
-        pending.catch(() => {
-            if (loading === pending) loading = null;
-        });
-    }
-    return loading.then(() => undefined);
+    return load(source).then(() => undefined);
 }
 
 async function load(source?: InitInput): Promise<Bridge> {
     let mod: Bridge;
     try {
-        mod = await import("./pkg/obc_web_assemble.js");
-        instantiated = await mod.default(source === undefined ? undefined : { module_or_path: source });
+        mod = await initCore(source);
     } catch (cause) {
         throw new AssembleError(
             "internal",
@@ -344,7 +328,7 @@ const abandoned =
         ? null
         : new FinalizationRegistry<{ free: () => void; name: string }>((held) => {
               console.warn(
-                  `obc-web-assemble: an AssembleResult (${held.name}) was dropped without release(). Freeing it now — ` +
+                  `obc-builder-bridge: an AssembleResult (${held.name}) was dropped without release(). Freeing it now — ` +
                       "but call release() when you are done with a map, or its bytes stay in wasm memory until a GC " +
                       "that may never come.",
               );
@@ -505,7 +489,7 @@ export async function assembleCells(
 
 /**
  * Which escapes from linear memory the run being priced will have. Mirrors `Residency` in
- * `apps/obc-web-assemble/src/estimate.rs`.
+ * `builder/wasm/src/estimate.rs`.
  */
 export interface Residency {
     /** The cells will stream from OPFS: a writable store with room and a passing sync-read probe.
@@ -550,9 +534,7 @@ export async function estimateMemory(
 }
 
 function ensure(): Promise<Bridge> {
-    initAssemble();
-    // `initAssemble` always assigns before returning; the assertion just tells TypeScript so.
-    return loading as Promise<Bridge>;
+    return load();
 }
 
 const CODES: ReadonlySet<AssembleErrorCode> = new Set(ASSEMBLE_ERROR_CODES);

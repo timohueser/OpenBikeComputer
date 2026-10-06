@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { ledgerFor, ledgerForRegion } from "./ledger";
 import { resolveSelection, type BoxPart, type RegionPart, type SelectionContext } from "./selection";
-import { cellSquare, parseCellId } from "./grid";
+import { cellSquare, parseCellId } from "../core/grid";
 import { exampleCatalog, fixtureIndices } from "./testdata";
 
 const indices = fixtureIndices(exampleCatalog, {

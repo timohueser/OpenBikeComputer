@@ -12,7 +12,7 @@
 // never be assembled together. A generator refuses to publish a mixed tree; this
 // refuses to consume one.
 
-import { formatCellId, parseCellId, type CellId } from "./grid";
+import { formatCellId, parseCellId, type CellId } from "../core/grid";
 import type { Catalog, CellIndexRef, RegionEntry, TerrainEntry } from "./manifest";
 import {
     arr,

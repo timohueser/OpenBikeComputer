@@ -14,8 +14,7 @@
         "preview": "vite preview",
         "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
         "test": "vitest run",
-        "test:components": "vitest run --exclude src/lib/device/sha256.test.ts",
-        "test:sha256": "vitest run src/lib/device/sha256.test.ts"
+        "test:components": "vitest run"
     },
     "dependencies": {
         "@mapbox/vector-tile": "^3.0.0",

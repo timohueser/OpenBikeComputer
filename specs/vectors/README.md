@@ -12,7 +12,7 @@ object, and the OBCT terrain raster ([`OBCT_Spec.md`](../OBCT_Spec.md)), consume
 - **App**: the `OBCKit` Swift tests pin the config, command, route, ride, trip and update
   codecs to the same files.
 - **Browser**: two consumers.
-  - The wasm conversion bridge (`apps/obc-web-convert`) must reproduce the route and
+  - The wasm conversion bridge (`builder/wasm`) must reproduce the route and
     finished-ride fixtures byte-for-byte from the same inputs —
     `builder/app/src/lib/convert/bridge.test.ts`.
   - The **USB protocol client** (`builder/app/src/lib/usb/`) pins the protocol-v4
