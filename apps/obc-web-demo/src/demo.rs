@@ -12,16 +12,14 @@ use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
 use obc_app::recorder::RecorderOutcome;
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::flat_map::FlatMap;
-use obc_host_core::frame;
 use obc_host_core::{
-    initial_camera, replay_advance, ActiveRouteSession, FlatRideRecorder, FlatRideStore, FlatRouteStore, HostLoop,
-    ReplaySensors, RgbaFrame,
+    initial_camera, replay_advance, ActiveRouteSession, DeviceHost, FlatRideRecorder, FlatRideStore, FlatRouteStore,
+    HostLoop, ReplaySensors,
 };
 use obc_host_core::{RideRepository, RouteRepository};
 use obc_ports::InputClock;
 use obc_reader::{MapTables, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
-use obc_route::RouteReader;
 
 /// The demo panel resolution, from the one [`obc_display`] frame authority.
 pub const FRAME_W: u32 = obc_display::ls021::FRAME_W as u32;
@@ -181,29 +179,11 @@ pub enum ResetStatus {
 }
 
 pub struct Demo {
-    map: FlatMap,
-    /// The shared app, heap-allocated: a by-value `App` temporary of this size is a silent wasm
-    /// stack trap.
-    app: Box<App>,
-    /// The render path's per-frame scratch, owned by the host and lent to each render call. Boxed
-    /// for the same reason as the app.
-    scratch: Box<obc_render::RenderScratch>,
-    routes: FlatRouteStore,
-    rides: FlatRideStore,
-    tracks: FlatRideRecorder,
+    device: DeviceHost<FlatRideRecorder>,
     player: GpxPlayer,
     baro: BaroSensor,
     compass: Compass,
-    /// The shared typed executor: the next pass's outcomes and facts, and the in-flight route plan,
-    /// stepped once per tick. Every sequencing decision lives in `obc-host-core`.
-    host: HostLoop,
-    /// The resident active-route parse, opened once per frame and lent to both the pass and the
-    /// render, so the map opens without a per-frame `RouteIndex` reparse.
-    session: ActiveRouteSession,
-    frame: RgbaFrame,
-    photo: obc_host_core::photo::Preparer,
     peaks: obc_host_core::peak_view::Runtime,
-    elevation: obc_elevation::TerrainElevation<'static, 4>,
     /// Page commands queued since the last [`tick`](Demo::tick), drained in full and in order once
     /// per tick. A guided-tour step pushes several commands in one frame and relies on that.
     ///
@@ -229,8 +209,6 @@ pub struct Demo {
     /// summit auto-restart is suspended. A `start_session` mid-demo would reset progress under the
     /// script.
     tour_active: bool,
-    /// First frame rendered: the page's readiness signal.
-    ready: bool,
     reset_status: ResetStatus,
 }
 
@@ -253,29 +231,25 @@ impl Demo {
         player.set_speed(DEMO_SPEED);
 
         let mut demo = Box::new(Demo {
-            map,
-            // Placeholder app; `reset(Ambient)` below builds the real baseline.
-            app: Box::new(App::new(AppState::new(0, 0, 1.0))),
-            scratch: Box::new(obc_render::RenderScratch::new()),
-            routes,
-            rides,
-            tracks,
+            device: DeviceHost::new(
+                Box::new(App::new(AppState::new(0, 0, 1.0))),
+                map,
+                routes,
+                rides,
+                tracks,
+                Box::new(obc_elevation::TerrainElevation::<4>::parse(&*TERRAIN).expect("demo elevation parses")),
+                (FRAME_W, FRAME_H),
+            ),
             player,
             baro: BaroSensor::new(),
             compass: Compass::default(),
-            host: HostLoop::new(),
-            session: ActiveRouteSession::new(),
-            frame: RgbaFrame::new(FRAME_W, FRAME_H),
-            photo: obc_host_core::photo::Preparer::default(),
             peaks: obc_host_core::peak_view::Runtime::new(Box::new(SliceSource(TERRAIN.0)))
                 .expect("demo surface terrain parses"),
-            elevation: obc_elevation::TerrainElevation::parse(&*TERRAIN).expect("demo elevation parses"),
             queue: Vec::new(),
             last_now_ms: None,
             ui_offset_ms: 0,
             pending_ride: false,
             tour_active: false,
-            ready: false,
             reset_status: ResetStatus::Ready,
         });
         demo.install_baseline(Baseline::Ambient);
@@ -295,10 +269,10 @@ impl Demo {
     pub fn set_dark(&mut self, dark: bool) {
         use obc_app::settings::Theme;
         let theme = if dark { Theme::Dark } else { Theme::Light };
-        if self.app.settings().theme != theme {
-            self.app.set_theme(theme);
+        if self.device.app.settings().theme != theme {
+            self.device.app.set_theme(theme);
             // A drawer can retain the old palette in its cached background.
-            self.app.set_resident_frame(false);
+            self.device.app.set_resident_frame(false);
         }
     }
 
@@ -306,38 +280,38 @@ impl Demo {
     /// step only once the app reached the target screen, so there are no fixed sleeps and it waits
     /// out the real planner.
     pub fn state(&self) -> &'static str {
-        self.app.top_screen().name()
+        self.device.app.top_screen().name()
     }
 
     /// True once the first frame is rendered, so the page can swap its poster for the canvas.
     pub fn ready(&self) -> bool {
-        self.ready
+        self.device.ready
     }
 
     pub fn peak_active(&self) -> bool {
-        self.app.peak_view_is_base()
+        self.device.app.peak_view_is_base()
     }
 
     pub fn heading(&self) -> u16 {
-        self.app.peak_view_heading_q4() / 4
+        self.device.app.peak_view_heading_q4() / 4
     }
 
     pub fn peak_ready(&self) -> bool {
         self.peaks.panorama().is_some_and(|panorama| {
-            self.app.state.peak_view_profile.is_some_and(|profile| {
-                panorama.view_ready(self.app.peak_view_heading_q4(), profile.horizontal_fov_q4())
+            self.device.app.state.peak_view_profile.is_some_and(|profile| {
+                panorama.view_ready(self.device.app.peak_view_heading_q4(), profile.horizontal_fov_q4())
             })
         })
     }
 
     pub fn find_ready(&self) -> bool {
-        self.app.find_place_state() == obc_app::find_place::State::Ready
-            && self.app.find_place_result_count() > 0
-            && self.app.assistant_planner_released()
+        self.device.app.find_place_state() == obc_app::find_place::State::Ready
+            && self.device.app.find_place_result_count() > 0
+            && self.device.app.assistant_planner_released()
     }
 
     pub fn visit_status(&self) -> obc_app::navigator::ReviewStatus {
-        self.app.assistant_review_status()
+        self.device.app.assistant_review_status()
     }
 
     pub fn reset_status(&self) -> ResetStatus {
@@ -346,7 +320,7 @@ impl Demo {
 
     /// The rendered RGBA frame, for `putImageData`.
     pub fn frame(&self) -> &[u8] {
-        self.frame.as_rgba()
+        self.device.frame()
     }
 
     /// Advance one JS-driven frame, and answer whether the frame buffer changed. `now_ms` is the
@@ -385,10 +359,10 @@ impl Demo {
             }
         }
 
-        if self.app.peak_view_is_base() {
+        if self.device.app.peak_view_is_base() {
             self.player.pause();
         }
-        self.peaks.update(&mut self.app, &self.map.reader());
+        self.peaks.update(&mut self.device.app, &self.device.map.reader());
         if !reset_failed {
             self.arm_baseline_ride();
         }
@@ -396,7 +370,7 @@ impl Demo {
         let plan = self.device_frame(self.ui_now(), dt, &gestures);
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
         // latch the pass may have armed rather than leaving it set for a plane that does not exist.
-        let _ = self.app.take_hold_cancel();
+        let _ = self.device.app.take_hold_cancel();
 
         // At the summit, start the next ambient lap through the same acknowledged cleanup. A pause
         // or a completed Save is not a new lap.
@@ -405,37 +379,13 @@ impl Demo {
             && was_playing
             && !self.player.is_playing()
             && self.player.time() >= self.player.duration()
-            && self.app.recording()
-            && !self.app.recorder.closing()
+            && self.device.app.recording()
+            && !self.device.app.recorder.closing()
         {
             self.cmd("ambient");
         }
 
-        // `plan.next_wake_ms` and `plan.immediate` are ignored: the page is rAF-paced, so the
-        // browser decides when the next frame happens.
-        //
-        // `plan.render` is the same signal the firmware gates its repaints on. The first frame
-        // always renders, because `ready` is also the page's poster-swap signal.
-        if plan.render.map || plan.render.overlay || !self.ready || self.app.photo_pending() {
-            self.session.sync(&self.app, &mut self.routes);
-            let route = frame::active_route(&self.session, &self.routes);
-            let reader = self.map.reader();
-            frame::render(
-                &mut self.app,
-                &mut self.scratch,
-                &mut self.frame,
-                frame::Scene { reader: &reader, route: route.as_ref() },
-                self.peaks.panorama(),
-                (FRAME_W as f32, FRAME_H as f32),
-                frame::device_rgb888,
-                &obc_render::NoopClock,
-                Some(self.photo.interactive(plan.render.map || !self.ready)),
-            );
-            self.app.set_resident_frame(true);
-            self.ready = true;
-            return true;
-        }
-        false
+        self.device.render_if_dirty(plan.render, self.peaks.panorama())
     }
 
     /// The device's UI clock: the rAF timestamp plus whatever a guided pre-roll ran through.
@@ -447,56 +397,24 @@ impl Demo {
     /// One device frame: the active route opened once, one [`App::run_pass`], and the typed
     /// executor behind it. The page's tick and the guided pre-roll share it.
     fn device_frame(&mut self, ui_ms: u32, dt: f64, gestures: &[Gesture]) -> PassPlan {
-        // Open the active route's geometry from the resident session. The index is kept until the
-        // active bytes change, so there is no per-frame `RouteIndex` reparse.
-        self.session.sync(&self.app, &mut self.routes);
         // Pausing replay freezes its clock, so publish one stopped GPS fix and let the compass
         // path take over from the last moving course.
         let mut stopped = StoppedFix(
-            self.app
+            self.device
+                .app
                 .state
                 .user_fix
                 .filter(|fix| self.compass.0.is_some() && !self.player.is_playing() && fix.course.is_some())
                 .map(|fix| obc_ports::Fix { course: None, speed_mps: Some(0.0), ..fix }),
         );
         let stopped_fix = stopped.0.is_some();
-        let mut plan = {
-            let route_src = self.routes.active_source();
-            let route = match (self.session.index(), route_src) {
-                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-                _ => None,
-            };
-            // GPS course orients the moving map; the compass lets a stopped rider look around.
-            let (ride, mut sensors) =
-                replay_advance(&mut self.player, &mut self.baro, Some(&mut self.compass), dt, ReplaySensors::default());
-            if stopped_fix {
-                sensors.loc = &mut stopped;
-            }
-            self.host.pass(
-                &mut self.app,
-                PassClock { ride, ui: InputClock(ui_ms) },
-                gestures,
-                sensors,
-                route.as_ref(),
-                SUPPORT,
-            )
-        };
-        // The typed executor: the plan's bounded effects against the in-memory stores, and
-        // token-carrying outcomes for the next pass. The demo has no trips and no platform work of
-        // its own, so the whole loop is repository sequencing from `obc-host-core`.
-        self.host.execute(
-            &mut self.app,
-            &mut plan,
-            &mut self.session,
-            &mut self.routes,
-            &mut self.rides,
-            &mut self.tracks,
-            &mut (),
-            &self.map,
-            &mut self.elevation,
-            &mut (),
-        );
-        plan
+        // GPS course orients the moving map; the compass takes over when stopped.
+        let (ride, mut sensors) =
+            replay_advance(&mut self.player, &mut self.baro, Some(&mut self.compass), dt, ReplaySensors::default());
+        if stopped_fix {
+            sensors.loc = &mut stopped;
+        }
+        self.device.step(PassClock { ride, ui: InputClock(ui_ms) }, gestures, sensors, SUPPORT, &mut (), |_, _| {})
     }
 
     /// Apply one drained command. A gesture joins this frame's batch; everything else drives the
@@ -508,10 +426,10 @@ impl Demo {
             // device's own order: the recogniser swallows a chord's constituents whole, and the app
             // resolves the chord above the screen stack before it applies the frame's gestures.
             Cmd::Chord(c) => {
-                self.app.apply_chord(c);
+                self.device.app.apply_chord(c);
             }
             Cmd::Play => {
-                if !self.app.peak_view_is_base() {
+                if !self.device.app.peak_view_is_base() {
                     self.player.play();
                 }
             }
@@ -523,14 +441,14 @@ impl Demo {
             }
             Cmd::StageUpload | Cmd::Enter | Cmd::Ambient => unreachable!("resets are queue barriers"),
             Cmd::ReceiveRoute => {
-                if let Some(&id) = self.routes.ids().first() {
-                    self.host.facts().note_route_upload(RouteUpload { id, replaced: false, elevation: None });
+                if let Some(&id) = self.device.routes.ids().first() {
+                    self.device.host.facts().note_route_upload(RouteUpload { id, replaced: false, elevation: None });
                 }
             }
             Cmd::Exit => {
                 // Take control: leave the device where the demo parked it, controls live.
                 self.tour_active = false;
-                if !self.app.peak_view_is_base() {
+                if !self.device.app.peak_view_is_base() {
                     self.player.play();
                 }
             }
@@ -539,23 +457,26 @@ impl Demo {
 
     /// Retire the old recorder through its exact acknowledgment before recycling App tokens.
     fn reset(&mut self, baseline: Baseline) -> bool {
-        if self.host.owns_navigation() {
+        if self.device.host.owns_navigation() {
             return false;
         }
-        if !self.tracks.is_idle() || self.app.recording() || !self.host.outcomes().recorder.is_empty() {
-            self.app.recorder.request(obc_app::RecorderIntent::Discard);
+        if !self.device.tracks.is_idle()
+            || self.device.app.recording()
+            || !self.device.host.outcomes().recorder.is_empty()
+        {
+            self.device.app.recorder.request(obc_app::RecorderIntent::Discard);
             // First consume any old reply, then issue Discard. The memory executor answers in this
             // pass, and the second pass must consume that exact answer before replacing App.
             self.device_frame(self.ui_now(), 0.0, &[]);
-            if let Some(reply) = self.host.outcomes().recorder.take() {
+            if let Some(reply) = self.device.host.outcomes().recorder.take() {
                 // Put the unchanged token back for RecorderMachine to validate and consume.
-                self.host.outcomes().recorder.try_put(reply).expect("the inspected slot is empty");
+                self.device.host.outcomes().recorder.try_put(reply).expect("the inspected slot is empty");
                 if !matches!(reply, RecorderOutcome::Discarded { .. }) {
                     return false;
                 }
                 self.device_frame(self.ui_now(), 0.0, &[]);
             }
-            if !self.tracks.is_idle() || self.app.recording() || self.host.owns_navigation() {
+            if !self.device.tracks.is_idle() || self.device.app.recording() || self.device.host.owns_navigation() {
                 return false;
             }
         }
@@ -572,7 +493,7 @@ impl Demo {
         self.tour_active = baseline != Baseline::Ambient;
 
         let (cx, cy, _) = {
-            let reader = self.map.reader();
+            let reader = self.device.map.reader();
             initial_camera(&reader, FRAME_W)
         };
         let mut state = AppState::new(cx, cy, obc_render::zoom_for_mpp(DEMO_MPP));
@@ -586,9 +507,9 @@ impl Demo {
         // the last one. That is what lets a drawer's sheet grow over a base the frame no longer
         // draws.
         app.set_resident_frame(true);
-        app.set_map_nav_graph(self.map.tables().has_nav_graph());
-        app.set_routes_with_ids(self.routes.catalog(), self.routes.ids());
-        app.set_rides(self.rides.catalog(), self.rides.trip_names());
+        app.set_map_nav_graph(self.device.map.tables().has_nav_graph());
+        app.set_routes_with_ids(self.device.routes.catalog(), self.device.routes.ids());
+        app.set_rides(self.device.rides.catalog(), self.device.rides.trip_names());
         // Manual climb mode for both baselines: the whole demo ride is a climb, so Auto would swap
         // the opening Map for the Climb profile within the first frames.
         //
@@ -596,27 +517,27 @@ impl Demo {
         // step that dwells on a menu while the visitor reads it would otherwise be swept back to the
         // Map thirty seconds in.
         app.set_settings(Settings {
-            theme: self.app.settings().theme,
+            theme: self.device.app.settings().theme,
             climb_mode: ClimbMode::Manual,
             idle_return: obc_app::settings::IdleReturn::Never,
             ..Settings::default()
         });
         // Select the embedded demo route. `arm_baseline_ride` asks for the ride itself on the first
         // frame that can grant one.
-        self.pending_ride = baseline != Baseline::Upload && !self.routes.catalog().is_empty();
+        self.pending_ride = baseline != Baseline::Upload && !self.device.routes.catalog().is_empty();
         if self.pending_ride {
             app.activate_route(0);
         }
         // Overwrite in the existing heap slot, so there is no fresh allocation and no lingering old
         // app. The executor is rebuilt with it, because its inbox holds outcomes and tokens minted
         // by the app that is being replaced.
-        *self.app = app;
-        self.host = HostLoop::new();
+        *self.device.app = app;
+        self.device.host = HostLoop::new();
         // The resident parse goes with it, and the store's active binding must be dropped too:
         // `sync_active` only reparses on a change, so a store still bound to route 0 would answer
         // unchanged and the fresh session would never open the route.
-        self.session = ActiveRouteSession::new();
-        self.routes.invalidate_active();
+        self.device.session = ActiveRouteSession::new();
+        self.device.routes.invalidate_active();
 
         self.player.seek(0.0);
         if baseline == Baseline::Upload {
@@ -651,9 +572,9 @@ impl Demo {
     /// The request is spent here, so the ride the visitor finishes stays finished. A page that
     /// re-asked every frame would reopen it two frames later.
     fn arm_baseline_ride(&mut self) {
-        if self.pending_ride && self.app.can_record() {
+        if self.pending_ride && self.device.app.can_record() {
             self.pending_ride = false;
-            self.app.recorder.request(obc_app::RecorderIntent::Start);
+            self.device.app.recorder.request(obc_app::RecorderIntent::Start);
         }
     }
 }
@@ -678,9 +599,9 @@ mod tests {
         demo.tick(0.0);
         demo.tick(60_000.0);
         let light = demo.frame().to_vec();
-        let clock = demo.app.wall_clock_now();
+        let clock = demo.device.app.wall_clock_now();
         demo.set_dark(true);
-        assert_eq!(demo.app.wall_clock_now(), clock);
+        assert_eq!(demo.device.app.wall_clock_now(), clock);
         assert!(demo.tick(60_016.0));
         assert_ne!(demo.frame(), light);
         assert_eq!(demo.state(), "Map");
@@ -689,22 +610,22 @@ mod tests {
             demo.cmd(command);
             demo.tick(60_032.0 + index as f64 * 16.0);
             assert_eq!(demo.reset_status(), ResetStatus::Ready);
-            assert_eq!(demo.app.settings().theme, Theme::Dark);
+            assert_eq!(demo.device.app.settings().theme, Theme::Dark);
         }
         demo.set_dark(false);
-        assert_eq!(demo.app.settings().theme, Theme::Light);
+        assert_eq!(demo.device.app.settings().theme, Theme::Light);
     }
 
     #[test]
     fn reset_drains_the_old_reply_before_reusing_session_tokens() {
         let mut d = Demo::new();
-        let map = d.map.source();
-        let route = d.routes.ids()[0];
+        let map = d.device.map.source();
+        let route = d.device.routes.ids()[0];
         d.tick(0.0);
         d.tick(250.0);
         d.tick(500.0); // cross the replay's one-second fix boundary
-        assert!(!d.tracks.is_idle());
-        assert!(!d.host.outcomes().recorder.is_empty(), "the old App still owes its reply");
+        assert!(!d.device.tracks.is_idle());
+        assert!(!d.device.host.outcomes().recorder.is_empty(), "the old App still owes its reply");
         d.cmd("back");
         d.cmd("ambient");
         d.cmd("upload");
@@ -714,21 +635,21 @@ mod tests {
         d.tick(750.0);
         assert_eq!(d.reset_status(), ResetStatus::Ready);
         assert_eq!(d.state(), "RouteReceived", "earlier gestures are superseded; later inputs follow the baseline");
-        assert!(d.tracks.is_idle());
-        assert!(!d.app.recording());
-        assert!(d.map.source().same_revision(&map));
-        assert_eq!(d.routes.ids(), &[route]);
-        assert!(d.rides.catalog().is_empty());
+        assert!(d.device.tracks.is_idle());
+        assert!(!d.device.app.recording());
+        assert!(d.device.map.source().same_revision(&map));
+        assert_eq!(d.device.routes.ids(), &[route]);
+        assert!(d.device.rides.catalog().is_empty());
         // Repeated cleanup must return the reservation and leave no old recording at Start.
         for i in 0..4 {
             d.cmd("ambient");
             d.tick(1000.0 + i as f64 * 500.0);
             d.tick(1250.0 + i as f64 * 500.0);
             assert_eq!(d.reset_status(), ResetStatus::Ready);
-            assert!(d.app.recording());
-            assert!(!d.tracks.is_idle());
+            assert!(d.device.app.recording());
+            assert!(!d.device.tracks.is_idle());
         }
-        assert_ne!(Demo::new().map.source().store_id(), map.store_id(), "a new page owns a new volatile card");
+        assert_ne!(Demo::new().device.map.source().store_id(), map.store_id(), "a new page owns a new volatile card");
     }
 
     #[test]
@@ -737,24 +658,24 @@ mod tests {
         d.tick(0.0);
         d.tick(250.0);
         d.tick(500.0);
-        let reply = d.host.outcomes().recorder.take().expect("the real append awaits delivery");
+        let reply = d.device.host.outcomes().recorder.take().expect("the real append awaits delivery");
         assert!(matches!(reply, RecorderOutcome::Appended { .. }));
-        assert!(!d.app.recorder.staged().is_empty());
-        d.app.recorder.request(obc_app::RecorderIntent::Save);
+        assert!(!d.device.app.recorder.staged().is_empty());
+        d.device.app.recorder.request(obc_app::RecorderIntent::Save);
         d.player.seek(d.player.duration() - 0.5);
         d.tick(750.0);
         assert!(!d.player.is_playing());
-        assert!(d.app.recording() && d.app.recorder.closing());
+        assert!(d.device.app.recording() && d.device.app.recorder.closing());
         assert_eq!(d.reset_status(), ResetStatus::Ready);
         assert!(d.queue.is_empty(), "playback end cannot supersede Save with automatic Discard");
-        d.host.outcomes().recorder.try_put(reply).unwrap();
+        d.device.host.outcomes().recorder.try_put(reply).unwrap();
         for i in 4..12 {
             d.tick(i as f64 * 250.0);
         }
-        assert!(!d.app.recording());
-        assert!(d.tracks.is_idle());
-        assert_eq!(d.rides.catalog().len(), 1, "the original sample becomes a saved object");
-        assert!(!d.rides.catalog()[0].summary.synced);
+        assert!(!d.device.app.recording());
+        assert!(d.device.tracks.is_idle());
+        assert_eq!(d.device.rides.catalog().len(), 1, "the original sample becomes a saved object");
+        assert!(!d.device.rides.catalog()[0].summary.synced);
     }
 
     #[test]
@@ -766,8 +687,8 @@ mod tests {
         let mut d = Demo::on_card(owner);
         d.tick(0.0);
         d.tick(250.0);
-        let session = d.app.recorder.session();
-        let map = d.map.source();
+        let session = d.device.app.recorder.session();
+        let map = d.device.map.source();
         let offset = d.ui_offset_ms;
         // An unavailable catalog: the cached owner cannot read the truncated backing file.
         std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(0).unwrap();
@@ -776,10 +697,10 @@ mod tests {
         d.tick(250.0);
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert_ne!(d.state(), "RouteReceived");
-        assert_eq!(d.app.recorder.session(), session);
-        assert!(!d.tracks.is_idle());
+        assert_eq!(d.device.app.recorder.session(), session);
+        assert!(!d.device.tracks.is_idle());
         assert_eq!(d.ui_offset_ms, offset, "no Tour pre-roll ran");
-        assert!(d.map.source().same_revision(&map));
+        assert!(d.device.map.source().same_revision(&map));
         d.cmd("back");
         d.tick(250.0);
         assert_eq!(d.reset_status(), ResetStatus::Failed, "an unrelated input cannot erase failure");
@@ -826,18 +747,18 @@ mod tests {
             }
         }
         assert!(d.peak_ready(), "the real DEM builds a visible panorama in bounded frames");
-        assert!(d.app.state.peak_view_peak_count > 0, "named summits come from the map");
+        assert!(d.device.app.state.peak_view_peak_count > 0, "named summits come from the map");
         for _ in 0..1200 {
             now += 16.0;
             d.tick(now);
         }
-        let visible: Vec<_> = d.app.state.peak_view_peaks[..d.app.state.peak_view_peak_count as usize]
+        let visible: Vec<_> = d.device.app.state.peak_view_peaks[..d.device.app.state.peak_view_peak_count as usize]
             .iter()
             .filter(|p| p.visible)
             .map(|p| (p.name.as_str(), p.azimuth_q4))
             .collect();
         assert!(!visible.is_empty(), "the skyline has named visible summits");
-        let observer = d.app.state.peak_view_profile.unwrap();
+        let observer = d.device.app.state.peak_view_profile.unwrap();
         assert!(observer.observer_elevation_m > 1000, "ground height comes from the DEM");
         drive(&mut d, &mut now, "exit", "PeakView");
         assert!(!d.player.is_playing(), "looking around keeps the rider stopped");
@@ -855,7 +776,7 @@ mod tests {
             }
         }
         assert!(d.peak_ready());
-        assert_eq!(d.app.peak_view_heading_q4(), 360, "the compass turns the actual view");
+        assert_eq!(d.device.app.peak_view_heading_q4(), 360, "the compass turns the actual view");
         drive(&mut d, &mut now, "back", "Menu");
         drive(&mut d, &mut now, "ambient", "Map");
         assert!(d.peaks.panorama().is_none());
@@ -947,7 +868,7 @@ mod tests {
 
         assert_eq!(d.state(), "RouteReceived");
         assert!(d.tour_active, "the idle upload card must not be restarted as an ambient ride");
-        assert!(!d.app.recording(), "a phone upload lands before the ride starts");
+        assert!(!d.device.app.recording(), "a phone upload lands before the ride starts");
 
         let mut now = 16.0;
         drive(&mut d, &mut now, "press", "RouteOverview");
@@ -955,13 +876,13 @@ mod tests {
         drive(&mut d, &mut now, "press", "StartAway");
         drive(&mut d, &mut now, "step:1", "StartAway");
         drive(&mut d, &mut now, "press", "Map");
-        assert!(d.app.recording(), "Join nearest begins the session before the next chapter");
+        assert!(d.device.app.recording(), "Join nearest begins the session before the next chapter");
         d.cmd("play");
         for _ in 0..4 {
             now += 250.0;
             d.tick(now);
         }
-        assert!(d.app.progress_m() > 1_000, "the first riding fix joins the route mid-climb");
+        assert!(d.device.app.progress_m() > 1_000, "the first riding fix joins the route mid-climb");
     }
 
     #[test]
@@ -972,35 +893,35 @@ mod tests {
         let mut d = Demo::on_card(owner.clone());
         let mut now = 0.0;
         d.tick(now);
-        assert!(d.rides.catalog().is_empty(), "no fabricated ride or archive proof");
+        assert!(d.device.rides.catalog().is_empty(), "no fabricated ride or archive proof");
 
         drive(&mut d, &mut now, "enter", "Map");
-        let stats = d.app.ride_stats();
+        let stats = d.device.app.ride_stats();
         assert!(stats.distance_m > 1_000, "the visible Finish flow should contain a real partial ride");
         assert!(stats.moving_time_s > 60);
         assert!(stats.climb_m > 50);
         drive(&mut d, &mut now, "press", "RideControl");
         drive(&mut d, &mut now, "step:1", "RideControl");
         drive(&mut d, &mut now, "hold", "Home");
-        assert!(d.app.recording(), "the ride is open until the store answers for the close");
+        assert!(d.device.app.recording(), "the ride is open until the store answers for the close");
         for _ in 0..8 {
             now += 16.0;
             d.tick(now);
-            if !d.app.recording() {
+            if !d.device.app.recording() {
                 break;
             }
         }
-        assert!(!d.app.recording(), "the final staged samples drain before the finalize verdict closes it");
+        assert!(!d.device.app.recording(), "the final staged samples drain before the finalize verdict closes it");
         // It stays ended. The baseline's Start is a one-shot; a page that re-asked every frame
         // would reopen a ride the rider just finished.
         for _ in 0..8 {
             now += 16.0;
             d.tick(now);
-            assert!(!d.app.recording(), "the finished ride must not reopen itself");
+            assert!(!d.device.app.recording(), "the finished ride must not reopen itself");
         }
-        let saved = d.rides.catalog()[0].clone();
+        let saved = d.device.rides.catalog()[0].clone();
         let source = owner.open(ObjectId(saved.id), Revision(1)).unwrap();
-        assert_eq!(source.store_id(), d.map.source().store_id());
+        assert_eq!(source.store_id(), d.device.map.source().store_id());
         let info = obc_route::RideInfo::read(&source).unwrap();
         assert!(info.point_count > 100);
         assert_eq!(saved.summary, obc_app::RideSummary::from_info(&info, false, 0));
@@ -1016,18 +937,18 @@ mod tests {
         assert!(points.windows(2).all(|pair| pair[0].t_ms < pair[1].t_ms));
         assert!(points.iter().any(|point| point.lat != points[0].lat));
         let (mut profile, mut facts) = (obc_route::Profile::EMPTY, obc_route::RideTrackFacts::EMPTY);
-        assert!(d.rides.fill_track(saved.id, &mut profile, &mut facts).unwrap().len() > 1);
+        assert!(d.device.rides.fill_track(saved.id, &mut profile, &mut facts).unwrap().len() > 1);
         d.cmd("exit");
         d.cmd("pause");
         now += 16.0;
         d.tick(now);
         assert!(!d.player.is_playing());
-        assert!(!d.app.recording(), "leaving the tour cannot reopen a saved ride");
+        assert!(!d.device.app.recording(), "leaving the tour cannot reopen a saved ride");
         d.cmd("upload");
         now += 16.0;
         d.tick(now);
         assert_eq!(d.reset_status(), ResetStatus::Ready);
-        assert_eq!(d.rides.catalog(), &[saved]);
+        assert_eq!(d.device.rides.catalog(), &[saved]);
         assert!(source.is_current(), "reset preserves the committed revision and its held reader");
     }
 
@@ -1063,7 +984,7 @@ mod tests {
         drive(&mut d, &mut now, "step:1", "Assistant");
         drive(&mut d, &mut now, "press", "WhatsNext");
         drive(&mut d, &mut now, "press", "WhatsNext");
-        assert!(d.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
+        assert!(d.device.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
         drive(&mut d, &mut now, "back", "WhatsNext");
         drive(&mut d, &mut now, "back", "Assistant");
         drive(&mut d, &mut now, "back", "Map");
@@ -1083,8 +1004,8 @@ mod tests {
         d.tick(now);
         drive(&mut d, &mut now, "enter", "Map");
         drive(&mut d, &mut now, "pause", "Map");
-        let original = d.app.route_ids()[d.app.active_route_index().unwrap()];
-        assert!(d.app.recording());
+        let original = d.device.app.route_ids()[d.device.app.active_route_index().unwrap()];
+        assert!(d.device.app.recording());
         dwell(&mut d, &mut now, 2600);
         drive(&mut d, &mut now, "context", "ContextDrawer");
         drive(&mut d, &mut now, "press", "Assistant");
@@ -1102,12 +1023,12 @@ mod tests {
             now += 16.0;
             d.tick(now);
         }
-        assert!(d.find_ready(), "real station search: {:?}, {:?}", d.app.find_place_state(), d.visit_status());
+        assert!(d.find_ready(), "real station search: {:?}, {:?}", d.device.app.find_place_state(), d.visit_status());
         dwell(&mut d, &mut now, 2600);
         drive(&mut d, &mut now, "press", "VisitReview");
         now += 16.0;
         d.tick(now);
-        assert!(d.host.owns_navigation());
+        assert!(d.device.host.owns_navigation());
         let offset = d.ui_offset_ms;
         d.cmd("enter");
         d.cmd("receive");
@@ -1115,8 +1036,8 @@ mod tests {
         d.tick(now);
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert_eq!(d.ui_offset_ms, offset);
-        assert!(d.host.owns_navigation());
-        assert!(!d.app.recorder.closing());
+        assert!(d.device.host.owns_navigation());
+        assert!(!d.device.app.recorder.closing());
         for _ in 0..750 {
             if d.visit_status() == ReviewStatus::Preview {
                 break;
@@ -1125,9 +1046,9 @@ mod tests {
             d.tick(now);
         }
         assert_eq!(d.visit_status(), ReviewStatus::Preview);
-        let preview = d.app.assistant_preview().unwrap();
+        let preview = d.device.app.assistant_preview().unwrap();
         assert!(preview.visit_costs.is_some() && preview.distance_m > 0);
-        assert_eq!(d.app.route_ids()[d.app.active_route_index().unwrap()], original);
+        assert_eq!(d.device.app.route_ids()[d.device.app.active_route_index().unwrap()], original);
         dwell(&mut d, &mut now, 2600);
         assert_eq!(d.visit_status(), ReviewStatus::Preview);
         drive(&mut d, &mut now, "press", "VisitReview");
@@ -1139,11 +1060,11 @@ mod tests {
             d.tick(now);
         }
         assert_eq!(d.visit_status(), ReviewStatus::Accepted);
-        assert_eq!(d.routes.read_checkpoint().unwrap().unwrap().route, preview.source);
-        assert_eq!(d.app.route_ids()[d.app.active_route_index().unwrap()], preview.source.object);
-        assert!(d.app.recording() && !d.app.recorder.closing());
+        assert_eq!(d.device.routes.read_checkpoint().unwrap().unwrap().route, preview.source);
+        assert_eq!(d.device.app.route_ids()[d.device.app.active_route_index().unwrap()], preview.source.object);
+        assert!(d.device.app.recording() && !d.device.app.recorder.closing());
         assert_eq!(d.state(), "Map", "accepted Visit returns to the riding map");
-        let session = d.app.recorder.session();
+        let session = d.device.app.recorder.session();
         d.cmd("exit");
         d.cmd(&format!("seek:{}", d.player.duration() - 0.5));
         now += 250.0;
@@ -1151,7 +1072,7 @@ mod tests {
         assert!(!d.player.is_playing());
         assert_eq!(d.reset_status(), ResetStatus::Failed);
         assert!(d.queue.is_empty(), "playback end cannot clear a refused navigation reset");
-        assert_eq!(d.app.recorder.session(), session);
+        assert_eq!(d.device.app.recorder.session(), session);
     }
 
     /// The landing page's guided scenarios wait on screen-name strings, so a rename in the
