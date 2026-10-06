@@ -32,6 +32,7 @@ use super::vocab::chrome::{
     card_check, copy_w, row_check, title_frame, wrapped, wrapped_line_pitch, LIST_TOP, ROW_CHECK_HALF, TITLE_BAR_H,
 };
 use super::vocab::flags::{FLAG_H, FLAG_W};
+use super::vocab::fmt::write_fixed;
 use super::vocab::list::on_step;
 use super::vocab::rows::{
     action_row, choice_row, nav_row, row_rect, row_tick, Line2, ROW_GAP, ROW_ONE, ROW_TWO, ROW_X,
@@ -732,8 +733,8 @@ const SAMPLE: (f32, f32) = (24.5, 86.4);
 fn ride_preview(cv: &mut impl Surface, rx: &Render, units: Units) {
     use palette::*;
     let (mut speed, mut dist) = (heapless::String::<8>::new(), heapless::String::<8>::new());
-    let _ = write!(speed, "{:.1}", units.speed(SAMPLE.0));
-    let _ = write!(dist, "{:.1}", units.dist(SAMPLE.1));
+    let _ = write_fixed(&mut speed, units.speed(SAMPLE.0), true);
+    let _ = write_fixed(&mut dist, units.dist(SAMPLE.1), true);
     for (i, (caption, value)) in [(units.speed_label(), speed), (units.dist_label(), dist)].into_iter().enumerate() {
         let area = preview_tile(rx, i);
         tile(cv, area, &rx.marquee, caption, &value, false, TextAlign::Left, PARCHMENT_SHADE, SUBTEXT, INK);

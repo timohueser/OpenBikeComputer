@@ -23,7 +23,7 @@ use obc_route::RideTrackFacts;
 use super::route_overview::{climb_arrow, ARROW_W};
 use super::vocab::band::draw_profile;
 use super::vocab::chrome::{empty_state, title_chrome, title_frame};
-use super::vocab::fmt::{duration_hms, write_date_weekday};
+use super::vocab::fmt::{duration_hms, write_date_weekday, write_fixed};
 use super::vocab::rows::{detail_totals, draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use super::vocab::tiles::{graph_field, GraphBlock};
 use super::vocab::track_map::{draw_track_map, Track};
@@ -191,14 +191,15 @@ where
     write_date_weekday(&mut when, &d, rx.settings.language);
     let _ = write!(when, " · {:02}:{:02}", d.hour, d.minute);
     cv.text(&when, Point::new(14, DATE_Y), Font::Label, TextAlign::Left, SUBTEXT);
-    let dist = number(format_args!("{:.1}", units.dist(ride.distance_m as f32 / 1000.0)));
+    let mut dist = heapless::String::<8>::new();
+    let _ = write_fixed(&mut dist, units.dist(ride.distance_m as f32 / 1000.0), true);
     let (dist_unit, speed_unit) = if units.is_imperial() { ("mi", "mph") } else { ("km", "km/h") };
     detail_totals(cv, w, TOTALS_Y, &dist, dist_unit, &duration_hms(ride.moving_time_s as f32));
     // The stored distance over the stored moving time, and `--` before any moving time.
     let mut speed = heapless::String::<16>::new();
     if ride.moving_time_s > 0 {
         let kmh = ride.distance_m as f32 / 1000.0 / (ride.moving_time_s as f32 / 3600.0);
-        let _ = write!(speed, "{:.1} {speed_unit}", units.speed(kmh));
+        let _ = write_fixed(&mut speed, units.speed(kmh), true).and_then(|()| write!(speed, " {speed_unit}"));
     } else {
         let _ = write!(speed, "-- {speed_unit}");
     }

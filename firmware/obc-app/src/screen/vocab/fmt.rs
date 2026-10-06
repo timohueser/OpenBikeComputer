@@ -2,10 +2,91 @@
 //! function is named `<quantity>_<style>`, and a `write_*` name appends into a caller-owned buffer.
 //! Two styles of one quantity are two functions, because their thresholds differ.
 
-use core::fmt::Write;
+use core::fmt::{self, Write};
 
 use crate::settings::{DateTime, Language, Units, FT_PER_M, FT_PER_MI};
 use crate::{t, Msg};
+
+fn unsigned(dst: &mut dyn Write, value: u128, remaining: usize) -> fmt::Result {
+    let mut digits = [0u8; 40];
+    let mut at = 40;
+    if value <= u64::MAX as u128 {
+        let mut n = value as u64;
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+    } else {
+        // Wider integers need at least 20 decimal digits.
+        if remaining < 20 {
+            return Err(fmt::Error);
+        }
+        let mut n = value;
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+    }
+    dst.write_str(core::str::from_utf8(&digits[at..]).unwrap())
+}
+fn round_shift(value: u32, shift: u32) -> u32 {
+    if shift >= 32 {
+        return 0;
+    }
+    let whole = value >> shift;
+    let rest = value & ((1u32 << shift) - 1);
+    let half = 1u32 << (shift - 1);
+    whole + u32::from(rest > half || (rest == half && whole & 1 != 0))
+}
+/// Write a whole or one-decimal figure. Round the binary value to nearest, with ties to even.
+pub(crate) fn write_fixed<const N: usize>(dst: &mut heapless::String<N>, value: f32, tenth: bool) -> fmt::Result {
+    let bits = value.to_bits();
+    let exponent = (bits >> 23) & 255;
+    let fraction = bits & 0x7fffff;
+    if exponent == 255 && fraction != 0 {
+        return dst.write_str("NaN");
+    }
+    if bits >> 31 != 0 {
+        dst.write_str("-")?
+    }
+    if exponent == 255 {
+        return dst.write_str("inf");
+    }
+    let (significand, power) =
+        if exponent == 0 { (fraction, -149) } else { (fraction | (1 << 23), exponent as i32 - 150) };
+    let (integer, decimal) = if power >= 0 {
+        ((significand as u128) << power, 0)
+    } else {
+        let rounded = round_shift(significand * if tenth { 10 } else { 1 }, (-power) as u32);
+        if tenth {
+            ((rounded / 10) as u128, (rounded % 10) as u8)
+        } else {
+            (rounded as u128, 0)
+        }
+    };
+    // Keep the zero and dot in one write, including when a fixed buffer rejects them.
+    if tenth && integer == 0 {
+        dst.write_str("0.")?;
+    } else {
+        let remaining = N - dst.len();
+        unsigned(dst, integer, remaining)?;
+        if tenth {
+            dst.write_str(".")?;
+        }
+    }
+    if tenth {
+        dst.write_char((b'0' + decimal) as char)?
+    }
+    Ok(())
+}
 
 /// The "no data" glyph every optional readout falls back to.
 pub(crate) fn dashes() -> heapless::String<8> {
@@ -19,7 +100,7 @@ pub(crate) fn dashes() -> heapless::String<8> {
 /// already-converted figure (`units.dist(km)`).
 pub(crate) fn distance_figure(value: f32) -> heapless::String<8> {
     let mut s = heapless::String::new();
-    let _ = if value >= 100.0 { write!(s, "{value:.0}") } else { write!(s, "{value:.1}") };
+    let _ = write_fixed(&mut s, value, value < 100.0);
     s
 }
 
@@ -97,14 +178,14 @@ pub(crate) fn write_distance_split(s: &mut heapless::String<8>, total_m: u32, un
             let _ = write!(s, "{ft}");
             "ft"
         } else {
-            let _ = write!(s, "{:.1}", units.dist(total_m as f32 / 1000.0));
+            let _ = write_fixed(s, units.dist(total_m as f32 / 1000.0), true);
             "mi"
         }
     } else if total_m < 1000 {
         let _ = write!(s, "{total_m}");
         "m"
     } else {
-        let _ = write!(s, "{:.1}", total_m as f32 / 1000.0);
+        let _ = write_fixed(s, total_m as f32 / 1000.0, true);
         "km"
     }
 }
@@ -114,7 +195,7 @@ pub(crate) fn speed_figure(v: Option<f32>) -> heapless::String<8> {
     let mut s = heapless::String::new();
     match v {
         Some(v) => {
-            let _ = write!(s, "{v:.1}");
+            let _ = write_fixed(&mut s, v, true);
         }
         None => {
             let _ = s.push_str("--");
@@ -281,6 +362,35 @@ pub(crate) fn write_ble_address(buf: &mut heapless::String<24>, addr: &[u8; 6]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_rounding_and_partial_writes() {
+        for (value, tenth, expected) in [
+            (0.0, true, "0.0"),
+            (-0.0, true, "-0.0"),
+            (0.25, true, "0.2"),
+            (0.75, true, "0.8"),
+            (2.5, false, "2"),
+            (3.5, false, "4"),
+            (-3.5, false, "-4"),
+            (f32::from_bits(1), true, "0.0"),
+            (f32::NAN, true, "NaN"),
+            (f32::INFINITY, true, "inf"),
+            (f32::NEG_INFINITY, true, "-inf"),
+            (f32::MAX, true, "340282346638528859811704183484516925440.0"),
+        ] {
+            let mut s = heapless::String::<48>::new();
+            assert!(write_fixed(&mut s, value, tenth).is_ok());
+            assert_eq!(s, expected);
+        }
+        for (value, expected) in
+            [(0.0, "xxxxxxx"), (1.0, "xxxxxxx1"), (-0.0, "xxxxxxx-"), (f32::MAX, "xxxxxxx"), (-f32::MAX, "xxxxxxx-")]
+        {
+            let mut s = heapless::String::<8>::try_from("xxxxxxx").unwrap();
+            assert!(write_fixed(&mut s, value, true).is_err());
+            assert_eq!(s, expected);
+        }
+    }
 
     #[test]
     fn distance_short_metric_crossovers() {
