@@ -2,6 +2,7 @@
 
 pub mod maps;
 pub mod planner;
+mod region_sources;
 
 use obc_data::engine::{Client, Code, Input, Python, Run, Step};
 use obc_data::product::Product;

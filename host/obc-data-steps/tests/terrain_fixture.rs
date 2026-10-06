@@ -8,7 +8,7 @@ use obc_bake::terrain::{DemCutter, TerrainBakeOptions, TerrainBakery, TerrainCel
 use obc_data::engine::runs::{Context, Limits, Run};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
-use obc_data::product::{Product, Unplanned};
+use obc_data::product::Unplanned;
 use obc_data::regions::{parse_region, Area, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::maps::{box_poly, Maps, TILE_LIST};
@@ -19,6 +19,7 @@ use obc_formats::io::SliceSource;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 const VERSION: &str = "2022-05-09";
+const AREA: &str = "europe/grimsel-east";
 /// The Grimsel east of the leaf edge at 8.388608°: one terrain cell, whose source box lies in the
 /// one captured tile.
 const REGION: &str = "name = \"Grimsel east\"\nkind = \"box\"\nbox = [8.39, 46.48261, 8.46007, 46.66]\n";
@@ -55,15 +56,54 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     let url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt".into();
     let file = FileRecord { name: "tileList.txt".into(), url, size, sha256, retrieved: String::new() };
     store.put_snapshot(&Snapshot { source: TILE_LIST.into(), version: VERSION.into(), files: vec![file] }).unwrap();
+    let Area::Box { bbox } = parse_region("grimsel-east", REGION).unwrap().area else { unreachable!() };
+    let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+        "properties":{"id":"grimsel-east","name":"Grimsel east","parent":null,
+            "urls":{"pbf":format!("https://download.geofabrik.de/{AREA}-latest.osm.pbf")}},
+        "geometry":{"type":"Polygon","coordinates":[[[bbox.west,bbox.south],[bbox.east,bbox.south],
+            [bbox.east,bbox.north],[bbox.west,bbox.north],[bbox.west,bbox.south]]]}}]});
+    for (source, name, params, bytes) in [
+        ("geofabrik-index", "index.json".into(), Vec::new(), index.to_string()),
+        ("geofabrik-poly", format!("{AREA}.poly"), vec![("area".into(), AREA.into())], box_poly(&bbox)),
+        (
+            "geofabrik-extracts",
+            format!("{AREA}.osm.pbf"),
+            vec![("area".into(), AREA.into())],
+            "unused OSM input".into(),
+        ),
+        ("land-polygons", "land.zip".into(), Vec::new(), "unused land input".into()),
+    ] {
+        let file = store.partial(source);
+        write_atomic(&file, bytes.as_bytes()).unwrap();
+        let (sha256, size) = hash_file(&file).unwrap();
+        store.insert(&file, &sha256).unwrap();
+        let record = FileRecord {
+            name: name.clone(),
+            url: format!("https://fixture.test/{name}"),
+            size,
+            sha256,
+            retrieved: String::new(),
+        };
+        store.put_snapshot(&Snapshot { source: source.into(), version: VERSION.into(), files: vec![record] }).unwrap();
+        store.put_requested(source, &Requested { version: VERSION.into(), params, files: vec![name] }).unwrap();
+    }
     store
+}
+
+fn steps(store: &Store, env: &Env, regions: &Regions) -> Result<obc_data::product::Steps, Unplanned> {
+    Maps.steps_with_tool(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        env,
+        regions,
+        store,
+        Err("this terrain fixture does not execute OSM preparation".into()),
+    )
 }
 
 /// Record a fetch without files of each national model that the step list asks for: the store has
 /// no national data of the Grimsel, so the terrain reads GLO-30 alone.
 fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) =
-        Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store)
-    else {
+    let Err(Unplanned::NeedsFetch(wanted)) = steps(store, env, regions) else {
         return;
     };
     for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
@@ -75,7 +115,9 @@ fn without_models(store: &Store, env: &Env, regions: &Regions) {
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
 fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<String, Vec<u8>> {
     without_models(store, env, regions);
-    let steps = Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store).unwrap().steps;
+    let listed = steps(store, env, regions).unwrap();
+    assert!(listed.blocked.iter().any(|blocked| blocked.layer == "maps/catalog"), "terrain alone cannot publish");
+    let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("maps/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
