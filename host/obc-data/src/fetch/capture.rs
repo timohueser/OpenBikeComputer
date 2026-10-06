@@ -11,7 +11,8 @@ use crate::sources::{Refresh, Registry, Source};
 use crate::store::{self, FileRecord, Snapshot, Store};
 
 /// The rasters of a national terrain model that cover `bbox=WEST,SOUTH,EAST,NORTH`, from the
-/// adapter of the reference ingest (`ingest.py fetch`).
+/// adapter of the reference ingest (`ingest.py fetch`). A box where the model has no data gives a
+/// fetch without files.
 pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let [bbox] = values(request, ["bbox"])?;
@@ -24,12 +25,9 @@ pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
         &format!("bbox={bbox}"),
         &[source],
         |_| &[0],
+        true,
         |work, out| {
-            // The pinned rasterio needs Python 3.12 or later.
-            let mut command = python(
-                &root,
-                &["--no-project", "--python", ">=3.12", "--with-requirements", "tools/requirements-bake.txt"],
-            );
+            let mut command = python(&root, &["--locked", "--group", "terrain-reference"]);
             command.arg("host/obc-dem/reference/ingest.py");
             command.args(["fetch", &key, &format!("--bbox={bbox}"), "--work"]).arg(work).arg("--out").arg(out);
             command
@@ -55,6 +53,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 &format!("bbox={bbox}&seasons={seasons}"),
                 &[source],
                 |_| &[0],
+                false,
                 |_, out| {
                     let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
@@ -72,6 +71,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 &format!("bbox={bbox}"),
                 &[source],
                 |_| &[0],
+                false,
                 |_, out| {
                     let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
                     command.args(["-m", "tools.planner_snow", &format!("--bounds={bbox}"), "--fetch-trails"]).arg(out);
@@ -91,6 +91,7 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 &format!("bbox={bbox}&first-year={first}"),
                 &[source],
                 |_| &[0],
+                false,
                 |_, out| {
                     let mut command = python(&root, &["--locked", "--group", "planner-climate"]);
                     command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
@@ -123,7 +124,7 @@ fn landmarks(store: &Store, request: &Request, root: &Path) -> Result<Snapshot, 
     let registry = Registry::load(root)?;
     let find = |id: &str| registry.sources.iter().find(|source| source.id == id).ok_or(format!("no source `{id}`"));
     let owners = [find("wikidata")?, find("wikipedia")?, find("commons")?];
-    capture(store, request, &query, &owners, landmark_owners, |_, out| {
+    capture(store, request, &query, &owners, landmark_owners, false, |_, out| {
         // The capture needs no package beyond the standard library.
         let mut command = python(root, &[]);
         command.arg(&tool);
@@ -152,13 +153,15 @@ fn landmark_owners(path: &str) -> &'static [usize] {
 /// `command` makes. The program writes them into its second directory, and may keep downloads in
 /// its first. `owners` gives the indexes in `sources` of the sources whose records take a file,
 /// from its path. A run that fails keeps both directories, so the next run can resume, unless
-/// they are older than the `refresh` of the source.
+/// they are older than the `refresh` of the source. With `empty`, a run that writes no file gives
+/// a fetch without files; else it fails.
 pub fn capture(
     store: &Store,
     request: &Request,
     query: &str,
     sources: &[&Source],
     owners: impl Fn(&str) -> &'static [usize],
+    empty: bool,
     command: impl FnOnce(&Path, &Path) -> Command,
 ) -> Result<Snapshot, String> {
     let source = request.source;
@@ -176,6 +179,10 @@ pub fn capture(
     });
     if !stored.is_empty() && stored.iter().all(|file| store.object(&file.sha256).is_file()) {
         return Ok(snapshot(stored));
+    }
+    // A fetch without files has only the record of its request.
+    if store.requested(&source.id, &version, &request.params)?.is_some_and(|files| files.is_empty()) {
+        return Ok(snapshot(Vec::new()));
     }
     if version != today {
         return Err(format!(
@@ -230,7 +237,7 @@ pub fn capture(
             });
         }
     }
-    if files.iter().all(Vec::is_empty) {
+    if files.iter().all(Vec::is_empty) && !empty {
         return Err(format!("source `{}`: the capture of {query} has no file", source.id));
     }
     // Every record is checked before one is written, so a conflict in one leaves all as they were.

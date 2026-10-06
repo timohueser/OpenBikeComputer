@@ -1,17 +1,20 @@
 //! The device maps. Each layer covers one leaf of the `2^23` grid that the region touches:
-//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`, and
+//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`,
+//! `maps/reference/<i>-<j>` the national terrain models that those cells read, and
 //! `maps/<band>/<i>-<j>` its map cells of one band. `maps/osm` holds the OSM of each leaf.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
 use obc_bake::planet::LeafId;
-use obc_data::engine::{Code, Input, Run, Step};
+use obc_data::engine::{snapshot_files, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{read, version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Bbox, Regions};
+use obc_data::sources::{self, attribution};
 use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
+use obc_dem::crest::cell_window;
 use obc_dem::step::GLO30;
 use obc_pack::grid::{id_width, Band, BandTable, CellId};
 use obc_pack::step::LAND;
@@ -55,9 +58,16 @@ impl Product for Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let terrain_cells = leaves(&outlines, V1_CELL_LOG2.into());
-        let mut steps: Vec<Step> =
-            terrain_cells.iter().map(|(&leaf, cells)| terrain(leaf, cells, &land, &glo30)).collect();
+        let mut steps = Vec::new();
+        for (&leaf, cells) in &leaves(&outlines, V1_CELL_LOG2.into()) {
+            let reference = reference(env, store, leaf, cells, &mut wanted)?;
+            let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
+            steps.extend(reference);
+            steps.push(terrain);
+        }
+        if !wanted.is_empty() {
+            return Err(Unplanned::NeedsFetch(wanted));
+        }
         let (Some(extract), Some(land_polygons)) = osm_sources else {
             return Ok(steps);
         };
@@ -146,18 +156,104 @@ fn map_cells(band: &Band, leaf: LeafId, cells: &[CellId], land_polygons: &str, r
     }
 }
 
-/// The terrain cells of one leaf, from the GLO-30 tiles that the square of each cell reaches. A
-/// square that the tile list does not name is sea, and has no tile to read.
-fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str) -> Step {
+/// The national terrain models whose box meets the terrain cells of `leaf` with the halo of the
+/// crest rule, merged into the reference archive of the leaf: the tiles that those cells read. Each
+/// model is the fetch of that box; a fetch without files, of a box where the model has no data,
+/// adds nothing. `None` when no model has data for the cells, or while the store lacks a fetch;
+/// then `wanted` has it. A missing fetch of a model behind a credential that this machine lacks
+/// blocks the product.
+fn reference(
+    env: &Env,
+    store: &Store,
+    leaf: LeafId,
+    cells: &[CellId],
+    wanted: &mut Vec<Wanted>,
+) -> Result<Option<Step>, Unplanned> {
+    let window_of = |cell: &CellId| {
+        let (ci, cj) = (u32::try_from(cell.i).ok()?, u32::try_from(cell.j).ok()?);
+        cell_window(ci, cj, V1_POSTING_LOG2, V1_CELL_LOG2)
+    };
+    let windows: Vec<_> = cells.iter().map(|cell| window_of(cell).expect("a terrain cell has a window")).collect();
+    let tiles: BTreeSet<(u32, u32)> = windows.iter().flat_map(|window| window.tiles()).collect();
+    let edge = |side: fn(&obc_dem::reference::Window) -> i64, max: bool| {
+        let sides = windows.iter().map(side);
+        let udeg = if max { sides.max() } else { sides.min() };
+        udeg.expect("a leaf has a cell") as f64 / 1e6
+    };
+    let (west, south) = (edge(|w| w.lon_lo, false), edge(|w| w.lat_lo, false));
+    let (east, north) = (edge(|w| w.lon_hi, true), edge(|w| w.lat_hi, true));
+    let params = vec![("bbox".to_string(), format!("{west},{south},{east},{north}"))];
+    let name = leaf_layer("maps/reference", leaf);
+    let (mut inputs, mut models, mut missing) = (Vec::new(), Vec::new(), false);
+    for source in sources::all() {
+        let Some([w, s, e, n]) = source.extent else { continue };
+        if east < w || west > e || north < s || south > n {
+            continue;
+        }
+        match version(env, store, &source.id, &params).map_err(Unplanned::Failed)? {
+            Ok(version) => {
+                let files = snapshot_files(store, &source.id, &version, &params, &[]).map_err(Unplanned::Failed)?;
+                if files.is_some_and(|files| files.is_empty()) {
+                    continue;
+                }
+                models.push(serde_json::json!({
+                    "source": source.id,
+                    "version": version,
+                    "credit": attribution(&source.id),
+                }));
+                inputs.push(Input::Snapshot {
+                    source: source.id.clone(),
+                    version,
+                    params: params.clone(),
+                    files: Vec::new(),
+                });
+            }
+            Err(fetch) => {
+                if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
+                    let source = &source.id;
+                    let credential = credential.describe();
+                    return Err(invalid(format!(
+                        "{name} reads `{source}`, which is blocked: credential missing: {credential}"
+                    )));
+                }
+                wanted.push(fetch);
+                missing = true;
+            }
+        }
+    }
+    if models.is_empty() || missing {
+        return Ok(None);
+    }
+    let tiles: Vec<String> = tiles.iter().map(|(ti, tj)| format!("{ti:04}/{tj:04}")).collect();
+    Ok(Some(crate::python(
+        &name,
+        inputs,
+        serde_json::json!({"models": models, "tiles": tiles}),
+        ("host/obc-dem/reference/merge.py", Some("terrain-reference")),
+        &REFERENCE_CODE,
+        &["reference"],
+    )))
+}
+
+/// The code of a reference step besides the uv environment: the merge, the ingest tool that it
+/// loads, and the modules of `tools/` that the tool imports.
+const REFERENCE_CODE: [&str; 4] =
+    ["host/obc-dem/reference/merge.py", "host/obc-dem/reference/ingest", "tools/data_registry.py", "tools/r2.py"];
+
+/// The terrain cells of one leaf, from the GLO-30 tiles that the square of each cell reaches and
+/// the reference archive of the leaf. A square that the tile list does not name is sea, and has no
+/// tile to read.
+fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, reference: Option<&Step>) -> Step {
     let source_box = |cell: &CellId| obc_bake::terrain::source_bbox([*cell]).expect("a cell has a box");
     let tiles = cells.iter().flat_map(|cell| obc_dem::fetch::tiles_for(source_box(cell)));
     let tiles: BTreeSet<String> = tiles.map(|tile| tile.stem()).filter(|tile| land.contains(tile.as_str())).collect();
     let params: Vec<_> = tiles.into_iter().map(|tile| ("tile".to_string(), tile)).collect();
     // A leaf at sea reads no snapshot: an input without params reads every file of its version.
-    let inputs = match params.is_empty() {
+    let mut inputs = match params.is_empty() {
         true => Vec::new(),
         false => vec![Input::Snapshot { source: GLO30.into(), version: glo30.into(), params, files: Vec::new() }],
     };
+    inputs.extend(reference.map(|reference| Input::layer(reference.name.clone())));
     Step {
         name: leaf_layer("maps/terrain", leaf),
         inputs,
@@ -329,9 +425,22 @@ pub(crate) mod tests {
         fetched(store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list)]);
     }
 
+    /// Record a fetch without files of each national model that the step list asks for, as of a
+    /// box where the model has no data.
+    pub(crate) fn without_models(store: &Store, env: &Env, regions: &Regions) {
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(env, regions, store) else { return };
+        for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
+            fetched(store, &fetch.source, "1", &fetch.params, &[]);
+        }
+    }
+
+    fn terrain_steps(steps: &[Step]) -> impl Iterator<Item = &Step> {
+        steps.iter().filter(|step| step.name.starts_with("maps/terrain/"))
+    }
+
     /// Record the GLO-30 tiles that `steps` read at `version`, each with the text `text(tile)`.
     fn glo30_fetched(store: &Store, steps: &[Step], version: &str, text: impl Fn(&str) -> String) {
-        for step in steps {
+        for step in terrain_steps(steps) {
             let Input::Snapshot { params, .. } = &step.inputs[0] else { unreachable!() };
             let files: Vec<_> = params.iter().map(|(_, tile)| (format!("{tile}/{tile}.tif"), text(tile))).collect();
             fetched(store, GLO30, version, params, &files);
@@ -357,6 +466,8 @@ pub(crate) mod tests {
         let temp = temp("leaves");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E007", "N47_00_E008"]);
+        let (env, regions) = grimsel("1");
+        without_models(&store, &env, &regions);
         let steps = |version: &str| {
             let (env, regions) = grimsel(version);
             let mut steps = Maps.steps(&env, &regions, &store).unwrap();
@@ -364,7 +475,7 @@ pub(crate) mod tests {
             steps
         };
         let names: Vec<String> = steps("1").iter().map(|step| step.name.clone()).collect();
-        assert_eq!(names, ["maps/terrain/0037-0032", "maps/terrain/0037-0033"]);
+        assert_eq!(names, ["maps/terrain/0037-0032", "maps/terrain/0037-0033"], "no model has data there");
         let west = "Copernicus_DSM_COG_10_N46_00_E007_00_DEM";
         glo30_fetched(&store, &steps("1"), "1", |tile| format!("{tile} 1"));
         glo30_fetched(&store, &steps("2"), "2", |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));
@@ -389,10 +500,12 @@ pub(crate) mod tests {
 
         // As if N47_00_E007 were sea.
         with_tile_list(&store, &["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
+        without_models(&store, &env, &regions);
         let steps = Maps.steps(&env, &regions, &store).unwrap();
-        assert_eq!(tiles(&steps[0]), ["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
+        let terrain: Vec<&Step> = terrain_steps(&steps).collect();
+        assert_eq!(tiles(terrain[0]), ["N46_00_E007", "N46_00_E008", "N47_00_E008"]);
         // The squares of the eastern cells reach no tile west of 8°.
-        assert_eq!(tiles(&steps[1]), ["N46_00_E008", "N47_00_E008"]);
+        assert_eq!(tiles(terrain[1]), ["N46_00_E008", "N47_00_E008"]);
     }
 
     #[test]
@@ -403,6 +516,7 @@ pub(crate) mod tests {
         let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no extract") };
         assert_eq!(wanted.iter().map(|fetch| fetch.source.as_str()).collect::<Vec<_>>(), [EXTRACTS, LAND]);
         with_osm(&store);
+        without_models(&store, &env, &regions);
         let steps = Maps.steps(&env, &regions, &store).unwrap();
         let reads = |name: &str| -> Vec<String> {
             let step = steps.iter().find(|step| step.name == name).unwrap();
@@ -430,6 +544,7 @@ pub(crate) mod tests {
         let store = Store::at(temp.0.join("store"));
         let (env, regions) = freiburg(&store);
         with_osm(&store);
+        without_models(&store, &env, &regions);
         let steps = Maps.steps(&env, &regions, &store).unwrap();
         assert!(steps.iter().any(|step| step.name == "maps/osm"));
         let by_name: BTreeMap<&str, &Step> = steps.iter().map(|step| (step.name.as_str(), step)).collect();
@@ -441,6 +556,108 @@ pub(crate) mod tests {
                     Input::Snapshot { source, .. } => assert!(!osm(source), "{} reads {source}", step.name),
                     Input::Layer { name, .. } => pending.push(by_name[name.as_str()]),
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn a_leaf_merges_each_national_model_whose_box_meets_its_cells() {
+        let temp = temp("models");
+        let store = Store::at(temp.0.join("store"));
+        with_tile_list(&store, &["N46_00_E008"]);
+        let (env, regions) = grimsel("1");
+        let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps(&env, &regions, &store) else { panic!("no model") };
+        // Switzerland, and France, whose box reaches 9.6° east: each fetched with the box of a leaf.
+        let fetches: BTreeSet<(&str, &str)> =
+            wanted.iter().map(|fetch| (fetch.source.as_str(), fetch.params[0].1.as_str())).collect();
+        let boxes: BTreeSet<&str> = fetches.iter().map(|(_, bbox)| *bbox).collect();
+        assert_eq!((fetches.len(), boxes.len()), (4, 2), "{fetches:?}");
+        assert!(fetches.iter().all(|(source, _)| ["dtm-ch", "dtm-fr"].contains(source)));
+
+        // Data of Switzerland, and none of France.
+        let dem = [("dem.tif".to_string(), "dem".to_string())];
+        let swiss = wanted.iter().filter(|fetch| fetch.source == "dtm-ch");
+        swiss.for_each(|fetch| fetched(&store, &fetch.source, "1", &fetch.params, &dem));
+        without_models(&store, &env, &regions);
+        let steps = Maps.steps(&env, &regions, &store).unwrap();
+        let reference = steps.iter().find(|step| step.name == "maps/reference/0037-0033").unwrap();
+        let models = reference.options["models"].as_array().unwrap();
+        let read: Vec<(&str, &str)> = models
+            .iter()
+            .map(|model| (model["source"].as_str().unwrap(), model["version"].as_str().unwrap()))
+            .collect();
+        assert_eq!(read, [("dtm-ch", "1")]);
+        assert_eq!(reference.inputs.len(), 1, "a model without data adds nothing");
+        assert_eq!(models[0]["credit"], "© swisstopo");
+        assert!(!reference.options["tiles"].as_array().unwrap().is_empty());
+        let terrain = steps.iter().find(|step| step.name == "maps/terrain/0037-0033").unwrap();
+        assert!(matches!(terrain.inputs.last(), Some(Input::Layer { name, .. }) if *name == reference.name));
+    }
+
+    #[test]
+    fn a_model_whose_credential_this_machine_lacks_blocks_the_maps() {
+        let temp = temp("credential");
+        let store = Store::at(temp.0.join("store"));
+        with_tile_list(&store, &[]);
+        let region = "name = \"Copenhagen\"\nkind = \"box\"\nbox = [12.5, 55.6, 12.6, 55.7]\n";
+        let regions = Regions::new(vec![obc_data::regions::parse_region("copenhagen", region).unwrap()]).unwrap();
+        let (env, _) = grimsel("1");
+        let env = Env { region: "copenhagen".into(), ..env };
+        let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
+        match Maps.steps(&env, &regions, &store) {
+            Err(Unplanned::Invalid(reason)) => {
+                assert!(!token.present());
+                let blocked = "maps/reference/0038-0033 reads `dtm-dk`, which is blocked: credential missing";
+                assert_eq!(reason, format!("{blocked}: OBC_REFERENCE_DK_TOKEN"));
+            }
+            // A machine with the token fetches the model.
+            Err(Unplanned::NeedsFetch(wanted)) => assert!(token.present() && wanted[0].source == "dtm-dk"),
+            other => panic!("{:?}", other.map(|steps| steps.len())),
+        }
+    }
+
+    /// Each module that a Python file of the reference step imports from the repository: a
+    /// module of `tools/`, or the ingest package.
+    fn reference_imports(file: &Path) -> Vec<String> {
+        let text = std::fs::read_to_string(file).unwrap();
+        let mut found = Vec::new();
+        for line in text.lines().map(|line| line.split('#').next().unwrap_or_default().trim()) {
+            let (module, names) = match line.strip_prefix("from ").and_then(|rest| rest.split_once(" import ")) {
+                Some((module, names)) => (module, names),
+                None => match line.strip_prefix("import ") {
+                    Some(module) => (module, ""),
+                    None => continue,
+                },
+            };
+            let top = module.split('.').next().unwrap_or_default();
+            if top == "tools" {
+                found.extend(names.split(',').map(|name| format!("tools/{}.py", name.trim())));
+            } else if top == "ingest" {
+                found.push("host/obc-dem/reference/ingest".into());
+            } else if !top.is_empty() && root().join(format!("tools/{top}.py")).is_file() {
+                found.push(format!("tools/{top}.py"));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_reference_step_declares_each_module_that_it_imports() {
+        let mut files = vec![root().join("host/obc-dem/reference/merge.py")];
+        let mut pending = vec![root().join("host/obc-dem/reference/ingest")];
+        while let Some(dir) = pending.pop() {
+            for path in std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()) {
+                match (path.is_dir(), path.extension().is_some_and(|ext| ext == "py")) {
+                    (true, _) => pending.push(path),
+                    (false, true) => files.push(path),
+                    _ => {}
+                }
+            }
+        }
+        let declared: Vec<&str> = crate::PYTHON.iter().chain(&REFERENCE_CODE).copied().collect();
+        for file in &files {
+            for module in reference_imports(file) {
+                assert!(declared.contains(&module.as_str()), "{} imports {module}", file.display());
             }
         }
     }

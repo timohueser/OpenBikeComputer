@@ -264,7 +264,6 @@ jobs:
           cache: pip
           cache-dependency-path: |
             tools/requirements-test.txt
-            tools/requirements-bake.txt
             pyproject.toml
       - name: Install Python test reporter
         # `--group` reads the dependency groups of pyproject.toml; pip has it from 25.1.
@@ -276,8 +275,8 @@ jobs:
         run: |
           rm -rf .artifacts/python/firmware-tools
           python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
-      - name: Install the bake tool dependencies (rasterio, pyproj)
-        run: pip install -r tools/requirements-bake.txt
+      - name: Install the reference archive tool dependencies (rasterio, pyproj)
+        run: pip install --group terrain-reference
       - name: reference archive ingest unit tests
         id: python-dem-reference
         run: |

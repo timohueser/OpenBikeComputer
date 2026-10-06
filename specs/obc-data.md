@@ -25,6 +25,7 @@ One `[[source]]` table per source.
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
+| `extent` | array of 4 numbers | no | The box that the data covers: west, south, east and north in degrees, west < east, south < north |
 
 `fetch.kind` is one of:
 
@@ -305,6 +306,7 @@ version. A file that fails it is deleted.
 | `osm` | The daily diffs from a base day, see below |
 | `dtm` | A program writes the files, see below |
 | `capture` | A program writes the files, see below |
+| `by-hand` of a `dtm-*` source | A program takes the files from the delivery, see below |
 | `by-hand`, `installed` | None; the fetch fails |
 
 A `geofabrik` URL with `{yymmdd}` names the day of the data of the extract. Without a version, the
@@ -338,9 +340,8 @@ is a version of `osm-planet`. The fetch does not apply the diffs. No product rea
 sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
 
 A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
-<packages> python`: `--no-project --python '>=3.12' --with-requirements <file>` for a requirements file, and
-`--locked --group <group>` for a dependency group of `pyproject.toml` (`OBC_PYTHON` replaces that
-Python).
+<packages> python`: `--locked --group <group>` for a dependency group of `pyproject.toml`
+(`OBC_PYTHON` replaces that Python).
 The program writes each file of the request to a directory under `partial/`, and its progress to
 standard error. The store takes every file in that directory but hidden, `.part` and `.tmp`
 files. A failed run keeps the directory and writes no record; the next run of the same request,
@@ -352,13 +353,18 @@ each once, and no other. A `capture` source without a row has no fetcher yet; th
 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
-| `dtm-*` | `bbox` | `host/obc-dem/reference/ingest.py fetch` | `tools/requirements-bake.txt` | `bbox=W,S,E,N` |
+| `dtm-*` | `bbox` | `host/obc-dem/reference/ingest.py fetch` | group `terrain-reference` | `bbox=W,S,E,N` |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
 | `wikidata`, `wikipedia`, `commons` | `boundary`, `candidates`, `select-with` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `recipe=` and 16 hex digits of the SHA-256 of the joined hex SHA-256 of the boundary, the candidates, `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json` and `tools/landmark_capture.py` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
+- A `dtm-*` file is a raster of the model that covers `bbox`, with its `.prj` when it has one. A
+  box where the model has no data gives a fetch without files: its record of the request names
+  no file. A `by-hand` model takes the rasters of its delivery: `OBC_REFERENCE_<KEY>_INPUT`
+  names the directory, and `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of
+  the order states. The two are the `credential` of the source.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September.
 - The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
@@ -723,15 +729,23 @@ outline of the region touches. The outline of a `box` region is its box; the out
 steps for a `polygon` region yet. Only a `geofabrik` region has map cells: they read the OSM of
 its area. Another region has terrain only.
 
-The steps read `copernicus-glo-30`, and the step list reads files such as a `.poly` and the GLO-30
-tile list, each at its version (see [Versions](#versions)). `copernicus-glo-30` and its tile list
-are `manual`.
+The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), and the step list
+reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
+[Versions](#versions)). `copernicus-glo-30`, its tile list and the `dtm-*` sources are `manual`.
+
+A leaf reads each `dtm-*` source whose `extent` meets the box of its terrain cells: the windows
+that the crest rule of `OBCT_Spec.md` §9 reads, which have a halo of two postings. The fetch of a
+model is `bbox=<that box>`. A fetch without files adds nothing, and a leaf where no model has
+data has no `maps/reference` layer. While the store lacks the fetch of a model whose `credential`
+is not on this machine, the product is blocked, and the reason names the layer and the
+credential.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `maps/osm` | `geofabrik-extracts`, `area=<region id>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The key holds no Osmium version: another Osmium can give other bytes. The metrics name the version (`osmium`) |
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
-| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
+| `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
+| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
 
@@ -3295,6 +3309,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             }
           ]
         },
+        "extent": {
+          "description": "The box that the data covers: west, south, east and north in degrees.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "fetch": {
           "$ref": "#/$defs/Fetch"
         },
@@ -3380,6 +3407,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             {
               "type": "null"
             }
+          ]
+        },
+        "extent": {
+          "description": "The box that the data covers: west, south, east and north in degrees.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "type": [
+            "array",
+            "null"
           ]
         },
         "fetch": {

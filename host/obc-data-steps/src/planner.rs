@@ -16,17 +16,16 @@ use obc_data::store::Store;
 use obc_dem::step::GLO30;
 use route_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::maps::{invalid, outlines, text, EXTRACTS, TILE_LIST};
+use crate::python;
 
 const SEARCH: &str = "apps/planner-search";
 /// `apps/planner-search/records.py` and the files that it reads: the data kinds of the query
 /// contract, and the POI kinds of the web planner, which the places also read.
 const RECORDS: [&str; 3] = ["apps/planner-search/records.py", "apps/planner-search/query/contract.json", POI_KINDS];
 const POI_KINDS: &str = "builder/app/src/lib/planner/poi-kinds.json";
-/// The uv environment, and the request of a step: code of every Python step.
-const PYTHON: [&str; 4] = [".python-version", "pyproject.toml", "uv.lock", "tools/step_request.py"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -309,38 +308,6 @@ fn snapshot(
     Ok(Input::Snapshot { source: source.into(), version, params, files: Vec::new() })
 }
 
-/// A Python step: `entry`, a `tools.*` module or a script, with the argument `--step`, under `uv
-/// run` with the packages of `group` of `pyproject.toml`. `files` is its code besides [`PYTHON`]:
-/// each Python file that it imports, and each file that it reads from the repository. A credit
-/// that it writes comes in its options, so `data/sources.toml` is no code of it. The hash seed is
-/// fixed, so the order of a set never reaches the bytes of a layer.
-fn python(
-    name: &str,
-    inputs: Vec<Input>,
-    options: Value,
-    (entry, group): (&str, Option<&str>),
-    files: &[&str],
-    outputs: &[&str],
-) -> Step {
-    let mut argv: Vec<String> =
-        ["env", "PYTHONHASHSEED=0", "uv", "run", "--locked", "--offline"].map(String::from).into();
-    argv.extend(group.into_iter().flat_map(|group| ["--group".to_string(), group.to_string()]));
-    argv.push("python".into());
-    if !entry.ends_with(".py") {
-        argv.push("-m".into());
-    }
-    argv.extend([entry.to_string(), "--step".to_string()]);
-    let paths = PYTHON.iter().chain(files).map(|path| path.to_string()).collect();
-    Step {
-        name: name.into(),
-        inputs,
-        options,
-        code: Code { paths, crates: Vec::new() },
-        outputs: outputs.iter().map(|output| output.to_string()).collect(),
-        run: Run::Command(argv),
-    }
-}
-
 /// The GLO-30 tiles of `bounds` that the tile list names, as an input. A square that it does not
 /// name is sea, and `bounds` at sea reads no snapshot.
 fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
@@ -505,6 +472,7 @@ mod tests {
     fn the_code_of_route_build_is_the_code_of_the_routing_layer_only() {
         let temp = temp("planner-code");
         let store = store(&temp, &["2026-10-01"]);
+        crate::maps::tests::without_models(&store, &env(AREA, &[]), &regions());
         let mut steps = Planner.steps(&env(AREA, &[]), &regions(), &store).unwrap();
         steps.extend(Maps.steps(&env(AREA, &[]), &regions(), &store).unwrap());
         for step in &steps {

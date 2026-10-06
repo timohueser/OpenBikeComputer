@@ -9,10 +9,10 @@ The agency's own example URL names the format `GTiff`, which is this MapServer's
 a GeoTIFF, and states the grid in EPSG:25832.
 
 The credit the agency asks for names the month of the delivery, so the row's attribution
-holds `{month}` and `{year}` and `credit` fills them from the day the ingest fetched.
+holds `{month}` and `{year}` and `fill` fills them from the day the ingest fetched.
 """
 
-from .base import Credential, registry_credit
+from .base import Credential
 from .protocols import Wcs10Source
 
 # The months as the Danish credit spells them, because the credit sentence is Danish.
@@ -23,15 +23,15 @@ MONTHS = ("januar", "februar", "marts", "april", "maj", "juni",
 class DhmWcs(Wcs10Source):
     """DHM/Terræn, whose credit names the month the data came from."""
 
-    def credit(self, fetched: str) -> str:
+    def fill(self, attribution: str, fetched: str) -> str:
         year, month, _ = fetched.split("-")
-        return self.attribution.format(month=MONTHS[int(month) - 1], year=year)
+        return attribution.format(month=MONTHS[int(month) - 1], year=year)
 
 
 DK = DhmWcs(
     "dk", "Denmark", "DHM/Terræn 0.4 m", 0.4,
-    "CC BY 4.0", registry_credit("dtm-dk"),
-    "DVR90", (8.008, 54.435, 15.598, 57.769),
+    "CC BY 4.0",
+    "DVR90",
     credential=Credential("dk", "token"),
     url="https://api.dataforsyningen.dk/dhm_wcs_DAF",
     coverage="dhm_terraen",

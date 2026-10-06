@@ -295,14 +295,15 @@ triggers = [
 ]
 
 # The ingest tool needs rasterio and pyproj, which no other suite wants, so the `test` job
-# installs `tools/requirements-bake.txt` for this one. The tests write their own rasters: no
+# installs the group `terrain-reference` for this one. The tests write their own rasters: no
 # service, no credential and no captured fixture.
 [[suite]]
 id = "python.dem-reference"
 route = "ordinary"
 command = "rm -rf .artifacts/python/dem-reference && python3 -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference"
 jobs = ["test"]
-triggers = ["host/obc-dem/reference/**", "tools/requirements-bake.txt", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["host/obc-dem/reference/**", "pyproject.toml", "data/sources.toml", "tools/data_registry.py",
+  "tools/step_request.py"]
 
 [[suite]]
 id = "python.builder"

@@ -470,13 +470,13 @@ class Credentials(unittest.TestCase):
 
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.sources.bulk.BulkSource(
-                "xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (0, 0, 1, 1),
+                "xx", "Nowhere", "p", 1.0, "l", "NAP",
                 credential=ingest.Credential("xx", "token"))
         self.assertIn("cannot be carried by BulkSource", str(refusal.exception))
 
         with self.assertRaises(ingest.Refuse) as refusal:
             ingest.sources.bulk.BulkSource(
-                "xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (0, 0, 1, 1),
+                "xx", "Nowhere", "p", 1.0, "l", "NAP",
                 credential=ingest.Credential("xx"))
         self.assertIn("needs credential_hosts", str(refusal.exception))
 

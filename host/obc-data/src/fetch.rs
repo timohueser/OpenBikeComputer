@@ -44,6 +44,8 @@ fn fetch_files(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
         FetchKind::Geofabrik => osm::extract(store, http, request),
         FetchKind::Osm => osm::replication(store, http, request),
         FetchKind::Dtm => capture::dtm(store, request),
+        // A national model that a person orders: the ingest reads the delivery.
+        FetchKind::ByHand if source.id.starts_with("dtm-") => capture::dtm(store, request),
         FetchKind::Capture => capture::run(store, request),
         FetchKind::ByHand => Err(format!(
             "source `{}`: a person downloads it from {}",
@@ -257,7 +259,7 @@ fn get(
 fn file_name(source: &Source, version: Option<&str>, url: &str) -> String {
     let template = source.fetch.url.as_deref().unwrap_or_default();
     let prefix = match source.fetch.kind {
-        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture => Some(template.to_string()),
+        FetchKind::Osm | FetchKind::Dtm | FetchKind::Capture | FetchKind::ByHand => Some(template.to_string()),
         _ => template
             .match_indices('{')
             .map(|(at, _)| at)
@@ -891,6 +893,7 @@ pub(crate) mod tests {
             "q=1",
             &[&land, &sea],
             |_| &[0, 1],
+            false,
             |_, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", "echo r > \"$1/recipe.json\"", "sh"]).arg(out);
@@ -921,7 +924,7 @@ pub(crate) mod tests {
         };
         let today = Request { source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&store, request, "q=1", &sources, owner, move |work, out| {
+            capture::capture(&store, request, "q=1", &sources, owner, false, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 command
@@ -953,6 +956,19 @@ pub(crate) mod tests {
         assert_eq!(run(&pinned, "exit 1").unwrap(), snapshot);
         let yesterday = Request { version: Some(date::format(date::today() - 1)), ..pinned };
         assert!(run(&yesterday, "exit 1").unwrap_err().contains("today's data"));
+
+        // A run that writes no file is a fetch without files where the caller allows one, and the
+        // record of the request that `fetch` writes serves it on another day.
+        let boxed = Request { source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
+        let nothing = |request: &Request, empty| {
+            capture::capture(&store, request, "q=2", &sources, owner, empty, |_, _| std::process::Command::new("true"))
+        };
+        assert!(nothing(&boxed, false).unwrap_err().contains("has no file"));
+        assert_eq!(nothing(&boxed, true).unwrap().files, []);
+        let day = date::format(date::today() - 1);
+        let requested = Requested { version: day.clone(), params: boxed.params.clone(), files: Vec::new() };
+        store.put_requested("land", &requested).unwrap();
+        assert_eq!(nothing(&Request { version: Some(day), ..boxed }, true).unwrap().files, []);
     }
 
     #[test]

@@ -10,7 +10,8 @@ run mirrors the tiles it needs.
 
 ## Run it
 
-Needs `rasterio`, `pyproj` and `numpy` (`tools/requirements-bake.txt`).
+Needs the uv group `terrain-reference` of the root `pyproject.toml`: `uv run --group
+terrain-reference python3 ingest.py …`.
 
 ```sh
 cd host/obc-dem/reference
@@ -28,6 +29,9 @@ python3 ingest.py mirror  --archive ref/ --bbox 8.30,46.75,8.60,46.95
 account and download steps of a source behind a login, then runs the ingest. `check` holds every
 tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
 adds, and it merges its index with the one already on R2.
+
+`merge.py --step` is the `obc data` step `maps/reference/<leaf>`: the models of one map leaf,
+best first, into an empty archive (`specs/obc-data.md`, `maps`).
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
 time, the work wiped after each and the finished tile marked done in the source manifest, so disk
@@ -120,24 +124,23 @@ only where the registry says a name is arithmetic, such as a grid square outside
 
 ## Sources
 
-`SOURCES` in `ingest/sources/__init__.py` is the registry, and each row holds its key, country,
-product, resolution, licence, attribution and vertical datum as data. Read the row, not a table
-here. `index.json` carries the same fields into the archive.
+`SOURCES` in `ingest/sources/__init__.py` is the registry: each row holds its key, country,
+product, resolution, licence and vertical datum. Its credit and its box are `attribution` and
+`extent` of `dtm-<key>` in `data/sources.toml`.
 
 Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `at`, `ca`, `nz`, `it-bz`,
 `it-tn`, and the German states `de-nw`, `de-he`, `de-bw`, `de-mv`, `de-st`, `de-by`, `de-sn`,
 `de-th`, `de-ni`. Germany publishes elevation per state, so `de-*` is a family of rows.
 
-Behind a free account, so an unattended bake cannot pull them: `dk`, `se`, `fi`, `au`. Set the
-credential and `ingest <key>` fetches live; without it, `ingest <key> --input <dir>` takes what the
-portal delivered. `wizard <key>` holds the account and download steps, and asks for the credential
-in its own process so it never reaches a command line.
+Behind a free account: `dk`, `se`, `fi`, `au`. Set the credential and `ingest <key>` fetches
+live; without it, `ingest <key> --input <dir>` takes what the portal delivered. `wizard <key>`
+holds the account and download steps. For `obc data`, `OBC_REFERENCE_AU_INPUT` names the `au`
+delivery and `OBC_REFERENCE_AU_DATUM` its datum.
 
 `de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:
 
-- **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal. No row can tell which an
-  order held, so `ingest au --input` refuses until `--datum AHD` is passed, and `wizard au` asks.
-  `au` also states no step: the step of an order is the step of whichever survey it covered.
+- **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal, so `ingest au --input`
+  refuses until `--datum AHD` is passed, and `wizard au` asks.
 
 `ingest --input` reads every `.tif`, `.tiff`, `.asc` and `.zip` under the directory and **writes
 nothing into it**; unpacked members go into the work directory under the digest of their bytes,

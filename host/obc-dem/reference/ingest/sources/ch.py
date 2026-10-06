@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from .base import Source, http_get, registry_credit
+from .base import Source, http_get
 from .stac import stac_items
 
 
@@ -40,7 +40,7 @@ class StacSource(Source):
 
 CH = StacSource(
     "ch", "Switzerland", "swissALTI3D 2 m", 2.0,
-    "Open data, attribution required", registry_credit("dtm-ch"), "LN02/LHN95", (5.9, 45.8, 10.5, 47.9),
+    "Open data, attribution required", "LN02/LHN95",
     stac="https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items",
     gsd="2",
 )

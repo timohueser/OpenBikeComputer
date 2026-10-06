@@ -1,5 +1,6 @@
 //! The terrain steps of `obc data`: the published terrain cells of one leaf, from the GLO-30 tiles
-//! of its request, which `obc-bake terrain` writes the same; and the terrain of the planner maps.
+//! of its request and the reference archive of the leaf, which `obc-bake terrain --reference`
+//! writes the same; and the terrain of the planner maps.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -9,13 +10,15 @@ use serde_json::Value;
 
 use crate::bake::{published_cell, write_cell_file};
 use crate::geotiff::{DemMosaic, DemTile};
+use crate::reference::ReferenceArchive;
 
 /// The source whose tiles the step reads.
 pub const GLO30: &str = "copernicus-glo-30";
 
 /// The options name the pairing, `posting_log2` and `cell_log2`, and the cells, as `[ci, cj]`.
-/// The layer is `terrain/<i>/<j>.obcd` for each cell with a height, and `terrain/empty.json`: the
-/// ids of the cells without one, so a leaf at sea is a layer too.
+/// The layer input, when the request has one, is the reference archive of the leaf below
+/// `reference/`. The layer is `terrain/<i>/<j>.obcd` for each cell with a height, and
+/// `terrain/empty.json`: the ids of the cells without one, so a leaf at sea is a layer too.
 pub fn terrain(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let log2 = |name: &str| {
@@ -37,12 +40,21 @@ pub fn terrain(request: &Request) -> Result<(), String> {
     for tile in request.snapshots.get(GLO30).into_iter().flat_map(|tiles| tiles.values()) {
         mosaic.push(DemTile::open(tile)?);
     }
+    let reference = match request.layers.values().collect::<Vec<_>>()[..] {
+        [] => None,
+        [files] => {
+            let view = request.output.with_file_name("view");
+            obc_data::engine::view(files, &view)?;
+            Some(ReferenceArchive::open(&view.join("reference"))?)
+        }
+        _ => return Err("the request reads more than one layer: a leaf has one reference archive".into()),
+    };
 
     let dir = request.output.join("terrain");
     let width = obc_elevation::grid::id_width(cell_log2);
     let mut empty = Vec::new();
     for (ci, cj) in cells {
-        let (block, _) = published_cell(&mosaic, ci, cj, posting_log2, cell_log2, None)?;
+        let (block, _) = published_cell(&mosaic, ci, cj, posting_log2, cell_log2, reference.as_ref())?;
         match block {
             Some(block) => {
                 let path = dir.join(format!("{ci:0width$}/{cj:0width$}.obcd"));
