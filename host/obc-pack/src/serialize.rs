@@ -1599,7 +1599,7 @@ mod tests {
     use super::*;
     use crate::config::LineStyle;
     use obc_elevation::NullElevation;
-    use obc_formats::obcm::{nav_edge_id_ordinal, FEATURE_HEADER_WIDE_LEN};
+    use obc_formats::obcm::{nav_edge_id_ordinal, FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN};
 
     /// The one case a push-driven ordinal gets wrong: a record that ends flush with its chunk. The
     /// record behind it opens the next chunk with no filler and no push, so an ordinal reset on the
