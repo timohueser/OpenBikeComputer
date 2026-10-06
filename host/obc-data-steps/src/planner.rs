@@ -20,7 +20,7 @@ use route_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::maps::{invalid, text, EXTRACTS, TILE_LIST};
+use crate::maps::{invalid, text, TILE_LIST};
 use crate::python;
 
 const SEARCH: &str = "apps/planner-search";
@@ -624,7 +624,7 @@ mod tests {
 
     use super::*;
     use crate::maps::tests::{fetched, root, temp, Temp};
-    use crate::maps::Maps;
+    use crate::maps::{Maps, EXTRACTS};
 
     const AREA: &str = "europe/test";
 
