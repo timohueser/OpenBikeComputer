@@ -25,14 +25,15 @@ import { desktop } from "../desktop/invoke";
  */
 let rootInflight: Promise<{ url: string; body: string }> | null = null;
 
-function catalog(): Promise<{ url: string; body: string }> {
-    // Start on a promise turn as well as catching a rejected invoke. The real
-    // Tauri bridge is async, but tests and alternate transports may reject by
-    // throwing synchronously; either kind of failed read must clear the memo.
-    rootInflight ??= Promise.resolve().then(() => desktop.catalog()).catch((e: unknown) => {
-        rootInflight = null;
-        throw e;
-    });
+function catalog({ refresh = false }: { refresh?: boolean } = {}): Promise<{ url: string; body: string }> {
+    if (refresh) rootInflight = null;
+    if (!rootInflight) {
+        const request = Promise.resolve().then(() => desktop.catalog()).catch((e: unknown) => {
+            if (rootInflight === request) rootInflight = null;
+            throw e;
+        });
+        rootInflight = request;
+    }
     return rootInflight;
 }
 

@@ -87,7 +87,7 @@ export interface Platform {
     readonly usbViaWebUsb: boolean;
 
     /** Resolved catalog URL and its raw root document. */
-    catalog(): Promise<{ url: string; body: string }>;
+    catalog(options?: { refresh?: boolean }): Promise<{ url: string; body: string }>;
     readonly catalogFetch: typeof fetch;
     readonly openMapOutput: ((name: string) => Promise<MapOutputSession>) | null;
 

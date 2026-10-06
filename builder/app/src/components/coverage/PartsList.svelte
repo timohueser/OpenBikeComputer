@@ -8,7 +8,7 @@
 
     let { store }: { store: CoverageStore } = $props();
 
-    const parts = $derived(store.resolution?.parts ?? []);
+    const parts = $derived(store.selection.parts);
     const hasCorridor = $derived(store.selection.parts.some((p) => p.kind === "corridor"));
     const radiusKm = $derived(Math.round(store.selection.corridorRadiusM / 1000));
 </script>
@@ -17,35 +17,32 @@
     <p class="summary muted small">Choose a region or draw an area on the map.</p>
 {:else}
     <ul class="parts">
-        {#each parts as p (p.part.id)}
+        {#each parts as part (part.id)}
+            {@const resolved = store.resolution?.parts.find((p) => p.part.id === part.id)}
             {@const regionError =
-                p.part.kind === "region" ? (store.regionErrors.get(p.part.regionId) ?? null) : null}
+                part.kind === "region" ? (store.regionErrors.get(part.regionId) ?? null) : null}
             <li
-                onmouseenter={() => (store.highlightPartId = p.part.id)}
+                onmouseenter={() => (store.highlightPartId = part.id)}
                 onmouseleave={() => {
-                    if (store.highlightPartId === p.part.id) store.highlightPartId = null;
+                    if (store.highlightPartId === part.id) store.highlightPartId = null;
                 }}
             >
-                <span class="glyph" aria-hidden="true"><ToolIcon kind={p.part.kind} size={15} /></span>
-                <span class="name">{p.part.kind === "corridor" ? `Corridor — ${p.part.name}` : p.part.name}</span>
+                <span class="glyph" aria-hidden="true"><ToolIcon kind={part.kind} size={15} /></span>
+                <span class="name">{part.kind === "corridor" ? `Corridor — ${part.name}` : part.name}</span>
                 {#if regionError}
-                    <button
-                        type="button"
-                        class="retry small"
-                        title={regionError}
-                        onclick={() => p.part.kind === "region" && store.retryRegion(p.part.regionId)}
-                    >
-                        failed — retry
-                    </button>
-                {:else if p.pending}
+                    <span class="small error">{regionError}</span>
+                    {#if part.kind === "region" && store.region(part.regionId)}
+                        <button type="button" class="retry small" onclick={() => part.kind === "region" && store.retryRegion(part.regionId)}>Retry</button>
+                    {/if}
+                {:else if !store.indices || resolved?.pending}
                     <span class="mono faint small price">Calculating…</span>
                 {/if}
                 <button
                     type="button"
                     class="remove"
-                    aria-label="Remove {p.part.name}"
-                    title="Remove {p.part.name}"
-                    onclick={() => store.removePart(p.part.id)}>✕</button
+                    aria-label="Remove {part.name}"
+                    title="Remove {part.name}"
+                    onclick={() => store.removePart(part.id)}>✕</button
                 >
             </li>
         {/each}
@@ -74,6 +71,8 @@
 {/if}
 
 <style>
+    .error { color: var(--coral); flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; }
+
     .summary {
         margin: 0;
         font-size: 14px;
@@ -91,6 +90,7 @@
     .parts li {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: 8px;
         background: var(--parchment);
         border: 1px solid var(--line);

@@ -59,7 +59,9 @@
     let {
         store,
         onSendReadyChange,
-    }: { store: CoverageStore; onSendReadyChange?: (ready: boolean) => void } = $props();
+        onFailureChange,
+        onRefreshBlockedChange,
+    }: { store: CoverageStore; onSendReadyChange?: (ready: boolean) => void; onFailureChange?: (failed: boolean) => void; onRefreshBlockedChange?: (blocked: boolean) => void } = $props();
 
     const KEEP_CELLS_KEY = "obcm.keepMapCells";
 
@@ -518,7 +520,14 @@
         }
     }
 
-    async function failRun(cause: unknown, runId = activeRunId) {
+    let failure: Promise<void> = Promise.resolve();
+    function failRun(cause: unknown, runId = activeRunId): Promise<void> {
+        if (runId === 0 || activeRunId !== runId || output?.runId !== runId) return failure;
+        failure = failRunOwned(cause, runId);
+        return failure;
+    }
+
+    async function failRunOwned(cause: unknown, runId: number) {
         // A cancelled preflight may resume after an unabortable OPFS call. Its
         // continuation no longer owns any shared run state and must be a no-op.
         if (runId === 0 || activeRunId !== runId || output?.runId !== runId) return;
@@ -949,6 +958,22 @@
             });
         });
 
+    let paused = $state(false);
+    const refreshBlocked = $derived(output?.kind === "device" || phase === "finalizing");
+    $effect(() => onFailureChange?.(phase === "error"));
+    $effect(() => onRefreshBlockedChange?.(refreshBlocked));
+
+    /** Quiesce this catalog before a replacement can admit another assembly. */
+    export async function pauseForRefresh(): Promise<() => void> {
+        if (refreshBlocked) throw new Error("Wait for the map send or cleanup to finish before refreshing.");
+        paused = true;
+        estimateGeneration += 1;
+        await failRun(new DOMException("the map catalog is being refreshed", "AbortError"));
+        worker?.terminate();
+        worker = null;
+        return () => { paused = false; };
+    }
+
     function cancel() {
         const cause = new DOMException("cancelled", "AbortError");
         // Direct assembly and PUT are one DeviceJob. Ask its controller to
@@ -993,7 +1018,7 @@
         estimate = null;
         estimateLedger = null;
         const idle = phase === "idle" || phase === "done" || phase === "cancelled" || phase === "error";
-        if (!l || !l.isFinal || l.cellCount === 0 || !idle || clearingCells) {
+        if (!l || !l.isFinal || l.cellCount === 0 || !idle || clearingCells || paused) {
                 // Every exit clears the pending flag: a selection that empties or a run
                 // that starts must not leave "waiting for an estimate" latched with
                 // nothing left to answer it.
@@ -1182,6 +1207,7 @@
             l.cellCount > 0 &&
             refusal === null &&
             !running &&
+            !paused &&
             !clearingCells &&
             estimate !== null &&
             estimateLedger === l &&

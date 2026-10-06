@@ -8,8 +8,8 @@ import { api } from "../api/client";
 import { LINKS } from "../constants";
 import type { Platform } from "./types";
 
-async function catalog(): Promise<{ url: string; body: string }> {
-    return api.publishedCatalog();
+async function catalog({ refresh = false }: { refresh?: boolean } = {}): Promise<{ url: string; body: string }> {
+    return api.publishedCatalog(refresh);
 }
 
 export const platform: Platform = {

@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { tick } from "svelte";
     import type { CatalogClient } from "../../lib/catalog/client";
     import { CoverageStore } from "../../lib/coverage/store.svelte";
     import { available } from "../../lib/platform/gating";
@@ -9,32 +10,71 @@
     import MapSummary from "./MapSummary.svelte";
     import PartsList from "./PartsList.svelte";
     import SkinStep from "./SkinStep.svelte";
+    import { jobRegistry } from "../../lib/device/job.svelte";
     import type { SendAssembledMap } from "../../lib/device/write";
 
     let {
         client,
         rootBody,
         active = true,
-    }: { client: CatalogClient; rootBody: string; active?: boolean } = $props();
+        refreshCatalog,
+    }: { client: CatalogClient; rootBody: string; active?: boolean; refreshCatalog: () => Promise<{ client: CatalogClient; body: string }> } = $props();
 
-    // Constructed once for the component's lifetime, from props that never
-    // change after mount (the home remounts this component per catalog).
     // svelte-ignore state_referenced_locally
-    const store = new CoverageStore(client, rootBody);
+    let store = $state.raw(new CoverageStore(client, rootBody));
 
     const partCount = $derived(store.selection.parts.length);
     const styleNames = $derived([
         store.lightSkins.length ? store.lightSkin.name : null,
         store.darkSkins.length ? store.darkSkin.name : null,
     ].filter(Boolean).join(" / "));
-    let downloadStep = $state<{ sendToDevice: SendAssembledMap }>();
+    let downloadStep = $state<{ sendToDevice: SendAssembledMap; pauseForRefresh: () => Promise<() => void> }>();
     let sendReady = $state(false);
     const sendAssembled: SendAssembledMap = (device, ctx) => {
         if (!downloadStep) throw new Error("The map assembler is not ready yet.");
         return downloadStep.sendToDevice(device, ctx);
     };
+    let refreshing = $state(false);
+    let refreshError = $state<string | null>(null);
+    let refreshNotice = $state<string | null>(null);
+    let downloadFailed = $state(false);
+    let runBlocked = $state(false);
+    const refreshBlocked = $derived(runBlocked || jobRegistry.active !== null);
+    const catalogFailed = $derived(!!store.indexError || store.regionErrors.size > 0 || !!store.resolutionError || downloadFailed);
+    let recovery: HTMLDivElement | undefined = $state();
+
+    async function refresh() {
+        if (refreshing || refreshBlocked || !downloadStep) return;
+        refreshing = true;
+        refreshError = null;
+        let resume: (() => void) | undefined;
+        try {
+            resume = await downloadStep.pauseForRefresh();
+            const { client, body } = await refreshCatalog();
+            if (jobRegistry.active) throw new Error("Wait for the device transfer to finish before refreshing.");
+            store = store.refreshed(client, body);
+            downloadFailed = false;
+            refreshNotice = "Map catalog refreshed. Your coverage selection is kept. Check the map summary before downloading.";
+        } catch (cause) {
+            refreshError = cause instanceof Error ? cause.message : String(cause);
+            resume?.();
+        } finally {
+            refreshing = false;
+            await tick();
+            recovery?.focus();
+        }
+    }
 </script>
 
+{#if catalogFailed || refreshing || refreshError || refreshNotice || store.refreshNotice}
+    <div class="recovery small" bind:this={recovery} tabindex="-1">
+        <p role="status">{refreshError ? `The map catalog could not be refreshed: ${refreshError}` : refreshing ? "Refreshing the map catalog…" : store.refreshNotice ?? refreshNotice ?? "Refresh the map catalog to use the current published map data. Your selection is kept."}</p>
+        <button type="button" class="btn" disabled={refreshing || refreshBlocked} onclick={() => void refresh()}>Refresh map catalog</button>
+        {#if refreshBlocked}<p>Wait for the device transfer or map cleanup to finish before refreshing.</p>{/if}
+    </div>
+{/if}
+
+{#key store}
 <div class="layout">
     <CoverageMap {store} {active} />
 
@@ -68,7 +108,7 @@
                 </summary>
                 <div class="style-picker"><SkinStep {store} /></div>
             </details>
-            <DownloadStep bind:this={downloadStep} {store} onSendReadyChange={(ready) => (sendReady = ready)} />
+            <DownloadStep bind:this={downloadStep} {store} onSendReadyChange={(ready) => (sendReady = ready)} onFailureChange={(failed) => (downloadFailed = failed)} onRefreshBlockedChange={(blocked) => (runBlocked = blocked)} />
         </section>
 
         <section class="card">
@@ -76,15 +116,20 @@
                 <h3>Or send directly to device</h3>
             </div>
             {#if available("deviceDashboard")}
-                <MapSendStep ledger={store.ledger} {sendAssembled} {sendReady} />
+                <MapSendStep ledger={store.ledger} {sendAssembled} sendReady={sendReady && !refreshing} />
             {:else}
-                <DeviceStep ledger={store.ledger} {sendAssembled} {sendReady} />
+                <DeviceStep ledger={store.ledger} {sendAssembled} sendReady={sendReady && !refreshing} />
             {/if}
         </section>
     </div>
 </div>
 
+{/key}
+
 <style>
+    .recovery { padding: 10px 0; }
+    .recovery p { margin: 0 0 8px; }
+
     /* The pane takes what the viewport
        gives, the steps column is the one thing that scrolls (narrow screens
        trade the lock back for page scrolling). */

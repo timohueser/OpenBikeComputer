@@ -208,6 +208,52 @@ describe("direct assembler delivery", () => {
         document.body.replaceChildren();
     });
 
+    it("drains old catalog work before refresh and closes admission until resumed", async () => {
+        let returnFetch!: () => void;
+        let oldSignal!: AbortSignal;
+        seams.downloadCells.mockImplementation((_plan, options) => new Promise<void>((resolve) => {
+            oldSignal = options.signal;
+            returnFetch = resolve;
+        }));
+        const { component, target } = await mountReadyStep();
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let n = 0; n < 30 && !returnFetch; n++) { await Promise.resolve(); await tick(); }
+        expect(returnFetch).toBeDefined();
+        let drained = false;
+        const pause = component.pauseForRefresh().then((resume) => { drained = true; return resume; });
+        await tick();
+        expect(oldSignal.aborted).toBe(true);
+        expect(drained).toBe(false);
+        await expectSecondRunRefused(component);
+        returnFetch();
+        const resume = await pause;
+        await tick();
+        expect(seams.workerAssemble).toBe(0);
+        expect(seams.saveBlob).not.toHaveBeenCalled();
+        expect((target.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(true);
+        resume();
+        await waitForReady(target);
+        await unmount(component);
+    });
+
+    it("refuses catalog refresh while an actual device PUT is active", async () => {
+        let releasePut!: () => void;
+        seams.sendMapBlob.mockImplementation((_client, _blob, _name, options) => new Promise((resolve) => {
+            releasePut = () => resolve({ objectId: 1, revision: 1 });
+            options.signal.addEventListener("abort", () => resolve({ objectId: 1, revision: 1 }));
+        }));
+        const { component } = await mountReadyStep();
+        const job = new DeviceJob("map");
+        const send = job.run((ctx) => component.sendToDevice({} as FlatStoreClient, ctx), () => "done");
+        for (let n = 0; n < 60 && !releasePut; n++) { await Promise.resolve(); await tick(); }
+        expect(releasePut).toBeDefined();
+        await expect(component.pauseForRefresh()).rejects.toThrow(/Wait for the map send/);
+        expect(job.running).toBe(true);
+        releasePut();
+        await send;
+        await unmount(component);
+    });
+
     it("shows the projected memory refusal and closes Download map", async () => {
         seams.memoryRequiresDisk = true;
         const { component, target } = await mountReadyStep();
