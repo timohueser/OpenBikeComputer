@@ -441,7 +441,7 @@ A step declares:
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
 | `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
 | `options` | A JSON object |
-| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. A Rust step declares the crate of its function |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `rust`: native or prepared compiler binding and dev/release profile, or `null` for native dev. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
@@ -449,6 +449,7 @@ A step declares:
 One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
 enables every feature its bytes depend on itself, or makes its bytes independent of it (structs,
 or sorted keys for JSON objects).
+A Rust function uses the native dev worker. Prepared and release declarations require a command.
 
 ### Keys
 
@@ -467,12 +468,33 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   dependencies add local crate files, registry checksums or resolved Git revisions. Local
   crates must be inside the checkout. Each selected package adds its name, version, edition,
   resolved package settings and features under `cargo/<name>@<version>#<source>`. Cargo metadata runs locked,
-  offline and for `target`, or the native host when unset. An explicit target also enters
+  offline and for `target`, or the native host when unset. The target enters
   `rust/target`. Features use Cargo's workspace resolution. This
   conservative union can rebuild a step when another producer enables a shared feature.
   Dev-only and unrelated packages add no records. The walk stops at the engine crate
   `obc-data`: its selected inputs enter the input digests.
-  `target` selects a Rust target instead of the native host and adds its triple to the identity.
+  A prepared compiler binding requires an explicit `target` and a checked builder in the step
+  options. It does not use the host compiler as the identity of a target executable.
+- Native Rust adds the selected compiler and Cargo executable digests, their verbose versions,
+  its compiler libraries, native link driver and linker digests, and ordered compiler flags.
+  The C compiler enters the identity when the selected closure uses `cc`. Rustup proxies
+  resolve to the actual selected executables in the checkout. A native target must match the
+  selected compiler host. Both compiler bindings add the selected dev/release profile settings,
+  its build override and applicable package overrides. Named package overrides use the selected
+  closure; `*` applies only when that closure contains a non-workspace package. Unselected
+  profiles and package overrides add no records. Profile inheritance and package-ID overrides
+  are refused. Tool bytes are cached within a checking context and revalidated at execution
+  boundaries; a changed tool invalidates its cached digest.
+- Native discovery checks Cargo config in the checkout, its ancestors and Cargo home. It
+  refuses build overrides except jobs and target directories. Network, registry, terminal and
+  alias settings add no byte identity. The supported flags are ordered `--cfg` and explicit
+  codegen and lint settings from `CARGO_ENCODED_RUSTFLAGS`, or `RUSTFLAGS` when the former is absent.
+  An empty encoded value suppresses `RUSTFLAGS`. Host-dependent `target-cpu=native`, external
+  codegen inputs, compiler wrappers and undeclared native build overrides are refused.
+  Supported `CARGO_PROFILE_DEV_*` and `CARGO_PROFILE_RELEASE_*` settings, including build
+  overrides, enter only their selected profile identity. `CARGO_INCREMENTAL` also enters it.
+  Cargo validates these raw values and applies its override precedence.
+  Errors identify the setting, not its value. Discovery does not install a toolchain.
 - A `.rs` file of a selected crate adds each file that it names in `include_str!`,
   `include_bytes!`, `include!` or `#[path = "…"]`, and an added `.rs` file adds its own.
   The name is a string literal, normal or raw, relative to the file, or a `concat!` of string
