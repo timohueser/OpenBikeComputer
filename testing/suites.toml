@@ -82,7 +82,7 @@ triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
 # Its tests load the checked-in registry and regions; no Cargo edge carries that.
 [[package]]
 name = "obc-data"
-triggers = ["data/**"]
+triggers = ["data/**", "tools/basemap_tool.py"]
 
 # Its tests plan the checked-in live environment, and run the Python steps and read their imports.
 [[package]]

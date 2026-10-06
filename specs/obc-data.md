@@ -504,6 +504,15 @@ inputs: their paths, and the links of a view, are objects of the store, and a st
 root can write to a read-only object. The engine does not enforce this.
 A step that needs a package or a tool finds it installed, or reads it as a snapshot.
 
+The `protomaps-basemaps` GitHub fetch needs a full commit SHA and takes no parameters. It
+stores the source archive and `basemap-<recipe SHA-256>.jar`, built by Maven under Java 21.
+The recipe hash identifies `tools/basemap_tool.py`. A step selects that jar only; other
+preparation recipes in the source snapshot do not change its inputs. The source POM
+must pin a Planetiler release. Tool preparation may download Maven packages. The jar holds
+the resolved dependencies, so their bytes are part of the basemap input identity. The bake
+reads only the prepared jar and the data snapshots. It validates every input file before
+Java starts, and passes `--download=false`.
+
 For a tool that reads a directory, `engine::view` in Rust and `view` of `tools/step_request.py`
 in Python make a new directory with one symbolic link per file of an input, to its object. A
 step makes it beside `output`, in `partial/layer-<key>/`, which the engine removes when the step
@@ -799,6 +808,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
 | `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
+| `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
 | `planner/overlays` | `planner/routing` | `attribution` of `osm-planet` | `overlays.pmtiles`: the route networks and the access of `routing/overlays.sqlite`, as [the planner release](planner-release.md) defines it |

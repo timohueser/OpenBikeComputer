@@ -552,6 +552,7 @@ fetch = { kind = "http", url = "https://naciscdn.org/naturalearth/packages/natur
 version = "digest"
 refresh = "manual"
 redistribute = true
+r2_copy = true
 
 [[source]]
 id = "daylight-landcover"
@@ -563,6 +564,7 @@ fetch = { kind = "http", url = "https://r2-public.protomaps.com/datasets/dayligh
 version = "digest"
 refresh = "manual"
 redistribute = true
+r2_copy = true
 
 [[source]]
 id = "qrank"
@@ -586,6 +588,7 @@ fetch = { kind = "http", url = "https://wipfli.github.io/pgf-encoding/pgf-encodi
 version = "digest"
 refresh = "manual"
 redistribute = true
+r2_copy = true
 
 # ── Assets that ship to users ────────────────────────────────────────────────
 
