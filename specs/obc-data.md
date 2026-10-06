@@ -3595,14 +3595,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Refresh": {
-      "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale.",
-      "enum": [
-        7,
-        30,
-        90,
-        365,
-        "manual"
-      ]
+      "anyOf": [
+        {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "const": "manual"
+        }
+      ],
+      "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale."
     },
     "Region": {
       "oneOf": [
