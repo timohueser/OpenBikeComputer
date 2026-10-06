@@ -11,7 +11,7 @@ npm test
 
 | Output | Use |
 | --- | --- |
-| `../app/src/lib/core/pkg` | Production conversion, assembly, preview, grid, GPX, and SHA-256 APIs |
+| `../app/src/lib/core/pkg` | Production conversion, assembly, preview, grid, GPX, SHA-256, and store client APIs |
 | `../app/test-support/flat-device/pkg` | The same crate with `test-device`, for browser tests and the dev harness |
 
 Both outputs are generated. The test-device package must stay outside production imports.
