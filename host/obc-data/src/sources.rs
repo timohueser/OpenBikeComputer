@@ -199,9 +199,9 @@ pub struct Source {
 
 impl Source {
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
-    /// the two boxes meet.
+    /// the two boxes overlap. Boxes that only touch do not: their overlap has no area.
     pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
-        self.extent.is_some_and(|[w, s, e, n]| west <= e && east >= w && south <= n && north >= s)
+        self.extent.is_some_and(|[w, s, e, n]| west < e && w < east && south < n && s < north)
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -516,6 +516,16 @@ mod tests {
     fn an_r2_copy_needs_redistribution() {
         let text = OSM.replace("redistribute = true", "redistribute = false\nr2_copy = true");
         assert!(parse_sources(&text).unwrap_err().contains("r2_copy"));
+    }
+
+    #[test]
+    fn a_source_meets_a_box_that_overlaps_its_extent() {
+        let source = embedded("hr-wsi");
+        assert!(source.meets([7.5, 47.5, 10.5, 49.8]));
+        assert!(source.meets([40.0, 20.0, 50.0, 30.0]), "a box that overlaps a corner");
+        assert!(!source.meets([-110.0, 37.0, -104.0, 41.0]));
+        assert!(!source.meets([46.0, 40.0, 50.0, 42.0]), "a box that only touches the edge");
+        assert!(!osm().meets([7.5, 47.5, 10.5, 49.8]), "a source without an extent meets no box");
     }
 
     #[test]

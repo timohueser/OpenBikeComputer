@@ -518,6 +518,8 @@ licence_url = "https://land.copernicus.eu/en/data-policy"
 attribution = "© European Union, Copernicus Land Monitoring Service {year}, European Environment Agency (EEA): HR-WSI Snow Phenology"
 obligations = "Credit the Copernicus Land Monitoring Service; state modifications"
 fetch = { kind = "capture", url = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products" }
+# The box around the footprints of the Snow Phenology S2 products in the CDSE catalogue, in whole degrees.
+extent = [-32, 26, 46, 72]
 hosts = ["eodata.dataspace.copernicus.eu"]
 version = "date"
 refresh = 365
