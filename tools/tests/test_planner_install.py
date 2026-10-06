@@ -86,11 +86,13 @@ class PlannerInstall(unittest.TestCase):
         directory = install.destination(self.value, self.base)
         self.assertEqual((directory / "data/offline/catalog.json").read_bytes(), b'{"format":3}')
         self.assertTrue((directory / "code/entry.py").is_file())
-        self.assertEqual([command for command in self.commands if command[:2] == ["systemctl", "restart"]], [["systemctl", "restart", "obc-planner-downloads-1.service"]])
-        self.assertFalse(any("caddy" in command or "enable" in command for command in self.commands))
+        self.assertEqual(self.commands, [["systemctl", "daemon-reload"],
+                                        ["systemctl", "enable", "obc-planner-downloads-1.service"],
+                                        ["systemctl", "restart", "obc-planner-downloads-1.service"]])
         contents = (self.units / install.unit(self.value)).read_text()
         self.assertIn(" -S -m tools.planner_downloads", contents)
         self.assertIn("DynamicUser=yes", contents)
+        self.assertIn("[Install]\nWantedBy=multi-user.target\n", contents)
         with patch.object(install, "host", return_value=HOST):
             actual = install.probe(self.request, self.base, self.execute, lambda _: {"sha256": "b" * 64}, self.proc)
         self.assertEqual(actual, {"service": "downloads", "catalog": "b" * 64}, "readiness must report opened data, not requested id")

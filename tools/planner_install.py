@@ -247,9 +247,11 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     contents += "Restart=on-failure\nDynamicUser=yes\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\nCPUQuota=200%\nTasksMax=64\n"
     contents += f"MemoryMax={2048 if value['service'] == 'routing' else 768 if value['service'] == 'search' else 256}M\n"
     if value["service"] == "downloads": contents += f"StateDirectory=obc-planner-downloads-{value['slot']}\n"
+    contents += "[Install]\nWantedBy=multi-user.target\n"
     units.mkdir(parents=True, exist_ok=True)
     (units / unit(value)).write_text(contents)
     execute(["systemctl", "daemon-reload"])
+    execute(["systemctl", "enable", unit(value)])
     execute(["systemctl", "restart", unit(value)])
 
 
