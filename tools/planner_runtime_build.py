@@ -28,7 +28,7 @@ SERVICE_FILES = [
     "query/words.py", "query/lexicon.py", "query/lexicon",
 ]
 DOWNLOAD_FILES = ["planner_downloads.py", "planner_grid.py", "planner_geo.py", "planner_map_archive.py",
-                  "planner_maps.py", "planner_runtime.py"]
+                  "planner_maps.py", "planner_runtime.py", "planner_offline.py", "planner_install.py"]
 
 
 def encoded(value):
@@ -291,7 +291,8 @@ def build(request, inside=False):
         else:
             copy_downloads(ROOT / "tools", payload)
             python = os.environ.get("OBC_PLANNER_RUNTIME_PYTHON", "python3")
-            run([python, "-S", "-m", "tools.planner_downloads", "--help"], cwd=payload, env=env)
+            for module in ("planner_downloads", "planner_install"):
+                run([python, "-S", "-m", f"tools.{module}", "--help"], cwd=payload, env={**env, "PYTHONPATH": str(payload)})
         if native(service, wanted) != actual:
             raise ValueError("Prepared runtime tools changed during the build; plan again")
         libraries = elf_requirements(payload, wanted)

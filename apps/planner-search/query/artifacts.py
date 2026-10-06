@@ -22,3 +22,8 @@ def fingerprints(paths):
         with path.open('rb') as stream:
             result[str(path)] = hashlib.file_digest(stream, 'sha256').hexdigest()
     return result
+
+
+def model_identity(directory: Path):
+    paths = [directory / name for name in ('labels.json', 'tokenizer.json', 'model.int8.onnx')]
+    return {Path(path).name: digest for path, digest in fingerprints(paths).items()}

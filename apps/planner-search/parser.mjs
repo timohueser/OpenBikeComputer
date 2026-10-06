@@ -12,6 +12,7 @@ export function parserProcess(python, model, onFailure) {
   let nextId = 0,
     available = false,
     stopped = false,
+    modelIdentity = null,
     failure = 'The query model is loading.';
   const fail = (message, report = true) => {
     if (stopped) return;
@@ -41,6 +42,13 @@ export function parserProcess(python, model, onFailure) {
       return;
     }
     if (value.ready) {
+      const names = ['labels.json', 'tokenizer.json', 'model.int8.onnx'];
+      if (!value.model || Object.keys(value.model).length !== names.length ||
+          names.some(name => !/^[a-f0-9]{64}$/.test(value.model[name]))) {
+        fail('The query runtime returned no model identity.');
+        return;
+      }
+      modelIdentity = value.model;
       available = true;
       failure = '';
       return;
@@ -53,7 +61,7 @@ export function parserProcess(python, model, onFailure) {
     else p.resolve(value.result);
   });
   return {
-    status: () => ({ ready: available, message: failure }),
+    status: () => ({ ready: available, message: failure, model: modelIdentity }),
     parse(text) {
       if (!available) return Promise.reject(new Error(failure));
       if (pending.size >= 8)

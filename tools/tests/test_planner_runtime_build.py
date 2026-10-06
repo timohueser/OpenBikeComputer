@@ -115,10 +115,11 @@ class RuntimeBuild(unittest.TestCase):
             with tarfile.open(artifact) as archive:
                 archive.extractall(installed, filter="data")
             env = {"PATH": os.environ["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
-            ready = subprocess.run([sys.executable, "-S", "-m", "tools.planner_downloads", "--help"],
-                                   cwd=installed, env=env, capture_output=True, check=False)
-            self.assertEqual(ready.returncode, 0, ready.stderr.decode())
-            self.assertIn(b"--objects-url", ready.stdout)
+            for module, option in [("planner_downloads", b"--objects-url"), ("planner_install", b"stage")]:
+                ready = subprocess.run([sys.executable, "-S", "-m", f"tools.{module}", "--help"],
+                                       cwd=installed, env={**env, "PYTHONPATH": str(installed)}, capture_output=True, check=False)
+                self.assertEqual(ready.returncode, 0, ready.stderr.decode())
+                self.assertIn(option, ready.stdout)
             self.assertFalse((installed / "pyproject.toml").exists())
 
     def test_elf_architecture_and_required_glibc_are_checked_with_readelf(self):

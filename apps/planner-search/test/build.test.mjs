@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync,rmSync,mkdirSync,writeFileSync,copyFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,mkdirSync,writeFileSync,copyFileSync,readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
@@ -119,6 +120,7 @@ for component,output in outputs.items():
     }
     writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells}));
     grid=openRegion(directory,'test');
+    assert.equal(grid.grid,createHash('sha256').update(readFileSync(join(directory,'test.grid.json'))).digest('hex'));
     assert.equal(grid.db.rows({sql:'SELECT p.* FROM {c}.places p'}).length,4);
     writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells:[{...cells[0],files:cells[0].files.slice(0,1)}]}));
     assert.throws(()=>openRegion(directory,'test'),/Invalid search grid files/);

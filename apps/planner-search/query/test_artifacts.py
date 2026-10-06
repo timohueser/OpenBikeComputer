@@ -1,7 +1,7 @@
 import json
 import pytest
 import schema
-from artifacts import check_labels, fingerprints, label_contract
+from artifacts import check_labels, fingerprints, label_contract, model_identity
 
 
 def test_contract_json_is_generated_from_the_schema():
@@ -28,3 +28,16 @@ def test_training_input_fingerprint_changes_with_content(tmp_path):
     before = fingerprints([path])
     path.write_text('two')
     assert fingerprints([path]) != before
+
+
+def test_runtime_identity_names_the_opened_model_files(tmp_path):
+    names = ('labels.json', 'tokenizer.json', 'model.int8.onnx')
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    before = model_identity(tmp_path)
+    assert set(before) == set(names)
+    (tmp_path / 'model.int8.onnx').write_bytes(b'changed')
+    assert model_identity(tmp_path)['model.int8.onnx'] != before['model.int8.onnx']
+    (tmp_path / 'tokenizer.json').unlink()
+    with pytest.raises(FileNotFoundError):
+        model_identity(tmp_path)

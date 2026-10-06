@@ -11,12 +11,13 @@ import numpy as np
 import onnxruntime as ort
 from tokenizers import Tokenizer
 
-from artifacts import check_labels
+from artifacts import check_labels, model_identity
 from prediction import request_from_prediction, validate_text
 
 
 class Parser:
     def __init__(self, directory: Path, *, threads: int = 1):
+        self.identity = model_identity(directory)
         check_labels(directory)
         self.tokenizer = Tokenizer.from_file(str(directory / 'tokenizer.json'))
         self.tokenizer.enable_truncation(max_length=64)
@@ -24,6 +25,8 @@ class Parser:
         options.intra_op_num_threads = threads
         self.session = ort.InferenceSession(str(directory / 'model.int8.onnx'), options,
                                            providers=['CPUExecutionProvider'])
+        if model_identity(directory) != self.identity:
+            raise ValueError('The model changed while it opened.')
 
     def parse(self, text: str) -> dict:
         validate_text(text)
@@ -41,7 +44,7 @@ def main():
     args = argparse.ArgumentParser()
     args.add_argument('--model', type=Path, required=True)
     parser = Parser(args.parse_args().model)
-    print(json.dumps({'ready': True}), flush=True)
+    print(json.dumps({'ready': True, 'model': parser.identity}), flush=True)
     for line in sys.stdin:
         value = {}
         try:
