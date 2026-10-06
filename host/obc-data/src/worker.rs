@@ -20,6 +20,14 @@ struct Binding {
 
 static BINDING: OnceLock<Binding> = OnceLock::new();
 
+/// Cargo runtime search paths do not select the libraries of native compilation tools.
+pub fn compiler_command(command: &mut std::process::Command) -> &mut std::process::Command {
+    for name in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+        command.env_remove(name);
+    }
+    command
+}
+
 pub fn fingerprint(root: &Path) -> Result<String, String> {
     code::compiled(root, &PRODUCERS.iter().map(|name| (*name).into()).collect::<Vec<_>>())
 }
