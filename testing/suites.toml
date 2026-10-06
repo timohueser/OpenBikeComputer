@@ -80,6 +80,10 @@ triggers = ["fixtures/catalog.toml"]
 name = "obc-bake"
 triggers = ["builder/presets/**", "data/regions/**", "data/sources.toml"]
 
+[[package]]
+name = "obc-osm"
+triggers = ["builder/tests/corpus/data/tiny.osm.pbf"]
+
 # Its tests load the checked-in registry and regions; no Cargo edge carries that.
 [[package]]
 name = "obc-data"

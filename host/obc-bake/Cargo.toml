@@ -6,6 +6,7 @@ publish = false  # internal host tool — not published to crates.io
 description = "The bakery: bake the curated region list into a catalog tree and publish it"
 
 [dependencies]
+obc-osm = { workspace = true }
 # The packer, linked rather than spawned: `pipeline::pack` is the one code path
 # both hosts already share (#906), and it hands back the byte count and a cancel
 # token instead of a subprocess whose stdout would have to be scraped. It also
