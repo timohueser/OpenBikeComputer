@@ -370,9 +370,6 @@ fn to_geos(g: &Geom) -> Geometry {
     }
 }
 
-/// Read a LineString or LinearRing's coordinate sequence into owned `(x, y)` pairs. Works on the
-/// borrowed `ConstGeometry` that ring accessors return.
-
 pub(crate) fn from_geos<G: Geom_>(g: &G) -> Geom {
     if g.is_empty().unwrap_or(true) {
         return Geom::Empty;

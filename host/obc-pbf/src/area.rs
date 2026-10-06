@@ -13,6 +13,8 @@ pub fn ring_to_coordseq(coords: &[(f64, f64)]) -> CoordSeq {
     CoordSeq::new_from_vec(&buf).expect("coordseq")
 }
 
+/// Read a LineString or LinearRing's coordinate sequence into owned `(x, y)` pairs. Works on the
+/// borrowed `ConstGeometry` that ring accessors return.
 pub fn read_coords<G: geos::Geom>(g: &G) -> Vec<(f64, f64)> {
     let cs = g.get_coord_seq().expect("coord seq");
     let n = cs.size().expect("size");
