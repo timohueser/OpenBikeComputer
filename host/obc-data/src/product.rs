@@ -3,7 +3,7 @@
 //! binary passes each product to `cli::main`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::engine::release::Release;
 use crate::engine::{snapshot_files, LayerFile, Step};
