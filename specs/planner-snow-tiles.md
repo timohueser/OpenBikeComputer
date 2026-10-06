@@ -74,7 +74,7 @@ The archive metadata is a JSON object:
 | `copernicus-hr-wsi` | HR-WSI Snow Phenology S2 yearly rasters | 20 |
 
 An archive reads `copernicus-hr-wsi` where it has data and `nasa-modis` elsewhere.
-A region outside the HR-WSI coverage reads `nasa-modis` only.
+A region outside the `extent` of `hr-wsi`, or where HR-WSI has no product, reads `nasa-modis` only.
 
 The max zoom is the zoom whose pixel size at the middle latitude of the bounds is
 nearest to `resolution_m` in log scale. In the Alps, it is 12 for
@@ -113,7 +113,8 @@ season, a pixel takes the first source in which it is not 255:
 At a lower zoom, the inputs are the 2 × 2 child pixels, with equal weights. When
 `source` is `copernicus-hr-wsi`, each child pixel is smoothed first: it takes the blend of its
 3 × 3 neighbourhood in its tile, with equal weights and the median of the dated
-inputs instead of the mean. A neighbour outside the tile repeats the edge pixel.
+inputs instead of the mean. A neighbour outside the tile repeats the edge pixel. The smoothing
+applies to every pixel of the tile, also to a pixel that `nasa-modis` fills.
 
 ## Forest
 

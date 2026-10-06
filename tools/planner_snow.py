@@ -16,7 +16,7 @@ reads the window of one zoom-9 tile at a time from each file on the Copernicus D
 """
 
 import argparse
-from collections import namedtuple
+from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import gzip
@@ -220,10 +220,13 @@ def parent(children, seasons, smoothed=False):
 
 
 def canopy_tiles(bounds):
-    """Names of the 10° Hansen tiles, named by their north-west corner, that the bounds touch."""
-    west, south, east, north = bounds
+    """Names of the 10° Hansen tiles, named by their north-west corner, that the bounds overlap with one MODIS pixel of
+    margin: the bake samples the MODIS pixels around its edge. As `canopy_tiles` of the planner step list."""
+    pad = 10 / MODIS_PIXELS
+    widen = pad / math.cos(math.radians(max(abs(bounds[1]), abs(bounds[3]))))
+    west, south, east, north = bounds[0] - widen, bounds[1] - pad, bounds[2] + widen, bounds[3] + pad
     return [f"{abs(lat):02d}{'N' if lat >= 0 else 'S'}_{abs(lon):03d}{'E' if lon >= 0 else 'W'}"
-            for lat in range(math.ceil(south / 10) * 10, math.ceil(north / 10) * 10 + 1, 10)
+            for lat in range(math.floor(south / 10) * 10 + 10, math.ceil(north / 10) * 10 + 1, 10)
             for lon in range(math.floor(west / 10) * 10, math.ceil(east / 10) * 10, 10)]
 
 
@@ -428,6 +431,18 @@ def modis_seasons(bounds, first_season, last_season):
         yield season, modis_items(bounds, dt.date(season, 9, 1), dt.date(season + 1, 8, 31))
 
 
+def bounded_map(pool, function, items, ahead):
+    """`pool.map(function, items)` with at most `ahead` items submitted and not yet read: the readers of MODIS days
+    outrun `SnowSeasons.observe`, and each day read holds its planes until it is observed."""
+    pending = deque()
+    for item in items:
+        pending.append(pool.submit(function, item))
+        if len(pending) == ahead:
+            yield pending.popleft().result()
+    while pending:
+        yield pending.popleft().result()
+
+
 def modis_planes(groups, bounds, first_season, last_season, canopy, workers=24):
     """Season planes on the MODIS grid around the bounds, from daily files fed as groups {date: [(platform, path)]}
     whose days increase from group to group. A pixel whose mean tree canopy cover in the Hansen GFC rasters
@@ -438,7 +453,8 @@ def modis_planes(groups, bounds, first_season, last_season, canopy, workers=24):
     with ThreadPoolExecutor(workers) as pool:
         for items in groups:
             days = sorted(items)
-            for day, (clear, snow) in zip(days, pool.map(lambda d: modis_day(items[d], grid), days)):
+            read = lambda day: modis_day(items[day], grid)
+            for day, (clear, snow) in zip(days, bounded_map(pool, read, days, 2 * workers)):
                 end = (day - first).days + 1
                 state.observe(end - 1, clear, snow)
             print(f"MODIS: {len(days)} days to {days[-1] if days else '-'}, {time.monotonic() - start:.0f} s",

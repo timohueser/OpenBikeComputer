@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use obc_data::engine::{Code, Input, Run, Step};
+use obc_data::engine::{snapshot_files, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Regions};
@@ -319,8 +319,8 @@ fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
     }
 }
 
-/// The snow layer of `bounds`: HR-WSI where it has data, and MODIS elsewhere. Outside the coverage
-/// of HR-WSI, it reads MODIS only.
+/// The snow layer of `bounds`: HR-WSI where it has data, and MODIS elsewhere. Outside the extent
+/// of HR-WSI, or where its fetch has no files, it reads MODIS only.
 fn snow(
     env: &Env,
     store: &Store,
@@ -337,13 +337,16 @@ fn snow(
     ];
     let mut credit = format!("{}; tree canopy: {}", attribution("modis-snow"), attribution("hansen-gfc"));
     let mut year = None;
-    if embedded("hr-wsi").covers(bounds) {
+    if embedded("hr-wsi").meets(bounds) {
         let hr_wsi = snapshot(env, store, "hr-wsi", params, wanted)?;
-        // The credit of HR-WSI names a year: the year of the capture.
-        let Input::Snapshot { version, .. } = &hr_wsi else { unreachable!("a fetch is a snapshot input") };
-        year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
-        credit = format!("{}; {credit}", attribution("hr-wsi"));
-        inputs.insert(0, hr_wsi);
+        let Input::Snapshot { version, params, .. } = &hr_wsi else { unreachable!("a fetch is a snapshot input") };
+        let files = snapshot_files(store, "hr-wsi", version, params, &[]).map_err(Unplanned::Failed)?;
+        if !files.is_some_and(|files| files.is_empty()) {
+            // The credit of HR-WSI names a year: the year of the capture.
+            year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
+            credit = format!("{}; {credit}", attribution("hr-wsi"));
+            inputs.insert(0, hr_wsi);
+        }
     }
     Ok(python(
         "planner/snow",
@@ -355,8 +358,12 @@ fn snow(
     ))
 }
 
-/// The 10° Hansen GFC tiles that `bounds` touches, named by their north-west corner.
+/// The 10° Hansen GFC tiles that `bounds` overlaps with one MODIS pixel, 1/240° of latitude, of
+/// margin: the snow layer samples the MODIS pixels around its edge. Named by their north-west corner.
 fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
+    let pad = 1.0 / 240.0;
+    let widen = pad / south.abs().max(north.abs()).to_radians().cos();
+    let [west, south, east, north] = [west - widen, south - pad, east + widen, north + pad];
     let lats = (south / 10.0).floor() as i32 + 1..=(north / 10.0).ceil() as i32;
     let lons = (west / 10.0).floor() as i32..(east / 10.0).ceil() as i32;
     let name = |lat: i32, lon: i32| {
@@ -534,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn snow_reads_hr_wsi_where_it_covers_the_region_and_modis_and_the_canopy_everywhere() {
+    fn snow_reads_hr_wsi_where_it_has_data_and_modis_and_the_canopy_everywhere() {
         let temp = temp("planner-snow");
         let store = store(&temp, &[]);
         let sources = |bounds: [f64; 4]| {
@@ -558,6 +565,16 @@ mod tests {
         assert_eq!(inputs[1].1, [("tile".to_string(), "40N_110W".to_string()), ("tile".into(), "50N_110W".into())]);
         assert_eq!(options["year"], serde_json::Value::Null);
         assert!(options["attribution"].as_str().unwrap().starts_with("MODIS"));
+
+        // Morocco is inside the extent of HR-WSI, and its fetch has no files. The canopy reaches one
+        // MODIS pixel west of 10° W.
+        let params = [("bbox".to_string(), "-10,31,-7,32".to_string()), ("seasons".into(), "2016-2024".into())];
+        fetched(&store, "hr-wsi", "2026-10-01", &params, &[]);
+        let (inputs, options) = sources([-10.0, 31.0, -7.0, 32.0]);
+        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
+        assert_eq!(names, ["modis-snow", "hansen-gfc"]);
+        assert_eq!(inputs[1].1, [("tile".to_string(), "40N_020W".to_string()), ("tile".into(), "40N_010W".into())]);
+        assert_eq!(options["year"], serde_json::Value::Null);
     }
 
     #[test]

@@ -217,6 +217,40 @@ class CopernicusTest(unittest.TestCase):
         self.assertTrue((planes[1] == snow.NO_DATA).all())
 
 
+class StepTest(unittest.TestCase):
+    def test_the_step_reads_hr_wsi_first_only_when_the_request_has_it(self):
+        modis = "MOD10A1.A2016245.h18v04.061.2021338033043_NDSI_Snow_Cover.tif"
+        sco = "CLMS_WSI_SP_020m_T32TMT_20160901P1Y_COMB_V100_SCO.tif"
+        canopy = "Hansen_GFC-2023-v1.11_treecover2000_50N_000E.tif"
+
+        def run(snapshots, year, credit):
+            snapshots = {source: {f"#bbox=8,46,9,47/{name}": f"/store/{name}" for name in names}
+                         for source, names in snapshots.items()}
+            with tempfile.TemporaryDirectory() as directory:
+                request = {"options": {"bounds": [8, 46, 9, 47], "seasons": [2016, 2016], "year": year,
+                                       "attribution": credit},
+                           "snapshots": snapshots, "output": directory, "metrics": f"{directory}/metrics.json"}
+                with mock.patch.object(snow.step_request, "read", return_value=request), \
+                        mock.patch.object(snow, "modis_planes", return_value="modis") as modis_planes, \
+                        mock.patch.object(snow, "copernicus_planes", return_value="hr-wsi") as copernicus_planes, \
+                        mock.patch.object(snow, "bake", return_value=1) as bake:
+                    snow.step()
+                    sources, *_, credit = bake.call_args.args
+                    sources = [(name, planes(None)) for name, planes in sources]
+            self.assertEqual(modis_planes.call_args.args[0],
+                             [{dt.date(2016, 9, 1): [("MOD", Path(f"/store/{modis}"))]}])
+            self.assertEqual(modis_planes.call_args.args[4], [Path(f"/store/{canopy}")])
+            return sources, copernicus_planes.call_args, credit
+
+        sources, _, credit = run({"modis-snow": [modis], "hansen-gfc": [canopy]}, None, "MODIS; tree canopy: Hansen")
+        self.assertEqual((sources, credit), ([("nasa-modis", "modis")], "MODIS; tree canopy: Hansen"))
+        sources, hr_wsi, credit = run({"hr-wsi": [sco], "modis-snow": [modis], "hansen-gfc": [canopy]}, 2026,
+                                      "© EU {year}; MODIS")
+        self.assertEqual(sources, [("copernicus-hr-wsi", "hr-wsi"), ("nasa-modis", "modis")])
+        self.assertEqual(hr_wsi.args[0], {2016: {"SCO": [f"/store/{sco}"]}})
+        self.assertEqual(credit, "© EU 2026; MODIS")
+
+
 class FetchTest(unittest.TestCase):
     def test_a_subset_is_the_window_of_the_bounds_one_pixel_wider(self):
         import rasterio

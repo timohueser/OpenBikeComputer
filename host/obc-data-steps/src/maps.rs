@@ -14,7 +14,7 @@ use obc_data::engine::{snapshot_files, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{read, version, Product, Unplanned, Wanted};
 use obc_data::regions::{Area, Bbox, Regions};
-use obc_data::sources::{self, attribution};
+use obc_data::sources::{self, attribution, Source};
 use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::cell_window;
@@ -383,7 +383,8 @@ fn reference(
     let params = vec![("bbox".to_string(), format!("{west},{south},{east},{north}"))];
     let name = leaf_layer("maps/reference", leaf);
     let (mut inputs, mut models, mut missing) = (Vec::new(), Vec::new(), false);
-    for source in sources::all().iter().filter(|source| source.meets([west, south, east, north])) {
+    let meets = |source: &&Source| source.id.starts_with("dtm-") && source.meets([west, south, east, north]);
+    for source in sources::all().iter().filter(meets) {
         match version(env, store, &source.id, &params).map_err(Unplanned::Failed)? {
             Ok(version) => {
                 let files = snapshot_files(store, &source.id, &version, &params, &[]).map_err(Unplanned::Failed)?;

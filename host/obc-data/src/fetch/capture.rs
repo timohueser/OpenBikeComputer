@@ -54,7 +54,8 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 &format!("bbox={bbox}&seasons={seasons}"),
                 &[source],
                 |_| &[0],
-                false,
+                // HR-WSI has no product in parts of its extent.
+                source.id == "hr-wsi",
                 |_, out| {
                     let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
