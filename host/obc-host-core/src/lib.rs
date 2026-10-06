@@ -31,6 +31,7 @@
 //! must stay framework-free. Simulator maps use native temporary files; browser maps use memory.
 
 pub mod conformance;
+mod device;
 mod device_input;
 mod dispatch;
 pub mod flat_map;
@@ -64,6 +65,7 @@ pub mod tone;
 pub mod trace;
 mod track_store;
 
+pub use device::DeviceHost;
 pub use device_input::DeviceInput;
 pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
