@@ -6,15 +6,18 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parserProcess } from '../parser.mjs';
 
+const model=Object.fromEntries(['labels.json','tokenizer.json','model.int8.onnx'].map((name,i)=>[name,String(i).repeat(64)]));
+
 async function start(t, script) {
   const directory = mkdtempSync(join(tmpdir(), 'planner-worker-'));
   const executable = join(directory, 'worker');
-  writeFileSync(executable, `#!${process.execPath}\nconsole.log(JSON.stringify({ready:true}));\n${script}\n`, {mode:0o755});
+  writeFileSync(executable, `#!${process.execPath}\nconsole.log(JSON.stringify({ready:true,model:${JSON.stringify(model)}}));\n${script}\n`, {mode:0o755});
   const failures = [];
   const parser = parserProcess(executable, directory, (message) => failures.push(message));
   t.after(() => { parser.close(); rmSync(directory, {recursive:true,force:true}); });
   for (let i = 0; i < 100 && !parser.status().ready; i++) await delay(20);
   assert.equal(parser.status().ready, true);
+  assert.deepEqual(parser.status().model,model);
   return {parser, failures};
 }
 

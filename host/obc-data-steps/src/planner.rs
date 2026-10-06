@@ -80,6 +80,7 @@ struct Routing {
 }
 
 mod catalog;
+pub mod install;
 mod runtime;
 
 pub struct Planner;

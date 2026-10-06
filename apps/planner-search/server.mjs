@@ -59,7 +59,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/planner-search/status' && req.method === 'GET') {
       json(200, {
         parser: parser.status(),
-        regions: [{ id: region, metadata: db.metadata, bytes }],
+        regions: [{ id: region, grid: installed.grid, metadata: db.metadata, bytes }],
       });
       return;
     }

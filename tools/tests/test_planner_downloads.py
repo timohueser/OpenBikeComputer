@@ -190,6 +190,8 @@ class PlannerDownloads(unittest.TestCase):
     def test_http_supports_exact_ranges_and_rejects_traversal(self):
         job = self.service.prepare(self.request())
         base = self.serve()
+        with urlopen(base + '/catalog') as response:
+            self.assertEqual(json.load(response)['sha256'], runtime.digest(self.source / 'catalog.json'))
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
         digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"

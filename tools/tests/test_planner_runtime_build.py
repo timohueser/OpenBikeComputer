@@ -115,25 +115,33 @@ class RuntimeBuild(unittest.TestCase):
             with tarfile.open(artifact) as archive:
                 archive.extractall(installed, filter="data")
             env = {"PATH": os.environ["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
-            ready = subprocess.run([sys.executable, "-S", "-m", "tools.planner_downloads", "--help"],
-                                   cwd=installed, env=env, capture_output=True, check=False)
-            self.assertEqual(ready.returncode, 0, ready.stderr.decode())
-            self.assertIn(b"--objects-url", ready.stdout)
+            for module, option in [("planner_downloads", b"--objects-url"), ("planner_install", b"stage")]:
+                ready = subprocess.run([sys.executable, "-S", "-m", f"tools.{module}", "--help"],
+                                       cwd=installed, env={**env, "PYTHONPATH": str(installed)}, capture_output=True, check=False)
+                self.assertEqual(ready.returncode, 0, ready.stderr.decode())
+                self.assertIn(option, ready.stdout)
             self.assertFalse((installed / "pyproject.toml").exists())
 
     def test_elf_architecture_and_required_glibc_are_checked_with_readelf(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "library.so").write_bytes(b"\x7fELF authored metadata fixture")
+            bundled = root / "numpy.libs/openblas.so"
+            bundled.parent.mkdir()
+            bundled.write_bytes(b"\x7fELF authored bundled library")
             def inspect(argv, **kwargs):
                 self.assertEqual(kwargs["env"]["LC_ALL"], "C")
                 if "-h" in argv:
                     return "Machine: Advanced Micro Devices X86-64\n"
                 if "--version-info" in argv:
                     return "Name: GLIBC_2.31\n"
-                return "(NEEDED) Shared library: [libc.so.6]\n"
+                if str(bundled) == argv[-1]:
+                    return "(SONAME) Library soname: [libopenblas-hash.so]\n(NEEDED) Shared library: [libc.so.6]\n"
+                return "(NEEDED) Shared library: [libc.so.6]\n(NEEDED) Shared library: [libopenblas-hash.so]\n"
             with patch.object(runtime, "run", side_effect=inspect):
                 self.assertEqual(runtime.elf_requirements(root, TARGET), ["libc.so.6"])
+                bundled.unlink()
+                self.assertEqual(runtime.elf_requirements(root, TARGET), ["libc.so.6", "libopenblas-hash.so"])
             with patch.object(runtime, "run", side_effect=["Machine: AArch64", ""]):
                 with self.assertRaisesRegex(ValueError, "architecture"):
                     runtime.elf_requirements(root, TARGET)

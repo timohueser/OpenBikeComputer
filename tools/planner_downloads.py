@@ -31,10 +31,11 @@ def bounds(value):
 class Downloads:
     def __init__(self, source, cache, max_cache_bytes, objects_url=None):
         self.source, self.cache = source.resolve(), cache.resolve()
-        self.publication = json.loads((self.source / "catalog.json").read_bytes())
+        body = (self.source / "catalog.json").read_bytes()
+        self.publication = json.loads(body)
         if self.publication["format"] != 3:
             raise ValueError("Unsupported offline publication")
-        self.identity, self.manifest = planner_runtime.digest(self.source / "catalog.json"), self.publication["release"]
+        self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
         self.objects_url = objects_url.rstrip("/") if objects_url else None
         self.max_cache_bytes = max_cache_bytes
         self.cache.mkdir(parents=True, exist_ok=True)
@@ -173,7 +174,7 @@ def handler(downloads):
         def do_GET(self):
             path = unquote(urlsplit(self.path).path)
             if path == "/catalog":
-                return self.json({"format": 1, "bounds": downloads.manifest["bounds"],
+                return self.json({"format": 1, "sha256": downloads.identity, "bounds": downloads.manifest["bounds"],
                                   "zoom": downloads.publication["zoom"]})
             match = re.fullmatch(r"/bundles/([0-9a-f]{64})/(bundle.json|release.json|objects/[0-9a-f]{64})", path)
             directory = match and downloads.selection(match[1])
