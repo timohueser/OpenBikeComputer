@@ -1,8 +1,9 @@
 # Planner release
 
 A release joins map, routing, search and model data.
-`release.json` is UTF-8 JSON. Its SHA-256 is the release ID. The release and
-its files are immutable.
+`release.json` is UTF-8 JSON. The release and its files are immutable.
+An applied publication uses the ID of the [`obc data` release manifest](obc-data.md#releases).
+The standalone publisher uses the SHA-256 of `release.json`.
 
 ## Manifest
 
@@ -10,6 +11,7 @@ its files are immutable.
 | --- | --- |
 | `format` | `1` |
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
+| `name` | Region display name for an applied grid publication |
 | `bounds` | `[west,south,east,north]` in degrees |
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
@@ -119,8 +121,26 @@ The online services and `deploy` serve grid releases only. A regional release
 without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
 entries retain logical paths and decoded `bytes` and `sha256`. Each also has
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
-R2 stores each distinct transport once at `planner/releases/ID/objects/SHA256`.
+R2 stores each distinct transport once at `planner/objects/SHA256`.
 The online services and offline installer consume this same pool.
+Named metadata stays at `planner/releases/ID/`: `release.json`, `public/`, and
+`indexes/GRID_STEP/index.json` for each selected grid. Applied release manifests
+bind each named path to its size and SHA-256. Producer directories and source
+archives are not part of these verification indexes.
+
+Before publication, the verifier checks the packed bytes and named metadata
+against their receipts. It composes the indexes with the same source and coverage
+checks as the producer. It reads changed decoded map archives, search shards and
+routing graphs with their format validators. Unchanged binary payloads retain their
+previous verification. The Python group and Node reader dependencies must be
+prepared from their locks. A fresh store can restore the named
+indexes and client objects without the producer files. Verification does not
+install tools, download data or build runtimes.
+
+The required `planner/runtime` layer blocks publication while routing and search
+have no stored code receipts and verified readiness. Independent data steps can
+build. Service identity must bind the runtime code and its data inputs. Optional
+map layers do not change service identity.
 
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
 TileJSON, route catalog cell, and device catalog has a small pointer at

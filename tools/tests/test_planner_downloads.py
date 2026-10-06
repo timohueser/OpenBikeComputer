@@ -163,6 +163,30 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (entry["bytes"], entry["sha256"]))
         self.assertEqual(json.loads(data)["archives"], ["c" * 64])
 
+    def test_published_payload_redirects_to_the_shared_pool_and_keeps_its_identity(self):
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+        pool = self.root / 'pool'
+        objects = pool / 'planner/objects'
+        objects.mkdir(parents=True)
+        for path in (self.source / 'objects').iterdir():
+            os.link(path, objects / path.name)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=pool))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def close():
+            server.shutdown(); server.server_close(); thread.join()
+        self.addCleanup(close)
+        self.service.objects_url = f'http://127.0.0.1:{server.server_port}/planner/objects'
+        job = self.service.prepare(self.request())
+        bundle = json.loads((self.service.cache / job['id'] / 'bundle.json').read_bytes())
+        entry = bundle['files']['routing/packs/' + 'c' * 64 + '/pages.bin']['transport']
+        url = f"{self.serve()}/bundles/{job['id']}/objects/{entry['sha256']}"
+        with urlopen(url) as response:
+            self.assertEqual(response.url, self.service.objects_url + '/' + entry['sha256'])
+            payload = response.read()
+        self.assertEqual((len(payload), hashlib.sha256(payload).hexdigest()), (entry['bytes'], entry['sha256']))
+
     def test_http_supports_exact_ranges_and_rejects_traversal(self):
         job = self.service.prepare(self.request())
         base = self.serve()

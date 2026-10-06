@@ -3,7 +3,7 @@
 //! binary passes each product to `cli::main`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::engine::release::Release;
 use crate::engine::{snapshot_files, LayerFile, Step};
@@ -40,8 +40,14 @@ pub trait Product {
         Ok(Vec::new())
     }
 
-    /// Check a release from the store before an apply makes it live.
-    fn verify(&self, _previous: Option<&Release>, _release: &Release, _store: &Store) -> Result<(), String> {
+    /// Check stored artifacts before publication. `root` locates the offline verification tools.
+    fn verify(
+        &self,
+        _root: &Path,
+        _previous: Option<&Release>,
+        _release: &Release,
+        _store: &Store,
+    ) -> Result<(), String> {
         Ok(())
     }
 }

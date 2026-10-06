@@ -23,8 +23,8 @@ name: CI
 #     The wasm-bridges job gates its production size and hands the same bytes to frontend jobs.
 #   * obc-desktop (#906) is the third excluded + standalone crate: a Tauri app, so it brings a
 #     platform webview with it (WebKitGTK on Linux) and would otherwise put those headers in
-#     every renderer test's way. Its job is also the only Rust one that needs Node — the shell
-#     *embeds* the built frontend, so it breaks from either side and both halves are built there.
+#     every renderer test's way. The shell embeds the frontend, so both halves are built there.
+#     The planner artifact verifier also needs the locked Node reader dependencies.
 #     It is the only **three-OS matrix** in this file because it is the artifact a user installs.
 #   * `--locked` everywhere so a stale Cargo.lock (any of the four) fails CI.
 
@@ -238,6 +238,11 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Prepare locked planner artifact readers
+        run: npm ci --omit=dev --ignore-scripts --prefix builder/app
       # The planner Python steps run under uv: obc-data-steps runs one in its tests.
       - uses: actions/setup-java@v4
         with:

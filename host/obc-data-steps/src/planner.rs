@@ -79,11 +79,31 @@ struct Routing {
     profiles: Vec<String>,
 }
 
+mod catalog;
+
 pub struct Planner;
 
 impl Product for Planner {
     fn name(&self) -> &'static str {
         "planner"
+    }
+
+    fn pointer(&self) -> Option<obc_data::product::PointerFn> {
+        Some(catalog::pointer)
+    }
+
+    fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
+        catalog::named(release)
+    }
+
+    fn verify(
+        &self,
+        root: &std::path::Path,
+        previous: Option<&obc_data::engine::release::Release>,
+        release: &obc_data::engine::release::Release,
+        store: &Store,
+    ) -> Result<(), String> {
+        catalog::verify(root, previous, release, store)
     }
 
     fn optional(&self) -> &'static [&'static str] {
@@ -404,12 +424,12 @@ impl Product for Planner {
             .map(|step| layer_files(&step.name, &["index.json"]))
             .collect();
         steps.push(Step {
-            client: Client::Paths(vec!["objects".into(), "release.json".into(), "public".into()]),
+            client: Client::Paths(vec!["objects".into()]),
             ..python(
                 "planner/index",
                 indexes,
                 json!({
-                    "region": name, "bounds": bounds,
+                    "region": name, "name": region.name, "bounds": bounds,
                     "attribution": attribution("osm-planet"),
                     "landcover_attribution": attribution("daylight-landcover"),
                 }),
@@ -425,7 +445,13 @@ impl Product for Planner {
             )
         });
         match wanted.is_empty() {
-            true => Ok(steps.into()),
+            true => Ok(obc_data::product::Steps {
+                steps,
+                blocked: vec![obc_data::product::BlockedLayer {
+                    layer: "planner/runtime".into(),
+                    reason: "routing and search runtimes have no stored code receipts or verified readiness".into(),
+                }],
+            }),
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
     }
