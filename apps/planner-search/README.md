@@ -63,7 +63,7 @@ integrates installation and readiness.
 pointing; pointing overrides the view. Edited requests bypass inference.
 
 [`runtime.mjs`](runtime.mjs) is shared by the server and the
-[native provider](native/README.md). It retrieves mapped places from SQLite and merges
+[native provider](../../companion-ios/PlannerSearch/README.md). It retrieves mapped places from SQLite and merges
 results across search cells. Search returns plan edits; the client applies them and
 calls its routing service. Search does not call routing.
 
