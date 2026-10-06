@@ -21,35 +21,45 @@ pub enum Switch {
 }
 
 /// An environment file after an edit.
-#[derive(Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Edited {
     pub env: String,
     pub region: String,
     pub layers: Vec<String>,
 }
 
-pub fn region(root: &Path, products: &[&dyn Product], name: &str, id: &str, json: bool) -> Result<(), Error> {
-    print(edit(root, products, name, |env| env.region = id.into())?, json)
+pub fn region(root: &Path, products: &[&dyn Product], name: &str, id: &str) -> Result<Edited, Error> {
+    edit(root, products, name, |env| env.region = id.into())
 }
 
-pub fn layer(
-    root: &Path,
-    products: &[&dyn Product],
-    name: &str,
-    layer: &str,
-    switch: Switch,
-    json: bool,
-) -> Result<(), Error> {
-    let edited = edit(root, products, name, |env| match switch {
+pub fn layer(root: &Path, products: &[&dyn Product], name: &str, layer: &str, switch: Switch) -> Result<Edited, Error> {
+    edit(root, products, name, |env| match switch {
         Switch::On if !env.layers.iter().any(|on| on == layer) => env.layers.push(layer.into()),
         Switch::On => {}
         Switch::Off => env.layers.retain(|on| on != layer),
-    })?;
-    print(edited, json)
+    })
 }
 
 /// Write `data/env/<name>.toml` as git has it in `HEAD`.
-pub fn undo(root: &Path, name: &str, json: bool) -> Result<(), Error> {
+pub fn undo(root: &Path, name: &str) -> Result<Edited, Error> {
+    write_atomic(&Env::path(root, name), &committed(root, name)?)?;
+    current(root, name)
+}
+
+/// The environment file `name` as it is now.
+pub fn current(root: &Path, name: &str) -> Result<Edited, Error> {
+    let env = load(root, name)?.env;
+    Ok(Edited { env: env.name, region: env.region, layers: env.layers })
+}
+
+/// Whether `data/env/<name>.toml` differs from its committed version. Not when it has none.
+pub fn edited(root: &Path, name: &str) -> bool {
+    let now = std::fs::read(Env::path(root, name)).ok();
+    committed(root, name).is_ok_and(|committed| Some(committed) != now)
+}
+
+/// `data/env/<name>.toml` as git has it in `HEAD`.
+fn committed(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
     if !crate::is_kebab(name) {
         return Err(Code::Usage.error(format!("`{name}` is not an environment name")));
     }
@@ -61,9 +71,7 @@ pub fn undo(root: &Path, name: &str, json: bool) -> Result<(), Error> {
         let why = String::from_utf8_lossy(&shown.stderr).trim().to_string();
         return Err(Code::Usage.error(format!("{file} has no committed version: {why}")));
     }
-    write_atomic(&Env::path(root, name), &shown.stdout)?;
-    let env = load(root, name)?.env;
-    print(Edited { env: env.name, region: env.region, layers: env.layers }, json)
+    Ok(shown.stdout)
 }
 
 /// Change the environment `name` and write its file, when the result is valid.
@@ -81,7 +89,7 @@ fn edit(root: &Path, products: &[&dyn Product], name: &str, change: impl FnOnce(
     Ok(Edited { env: env.name, region: env.region, layers: env.layers })
 }
 
-fn print(edited: Edited, json: bool) -> Result<(), Error> {
+pub fn print(edited: Edited, json: bool) -> Result<(), Error> {
     if json {
         return print_json(&edited);
     }
@@ -135,27 +143,27 @@ mod tests {
         let file = || std::fs::read_to_string(root.join("data/env/live.toml")).unwrap();
         let products: &[&dyn Product] = &[&Optional];
 
-        assert!(region(&root, products, "live", "atlantis", false).unwrap_err().message.contains("atlantis"));
-        let snow = layer(&root, products, "live", "snow", Switch::On, false).unwrap_err();
+        assert!(region(&root, products, "live", "atlantis").unwrap_err().message.contains("atlantis"));
+        let snow = layer(&root, products, "live", "snow", Switch::On).unwrap_err();
         assert_eq!(snow.code, Code::Usage, "{}", snow.message);
         assert_eq!(file(), LIVE, "a refused edit changes nothing");
 
-        region(&root, products, "live", "europe/andorra", false).unwrap();
+        region(&root, products, "live", "europe/andorra").unwrap();
         for (name, switch) in [("sun", Switch::On), ("climate", Switch::On), ("sun", Switch::On), ("sun", Switch::Off)]
         {
-            layer(&root, products, "live", name, switch, false).unwrap();
+            layer(&root, products, "live", name, switch).unwrap();
         }
         assert_eq!(file(), "# Live.\nregion = \"europe/andorra\"\nlayers = [\"climate\"]\n");
 
-        let refused = undo(&root, "live", false).unwrap_err();
+        let refused = undo(&root, "live").unwrap_err();
         assert!(refused.message.contains("has no committed version"), "{}", refused.message);
         // The repository is above `root`.
         git(&scratch.0, &["init", "--quiet"]);
         write(&root.join("data/env/live.toml"), LIVE);
         git(&root, &["add", "data/env/live.toml"]);
         git(&root, &["-c", "user.name=test", "-c", "user.email=test@example.org", "commit", "--quiet", "-m", "live"]);
-        region(&root, products, "live", "europe/andorra", false).unwrap();
-        undo(&root, "live", false).unwrap();
+        region(&root, products, "live", "europe/andorra").unwrap();
+        undo(&root, "live").unwrap();
         assert_eq!(file(), LIVE);
     }
 }

@@ -30,7 +30,7 @@ pub struct StatusArgs {
 }
 
 /// What `status` writes.
-#[derive(Serialize, JsonSchema)]
+#[derive(Clone, Serialize, JsonSchema)]
 pub struct Status {
     /// Where live was read: the bucket, or its public URL.
     pub from: String,
@@ -40,17 +40,21 @@ pub struct Status {
     pub check: Option<Check>,
 }
 
-#[derive(Serialize, JsonSchema)]
+#[derive(Clone, Serialize, JsonSchema)]
 pub struct ProductStatus {
     pub product: String,
     /// The id of the live release; `None` when nothing is live.
     pub release: Option<String>,
+    /// The size of the objects of the live release.
+    pub bytes: Option<u64>,
+    /// The optional layers of the product, which `layer live NAME on|off` switches.
+    pub optional: Vec<String>,
     /// Each layer of the environment `live`, in dependency order; `None` when a fetch that its
     /// step list needs failed, and `attention` says why.
     pub layers: Option<Vec<LayerStatus>>,
 }
 
-#[derive(Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct LayerStatus {
     pub layer: String,
     pub state: State,
@@ -58,7 +62,7 @@ pub struct LayerStatus {
 }
 
 /// Something that needs a person.
-#[derive(Serialize, JsonSchema)]
+#[derive(Clone, Serialize, JsonSchema)]
 pub struct Attention {
     pub kind: AttentionKind,
     /// The source, the directory, the product, or `R2`.
@@ -84,7 +88,7 @@ pub enum AttentionKind {
 }
 
 impl AttentionKind {
-    fn text(self) -> &'static str {
+    pub fn text(self) -> &'static str {
         match self {
             AttentionKind::Stale => "stale",
             AttentionKind::Blocked => "blocked",
@@ -97,6 +101,18 @@ impl AttentionKind {
 }
 
 pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -> Result<ExitCode, Error> {
+    let status = read(root, products, check)?;
+    let problems = status.check.as_ref().is_some_and(|check| !check.drift.is_empty() || !check.leftovers.is_empty());
+    if json {
+        print_json(&status)?;
+    } else {
+        print_status(&status);
+    }
+    Ok(if problems { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
+/// What `status` writes; with `check`, what `status --check` writes.
+pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, Error> {
     let (store, registry, mut loaded) = (Store::open()?, registry(root)?, load(root, "live")?);
     let remote = remote()?;
     if check && matches!(remote, Remote::Public(_)) {
@@ -115,8 +131,11 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
     let fetch = fetcher(&store, &http, &loaded.sources, &loaded.env);
     let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
-    let products = live.products.iter().map(|product| {
+    // `Live::read` gives one live product per product, in their order.
+    let products = live.products.iter().zip(products).map(|(product, offered)| {
         let release = product.release.as_ref().map(|(id, _)| id.clone());
+        let bytes = product.release.as_ref().map(|(_, release)| release.objects().values().sum());
+        let optional = offered.optional().iter().map(|layer| layer.to_string()).collect();
         let layers = match layers.remove(&product.product).unwrap_or(Ok(Vec::new())) {
             Ok(layers) => Some(layers),
             Err(reason) => {
@@ -125,7 +144,7 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
                 None
             }
         };
-        ProductStatus { product: product.product.clone(), release, layers }
+        ProductStatus { product: product.product.clone(), release, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
     for row in &rows {
@@ -164,14 +183,7 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
             attention.push(Attention { kind: AttentionKind::Leftovers, about, reason });
         }
     }
-    let problems = check.as_ref().is_some_and(|check| !check.drift.is_empty() || !check.leftovers.is_empty());
-    let status = Status { from: remote.describe().into(), products, attention, check };
-    if json {
-        print_json(&status)?;
-    } else {
-        print_status(&status);
-    }
-    Ok(if problems { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    Ok(Status { from: remote.describe().into(), products, attention, check })
 }
 
 /// The state of each layer of `live`, by product. `Err` with the reason for a product that is
@@ -243,8 +255,9 @@ fn print_status(status: &Status) {
             .release
             .as_ref()
             .map_or("nothing live · not owned until the first apply".into(), |id| format!("release {}", &id[..8]));
+        let size = product.bytes.map_or("—".into(), bytes);
         let Some(layers) = &product.layers else {
-            table.push(vec![product.product.clone(), release, "unknown".into()]);
+            table.push(vec![product.product.clone(), release, size, "unknown".into()]);
             continue;
         };
         let mut counts: Vec<(State, usize)> = Vec::new();
@@ -255,10 +268,10 @@ fn print_status(status: &Status) {
             }
         }
         let counts: Vec<String> = counts.into_iter().map(|(state, n)| format!("{n} {state}")).collect();
-        table.push(vec![product.product.clone(), release, counts.join(" · ")]);
+        table.push(vec![product.product.clone(), release, size, counts.join(" · ")]);
     }
     if !table.is_empty() {
-        table.insert(0, cells(["PRODUCT", "RELEASE", "LAYERS"]));
+        table.insert(0, cells(["PRODUCT", "RELEASE", "SIZE", "LAYERS"]));
         print_table(&table);
     }
     println!("NEEDS ATTENTION");
@@ -292,7 +305,7 @@ fn print_status(status: &Status) {
 }
 
 /// `1 key`, `2 keys`.
-fn keys(count: usize) -> String {
+pub(super) fn keys(count: usize) -> String {
     format!("{count} key{}", if count == 1 { "" } else { "s" })
 }
 
