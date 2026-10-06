@@ -206,7 +206,7 @@ fn manifest_hash(path: &Path) -> Result<String, String> {
     let table = manifest.as_table_mut().ok_or("Cargo.toml is not a table")?;
     table.remove("dev-dependencies");
     if let Some(targets) = table.get_mut("target").and_then(toml::Value::as_table_mut) {
-        for target in targets.values_mut().filter_map(toml::Value::as_table_mut) {
+        for target in targets.iter_mut().filter_map(|(_, target)| target.as_table_mut()) {
             target.remove("dev-dependencies");
         }
         targets.retain(|_, target| target.as_table().is_none_or(|table| !table.is_empty()));

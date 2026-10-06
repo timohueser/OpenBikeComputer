@@ -27,8 +27,6 @@ pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, St
     })
 }
 
-/// Run `argv` in `root` with the request as JSON on standard input. Its standard output goes to
-/// standard error. The usage is that of the process and the children it waited for.
 pub(super) fn command(root: &Path, argv: &[String], python: Option<(&Code, &str)>) -> Result<Command, String> {
     let (program, args) = argv.split_first().ok_or("the command is empty")?;
     let mut command = Command::new(program);
@@ -39,6 +37,8 @@ pub(super) fn command(root: &Path, argv: &[String], python: Option<(&Code, &str)
     Ok(command)
 }
 
+/// Run `argv` in `root` with the request as JSON on standard input. Its standard output goes to
+/// standard error. The usage is that of the process and the children it waited for.
 pub fn run(root: &Path, argv: &[String], request: &Request, python: Option<(&Code, &str)>) -> Result<Usage, String> {
     let mut command = command(root, argv, python)?;
     command.stdin(Stdio::piped()).stdout(std::io::stderr());
