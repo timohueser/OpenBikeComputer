@@ -1,12 +1,13 @@
-//! Live: the region of `data/env/live.toml`, each product with its live release and state, the
-//! optional layers, and what needs attention. It shows what `status` writes.
+//! Live: the region of `data/env/live.toml`, each product with its live release, the day of its
+//! apply and its state, the optional layers, and what needs attention. It shows what `status`
+//! writes.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-use super::{bytes, row_text, state_style, widths, App, Effect, Overlay, Switch, LIVE};
+use super::{bytes, row_text, state_style, widths, App, Effect, Overlay, Switch};
 use crate::cli::status_cli::{AttentionKind, ProductStatus};
 use crate::sources::State;
 
@@ -84,26 +85,16 @@ impl App {
         }
     }
 
-    pub(super) fn live_command(&self) -> String {
-        match self.live_rows().get(self.row) {
-            Some(LiveRow::Region) => "obc data region list".into(),
-            Some(LiveRow::Layer(name)) => {
-                format!("obc data layer {LIVE} {name} {}", if self.layer_on(name) { "off" } else { "on" })
-            }
-            _ if self.status.as_ref().is_some_and(|status| status.check.is_some()) => "obc data status --check".into(),
-            _ => "obc data status".into(),
-        }
-    }
-
     pub(super) fn draw_live(&mut self, frame: &mut Frame, area: Rect) {
         let header = self.status.as_ref().map_or("LIVE".into(), |status| format!("LIVE from {}", status.from));
         let rows = self.live_rows();
         let products = self.status.as_ref().map_or(&[][..], |status| &status.products[..]);
         let attention = self.status.as_ref().map_or(&[][..], |status| &status.attention[..]);
-        let mut table = vec![["PRODUCT", "RELEASE", "SIZE"].map(String::from).to_vec()];
+        let mut table = vec![["PRODUCT", "RELEASE", "APPLIED", "SIZE"].map(String::from).to_vec()];
         table.extend(products.iter().map(|product| {
             let release = product.release.as_ref().map_or("nothing live".into(), |id| format!("release {}", &id[..8]));
-            vec![product.product.clone(), release, product.bytes.map_or("—".into(), bytes)]
+            let applied = product.applied.as_deref().and_then(|time| time.get(..10)).unwrap_or("—");
+            vec![product.product.clone(), release, applied.into(), product.bytes.map_or("—".into(), bytes)]
         }));
         let product_widths = widths(&table);
         let needs: Vec<Vec<String>> =

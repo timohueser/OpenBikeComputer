@@ -159,6 +159,7 @@ fn apply_live(
         let key = format!("{}/catalog.json", switch.prefix);
         let mut document = switch.pointer.document;
         document.insert("release".into(), switch.id.clone().into());
+        document.insert("applied".into(), date::timestamp(date::now()).into());
         let file = write(&scratch, &key, &serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?)?;
         let upload = Upload { cache_control: Some(POINTER_CACHE), content_type: Some(JSON), immutable: false };
         bucket.put(&file, &key, &upload).map_err(r2_failed)?;
@@ -527,8 +528,12 @@ mod tests {
         std::fs::remove_file(dir.join("inputs/objects/fresh")).unwrap();
         let id = checked(&fixture, &remote).unwrap();
         assert_eq!(applied.switched.iter().map(|s| &s.id).collect::<Vec<_>>(), [&id]);
-        let pointer: serde_json::Value = serde_json::from_slice(&keys["test/catalog.json"]).unwrap();
+        let mut pointer: serde_json::Value = serde_json::from_slice(&keys["test/catalog.json"]).unwrap();
+        let applied = pointer.as_object_mut().unwrap().remove("applied").unwrap().as_str().unwrap().to_string();
+        assert!(date::seconds(&applied).unwrap().abs_diff(date::now()) < 600, "the time of the switch: {applied}");
         assert_eq!(pointer, serde_json::json!({"schema": 1, "release": id}));
+        let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        assert_eq!(live.products[0].applied.as_ref(), Some(&applied), "status reads it");
         assert_eq!(keys[&format!("test/releases/{id}/LICENSE.txt")], b"CC0-1.0\n");
         assert_eq!(keys[&format!("inputs/objects/{}", sha256_hex(b"head\n"))], b"head\n", "the input copy");
         assert_eq!(keys["firmware/v1/app.bin"], b"firmware", "an apply never touches another prefix");

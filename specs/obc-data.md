@@ -527,8 +527,8 @@ looks at the steps in dependency order:
 
 A group is one change. Two builds are in the same group when one reads the layer of the other.
 Thus a run of one group never needs a build of another group. Two groups can need the same
-fetch. `--only GROUP,…` selects groups by their `id`. An `id` names a group only in the plan that
-it comes from. A plan of `live` has one group per cause instead: see
+fetch. `--only GROUP,…` selects groups by their `id`, and `--only none` selects no group. An `id`
+names a group only in the plan that it comes from. A plan of `live` has one group per cause instead: see
 [Changes of live](#changes-of-live).
 
 | Key | Value |
@@ -570,8 +570,8 @@ store lacks. Groups come in the order of the table. Two groups can need the same
 
 A plan of `live` takes every group: git holds what live contains, so an edit or a change of the
 code cannot stay out. `--only move:SOURCE,…` selects the moves: a move that it does not select
-does not move, and the steps read the version of live. An explicit `--move` that `--only` leaves
-out gives a warning. Another `id` in `--only` is a usage error.
+does not move, and the steps read the version of live. `--only none` selects no move. An explicit
+`--move` that `--only` leaves out gives a warning. Another `id` in `--only` is a usage error.
 
 The release of a product after a plan is its live release with the `layers` of the groups in place
 of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
@@ -674,10 +674,15 @@ out a product without them: it is in `blocked` with the reason "no client docume
 live release stays. Neither `maps` nor `planner` gives them yet. A product can check a release
 before an apply makes it live; neither `maps` nor `planner` has a check yet.
 
+Each step says whether a client reads its layer: the device, the web planner or a service on the
+VPS. Another layer is intermediate: only other layers read it, and a build makes it again from
+its inputs. R2 holds the files of a client layer only (see [Releases](#releases)).
+
 `plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each source that the plan moves
 (a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
-the step lists read, and `only`, the groups that `--only` selected or `[]` for every group. A plan
+the step lists read, and `only`, the groups that `--only` selected, `[]` for every group or
+`["none"]` for no group. A plan
 of `live` also has:
 
 - `live`: per product, the id of its live release, or `null` when nothing is live.
@@ -733,7 +738,8 @@ are `manual`.
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13); `terrain/empty.json`: the ids of the cells without a height |
 
-`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
+`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id. `maps/osm` is an
+intermediate layer; the other layers are client layers.
 
 #### `planner`
 
@@ -763,7 +769,9 @@ reads no snapshot. No layer reads a national terrain model yet.
 | `planner/sun` | `planner/terrain` | `bounds`, `time_zone` of the region, `distance_m` (`terrain.margin_m`), `horizon_samples` and `horizon_directions` | `sun.pmtiles`: [the sun archive](planner-sun-tiles.md). `terrain_sha256` is the SHA-256 of the PMTiles archive that the step converts from `terrain.mbtiles` |
 
 `climate`, `snow` and `sun` are optional layers: a step only when `layers` of the environment
-names it. The search and the sun layer use the `time_zone` of the region.
+names it. The search and the sun layer use the `time_zone` of the region. `planner/osm`,
+`planner/search/policy`, `planner/search/dump` and `planner/search/records` are intermediate
+layers; the other layers are client layers.
 
 A Python step runs `env PYTHONHASHSEED=0 uv run --locked --offline --group <group> python
 <entry> --step` in the repository root, with the packages of a dependency group of
@@ -789,8 +797,10 @@ the same layers make the same release. `layers` is sorted by `step`, and each la
 | --- | --- |
 | `step`, `key`, `inputs`, `options`, `code`, `command`, `outputs`, `digest`, `files` | As in the [receipt](#receipt) |
 | `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE` of each snapshot that the layer read |
+| `client` | `true` for a client layer, `false` for an intermediate layer (see [Products](#products)) |
 
-The objects of a release are the `files` of its layers.
+The objects of a release are the `files` of its client layers. The manifest also records each
+intermediate layer, so a plan compares it with live and live names the versions that it read.
 
 ### State of a layer
 
@@ -826,10 +836,10 @@ would use is a leftover.
 
 | Key | Holds |
 | --- | --- |
-| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"`. A pointer without `release` names no release: nothing is live |
+| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"` and `"applied"`, the time of the switch. A pointer without `release` names no release: nothing is live |
 | `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
 | `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
-| `<prefix>/objects/<sha256>` | A file of a layer of a release. Immutable |
+| `<prefix>/objects/<sha256>` | A file of a client layer of a release. Immutable |
 | `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read. A record that R2 holds of a version that a live layer read counts, also without `r2_copy` |
 | `inputs/objects/<sha256>` | A file of an input copy. Immutable |
 
@@ -867,7 +877,8 @@ first writes the status, and the second writes an error.
 5. It uploads each key of the releases after the apply and of their input copies that R2 lacks,
    or holds with another size; a key with another size goes first. Then it checks each key.
 6. It writes the pointer of each product whose release changes: the document of the product with
-   `"release": "<id>"`, and `Cache-Control: public, max-age=60, must-revalidate`.
+   `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
+   `Cache-Control: public, max-age=60, must-revalidate`.
 7. It reads live again and lists its prefixes, and `reference/v1` once live reads a `dtm-*`
    source. With drift, it removes nothing. The leftovers are the keys that no live release uses
    and that R2 had 5 minutes before the apply started: a key that another apply uploads and has
@@ -891,7 +902,7 @@ uploads only what R2 still lacks. The objects, manifests and named files are imm
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE 7\|30\|90\|365\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
@@ -1653,7 +1664,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         },
         "only": {
-          "description": "The groups that `--only` selected, or none for every group.",
+          "description": "The groups that `--only` selected: none for every group, `[\"none\"]` for no group.",
           "items": {
             "type": "string"
           },
@@ -2735,6 +2746,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "ProductStatus": {
       "properties": {
+        "applied": {
+          "description": "When an apply made the release live, `YYYY-MM-DDTHH:MM:SSZ`; `None` when nothing is live or\nthe pointer has no time.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "bytes": {
           "description": "The size of the objects of the live release.",
           "format": "uint64",
@@ -2775,6 +2793,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "product",
         "release",
+        "applied",
         "bytes",
         "optional",
         "layers"

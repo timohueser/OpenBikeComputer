@@ -28,7 +28,7 @@ use crate::store::Store;
 pub struct PlanArgs {
     /// The environment: `data/env/ENV.toml`.
     env: String,
-    /// Only these groups, by id. Against `live`, only these moves.
+    /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',')]
     only: Vec<String>,
     /// Read this version of a source instead of the version of live; without a version, the newest
@@ -41,7 +41,7 @@ pub struct PlanArgs {
 pub struct BuildArgs {
     /// The environment: `data/env/ENV.toml`.
     pub(super) env: String,
-    /// Only these groups, by id. Against `live`, only these moves.
+    /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',', conflicts_with = "plan")]
     pub(super) only: Vec<String>,
     /// Build the groups of this output of `plan ENV --json`, with its versions. Exit status 3 when
@@ -71,7 +71,7 @@ pub struct EnvPlan {
     pub live: Vec<LiveRelease>,
     /// For `live`: what the environment file changes against the live releases.
     pub edits: Vec<Edit>,
-    /// The groups that `--only` selected, or none for every group.
+    /// The groups that `--only` selected: none for every group, `["none"]` for no group.
     pub only: Vec<String>,
     pub groups: Vec<Group>,
     /// The products that give no steps for the environment. The others plan without them.
@@ -380,11 +380,20 @@ fn outdated() -> Error {
     Code::PlanOutdated.error("the plan is not the plan of now")
 }
 
+/// `--only none`: no group, or against live no move.
+pub(super) const NONE: &str = "none";
+
 /// The groups that `only` names. Against live, `only` names moves, and the plan keeps every group:
 /// a move that it does not name does not move, and the rest of live follows `data/` and the code.
 fn select(plan: &Plan, only: &[String], live: bool) -> Result<Plan, Error> {
     if only.is_empty() {
         return Ok(plan.clone());
+    }
+    if only.iter().any(|id| id == NONE) {
+        if only.len() > 1 {
+            return Err(Code::Usage.error(format!("`--only {}`: `none` names no other group", only.join(","))));
+        }
+        return Ok(if live { plan.clone() } else { Plan { groups: Vec::new() } });
     }
     if let Some(id) = only.iter().find(|id| live && !id.starts_with("move:")) {
         return Err(Code::Usage.error(format!("`--only {id}`: against live, `--only` selects moves only")));
@@ -676,14 +685,14 @@ fn next(
             drops.chain(&missing).map(String::as_str).filter(mine).map(str::to_string).collect();
         let new: Vec<_> = stored.values().filter(|layer| mine(&layer.step.as_str())).cloned().collect();
         let edited = plan.edits.iter().any(|edit| edit.product() == name);
-        let release = if new.is_empty() && dropped.is_empty() && !edited {
-            now.release.clone()
+        let (release, applied) = if new.is_empty() && dropped.is_empty() && !edited {
+            (now.release.clone(), now.applied.clone())
         } else {
             let live = now.release.as_ref().map(|(_, release)| release);
             let release = Release::compose(name, &plan.region, &optional(*product, &plan.layers), live, new, &dropped);
-            Some((release.id(), release))
+            (Some((release.id(), release)), None)
         };
-        next.products.push(LiveProduct { product: name.into(), prefix: now.prefix.clone(), release });
+        next.products.push(LiveProduct { product: name.into(), prefix: now.prefix.clone(), release, applied });
     }
     let unbuilt = steps.iter().filter(|step| missing.contains(&step.name)).flat_map(|step| &step.inputs);
     let mut reads = next.snapshots();
@@ -1303,6 +1312,9 @@ pub(crate) mod tests {
         assert_eq!(err.code, Code::Usage, "against live, --only selects moves only: {}", err.message);
         let plan = live_plan(&fixture, &remote, &["move:head"]).unwrap();
         assert_eq!((plan.groups.len(), plan.moves.len()), (3, 1), "every group, and the move");
+        let plan = live_plan(&fixture, &remote, &["none"]).unwrap();
+        let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
+        assert_eq!((ids, plan.moves.len()), (vec!["code:test/join", "repair"], 0), "no move");
 
         write(&fixture.root().join("data/regions/andorra.toml"), "name = \"Andorra\"\nkind = \"geofabrik\"\n");
         write(&fixture.root().join("data/env/live.toml"), "region = \"andorra\"\n");
