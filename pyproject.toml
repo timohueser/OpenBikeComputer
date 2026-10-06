@@ -1,5 +1,5 @@
-# The Python packages of the `obc data` steps: one group per kind of step. `uv sync --all-groups`
-# sets up a machine; the steps run `uv run --locked --offline --group <group>`.
+# Python consumers use locked groups. Data steps run their selected group offline.
+# Search environments stay separate because their PyYAML pin differs from the data steps.
 
 [project]
 name = "openbikecomputer-tools"
@@ -20,7 +20,90 @@ terrain-reference = ["rasterio==1.5.2", "pyproj==3.8.0", "numpy==2.5.3"]
 # The search databases, and the country policy that PyYAML reads from the Nominatim archive.
 planner-search = ["orjson==3.12.0", "pyyaml==6.0.2", "shapely==2.1.2", "zstandard==0.25.0"]
 
+dev = ["unittest-xml-reporting==4.0.0", "PyYAML==6.0.2"]
+builder = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
+builder-test = [{ include-group = "builder" }, "pytest>=8.0.0", "httpx>=0.27.0"]
+search-runtime = [
+    "orjson==3.12.0",
+    "shapely==2.1.2",
+    "zstandard==0.25.0",
+    "numpy==2.5.3",
+    "onnxruntime==1.30.0",
+    "tokenizers==0.23.2",
+    "pyyaml==6.0.3",
+    "rapidfuzz==3.14.6",
+    "snowballstemmer==3.1.1",
+]
+search-test = [
+    "iniconfig==2.3.0",
+    "packaging==26.3",
+    "pluggy==1.6.0",
+    "pyflakes==4.0.0",
+    "pygments==2.21.0",
+    "pytest==9.1.1",
+    "pyyaml==6.0.3",
+    "rapidfuzz==3.14.6",
+    "snowballstemmer==3.1.1",
+]
+search-training = [
+    "annotated-doc==0.0.5",
+    "anyio==4.15.1",
+    "brotli==1.2.0",
+    "certifi==2026.7.22",
+    "click==8.5.0",
+    "filelock==4.0.4",
+    "flatbuffers==25.12.19",
+    "fsspec==2026.9.0",
+    "h11==0.16.0",
+    "hf-xet==1.6.0",
+    "httpcore==1.0.9",
+    "httpx==0.28.1",
+    "huggingface-hub==1.33.0",
+    "idna==3.20",
+    "jinja2==3.1.6",
+    "markdown-it-py==4.2.0",
+    "markupsafe==3.0.3",
+    "mdurl==0.1.2",
+    "ml-dtypes==0.6.0",
+    "mpmath==1.3.0",
+    "networkx==3.7",
+    "numpy==2.5.3",
+    "onnx==1.23.0",
+    "onnx-ir==1.0.0",
+    "onnxruntime==1.30.0",
+    "onnxscript==0.7.2",
+    "packaging==26.3",
+    "protobuf==7.36.2",
+    "psutil==7.2.2",
+    "pygments==2.21.0",
+    "pyyaml==6.0.3",
+    "rapidfuzz==3.14.6",
+    "regex==2026.9.10",
+    "rich==15.0.0",
+    "safetensors==0.8.0",
+    "setuptools==84.0.0",
+    "shellingham==1.5.4",
+    "snowballstemmer==3.1.1",
+    "sympy==1.14.0",
+    "tokenizers==0.23.2",
+    "torch==2.14.0",
+    "tqdm==4.70.1",
+    "transformers==5.17.0",
+    "typer==0.27.2",
+    "typing-extensions==4.16.0",
+]
+desktop-e2e = ["selenium==4.35.0"]
+
 [tool.uv]
 package = false
-# The oldest uv that reads uv.lock and runs `uv run --group`.
-required-version = ">=0.5.0"
+default-groups = []
+conflicts = [
+    [{ group = "desktop-e2e" }, { group = "search-training" }],
+    [{ group = "dev" }, { group = "search-runtime" }],
+    [{ group = "dev" }, { group = "search-test" }],
+    [{ group = "dev" }, { group = "search-training" }],
+    [{ group = "planner-search" }, { group = "search-runtime" }],
+    [{ group = "planner-search" }, { group = "search-test" }],
+    [{ group = "planner-search" }, { group = "search-training" }],
+]
+required-version = ">=0.8.17"
