@@ -1207,6 +1207,7 @@ mod tests {
             _config: &obc_pack::config::Config,
             _out_dir: &Path,
             opts: &CutOptions,
+            _progress: &Progress,
         ) -> Result<obc_pack::cut::CutSummary, String> {
             let cells = opts
                 .bands
