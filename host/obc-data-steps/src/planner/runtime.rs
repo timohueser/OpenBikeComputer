@@ -26,6 +26,7 @@ struct Config {
 struct Probe {
     builder: Value,
     paths: Vec<String>,
+    files: Vec<String>,
 }
 
 fn argv() -> Vec<String> {
@@ -102,7 +103,7 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
                 result.steps.push(Step {
                     name,
                     inputs: Vec::new(),
-                    options: json!({"service": service, "target": target, "builder": probe.builder}),
+                    options: json!({"service": service, "target": target, "builder": probe.builder, "files": probe.files}),
                     code: Code {
                         paths,
                         crates: if service == "routing" { vec!["route-server".into()] } else { Vec::new() },
@@ -233,7 +234,7 @@ mod tests {
             assert_eq!(root, fixture.0);
             assert_eq!(target["triple"], "x86_64-unknown-linux-gnu");
             assert_eq!(target.get("node").is_some(), service == "search");
-            Ok(Probe { builder: json!({"kind": "native"}), paths: Vec::new() })
+            Ok(Probe { builder: json!({"kind": "native"}), paths: Vec::new(), files: Vec::new() })
         });
         assert_eq!(found.steps.len(), 3);
         assert_eq!(found.blocked.len(), 1);

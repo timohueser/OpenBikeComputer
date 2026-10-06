@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 
 from tools import step_request
 
@@ -70,6 +71,7 @@ def native(service, wanted):
         raise ValueError("Builder glibc exceeds the configured runtime baseline")
     tools = {"kind": "native", "glibc": release}
     if service == "routing":
+        tools["release_profile"] = release_profile()
         tools["rustc"] = run(["rustc", "--version", "--verbose"], env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).strip()
         tools["cargo"] = run(["cargo", "--version"], env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).strip()
         tools["cc"] = run(["cc", "--version"]).splitlines()[0]
@@ -104,7 +106,15 @@ def builder(service, wanted, choice):
         cache = os.environ.get("OBC_PLANNER_RUNTIME_CARGO_HOME")
         if cache and any((Path(cache) / name).exists() for name in ("config", "config.toml")):
             raise ValueError("Container Cargo cache has external configuration; use a cache without config files")
-    return {"kind": "container", "image": image}
+    result = {"kind": "container", "image": image}
+    if service == "routing":
+        result["release_profile"] = release_profile()
+    return result
+
+
+def release_profile():
+    profile = tomllib.loads((ROOT / "Cargo.toml").read_text()).get("profile", {}).get("release", {})
+    return hashlib.sha256(encoded(profile)).hexdigest()
 
 
 def local_docker():
@@ -116,7 +126,7 @@ def local_docker():
 
 def code_paths(service):
     if service == "routing":
-        return [name for name in ("LICENSE", "rust-toolchain.toml", ".cargo/config.toml") if (ROOT / name).is_file()]
+        return [name for name in ("LICENSE", "THIRD-PARTY.md", "rust-toolchain.toml", ".cargo/config.toml") if (ROOT / name).is_file()]
     if service == "downloads":
         return ["LICENSE", *(f"tools/{name}" for name in DOWNLOAD_FILES)]
     source = ROOT / "apps/planner-search"
@@ -142,16 +152,21 @@ def npm_packages(tree):
     return selected
 
 
-def copy_service(root, output):
-    for name in SERVICE_FILES:
+def service_files():
+    root = ROOT / "apps/planner-search"
+    names = [*SERVICE_FILES, *(path.name for path in sorted(root.glob("LICENSE.*")))]
+    return sorted(set(filter(None, run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *names], cwd=root).split("\0"))))
+
+
+def copy_service(root, output, files):
+    if files != sorted(set(files)):
+        raise ValueError("Service source files must be sorted and unique")
+    for name in files:
+        if Path(name).is_absolute() or Path(name).as_posix() != name or ".." in Path(name).parts:
+            raise ValueError("Invalid service source file")
         source, dest = root / name, output / name
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_dir():
-            shutil.copytree(source, dest, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        else:
-            shutil.copyfile(source, dest)
-    for source in root.glob("LICENSE.*"):
-        shutil.copyfile(source, output / source.name)
+        shutil.copyfile(source, dest)
     (output / "package.json").write_bytes(encoded({"type": "module"}))
 
 
@@ -159,6 +174,14 @@ def copy_downloads(root, output):
     (output / "tools").mkdir()
     for name in DOWNLOAD_FILES:
         shutil.copyfile(root / name, output / "tools" / name)
+
+
+def routing_notices(triple):
+    heading = f"## Linux routing service (`route-server`, `{triple}`)\n"
+    document = (ROOT / "THIRD-PARTY.md").read_text()
+    if heading not in document:
+        raise ValueError("Regenerate the Linux routing notices with obc licenses")
+    return heading + document.split(heading, 1)[1].split("\n## ", 1)[0]
 
 
 def elf_requirements(directory, wanted):
@@ -201,7 +224,7 @@ def archive(directory, output):
 def container(request):
     output = Path(request["output"])
     child = {**request, "output": "/work/output", "metrics": "/work/metrics.json"}
-    argv = ["docker", "run", "--rm", "--pull=never", "--network=none", "--read-only", "--tmpfs", "/tmp",
+    argv = ["docker", "run", "--interactive", "--rm", "--pull=never", "--network=none", "--read-only", "--tmpfs", "/tmp",
             "--user", f"{os.getuid()}:{os.getgid()}", "--mount", f"type=bind,source={ROOT},target=/src,readonly",
             "--mount", f"type=bind,source={output.parent},target=/work", "--workdir", "/src"]
     if "CARGO_BUILD_JOBS" in os.environ:
@@ -228,7 +251,7 @@ def build(request, inside=False):
         container(request)
         return
     actual = native(service, wanted)
-    if not inside and actual != fingerprint:
+    if not inside and actual != fingerprint or service == "routing" and actual.get("release_profile") != fingerprint.get("release_profile"):
         raise ValueError("Prepared runtime tools changed; plan again")
     output = Path(request["output"])
     with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
@@ -246,6 +269,7 @@ def build(request, inside=False):
             (payload / "bin").mkdir()
             shutil.copyfile(work / "target" / wanted["triple"] / "release/route-server", payload / "bin/route-server")
             (payload / "bin/route-server").chmod(0o755)
+            (payload / "THIRD-PARTY.md").write_text(routing_notices(wanted["triple"]))
         elif service == "search":
             source = ROOT / "apps/planner-search"
             app = work / "dependencies"
@@ -255,7 +279,7 @@ def build(request, inside=False):
             run(["npm", "ci", "--offline", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--bin-links=false"], cwd=app, env=env)
             packages = npm_packages(json.loads(run(["npm", "ls", "--all", "--omit=dev", "--json", "--long"], cwd=app, env=env)))
             shutil.copytree(app / "node_modules", payload / "node_modules")
-            copy_service(source, payload)
+            copy_service(source, payload, options["files"])
             requirements = work / "requirements.txt"
             run(["uv", "export", "--locked", "--offline", "--no-default-groups", "--group", "search-runtime", "--no-emit-project", "--no-header", "--no-annotate", "--output-file", str(requirements)], env=env)
             python = os.environ.get("OBC_PLANNER_RUNTIME_PYTHON", "python3")
@@ -263,7 +287,7 @@ def build(request, inside=False):
             if (payload / "python/bin").exists():
                 shutil.rmtree(payload / "python/bin")
             shutil.copyfile(requirements, payload / "requirements.txt")
-            run([python, "-c", "import numpy,onnxruntime,tokenizers,rapidfuzz,snowballstemmer,yaml"], env={**env, "PYTHONPATH": str(payload / "python")})
+            run([python, "-S", "-c", "import numpy,onnxruntime,tokenizers,rapidfuzz,snowballstemmer,yaml"], env={**env, "PYTHONPATH": str(payload / "python")})
         else:
             copy_downloads(ROOT / "tools", payload)
             python = os.environ.get("OBC_PLANNER_RUNTIME_PYTHON", "python3")
@@ -289,7 +313,7 @@ def main():
     if args.probe:
         wanted = target(json.load(sys.stdin), args.probe)
         print(json.dumps({"builder": builder(args.probe, wanted, os.environ.get("OBC_PLANNER_RUNTIME_BUILDER", "native")),
-                          "paths": code_paths(args.probe)}, sort_keys=True))
+                          "paths": code_paths(args.probe), "files": service_files() if args.probe == "search" else []}, sort_keys=True))
     elif args.step:
         build(step_request.read(), args.inside)
     else:

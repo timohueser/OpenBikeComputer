@@ -63,6 +63,46 @@ class RuntimeBuild(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unpinned"):
             runtime.npm_packages({"dependencies": {"production": {"version": "1.0.0"}}})
 
+    def test_search_copies_only_identity_covered_files_without_container_git(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / "apps/planner-search"
+            (app / "web/vendor").mkdir(parents=True)
+            (app / ".gitignore").write_text("web/vendor/\n")
+            (app / "server.mjs").write_text("export const service = true;\n")
+            (app / "web/view.mjs").write_text("export const view = true;\n")
+            (app / "web/vendor/local.mjs").write_text("ignored host content\n")
+            subprocess.run(["git", "init", "--quiet"], cwd=app, check=True, capture_output=True)
+            with patch.object(runtime, "ROOT", root):
+                files = runtime.service_files()
+            self.assertEqual(files, ["server.mjs", "web/view.mjs"])
+            payload = root / "payload"
+            payload.mkdir()
+            with patch.object(runtime, "run", side_effect=AssertionError("container copy must not use Git")):
+                runtime.copy_service(app, payload, files)
+            self.assertEqual((payload / "web/view.mjs").read_bytes(), (app / "web/view.mjs").read_bytes())
+            self.assertFalse((payload / "web/vendor").exists())
+
+    def test_routing_profile_and_selected_notices_ignore_unrelated_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[profile.release]\nopt-level = 3\n')
+            heading = "## Linux routing service (`route-server`, `x86_64-unknown-linux-gnu`)\n"
+            notices = root / "THIRD-PARTY.md"
+            notices.write_text(heading + "\nHTTP library licence.\n\n## Other artifact\n\nOther licence.\n")
+            with patch.object(runtime, "ROOT", root):
+                first = runtime.release_profile()
+                selected = runtime.routing_notices(TARGET["triple"])
+                manifest.write_text('[profile.release]\nopt-level = 3\n[workspace.dependencies]\nunrelated = "2"\n')
+                self.assertEqual(runtime.release_profile(), first)
+                notices.write_text(heading + "\nHTTP library licence.\n\n## Other artifact\n\nChanged licence.\n")
+                self.assertEqual(runtime.routing_notices(TARGET["triple"]), selected)
+                manifest.write_text('[profile.release]\nopt-level = 2\n')
+                self.assertNotEqual(runtime.release_profile(), first)
+                with self.assertRaisesRegex(ValueError, "Regenerate"):
+                    runtime.routing_notices("aarch64-unknown-linux-gnu")
+
     def test_archived_download_service_imports_without_a_checkout_or_site_packages(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -109,7 +149,7 @@ class RuntimeBuild(unittest.TestCase):
                 runtime.builder("routing", TARGET, "docker:" + image)
             self.assertEqual(run.call_count, 1)
         with patch.dict(os.environ, {}, clear=True), patch.object(runtime, "run", side_effect=['"unix:///local.sock"', json.dumps(record)]) as run:
-            self.assertEqual(runtime.builder("routing", TARGET, "docker:" + image), {"kind": "container", "image": image})
+            self.assertEqual(runtime.builder("routing", TARGET, "docker:" + image), {"kind": "container", "image": image, "release_profile": runtime.release_profile()})
             self.assertEqual(run.call_args.args[0], ["docker", "image", "inspect", image])
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "output"
@@ -119,6 +159,7 @@ class RuntimeBuild(unittest.TestCase):
                 runtime.container(request)
                 argv = run.call_args.args[0]
                 self.assertIn("--network=none", argv)
+                self.assertIn("--interactive", argv)
                 self.assertIn("--pull=never", argv)
                 self.assertNotIn("UV_PYTHON=/laptop/python", argv)
                 self.assertIn("CARGO_BUILD_JOBS=2", argv)
