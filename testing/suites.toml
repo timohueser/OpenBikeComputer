@@ -335,8 +335,6 @@ fixtures = ["captured-met", "legacy-library"]
 platforms = ["macos"]
 triggers = [
   "companion-ios/Packages/OBCKit/Package.swift",
-  "apps/obc-ios-host/**",
-  "firmware/obc-link/**",
   "tools/build-ios-host.sh",
   "companion-ios/Packages/OBCKit/Sources/**",
   "companion-ios/Packages/OBCKit/Tests/**",
@@ -543,7 +541,7 @@ id = "ci.ios-app-build"
 scoped = true
 rust_packages = ["route-server", "obc-ios-host"]
 # The phone library disables the HTTP feature.
-rust_excludes = ["apps/route-server/src/http.rs"]
+rust_excludes = ["apps/route-server/src/http.rs", "firmware/obc-app/src/harness/**"]
 route = "ordinary"
 command = "tools/build-ios-host.sh --sim-only && xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
@@ -588,7 +586,7 @@ id = "ci.ios-release-build"
 scoped = true
 rust_packages = ["route-server", "obc-ios-host"]
 # The phone library disables the HTTP feature.
-rust_excludes = ["apps/route-server/src/http.rs"]
+rust_excludes = ["apps/route-server/src/http.rs", "firmware/obc-app/src/harness/**"]
 route = "ordinary"
 command = "tools/build-ios-host.sh --sim-only && xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
 jobs = ["ios-release"]
