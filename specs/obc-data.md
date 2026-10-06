@@ -674,6 +674,12 @@ artifacts fail verification before upload. An unchanged pick can reuse prior ver
 
 ### Runs
 
+A mutating preparation, build or apply owns one run. It starts after argument and consent
+preconditions, before authorized input preparation. The caller finishes it once, after its
+last phase. An apply keeps the run through release verification, upload, pointer switches,
+the retention wait and cleanup. A repair with no layer builds still has a run. A read-only
+plan creates none. A failure after the run starts returns its id in `error.run`.
+
 A run fetches the fetches of a plan, one after another, with the fetchers of [Fetch](#fetch).
 Then it builds the builds of the plan. A layer that a planned step reads, and that the plan does
 not build, must be in the store. A planned key that is not the key of the step now fails the run
@@ -701,13 +707,21 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 | `event` | Keys |
 | --- | --- |
 | `started` | `command`, and `at` (`YYYY-MM-DDTHH:MM:SSZ`) |
+| `phase` | `phase`: `prepare`, `build`, `verify`, `upload`, `switch`, `wait` or `cleanup` |
+| `published` | `mutation`: an acknowledged upload key, product and release switch, or removed key and size |
 | `fetch_started` | `source`, `version` and `params` |
-| `fetch_finished` | `source`, `version`, `params`, `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
+| `fetch_finished` | `source`, `version`, `params`, `resolved` (the acquired version), `bytes` (the size of the files that the fetch gave, downloaded or found in the store) and `wall_ms` |
 | `fetch_failed` | `source`, `version`, `params` and `error` |
 | `step_started` | `step` |
 | `step_finished` | `step`, `reused` and `receipt` |
 | `step_failed` | `step` and `error` |
 | `finished` | `ok`, `error` (`null` when `ok`) and `wall_ms` |
+
+A discovery fetch without a pin uses `newest` as its request version. Its finished event
+records the acquired version separately. `runs RUN` gives the last phase and acknowledged
+remote writes, also after a later phase fails. An acknowledged write is not proof that later
+verification passes. An interrupted write can have an unknown remote outcome. The ordinary
+run journal does not make publication atomic or recover an interrupted commit.
 
 ### Versions
 
@@ -789,7 +803,16 @@ VPS. Other files are intermediate: only other layers read them. R2 holds only se
 (see [Releases](#releases)). The selection changes the recipe and the release, but not the layer
 key: a change in selection reuses the same bytes.
 
-`plan ENV` plans the steps of every product together. `--json` writes the plan with `env`,
+`plan ENV` plans the steps of every product together. It prepares no bulk inputs, also with
+`--move`. Small discovery metadata uses the status allowlist. `needs_prepare` is true when
+input discovery cannot resolve the graph. Blocked readiness alone does not set it. The
+blocked reason names the unavailable input or credential.
+
+`prepare ENV` explicitly acquires inputs that discovery needs. It builds no layers and uploads
+nothing. Its JSON is `{run, plan}`. Review and save the nested `plan` object for replay.
+Missing credentials or an upstream failure keep their actionable error and the run id.
+
+`--json` writes the plan with `env`,
 `region` and `layers` of the environment, `moves`, the version of each source that the plan moves
 (a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
 the step lists read, and `only`, the groups that `--only` selected, `[]` for every group or
@@ -820,6 +843,7 @@ step lists read the `versions` of the file and no other version, and it moves th
 fetch fails, the command fails with its code, and a fix that says to plan again when the fetch
 gives none. It refuses the file, with exit status 3, before it builds:
 
+- when `needs_prepare` is true, before any preparation fetch; prepare and review a new plan;
 - when `env`, `region`, `layers`, `blocked`, `live` or `edits` differ from the environment, its
   products and live now;
 - when a step list reads a fetch that `versions` does not name;
@@ -1095,6 +1119,8 @@ first writes the status, and the second writes an error.
    and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan; the plan must
    be the plan of now, as for `build --plan`. Without a terminal, `--yes` or `--plan` is the
    consent. When live has every change and nothing is to be removed, it applies nothing.
+   An unresolved preview is refused before preparation. Use `prepare live`, review the
+   resulting plan and save it before applying. A no-op still returns a finished run.
 3. It builds the plan, as `build live --plan` does.
 4. It checks each release that changes: the check of its product, and its pointer. Each file
    that it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
@@ -1136,7 +1162,8 @@ uploads only what R2 still lacks. The objects, manifests and named files are imm
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the old cache directories with their files and sizes. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
-| `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It fetches what a step list depends on, see [Products](#products). `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
+| `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
+| `obc data prepare ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | Explicit input preparation. Returns `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
 | `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
 | `obc data apply live [--plan FILE] [--yes] [--json]` | Builds the plan of live, uploads what R2 lacks, switches the pointers and removes what no live release uses, as [Apply](#apply) says. Writes what it uploaded, switched and removed |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
@@ -1269,6 +1296,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
+| `prepare` | `Prepared` |
 | `build` | `Built` |
 | `apply` | `Applied` |
 | `runs` | `RunList` |
@@ -1303,6 +1331,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "run": {
+          "type": "string"
+        },
         "switched": {
           "description": "The release of each product whose pointer it switched.",
           "items": {
@@ -1319,6 +1350,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
+        "run",
         "built",
         "uploaded",
         "switched",
@@ -1473,11 +1505,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "run": {
-          "description": "`None` when there was nothing to fetch or build.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "The operation journal, including preparation and release creation.",
+          "type": "string"
         }
       },
       "required": [
@@ -1689,6 +1718,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "outcome": {
           "$ref": "#/$defs/Outcome"
         },
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Phase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "published": {
+          "items": {
+            "$ref": "#/$defs/Publication"
+          },
+          "type": "array"
+        },
         "started": {
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
           "type": "string"
@@ -1719,6 +1764,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "bytes_fetched",
         "bytes_built",
         "error",
+        "phase",
+        "published",
         "fetches",
         "steps"
       ],
@@ -1913,6 +1960,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "Source move intent: an explicit version, or each request's newest version. Exact resolved\nversions are in `versions`; fetching never changes this intent.",
           "type": "object"
         },
+        "needs_prepare": {
+          "description": "Discovery could not resolve the step graph. Prepare and review a new plan before replay.",
+          "type": "boolean"
+        },
         "only": {
           "description": "The groups that `--only` selected: none for every group, `[\"none\"]` for no group.",
           "items": {
@@ -1950,7 +2001,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "groups",
         "blocked",
         "remove",
-        "listed"
+        "listed",
+        "needs_prepare"
       ],
       "type": "object"
     },
@@ -1965,6 +2017,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "message": {
           "type": "string"
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2025,6 +2083,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "event",
             "command",
             "at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "phase",
+              "type": "string"
+            },
+            "phase": {
+              "$ref": "#/$defs/Phase"
+            }
+          },
+          "required": [
+            "event",
+            "phase"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "const": "published",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/Publication"
+            }
+          },
+          "required": [
+            "event",
+            "mutation"
           ],
           "type": "object"
         },
@@ -2095,6 +2187,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               },
               "type": "array"
             },
+            "resolved": {
+              "type": "string"
+            },
             "source": {
               "type": "string"
             },
@@ -2112,6 +2207,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "source",
             "version",
             "params",
+            "resolved",
             "bytes",
             "wall_ms"
           ],
@@ -2781,6 +2877,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Phase": {
+      "enum": [
+        "prepare",
+        "build",
+        "verify",
+        "upload",
+        "switch",
+        "wait",
+        "cleanup"
+      ],
+      "type": "string"
+    },
     "PlanBuild": {
       "additionalProperties": false,
       "properties": {
@@ -3062,6 +3170,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Prepared": {
+      "description": "Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/EnvPlan"
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "plan"
+      ],
+      "type": "object"
+    },
     "ProductStatus": {
       "properties": {
         "applied": {
@@ -3117,6 +3241,72 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers"
       ],
       "type": "object"
+    },
+    "Publication": {
+      "description": "A remote write that acknowledged success. Verification can still fail afterward.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "uploaded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "switched",
+              "type": "string"
+            },
+            "product": {
+              "type": "string"
+            },
+            "release": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "product",
+            "release"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "bytes"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Receipt": {
       "additionalProperties": false,
@@ -3578,6 +3768,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "resolved": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "type": "string"
         },
@@ -3596,6 +3792,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "source",
         "version",
+        "resolved",
         "params",
         "bytes",
         "wall_ms",

@@ -934,6 +934,9 @@ fn steps_lines(run: &Details) -> Vec<Line<'static>> {
     let widths = widths(&table);
     let mut lines: Vec<Line> = table.iter().map(|cells| Line::from(row_text(cells, &widths))).collect();
     lines[0] = lines[0].clone().dim();
+    if let Some(phase) = run.phase {
+        lines.insert(0, Line::from(format!("{phase:?} · {} remote writes acknowledged", run.published.len())));
+    }
     lines.extend(run.error.clone().map(|error| Line::styled(error, Color::Red)));
     lines
 }
@@ -1106,6 +1109,7 @@ mod tests {
             "blocked": [{"product": "maps", "reason": "source `wikidata` is blocked", "layers": []}],
             "remove": [{"key": "planner/objects/aa", "bytes": 1_100_000_000}, {"key": "planner/objects/bb", "bytes": 5_000_000}],
             "listed": false,
+            "needs_prepare": false,
         }))
         .unwrap()
     }
@@ -1133,6 +1137,8 @@ mod tests {
                 bytes_built: 10,
             },
             error: None,
+            phase: None,
+            published: Vec::new(),
             fetches: Vec::new(),
             steps: Vec::new(),
         };

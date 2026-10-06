@@ -13,6 +13,8 @@ pub struct Error {
     pub code: Code,
     pub message: String,
     pub fix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
 }
 
 /// What `--json` writes when a command fails.
@@ -91,8 +93,28 @@ impl Code {
     }
 
     pub fn error(self, message: impl Into<String>) -> Error {
-        Error { code: self, message: message.into(), fix: self.fix().into() }
+        Error { code: self, message: message.into(), fix: self.fix().into(), run: None }
     }
+}
+
+/// Finish the caller's journal once, while retaining the original operation failure.
+pub(super) fn finish_run<T>(
+    run: crate::engine::runs::Run,
+    mut result: Result<T, Error>,
+    incomplete: Option<&str>,
+) -> Result<T, Error> {
+    let id = run.id().to_string();
+    let finished = run.finish(result.as_ref().err().map(|error| error.message.as_str()).or(incomplete));
+    if let Err(message) = finished {
+        match &mut result {
+            Err(error) => error.message += &format!("; the run journal could not finish: {message}"),
+            Ok(_) => result = Err(Code::Failed.error(message)),
+        }
+    }
+    result.map_err(|mut error| {
+        error.run = Some(id);
+        error
+    })
 }
 
 impl From<String> for Error {
@@ -115,9 +137,19 @@ impl Error {
             println!("{}", serde_json::to_string(&Failure { error: self }).expect("an error serializes"));
         } else {
             eprintln!("obc data: {}\n{}", self.message, self.fix);
+            if let Some(run) = &self.run {
+                eprintln!("run {run}; `obc data runs {run}` shows its events");
+            }
         }
         ExitCode::from(self.code.exit())
     }
+}
+
+pub(super) fn start_run(store: &crate::store::Store, command: &str) -> Result<crate::engine::runs::Run, Error> {
+    let run = crate::engine::runs::Run::create(store, command)?;
+    let id = run.id();
+    eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
+    Ok(run)
 }
 
 /// The rule of every command that changes live: it asks in a terminal. Without a terminal it
@@ -172,6 +204,7 @@ mod tests {
             schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
+            schema("`prepare`", generator.subschema_for::<build_cli::Prepared>()),
             schema("`build`", generator.subschema_for::<build_cli::Built>()),
             schema("`apply`", generator.subschema_for::<apply_cli::Applied>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
