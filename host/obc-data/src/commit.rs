@@ -32,6 +32,7 @@ pub struct Owner {
     state: State,
     path: PathBuf,
     _lock: File,
+    _run_lock: File,
 }
 
 impl Owner {
@@ -46,6 +47,15 @@ impl Owner {
             .open(directory.join("owner.lock"))
             .map_err(|e| e.to_string())?;
         inherit_lock(&lock)?;
+        let digest = sha256_hex(bundle);
+        let run_lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(directory.join(format!("{run}-{digest}.owner.lock")))
+            .map_err(|e| e.to_string())?;
+        inherit_lock(&run_lock)?;
         let path = directory.join(format!("{run}.json"));
         for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
@@ -60,7 +70,6 @@ impl Owner {
                 }
             }
         }
-        let digest = sha256_hex(bundle);
         let state = if path.exists() {
             let state: State =
                 serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -71,9 +80,43 @@ impl Owner {
         } else {
             State { run: run.into(), bundle: digest, pending: None, finished: false }
         };
-        let owner = Self { state, path, _lock: lock };
+        let owner = Self { state, path, _lock: lock, _run_lock: run_lock };
         owner.save()?;
+        durable(&directory.join("owner.active"), &serde_json::to_vec(&owner.state).map_err(|e| e.to_string())?)?;
         Ok(owner)
+    }
+
+    /// A retained mutator child counts as ownership too. No PID or service name proves it.
+    pub fn active(directory: &Path, run: &str, bundle: &str) -> Result<bool, String> {
+        let lock = match File::open(directory.join("owner.lock")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        let run_lock = match File::open(directory.join(format!("{run}-{bundle}.owner.lock"))) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        let held = || {
+            for file in [&lock, &run_lock] {
+                match file.try_lock() {
+                    Ok(()) => return Ok(false),
+                    Err(std::fs::TryLockError::WouldBlock) => {}
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
+                }
+            }
+            Ok(true)
+        };
+        if !held()? {
+            return Ok(false);
+        }
+        let state: State = match std::fs::read(directory.join("owner.active")) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        Ok(state.run == run && state.bundle == bundle && held()?)
     }
 
     pub fn finished(&self) -> bool {
@@ -232,10 +275,17 @@ mod tests {
         let directory = fixture.store.root().join("commits");
         let owner = Owner::open(&directory, "2026-10-06-120000", b"bundle").unwrap();
         let mut child = Command::new("sh").args(["-c", "read value"]).stdin(Stdio::piped()).spawn().unwrap();
+        assert!(Owner::active(&directory, "2026-10-06-120000", &sha256_hex(b"bundle")).unwrap());
         drop(owner);
+        assert!(
+            Owner::active(&directory, "2026-10-06-120000", &sha256_hex(b"bundle")).unwrap(),
+            "the child retains the run and global locks"
+        );
+        assert!(!Owner::active(&directory, "2026-10-06-120001", &sha256_hex(b"other")).unwrap());
         assert!(Owner::open(&directory, "2026-10-06-120001", b"other").is_err());
         child.stdin.take().unwrap().write_all(b"done\n").unwrap();
         assert!(child.wait().unwrap().success());
+        assert!(!Owner::active(&directory, "2026-10-06-120000", &sha256_hex(b"bundle")).unwrap());
         assert!(Owner::open(&directory, "2026-10-06-120001", b"other").is_ok());
     }
 }

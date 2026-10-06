@@ -29,14 +29,14 @@ use crate::store::Store;
 #[derive(Args)]
 pub struct PlanArgs {
     /// The environment: `data/env/ENV.toml`.
-    env: String,
+    pub(super) env: String,
     /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',')]
-    only: Vec<String>,
+    pub(super) only: Vec<String>,
     /// Read this version of a source instead of the version of live; without a version, the newest
     /// version upstream. A `manual` source moves only this way.
     #[arg(long = "move", value_name = "SOURCE[@VERSION]")]
-    moves: Vec<String>,
+    pub(super) moves: Vec<String>,
 }
 
 #[derive(Args)]

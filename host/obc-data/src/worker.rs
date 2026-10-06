@@ -50,6 +50,13 @@ pub fn check(root: &Path) -> Result<(), String> {
     BINDING.get().map_or(Ok(()), |binding| verify(binding, root))
 }
 
+/// A detached request needs an actual launcher binding, not an ambient environment value.
+pub fn bound_code(root: &Path) -> Result<String, String> {
+    let binding = BINDING.get().ok_or("start detached operations through the fresh producer launcher")?;
+    verify(binding, root)?;
+    Ok(binding.code.clone())
+}
+
 fn verify(binding: &Binding, root: &Path) -> Result<(), String> {
     if root.canonicalize().map_err(|e| e.to_string())? != binding.root || fingerprint(root)? != binding.code {
         return Err(RESTART.into());

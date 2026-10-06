@@ -155,8 +155,7 @@ impl Run {
             let id = if n == 1 { base.clone() } else { format!("{base}-{n}") };
             let Some(lock) = store.try_lock(&format!("run-{id}"))? else { continue };
             let path = store.run(&id);
-            std::fs::create_dir_all(path.parent().expect("a run file has a directory"))
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            crate::commit::durable_directory(path.parent().expect("a run file has a directory"))?;
             let file = match OpenOptions::new().append(true).create_new(true).open(&path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
@@ -164,6 +163,8 @@ impl Run {
             };
             let mut run = Run { id, file, start: Instant::now(), _lock: lock };
             run.record(&Event::Started { command: command.into(), at })?;
+            run.sync()?;
+            File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
             return Ok(run);
         }
         unreachable!("the ids never run out")
@@ -177,6 +178,13 @@ impl Run {
         let mut line = serde_json::to_string(event).map_err(|e| e.to_string())?;
         line.push('\n');
         self.file.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.id))
+    }
+
+    pub fn check_stop(&self, store: &Store) -> Result<(), String> {
+        if crate::operation::stopped(store, self.id())? {
+            return Err("stopped after the current work; no publication handoff started".into());
+        }
+        Ok(())
     }
 
     /// Flush the acknowledgement that a commit intent depends on.
@@ -241,6 +249,7 @@ impl Run {
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
+        self.check_stop(store)?;
         crate::worker::check(root)?;
         let _using = store.using()?;
         if limits.jobs == 0 {
@@ -287,8 +296,15 @@ impl Run {
         let (mut running, mut reserved, mut rust_running) = (0, 0, false);
         let (sender, receiver) = mpsc::channel();
         std::thread::scope(|scope| loop {
+            if failure.is_none() {
+                failure = self.check_stop(store).err();
+            }
             let mut i = 0;
             while failure.is_none() && i < pending.len() {
+                if let Err(error) = self.check_stop(store) {
+                    failure = Some(error);
+                    break;
+                }
                 let step = pending[i];
                 if !step.layers().all(|name| done.contains_key(name)) {
                     i += 1;
@@ -380,6 +396,7 @@ impl Run {
 
     fn fetch(&mut self, context: &Context, plan: &Plan) -> Result<(), String> {
         for planned in plan.fetches() {
+            self.check_stop(context.store)?;
             let source = context.sources.iter().find(|known| known.id == planned.source).ok_or_else(|| {
                 format!(
                     "fetch {}@{}: no source `{}` in data/sources.toml",
@@ -402,6 +419,7 @@ impl Run {
         request: &fetch::Request<'_>,
         files: &[String],
     ) -> Result<crate::store::Snapshot, String> {
+        self.check_stop(store)?;
         let (source, version, params) = (
             request.source.id.clone(),
             request.version.clone().unwrap_or_else(|| "newest".into()),
@@ -551,7 +569,7 @@ pub fn follow(store: &Store, id: &str, mut each: impl FnMut(&Event) -> Result<()
         if reader.read(&mut each)? {
             return Ok(());
         }
-        if store.try_lock(&format!("run-{id}"))?.is_some() {
+        if !store.is_locked(&format!("run-{id}"))? {
             // Its process ended without `finished`; read what it wrote before it ended.
             reader.read(&mut each)?;
             return Ok(());
@@ -568,6 +586,18 @@ pub fn list(store: &Store) -> Result<Vec<Summary>, String> {
 pub fn details(store: &Store, id: &str) -> Result<Details, String> {
     let runs = all(store)?;
     let at = runs.iter().position(|run| run.summary.id == id).ok_or_else(|| format!("no run `{id}`"))?;
+    Ok(with_history(&runs, at))
+}
+
+/// A checked remote journal changes this returned view only; the local files stay unchanged.
+pub fn observed(store: &Store, id: &str, journal: &[Event]) -> Result<Details, String> {
+    let local = events(store, id)?;
+    if !journal.starts_with(&local) {
+        return Err("owner journal differs from the originating operation".into());
+    }
+    let mut runs = all(store)?;
+    let at = runs.iter().position(|run| run.summary.id == id).ok_or_else(|| format!("no run `{id}`"))?;
+    runs[at] = from_events(id.into(), journal.to_vec(), false);
     Ok(with_history(&runs, at))
 }
 
@@ -617,10 +647,22 @@ fn all(store: &Store) -> Result<Vec<Details>, String> {
 /// A run file that cannot be read is a run that failed, unless its process still runs.
 fn read_run(store: &Store, id: String) -> Result<Details, String> {
     // The lock before the events: a run that ends after this has its `finished` in the file.
-    let running = store.try_lock(&format!("run-{id}"))?.is_none();
-    let mut run = Details {
+    let running = store.is_locked(&format!("run-{id}"))?;
+    let mut run = blank(&id, running);
+    let events = match events(store, &id) {
+        Ok(events) => events,
+        Err(e) => {
+            run.error = Some(e);
+            return Ok(run);
+        }
+    };
+    Ok(from_events(id, events, running))
+}
+
+fn blank(id: &str, running: bool) -> Details {
+    Details {
         summary: Summary {
-            id: id.clone(),
+            id: id.into(),
             command: String::new(),
             started: String::new(),
             outcome: if running { Outcome::Running } else { Outcome::Failed },
@@ -633,19 +675,16 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
         published: Vec::new(),
         fetches: Vec::new(),
         steps: Vec::new(),
-    };
-    let events = match events(store, &id) {
-        Ok(events) => events,
-        Err(e) => {
-            run.error = Some(e);
-            return Ok(run);
-        }
-    };
+    }
+}
+
+fn from_events(id: String, events: Vec<Event>, running: bool) -> Details {
+    let mut run = blank(&id, running);
     let Some(Event::Started { command, at }) = events.first() else {
         if !running {
             run.error = Some(format!("run {id}: it does not start with `started`"));
         }
-        return Ok(run);
+        return run;
     };
     (run.summary.command, run.summary.started) = (command.clone(), at.clone());
     // A version fetched with two sets of params is two fetches.
@@ -709,7 +748,7 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
             }
         }
     }
-    Ok(run)
+    run
 }
 
 /// Reads the complete lines of a run file, and keeps its place for the lines that follow.

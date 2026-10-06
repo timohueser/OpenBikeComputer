@@ -5,9 +5,11 @@
 mod api;
 mod apply_cli;
 mod build_cli;
+pub use build_cli::EnvPlan;
 pub mod commit_cli;
 mod edit_cli;
 mod freshness;
+pub mod operation_cli;
 mod r2_cli;
 mod regions_cli;
 mod runs_cli;
@@ -46,6 +48,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    Perform {
+        #[arg(long)]
+        store: std::path::PathBuf,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        request: String,
+    },
     /// What is live: the release of each product, the state of its layers, and what needs attention.
     Status(status_cli::StatusArgs),
     /// Every source with licence, R2 copy, live version, newest upstream version, age, policy and
@@ -82,13 +93,12 @@ enum Command {
     Undo { env: String },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
-    /// Resolve the environment's inputs and return a plan for review. Nothing builds or uploads.
+    /// Start durable input preparation and return its run handle. Nothing builds or uploads.
     Prepare(build_cli::PlanArgs),
-    /// Fetch and build the environment into the store, and write the release of each product
-    /// whose every layer is built. Nothing uploads.
+    /// Start a durable build into the store and return its run handle. Nothing uploads.
     Build(build_cli::BuildArgs),
-    /// Build the plan of live, upload what R2 lacks, switch the pointers, and remove from R2 what no
-    /// live release uses. Asks once; without a terminal, `--yes` or `--plan` is required.
+    /// Review live, start its durable build/publication, and return a run handle.
+    /// Asks once; without a terminal, `--yes` or `--plan` is required.
     Apply(apply_cli::ApplyArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
@@ -140,6 +150,9 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Some(command) => command,
     };
     let done = match command {
+        Command::Perform { store, run, request } => {
+            return operation_cli::perform(&Store::at(store), &run, &request, products).map(|()| ExitCode::SUCCESS);
+        }
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
         Command::Fetch { target, params } => {
@@ -188,9 +201,9 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         }
         Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
-        Command::Prepare(args) => build_cli::prepare(&root()?, products, args, json),
-        Command::Build(args) => build_cli::build(&root()?, products, args, json),
-        Command::Apply(args) => apply_cli::apply(&root()?, products, args, json),
+        Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
+        Command::Build(args) => operation_cli::build(&root()?, args, json),
+        Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

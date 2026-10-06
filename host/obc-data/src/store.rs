@@ -116,6 +116,20 @@ impl Store {
         }
     }
 
+    /// Inspect an existing owner lock without creating a file or a directory.
+    pub fn is_locked(&self, key: &str) -> Result<bool, String> {
+        let file = match File::open(self.lock_path(key)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.to_string()),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(false),
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(e)) => Err(e.to_string()),
+        }
+    }
+
     /// The shared lock that a fetch, a build or an import holds while it adds objects and their
     /// records. A collection waits for no holder: it refuses to start.
     pub fn using(&self) -> Result<Lock, String> {
@@ -130,12 +144,16 @@ impl Store {
     }
 
     fn lock_file(&self, key: &str) -> Result<(File, PathBuf), String> {
-        let name: String =
-            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
-        let path = self.root.join("locks").join(format!("{name}.lock"));
+        let path = self.lock_path(key);
         create_parent(&path)?;
         let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path);
         Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
+    }
+
+    fn lock_path(&self, key: &str) -> PathBuf {
+        let name: String =
+            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
+        self.root.join("locks").join(format!("{name}.lock"))
     }
 
     pub(crate) fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
