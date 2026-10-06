@@ -46,19 +46,34 @@ pub fn timestamp(seconds: u64) -> String {
     format!("{}T{:02}:{:02}:{:02}Z", format((seconds / 86_400) as i64), time / 3600, time / 60 % 60, time % 60)
 }
 
-/// A UTC time that starts `YYYY-MM-DDTHH:MM:SS`, such as an upload time on R2, as seconds since
-/// 1970-01-01; the rest, such as fractions of a second, is left out.
+/// An RFC 3339 time, `YYYY-MM-DDTHH:MM:SS` with an optional fraction and then `Z`, `+HH:MM` or
+/// `-HH:MM`, as seconds since 1970-01-01 UTC; the fraction is left out. R2 writes `Z`; rclone's
+/// local backend writes the offset of the local zone.
 pub fn seconds(text: &str) -> Option<u64> {
-    let (day, time) = (text.get(..10)?, text.get(10..19)?);
-    let [hours, minutes, seconds]: [u64; 3] = time
-        .strip_prefix('T')?
-        .split(':')
-        .map(|part| part.parse().ok())
-        .collect::<Option<Vec<_>>>()?
-        .try_into()
-        .ok()?;
-    let days = u64::try_from(parse(day)?).ok()?;
-    (hours < 24 && minutes < 60 && seconds < 60).then(|| days * 86_400 + hours * 3600 + minutes * 60 + seconds)
+    let two = |part: Option<&str>| part.filter(|p| p.len() == 2 && p.bytes().all(|b| b.is_ascii_digit()))?.parse().ok();
+    let day = parse(text.get(..10)?)?;
+    if (text.get(10..11)?, text.get(13..14)?, text.get(16..17)?) != ("T", ":", ":") {
+        return None;
+    }
+    let (hours, minutes, seconds): (i64, i64, i64) =
+        (two(text.get(11..13))?, two(text.get(14..16))?, two(text.get(17..19))?);
+    if hours > 23 || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    let zone = text.get(19..)?.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let offset = match (zone, zone.get(..1), zone.get(3..4)) {
+        ("Z", _, _) => 0,
+        (_, Some(sign @ ("+" | "-")), Some(":")) if zone.len() == 6 => {
+            let offset: i64 = two(zone.get(1..3))? * 3600 + two(zone.get(4..6))? * 60;
+            if sign == "+" {
+                offset
+            } else {
+                -offset
+            }
+        }
+        _ => return None,
+    };
+    u64::try_from(day * 86_400 + hours * 3600 + minutes * 60 + seconds - offset).ok()
 }
 
 /// The day of an HTTP date such as `Sun, 06 Nov 1994 08:49:37 GMT`, as `YYYY-MM-DD`.
@@ -116,7 +131,11 @@ mod tests {
         }
         assert_eq!(timestamp(86_400 + 3_723), "1970-01-02T01:02:03Z");
         assert_eq!(seconds("1970-01-02T01:02:03.278071679Z"), Some(86_400 + 3_723), "an R2 upload time");
-        assert_eq!(seconds("1970-01-02T25:02:03Z"), None);
+        assert_eq!(seconds("1970-01-02T03:02:03.5+02:00"), Some(86_400 + 3_723), "a local backend time");
+        assert_eq!(seconds("1970-01-01T20:32:03-04:30"), Some(86_400 + 3_723));
+        for bad in ["1970-01-02T25:02:03Z", "1970-01-02T01:02:03", "1970-01-02T01:02:03+2", "1970-01-02 01:02:03Z"] {
+            assert_eq!(seconds(bad), None, "{bad}");
+        }
         assert_eq!(from_http("Mon, 05 Oct 2026 03:43:59 GMT").as_deref(), Some("2026-10-05"));
         assert_eq!(from_http("Mon, 32 Oct 2026 03:43:59 GMT"), None);
         assert_eq!(from_http("yesterday"), None);

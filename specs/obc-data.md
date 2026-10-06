@@ -869,11 +869,18 @@ first writes the status, and the second writes an error.
 6. It writes the pointer of each product whose release changes: the document of the product with
    `"release": "<id>"`, and `Cache-Control: public, max-age=60, must-revalidate`.
 7. It reads live again and lists its prefixes, and `reference/v1` once live reads a `dtm-*`
-   source. With drift, it removes nothing. The keys to remove are those that no live release
-   uses and that R2 had before the apply started: a key of another apply that runs now stays.
-8. When there are keys to remove, it waits until 10 minutes after the newest pointer, so a client
-   that read an old pointer finishes its downloads, also after an apply that stopped in the wait.
-   Then it removes the keys, with a line in `removed.jsonl`.
+   source. With drift, it removes nothing. The leftovers are the keys that no live release uses
+   and that R2 had 5 minutes before the apply started: a key that another apply uploads and has
+   not switched to yet stays.
+8. A client that read an old pointer finishes its downloads first. So while there are leftovers,
+   the apply waits until 12 minutes after the time of the newest pointer on R2 (10 minutes, and 2
+   for a clock that differs), and 10 minutes after its own switch. When no pointer time reads, it
+   waits 10 minutes. Then it reads and lists again, as in step 7, and removes the leftovers of
+   that read only, with a line in `removed.jsonl`: another apply can switch during the wait. An
+   apply that stopped in the wait waits again.
+
+An apply removes the leftovers of step 7, not the `remove` list of the plan, which is an estimate.
+A record on R2 of a version that live reads stays, also when `r2_copy` of its source is off now.
 
 An apply that stops before step 6 leaves live as it was, and the same plan applies again: it
 uploads only what R2 still lacks. The objects, manifests and named files are immutable, with

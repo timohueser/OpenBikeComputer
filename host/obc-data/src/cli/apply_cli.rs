@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Args;
 use schemars::JsonSchema;
@@ -21,9 +21,20 @@ use crate::r2::{Bucket, Object, Scratch, Upload};
 use crate::sources::Source;
 use crate::store::{hash_file, write_atomic, Store};
 
-/// How long the files of the releases before a switch stay on R2 after the newest pointer: a
-/// client that read an old pointer finishes its downloads.
-const WAIT: Duration = Duration::from_secs(600);
+/// How long the files of the releases before a switch stay on R2: a client that read an old
+/// pointer finishes its downloads.
+#[derive(Clone, Copy)]
+struct Wait {
+    /// After the switch of this apply, and after the time of the newest pointer on R2.
+    pointer: Duration,
+    /// More after the time of a pointer on R2, whose clock is not the clock of this machine.
+    clock: Duration,
+}
+
+const WAIT: Wait = Wait { pointer: Duration::from_secs(600), clock: Duration::from_secs(120) };
+
+/// Seconds before the start of an apply in which a key can be one of another apply.
+const YOUNG: u64 = 300;
 
 /// A pointer is at most this old in a cache, so a switch reaches every client soon.
 const POINTER_CACHE: &str = "public, max-age=60, must-revalidate";
@@ -107,7 +118,7 @@ fn question(plan: &EnvPlan) -> String {
 }
 
 /// Apply `saved`, or else the plan of now. `ask` gets the plan before anything changes. The
-/// removal waits until `wait` after the newest pointer.
+/// removal waits as `wait` says.
 #[allow(clippy::too_many_arguments)]
 fn apply_live(
     root: &Path,
@@ -117,7 +128,7 @@ fn apply_live(
     products: &[&dyn Product],
     saved: Option<&EnvPlan>,
     ask: impl FnOnce(&EnvPlan) -> Result<(), Error>,
-    wait: Duration,
+    wait: Wait,
 ) -> Result<Applied, Error> {
     let start = date::now();
     let Remote::Bucket(bucket) = remote else {
@@ -155,17 +166,46 @@ fn apply_live(
         switched.push(BuiltRelease { product: switch.product.into(), id: switch.id });
     }
 
+    let switch = (!switched.is_empty()).then(Instant::now);
     let sources = registry(root)?.sources;
-    let (removed, newest) = leftovers(remote, products, &sources, store, start)?;
-    if !removed.is_empty() {
-        let until = newest + wait.as_secs();
-        if let Some(left) = until.checked_sub(date::now()).filter(|left| *left > 0) {
-            eprintln!("obc data: the old releases stay {left} s more for clients that read an old pointer");
-            std::thread::sleep(Duration::from_secs(left));
-        }
-        bucket.delete(&removed, "obc data apply live: no live release uses it").map_err(r2_failed)?;
-    }
+    let removed = remove(bucket, (remote, products, &sources, store), start, switch, wait)?;
     Ok(Applied { built: Some(built), uploaded, switched, removed })
+}
+
+/// Remove what no live release uses once no client can still read an older pointer: `wait` after
+/// the newest pointer on R2, and after `switch`, the switch of this apply. Each round reads live
+/// and lists R2 again, and the removal takes the leftovers of the last round only: another apply
+/// can switch during the wait.
+fn remove(
+    bucket: &Bucket,
+    reader: (&Remote, &[&dyn Product], &[Source], &Store),
+    start: u64,
+    switch: Option<Instant>,
+    wait: Wait,
+) -> Result<Vec<Object>, Error> {
+    let since = |instant: Instant| wait.pointer.saturating_sub(instant.elapsed());
+    let mut unknown = None;
+    loop {
+        let (leftovers, newest) = leftovers(reader, start)?;
+        if leftovers.is_empty() {
+            return Ok(leftovers);
+        }
+        let by_clock = match newest {
+            Some(newest) => {
+                let until = newest + (wait.pointer + wait.clock).as_secs();
+                Duration::from_secs(until.saturating_sub(date::now()))
+            }
+            // No time of a pointer reads: the whole wait, from the first round.
+            None => since(*unknown.get_or_insert_with(Instant::now)),
+        };
+        let left = by_clock.max(switch.map_or(Duration::ZERO, since));
+        if left.is_zero() {
+            bucket.delete(&leftovers, "obc data apply live: no live release uses it").map_err(r2_failed)?;
+            return Ok(leftovers);
+        }
+        eprintln!("obc data: the old releases stay {} s more for clients that read an old pointer", left.as_secs());
+        std::thread::sleep(left);
+    }
 }
 
 /// Build `plan`, check its releases and upload what R2 lacks. Live does not change.
@@ -357,15 +397,13 @@ fn upload(bucket: &Bucket, listed: &[Object], files: &[File]) -> Result<Vec<Stri
 }
 
 /// What an apply removes, from one read of live and one listing: the keys under the prefixes of
-/// live that no live release uses and that R2 had before `start`, and the time of the newest
-/// pointer. Drift is an error: a listing that lacks a key of live is no ground for a removal.
+/// live that no live release uses and that R2 had [`YOUNG`] before `start`, and the time of the
+/// newest pointer, when one reads. Drift is an error: a listing that lacks a key of live is no
+/// ground for a removal.
 fn leftovers(
-    remote: &Remote,
-    products: &[&dyn Product],
-    sources: &[Source],
-    store: &Store,
+    (remote, products, sources, store): (&Remote, &[&dyn Product], &[Source], &Store),
     start: u64,
-) -> Result<(Vec<Object>, u64), Error> {
+) -> Result<(Vec<Object>, Option<u64>), Error> {
     let live = Live::read(remote, products, sources, store).map_err(r2_failed)?;
     let mut listed = Vec::new();
     for prefix in live.swept() {
@@ -378,9 +416,9 @@ fn leftovers(
     }
     let pointers: Vec<String> = live.releases().map(|(prefix, _, _)| format!("{prefix}/catalog.json")).collect();
     let switched = listed.iter().filter(|object| pointers.contains(&object.key));
-    let newest = switched.filter_map(|object| date::seconds(&object.modified)).max().unwrap_or(0);
-    // A key of another apply that runs now is newer than this one.
-    let older = |object: &Object| date::seconds(&object.modified).is_some_and(|modified| modified < start);
+    let newest = switched.filter_map(|object| date::seconds(&object.modified)).max();
+    // A key that another apply uploads now, but has not switched to yet, is young.
+    let older = |object: &Object| date::seconds(&object.modified).is_some_and(|modified| modified + YOUNG < start);
     Ok((check.leftovers.into_iter().filter(older).collect(), newest))
 }
 
@@ -398,6 +436,8 @@ mod tests {
     use crate::regions::Regions;
     use crate::sources::parse_sources;
     use crate::store::sha256_hex;
+
+    const NO_WAIT: Wait = Wait { pointer: Duration::ZERO, clock: Duration::ZERO };
 
     /// A repository whose `data/` git has, `head@2020-01-01` in the store, and a local bucket with a
     /// firmware file and the removal log.
@@ -422,7 +462,7 @@ mod tests {
 
     fn apply(fixture: &Fixture, remote: &Remote, products: &[&dyn Product]) -> Result<Applied, Error> {
         let (root, http) = (fixture.root(), Http::new());
-        apply_live(&root, &fixture.store, &http, remote, products, None, |_| Ok(()), Duration::ZERO)
+        apply_live(&root, &fixture.store, &http, remote, products, None, |_| Ok(()), NO_WAIT)
     }
 
     /// Every file in the local bucket.
@@ -627,8 +667,7 @@ mod tests {
         let copy = format!("inputs/objects/{}", sha256_hex(b"head\n"));
         assert!(staged.contains(&copy), "{staged:?}");
 
-        let retry =
-            apply_live(&root, &fixture.store, &http, &remote, &products, Some(&plan), |_| Ok(()), Duration::ZERO);
+        let retry = apply_live(&root, &fixture.store, &http, &remote, &products, Some(&plan), |_| Ok(()), NO_WAIT);
         let retry = retry.unwrap();
         assert!(retry.uploaded.is_empty(), "nothing uploads twice: {:?}", retry.uploaded);
         assert_eq!((retry.switched.len(), retry.removed.len()), (1, 0));
