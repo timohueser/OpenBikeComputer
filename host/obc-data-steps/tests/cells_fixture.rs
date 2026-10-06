@@ -231,8 +231,29 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     );
     let catalog: obc_pack::catalog::Catalog = serde_json::from_value(pointer.document.into()).unwrap();
     assert_eq!(catalog.schema.sha256, release.named.iter().find(|file| file.path == "schema.json").unwrap().sha256);
-    assert_eq!(catalog.regions.len(), 1);
-    assert!(catalog.regions[0].article_bytes.unwrap() > 0);
+    assert_eq!(
+        catalog.regions.iter().map(|region| region.id.as_str()).collect::<BTreeSet<_>>(),
+        [AREA, "grimsel-box"].into()
+    );
+    let selected = catalog.regions.iter().find(|region| region.id == env.region).unwrap();
+    assert!(selected.article_bytes.unwrap() > 0);
+    for region in &catalog.regions {
+        let named = release.named.iter().find(|file| file.path == format!("regions/{}/cells.json", region.id)).unwrap();
+        assert_eq!((&named.sha256, named.size), (&region.cells_sha256, region.cells_bytes));
+        let cells: obc_pack::catalog::RegionCellsDocument =
+            serde_json::from_slice(&std::fs::read(store.object(&named.sha256)).unwrap()).unwrap();
+        assert_eq!((cells.region_id.as_str(), &cells.schema_sha256), (region.id.as_str(), &catalog.schema.sha256));
+        assert_eq!(
+            cells.cells.iter().map(|(band, ids)| (band.clone(), ids.len() as u32)).collect::<BTreeMap<_, _>>(),
+            region.cell_count
+        );
+    }
+    let source = release.layers.iter().find(|layer| layer.step == format!("maps/source/{AREA}")).unwrap();
+    assert!(source.client_files().next().is_none());
+    for name in [EXTRACTS, "geofabrik-poly"] {
+        let read = &source.snapshots[name];
+        assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
+    }
     assert!(release
         .layers
         .iter()
