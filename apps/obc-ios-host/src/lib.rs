@@ -11,6 +11,7 @@
 
 pub mod client;
 pub mod ffi;
+mod route_codec;
 mod sensors;
 #[cfg(test)]
 mod tests;
