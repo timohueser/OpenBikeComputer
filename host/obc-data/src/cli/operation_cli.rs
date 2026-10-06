@@ -292,7 +292,7 @@ fn finish_result(store: &Store, run: &str, mut result: Result<(), Error>) -> Res
 
 pub(super) fn plan_path() -> Result<Option<PathBuf>, String> {
     let session = SESSION.get().ok_or("worker has no operation request")?;
-    Ok(session
+    session
         .control
         .request
         .plan
@@ -300,7 +300,7 @@ pub(super) fn plan_path() -> Result<Option<PathBuf>, String> {
         .map(|_| {
             operation::directory(&session.store, &session.control.run).map(|directory| directory.join("plan.json"))
         })
-        .transpose()?)
+        .transpose()
 }
 
 pub(super) fn request() -> Result<&'static Request, String> {
