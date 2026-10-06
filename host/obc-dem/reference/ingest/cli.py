@@ -28,6 +28,7 @@ from . import publish, wizard
 from .archive import (ingest_rasters, load_manifests, local_rasters, rebuild_index, read_index,
                       tile_path, tile_problems, tile_digest, write_manifest)
 from .lattice import Refuse, box_tiles, check_world, tile_bounds, tile_id
+from .pool import read_source
 from .sources import SOURCES, ManualSource
 
 
@@ -107,7 +108,7 @@ def command_fetch(args) -> int:
     Each raster goes to `--out` at its path under `--work`, or under the delivery of a row
     without a service, with its `.prj` when it has one. `--work` keeps what the adapter
     downloaded, so a run that failed reuses it. A box where the product has no data writes
-    nothing.
+    nothing: a raster without a height is no data.
     """
 
     bbox = parse_bbox(args.bbox)
@@ -122,12 +123,20 @@ def command_fetch(args) -> int:
         if not base.name or not base.is_dir():
             raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
                          f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
+        # `obc data` runs the fetch in the repository root, not where the variable was set.
+        if not base.is_absolute():
+            raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
         require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
         rasters = local_rasters(source, base, bbox, work)
     else:
         source.require_credential()
         base = work
-        rasters = source.fetch(bbox, work)
+        # Outside its `extent` the product has no data, so only the overlap is downloaded.
+        west, south, east, north = source.extent
+        bbox = (max(bbox[0], west), max(bbox[1], south), min(bbox[2], east), min(bbox[3], north))
+        rasters = source.fetch(bbox, work) if bbox[0] < bbox[2] and bbox[1] < bbox[3] else []
+    # A service answers a box outside its model with a raster of voids.
+    rasters = [raster for raster in rasters if read_source(raster, source.grid_crs())[4] < 1]
     for raster in rasters:
         # `local_rasters` unpacks a zip, and places a grid without a `.prj`, in the work directory.
         fetched = work.resolve() in raster.resolve().parents

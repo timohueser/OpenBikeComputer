@@ -275,13 +275,11 @@ jobs:
         run: |
           rm -rf .artifacts/python/firmware-tools
           python3 -m xmlrunner discover -s firmware/tools/tests -v -o .artifacts/python/firmware-tools
-      - name: Install the reference archive tool dependencies (rasterio, pyproj)
-        run: pip install --group terrain-reference
       - name: reference archive ingest unit tests
         id: python-dem-reference
         run: |
           rm -rf .artifacts/python/dem-reference
-          python3 -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference
+          uv run --locked --group terrain-reference --with-requirements tools/requirements-test.txt python -m xmlrunner discover -s host/obc-dem/reference/tests -v -o .artifacts/python/dem-reference
       - name: Upload reference archive Python test results
         if: ${{ !cancelled() && (steps.python-dem-reference.outcome == 'success' || steps.python-dem-reference.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

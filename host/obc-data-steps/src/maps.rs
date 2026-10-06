@@ -189,11 +189,7 @@ fn reference(
     let params = vec![("bbox".to_string(), format!("{west},{south},{east},{north}"))];
     let name = leaf_layer("maps/reference", leaf);
     let (mut inputs, mut models, mut missing) = (Vec::new(), Vec::new(), false);
-    for source in sources::all() {
-        let Some([w, s, e, n]) = source.extent else { continue };
-        if east < w || west > e || north < s || south > n {
-            continue;
-        }
+    for source in sources::all().iter().filter(|source| source.meets([west, south, east, north])) {
         match version(env, store, &source.id, &params).map_err(Unplanned::Failed)? {
             Ok(version) => {
                 let files = snapshot_files(store, &source.id, &version, &params, &[]).map_err(Unplanned::Failed)?;
@@ -598,6 +594,7 @@ pub(crate) mod tests {
         assert_eq!(read, [("dtm-ch", "1")]);
         assert_eq!(reference.inputs.len(), 1, "a model without data adds nothing");
         assert_eq!(models[0]["credit"], "© swisstopo");
+        assert!(!reference.client, "only the terrain step reads the national models");
         assert!(!reference.options["tiles"].as_array().unwrap().is_empty());
         let terrain = steps.iter().find(|step| step.name == "maps/terrain/0037-0033").unwrap();
         assert!(matches!(terrain.inputs.last(), Some(Input::Layer { name, .. }) if *name == reference.name));
@@ -608,15 +605,16 @@ pub(crate) mod tests {
         let temp = temp("credential");
         let store = Store::at(temp.0.join("store"));
         with_tile_list(&store, &[]);
-        let region = "name = \"Copenhagen\"\nkind = \"box\"\nbox = [12.5, 55.6, 12.6, 55.7]\n";
-        let regions = Regions::new(vec![obc_data::regions::parse_region("copenhagen", region).unwrap()]).unwrap();
+        // West Jutland: only the box of `dtm-dk` meets the terrain cells of the leaf.
+        let region = "name = \"Jutland\"\nkind = \"box\"\nbox = [8.2, 56.0, 8.3, 56.1]\n";
+        let regions = Regions::new(vec![obc_data::regions::parse_region("jutland", region).unwrap()]).unwrap();
         let (env, _) = grimsel("1");
-        let env = Env { region: "copenhagen".into(), ..env };
+        let env = Env { region: "jutland".into(), ..env };
         let token = sources::embedded("dtm-dk").credential.as_ref().unwrap();
         match Maps.steps(&env, &regions, &store) {
             Err(Unplanned::Invalid(reason)) => {
                 assert!(!token.present());
-                let blocked = "maps/reference/0038-0033 reads `dtm-dk`, which is blocked: credential missing";
+                let blocked = "maps/reference/0038-0032 reads `dtm-dk`, which is blocked: credential missing";
                 assert_eq!(reason, format!("{blocked}: OBC_REFERENCE_DK_TOKEN"));
             }
             // A machine with the token fetches the model.

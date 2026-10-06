@@ -10,6 +10,7 @@ carry a one-pixel rock tower without spreading it over its neighbours.
 import hashlib
 import json
 import os
+import shutil
 import sys
 import unittest
 import unittest.mock
@@ -441,9 +442,9 @@ class Fetch(ArchiveCase):
             def fetch(self, bbox, workdir):
                 (workdir / "a.d").mkdir(parents=True)
                 (workdir / "a.zip").write_bytes(b"download")
-                (workdir / "a.d/a.prj").write_text("crs")
+                (workdir / "a.d/a.prj").write_text(LV95.to_wkt())
                 raster = workdir / "a.d/a.asc"
-                raster.write_text("grid")
+                raster.write_text(f"ncols 1\nnrows 1\nxllcorner {EAST}\nyllcorner {NORTH}\ncellsize 1\n1000\n")
                 return [raster]
 
         real = ingest.SOURCES["ch"]
@@ -456,18 +457,42 @@ class Fetch(ArchiveCase):
         self.assertEqual(moved, ["a.d/a.asc", "a.d/a.prj"])
         self.assertTrue((work / "a.zip").is_file())
 
+    def fetch(self, key, bbox):
+        """`ingest.py fetch` of `key` and `bbox`: its exit code and the files it wrote."""
+
+        out = self.root / "out"
+        shutil.rmtree(out, ignore_errors=True)
+        code = ingest.main(["fetch", key, "--bbox", bbox, "--work", str(self.root / "work"), "--out", str(out)])
+        return code, sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
+
     def test_a_box_without_data_is_a_fetch_without_files(self):
-        class Nothing(ingest.Source):
+        """A STAC search that finds no item, as Lower Saxony answers a box where it has no tile."""
+
+        empty = json.dumps({"type": "FeatureCollection", "features": [], "links": []}).encode()
+        with unittest.mock.patch.object(ingest.sources.stac, "http_get", return_value=empty) as search:
+            self.assertEqual(self.fetch("de-ni", "9,53.9,9.1,54"), (0, []))
+        self.assertIn("bbox=9.0,53.9,9.1,54.0", search.call_args.args[0])
+
+    def test_a_raster_without_a_height_is_no_data_and_a_box_asks_only_inside_the_extent(self):
+        """A service answers a box outside its model with a raster of voids."""
+
+        class Service(ingest.Source):
+            boxes = []
+
             def fetch(self, bbox, workdir):
-                return []
+                self.boxes.append(bbox)
+                workdir.mkdir(parents=True, exist_ok=True)
+                void = np.full((SIDE, SIDE), -9999.0, dtype="float32")
+                return [source_raster(workdir / "void.tif", void, nodata=-9999.0),
+                        source_raster(workdir / "data.tif", plateau_with_tower())]
 
         real = ingest.SOURCES["ch"]
-        ingest.SOURCES["ch"] = Nothing("ch", "Testland", "test", 1.0, "CC0", "EGM2008")
+        ingest.SOURCES["ch"] = Service("ch", "Testland", "test", 1.0, "CC0", "EGM2008")
         self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
-        out = self.root / "out"
-        code = ingest.main(["fetch", "ch", "--bbox", "8,46,9,47", "--work", str(self.root / "work"),
-                            "--out", str(out)])
-        self.assertEqual((code, list(out.rglob("*"))), (0, []))
+        # The row `dtm-ch` has the extent [5.9, 45.8, 10.5, 47.9].
+        self.assertEqual(self.fetch("ch", "10,47,11,48"), (0, ["data.tif"]))
+        self.assertEqual(self.fetch("ch", "11,47,12,48"), (0, []))
+        self.assertEqual(Service.boxes, [(10.0, 47.0, 10.5, 47.9)])
 
     def test_a_delivery_is_fetched_from_the_directory_that_the_environment_names(self):
         """A row without a service reads its delivery like a credential, and leaves it as it is."""
@@ -480,6 +505,8 @@ class Fetch(ArchiveCase):
             self.assertEqual(ingest.main(fetch), 1, "the datum of the order is not confirmed")
             os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
             self.assertEqual(ingest.main(fetch), 0)
+            os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
+            self.assertEqual(ingest.main(fetch), 1, "a relative path names another directory in the step")
         self.assertEqual([path.relative_to(out) for path in out.rglob("*.tif")], [Path("order/dem.tif")])
         self.assertTrue(raster.is_file())
 

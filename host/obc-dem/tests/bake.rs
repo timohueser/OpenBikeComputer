@@ -406,6 +406,11 @@ fn the_terrain_step_reads_its_reference_layer_as_the_archive_of_the_old_bake() {
         lifted += i32::from(new[new.len() - 512..] != plain.unwrap()[..]);
     }
     assert!(lifted >= 2, "the cone on the seam lifts the cells either side of it");
+    let credits: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(output.join("terrain/credits.json")).unwrap()).unwrap();
+    let keys: Vec<&str> = credits.iter().map(|credit| credit["key"].as_str().unwrap()).collect();
+    let archived: Vec<&str> = archive.credits().iter().map(|credit| credit.key.as_str()).collect();
+    assert_eq!(keys, archived, "the layer credits the model that lifts its cells");
 }
 
 /// The rule itself, over an archive: the tower is lifted to its own height, the steep plane it

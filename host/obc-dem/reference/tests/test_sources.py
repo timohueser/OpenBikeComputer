@@ -716,16 +716,6 @@ class BulkArchives(unittest.TestCase):
             served.unlink()
             self.assertEqual(source.fetch((0, 0, 1, 1), work), rasters)
 
-    def test_a_bulk_source_that_covers_nothing_says_so(self):
-        class Empty(ingest.sources.bulk.BulkSource):
-            def files(self, bbox):
-                return []
-
-        source = Empty("xx", "Nowhere", "p", 1.0, "l", "NAP")
-        with self.assertRaises(ingest.Refuse) as refusal:
-            source.fetch((0, 0, 1, 1), Path("/nonexistent"))
-        self.assertIn("nothing published covers", str(refusal.exception))
-
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:
             archive = self.bundle(directory, {"readme.txt": b"licence only"})

@@ -25,7 +25,7 @@ One `[[source]]` table per source.
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
-| `extent` | array of 4 numbers | no | The box that the data covers: west, south, east and north in degrees, west < east, south < north |
+| `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north |
 
 `fetch.kind` is one of:
 
@@ -345,8 +345,8 @@ A `dtm` or `capture` fetch runs a program in the repository root, with the Pytho
 The program writes each file of the request to a directory under `partial/`, and its progress to
 standard error. The store takes every file in that directory but hidden, `.part` and `.tmp`
 files. A failed run keeps the directory and writes no record; the next run of the same request,
-also on a later day, resumes from it. A directory older than the `refresh` of the source is
-deleted before the run. In the record, the `url` of a file is `<fetch.url>#<query>/<path in the
+also on a later day, resumes from it. A directory older than the `refresh` of the source, or of a
+`manual` source, is deleted before the run. In the record, the `url` of a file is `<fetch.url>#<query>/<path in the
 directory>`, with the `fetch.url` of the source whose record takes the file. The fetch checks
 every record that it adds to before it writes one. Each fetch takes the `NAME=VALUE` of its row,
 each once, and no other. A `capture` source without a row has no fetcher yet; the fetch fails.
@@ -361,9 +361,10 @@ each once, and no other. A `capture` source without a row has no fetcher yet; th
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A `dtm-*` file is a raster of the model that covers `bbox`, with its `.prj` when it has one. A
-  box where the model has no data gives a fetch without files: its record of the request names
-  no file. A `by-hand` model takes the rasters of its delivery: `OBC_REFERENCE_<KEY>_INPUT`
-  names the directory, and `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of
+  service is asked only for the part of `bbox` inside the `extent`, and a raster without a height
+  is no file. A box where the model has no data gives a fetch without files: its record of the
+  request names no file. A `by-hand` model takes the rasters of its delivery:
+  `OBC_REFERENCE_<KEY>_INPUT` names the directory, as an absolute path, and `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of
   the order states. The two are the `credential` of the source.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September.
@@ -750,10 +751,10 @@ credential.
 | `maps/osm` | `geofabrik-extracts`, `area=<region id>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The key holds no Osmium version: another Osmium can give other bytes. The metrics name the version (`osmium`) |
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
-| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height |
+| `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
 
-`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id. `maps/osm` is an
-intermediate layer; the other layers are client layers.
+`<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id. `maps/osm` and
+`maps/reference/<i>-<j>` are intermediate layers; the other layers are client layers.
 
 #### `planner`
 
@@ -3329,7 +3330,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "extent": {
-          "description": "The box that the data covers: west, south, east and north in degrees.",
+          "description": "The box outside which the source has no data: west, south, east and north in degrees.",
           "items": {
             "format": "double",
             "type": "number"
@@ -3429,7 +3430,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "extent": {
-          "description": "The box that the data covers: west, south, east and north in degrees.",
+          "description": "The box outside which the source has no data: west, south, east and north in degrees.",
           "items": {
             "format": "double",
             "type": "number"

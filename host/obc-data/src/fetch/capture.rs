@@ -153,7 +153,7 @@ fn landmark_owners(path: &str) -> &'static [usize] {
 /// `command` makes. The program writes them into its second directory, and may keep downloads in
 /// its first. `owners` gives the indexes in `sources` of the sources whose records take a file,
 /// from its path. A run that fails keeps both directories, so the next run can resume, unless
-/// they are older than the `refresh` of the source. With `empty`, a run that writes no file gives
+/// they are older than the `refresh` of the source or the source is manual. With `empty`, a run that writes no file gives
 /// a fetch without files; else it fails.
 pub fn capture(
     store: &Store,
@@ -197,9 +197,14 @@ pub fn capture(
     }
     let staging = store.partial(&format!("capture-{key}"));
     let staging = std::path::absolute(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
-    if let (Refresh::Days(days), Ok(modified)) = (source.refresh, fs::metadata(&staging).and_then(|m| m.modified())) {
-        // Data that old would mix with today's, so the capture starts again.
-        if modified.elapsed().is_ok_and(|age| age.as_secs() > u64::from(days) * 86_400) {
+    if let Ok(modified) = fs::metadata(&staging).and_then(|m| m.modified()) {
+        // Data that old would mix with today's, so the capture starts again. Nothing bounds the age
+        // of what a failed run of a manual source kept, so it never resumes.
+        let stale = match source.refresh {
+            Refresh::Days(days) => modified.elapsed().is_ok_and(|age| age.as_secs() > u64::from(days) * 86_400),
+            Refresh::Manual => true,
+        };
+        if stale {
             fs::remove_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
         }
     }

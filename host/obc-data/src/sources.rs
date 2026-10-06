@@ -181,7 +181,7 @@ pub struct Source {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obligations: Option<String>,
     pub fetch: Fetch,
-    /// The box that the data covers: west, south, east and north in degrees.
+    /// The box outside which the source has no data: west, south, east and north in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<[f64; 4]>,
     /// Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.
@@ -198,6 +198,12 @@ pub struct Source {
 }
 
 impl Source {
+    /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
+    /// the two boxes meet.
+    pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
+        self.extent.is_some_and(|[w, s, e, n]| west <= e && east >= w && south <= n && north >= s)
+    }
+
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         if !crate::is_kebab(&self.id) {

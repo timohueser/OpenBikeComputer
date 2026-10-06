@@ -83,7 +83,8 @@ the first of them. `index` rebuilds all of this from the manifests in `sources/<
 | `wizard.py` | The steps of a portal behind a login, and the check on what it delivered. |
 | `cli.py` | The subcommands. |
 
-An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and any dtype.
+An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and any dtype,
+and no raster for a box where the product has no data.
 The shared tail turns voids and heights outside −500 m to 9 000 m into absence, max-pools pixel
 centres onto the lattice as `int16` metres, and cuts the window into whole tiles.
 
@@ -135,7 +136,7 @@ Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `uk`, `at`, `ca`, `nz
 Behind a free account: `dk`, `se`, `fi`, `au`. Set the credential and `ingest <key>` fetches
 live; without it, `ingest <key> --input <dir>` takes what the portal delivered. `wizard <key>`
 holds the account and download steps. For `obc data`, `OBC_REFERENCE_AU_INPUT` names the `au`
-delivery and `OBC_REFERENCE_AU_DATUM` its datum.
+delivery as an absolute path, and `OBC_REFERENCE_AU_DATUM` its datum.
 
 `de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:
 

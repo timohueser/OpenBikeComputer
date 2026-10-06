@@ -2,7 +2,7 @@
 //! of its request and the reference archive of the leaf, which `obc-bake terrain --reference`
 //! writes the same; and the terrain of the planner maps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use obc_data::engine::Request;
@@ -17,8 +17,9 @@ pub const GLO30: &str = "copernicus-glo-30";
 
 /// The options name the pairing, `posting_log2` and `cell_log2`, and the cells, as `[ci, cj]`.
 /// The layer input, when the request has one, is the reference archive of the leaf below
-/// `reference/`. The layer is `terrain/<i>/<j>.obcd` for each cell with a height, and
-/// `terrain/empty.json`: the ids of the cells without one, so a leaf at sea is a layer too.
+/// `reference/`. The layer is `terrain/<i>/<j>.obcd` for each cell with a height,
+/// `terrain/empty.json`: the ids of the cells without one, so a leaf at sea is a layer too, and,
+/// when a cell reads a national model, `terrain/credits.json`: the credit of each such model.
 pub fn terrain(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let log2 = |name: &str| {
@@ -52,9 +53,10 @@ pub fn terrain(request: &Request) -> Result<(), String> {
 
     let dir = request.output.join("terrain");
     let width = obc_elevation::grid::id_width(cell_log2);
-    let mut empty = Vec::new();
+    let (mut empty, mut used) = (Vec::new(), BTreeSet::new());
     for (ci, cj) in cells {
-        let (block, _) = published_cell(&mosaic, ci, cj, posting_log2, cell_log2, reference.as_ref())?;
+        let (block, lift) = published_cell(&mosaic, ci, cj, posting_log2, cell_log2, reference.as_ref())?;
+        used.extend(lift.map.iter().flat_map(|map| map.sources().iter().cloned()));
         match block {
             Some(block) => {
                 let path = dir.join(format!("{ci:0width$}/{cj:0width$}.obcd"));
@@ -64,9 +66,22 @@ pub fn terrain(request: &Request) -> Result<(), String> {
         }
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join("empty.json");
-    std::fs::write(&path, serde_json::to_string(&empty).expect("strings serialize"))
-        .map_err(|e| format!("{}: {e}", path.display()))
+    let write = |name: &str, value: Value| {
+        let path = dir.join(name);
+        std::fs::write(&path, value.to_string()).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    write("empty.json", empty.into())?;
+    let credits = reference.iter().flat_map(|archive| archive.credits()).filter(|credit| used.contains(&credit.key));
+    let credits: Vec<Value> = credits
+        .map(|credit| {
+            let crate::reference::SourceCredit { key, product, attribution, licence } = credit;
+            serde_json::json!({"key": key, "product": product, "attribution": attribution, "licence": licence})
+        })
+        .collect();
+    match credits.is_empty() {
+        true => Ok(()),
+        false => write("credits.json", credits.into()),
+    }
 }
 
 /// The terrain of the planner maps. The option `bounds` is `[west, south, east, north]` in

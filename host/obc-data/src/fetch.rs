@@ -373,7 +373,7 @@ fn expand(template: &str, version: Option<&str>, params: &[(String, String)]) ->
 pub(crate) mod tests {
     use super::*;
     use crate::fetch::upstream::Upstream;
-    use crate::sources::parse_sources;
+    use crate::sources::{parse_sources, Refresh};
     use crate::store::tests::Scratch;
     use crate::store::{hash_file, sha256_hex};
     use std::io::{BufRead, BufReader, Write};
@@ -872,7 +872,7 @@ pub(crate) mod tests {
     fn a_conflict_in_one_record_of_a_capture_writes_none() {
         let scratch = Scratch::new("capture-conflict");
         let store = Store::at(&scratch.0);
-        let land = located(FetchKind::Capture, "https://example.org/land");
+        let land = Source { refresh: Refresh::Days(90), ..located(FetchKind::Capture, "https://example.org/land") };
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
         let version = date::format(date::today());
@@ -911,7 +911,7 @@ pub(crate) mod tests {
     fn a_capture_is_split_into_records_and_another_day_comes_only_from_the_store() {
         let scratch = Scratch::new("capture");
         let store = Store::at(&scratch.0);
-        let land = located(FetchKind::Capture, "https://example.org/land");
+        let land = Source { refresh: Refresh::Days(90), ..located(FetchKind::Capture, "https://example.org/land") };
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
         let sources = [&land, &sea];
@@ -969,6 +969,33 @@ pub(crate) mod tests {
         let requested = Requested { version: day.clone(), params: boxed.params.clone(), files: Vec::new() };
         store.put_requested("land", &requested).unwrap();
         assert_eq!(nothing(&Request { version: Some(day), ..boxed }, true).unwrap().files, []);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_manual_capture_never_resumes_a_failed_run() {
+        let scratch = Scratch::new("manual-capture");
+        let store = Store::at(&scratch.0);
+        let model = located(FetchKind::Dtm, "https://example.org/model");
+        let request = Request { source: &model, version: None, params: vec![] };
+        let run = |script: &'static str| {
+            capture::capture(
+                &store,
+                &request,
+                "q=1",
+                &[&model],
+                |_| &[0],
+                true,
+                move |work, out| {
+                    let mut command = std::process::Command::new("sh");
+                    command.args(["-c", script, "sh"]).arg(work).arg(out);
+                    command
+                },
+            )
+        };
+        assert!(run("echo half > \"$2/a.tif\"; exit 1").is_err());
+        let names: Vec<_> = run("echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
+        assert_eq!(names, ["#q=1/b.tif"], "the half of the failed run is no data");
     }
 
     #[test]
