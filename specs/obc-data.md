@@ -945,7 +945,7 @@ would use is a leftover.
 | `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
 | `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
 | `<prefix>/objects/<sha256>` | A file of a client layer of a release. Immutable |
-| `inputs/records/<source>/<version>.json` | The snapshot record of an input copy: a version of a source with `r2_copy` that a live layer read. A record that R2 holds of a version that a live layer read counts, also without `r2_copy` |
+| `inputs/records/<source>/<version>/<digest>.json` | The immutable record of one exact snapshot read. `digest` is the input digest in the live layer receipt. `files` lists only its selected names, URLs, sizes and SHA-256 values, sorted by name. An empty read has an empty list. Retrieval time stays local. New copies require `redistribute` and `r2_copy`; an existing record of a live read stays without `r2_copy` |
 | `inputs/objects/<sha256>` | A file of an input copy. Immutable |
 
 When `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is set, `obc data` reads that bucket. Otherwise it
@@ -954,10 +954,17 @@ a listing needs the bucket. A release id is 64 lowercase hex digits. The store k
 that it reads, and uses its copy only while the SHA-256 of the copy is the id and the copy is of
 the product.
 
+Planning reads only copy metadata named by the live manifests, once per immutable key. A build
+restores missing files only for matching source, version and request parameters, or the exact
+file names of its selected step inputs. It checks file digests and sizes before recording a
+snapshot or a request. A complete verified local selection serves even if R2 lacks its record.
+A missing or corrupt named retained copy never starts an upstream capture. Status keeps its
+small-source discovery allowlist: it does not download input objects for other sources.
+
 `status --check` lists the owned prefixes, and compares them with live:
 
 - drift: a key of a live release or of its input copies that R2 does not have, or has with
-  another size. Pointers and records of input copies have no expected size.
+  another size. Pointers have no expected size. An available input record gives its canonical size.
 - leftovers: a key under the owned prefixes that no live release uses. The files of
   `<prefix>/releases/<id>/` of a live release are never leftovers.
 
@@ -2425,7 +2432,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "files": {
-          "description": "The paths that a layer input selects, sorted, or none for every file. Not in the key: the\ndigest names the paths.",
+          "default": [],
+          "description": "Exact resolved snapshot file names, including an empty read. For a layer input, the\nselected paths, or none for every file. The digest names the bytes in the key.",
           "items": {
             "type": "string"
           },
@@ -2442,7 +2450,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "kind",
         "name",
-        "digest"
+        "digest",
+        "files"
       ],
       "type": "object"
     },

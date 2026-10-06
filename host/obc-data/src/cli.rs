@@ -22,7 +22,7 @@ use serde::Serialize;
 
 use crate::fetch::http::Http;
 use crate::fetch::upstream::{self, Upstream};
-use crate::fetch::{self, Request};
+use crate::fetch::Request;
 use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
@@ -148,7 +148,25 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             let source = find(&registry, id)?;
             let store = Store::open()?;
             let request = Request { source, version, params: parse_params(&params)? };
-            print_snapshot(&store, &fetched(source, fetch::fetch(&store, &Http::new(), &request))?, json)
+            let missing = request
+                .version
+                .as_ref()
+                .map(|version| crate::engine::snapshot_files(&store, id, version, &request.params, &[]))
+                .transpose()?
+                .flatten()
+                .is_none();
+            let remote = (request.version.is_some() && source.r2_copy && missing).then(remote).transpose()?;
+            let live = remote
+                .as_ref()
+                .map(|remote| crate::live::Live::read(remote, products, &registry.sources, &store))
+                .transpose()?;
+            let copies =
+                remote.as_ref().zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
+            print_snapshot(
+                &store,
+                &fetched(source, crate::input_copy::fetch(&store, &Http::new(), copies.as_ref(), &request, &[]))?,
+                json,
+            )
         }
         Command::Policy { source, refresh } => {
             let source = policy(&root()?, &source, refresh)?;

@@ -212,7 +212,16 @@ fn captures(
             }
         }
         if !missing.is_empty() {
-            if CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
+            let retained = missing.iter().all(|wanted| {
+                wanted.version.as_ref().is_some_and(|version| {
+                    env.retained.iter().any(|read| {
+                        read.key.source == wanted.source
+                            && read.key.version == *version
+                            && read.params == obc_data::store::sorted(&wanted.params)
+                    })
+                })
+            });
+            if retained || CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
                 wanted.extend(missing);
             } else {
                 let reason = format!("{collection} capture missing; plan with `--move wikidata`");
@@ -273,10 +282,14 @@ fn capture_params(
     }
     // The extract and the `.poly` that the capture read, which need not be those of now. Their
     // input names the file, not the params: a fetch has one version in live.
-    let reads = |osm: &str, poly: &str| -> Result<Option<Vec<Input>>, Unplanned> {
+    let reads = |osm: &str, poly: &str, held: bool| -> Result<Option<Vec<Input>>, Unplanned> {
         let mut inputs = Vec::new();
         for (source, digest) in [(EXTRACTS, osm), (POLY, poly)] {
-            let Some((version, file)) = by_digest(store, source, area, digest)? else { return Ok(None) };
+            let Some((version, file)) =
+                by_digest(env, store, source, area, digest, held.then(|| content_layer(collection)).as_deref())?
+            else {
+                return Ok(None);
+            };
             inputs.push(Input::Snapshot { source: source.into(), version, params: Vec::new(), files: vec![file] });
         }
         Ok(Some(inputs))
@@ -286,13 +299,13 @@ fn capture_params(
             return Err(invalid(format!("{collection} capture code changed; plan with `--move wikidata`")));
         }
         let (osm, poly) = (value(&params, "osm").unwrap_or_default(), value(&params, "poly").unwrap_or_default());
-        if let Some(read) = reads(&osm, &poly)? {
+        if let Some(read) = reads(&osm, &poly, true)? {
             return Ok((params, read));
         }
         return Err(invalid(format!("{collection} capture inputs missing; plan with `--move wikidata`")));
     }
-    let read =
-        reads(now.0, now.1)?.ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
+    let read = reads(now.0, now.1, false)?
+        .ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
     let code = obc_pack::step::capture_code();
     let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", &code)];
     Ok((pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec(), read))
@@ -319,11 +332,38 @@ fn file(
 /// `sha256:<hex>`, or `None` when the store has it no more: a clean keeps the request record of a
 /// version whose snapshot record it deletes.
 fn by_digest(
+    env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
     digest: &str,
+    held_step: Option<&str>,
 ) -> Result<Option<(String, String)>, Unplanned> {
+    let area = params.iter().find(|(name, _)| name == "area").map(|(_, value)| value.as_str());
+    let suffix = if source == POLY { ".poly" } else { ".osm.pbf" };
+    let retained: Vec<_> =
+        env.retained.iter().filter(|read| read.key.source == source && held_step == Some(read.step.as_str())).collect();
+    let held: BTreeSet<_> = retained
+        .iter()
+        .copied()
+        .flat_map(|read| read.record.files.iter().map(move |file| (read, file)))
+        .filter(|(_, file)| {
+            digest.strip_prefix("sha256:") == Some(file.sha256.as_str())
+                && area.is_some_and(|area| file.name == format!("{area}{suffix}"))
+        })
+        .map(|(read, file)| (read.key.version.clone(), file.name.clone()))
+        .collect();
+    if held.len() > 1 {
+        return Err(Unplanned::Failed(format!("{source}: retained capture input {digest} has ambiguous versions")));
+    }
+    if let Some(held) = held.into_iter().next() {
+        return Ok(Some(held));
+    }
+    if !retained.is_empty() {
+        return Err(Unplanned::Failed(format!(
+            "{source}: retained capture input {digest} disagrees with its content layer"
+        )));
+    }
     for request in store.requests(source, params).map_err(Unplanned::Failed)? {
         if store.snapshot(source, &request.version).map_err(Unplanned::Failed)?.is_none() {
             continue;
@@ -495,7 +535,13 @@ fn reference(
                 if files.as_ref().is_some_and(|files| files.is_empty()) {
                     continue;
                 }
-                if files.is_none() {
+                if files.is_none()
+                    && !env.retained.iter().any(|read| {
+                        read.key.source == source.id
+                            && read.key.version == version
+                            && read.params == obc_data::store::sorted(&params)
+                    })
+                {
                     if let Some(credential) = source.credential.as_ref().filter(|credential| !credential.present()) {
                         return Err(invalid(format!(
                             "{name} reads `{}`, which is blocked: credential missing: {}",
@@ -834,7 +880,8 @@ pub(crate) mod tests {
         glo30_fetched(&store, &steps("2"), "2", |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));
 
         let (root, http) = (root(), Http::new());
-        let context = Context { store: &store, root: &root, sources: &[], http: &http, limits: Limits::machine() };
+        let context =
+            Context { store: &store, root: &root, sources: &[], http: &http, copies: None, limits: Limits::machine() };
         let first = plan(&store, &root, &steps("1")).unwrap();
         assert_eq!(builds(&first), names);
         let mut run = RunLog::create(&store, "build test").unwrap();
@@ -1038,6 +1085,60 @@ pub(crate) mod tests {
         let listed = Maps.steps(&env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
         assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+        // The live copy metadata identifies the held input without its local request or bytes.
+        for (source, name, text) in [(EXTRACTS, "europe/test.osm.pbf", "osm"), (POLY, "europe/test.poly", FREIBURG)] {
+            let file = obc_data::input_copy::File {
+                name: name.into(),
+                url: format!("https://example.org/{name}"),
+                size: text.len() as u64,
+                sha256: sha256_hex(text.as_bytes()),
+            };
+            env.retained.push(obc_data::input_copy::Retained {
+                step: content_layer("landmarks"),
+                key: obc_data::input_copy::Key {
+                    source: source.into(),
+                    version: "1".into(),
+                    digest: obc_data::engine::digest([(file.name.as_str(), file.sha256.as_str())]),
+                },
+                params: Vec::new(),
+                record: obc_data::input_copy::Record { source: source.into(), version: "1".into(), files: vec![file] },
+            });
+        }
+        let params = capture_params("landmarks", "europe/test", "osm", FREIBURG);
+        for source in CAPTURES {
+            env.live.insert((source.into(), params.clone()), ["1".into()].into());
+        }
+        let fresh = Store::at(temp.0.join("fresh"));
+        let (params, inputs) =
+            super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
+        assert_eq!(params, capture_params("landmarks", "europe/test", "osm", FREIBURG));
+        assert!(inputs.iter().all(|input| matches!(input, Input::Snapshot { version, params, files, .. } if version == "1" && params.is_empty() && files.len() == 1)));
+        assert!(!fresh.root().exists(), "metadata lookup downloads no old extract or poly");
+        let mut peak_poly = env.retained[1].clone();
+        peak_poly.step = content_layer("peaks");
+        peak_poly.key.version = "2".into();
+        peak_poly.record.version = "2".into();
+        let mut peak_osm = env.retained[0].clone();
+        peak_osm.step = content_layer("peaks");
+        env.retained.extend([peak_osm, peak_poly.clone()]);
+        let peak_params = capture_params("peaks", "europe/test", "osm", FREIBURG);
+        for source in CAPTURES {
+            env.live.insert((source.into(), peak_params.clone()), ["1".into()].into());
+        }
+        let (_, peak_inputs) = super::capture_params(&env, &fresh, "peaks", &area, ("new osm", "new poly")).unwrap();
+        assert!(peak_inputs
+            .iter()
+            .any(|input| matches!(input, Input::Snapshot { source, version, .. } if source == POLY && version == "2")));
+        let (_, landmark_inputs) =
+            super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")).unwrap();
+        assert!(landmark_inputs
+            .iter()
+            .any(|input| matches!(input, Input::Snapshot { source, version, .. } if source == POLY && version == "1")));
+        peak_poly.step = content_layer("landmarks");
+        env.retained.push(peak_poly);
+        assert!(
+            matches!(super::capture_params(&env, &fresh, "landmarks", &area, ("new osm", "new poly")), Err(Unplanned::Failed(message)) if message.contains("ambiguous versions"))
+        );
     }
 
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
@@ -1142,6 +1243,49 @@ pub(crate) mod tests {
                     .all(|b| b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
                 assert!(listed.blocked.last().unwrap().reason.contains("box and multi-area"));
                 assert!(listed.steps.is_empty());
+                let mut restored_env = env.clone();
+                let coverage =
+                    Coverage::parse_poly(&box_poly(&Bbox { west: 8.2, south: 53.8, east: 8.3, north: 56.1 })).unwrap();
+                let (leaf, cells) = leaves(&[coverage], V1_CELL_LOG2.into()).into_iter().next().unwrap();
+                // Pin the request before reference preflight; the missing credential matters only upstream.
+                let windows: Vec<_> = cells
+                    .iter()
+                    .map(|c| cell_window(c.i as u32, c.j as u32, V1_POSTING_LOG2, V1_CELL_LOG2).unwrap())
+                    .collect();
+                let bbox = format!(
+                    "{},{},{},{}",
+                    windows.iter().map(|w| w.lon_lo).min().unwrap() as f64 / 1e6,
+                    windows.iter().map(|w| w.lat_lo).min().unwrap() as f64 / 1e6,
+                    windows.iter().map(|w| w.lon_hi).max().unwrap() as f64 / 1e6,
+                    windows.iter().map(|w| w.lat_hi).max().unwrap() as f64 / 1e6
+                );
+                let params = vec![("bbox".to_string(), bbox)];
+                for source in ["dtm-de-ni", "dtm-dk"] {
+                    restored_env.live.insert((source.into(), params.clone()), ["1".into()].into());
+                    restored_env.retained.push(obc_data::input_copy::Retained {
+                        step: leaf_layer("maps/reference", leaf),
+                        key: obc_data::input_copy::Key {
+                            source: source.into(),
+                            version: "1".into(),
+                            digest: obc_data::engine::digest([]),
+                        },
+                        params: params.clone(),
+                        record: obc_data::input_copy::Record {
+                            source: source.into(),
+                            version: "1".into(),
+                            files: Vec::new(),
+                        },
+                    });
+                }
+                let mut wanted = Vec::new();
+                let restored = reference(&restored_env, &store, leaf, &cells, &mut wanted).unwrap().unwrap();
+                assert!(wanted.is_empty());
+                assert_eq!(
+                    restored.inputs.len(),
+                    2,
+                    "verified retained reads defer the credential check until restoration"
+                );
+                assert_eq!(plan(&store, &root(), &[restored]).unwrap().fetches().len(), 2);
             }
             // A machine with the token fetches the model.
             Err(Unplanned::NeedsFetch(wanted)) => {

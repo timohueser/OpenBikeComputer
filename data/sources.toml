@@ -131,7 +131,8 @@ licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-el
 fetch = { kind = "http", url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt" }
 version = "date"
 refresh = "manual"
-redistribute = false
+redistribute = true
+r2_copy = true
 
 [[source]]
 id = "mapzen-terrain-tiles"
