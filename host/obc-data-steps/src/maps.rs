@@ -94,7 +94,7 @@ impl Maps {
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let mut steps = Vec::new();
         let mut blocked = Vec::new();
-        for (&leaf, cells) in &leaves(&outlines, V1_CELL_LOG2.into()) {
+        for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
             let mut leaf_wanted = Vec::new();
             let reference = match reference(env, store, leaf, cells, &mut leaf_wanted) {
                 Ok(reference) => {
@@ -151,7 +151,7 @@ impl Maps {
         for band in BandTable::recommended().bands {
             let reads_terrain = obc_pack::step::reads_terrain(&band).map_err(Unplanned::Failed)?;
             let boundary = source_coverage.boundary_cells(band.cell_log2);
-            for (leaf, cells) in leaves(&outlines, band.cell_log2) {
+            for (leaf, cells) in leaves(outlines, band.cell_log2) {
                 osm_leaves.insert(leaf);
                 let partial = cells
                     .iter()
