@@ -132,6 +132,9 @@ pub enum Publication {
     Uploaded { key: String },
     Switched { product: String, release: String },
     Removed { key: String, bytes: u64 },
+    ServiceStaged { service: String, slot: u8, binding: String },
+    ServicesActivated { bindings: Vec<String> },
+    ServicesRetired { bindings: Vec<String> },
 }
 
 /// A run that this process writes. The process that holds the lock of a run is the process that

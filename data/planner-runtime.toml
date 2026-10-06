@@ -1,3 +1,5 @@
 # Configure the shared Linux service target before building planner runtimes.
 # The target table names triple, glibc, node, and python. Versions are exact.
 # The host chooses its prepared builder with OBC_PLANNER_RUNTIME_BUILDER.
+# Configure [publication] site_origin, api_origin and objects_origin as HTTPS origins.
+# The API host must exist in the VPS Caddyfile before apply.

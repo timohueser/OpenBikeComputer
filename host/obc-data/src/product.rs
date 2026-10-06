@@ -40,6 +40,17 @@ pub trait Product: Sync {
         Ok(Vec::new())
     }
 
+    /// Prepare the three planner service views in caller-owned storage, before handoff.
+    fn services(
+        &self,
+        _root: &Path,
+        _release: &Release,
+        _store: &Store,
+        _destination: &Path,
+    ) -> Result<Vec<crate::vps::Candidate>, String> {
+        Ok(Vec::new())
+    }
+
     /// Check stored artifacts before publication. `root` locates the offline verification tools.
     fn verify(
         &self,
@@ -87,7 +98,7 @@ pub struct BlockedLayer {
 }
 
 /// Gives the pointer of a release from the store.
-pub type PointerFn = fn(&Release, &Store) -> Result<Pointer, String>;
+pub type PointerFn = fn(&Path, &Release, &Store) -> Result<Pointer, String>;
 
 /// What clients read of a release.
 pub struct Pointer {

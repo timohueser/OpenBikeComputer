@@ -162,7 +162,8 @@ def switch_downloads(host, identity, base, public_url):
     """Serve download selections of this release. Their payloads stream from its R2 object pool."""
     unit = service(
         f"/usr/bin/python3 -m tools.planner_downloads --source {base}/offline --cache {DOWNLOAD_CACHE}/selections "
-        f"--max-cache-bytes {256 * 1024 * 1024} --objects-url {public_url}/planner/objects",
+        f"--max-cache-bytes {256 * 1024 * 1024} --objects-url {public_url}/planner/objects "
+        "--public-url https://releases.openbikecomputer.com/planner-offline",
         {"PATH": "/usr/local/bin:/usr/bin:/bin"}, "256M")
     unit = unit.replace("DynamicUser=yes", f"User=obc-planner-downloads\nWorkingDirectory={SOURCE}\nStateDirectory=obc-planner-downloads\nCacheDirectory=obc-planner-downloads")
     config = "handle_path /planner-offline/* {\n    reverse_proxy 127.0.0.1:8790\n}\n"

@@ -26,7 +26,7 @@ UNITS = Path("/etc/systemd/system")
 
 
 def run(argv):
-    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, close_fds=False)
     if result.returncode:
         raise ValueError(f"Service tool failed: {argv[0]}: {result.stderr.strip()}")
     return result.stdout.strip()
@@ -39,10 +39,36 @@ def identity(value):
 
 
 def installed(value):
-    if set(value) != {"service", "id", "slot"} or value["service"] not in SERVICES or type(value["slot"]) is not int or value["slot"] not in (0, 1):
+    if set(value) != {"service", "id", "slot", "binding"} or value["service"] not in SERVICES or type(value["slot"]) is not int or value["slot"] not in (0, 1):
         raise ValueError("Invalid service slot")
     identity(value["id"])
+    identity(value["binding"])
     return value
+
+
+def origin(value):
+    if not value.startswith("https://") or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]" for c in value.removeprefix("https://")):
+        raise ValueError("Invalid HTTPS origin")
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise ValueError("Configure an HTTPS origin without credentials or a path")
+    if any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]" for c in parsed.netloc):
+        raise ValueError("Invalid HTTPS authority")
+    if not parsed.hostname or parsed.port == 0:
+        raise ValueError("Invalid HTTPS host or port")
+    return value
+
+
+def binding(candidate):
+    origin(candidate["api_origin"])
+    origin(candidate["site_origin"])
+    pool = candidate["objects_url"]
+    if not pool.endswith("/planner/objects"):
+        raise ValueError("Configure the planner shared object pool")
+    origin(pool.removesuffix("/planner/objects"))
+    pool = candidate["objects_url"] if candidate["service"] == "downloads" else ""
+    fields = [candidate["service"], candidate["id"], candidate["api_origin"], candidate["site_origin"], pool]
+    return hashlib.sha256(json.dumps(fields, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
 def destination(value, base):
@@ -74,6 +100,8 @@ def inspect(base=BASE, execute=run):
             if path.name != "code" or path.parent.parent != base / name:
                 raise ValueError("Unknown service slot ownership")
             value["id"] = identity(path.parent.name)
+            environment = dict(item.split("=", 1) for item in shlex.split(execute(["systemctl", "show", unit(value), "--property=Environment", "--value"])) if "=" in item)
+            value["binding"] = identity(environment.get("OBC_PLANNER_BINDING"))
             result["installed"].append(value)
     return result
 
@@ -146,10 +174,10 @@ def documents(directory, expected):
     return release, descriptor
 
 
-def configuration(value, directory, release, objects_url, site_origin):
+def configuration(value, directory, release, objects_url, site_origin, api_origin):
     name, port = value["service"], SERVICES[value["service"]][value["slot"]]
     data, code = directory / "data", directory / "code"
-    environment = {"OBC_PLANNER_SERVICE_ID": value["id"]}
+    environment = {"OBC_PLANNER_SERVICE_ID": value["id"], "OBC_PLANNER_BINDING": value["binding"]}
     if name == "routing":
         command = [str(code / "bin/route-server"), str(data / "routing")]
         environment.update(ROUTE_LISTEN=f"127.0.0.1:{port}", ROUTE_WORKERS="2", ROUTE_ORIGIN=site_origin)
@@ -162,7 +190,7 @@ def configuration(value, directory, release, objects_url, site_origin):
             command = [str(Path(shutil.which("node")).resolve()), str(code / "server.mjs")]
             environment.update(OBC_SEARCH_PORT=str(port), OBC_SEARCH_DATA=str(data / "search"), OBC_SEARCH_PYTHON=str(wrapper), OBC_SEARCH_REGIONS=release["region"], OBC_SEARCH_ORIGINS=site_origin)
         else:
-            command = [python, "-S", "-m", "tools.planner_downloads", "--source", str(data / "offline"), "--cache", f"/var/lib/obc-planner-downloads-{value['slot']}/selections", "--max-cache-bytes", str(256 * 1024 * 1024), "--port", str(port), "--objects-url", objects_url]
+            command = [python, "-S", "-m", "tools.planner_downloads", "--source", str(data / "offline"), "--cache", f"/var/lib/obc-planner-downloads-{value['slot']}/selections", "--max-cache-bytes", str(256 * 1024 * 1024), "--port", str(port), "--objects-url", objects_url, "--public-url", f"{api_origin}/planner-api/services/{value['binding']}/downloads"]
             environment["PYTHONPATH"] = str(code)
     return command, environment
 
@@ -170,7 +198,7 @@ def configuration(value, directory, release, objects_url, site_origin):
 def stage(request, base=BASE, units=UNITS, execute=run):
     value = installed(request["installed"])
     candidate = request["candidate"]
-    if (value["service"], value["id"]) != (candidate["service"], candidate["id"]):
+    if (value["service"], value["id"]) != (candidate["service"], candidate["id"]) or value["binding"] != binding(candidate):
         raise ValueError("Candidate service identity differs from the selected slot")
     request = {**candidate, "installed": value}
     source, directory = Path(request["source"]), destination(value, base)
@@ -210,7 +238,7 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     selected = lambda body: {name: item for name, item in body["files"].items() if name.startswith(prefix)}
     if actual_runtime != descriptor or actual["region"] != release["region"] or selected(actual) != selected(release):
         raise ValueError("Installed service identity has different runtime or data")
-    command, environment = configuration(value, directory, release, request["objects_url"], request["site_origin"])
+    command, environment = configuration(value, directory, release, request["objects_url"], request["site_origin"], request["api_origin"])
     environment.update(OBC_PLANNER_RELEASE_SHA=stored["release"]["sha256"], OBC_PLANNER_RUNTIME_SHA=stored["runtime"]["sha256"])
     if any(any(c in argument for c in '\r\n"') for argument in [*command, *environment.values(), str(directory)]):
         raise ValueError("Invalid service configuration")
@@ -219,9 +247,11 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     contents += "Restart=on-failure\nDynamicUser=yes\nNoNewPrivileges=yes\nPrivateTmp=yes\nProtectHome=yes\nProtectSystem=strict\nCPUQuota=200%\nTasksMax=64\n"
     contents += f"MemoryMax={2048 if value['service'] == 'routing' else 768 if value['service'] == 'search' else 256}M\n"
     if value["service"] == "downloads": contents += f"StateDirectory=obc-planner-downloads-{value['slot']}\n"
+    contents += "[Install]\nWantedBy=multi-user.target\n"
     units.mkdir(parents=True, exist_ok=True)
     (units / unit(value)).write_text(contents)
     execute(["systemctl", "daemon-reload"])
+    execute(["systemctl", "enable", unit(value)])
     execute(["systemctl", "restart", unit(value)])
 
 
@@ -233,7 +263,7 @@ def running(value, candidate, directory, execute, proc):
     args = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
     code, data = directory / "code", directory / "data"
     executable = code / "bin/route-server" if value["service"] == "routing" else Path(shutil.which("node")) if value["service"] == "search" else Path(sys.executable)
-    if (process / "cwd").resolve() != code.resolve() or (process / "exe").resolve() != executable.resolve() or environment.get("OBC_PLANNER_SERVICE_ID") != value["id"]:
+    if (process / "cwd").resolve() != code.resolve() or (process / "exe").resolve() != executable.resolve() or environment.get("OBC_PLANNER_SERVICE_ID") != value["id"] or environment.get("OBC_PLANNER_BINDING") != value["binding"]:
         raise ValueError("Running process belongs to another runtime identity")
     name = value["service"]
     port = str(SERVICES[name][value["slot"]])
@@ -244,7 +274,7 @@ def running(value, candidate, directory, execute, proc):
     if name == "downloads":
         def option(key):
             return args[args.index(key) + 1] if args.count(key) == 1 and args.index(key) + 1 < len(args) else None
-        if args[1:4] != ["-S", "-m", "tools.planner_downloads"] or option("--source") != str(data / "offline") or option("--port") != port or option("--objects-url") != candidate["objects_url"] or environment.get("PYTHONPATH") != str(code):
+        if args[1:4] != ["-S", "-m", "tools.planner_downloads"] or option("--source") != str(data / "offline") or option("--port") != port or option("--objects-url") != candidate["objects_url"] or option("--public-url") != f"{candidate['api_origin']}/planner-api/services/{value['binding']}/downloads" or environment.get("PYTHONPATH") != str(code):
             raise ValueError("Running downloads configuration differs")
     return environment, pid
 
@@ -252,7 +282,7 @@ def running(value, candidate, directory, execute, proc):
 def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
     value = installed(request["installed"])
     candidate = request["candidate"]
-    if (value["service"], value["id"]) != (candidate["service"], candidate["id"]):
+    if (value["service"], value["id"]) != (candidate["service"], candidate["id"]) or value["binding"] != binding(candidate):
         raise ValueError("Candidate service identity differs from the selected slot")
     directory = destination(value, base)
     environment, pid = running(value, candidate, directory, execute, proc)
@@ -295,10 +325,20 @@ def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("inspect", "stage", "probe"))
+    parser.add_argument("command", choices=("inspect", "stage", "probe", "activate", "retire"))
+    parser.add_argument("--api-origin")
     args = parser.parse_args()
     request = None if args.command == "inspect" else json.load(sys.stdin)
-    result = inspect() if args.command == "inspect" else stage(request) if args.command == "stage" else probe(request)
+    if args.command == "inspect":
+        if args.api_origin:
+            from . import planner_activation
+            planner_activation.context(args.api_origin)
+        result = inspect()
+    elif args.command == "stage": result = stage(request)
+    elif args.command == "probe": result = probe(request)
+    else:
+        from . import planner_activation
+        result = planner_activation.activate(request) if args.command == "activate" else planner_activation.retire(request)
     print(json.dumps(result))
 
 

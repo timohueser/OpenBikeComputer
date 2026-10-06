@@ -27,6 +27,8 @@ pub(super) struct Bundle {
     expected: BTreeMap<String, Option<String>>,
     next: Live,
     sources: Vec<Source>,
+    services: Vec<crate::vps::Candidate>,
+    previous_services: Vec<crate::vps::Candidate>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -71,6 +73,7 @@ pub(super) fn expected(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn pack(
     directory: &Path,
     store: &Store,
@@ -79,8 +82,16 @@ pub(super) fn pack(
     mut next: Live,
     sources: Vec<Source>,
     remote: &Remote,
+    services: (Vec<crate::vps::Candidate>, Vec<crate::vps::Candidate>),
 ) -> Result<String, Error> {
     next.products.retain(|product| expected.contains_key(&format!("{}/catalog.json", product.prefix)));
+    let (mut services, mut previous_services) = services;
+    for candidate in &mut previous_services {
+        candidate.source = std::path::PathBuf::from("previous-services").join(candidate.service.name());
+    }
+    for candidate in &mut services {
+        candidate.source = std::path::PathBuf::from("services").join(candidate.service.name());
+    }
     let bundle = Bundle {
         run: run.id().into(),
         bucket: remote.describe().into(),
@@ -88,6 +99,8 @@ pub(super) fn pack(
         expected,
         next,
         sources,
+        services,
+        previous_services,
     };
     let scratch = Scratch::new()?;
     let files = apply_cli::files(store, &scratch, &bundle.next)?;
@@ -184,6 +197,40 @@ fn validate(bundle: &Bundle) -> Result<(), Error> {
     if bundle.expected.len() != names.len() {
         return Err(Code::Usage.error("commit has an unexpected pointer key"));
     }
+    let planner = bundle.next.products.iter().find(|product| product.product == "planner" && product.release.is_some());
+    if let Some(planner) = planner {
+        let release = &planner.release.as_ref().unwrap().1;
+        if bundle.services.len() != 3
+            || bundle.services.iter().map(|candidate| candidate.service).collect::<BTreeSet<_>>().len() != 3
+        {
+            return Err(Code::Blocked.error("planner needs all three prepared service views"));
+        }
+        let document =
+            planner.document.as_ref().ok_or_else(|| Code::VerifyFailed.error("planner has no desired document"))?;
+        let origins: crate::vps::Origins = serde_json::from_value(
+            document.get("origins").cloned().ok_or_else(|| Code::VerifyFailed.error("planner has no origins"))?,
+        )
+        .map_err(|e| e.to_string())?;
+        origins.check()?;
+        for candidate in &bundle.services {
+            if candidate.source != std::path::PathBuf::from("services").join(candidate.service.name())
+                || !release.named.contains(&candidate.release)
+                || !release.named.contains(&candidate.runtime)
+                || candidate.release.path != "release.json"
+                || candidate.runtime.path != format!("runtime/{}.json", candidate.service.name())
+                || candidate.site_origin != origins.site_origin
+                || candidate.api_origin != origins.api_origin
+                || candidate.objects_url != origins.objects_url()
+                || document["active"]["services"][candidate.service.name()] != candidate.id
+            {
+                return Err(
+                    Code::VerifyFailed.error("prepared service differs from its release or desired publication")
+                );
+            }
+        }
+    } else if !bundle.services.is_empty() {
+        return Err(Code::Usage.error("service views have no planner release"));
+    }
     Ok(())
 }
 
@@ -209,16 +256,75 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         owner.finish()?;
         return Ok(result);
     }
+    let mut observed = BTreeMap::new();
     for (key, expected) in &bundle.expected {
-        if remote.get(key)?.as_deref().map(sha256_hex) != *expected {
+        let body = remote.get(key)?;
+        if body.as_deref().map(sha256_hex) != *expected {
             return Err(Code::PlanOutdated.error(format!("{key} changed before the commit lock; plan again")));
         }
+        let document = body
+            .map(|body| {
+                serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&body).map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        observed.insert(key.clone(), document);
     }
-    for product in &bundle.next.products {
-        if product.product == "planner" && product.release.is_some() && !same_pointer(remote, product)? {
-            return Err(Code::Blocked.error("planner publication needs the service activation and retirement owner"));
+    let planner = bundle.next.products.iter().find(|product| product.product == "planner" && product.release.is_some());
+    let current_document = observed
+        .get("planner/catalog.json")
+        .and_then(Option::as_ref)
+        .filter(|document| document.contains_key("release"));
+    let current = if planner.is_some() { crate::vps::current(current_document)? } else { Vec::new() };
+    let approved = if let Some(planner) = planner {
+        let mut wanted =
+            planner.document.clone().ok_or_else(|| Code::VerifyFailed.error("planner has no desired pointer"))?;
+        let chosen = crate::vps::document(&mut wanted, current_document)?;
+        if planner.document.as_ref() != Some(&wanted) {
+            return Err(Code::PlanOutdated.error("service slot choices differ from the approved pointer"));
         }
-    }
+        let original = Live::read_products(remote, &[("planner", "planner")], &bundle.sources, store)?;
+        if original.products.first().map(|product| &product.observed) != bundle.expected.get("planner/catalog.json") {
+            return Err(Code::PlanOutdated.error("planner changed while reading original service metadata"));
+        }
+        let release =
+            original.products.first().and_then(|product| product.release.as_ref()).map(|(_, release)| release);
+        if current.len() != bundle.previous_services.len() {
+            return Err(Code::Blocked.error("current service metadata is incomplete"));
+        }
+        for candidate in &bundle.previous_services {
+            let release =
+                release.ok_or_else(|| Code::Blocked.error("previous service metadata has no original live release"))?;
+            if candidate.source != std::path::PathBuf::from("previous-services").join(candidate.service.name())
+                || !release.named.contains(&candidate.release)
+                || !release.named.contains(&candidate.runtime)
+                || candidate.release.path != "release.json"
+                || candidate.runtime.path != format!("runtime/{}.json", candidate.service.name())
+            {
+                return Err(Code::VerifyFailed.error("previous service view differs from exact observed live metadata"));
+            }
+            let origins: crate::vps::Origins = serde_json::from_value(
+                current_document
+                    .and_then(|document| document.get("origins"))
+                    .cloned()
+                    .ok_or_else(|| Code::VerifyFailed.error("original planner has no publication origins"))?,
+            )
+            .map_err(|e| Code::VerifyFailed.error(e.to_string()))?;
+            origins.check()?;
+            if candidate.api_origin != origins.api_origin
+                || candidate.site_origin != origins.site_origin
+                || candidate.objects_url != origins.objects_url()
+            {
+                return Err(Code::VerifyFailed.error("previous service origins differ from exact observed live"));
+            }
+        }
+        crate::vps::commit::stages(&bundle.previous_services, &current)?;
+        chosen
+    } else {
+        if !bundle.previous_services.is_empty() {
+            return Err(Code::Usage.error("previous service views have no planner publication"));
+        }
+        Vec::new()
+    };
     let payload = Store::at(directory);
     for (_, _, release) in bundle.next.releases() {
         release.write(&payload)?;
@@ -231,6 +337,30 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         run.record(&Event::Phase { phase: Phase::Upload })?;
         let uploaded = apply_cli::upload(bucket, &listed, &files, &mut run, &mut owner)?;
         run.record(&Event::Phase { phase: Phase::Switch })?;
+        let candidates = |views: &[crate::vps::Candidate]| {
+            views
+                .iter()
+                .map(|candidate| {
+                    let mut candidate = candidate.clone();
+                    candidate.source = directory.join(&candidate.source);
+                    candidate
+                })
+                .collect::<Vec<_>>()
+        };
+        let desired = candidates(&bundle.services);
+        let previous = candidates(&bundle.previous_services);
+        let mut service_owner = desired
+            .iter()
+            .find(|candidate| candidate.service == crate::vps::Service::Downloads)
+            .map(|downloads| crate::vps::local::Local::new(&payload, bucket, downloads))
+            .transpose()
+            .map_err(|e| Code::Blocked.error(e))?;
+        if let Some(backend) = &mut service_owner {
+            let mut guarded = crate::vps::commit::Guarded { backend, owner: &mut owner, run: &mut run };
+            crate::vps::commit::activate(&mut guarded, &desired, &previous, &current, &approved, || {
+                std::thread::sleep(wait.pointer + wait.clock)
+            })?;
+        }
         let mut switched = Vec::new();
         for product in &bundle.next.products {
             let Some((id, _)) = &product.release else { continue };
@@ -278,6 +408,17 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
             &mut run,
             &mut owner,
         )?;
+        if let Some(backend) = &mut service_owner {
+            use crate::vps::Vps;
+            if current.iter().any(|unit| !approved.contains(unit)) {
+                let switched = switch
+                    .ok_or_else(|| Code::Blocked.error("service retirement needs an acknowledged pointer switch"))?;
+                run.record(&Event::Phase { phase: Phase::Wait })?;
+                std::thread::sleep((wait.pointer + wait.clock).saturating_sub(switched.elapsed()));
+                run.record(&Event::Phase { phase: Phase::Cleanup })?;
+            }
+            crate::vps::commit::Guarded { backend, owner: &mut owner, run: &mut run }.retire(&current, &approved)?;
+        }
         Ok(Committed { uploaded, switched, removed })
     })();
     let result = super::api::finish_run(run, result, None).map_err(|mut error| {

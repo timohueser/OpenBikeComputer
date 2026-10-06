@@ -183,7 +183,7 @@ pub fn named(release: &obc_data::engine::release::Release) -> Result<Vec<obc_dat
 }
 
 pub fn pointer() -> PointerFn {
-    |release, store| {
+    |_, release, store| {
         let file =
             release.named.iter().find(|file| file.path == "catalog.json").ok_or("release has no catalog root")?;
         let body = std::fs::read(store.object(&file.sha256)).map_err(|e| format!("{}: {e}", file.path))?;

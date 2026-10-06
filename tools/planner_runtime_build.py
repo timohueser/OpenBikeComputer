@@ -28,7 +28,7 @@ SERVICE_FILES = [
     "query/words.py", "query/lexicon.py", "query/lexicon",
 ]
 DOWNLOAD_FILES = ["planner_downloads.py", "planner_grid.py", "planner_geo.py", "planner_map_archive.py",
-                  "planner_maps.py", "planner_runtime.py", "planner_offline.py", "planner_install.py"]
+                  "planner_maps.py", "planner_runtime.py", "planner_offline.py", "planner_install.py", "planner_activation.py"]
 
 
 def encoded(value):
