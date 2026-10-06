@@ -9,41 +9,21 @@
 #   formats-default    obc-formats in the device's default feature shape
 #   bench-golden       render + read-counter golden gate
 #
-# Set OBC_COVERAGE=1 to run the instrumented path CI runs, for example
-# `OBC_COVERAGE=1 tools/ci/test.sh nextest-fast`. It needs `cargo llvm-cov`.
-#
 # Every section runs in a subshell, so one section's exported environment cannot reach
 # the next when several run in one invocation.
 #
 # `--all-features` is deliberate: it is the shape the host tests are written for. The
 # device's feature shape is checked by the separate formats-default section.
-#
-# Compilation stays workspace-wide. The per-pull-request coverage ratchet reads one lcov
-# report over the whole workspace and fails any critical file it never compiled, so a
-# narrowed package set would fail the ratchet rather than save time.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# Instrumentation belongs to the two nextest sections only: they produce the ratchet's
-# evidence. The bench golden gate is a release binary whose profile data would otherwise
-# merge into that evidence, and doctests are not part of it either.
-coverage_env() {
-  if [ "${OBC_COVERAGE:-}" = "1" ]; then
-    eval "$(cargo llvm-cov show-env --sh)"
-  fi
-}
-
 nextest_fast() {
-  coverage_env
   export NEXTEST_PROFILE=ci
-  mkdir -p target
-  find target -maxdepth 1 -name '*.profraw' -delete
   rm -f target/nextest/ci/junit.xml
   cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)"
 }
 
 nextest_fixtures() {
-  coverage_env
   export NEXTEST_PROFILE=fixtures
   rm -f target/nextest/fixtures/junit.xml
   python3 tools/fixtures.py sync test

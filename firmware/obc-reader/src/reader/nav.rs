@@ -7,12 +7,11 @@ pub use cache::{NavCacheStats, NavTileCache};
 use super::{aligned_index_end, fixed_chunk_range, resolve, MapReadError, QuadIndex, Reader, MAX_QUADTREE_DEPTH};
 use crate::Error;
 use heapless::Vec;
-use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
+use obc_formats::io::{rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::{
-    nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, OffsetScale, BRANCH_BIT, CHUNK_END, EMPTY_LEAF,
-    HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_MAX_PROFILES,
-    NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN,
-    NAV_PROFILE_NAME_LEN, NAV_SNAP_RECORD_LEN,
+    nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, NavEdgeRecord, OffsetScale, BRANCH_BIT, CHUNK_END,
+    EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_MAX_CHUNKS, NAV_MAX_PROFILES,
+    NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_SNAP_RECORD_LEN,
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 
@@ -184,22 +183,7 @@ impl MapProfile {
     }
 }
 
-/// One adjacency entry of a decoded junction record. Coordinates are absolute microdegrees,
-/// reconstructed from the record's own coord plus the stored `i16` deltas, and `cost_m` is the
-/// edge's raw unweighted ground length in metres.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NavNeighbor {
-    pub id: u32,
-    pub lat: i32,
-    pub lon: i32,
-    pub edge_id: u32,
-    pub cost_m: u32,
-    pub way_kind: u8,
-    /// Integrated climb in metres of riding this edge from the record's node toward this
-    /// neighbor. Directional: it is the one adjacency field that legitimately differs between the
-    /// two sides.
-    pub ascent_m: u16,
-}
+pub use obc_formats::obcm::{NavNeighbor, NavNodeRecord as NavNodeRef};
 
 /// One exact position along an edge polyline. `segment` names the forward `a → b` segment and
 /// `fraction` is its 0..=65535 interpolation parameter.
@@ -268,45 +252,6 @@ fn project_to_nav_segment(a: (i32, i32), b: (i32, i32), p: (i32, i32), cl: f32) 
 #[inline]
 fn candidate_beats(new: &NavEdgeCandidate, old: &NavEdgeCandidate) -> bool {
     new.distance_m < old.distance_m || (new.distance_m == old.distance_m && new.edge_id < old.edge_id)
-}
-
-/// One junction record, borrowed from the chunk scratch for a single callback. Neighbor entries
-/// decode lazily, so A* relaxes them straight off the record with no intermediate copy.
-#[derive(Debug, Clone, Copy)]
-pub struct NavNodeRef<'a> {
-    /// Absolute microdegrees.
-    pub lat: i32,
-    /// Absolute microdegrees.
-    pub lon: i32,
-    /// The pack-run-dense node id (the A* hash key).
-    pub id: u32,
-    /// Raw neighbor bytes, `degree` × [`NAV_NEIGHBOR_LEN`] — length-validated by the walk.
-    neighbors: &'a [u8],
-}
-
-impl<'a> NavNodeRef<'a> {
-    /// This junction's degree; the packer caps it far lower.
-    #[inline]
-    pub fn degree(&self) -> usize {
-        self.neighbors.len() / NAV_NEIGHBOR_LEN
-    }
-
-    /// Iterate the adjacency entries in record order. Each neighbor's absolute coord is
-    /// reconstructed as `record coord + i16 delta` through `from_le_bytes` on the slice, never a
-    /// typed view.
-    #[inline]
-    pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
-        let (base_lat, base_lon) = (self.lat, self.lon);
-        self.neighbors.as_chunks::<NAV_NEIGHBOR_LEN>().0.iter().map(move |e| NavNeighbor {
-            id: rd_u32(e, 0),
-            lat: base_lat.wrapping_add(rd_i16(e, 4) as i32),
-            lon: base_lon.wrapping_add(rd_i16(e, 6) as i32),
-            edge_id: rd_u32(e, 8),
-            cost_m: rd_u16(e, 12) as u32,
-            way_kind: e[14],
-            ascent_m: rd_u16(e, NAV_NEIGHBOR_ASCENT_OFF),
-        })
-    }
 }
 
 impl<'a> Reader<'a> {
@@ -400,18 +345,13 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Resolve an `Edge Id`, a packed `(chunk_index, ordinal)` pair, to the chunk that holds the
-    /// record and the record's byte position inside it.
-    ///
-    /// The `ordinal` is a position within the chunk, not a byte offset, so this reads the one
-    /// chunk and walks `ordinal` records from its first byte. There is no extra I/O: the chunk
-    /// that holds the record holds every record before it. A refused id is a malformed map, but
-    /// every caller degrades to "no geometry" rather than panicking.
-    fn nav_edge_record<'t>(&self, tiles: &'t mut NavTileCache, edge_id: u32) -> Option<(&'t [u8], usize)> {
+    /// Resolve the packed `(chunk, ordinal)` edge id to a validated record. The ordinal walk
+    /// reads preceding records from the same chunk, with no extra I/O.
+    fn nav_edge_record<'t>(&self, tiles: &'t mut NavTileCache, edge_id: u32) -> Option<NavEdgeRecord<'t>> {
         let chunk_start = self.nav_edge_chunk_start(edge_id)?;
         let chunk = tiles.chunk(self.src, chunk_start, NAV_CHUNK_SIZE)?;
-        let (start, _end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))?;
-        Some((chunk, start))
+        let (start, end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))?;
+        NavEdgeRecord::parse(&chunk[start..end])
     }
 
     /// The absolute file offset of the chunk holding `edge_id`'s record, split out so the two
@@ -440,18 +380,18 @@ impl<'a> Reader<'a> {
         &self,
         buf: &'b mut [u8; NAV_CHUNK_SIZE],
         edge_id: u32,
-    ) -> Option<(&'b [u8], usize)> {
+    ) -> Option<NavEdgeRecord<'b>> {
         let chunk_start = self.nav_edge_chunk_start(edge_id)?;
         self.src.read_at(chunk_start, &mut buf[..]).ok()?;
-        let (start, _end) = nav_edge_record_range(&buf[..], nav_edge_id_ordinal(edge_id))?;
-        Some((&buf[..], start))
+        let (start, end) = nav_edge_record_range(&buf[..], nav_edge_id_ordinal(edge_id))?;
+        NavEdgeRecord::parse(&buf[start..end])
     }
 
     /// Surface class and whether every terrain integration sample was present.
     pub fn nav_edge_facts(&self, edge_id: u32) -> Option<(u8, bool)> {
         let mut bytes = [0u8; NAV_EDGE_STACK_BUDGET];
-        let (chunk, within) = self.nav_edge_record_uncached(&mut bytes, edge_id)?;
-        Some((chunk[within + 6] >> 5, rd_u16(chunk, within + 4) & 0x8000 != 0))
+        let record = self.nav_edge_record_uncached(&mut bytes, edge_id)?;
+        Some((record.way_kind() >> 5, record.elevation_complete()))
     }
 
     /// Fetch one edge polyline by its `edge_id`, decoding the anchor and deltas into `points` as
@@ -463,25 +403,14 @@ impl<'a> Reader<'a> {
     pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
         points.clear();
         let mut chunk_buf = [0u8; NAV_EDGE_STACK_BUDGET];
-        let (chunk, within) = self.nav_edge_record_uncached(&mut chunk_buf, edge_id)?;
-        let length_m = rd_u32(chunk, within);
-        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
-        // Byte 6 is `way_kind`; the anchor sits behind it, at 7 (lat) and 11 (lon).
-        let anchor_lat = rd_i32(chunk, within + 7);
-        let anchor_lon = rd_i32(chunk, within + 11);
-        // The walk already refused `Pt Count < 2` and any record claiming bytes past its chunk.
-        let rec_len = NAV_EDGE_FIXED_LEN + (pt_count - 1) * 4;
-        if pt_count > P {
-            return None; // caller's buffer can't hold the polyline — corrupt or mis-sized
+        let record = self.nav_edge_record_uncached(&mut chunk_buf, edge_id)?;
+        if record.point_count() > P {
+            return None;
         }
-        points.push((anchor_lon, anchor_lat)).ok()?;
-        let (mut lat, mut lon) = (anchor_lat, anchor_lon);
-        for pair in chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len].as_chunks::<4>().0 {
-            lat = lat.wrapping_add(rd_i16(pair, 0) as i32);
-            lon = lon.wrapping_add(rd_i16(pair, 2) as i32);
-            points.push((lon, lat)).ok()?;
+        for point in record.vertices() {
+            points.push(point).ok()?;
         }
-        Some(length_m)
+        Some(record.length_m())
     }
 
     /// [`Reader::for_each_nav_node`] with the chunk read routed through a caller-owned
@@ -724,52 +653,22 @@ impl<'a> Reader<'a> {
         to: NavEdgePosition,
         mut emit: impl FnMut((i32, i32)),
     ) -> Option<u32> {
-        let dir = self.nav_directory();
-        let cs = dir.chunk_size;
-        if dir.edge_chunk_count == 0 || cs == 0 {
+        let record = self.nav_edge_record(tiles, edge_id)?;
+        if from.segment as usize + 1 >= record.point_count() || to.segment as usize + 1 >= record.point_count() {
             return None;
         }
-        let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
-        let length_m = rd_u32(chunk, within);
-        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
-        if pt_count < 2 || from.segment as usize + 1 >= pt_count || to.segment as usize + 1 >= pt_count {
-            return None;
-        }
-        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
-        if within + rec_len > cs {
-            return None;
-        }
-        let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
-        let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7));
-        let step = |(lon, lat): (i32, i32), pair: &[u8]| {
-            (
-                lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32),
-                lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32),
-            )
-        };
         let forward = (from.segment, from.fraction) <= (to.segment, to.fraction);
         emit(from.coord);
+        let vertices = record.vertices().enumerate();
         if forward {
-            let mut point = anchor;
-            for (i, pair) in deltas.as_chunks::<4>().0.iter().enumerate() {
-                point = step(point, pair);
-                let vertex = i + 1;
-                if vertex > from.segment as usize && vertex <= to.segment as usize {
+            for (i, point) in vertices {
+                if i > from.segment as usize && i <= to.segment as usize {
                     emit(point);
                 }
             }
         } else {
-            let mut point = anchor;
-            for pair in deltas.as_chunks::<4>().0 {
-                point = step(point, pair);
-            }
-            for (i, pair) in deltas.as_chunks::<4>().0.iter().enumerate().rev() {
-                point = (
-                    point.0.wrapping_sub(i16::from_le_bytes([pair[2], pair[3]]) as i32),
-                    point.1.wrapping_sub(i16::from_le_bytes([pair[0], pair[1]]) as i32),
-                );
-                let vertex = i;
-                if vertex <= from.segment as usize && vertex > to.segment as usize {
+            for (i, point) in vertices.rev() {
+                if i <= from.segment as usize && i > to.segment as usize {
                     emit(point);
                 }
             }
@@ -777,7 +676,7 @@ impl<'a> Reader<'a> {
         if to.coord != from.coord {
             emit(to.coord);
         }
-        Some(length_m)
+        Some(record.length_m())
     }
 
     fn project_nav_edge_cached(
@@ -786,38 +685,18 @@ impl<'a> Reader<'a> {
         edge_id: u32,
         p: (i32, i32),
     ) -> Option<NavEdgeCandidate> {
-        let dir = self.nav_directory();
-        let cs = dir.chunk_size;
-        if dir.edge_chunk_count == 0 || cs == 0 {
-            return None;
-        }
-        let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
-        let length_m = rd_u32(chunk, within);
-        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
-        if pt_count < 2 || pt_count - 1 > u16::MAX as usize {
-            return None;
-        }
-        let way_kind = chunk[within + 6];
-        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
-        if within + rec_len > cs {
-            return None;
-        }
-        let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
-        let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7));
-        let step = |(lon, lat): (i32, i32), pair: &[u8]| {
-            (
-                lon.wrapping_add(i16::from_le_bytes([pair[2], pair[3]]) as i32),
-                lat.wrapping_add(i16::from_le_bytes([pair[0], pair[1]]) as i32),
-            )
-        };
+        let record = self.nav_edge_record(tiles, edge_id)?;
+        let length_m = record.length_m();
+        let pt_count = record.point_count();
+        let way_kind = record.way_kind();
+        let anchor = record.anchor();
         let cl = cos_lat(p.1).max(1e-3);
         let mut a = anchor;
         let mut along = 0.0f32;
         let mut best_distance = f32::INFINITY;
         let mut best_along = 0.0f32;
         let mut best_position = NavEdgePosition { segment: 0, fraction: 0, coord: anchor };
-        for (i, pair) in deltas.as_chunks::<4>().0.iter().enumerate() {
-            let b = step(a, pair);
+        for (i, b) in record.vertices().skip(1).enumerate() {
             let (t, distance) = project_to_nav_segment(a, b, p, cl);
             let segment_m = ground_dist_m_cl(a, b, cl);
             if distance < best_distance {
@@ -910,81 +789,32 @@ impl<'a> Reader<'a> {
         start: (i32, i32),
         mut emit: impl FnMut((i32, i32)),
     ) -> Option<u32> {
-        let dir = self.nav_directory();
-        let cs = dir.chunk_size;
-        if dir.edge_chunk_count == 0 || cs == 0 {
-            return None;
-        }
-        let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
-        let length_m = rd_u32(chunk, within);
-        let pt_count = (rd_u16(chunk, within + 4) & 0x7fff) as usize;
-        // Byte +6 is `way_kind`; the anchor sits behind it, at +7 (lat) and +11 (lon).
-        let anchor = (rd_i32(chunk, within + 11), rd_i32(chunk, within + 7)); // (lon, lat)
-        if pt_count == 0 {
-            return None;
-        }
-        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
-        if within + rec_len > cs {
-            return None;
-        }
-        let deltas = &chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len];
-        let step = |(lon, lat): (i32, i32), pair: &[u8]| {
-            (lon.wrapping_add(rd_i16(pair, 2) as i32), lat.wrapping_add(rd_i16(pair, 0) as i32))
-        };
-        if anchor == start {
-            // Forward: the record already runs `start → …`.
-            let mut p = anchor;
-            emit(p);
-            for pair in deltas.as_chunks::<4>().0 {
-                p = step(p, pair);
-                emit(p);
+        let record = self.nav_edge_record(tiles, edge_id)?;
+        let mut vertices = record.vertices();
+        if record.anchor() == start {
+            for point in vertices {
+                emit(point);
             }
-            return Some(length_m);
+        } else {
+            if vertices.next_back()? != start {
+                return None;
+            }
+            emit(start);
+            for point in vertices.rev() {
+                emit(point);
+            }
         }
-        // Maybe reversed: forward-sum the deltas for the `b` endpoint…
-        let mut p = anchor;
-        for pair in deltas.as_chunks::<4>().0 {
-            p = step(p, pair);
-        }
-        if p != start {
-            return None; // matches neither endpoint — a stale/corrupt edge id
-        }
-        // …then walk them backward, undoing one delta per point.
-        emit(p);
-        for pair in deltas.as_chunks::<4>().0.iter().rev() {
-            p = (p.0.wrapping_sub(rd_i16(pair, 2) as i32), p.1.wrapping_sub(rd_i16(pair, 0) as i32));
-            emit(p);
-        }
-        Some(length_m)
+        Some(record.length_m())
     }
 }
 
-/// Decode one nav node chunk's records, handing each to `visit`. Records are back-to-back and the
-/// `degree` byte reads `0xFF` in the padding, which ends the walk. A record whose neighbors run
-/// past the chunk is corrupt: stop cleanly and decode nothing more.
-///
-/// Byte-wise by contract, never a typed view: the record stride is odd, so fields sit at odd
-/// offsets by design. The board build compiles with `+strict-align`, because the ARM backend fused
-/// byte-wise decodes into an alignment-trapping `ldrd` under fat LTO, and the nav suite runs under
-/// Miri.
+/// Visit records in chunk order. Padding or a truncated record ends the walk.
+/// The shared record view decodes fields byte-wise, including fields at odd offsets.
 fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
-    let mut off = 0usize;
-    while off + NAV_NODE_FIXED_LEN <= chunk.len() {
-        let degree = chunk[off + 12] as usize;
-        if degree == usize::from(CHUNK_END) {
-            break;
-        }
-        let end = off + NAV_NODE_FIXED_LEN + degree * NAV_NEIGHBOR_LEN;
-        if end > chunk.len() {
-            break;
-        }
-        visit(NavNodeRef {
-            lat: rd_i32(chunk, off),
-            lon: rd_i32(chunk, off + 4),
-            id: rd_u32(chunk, off + 8),
-            neighbors: &chunk[off + NAV_NODE_FIXED_LEN..end],
-        });
-        off = end;
+    let mut rest = chunk;
+    while let Some(node) = NavNodeRef::parse(rest) {
+        rest = &rest[node.bytes().len()..];
+        visit(node);
     }
 }
 

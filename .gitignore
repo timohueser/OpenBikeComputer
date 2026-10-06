@@ -118,5 +118,3 @@ fixtures/build/
 
 # repowise local index and session cache — never committed.
 /.repowise/
-
-.coverage

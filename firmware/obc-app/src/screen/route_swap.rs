@@ -15,6 +15,7 @@ use obc_render::{
 };
 
 use crate::activity::Mode;
+use crate::card_scheduler::CardPermit;
 use crate::input::Gesture;
 use crate::Msg;
 
@@ -50,7 +51,7 @@ impl RouteSwapScreen {
 
     /// The host-pushed prompt for a route that arrived over BLE mid-ride, opened at `now_ms`.
     /// Only the framing and the timeout differ from the manual prompt.
-    pub fn received(pending: usize, now_ms: u32) -> Self {
+    pub(crate) fn received(_permit: CardPermit, pending: usize, now_ms: u32) -> Self {
         RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: Some(now_ms) }
     }
 
