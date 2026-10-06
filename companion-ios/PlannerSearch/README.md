@@ -2,7 +2,7 @@
 
 The Companion app compiles the Swift files in this directory. Link
 JavaScriptCore and SQLite. Use iOS 17 or later. The
-[app project](../../../companion-ios/project.yml) lists the files and builds the
+[app project](../project.yml) lists the files and builds the
 shared JavaScript resource before it generates the project. To build it by hand,
 run from the repository root:
 

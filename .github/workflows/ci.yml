@@ -833,7 +833,7 @@ jobs:
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'planner.native-tiles')
         id: planner-tiles
         shell: bash
-        run: bash apps/planner-native/test-tiles.sh 2>&1 | tee "$RUNNER_TEMP/planner-tiles.log"
+        run: bash companion-ios/PlannerNative/test-tiles.sh 2>&1 | tee "$RUNNER_TEMP/planner-tiles.log"
       - name: Upload planner PMTiles results
         if: ${{ !cancelled() && (steps.planner-tiles.outcome == 'success' || steps.planner-tiles.outcome == 'failure') }}
         uses: actions/upload-artifact@v4

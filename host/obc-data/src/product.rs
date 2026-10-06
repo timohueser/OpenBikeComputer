@@ -11,7 +11,7 @@ use crate::env::Env;
 use crate::regions::Regions;
 use crate::store::{sorted, Store};
 
-pub trait Product {
+pub trait Product: Sync {
     /// Kebab-case. Each of its layer names starts with `<name>/`.
     fn name(&self) -> &'static str;
 

@@ -1,17 +1,18 @@
 //! The TUI of `obc data`. Each screen shows what a command writes with `--json`. Each change goes
 //! through the function of its command: `region`, `layer`, `undo`, `policy` and `clean --apply`.
 
+mod background;
 mod live;
 mod plan;
+mod regions;
+mod sources;
 
 use std::io::Stdout;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
-};
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture, KeyCode};
 use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::crossterm::{cursor, execute};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -21,17 +22,15 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
-use crate::fetch::http::Http;
 use crate::product::Product;
 use crate::regions::Regions;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
 use crate::store::{gc, import, Store};
 
-use super::build_cli::plan_live;
 use super::edit_cli::{self, Edited, Switch};
 use super::runs_cli::{bytes, duration, mark, step_cells};
 use super::status_cli::{self, Status};
-use super::{clean, clean_plan, policy, row_text, source_listing, widths, CleanPlan, Error, SourceRow};
+use super::{row_text, source_listing, widths, CleanPlan, Error, SourceRow};
 use live::{Fix, LiveRow};
 use plan::PlanView;
 
@@ -58,6 +57,8 @@ const SCREENS: [(char, &str, Screen); 4] = [
 enum Overlay {
     Help,
     Attribution,
+    Source,
+    Error,
     Policy,
     Clean,
     Region,
@@ -87,15 +88,30 @@ enum Action {
     /// The fetches and builds of Plan, or its groups again.
     Steps,
     Undo,
+    Dismiss,
+    SourceScope,
+    SourceFilter,
+    CustomPolicy,
+    InputKey(KeyCode),
+    NewRegion,
+    BoxRegion,
+    DeleteRegion,
+    LoadAreas,
     Close,
     Quit,
 }
 
 /// What the loop does after a key or a click.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Effect {
     None,
     Quit,
+    Initial,
+    Areas,
+    LoadAreas,
+    CreateRegion(super::regions_cli::Create),
+    ReviewRegionDeletion(String),
+    DeleteRegion(super::regions_cli::Deletion),
     /// `obc data policy SOURCE REFRESH`.
     Policy(String, Refresh),
     /// `obc data sources --check-now`.
@@ -136,6 +152,9 @@ fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'st
             (KeyCode::Char('R'), Action::CheckNow, "R", "check R2"),
         ],
         Screen::Sources => &[
+            (KeyCode::Enter, Action::Open(Overlay::Source), "enter", "details"),
+            (KeyCode::Char('f'), Action::SourceScope, "f", "scope"),
+            (KeyCode::Char('/'), Action::SourceFilter, "/", "filter"),
             (KeyCode::Char('e'), Action::Open(Overlay::Policy), "e", "policy"),
             (KeyCode::Char('R'), Action::CheckNow, "R", "check upstream"),
             (KeyCode::Char('L'), Action::Open(Overlay::Attribution), "L", "attribution"),
@@ -149,6 +168,8 @@ fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'st
 enum Hit {
     Screen(Screen),
     Row(usize),
+    Action(Action),
+    Region(regions::Target),
 }
 
 #[derive(Clone)]
@@ -171,10 +192,13 @@ struct App {
     /// `data/env/live.toml` differs from its committed version: `undo` takes the edits back.
     edited: bool,
     /// The id of each region, or why `data/regions/` could not be read.
-    regions: Result<Vec<String>, String>,
+    regions: Result<Vec<crate::regions::Region>, String>,
     /// The filter of Region, and whether keys type into it.
     filter: String,
     filtering: bool,
+    region_editor: regions::Editor,
+    source_view: sources::View,
+    policy_days: Option<String>,
     /// The plan of Plan, once it is made.
     plan: Option<PlanView>,
     row: usize,
@@ -188,7 +212,9 @@ struct App {
     /// Clean asks its question.
     asking: bool,
     /// The error of the last change.
-    notice: Option<String>,
+    notice: Option<Error>,
+    /// Last successful file write, distinct from unsaved inputs and environment Undo.
+    saved: Option<String>,
     /// Where the last frame drew each tab and row.
     hits: Vec<(Rect, Hit)>,
 }
@@ -213,134 +239,19 @@ static NO_PLAN: CleanPlan = CleanPlan {
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<(), Error> {
     let store = Store::open()?;
-    let (sources, live) = source_listing(root, products, false)?;
-    let mut app = App::new(sources, list_runs(&store)?);
-    app.live = live;
-    app.regions = Regions::load(root).map(|regions| regions.iter().map(|region| region.id.clone()).collect());
-    app.notice = app.regions.clone().err();
+    let mut app = App::new(Vec::new(), list_runs(&store)?);
+    app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+    app.notice = app.regions.clone().err().map(|message| super::Code::InvalidData.error(message));
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         stop();
         previous(info);
     }));
-    let result =
-        start().inspect_err(|_| stop()).and_then(|mut tui| run_loop(root, products, &store, &mut app, &mut tui));
+    let result = start()
+        .inspect_err(|_| stop())
+        .and_then(|mut tui| background::run_loop(root, products, &store, &mut app, &mut tui));
     stop();
     result
-}
-
-fn run_loop(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App, tui: &mut Tui) -> Result<(), Error> {
-    let io = |e: std::io::Error| e.to_string();
-    let mut read = Instant::now();
-    // Live is the first screen. Only `R` lists R2.
-    let mut effect = Effect::Status { check: false };
-    loop {
-        match effect {
-            Effect::None => {}
-            Effect::Quit => return Ok(()),
-            effect => {
-                app.busy = true;
-                tui.draw(|frame| app.draw(frame)).map_err(io)?;
-                if let Err(error) = perform(root, products, store, app, effect) {
-                    app.notice = Some(error.message);
-                }
-                app.busy = false;
-                discard_keys()?;
-                // A fetch writes its progress to standard error, over the screen: draw all of it
-                // again. `Terminal::clear` would ask the terminal for the cursor first.
-                execute!(std::io::stdout(), terminal::Clear(terminal::ClearType::All)).map_err(io)?;
-                tui.swap_buffers();
-            }
-        }
-        tui.draw(|frame| app.draw(frame)).map_err(io)?;
-        let screen = app.screen;
-        effect = Effect::None;
-        // A mouse move is an event too, so the tick is timed, not the wait for an event.
-        if event::poll(TICK.saturating_sub(read.elapsed())).map_err(io)? {
-            effect = match event::read().map_err(io)? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => app.key(key.code),
-                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                    app.click(mouse.column, mouse.row);
-                    Effect::None
-                }
-                _ => Effect::None,
-            };
-        }
-        let running = app.runs.iter().any(|run| run.summary.outcome == Outcome::Running);
-        let tick = read.elapsed() >= TICK;
-        if app.screen == Screen::Runs && (screen != Screen::Runs || (tick && running)) {
-            app.runs = list_runs(store)?;
-        }
-        if app.screen == Screen::Store && screen != Screen::Store && app.store.is_none() {
-            effect = Effect::PlanClean;
-        }
-        if tick || app.screen != screen {
-            read = Instant::now();
-        }
-    }
-}
-
-/// Do what `effect` names, with the function of its command.
-fn perform(root: &Path, products: &[&dyn Product], store: &Store, app: &mut App, effect: Effect) -> Result<(), Error> {
-    crate::worker::check(root)?;
-    match effect {
-        Effect::None | Effect::Quit => Ok(()),
-        Effect::Policy(id, refresh) => {
-            let result = policy(root, &id, refresh).map(drop);
-            let reloaded = app.reload(root, products, false);
-            result.and(reloaded)
-        }
-        Effect::CheckNow => app.reload(root, products, true),
-        Effect::PlanClean => {
-            let result = clean_plan(root, products, store).map(|plan| app.store = Some(plan));
-            if result.is_err() {
-                app.overlay = None;
-            }
-            result
-        }
-        Effect::Clean => {
-            let confirmed = app.store.as_ref().unwrap_or(&NO_PLAN);
-            let result = clean(root, products, store, &confirmed.store).map(drop);
-            match clean_plan(root, products, store) {
-                Ok(plan) => app.store = Some(plan),
-                Err(error) => app.notice = Some(error.message),
-            }
-            result
-        }
-        Effect::Status { check } => app.read_live(root, products, check),
-        Effect::Region(id) => {
-            let result = edit_cli::region(root, products, LIVE, &id).map(drop);
-            result.and(app.read_live(root, products, false))
-        }
-        Effect::Layer(layer, switch) => {
-            let result = edit_cli::layer(root, products, LIVE, &layer, switch).map(drop);
-            result.and(app.read_live(root, products, false))
-        }
-        Effect::Undo => edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)),
-        Effect::Plan => {
-            let plan = plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &[], false);
-            let plan = plan.inspect_err(|_| app.overlay = None)?;
-            app.plan = Some(PlanView::new(plan));
-            Ok(())
-        }
-        Effect::Select(only) => {
-            let Some(view) = app.plan.as_mut() else { return Ok(()) };
-            let taken = match only.is_empty() {
-                true => Ok(view.all.clone()),
-                false => plan_live(root, &Store::open()?, &Http::new(), &super::remote()?, products, &only, false),
-            };
-            view.taken = taken.inspect_err(|_| app.overlay = None)?;
-            Ok(())
-        }
-    }
-}
-
-/// Drop the keys typed while the TUI waited: they are not for what it shows now.
-fn discard_keys() -> Result<(), Error> {
-    while event::poll(Duration::ZERO).map_err(|e| e.to_string())? {
-        event::read().map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 fn start() -> Result<Tui, Error> {
@@ -378,6 +289,9 @@ impl App {
             regions: Ok(Vec::new()),
             filter: String::new(),
             filtering: false,
+            region_editor: regions::Editor::default(),
+            source_view: sources::View::default(),
+            policy_days: None,
             plan: None,
             row: 0,
             source: 0,
@@ -387,6 +301,7 @@ impl App {
             choice: 0,
             asking: false,
             notice: None,
+            saved: None,
             hits: Vec::new(),
         }
     }
@@ -411,7 +326,7 @@ impl App {
     fn rows(&self) -> usize {
         match self.screen {
             Screen::Live => self.live_rows().len(),
-            Screen::Sources => self.sources.len(),
+            Screen::Sources => self.source_view.rows(&self.sources).len(),
             Screen::Store => self
                 .store
                 .as_ref()
@@ -424,7 +339,7 @@ impl App {
     fn choices(&self) -> Option<usize> {
         match self.overlay? {
             Overlay::Policy => Some(Refresh::ALL.len()),
-            Overlay::Region => Some(self.shown_regions().len()),
+            Overlay::Region if self.region_editor.mode.is_none() => Some(self.shown_regions().len()),
             Overlay::Plan => self.plan.as_ref().filter(|view| !view.steps).map(|view| view.all.groups.len()),
             _ => None,
         }
@@ -436,6 +351,7 @@ impl App {
             return &mut self.plan.as_mut().expect("Plan has its plan").group;
         }
         match (self.overlay, self.screen) {
+            (Some(Overlay::Region), _) if self.region_editor.mode.is_some() => &mut self.scroll,
             (Some(Overlay::Policy | Overlay::Region), _) => &mut self.choice,
             (Some(_), _) => &mut self.scroll,
             (None, Screen::Live) => &mut self.row,
@@ -449,12 +365,17 @@ impl App {
     fn shown_regions(&self) -> Vec<&str> {
         let filter = self.filter.to_lowercase();
         let regions = self.regions.iter().flatten();
-        regions.map(String::as_str).filter(|id| id.contains(&filter)).collect()
+        regions
+            .filter(|region| region.id.contains(&filter) || region.name.to_lowercase().contains(&filter))
+            .map(|region| region.id.as_str())
+            .collect()
     }
 
     /// Keys type into the filter of Region.
     fn typing(&self) -> bool {
-        self.overlay == Some(Overlay::Region) && self.filtering
+        self.overlay == Some(Overlay::Region) && (self.filtering || self.region_editor.mode.is_some())
+            || self.overlay.is_none() && self.screen == Screen::Sources && self.source_view.typing
+            || self.overlay == Some(Overlay::Policy) && self.policy_days.is_some()
     }
 
     /// Whether `enter` in Policy or Region chooses another policy or region.
@@ -474,16 +395,35 @@ impl App {
 
     /// Whether a key does something for the selected row.
     fn works(&self, action: Action) -> bool {
+        if self.busy
+            && matches!(
+                action,
+                Action::Choose
+                    | Action::CheckNow
+                    | Action::Clean
+                    | Action::Toggle
+                    | Action::Undo
+                    | Action::LoadAreas
+                    | Action::DeleteRegion
+                    | Action::Open(Overlay::Clean | Overlay::Plan)
+            )
+        {
+            return false;
+        }
         match action {
+            Action::Open(Overlay::Source) => self.source_visible(),
             Action::Open(Overlay::Policy) => {
-                self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
+                self.source_visible()
+                    && self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
             }
             Action::Open(Overlay::Clean) => self.store.as_ref().is_some_and(|plan| !plan.is_empty()),
             Action::Filter => self.regions.is_ok(),
             Action::Choose => self.chooses(),
             Action::Toggle if self.overlay == Some(Overlay::Plan) => self.plan.as_ref().is_some_and(PlanView::toggles),
             Action::Toggle => matches!(self.live_rows().get(self.row), Some(LiveRow::Layer(_))),
-            Action::Fix => self.fix().is_some(),
+            Action::Fix => {
+                self.fix().is_some_and(|fix| !matches!(fix, Fix::Plan) || self.works(Action::Open(Overlay::Plan)))
+            }
             Action::Steps => self.plan.as_ref().is_some_and(|view| !view.all.groups.is_empty()),
             Action::Undo => self.edited,
             _ => true,
@@ -493,6 +433,46 @@ impl App {
     fn bindings(&self) -> Vec<Binding> {
         let bar = |key, action, label, does: &str| Binding { key, action, bar: Some((label, does.to_string())) };
         let hidden = |key, action| Binding { key, action, bar: None };
+        let input = |key, label, text: &str| bar(key, Action::InputKey(key), label, text);
+        if self.overlay == Some(Overlay::Region) && self.region_editor.mode.is_some() {
+            let mut keys = vec![input(KeyCode::Esc, "esc", "back")];
+            match self.region_editor.mode {
+                Some(regions::Mode::Delete) => {
+                    keys.push(hidden(KeyCode::Up, Action::Up));
+                    keys.push(hidden(KeyCode::Down, Action::Down));
+                    if !self.busy && self.region_editor.deletion.as_ref().is_some_and(|plan| plan.used_by.is_empty()) {
+                        keys.insert(0, input(KeyCode::Char('y'), "y", "delete reviewed definition"));
+                    }
+                }
+                _ => {
+                    keys.insert(0, input(KeyCode::Tab, "tab", "field"));
+                    if self.region_editor.mode == Some(regions::Mode::Areas) {
+                        keys.insert(1, input(KeyCode::F(3), "F3", "selected / all"));
+                    }
+                    if !self.busy {
+                        keys.insert(1, input(KeyCode::F(2), "F2", "save"));
+                        if self.region_editor.mode == Some(regions::Mode::Areas) {
+                            keys.insert(2, input(KeyCode::F(5), "F5", "load area list"));
+                        }
+                    }
+                }
+            }
+            return keys;
+        }
+        if self.overlay == Some(Overlay::Policy) && self.policy_days.is_some() {
+            let mut keys = vec![input(KeyCode::Esc, "esc", "keep policy")];
+            if !self.busy {
+                keys.insert(0, input(KeyCode::Enter, "enter", "save"));
+            }
+            return keys;
+        }
+        if self.overlay.is_none() && self.screen == Screen::Sources && self.source_view.typing {
+            return vec![
+                input(KeyCode::Enter, "enter", "done"),
+                input(KeyCode::Delete, "delete", "clear"),
+                input(KeyCode::Esc, "esc", "done"),
+            ];
+        }
         let typing = self.typing();
         let mut keys = vec![hidden(KeyCode::Up, Action::Up), hidden(KeyCode::Down, Action::Down)];
         if !typing {
@@ -506,7 +486,14 @@ impl App {
                     }
                 };
                 match overlay {
-                    Overlay::Region if !typing => offer(KeyCode::Char('/'), Action::Filter, "/", "filter"),
+                    Overlay::Policy if !typing => offer(KeyCode::Char('c'), Action::CustomPolicy, "c", "custom days"),
+                    Overlay::Region if !typing => {
+                        offer(KeyCode::Char('/'), Action::Filter, "/", "filter");
+                        offer(KeyCode::Char('n'), Action::NewRegion, "n", "new areas");
+                        offer(KeyCode::Char('b'), Action::BoxRegion, "b", "new box");
+                        offer(KeyCode::Char('d'), Action::DeleteRegion, "d", "delete");
+                        offer(KeyCode::F(5), Action::LoadAreas, "F5", "load area list");
+                    }
                     Overlay::Clean if self.works(Action::Open(Overlay::Clean)) => match self.asking {
                         false => offer(KeyCode::Char('a'), Action::Ask, "a", "clean"),
                         true => offer(KeyCode::Char('y'), Action::Clean, "y", "clean"),
@@ -522,7 +509,7 @@ impl App {
                 let close = if self.asking {
                     "cancel"
                 } else if typing {
-                    "clear"
+                    "done"
                 } else {
                     "close"
                 };
@@ -531,7 +518,7 @@ impl App {
             None => {
                 keys.extend(SCREENS.iter().map(|&(key, _, screen)| hidden(KeyCode::Char(key), Action::Show(screen))));
                 keys.push(hidden(KeyCode::Tab, Action::NextScreen));
-                if self.rows() > 0 {
+                if self.rows() > 0 || self.screen == Screen::Sources {
                     let works = screen_keys(self.screen).iter().filter(|&&(_, action, _, _)| self.works(action));
                     keys.extend(works.map(|&(key, action, label, does)| bar(key, action, label, does)));
                 }
@@ -544,21 +531,69 @@ impl App {
                         _ => {}
                     }
                 }
-                keys.push(bar(KeyCode::Char('p'), Action::Open(Overlay::Plan), "p", "plan"));
+                if self.works(Action::Open(Overlay::Plan)) {
+                    keys.push(bar(KeyCode::Char('p'), Action::Open(Overlay::Plan), "p", "plan"));
+                }
                 if self.works(Action::Undo) {
-                    keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo"));
+                    keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo environment"));
                 }
                 keys.push(bar(KeyCode::Char('?'), Action::Open(Overlay::Help), "?", "help"));
             }
         }
         if !typing {
             keys.push(hidden(KeyCode::Char('q'), Action::Quit));
+            if self.notice.is_some() {
+                keys.push(bar(KeyCode::Char('!'), Action::Open(Overlay::Error), "!", "error details"));
+                keys.push(bar(KeyCode::Char('x'), Action::Dismiss, "x", "dismiss error"));
+            }
         }
         keys
     }
 
     fn key(&mut self, key: KeyCode) -> Effect {
-        self.notice = None;
+        if self.overlay == Some(Overlay::Policy) && self.policy_days.is_some() {
+            match key {
+                KeyCode::Esc => self.policy_days = None,
+                KeyCode::Char(c) => self.policy_days.as_mut().unwrap().push(c),
+                KeyCode::Backspace => {
+                    self.policy_days.as_mut().unwrap().pop();
+                }
+                KeyCode::Delete => self.policy_days.as_mut().unwrap().clear(),
+                KeyCode::Enter if !self.busy => match self.policy_days.as_ref().unwrap().parse::<Refresh>() {
+                    Ok(refresh) => {
+                        self.policy_days = None;
+                        self.overlay = None;
+                        return Effect::Policy(self.sources[self.source].source.id.clone(), refresh);
+                    }
+                    Err(message) => {
+                        self.notice = Some(
+                            super::Code::Usage
+                                .error(message)
+                                .fix("Enter 1..65535 whole days, or press Esc to keep the current policy."),
+                        )
+                    }
+                },
+                _ => {}
+            }
+            return Effect::None;
+        }
+        if self.overlay == Some(Overlay::Region) {
+            if let Some(effect) = self.region_editor.key(key, self.busy) {
+                return effect;
+            }
+        }
+        if self.overlay.is_none() && self.screen == Screen::Sources && self.source_view.typing {
+            match key {
+                KeyCode::Char(c) => self.source_view.filter.push(c),
+                KeyCode::Backspace => {
+                    self.source_view.filter.pop();
+                }
+                KeyCode::Delete => self.source_view.filter.clear(),
+                KeyCode::Esc | KeyCode::Enter => self.source_view.typing = false,
+                _ => {}
+            }
+            return Effect::None;
+        }
         if self.typing() {
             match key {
                 KeyCode::Char(c) => self.filter.push(c),
@@ -577,6 +612,9 @@ impl App {
     }
 
     fn act(&mut self, action: Action) -> Effect {
+        if matches!(action, Action::Open(Overlay::Plan)) && !self.works(action) {
+            return Effect::None;
+        }
         let last = match self.overlay {
             Some(_) => self.choices().map_or(usize::MAX, |choices| choices.saturating_sub(1)),
             None => self.rows().saturating_sub(1),
@@ -588,12 +626,15 @@ impl App {
                 self.screen = SCREENS[(at + 1) % SCREENS.len()].2;
             }
             // The drawing stops the scroll of an overlay at its end.
+            Action::Up if self.overlay.is_none() && self.screen == Screen::Sources => self.source_move(false),
+            Action::Down if self.overlay.is_none() && self.screen == Screen::Sources => self.source_move(true),
             Action::Up => *self.selected() = self.selected().saturating_sub(1),
             Action::Down => *self.selected() = (*self.selected() + 1).min(last),
             Action::Open(overlay) => {
                 (self.overlay, self.scroll, self.asking) = (Some(overlay), 0, false);
                 match overlay {
                     Overlay::Policy => {
+                        self.policy_days = None;
                         let current = self.sources.get(self.source).map(|row| row.source.refresh);
                         self.choice = Refresh::ALL.iter().position(|&r| Some(r) == current).unwrap_or(0);
                     }
@@ -607,7 +648,7 @@ impl App {
                         self.plan = None;
                         return Effect::Plan;
                     }
-                    Overlay::Help | Overlay::Attribution => {}
+                    Overlay::Help | Overlay::Attribution | Overlay::Source | Overlay::Error => {}
                 }
             }
             Action::Choose if self.overlay == Some(Overlay::Policy) => {
@@ -641,8 +682,39 @@ impl App {
                 }
             }
             Action::Undo => return Effect::Undo,
+            Action::Dismiss => self.notice = None,
+            Action::SourceScope => self.source_view.scope.toggle(),
+            Action::SourceFilter => self.source_view.typing = true,
+            Action::CustomPolicy => {
+                self.policy_days = Some(match self.sources[self.source].source.refresh {
+                    Refresh::Days(days) => days.to_string(),
+                    Refresh::Manual => String::new(),
+                });
+            }
+            Action::InputKey(key) => return self.key(key),
+            Action::NewRegion => {
+                self.scroll = 0;
+                self.region_editor.open(regions::Mode::Areas);
+                if self.region_editor.areas.is_none() {
+                    return Effect::Areas;
+                }
+            }
+            Action::BoxRegion => {
+                self.scroll = 0;
+                self.region_editor.open(regions::Mode::Box);
+            }
+            Action::LoadAreas => return Effect::LoadAreas,
+            Action::DeleteRegion => {
+                self.scroll = 0;
+                if let Some(id) = self.shown_regions().get(self.choice) {
+                    let id = id.to_string();
+                    self.region_editor.open(regions::Mode::Delete);
+                    self.region_editor.deletion = None;
+                    return Effect::ReviewRegionDeletion(id);
+                }
+            }
             Action::Close if self.asking => self.asking = false,
-            Action::Close if self.typing() => (self.filter, self.filtering, self.choice) = (String::new(), false, 0),
+            Action::Close if self.typing() => self.filtering = false,
             Action::Close => self.overlay = None,
             Action::Quit => return Effect::Quit,
         }
@@ -650,22 +722,45 @@ impl App {
     }
 
     /// A click on a tab shows its screen. A click on a row selects it.
-    fn click(&mut self, x: u16, y: u16) {
-        let hit = self.hits.iter().find(|(area, _)| area.contains(Position { x, y })).map(|&(_, hit)| hit);
+    fn click(&mut self, x: u16, y: u16) -> Effect {
+        let hit = self.hits.iter().rev().find(|(area, _)| area.contains(Position { x, y })).map(|&(_, hit)| hit);
         match hit {
+            Some(Hit::Action(action)) => return self.act(action),
+            Some(Hit::Region(target)) => self.region_editor.click(target),
             Some(Hit::Screen(screen)) => {
                 self.overlay = None;
                 self.screen = screen;
             }
+            Some(Hit::Row(row)) if self.overlay.is_none() && self.screen == Screen::Sources => {
+                if let Some((index, _)) = self.source_view.rows(&self.sources).get(row) {
+                    self.source = *index;
+                }
+            }
             Some(Hit::Row(row)) if self.overlay.is_none() => *self.selected() = row,
             _ => {}
         }
+        Effect::None
     }
 
     fn draw(&mut self, frame: &mut Frame) {
         self.hits.clear();
-        let [tabs, body, bar] =
-            Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let error_height = self.notice.as_ref().map_or(0, |error| {
+            Paragraph::new(format!("Error: {}\nFix: {}", error.message, error.fix))
+                .wrap(Wrap { trim: false })
+                .line_count(frame.area().width)
+                .min(6) as u16
+        });
+        let saved_height = self.saved.as_ref().map_or(0, |saved| {
+            Paragraph::new(saved.as_str()).wrap(Wrap { trim: false }).line_count(frame.area().width).min(3) as u16
+        });
+        let [tabs, body, saved_area, error_area, bar] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(saved_height),
+            Constraint::Length(error_height),
+            Constraint::Length(if self.busy { 1 } else { self.bar_rows(frame.area().width).len() as u16 }),
+        ])
+        .areas(frame.area());
         let mut x = tabs.x;
         for &(key, name, screen) in &SCREENS {
             let text = format!(" {key} {name} ");
@@ -687,31 +782,17 @@ impl App {
         if let Some(overlay) = self.overlay {
             self.draw_overlay(frame, body, overlay);
         }
-    }
-
-    fn draw_sources(&mut self, frame: &mut Frame, area: Rect) {
-        let header = ["SOURCE", "LICENCE", "R2 COPY", "LIVE", "AGE", "POLICY", "STATE"];
-        let mut table = vec![header.map(String::from).to_vec()];
-        table.extend(self.sources.iter().map(SourceRow::cells));
-        let widths = widths(&table);
-        let mut lines = Vec::new();
-        let mut at = Vec::new();
-        let mut end = 0;
-        for (i, (row, cells)) in self.sources.iter().zip(&table[1..]).enumerate() {
-            if row.source.kind == Kind::Tool && (i == 0 || self.sources[i - 1].source.kind != Kind::Tool) {
-                lines.extend([Line::default(), Line::from("tools").dim()]);
-            }
-            at.push(lines.len());
-            let (last, rest) = cells.split_last().expect("a row has cells");
-            let prefix = row_text(&[rest, &[String::new()]].concat(), &widths);
-            let line = Line::from(vec![Span::raw(prefix), Span::styled(last.clone(), state_style(row.state))]);
-            lines.push(if i == self.source { line.reversed() } else { line });
-            if i == self.source {
-                lines.extend(expansion(row));
-                end = lines.len() - 1;
-            }
+        if let Some(error) = &self.notice {
+            frame.render_widget(
+                Paragraph::new(format!("Error: {}\nFix: {}", error.message, error.fix))
+                    .red()
+                    .wrap(Wrap { trim: false }),
+                error_area,
+            );
         }
-        self.draw_lines(frame, area, Line::from(row_text(&table[0], &widths)), lines, &at, end);
+        if let Some(saved) = &self.saved {
+            frame.render_widget(Paragraph::new(saved.as_str()).dim().wrap(Wrap { trim: false }), saved_area);
+        }
     }
 
     fn draw_store(&mut self, frame: &mut Frame, area: Rect) {
@@ -774,19 +855,45 @@ impl App {
         frame.render_widget(Paragraph::new(lines).scroll((offset as u16, 0)), area);
     }
 
-    fn draw_bar(&self, frame: &mut Frame, area: Rect) {
+    fn bar_rows(&self, width: u16) -> Vec<Vec<Binding>> {
+        let mut rows = vec![Vec::new()];
+        let mut used = 0;
+        for binding in self.bindings().into_iter().filter(|binding| binding.bar.is_some()) {
+            let (label, does) = binding.bar.as_ref().unwrap();
+            let size = (label.len() + does.chars().count() + 4) as u16;
+            if used > 0 && used + size > width {
+                rows.push(Vec::new());
+                used = 0;
+            }
+            used += size;
+            rows.last_mut().unwrap().push(binding);
+        }
+        rows
+    }
+
+    fn draw_bar(&mut self, frame: &mut Frame, area: Rect) {
         if self.busy {
-            frame.render_widget(Line::from("working…"), area);
+            let text = if self.typing() {
+                "Checking or editing…  esc leave input · then q finish and quit"
+            } else {
+                "Checking or editing…  navigation available · q finish and quit"
+            };
+            frame.render_widget(Line::from(text), area);
             return;
         }
-        let mut spans = Vec::new();
-        for (label, does) in self.bindings().into_iter().filter_map(|binding| binding.bar) {
-            spans.extend([Span::from(label).bold(), Span::from(format!(" {does}   "))]);
+        for (row, bindings) in self.bar_rows(area.width).into_iter().enumerate() {
+            let mut spans = Vec::new();
+            let mut x = area.x;
+            let line = Rect { y: area.y + row as u16, height: 1, ..area }.intersection(area);
+            for binding in bindings {
+                let (label, does) = binding.bar.unwrap();
+                let width = (label.len() + does.chars().count() + 4) as u16;
+                self.hits.push((Rect { x, width, ..line }.intersection(line), Hit::Action(binding.action)));
+                x += width;
+                spans.extend([Span::from(label).bold(), Span::from(format!(" {does}   "))]);
+            }
+            frame.render_widget(Line::from(spans), line);
         }
-        if let Some(notice) = &self.notice {
-            spans.push(Span::styled(notice.clone(), Color::Red));
-        }
-        frame.render_widget(Line::from(spans), area);
     }
 
     fn draw_overlay(&mut self, frame: &mut Frame, body: Rect, overlay: Overlay) {
@@ -795,9 +902,30 @@ impl App {
         let (title, lines, footer, focus) = match overlay {
             Overlay::Help => (" HELP ".to_string(), help(), Vec::new(), None),
             Overlay::Attribution => (" ATTRIBUTION ".into(), attribution(&self.sources), Vec::new(), None),
+            Overlay::Source => (format!(" SOURCE · {id} "), self.source_lines(), Vec::new(), None),
+            Overlay::Error => (
+                " ERROR ".into(),
+                self.notice
+                    .as_ref()
+                    .map(|error| {
+                        vec![
+                            Line::from(error.message.clone()),
+                            Line::default(),
+                            Line::from(format!("Fix: {}", error.fix)),
+                        ]
+                    })
+                    .unwrap_or_default(),
+                Vec::new(),
+                None,
+            ),
             Overlay::Policy => (format!(" POLICY · {id} "), self.policy_lines(), Vec::new(), Some(self.choice)),
             Overlay::Clean => (" CLEAN ".into(), self.clean_lines(), Vec::new(), None),
-            Overlay::Region => (format!(" REGION · {LIVE} "), self.region_lines(), Vec::new(), Some(self.choice + 1)),
+            Overlay::Region => (
+                format!(" REGION · {LIVE} "),
+                self.region_lines(),
+                Vec::new(),
+                if self.region_editor.mode.is_some() { self.region_editor.focus() } else { Some(self.choice + 3) },
+            ),
             Overlay::Plan => {
                 let (lines, footer, focus) = self.plan_lines();
                 (format!(" PLAN · {LIVE} "), lines, footer, focus)
@@ -805,6 +933,14 @@ impl App {
         };
         let width = body.width * 4 / 5;
         let wrapped = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
+        let mut offsets = Vec::with_capacity(lines.len());
+        let mut physical = 0;
+        for line in &lines {
+            let height = wrapped(vec![line.clone()]).line_count(width.saturating_sub(2));
+            offsets.push((physical, height));
+            physical += height;
+        }
+        let focus = focus.and_then(|line| offsets.get(line)).map(|(start, height)| start + height - 1);
         let (paragraph, footer) = (wrapped(lines), wrapped(footer));
         let height = paragraph.line_count(width.saturating_sub(2));
         let footer_height = footer.line_count(width.saturating_sub(2));
@@ -821,42 +957,24 @@ impl App {
                 self.scroll
             }
         };
+        if overlay == Overlay::Region && self.region_editor.mode.is_some() {
+            for (line, target) in self.region_editor.targets() {
+                if let Some(&(start, height)) = offsets.get(line) {
+                    let from = start.max(scroll);
+                    let to = (start + height).min(scroll + shown);
+                    if from < to {
+                        self.hits.push((
+                            Rect { y: top.y + (from - scroll) as u16, height: (to - from) as u16, ..top },
+                            Hit::Region(target),
+                        ));
+                    }
+                }
+            }
+        }
         frame.render_widget(Clear, area);
         frame.render_widget(block, area);
         frame.render_widget(paragraph.scroll((scroll as u16, 0)), top);
         frame.render_widget(footer, bottom);
-    }
-
-    fn region_lines(&self) -> Vec<Line<'static>> {
-        let filter = match (self.filtering, self.filter.is_empty()) {
-            (false, true) => Span::from("filter").dim(),
-            (true, _) => Span::from(format!("{}▏", self.filter)),
-            (false, false) => Span::from(self.filter.clone()),
-        };
-        if let Err(error) = &self.regions {
-            return vec![Line::styled(error.clone(), Color::Red)];
-        }
-        let mut lines = vec![Line::from(vec![Span::from("/ ").bold(), filter])];
-        let current = self.env.as_ref().map(|env| env.region.as_str());
-        for (i, id) in self.shown_regions().into_iter().enumerate() {
-            let line = Line::from(format!("{} {id}", if Some(id) == current { "●" } else { " " }));
-            lines.push(if i == self.choice { line.reversed() } else { line });
-        }
-        lines
-    }
-
-    fn policy_lines(&self) -> Vec<Line<'static>> {
-        let current = self.sources[self.source].source.refresh;
-        let lines = Refresh::ALL.iter().enumerate().map(|(i, &refresh)| {
-            let mark = if refresh == current { "●" } else { " " };
-            let line = Line::from(format!("{mark} {refresh}"));
-            if i == self.choice {
-                line.reversed()
-            } else {
-                line
-            }
-        });
-        lines.collect()
     }
 
     fn clean_lines(&self) -> Vec<Line<'static>> {
@@ -984,400 +1102,4 @@ fn help() -> Vec<Line<'static>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-    use serde_json::{json, Value};
-
-    use super::*;
-    use crate::cli::build_cli::EnvPlan;
-    use crate::cli::status_cli::{Attention, AttentionKind, LayerStatus, ProductStatus};
-    use crate::cli::Stored;
-    use crate::sources::parse_sources;
-    use crate::store::gc::Kept;
-
-    const SOURCES: &str = r#"
-        [[source]]
-        id = "osm"
-        kind = "data"
-        licence = "ODbL-1.0"
-        attribution = "© OpenStreetMap contributors"
-        fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
-        version = "date"
-        refresh = 7
-        redistribute = true
-
-        [[source]]
-        id = "planetiler"
-        kind = "tool"
-        fetch = { kind = "github", url = "https://api.github.com/repos/onthegomap/planetiler" }
-        version = "release"
-        refresh = "manual"
-        redistribute = true
-    "#;
-
-    const REGION: &str = "europe/germany/baden-wuerttemberg";
-
-    /// What `status --json` writes: `maps` is unknown, and `planner` has the optional layer `sun`
-    /// on, which live lacks.
-    fn status() -> Status {
-        let layer = |layer: &str, state, reason: &str| LayerStatus {
-            layer: layer.into(),
-            state,
-            reason: Some(reason.into()).filter(|reason: &String| !reason.is_empty()),
-        };
-        let product =
-            |product: &str, release: &str, applied: Option<&str>, bytes, optional: &[&str], layers| ProductStatus {
-                product: product.into(),
-                release: Some(release.repeat(8)),
-                applied: applied.map(str::to_string),
-                bytes: Some(bytes),
-                optional: optional.iter().map(|layer| layer.to_string()).collect(),
-                layers,
-            };
-        let planner = vec![
-            layer("planner/basemap", State::Stale, "osm: 120 d > 90 d"),
-            layer("planner/routing", State::CodeChanged, "host/route-build/src/main.rs"),
-            layer("planner/overlays", State::InputChanged, "planner/routing"),
-            layer("planner/sun", State::NotApplied, "missing in live"),
-        ];
-        let attention =
-            |kind, about: &str, reason: &str| Attention { kind, about: about.into(), reason: reason.into() };
-        Status {
-            from: "https://maps.openbikecomputer.com".into(),
-            products: vec![
-                product("maps", "3f9a2c1e", None, 980_000_000, &[], None),
-                product(
-                    "planner",
-                    "8b0d47a5",
-                    Some("2026-10-02T09:14:05Z"),
-                    2_370_000_000,
-                    &["climate", "sun"],
-                    Some(planner),
-                ),
-            ],
-            attention: vec![
-                attention(AttentionKind::Stale, "osm", "120 d > 90 d"),
-                attention(AttentionKind::OldCache, "/home/rider/obc-bake", "12 files, 1.2 GB"),
-                attention(AttentionKind::Unreachable, "maps", "a fetch that the step list needs failed"),
-            ],
-            check: None,
-        }
-    }
-
-    /// What `plan live --json` writes: the edit of `sun`, two stale sources and a change of code.
-    fn plan() -> EnvPlan {
-        let build = |step: &str, minutes: u64, bytes_out: u64| {
-            let estimate = json!({"wall_ms": minutes * 60_000, "bytes_out": bytes_out, "peak_rss_bytes": null});
-            json!({"step": step, "recipe": "recipe", "key": null, "estimate": estimate})
-        };
-        let fetch = |source: &str, version: &str, bytes: u64| json!([{"source": source, "version": version, "params": [], "files": [], "bytes": bytes}]);
-        let group = |id: &str, cause: Value, fetches: Value, builds: Vec<Value>| json!({"id": id, "cause": cause, "layers": builds, "drops": [], "fetches": fetches, "builds": builds});
-        let (basemap, routing) =
-            (build("planner/basemap", 41, 324_000_000), build("planner/routing", 37, 1_040_000_000));
-        let groups = [
-            group("layers", json!({"kind": "layers"}), json!([]), vec![build("planner/sun", 55, 30_000_000)]),
-            group(
-                "move:land",
-                json!({"kind": "move", "source": "land", "from": ["2024-01-01"], "to": "2024-01-03"}),
-                fetch("land", "2024-01-03", 950_000_000),
-                vec![basemap.clone()],
-            ),
-            group(
-                "move:osm",
-                json!({"kind": "move", "source": "osm", "from": ["2024-01-02"], "to": "2024-01-09"}),
-                fetch("osm", "2024-01-09", 710_000_000),
-                vec![basemap, routing.clone()],
-            ),
-            group(
-                "code:planner/routing",
-                json!({"kind": "code", "paths": ["host/route-build"], "crates": []}),
-                json!([]),
-                vec![routing, build("planner/overlays", 7, 63_000_000)],
-            ),
-        ];
-        serde_json::from_value(json!({
-            "env": "live",
-            "region": REGION,
-            "layers": ["sun"],
-            "moves": {"land": "2024-01-03", "osm": "2024-01-09"},
-            "versions": [],
-            "live": [{"product": "planner", "release": "8b0d47a5".repeat(8)}],
-            "edits": [{"kind": "layers", "product": "planner", "on": ["sun"], "off": []}],
-            "only": [],
-            "groups": groups,
-            "blocked": [{"product": "maps", "reason": "source `wikidata` is blocked", "layers": []}],
-            "remove": [{"key": "planner/objects/aa", "bytes": 1_100_000_000}, {"key": "planner/objects/bb", "bytes": 5_000_000}],
-            "listed": false,
-            "needs_prepare": false,
-        }))
-        .unwrap()
-    }
-
-    fn app() -> App {
-        let sources = parse_sources(SOURCES).unwrap().into_iter().map(|source| SourceRow {
-            live: Some(vec![if source.kind == Kind::Tool { "0.10.2" } else { "2024-01-02" }.into()]),
-            upstream: (source.kind == Kind::Data).then(|| "2024-01-09".into()),
-            age_days: None,
-            state: State::Ok,
-            reason: None,
-            snapshots: vec![Stored { version: "2024-01-02".into(), bytes: 1_000_000 }],
-            requests: Vec::new(),
-            credential_missing: false,
-            source,
-        });
-        let run = |id: &str| Details {
-            summary: Summary {
-                id: id.into(),
-                command: "build test".into(),
-                started: "2024-01-10T12:00:00Z".into(),
-                outcome: Outcome::Ok,
-                wall_ms: Some(1000),
-                bytes_fetched: 0,
-                bytes_built: 10,
-            },
-            error: None,
-            phase: None,
-            published: Vec::new(),
-            fetches: Vec::new(),
-            steps: Vec::new(),
-        };
-        let mut app = App::new(sources.collect(), vec![run("2024-01-10-120000"), run("2024-01-09-120000")]);
-        let store = gc::Plan {
-            kept: vec![Kept { entry: "osm@2024-01-02".into(), bytes: 1_000_000, because: vec!["live maps".into()] }],
-            snapshots: vec!["osm@2023-12-01".into()],
-            objects: vec![("ab".repeat(32), 1_000_000)],
-            remove_bytes: 1_000_000,
-            ..gc::Plan::default()
-        };
-        app.store = Some(CleanPlan { store, ..CleanPlan::default() });
-        app.status = Some(status());
-        app.env = Some(Edited { env: LIVE.into(), region: REGION.into(), layers: vec!["sun".into()] });
-        app.edited = true;
-        app.regions = Ok(["europe/andorra", REGION, "monaco"].map(String::from).to_vec());
-        app
-    }
-
-    /// Plan over an empty screen, with group `group` selected.
-    fn planned(group: usize, steps: bool, skipped: &[&str]) -> App {
-        let skipped = skipped.iter().map(|id| id.to_string()).collect();
-        let plan = PlanView { group, steps, skipped, ..PlanView::new(plan()) };
-        App { screen: Screen::Runs, runs: Vec::new(), overlay: Some(Overlay::Plan), plan: Some(plan), ..app() }
-    }
-
-    fn view(app: &App) -> String {
-        let plan = app.plan.as_ref().map(|plan| (plan.group, plan.steps, plan.skipped.clone()));
-        let selected = [app.row, app.source, app.kept, app.run, app.choice];
-        format!("{:?}", (app.screen, app.overlay, selected, app.asking, (&app.filter, app.filtering), plan))
-    }
-
-    fn opened(overlay: Overlay, source: usize, choice: usize) -> App {
-        let mut app = App { screen: Screen::Sources, source, ..app() };
-        app.act(Action::Open(overlay));
-        App { choice, ..app }
-    }
-
-    /// The text of each line of the screen.
-    fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| app.draw(frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let lines = buffer.content.chunks(width as usize);
-        lines.map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>().trim_end().to_string()).collect()
-    }
-
-    #[test]
-    fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
-        let mut states = vec![app(), App::new(Vec::new(), Vec::new())];
-        states.extend((0..app().live_rows().len()).map(|row| App { row, ..app() }));
-        for screen in [Screen::Sources, Screen::Store, Screen::Runs] {
-            states.push(App { screen, ..app() });
-        }
-        states.push(App { screen: Screen::Sources, source: 1, ..app() });
-        for overlay in [Overlay::Help, Overlay::Attribution, Overlay::Policy, Overlay::Clean, Overlay::Region] {
-            states.push(opened(overlay, 0, 0));
-            states.push(opened(overlay, 1, 1));
-        }
-        states.push(App { asking: true, ..opened(Overlay::Clean, 0, 0) });
-        states.push(App { store: Some(CleanPlan::default()), ..opened(Overlay::Clean, 0, 0) });
-        states.push(App { screen: Screen::Store, store: Some(CleanPlan::default()), ..app() });
-        states.push(App { filtering: true, ..opened(Overlay::Region, 0, 0) });
-        states.push(App { filtering: true, filter: "mon".into(), ..opened(Overlay::Region, 0, 0) });
-        for group in 0..4 {
-            states.extend([
-                planned(group, false, &[]),
-                planned(group, true, &[]),
-                planned(group, false, &["move:land"]),
-            ]);
-        }
-        for app in states {
-            let keys = app.bindings();
-            for binding in &keys {
-                assert_eq!(keys.iter().filter(|other| other.key == binding.key).count(), 1, "{:?}", binding.key);
-            }
-            for binding in keys.iter().filter(|binding| binding.bar.is_some()) {
-                let mut after = app.clone();
-                let effect = after.act(binding.action);
-                assert!(effect != Effect::None || view(&after) != view(&app), "{:?} in {}", binding.key, view(&app));
-            }
-        }
-    }
-
-    #[test]
-    fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
-        let mut app = app();
-        let drawn = screen(&mut app, 80, 18);
-        let live = [
-            " 1 Live   3 Sources   4 Store   5 Runs",
-            "",
-            "LIVE from https://maps.openbikecomputer.com",
-            "region  europe/germany/baden-wuerttemberg",
-            "",
-            "PRODUCT  RELEASE           APPLIED     SIZE      STATE",
-            "maps     release 3f9a2c1e  —           980.0 MB  unknown",
-            "planner  release 8b0d47a5  2026-10-02  2.37 GB   not applied",
-            "",
-            "OPTIONAL LAYERS",
-            "[ ] climate",
-            "[x] sun      not applied",
-            "",
-            "NEEDS ATTENTION",
-            "stale        osm                   120 d > 90 d",
-            "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
-            "unreachable  maps                  a fetch that the step list needs failed",
-            "r region   R check R2   p plan   u undo   ? help",
-        ];
-        assert_eq!(drawn, live, "{drawn:#?}");
-        assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
-        // 0 region, 1 maps, 2 planner, 3 climate, 4 sun, 5 stale, 6 old cache, 7 unreachable.
-        app.row = 3;
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Layer("climate".into(), Switch::On));
-        app.row = 4;
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Layer("sun".into(), Switch::Off));
-        assert_eq!(app.key(KeyCode::Char('u')), Effect::Undo);
-        app.row = 7;
-        assert_eq!(app.key(KeyCode::Enter), Effect::None, "an unreachable product has no fix");
-        (app.row, app.source) = (5, 1);
-        app.key(KeyCode::Enter);
-        assert_eq!((app.screen, app.source), (Screen::Sources, 0), "the stale source");
-    }
-
-    #[test]
-    fn the_region_picker_filters_and_sets_the_region_of_live() {
-        let mut app = app();
-        app.key(KeyCode::Char('r'));
-        assert_eq!((app.overlay, app.choice), (Some(Overlay::Region), 1), "the region of live");
-        assert_eq!(app.key(KeyCode::Enter), Effect::None, "live has the region already");
-        app.key(KeyCode::Char('/'));
-        assert_eq!(app.key(KeyCode::Char('q')), Effect::None);
-        assert!(app.shown_regions().is_empty(), "`q` types: it does not quit");
-        app.key(KeyCode::Backspace);
-        "and".chars().for_each(|c| drop(app.key(KeyCode::Char(c))));
-        assert_eq!(app.shown_regions(), ["europe/andorra"]);
-        assert_eq!(app.key(KeyCode::Enter), Effect::Region("europe/andorra".into()));
-        assert_eq!(app.overlay, None);
-
-        let mut broken = App { regions: Err("data/regions/monaco.toml: no `kind`".into()), ..app };
-        broken.key(KeyCode::Char('r'));
-        assert_eq!(broken.region_lines(), [Line::styled("data/regions/monaco.toml: no `kind`", Color::Red)]);
-        assert!(broken.bindings().iter().all(|binding| binding.key != KeyCode::Char('/')), "nothing to filter");
-    }
-
-    #[test]
-    fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
-        let mut app = App { screen: Screen::Runs, runs: Vec::new(), ..app() };
-        assert_eq!(app.key(KeyCode::Char('p')), Effect::Plan);
-        app.plan = Some(PlanView::new(plan()));
-        let drawn = screen(&mut app, 100, 18);
-        let changes = [
-            "          ┌ PLAN · live ─────────────────────────────────────────────────────────────────┐",
-            "          │     CHANGE                             FETCH     TIME     OUTPUT             │",
-            "          │[x]  planner +sun                                 55m 00s  30.0 MB            │",
-            "          │[x]  move land 2024-01-01 → 2024-01-03  950.0 MB  41m 00s  324.0 MB           │",
-            "          │[x]  move osm 2024-01-02 → 2024-01-09   710.0 MB  1h 18m   1.36 GB            │",
-            "          │[x]  code of host/route-build                     44m 00s  1.10 GB            │",
-        ];
-        let footer = [
-            "          │                                                                              │",
-            "          │REMOVE FROM R2  2 keys, 1.10 GB                                               │",
-            "          │⚠ blocked maps: source `wikidata` is blocked                                  │",
-            "          │⚠ R2 was not listed, so leftovers are unknown                                 │",
-            "          │TOTAL  fetch 1.66 GB · build 4 layers, 2h 20m · output 1.46 GB                │",
-            "          └──────────────────────────────────────────────────────────────────────────────┘",
-        ];
-        assert_eq!(drawn[4..16], [&changes[..], &footer[..]].concat(), "{drawn:#?}");
-        assert_eq!(drawn[17], "d steps   esc close", "only keys");
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "an edit always goes");
-        app.key(KeyCode::Down);
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["move:osm".into()]));
-        app.key(KeyCode::Down);
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["none".into()]), "the last move too");
-        app.key(KeyCode::Up);
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["move:land".into()]));
-        app.key(KeyCode::Down);
-        assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(Vec::new()));
-        for key in [KeyCode::Enter, KeyCode::Char('a')] {
-            assert_eq!(app.key(key), Effect::None);
-        }
-        app.key(KeyCode::Char('d'));
-        let drawn = screen(&mut app, 100, 22);
-        let steps = [
-            "          │FETCH                                                                         │",
-            "          │  land  2024-01-03  950.0 MB                                                  │",
-            "          │  osm   2024-01-09  710.0 MB                                                  │",
-            "          │BUILD                                                                         │",
-            "          │  planner/sun       55m 00s                                                   │",
-            "          │  planner/basemap   41m 00s                                                   │",
-            "          │  planner/routing   37m 00s                                                   │",
-            "          │  planner/overlays  7m 00s                                                    │",
-        ];
-        assert_eq!(drawn[5..19], [&steps[..], &footer[..]].concat(), "{drawn:#?}");
-    }
-
-    #[test]
-    fn enter_in_policy_sets_another_policy_of_a_date_source() {
-        let mut app = App { screen: Screen::Sources, ..app() };
-        assert_eq!(app.key(KeyCode::Char('e')), Effect::None);
-        assert_eq!((app.overlay, app.choice), (Some(Overlay::Policy), 0));
-        app.key(KeyCode::Down);
-        assert_eq!(app.key(KeyCode::Enter), Effect::Policy("osm".into(), Refresh::Days(30)));
-        let mut tool = App { source: 1, ..app };
-        tool.key(KeyCode::Char('e'));
-        assert_eq!(tool.overlay, None, "a release version has no age");
-    }
-
-    #[test]
-    fn a_clean_needs_a_then_y() {
-        let mut app = App { screen: Screen::Store, ..app() };
-        assert_eq!(app.key(KeyCode::Char('c')), Effect::PlanClean, "the plan of now");
-        assert_eq!(app.overlay, Some(Overlay::Clean));
-        for key in [KeyCode::Enter, KeyCode::Char('y')] {
-            assert_eq!(app.key(key), Effect::None);
-        }
-        app.key(KeyCode::Char('a'));
-        assert!(app.asking);
-        app.key(KeyCode::Esc);
-        assert_eq!((app.overlay, app.asking), (Some(Overlay::Clean), false));
-        app.key(KeyCode::Char('a'));
-        assert_eq!(app.key(KeyCode::Char('y')), Effect::Clean);
-        assert_eq!(app.overlay, None);
-        let mut empty = App { store: Some(CleanPlan::default()), ..app };
-        empty.act(Action::Open(Overlay::Clean));
-        assert_eq!(empty.key(KeyCode::Char('a')), Effect::None, "an empty plan has nothing to clean");
-    }
-
-    #[test]
-    fn a_click_selects_a_row_or_shows_a_screen() {
-        let mut app = App { screen: Screen::Sources, ..app() };
-        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
-        let mut click = |app: &mut App, hit: Hit| {
-            terminal.draw(|frame| app.draw(frame)).unwrap();
-            let (area, _) = *app.hits.iter().find(|(_, drawn)| *drawn == hit).unwrap();
-            app.click(area.x, area.y)
-        };
-        click(&mut app, Hit::Row(1));
-        assert_eq!((app.screen, app.overlay, app.source), (Screen::Sources, None, 1));
-        click(&mut app, Hit::Screen(Screen::Store));
-        assert_eq!((app.screen, app.overlay), (Screen::Store, None));
-    }
-}
+mod tests;

@@ -45,11 +45,11 @@ targets:
     platform: iOS
     sources:
       - path: OBCCompanion
-      - path: ../apps/planner-native/RouteProvider.swift
-      - path: ../apps/planner-native/PMTilesArchive.swift
-      - path: ../apps/planner-search/native/PlannerSearchConnection.swift
-      - path: ../apps/planner-search/native/PlannerSearchDatabase.swift
-      - path: ../apps/planner-search/native/PlannerSearchRuntime.swift
+      - path: PlannerNative/RouteProvider.swift
+      - path: PlannerNative/PMTilesArchive.swift
+      - path: PlannerSearch/PlannerSearchConnection.swift
+      - path: PlannerSearch/PlannerSearchDatabase.swift
+      - path: PlannerSearch/PlannerSearchRuntime.swift
       - path: ../target/PlannerSearch
         type: folder
         buildPhase: resources

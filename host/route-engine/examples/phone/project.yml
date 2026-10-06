@@ -10,7 +10,7 @@ targets:
     sources:
       - Benchmark.swift
       - SearchBenchmark.swift
-      - path: ../../../../apps/planner-search/native
+      - path: ../../../../companion-ios/PlannerSearch
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.openbikecomputer.PlannerBenchmark
