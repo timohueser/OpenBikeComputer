@@ -17,7 +17,7 @@ const SETTLEMENT_POPULATION_MAX: u16 = SETTLEMENT_POPULATION_UNKNOWN - 1;
 
 use crate::hours::Schedule;
 
-use crate::{ring_centroid, to_udeg, PoiKind, POI_TABLE};
+use crate::{PoiKind, POI_TABLE};
 
 /// Category display names for the pack log, indexed by category id (0 unused).
 pub const CATEGORY_NAMES: [&str; 10] = [
@@ -334,6 +334,7 @@ pub fn dump_hours(pois: &[Poi]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ring_centroid, to_udeg};
 
     /// Pin the packer's OSM-tag classification: subtype ids are normative and append-only, so any
     /// edit to an existing row must fail a test rather than slip through review. This also asserts

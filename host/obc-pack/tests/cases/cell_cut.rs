@@ -17,9 +17,10 @@ use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
 use obc_pack::geom::Geom;
 use obc_pack::grid::{BandTable, CellId, UBox};
 use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::{integrate_edge_ascent, RoutableWay};
+use obc_pack::nav::integrate_edge_ascent;
 use obc_pack::terrain::TerrainSet;
 use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The band-`2^18` lon line between cells `j = 1052` and `j = 1053`: the worked-example seam.

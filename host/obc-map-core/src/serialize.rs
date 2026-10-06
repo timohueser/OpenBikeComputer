@@ -413,8 +413,6 @@ pub struct MapWriter<W> {
     table: Vec<u8>,
     table_offset: usize,
     levels: usize,
-    marker: u16,
-    bounds: (i64, i64, i64, i64),
 }
 
 impl<W: Write + Seek> MapWriter<W> {
@@ -427,16 +425,8 @@ impl<W: Write + Seek> MapWriter<W> {
     ) -> io::Result<Self> {
         let styles = pack_style_dict(styles);
         let (table_offset, payload_start) = prefix_offsets(styles.len(), levels);
-        let mut writer = Self {
-            output,
-            cursor: 0,
-            styles,
-            table: Vec::with_capacity(levels * LOD_ENTRY_LEN),
-            table_offset,
-            levels,
-            marker,
-            bounds,
-        };
+        let mut writer =
+            Self { output, cursor: 0, styles, table: Vec::with_capacity(levels * LOD_ENTRY_LEN), table_offset, levels };
         let header = header_bytes(levels, marker, bounds, table_offset, STYLE_OFFSET, STYLE_OFFSET, STYLE_OFFSET);
         // Keep the borrowed style bytes outside the mutable writer walk.
         let styles = std::mem::take(&mut writer.styles);
