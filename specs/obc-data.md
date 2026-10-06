@@ -2814,6 +2814,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
+        "observed": {
+          "description": "SHA-256 of the exact pointer bytes that consent observed; None means absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "pointer": {
           "description": "SHA-256 of the actual client document, excluding only `release` and `applied`.",
           "type": [
@@ -2835,7 +2842,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "product",
         "release",
-        "pointer"
+        "pointer",
+        "observed"
       ],
       "type": "object"
     },
