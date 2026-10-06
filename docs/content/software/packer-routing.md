@@ -315,7 +315,7 @@ region's texts and photos are under. Each place keeps its own notices.
 - Packer pipeline: [`pipeline.rs`](src:host/obc-pack/src/pipeline.rs)
 - Configuration: [`config.rs`](src:host/obc-pack/src/config.rs)
 - OSM ingest: [`ingest.rs`](src:host/obc-pack/src/ingest.rs)
-- POIs and opening hours: [`poi.rs`](src:host/obc-pack/src/poi.rs), [`hours.rs`](src:host/obc-pack/src/hours.rs)
+- POIs and opening hours: [`metadata.rs`](src:host/obc-places/src/metadata.rs), [`hours.rs`](src:host/obc-places/src/hours.rs)
 - Landmark preparation: [`landmarks`](src:host/obc-pack/src/landmarks/mod.rs)
 - Landmark discovery: [`discover.rs`](src:host/obc-pack/src/landmarks/discover.rs)
 - Landmark bake stage: [`landmarks.rs`](src:host/obc-bake/src/landmarks.rs)

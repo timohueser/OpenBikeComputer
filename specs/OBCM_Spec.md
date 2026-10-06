@@ -1255,8 +1255,8 @@ distance (100 m in the reference router).
   `serialize_tree`, `serialize_poi_section`, `serialize_nav_section`,
   `flatten_nav_tree` (§8.2 bin-packing), `pack_nav_record`, `pack_edge_record`,
   `pack_profile_table`, `pack_feature`, `pack_chunk`, `pack_style_dict`),
-  `host/obc-pack/src/poi.rs` (the OSM-tag classifier for the shared §7.4 ids),
-  `host/obc-pack/src/hours.rs` (the `opening_hours` parser + 29-byte blob
+  `host/obc-places/src/metadata.rs` (the OSM-tag classifier for the shared §7.4 ids),
+  `host/obc-places/src/hours.rs` (the `opening_hours` parser + 29-byte blob
   encoder + dedup pool for §7.5), `host/obc-pack/src/nav.rs` (the routable-graph
   builder + the canonical way-kind table behind §8.6), and
   `host/obc-pack/src/config.rs` (the `routing` config + profile quantization).

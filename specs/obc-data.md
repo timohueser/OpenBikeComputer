@@ -926,11 +926,14 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 A capture keeps its params while no source of the capture moves: the step list reads the capture
 of the region that the saved plan or live reads, or else the newest capture of the region in the
-store. A new extract alone therefore asks for no new capture. A missing capture, missing capture inputs, stale capture code, or an automatic stale-source
-move blocks only its content and artifacts. The reason asks for `--move wikidata`. Status and
+store. A new extract alone therefore asks for no new capture. A missing capture, missing capture inputs or an automatic stale-source move blocks only its
+content and artifacts. The reason asks for `--move wikidata`. Status and
 plans do not start bulk captures without an explicit move. A capture that moves explicitly
 reads the extract and the `.poly` of now. `code=` is the digest of the code that makes the boundary and the
 candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
+A held request keeps its original `code=` even when source text changes. Its selection is
+provisional until the offline content step reconstructs the boundary and candidates or summits
+and checks their full SHA-256 pins. A mismatch fails before content output or a receipt.
 
 A single-area definition keeps the unsuffixed content layer names. Other definitions have one
 content layer per collection and source area. A selection edit can retain a capture when its
