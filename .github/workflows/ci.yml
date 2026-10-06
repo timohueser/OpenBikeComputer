@@ -141,7 +141,7 @@ jobs:
           path: .artifacts/python/repository-tools/*.xml
           if-no-files-found: error
       - name: The job table and this workflow describe the same jobs
-        run: python3 tools/test_plan.py validate-filters
+        run: uv run --locked --group dev python tools/test_plan.py validate-filters
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
