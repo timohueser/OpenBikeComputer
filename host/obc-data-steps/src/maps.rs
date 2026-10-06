@@ -46,6 +46,10 @@ impl Product for Maps {
         Some(catalog::pointer())
     }
 
+    fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
+        catalog::named(release)
+    }
+
     fn verify(
         &self,
         previous: Option<&obc_data::engine::release::Release>,

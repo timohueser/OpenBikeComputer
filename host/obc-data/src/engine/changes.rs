@@ -101,7 +101,7 @@ pub fn changes(store: &Store, root: &Path, steps: &[Step], against: &Against) ->
             Cause::Move { source, .. } => format!("move:{source}"),
             // The first layer in dependency order has the cause itself, so no other code names it.
             Cause::Code { .. } => format!("code:{}", named.first().or(dropped.first()).expect("a cause has a layer")),
-            Cause::Repair { .. } => unreachable!("drift is no cause of a layer"),
+            Cause::Repair { .. } | Cause::Pointer { .. } => unreachable!("drift is no cause of a layer"),
         };
         let mut group =
             needs(&walked, &receipts, Group::new(id, Some(cause.clone())), &named.iter().copied().collect());
