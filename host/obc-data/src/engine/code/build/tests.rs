@@ -227,5 +227,5 @@ fn rustup_proxy_resolves_the_selected_executable_in_the_explicit_root() {
     );
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o700)).unwrap();
     fs::hard_link(&rustup, &rustc).unwrap();
-    assert_eq!(executable(&root, Some(&rustc.into_os_string()), "rustc").unwrap(), selected);
+    assert_eq!(executable(&root, Some(&rustc.into_os_string()), "rustc").unwrap(), selected.canonicalize().unwrap());
 }
