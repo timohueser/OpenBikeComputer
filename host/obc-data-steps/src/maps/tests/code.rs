@@ -89,7 +89,7 @@ fn navigation_edits_reuse_the_actual_source_and_osm_step_recipes() {
     });
     let root = temporary.0.join("checkout");
     recipe_root(&root);
-    let files = obc_data::engine::code::files(&root, &steps[0].code).unwrap();
+    let files = steps[0].code.files(&root).unwrap();
     assert!(files.keys().any(|path| path.ends_with("obc-osm/src/step.rs")));
     assert!(files.keys().all(|path| !path.contains("obc-pack") && !path.contains("obc-bake")));
     let http = Http::new();
@@ -126,7 +126,7 @@ fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
     let path = root.join("data/sources.toml");
     let original = std::fs::read_to_string(super::root().join("data/sources.toml")).unwrap();
     std::fs::write(&path, &original).unwrap();
-    let identity = |step: &Step| obc_data::engine::code::files(&root, &step.code).unwrap();
+    let identity = |step: &Step| step.code.files(&root).unwrap();
     let before = [identity(source), identity(osm), identity(cell)];
     let catalog_before = identity(catalog);
     for id in ["osm-planet", "copernicus-glo-30"] {
