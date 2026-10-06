@@ -1408,11 +1408,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
-| `prepare` | `Prepared` |
-| `build` | `Built` |
-| `apply` | `Applied` |
+| `prepare`, `build`, `apply` | `Handle` |
+| Completed prepare output | `Prepared` |
+| Completed build output | `Built` |
+| Completed apply output | `Applied` |
 | `runs` | `RunList` |
-| `runs RUN` | `Details` |
+| `runs RUN` for a detached operation | `View` |
+| `runs RUN` for other journals | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
 | `r2 list`, `r2 stat`, `r2 delete` | `Objects` |
 | `r2 get` | `Downloaded` |
@@ -2701,6 +2703,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "remove_bytes",
         "keep_objects",
         "keep_bytes"
+      ],
+      "type": "object"
+    },
+    "Handle": {
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "request"
       ],
       "type": "object"
     },
@@ -3996,6 +4014,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunList": {
       "description": "Every run in the store, newest first.",
       "properties": {
+        "observation_errors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "operations": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Status2"
+          },
+          "type": "object"
+        },
         "runs": {
           "items": {
             "$ref": "#/$defs/Summary"
@@ -4004,7 +4034,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
-        "runs"
+        "runs",
+        "operations",
+        "observation_errors"
       ],
       "type": "object"
     },
@@ -4374,6 +4406,131 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Status2": {
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "starting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "running",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "stopping",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "interrupted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remote absence or a transport error does not resolve a dispatched operation.",
+          "properties": {
+            "bundle": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "status": {
+              "const": "awaiting_owner",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "host",
+            "bundle"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "status": {
+              "const": "finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "ok"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "bundle": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unknown_owner",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "host",
+            "bundle",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Stored": {
       "description": "A version of a source in the local store.",
       "properties": {
@@ -4610,6 +4767,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "View": {
+      "properties": {
+        "observation_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Status2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": true,
+        "run": {
+          "$ref": "#/$defs/Details"
+        }
+      },
+      "required": [
+        "run",
+        "operation",
+        "observation_error",
+        "result"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema"
