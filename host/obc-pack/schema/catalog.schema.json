@@ -82,6 +82,17 @@
       ],
       "format": "uint32",
       "minimum": 0
+    },
+    "articles": {
+      "description": "Sparse detached landmark and peak sections on the network grid.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -521,7 +532,7 @@
       "properties": {
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
         },
         "bytes": {
           "type": "integer",
@@ -581,6 +592,15 @@
             "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
           }
         },
+        "article_bytes": {
+          "description": "Selected detached article bytes, separate from map bands and terrain.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "cell_count": {
           "description": "Cells per band.",
           "type": "object",
@@ -619,7 +639,7 @@
         "cells_url": {
           "description": "Where the region's cell-id list lives (§6).",
           "type": "string",
-          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
         },
         "cells_bytes": {
           "description": "Size of that document, in bytes.",
@@ -746,7 +766,7 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
         }
       },
       "required": [
@@ -882,7 +902,7 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
         }
       },
       "required": [
@@ -977,6 +997,30 @@
         "built_at"
       ]
     },
+    "ArtifactRef": {
+      "description": "A digest-pinned object or satellite.",
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
+        }
+      },
+      "required": [
+        "bytes",
+        "sha256",
+        "url"
+      ]
+    },
     "CellEntry": {
       "description": "One published cell. There is deliberately no bbox: a cell's coverage is exactly its grid square, which the `id` determines to the microdegree (OBCA_Spec.md §1.3), and the generator verifies the artifact's own OBCM header bbox against it at bake time. A stored copy could only agree (redundant) or disagree (a lie).",
       "type": "object",
@@ -997,7 +1041,7 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
         },
         "built_at": {
           "description": "RFC 3339 UTC, recorded by the bake job.",
@@ -1172,6 +1216,82 @@
       "description": "A region's cell list: the satellite `RegionEntry::cells_url` points at (§6). Cell ids only — every other fact is in the band's index, keyed by the same id.",
       "type": "object"
     },
+    "ArticleCellEntry": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^\\d{1,2}/\\d{4,}/\\d{4,}$"
+        },
+        "landmarks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "peaks": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "landmarks"
+          ],
+          "properties": {
+            "landmarks": {
+              "$ref": "#/$defs/ArtifactRef"
+            }
+          }
+        },
+        {
+          "required": [
+            "peaks"
+          ],
+          "properties": {
+            "peaks": {
+              "$ref": "#/$defs/ArtifactRef"
+            }
+          }
+        }
+      ]
+    },
+    "ArticleIndexDocument": {
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "const": 3
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArticleCellEntry"
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "cells"
+      ],
+      "description": "Detached article sections. An absent cell or collection has no content.",
+      "type": "object"
+    },
     "TerrainCellEntry": {
       "description": "One published terrain cell. No bbox and no source list: the `id` is the square (§13.1), and the provenance is one dataset stated once in the root block rather than repeated on every one of thousands of entries.",
       "type": "object",
@@ -1192,7 +1312,7 @@
         },
         "url": {
           "type": "string",
-          "pattern": "^(https?://|/).+\\.[0-9a-f]{64}\\.[^/?#]+$"
+          "pattern": "^(https?://|/)(.+\\.[0-9a-f]{64}\\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$"
         },
         "built_at": {
           "description": "RFC 3339 UTC, recorded by the bake job.",

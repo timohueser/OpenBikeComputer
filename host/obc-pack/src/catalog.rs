@@ -315,6 +315,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         landmarks: landmarks
             .map(|store| LandmarkEntry { attribution: crate::landmarks::attribution(), artifacts: store.artifacts }),
         network_terrain_revision: cells.terrain_revision,
+        articles: None,
     };
     pinned_artifacts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(GeneratedCatalog { root, satellites, pinned_artifacts, warnings })

@@ -1129,3 +1129,78 @@ fn peak_articles_survive_the_normal_bridge_as_a_separate_collection() {
             .unwrap();
     }
 }
+
+#[test]
+fn detached_articles_reach_the_reader_through_the_bridge() {
+    use obc_formats::{
+        io::{ByteSource, SliceSource},
+        obcm,
+    };
+    let mut embedded = cells();
+    let core = embedded.iter_mut().find(|cell| cell.band == "network").unwrap();
+    landmark_fixture::attach(&mut core.bytes, vec![landmark_fixture::record(123)], true);
+    let copy = |cells: &[CellBytes]| {
+        cells
+            .iter()
+            .map(|c| CellBytes { id: c.id.clone(), band: c.band.clone(), partial: c.partial, bytes: c.bytes.clone() })
+            .collect::<Vec<_>>()
+    };
+    let mut detached = copy(&embedded);
+    let mut landmarks = Vec::new();
+    let mut peaks = Vec::new();
+    for cell in &mut detached {
+        let source = SliceSource(&cell.bytes);
+        if let Some(section) = obc_reader::landmarks::map_section(&source).unwrap() {
+            let len = obc_reader::landmarks::LandmarkDirectory::read(&section).unwrap().len;
+            let mut bytes = vec![0; len as usize];
+            section.read_at(0, &mut bytes).unwrap();
+            bytes.extend_from_slice(&0u16.to_le_bytes());
+            landmarks.push(bytes);
+        }
+        if let Some(section) = obc_reader::peaks::map_section(&source).unwrap() {
+            let len = obc_reader::peaks::Directory::read(&section).unwrap().len;
+            let mut bytes = vec![0; len as usize];
+            section.read_at(0, &mut bytes).unwrap();
+            peaks.push(bytes);
+        }
+        for at in [
+            obcm::HEADER_LANDMARK_OFFSET_OFF,
+            obcm::HEADER_LANDMARK_LENGTH_OFF,
+            obcm::HEADER_PEAK_OFFSET_OFF,
+            obcm::HEADER_PEAK_LENGTH_OFF,
+        ] {
+            cell.bytes[at..at + 4].fill(0);
+        }
+    }
+    assert!(!landmarks.is_empty() && !peaks.is_empty());
+    let run = |cells, landmarks, peaks| {
+        assemble(
+            Wiring {
+                cells,
+                landmarks,
+                peaks,
+                terrain: Some(terrain_lattice()),
+                terrain_cells: terrain_cells(),
+                ..Wiring::default()
+            },
+            &sidecar(),
+            &skin(),
+            &skin(),
+            &options(),
+            &mut NoHooks,
+        )
+    };
+    let expected = run(embedded, Vec::new(), Vec::new()).unwrap();
+    let out = run(copy(&detached), landmarks, peaks).unwrap();
+    assert_same_bytes(taken(&expected), taken(&out), "detached articles preserve the embedded content");
+    let source = SliceSource(taken(&out));
+    landmark_fixture::assert_content(&obc_reader::landmarks::map_section(&source).unwrap().unwrap());
+    let directory =
+        obc_reader::peaks::Directory::read(&obc_reader::peaks::map_section(&source).unwrap().unwrap()).unwrap();
+    assert_eq!((directory.associations, directory.records), (2, 1));
+    let err = match run(detached, vec![vec![0; 32]], Vec::new()) {
+        Err(err) => err,
+        Ok(_) => panic!("malformed detached content is rejected"),
+    };
+    assert_eq!(err.code, ErrorCode::Format);
+}

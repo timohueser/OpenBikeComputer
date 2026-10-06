@@ -7,6 +7,7 @@
 // the committed selection and the selection plus the corridor panel's preview
 // would evict half its cache on every frame.
 
+import type { ArticleIndexDocument } from "../catalog/articles";
 import { CatalogClient } from "../catalog/client";
 import { cellsIntersecting, coverageBbox, parseCellId, type UBox } from "../catalog/grid";
 import { lassoCells } from "../catalog/lasso";
@@ -103,6 +104,7 @@ export class CoverageStore {
      *  "this catalog publishes no raster", because a consumer treats the two the
      *  same way: no elevation, no refusal. */
     terrain = $state<TerrainIndexDocument | null>(null);
+    articles = $state<ArticleIndexDocument | null>(null);
     indexError = $state<string | null>(null);
 
     /** Region cell lists, as they arrive. Replaced wholesale on each arrival so
@@ -153,10 +155,11 @@ export class CoverageStore {
 
     private async loadIndices(): Promise<void> {
         try {
-            // Terrain alongside the bands, in one round of requests, because a
-            // selection is priced with the raster in it and a price that arrives
-            // in two steps is a price that is briefly wrong.
-            const [indices, terrain] = await Promise.all([this.client.cellIndices(), this.client.terrain()]);
+            // Accept all indices together so the download total is complete.
+            const [indices, terrain, articles] = await Promise.all([
+                this.client.cellIndices(), this.client.terrain(), this.client.articles(),
+            ]);
+            this.articles = articles;
             this.terrain = terrain;
             this.indices = indices;
         } catch (e) {
@@ -204,7 +207,7 @@ export class CoverageStore {
 
     readonly ledger = $derived.by<Ledger | null>(() => {
         const resolution = this.resolved.resolution;
-        return resolution && this.indices ? ledgerFor(resolution, this.catalog, this.indices) : null;
+        return resolution && this.indices ? ledgerFor(resolution, this.catalog, this.indices, this.articles) : null;
     });
 
     /** The selection plus the panel's preview routes — what the map draws while
@@ -292,7 +295,7 @@ export class CoverageStore {
         const withPreview = this.previewResolution;
         const ledger = this.ledger;
         if (!withPreview || !ledger || !this.indices) return null;
-        const candidate = ledgerFor(withPreview, this.catalog, this.indices);
+        const candidate = ledgerFor(withPreview, this.catalog, this.indices, this.articles);
         return {
             addsBytes: Math.max(0, candidate.totalBytes - ledger.totalBytes),
             addsCells: Math.max(0, candidate.cellCount - ledger.cellCount),
@@ -428,7 +431,7 @@ export class CoverageStore {
             corridorRadiusM: this.selection.corridorRadiusM,
         };
         try {
-            const ledger = ledgerFor(this.dragResolver.resolve(candidate, ctx), this.catalog, this.indices);
+            const ledger = ledgerFor(this.dragResolver.resolve(candidate, ctx), this.catalog, this.indices, this.articles);
             return { bytes: ledger.totalBytes, cells: ledger.cellCount };
         } catch {
             // The grid refused to enumerate it — same refusal the add gives.

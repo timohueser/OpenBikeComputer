@@ -81,8 +81,10 @@ describe("assembly worker storage admission", () => {
     it("keeps terrain resident and permits a known-empty map selection", async () => {
         const terrain = { postingLog2: 14, cellLog2: 19 };
         const terrainCells = [{ id: "19/602/526", sha256: "terrain", bytes: Uint8Array.of(1) }];
-        await send({ ...request(), sourceCells: [], cellStore: undefined, knownEmpty: [{ id: input.id, band: input.band }], terrain, terrainCells });
+        const articles = { landmarks: [Uint8Array.of(2)], peaks: [Uint8Array.of(3)] };
+        await send({ ...request(), articles, sourceCells: [], cellStore: undefined, knownEmpty: [{ id: input.id, band: input.band }], terrain, terrainCells });
         expect(seams.assemble.mock.calls[0][7]).toEqual({ lattice: terrain, cells: terrainCells });
+        expect(seams.assemble.mock.calls[0][11]).toEqual(articles);
         expect(messages).toContainEqual({ type: "stored-map", sha256: "abc", byteLength: 4 });
         expect(sink.close).toHaveBeenCalledOnce();
         expect(scratch.discard).toHaveBeenCalledOnce();

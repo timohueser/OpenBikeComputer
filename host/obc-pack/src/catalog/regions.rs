@@ -248,6 +248,7 @@ fn read_region(
         boundary,
         bytes: total,
         bytes_by_band,
+        article_bytes: None,
         cell_count,
         partial_cell_count_by_band,
         terrain: terrain_selection.map(|s| s.footprint),

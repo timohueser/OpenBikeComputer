@@ -15,8 +15,9 @@ use crate::config::Config;
 use crate::grid::{MAX_CELL_LOG2, MIN_CELL_LOG2};
 
 use super::model::{
-    BandEntry, BandRole, BandSection, Catalog, CellIndexDocument, LodEntry, RegionCellsDocument, RoutingEntry,
-    SkinEntry, SkinPreview, SkinStyle, StyleAssignment, TerrainIndexDocument, GRID_ORIGIN_UDEG, WORLD_SIDE_UDEG,
+    ArticleIndexDocument, BandEntry, BandRole, BandSection, Catalog, CellIndexDocument, LodEntry, RegionCellsDocument,
+    RoutingEntry, SkinEntry, SkinPreview, SkinStyle, StyleAssignment, TerrainIndexDocument, GRID_ORIGIN_UDEG,
+    WORLD_SIDE_UDEG,
 };
 use super::validate::validate_id;
 use super::{
@@ -58,7 +59,7 @@ fn flatten_descriptions(value: &mut Value) {
 
 pub(super) const CELL_ID_PATTERN: &str = r"^\d{1,2}/\d{4,}/\d{4,}$";
 pub(super) const SHA256_PATTERN: &str = "^[0-9a-f]{64}$";
-pub(super) const PINNED_URL_PATTERN: &str = r"^(https?://|/).+\.[0-9a-f]{64}\.[^/?#]+$";
+pub(super) const PINNED_URL_PATTERN: &str = r"^(https?://|/)(.+\.[0-9a-f]{64}\.[^/?#]+|(.*/)?objects/[0-9a-f]{64})$";
 const DATE_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
 pub(super) const TIMESTAMP_PATTERN: &str = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$";
 pub(super) const ID_PATTERN: &str = "^[a-z0-9]+(-[a-z0-9]+)*$";
@@ -110,6 +111,10 @@ pub fn catalog_schema() -> Value {
             serde_json::to_value(schemars::schema_for!(RegionCellsDocument)).expect("region cells"),
         ),
         (
+            "ArticleIndexDocument",
+            serde_json::to_value(schemars::schema_for!(ArticleIndexDocument)).expect("article index"),
+        ),
+        (
             "TerrainIndexDocument",
             serde_json::to_value(schemars::schema_for!(TerrainIndexDocument)).expect("terrain index"),
         ),
@@ -142,6 +147,14 @@ pub fn catalog_schema() -> Value {
     defs["RegionCellsDocument"]["properties"]["region_id"]["pattern"] = Value::from(REGION_ID_PATTERN);
     band_keyed_map(&mut defs["RegionCellsDocument"]["properties"]["cells"]);
     defs["RegionCellsDocument"]["properties"]["terrain"]["items"]["pattern"] = Value::from(CELL_ID_PATTERN);
+
+    defs["ArticleIndexDocument"]["properties"]["schema_version"]["const"] = Value::from(CATALOG_SCHEMA_VERSION);
+    defs["ArticleCellEntry"]["properties"]["id"]["pattern"] = Value::from(CELL_ID_PATTERN);
+    defs["ArticleCellEntry"]["anyOf"] = serde_json::json!([{"required":["landmarks"],"properties":{"landmarks":{"$ref":"#/$defs/ArtifactRef"}}},{"required":["peaks"],"properties":{"peaks":{"$ref":"#/$defs/ArtifactRef"}}}]);
+    let artifact = defs["ArtifactRef"]["properties"].as_object_mut().expect("artifact ref properties");
+    artifact["bytes"]["minimum"] = Value::from(1);
+    artifact["sha256"]["pattern"] = Value::from(SHA256_PATTERN);
+    artifact["url"]["pattern"] = Value::from(PINNED_URL_PATTERN);
 
     // The terrain artifact class. Its index is the third satellite shape in the same checked-in
     // file, and it carries no `schema_revision` at all, which states the independence in the schema

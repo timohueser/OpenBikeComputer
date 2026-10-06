@@ -28,6 +28,7 @@
 // survives the boundary because it is data here, not a class.
 
 import type {
+    AssembleArticles,
     AssembleErrorCode,
     AssembleOptions,
     AssemblePhase,
@@ -83,8 +84,7 @@ export type AssembleWorkerRequest =
           estimateId: number;
           networkBandBytes: number;
           totalCellBytes: number;
-          /** The terrain squares' share of the total — resident whatever the mode,
-           *  because they are never stored in OPFS. */
+          /** Terrain and detached article bytes stay resident in every mode. */
           terrainBytes: number;
           /** The main thread's half of both residency escapes: a writable cell
            *  store with room for the whole run — cells, map and spill. The worker
@@ -99,7 +99,7 @@ export type AssembleWorkerRequest =
       }
     | {
           type: "assemble";
-          /** The accepted projection requires disk-backed input, output and scratch. Terrain stays resident. */
+          /** The accepted projection requires disk-backed input, output and scratch. Terrain and articles stay resident. */
           requireDisk: boolean;
           cells: WorkerCell[];
           /** The cells the download left in OPFS instead of in memory, with
@@ -119,6 +119,7 @@ export type AssembleWorkerRequest =
            *  is written with an empty terrain region. */
           terrain?: WorkerTerrain;
           terrainCells?: WorkerTerrainCell[];
+          articles?: AssembleArticles;
       };
 
 /** The assembled map, bytes transferred, for a run that had to buffer it. */
@@ -178,7 +179,12 @@ export type AssembleWorkerResponse =
  *  gigabytes of downloaded cells once the assembly owns them. */
 export function requestTransferList(req: AssembleWorkerRequest): Transferable[] {
     if (req.type !== "assemble") return [];
-    return dedupedBuffers([...req.cells.map((c) => c.bytes), ...(req.terrainCells ?? []).map((c) => c.bytes)]);
+    return dedupedBuffers([
+        ...req.cells.map((c) => c.bytes),
+        ...(req.terrainCells ?? []).map((c) => c.bytes),
+        ...(req.articles?.landmarks ?? []),
+        ...(req.articles?.peaks ?? []),
+    ]);
 }
 
 /** The transfer list for a `file` response: the bytes *move*, so the worker's copy

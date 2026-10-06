@@ -13,6 +13,7 @@ import {
     type SkinEntry,
 } from "./manifest";
 import { fail } from "./parse";
+import { parseArticleIndex, type ArticleIndexDocument, type ArtifactPin } from "./articles";
 import {
     assertRegionCellsIndexed,
     parseCellIndex,
@@ -71,6 +72,7 @@ export class CatalogClient {
     private readonly loaded = new Map<string, CellIndexDocument>();
     private readonly regionCells = new Map<string, Promise<RegionCellsDocument>>();
     private readonly previews = new Map<string, Promise<Uint8Array>>();
+    private articleIndex: Promise<ArticleIndexDocument | null> | null = null;
     private terrainIndex: Promise<TerrainIndexDocument | null> | null = null;
 
     private constructor(catalog: Catalog, baseUrl: string, opts: CatalogClientOptions) {
@@ -193,6 +195,25 @@ export class CatalogClient {
             throw e;
         });
         this.terrainIndex = inflight;
+        return inflight;
+    }
+
+    /** Detached articles, verified before sparse absence can mean no content. */
+    articles(): Promise<ArticleIndexDocument | null> {
+        if (this.articleIndex) return this.articleIndex;
+        const pin = this.catalog.articles;
+        if (!pin) return Promise.resolve(null);
+        const inflight = (async () => {
+            const bytes = await fetchVerified(this.resolve(pin.url), pin, this.downloadOptions());
+            const doc = parseArticleIndex(decode(bytes, "article index"), this.catalog);
+            const resolve = (pin: ArtifactPin | null) => pin && ({ ...pin, url: this.resolve(pin.url) });
+            const cells = doc.cells.map((cell) => ({ ...cell, landmarks: resolve(cell.landmarks), peaks: resolve(cell.peaks) }));
+            return { cells, byId: new Map(cells.map((cell) => [cell.id, cell])) };
+        })().catch((e: unknown) => {
+            this.articleIndex = null;
+            throw e;
+        });
+        this.articleIndex = inflight;
         return inflight;
     }
 
