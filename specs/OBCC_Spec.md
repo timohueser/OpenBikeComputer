@@ -633,8 +633,7 @@ Landmarks are compiled Wikipedia, Wikidata and Commons content (OBCM §9). Peaks
 are the articles of OSM summits from the same sources (OBCM §10). Each is an
 **artifact class of its own** on the grid of the core band, like terrain (§13).
 It is not a band and not covered by §10. A landmark or peak refresh changes no
-map cell, and a map cell has no landmark or peak section when the store has these
-artifacts (§14.3).
+map cell (§14.3).
 
 A store whose cells were cut with their landmark sections publishes the
 `landmarks` block (§14.1): it is the provenance of content that is not
@@ -689,6 +688,13 @@ and MUST NOT repeat.
 The objects keep stable keys, unlike a cell or a satellite: nothing pins them, so
 there is no mixed-generation fetch to protect.
 
+Every artifact directory also holds `landmarks.json`, the declaration that the
+landmark stage of `obc bake` writes beside the content document: the region, the
+recipe version, the digests of the boundary, the category policy, the UI language
+set and the candidate list that it was captured under, and `sha256`. A producer
+MUST refuse to publish a directory without one: an artifact that cannot say what
+it was compiled from is a licence statement no one can check.
+
 `sha256` is a listing digest: every file's name and content, the declaration
 excluded. It is what a verifier re-computes to find a file that moved. **It is not
 the key a cell bake cuts on.** That key is over the content document and the photo
@@ -721,7 +727,9 @@ A landmark or peak artifact holds the content of one cell of the core band
 (OBCA, `2^18` µdeg in the recommended band table). A cell owns a landmark when
 the cell holds its display coordinate, and an association when the cell holds
 its summit node, both by the half-open rules of OBCM §9.4 and §10.4. A cell that
-owns no content has no artifact.
+owns no content has no artifact. A producer that writes these artifacts cuts the
+map cells without landmark and peak sections, so that a map cell does not depend
+on landmark or peak content.
 
 | Class | Path in the layer | Bytes |
 | :-- | :-- | :-- |
