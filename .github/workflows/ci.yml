@@ -814,9 +814,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Prepare replay assets and test camera engine
-        run: npm ci --prefix companion-ios/ReplayAssets && npm test --prefix companion-ios/ReplayAssets
+      - name: Prepare replay assets
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.replay-camera') || contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'swift.obckit-host')
+        run: npm ci --prefix companion-ios/ReplayAssets
+      - name: Test camera engine
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ios.replay-camera')
+        run: npm test --prefix companion-ios/ReplayAssets
       - name: OBCKit package tests (XCTest and Swift Testing, host)
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'swift.obckit-host')
         id: swift-tests
         working-directory: companion-ios/Packages/OBCKit
         run: |
@@ -840,6 +845,7 @@ jobs:
             .artifacts/ios-unit/
           if-no-files-found: error
       - name: Planner PMTiles reader
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'planner.native-tiles')
         id: planner-tiles
         shell: bash
         run: bash apps/planner-native/test-tiles.sh 2>&1 | tee "$RUNNER_TEMP/planner-tiles.log"
