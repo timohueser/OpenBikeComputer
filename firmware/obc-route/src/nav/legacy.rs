@@ -1494,5 +1494,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod differential;
+pub(super) fn table_full(planner: &NavPlanner) -> bool {
+    planner.table_full
+}
