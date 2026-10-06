@@ -233,7 +233,7 @@ fn stage<'a>(
     let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
     let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan))?;
     let Applying { live, next } = applying.expect("a build of live gives what an apply changes");
-    let switches = switches(products, store, &live, &next)?;
+    let switches = switches(root, products, store, &live, &next)?;
     let files = files(store, scratch, &next)?;
     let listed = next.list(remote).map_err(r2_failed)?;
     crate::worker::check(root)?;
@@ -285,6 +285,7 @@ struct Switch<'a> {
 /// Each product whose release `next` changes, with its pointer. Each release is checked here,
 /// before anything changes on R2.
 fn switches<'a>(
+    root: &Path,
     products: &[&'a dyn Product],
     store: &Store,
     live: &Live,
@@ -301,7 +302,7 @@ fn switches<'a>(
                 .error(format!("release {} of `{name}`: {e}; nothing changed", &id[..8]))
                 .fix(format!("Correct the steps of product `{name}`, then plan again."))
         };
-        product.verify(live.release.as_ref().map(|(_, release)| release), release, store).map_err(failed)?;
+        product.verify(root, live.release.as_ref().map(|(_, release)| release), release, store).map_err(failed)?;
         let pointer =
             Pointer { document: next.document.clone().ok_or_else(|| failed("release has no desired pointer".into()))? };
         switches.push(Switch { product: name, prefix: next.prefix.clone(), id: id.clone(), pointer });
@@ -843,6 +844,7 @@ mod tests {
 
         fn verify(
             &self,
+            _: &Path,
             _: Option<&crate::engine::release::Release>,
             _: &crate::engine::release::Release,
             _: &Store,

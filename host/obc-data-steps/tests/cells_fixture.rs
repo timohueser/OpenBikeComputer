@@ -210,7 +210,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     let mut release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
     release.name_files(Maps.named(&release).unwrap()).unwrap();
-    Maps.verify(None, &release, &store).unwrap();
+    Maps.verify(&root, None, &release, &store).unwrap();
     let pointer = Maps.pointer().unwrap()(&release, &store).unwrap();
     assert!(
         release.named.iter().any(|file| file.path == "schema.json")
@@ -306,8 +306,8 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let path = store.object(&network.sha256);
     let backup = temp.0.join("retained-network.obcm");
     std::fs::rename(&path, &backup).unwrap();
-    Maps.verify(Some(&release), &release, &store).unwrap();
-    assert!(Maps.verify(None, &release, &store).unwrap_err().contains("artifact"));
+    Maps.verify(&root, Some(&release), &release, &store).unwrap();
+    assert!(Maps.verify(&root, None, &release, &store).unwrap_err().contains("artifact"));
     std::fs::rename(backup, path).unwrap();
     for step in &mut steps {
         if step.name == "maps/network/0037-0033" {
@@ -320,7 +320,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
     let next = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
-    let error = Maps.verify(Some(&release), &next, &store).unwrap_err();
+    let error = Maps.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
 }
 

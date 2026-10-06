@@ -9,6 +9,9 @@ pub mod preview;
 #[cfg(target_arch = "wasm32")]
 mod browser;
 
+#[cfg(target_arch = "wasm32")]
+mod client_web;
+
 pub use driver::*;
 pub use estimate::*;
 pub use preview::*;

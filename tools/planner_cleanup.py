@@ -60,7 +60,7 @@ def referenced_keys(document, prefix):
     """The bucket keys of a release, each with its size; the manifest has none."""
     keys = {prefix + "release.json": None}
     for name, item in storage_files(document).items():
-        keys[prefix + name] = item["bytes"]
+        keys["planner/" + name if name.startswith("objects/") else prefix + name] = item["bytes"]
     for name, data in public_metadata(document).items():
         keys[prefix + name] = len(data)
     for name, item in document.get("source_files", {}).items():
@@ -85,13 +85,13 @@ def plan(remote, current):
     rows = json.loads(r2.run_rclone(["lsjson", remote.path + "/planner", "--recursive", "--files-only", "--use-server-modtime", "--no-mimetype"], remote.env, capture=True))
     found = {"planner/" + row["Path"]: row for row in rows}
     for key in found:
-        if key.startswith(("planner/releases/", "planner/sources/")): relative_path(key)
+        if key.startswith(("planner/releases/", "planner/sources/", "planner/objects/")): relative_path(key)
     if prefix + "release.json" not in found:
         raise ValueError("Active release manifest is absent")
     if any(size is not None and found.get(key, {}).get("Size") != size for key, size in keep.items()):
         raise ValueError("Active release is incomplete; cleanup is blocked.")
     stale = [r2.Target(key, row["Size"], row["ModTime"]) for key, row in found.items()
-             if key.startswith(("planner/releases/", "planner/sources/")) and not key.startswith(prefix) and key not in keep]
+             if key.startswith(("planner/releases/", "planner/sources/", "planner/objects/")) and not key.startswith(prefix) and key not in keep]
     published = datetime.fromisoformat(found[prefix + "release.json"]["ModTime"])
     newer = [item for item in stale if datetime.fromisoformat(item.modified) > published]
     if newer:

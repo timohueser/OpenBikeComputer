@@ -9,6 +9,7 @@ pub enum QueryOutcome {
     Page { store: StoreId, sequence: u64, more: bool, entries: Vec<EntryMeta> },
     Catalog { store: StoreId, sequence: u64, entries: Vec<EntryMeta> },
     Status(StatusResponse),
+    Cancel(bool),
 }
 
 #[derive(Default)]
@@ -29,7 +30,8 @@ pub(super) struct Query {
 }
 
 impl Client {
-    /// Submit one LIST page or STATUS without taking ownership of the primary transfer.
+    /// Submit one LIST page, STATUS or CANCEL. CANCEL reports the peer's answer and settles
+    /// a matching primary transfer through the same bilateral cancellation path as Event::Cancel.
     /// LIST cursors retain their snapshot sequence; a refused page is not silently restarted.
     pub fn query(&mut self, request: Request, expected_store: Option<StoreId>, now: u64) -> Result<QueryId, Error> {
         self.start_query(request, expected_store, now, None)
@@ -51,13 +53,32 @@ impl Client {
         )
     }
 
-    /// Complete one query locally. A transmitted request may still answer; its response and
-    /// completion token no longer belong to a live query.
+    /// Complete one query waiter locally. A CANCEL targeting the primary keeps its cancellation
+    /// intent: the primary takes ownership of its queued send and in-flight completion token.
     pub fn cancel_query(&mut self, handle: QueryId) -> bool {
         let Some(index) = self.queries.iter().position(|query| query.handle == handle) else {
             return false;
         };
+        let query = &self.queries[index];
+        let primary_cancel = self.cancellation.as_ref().is_some_and(|cancel| cancel.id == query.id);
+        let token = query.token;
+        let queued = if primary_cancel {
+            self.actions
+                .iter()
+                .position(|action| matches!(action, Action::Send { token: sent, .. } if Some(*sent) == token))
+                .map(|at| (at, self.actions.remove(at).unwrap()))
+        } else {
+            None
+        };
         self.finish_query(index, Err(Error::Cancelled));
+        if primary_cancel {
+            if let Some(token) = token {
+                self.write = Some((token, Write::Control));
+            }
+            if let Some((at, action)) = queued {
+                self.actions.insert(at, action);
+            }
+        }
         true
     }
 
@@ -68,7 +89,7 @@ impl Client {
         now: u64,
         catalog: Option<Catalog>,
     ) -> Result<QueryId, Error> {
-        if !matches!(request, Request::List(_) | Request::Status(_)) {
+        if !matches!(request, Request::List(_) | Request::Status(_) | Request::Cancel(_)) {
             return Err(Error::InvalidInput);
         }
         if !self.connected || self.restoring {
@@ -79,7 +100,7 @@ impl Client {
                 return Err(Error::StoreChanged { previous, current });
             }
         }
-        let introducing = self.store.is_none() && matches!(request, Request::Status(_));
+        let introducing = self.store.is_none() && matches!(request, Request::Status(_) | Request::Cancel(_));
         let sent = if introducing { Request::List(ListRequest { kind: None, cursor: None }) } else { request };
         let id = self.id()?;
         let token = self.send_query(sent, id)?;
@@ -94,6 +115,11 @@ impl Client {
             token: Some(token),
             deadline: now.saturating_add(self.options.timeout_ms),
         });
+        if let Request::Cancel(cancel) = request {
+            if self.active_transfer_id() == Some(cancel.transfer) && self.cancellation.is_none() {
+                self.begin_query_cancel(id, cancel.transfer, now);
+            }
+        }
         Ok(handle)
     }
 
@@ -135,7 +161,13 @@ impl Client {
             })
         };
         match result {
-            Ok(Some(outcome)) => self.finish_query(index, Ok(outcome)),
+            Ok(Some(outcome)) => {
+                let cancelled = matches!(outcome, QueryOutcome::Cancel(_));
+                self.finish_query(index, Ok(outcome));
+                if cancelled {
+                    self.settle_cancellation();
+                }
+            }
             Ok(None) => {}
             Err(error) => self.finish_query(index, Err(error)),
         }
@@ -225,6 +257,15 @@ impl Client {
         }
         match (self.queries[index].request, response) {
             (Request::Status(_), Response::Status(status)) => Ok(Some(QueryOutcome::Status(status))),
+            (Request::Cancel(_), Response::Cancel(confirmed)) => {
+                if let Some(cancel) = &mut self.cancellation {
+                    if cancel.id == self.queries[index].id {
+                        cancel.answered = true;
+                        cancel.confirmed = confirmed;
+                    }
+                }
+                Ok(Some(QueryOutcome::Cancel(confirmed)))
+            }
             _ => Err(Error::Protocol),
         }
     }

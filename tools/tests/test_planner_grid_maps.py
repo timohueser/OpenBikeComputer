@@ -13,7 +13,7 @@ from pmtiles.reader import MmapSource, Reader, all_tiles
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import write
 
-from tools import planner_grid_maps as grid, planner_offline as offline
+from tools import planner_grid_maps as grid, planner_offline as offline, planner_verify
 
 
 BOUNDS = [-180, -85, 180, 85]
@@ -86,11 +86,31 @@ class MapGrid(unittest.TestCase):
             grid.step(request)
             output, index = self.files(request)
             entry = index["files"]["maps/tiles/terrain/0-0-0.pmtiles"]
+            path = output / "objects" / entry["transport"]["sha256"]
+            planner_verify.archive(path, "terrain")
+            with self.assertRaisesRegex(ValueError, 'tile format'):
+                planner_verify.archive(path, "basemap")
             with (output / "objects" / entry["transport"]["sha256"]).open("rb") as stream:
                 read = MmapSource(stream)
                 self.assertEqual(dict(all_tiles(read)), {(0, 0, 0): data})
                 self.assertEqual(Reader(read).header()["tile_compression"], Compression.NONE)
                 self.assertEqual(Reader(read).header()["tile_type"], TileType.WEBP)
+
+    def test_changed_binary_archives_check_the_decoded_consumer_layouts(self):
+        for kind, zoom, size, metadata in [('snow', 8, 2 * 2 * 256 * 256, {'seasons': 2}),
+                                         ('climate', 8, 183552, {'years': 10}),
+                                         ('climate', 9, 252096, {'years': 10})]:
+            with self.subTest(kind=kind, zoom=zoom), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'archive.pmtiles'
+                for length in (0, size - 1, size):
+                    with write(path) as writer:
+                        writer.write_tile(zxy_to_tileid(zoom, 0, 0), gzip.compress(bytes(length)))
+                        writer.finalize({'tile_type': TileType.UNKNOWN, 'tile_compression': Compression.GZIP}, metadata)
+                    if length == size:
+                        planner_verify.archive(path, kind)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'tile size'):
+                            planner_verify.archive(path, kind)
 
     def test_empty_terrain_has_metadata_and_no_tile_archives(self):
         with tempfile.TemporaryDirectory() as temporary:

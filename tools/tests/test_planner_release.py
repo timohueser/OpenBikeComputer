@@ -122,7 +122,7 @@ class ReleaseTests(unittest.TestCase):
             for name in document["files"]:
                 self.assertEqual((root / "runtime" / name).read_bytes(), raw.read_bytes())
             keys = planner_cleanup.referenced_keys(document, "planner/releases/test/")
-            self.assertIn("planner/releases/test/objects/" + entry["transport"]["sha256"], keys)
+            self.assertIn("planner/objects/" + entry["transport"]["sha256"], keys)
             self.assertNotIn("planner/releases/test/search/tiles/9-1-1.sqlite", keys)
             self.assertIn("planner/releases/test/public/grid.json", keys)
             cell = runtime.public_metadata({**document, "files": {"routes/tiles/9-1-1.json": entry}})["public/routes/tiles/9-1-1.json.json"]

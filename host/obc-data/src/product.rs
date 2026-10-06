@@ -40,8 +40,14 @@ pub trait Product {
         Ok(Vec::new())
     }
 
-    /// Check a release from the store before an apply makes it live.
-    fn verify(&self, _previous: Option<&Release>, _release: &Release, _store: &Store) -> Result<(), String> {
+    /// Check stored artifacts before publication. `root` locates the offline verification tools.
+    fn verify(
+        &self,
+        _root: &Path,
+        _previous: Option<&Release>,
+        _release: &Release,
+        _store: &Store,
+    ) -> Result<(), String> {
         Ok(())
     }
 }

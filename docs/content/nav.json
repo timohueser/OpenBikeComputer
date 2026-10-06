@@ -3,9 +3,7 @@
     {
       "title": null,
       "pages": [
-        { "path": "index", "title": "Overview" },
-        { "path": "build", "title": "Build your own" },
-        { "path": "releases", "title": "Public releases" }
+        { "path": "index", "title": "Overview" }
       ]
     },
     {

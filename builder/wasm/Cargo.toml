@@ -9,7 +9,7 @@ description = "The builder's shared Rust core and browser bindings"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-test-device = ["dep:obc-flat-device", "dep:obc-link", "dep:obc-storage"]
+test-device = ["dep:obc-flat-device", "obc-link/std", "dep:obc-storage"]
 
 [dependencies]
 obc-route = { workspace = true }
@@ -23,7 +23,7 @@ serde_json = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true }
 obc-flat-device = { workspace = true, optional = true }
-obc-link = { workspace = true, features = ["std"], optional = true }
+obc-link = { workspace = true, features = ["client"] }
 obc-storage = { workspace = true, features = ["std"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
