@@ -83,8 +83,8 @@ the first of them. `index` rebuilds all of this from the manifests in `sources/<
 | `wizard.py` | The steps of a portal behind a login, and the check on what it delivered. |
 | `cli.py` | The subcommands. |
 
-An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and any dtype,
-and no raster for a box where the product has no data.
+An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and dtype.
+WMS, ArcGIS and WCS adapters may return a void raster; `ingest.py fetch` drops it.
 The shared tail turns voids and heights outside −500 m to 9 000 m into absence, max-pools pixel
 centres onto the lattice as `int16` metres, and cuts the window into whole tiles.
 

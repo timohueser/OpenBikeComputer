@@ -107,8 +107,9 @@ def command_fetch(args) -> int:
 
     Each raster goes to `--out` at its path under `--work`, or under the delivery of a row
     without a service, with its `.prj` when it has one. `--work` keeps what the adapter
-    downloaded, so a run that failed reuses it. A box where the product has no data writes
-    nothing: a raster without a height is no data.
+    downloads, and a later run with the same `--work` reuses it; `obc data` gives each run an
+    empty `--work`, because each `dtm-*` source is manual. A box where the product has no data
+    writes nothing: a raster without a height is no data.
     """
 
     bbox = parse_bbox(args.bbox)
@@ -120,12 +121,12 @@ def command_fetch(args) -> int:
         # that the owner read in the order's metadata.
         prefix = f"OBC_REFERENCE_{source.key.upper().replace('-', '_')}"
         base = Path(os.environ.get(f"{prefix}_INPUT", "").strip())
+        # `obc data` runs the fetch in the repository root, not where the variable was set.
+        if base.name and not base.is_absolute():
+            raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
         if not base.name or not base.is_dir():
             raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
                          f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
-        # `obc data` runs the fetch in the repository root, not where the variable was set.
-        if not base.is_absolute():
-            raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
         require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
         rasters = local_rasters(source, base, bbox, work)
     else:

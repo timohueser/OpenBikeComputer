@@ -343,13 +343,14 @@ A `dtm` or `capture` fetch runs a program in the repository root, with the Pytho
 <packages> python`: `--locked --group <group>` for a dependency group of `pyproject.toml`
 (`OBC_PYTHON` replaces that Python).
 The program writes each file of the request to a directory under `partial/`, and its progress to
-standard error. The store takes every file in that directory but hidden, `.part` and `.tmp`
-files. A failed run keeps the directory and writes no record; the next run of the same request,
-also on a later day, resumes from it. A directory older than the `refresh` of the source, or of a
-`manual` source, is deleted before the run. In the record, the `url` of a file is `<fetch.url>#<query>/<path in the
-directory>`, with the `fetch.url` of the source whose record takes the file. The fetch checks
-every record that it adds to before it writes one. Each fetch takes the `NAME=VALUE` of its row,
-each once, and no other. A `capture` source without a row has no fetcher yet; the fetch fails.
+standard error. The store takes every file in that directory but hidden, `.part` and `.tmp` files.
+A failed run keeps the directory and writes no record. A directory of a `manual` source, or one
+older than the `refresh` of the source, is deleted before the run. The next run of the same
+request resumes from any other directory, also on a later day. In the record, the `url` of a file
+is `<fetch.url>#<query>/<path in the directory>`, with the `fetch.url` of the source whose record
+takes the file. The fetch checks every record that it adds to before it writes one. Each fetch
+takes the `NAME=VALUE` of its row, each once, and no other. A `capture` source without a row has
+no fetcher yet; the fetch fails.
 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
@@ -364,8 +365,9 @@ each once, and no other. A `capture` source without a row has no fetcher yet; th
   service is asked only for the part of `bbox` inside the `extent`, and a raster without a height
   is no file. A box where the model has no data gives a fetch without files: its record of the
   request names no file. A `by-hand` model takes the rasters of its delivery:
-  `OBC_REFERENCE_<KEY>_INPUT` names the directory, as an absolute path, and `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of
-  the order states. The two are the `credential` of the source.
+  `OBC_REFERENCE_<KEY>_INPUT` names the directory, as an absolute path, and
+  `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states. The two
+  are the `credential` of the source.
 - A snow file is the window of one source raster that covers `bbox`, one pixel wider on each
   side, in the grid of the source. A season starts on 1 September.
 - The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of

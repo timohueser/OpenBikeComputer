@@ -188,8 +188,8 @@ fn wiki_owners(path: &str) -> &'static [usize] {
 /// `command` makes. The program writes them into its second directory, and may keep downloads in
 /// its first. `owners` gives the indexes in `sources` of the sources whose records take a file,
 /// from its path. A run that fails keeps both directories, so the next run can resume, unless
-/// they are older than the `refresh` of the source or the source is manual. With `empty`, a run that writes no file gives
-/// a fetch without files; else it fails.
+/// they are older than the `refresh` of the source or the source is manual. With `empty`, a run
+/// that writes no file gives a fetch without files; else it fails.
 pub fn capture(
     store: &Store,
     request: &Request,
