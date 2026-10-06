@@ -47,7 +47,7 @@ let package = Package(
         ),
         .target(
             name: "OBCTransport",
-            dependencies: ["OBCDomain", "OBCProtocolV4"],
+            dependencies: ["OBCDomain", "OBCProtocolV4", "OBCHost"],
             swiftSettings: languageMode
         ),
 

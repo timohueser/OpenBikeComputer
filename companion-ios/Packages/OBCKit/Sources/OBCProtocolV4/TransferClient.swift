@@ -50,8 +50,8 @@ public actor TransferClient {
     private var queryID: UInt64?
     private var generation: UInt64 = 0
     private var ioEpoch: UInt64 = 0
-    private var controlReader: Task<Void, Never>?
-    private var streamReader: Task<Void, Never>?
+    private var controlReader: ReceiveTask?
+    private var streamReader: ReceiveTask?
     private var controlReadSettled = false
     private var streamReadSettled = false
     private var writers: [UInt64: Task<Void, Never>] = [:]
@@ -293,11 +293,11 @@ public actor TransferClient {
             }
         }
         if controlReadSettled {
-            await controlReader?.value
+            await controlReader?.drain()
             controlReader = nil; controlReadSettled = false
         }
         if streamReadSettled {
-            await streamReader?.value
+            await streamReader?.drain()
             streamReader = nil; streamReadSettled = false
         }
         if completion != nil {
@@ -333,16 +333,14 @@ public actor TransferClient {
     private func startReader(stream: Bool) {
         if stream ? streamReader != nil : controlReader != nil { return }
         let epoch = ioEpoch
+        let cancellation = ReceiveCancellation()
         let task = Task { [weak self, link] in
             do {
                 let bytes = try await withTaskCancellationHandler {
                     if stream { return try await link.receiveStreamRecord() }
                     return try await link.receiveControlRecord()
                 } onCancel: {
-                    Task {
-                        if stream { await link.cancelStreamReceive() }
-                        else { await link.cancelControlReceive() }
-                    }
+                    cancellation.request(on: link, stream: stream)
                 }
                 await self?.readFinished(.success(bytes), stream: stream, epoch: epoch)
             } catch {
@@ -351,7 +349,8 @@ public actor TransferClient {
                 }
             }
         }
-        if stream { streamReader = task } else { controlReader = task }
+        let read = ReceiveTask(task: task, cancellation: cancellation)
+        if stream { streamReader = read } else { controlReader = read }
     }
 
     private func readFinished(_ result: Swift.Result<Data, Error>, stream: Bool, epoch: UInt64) {
@@ -372,8 +371,10 @@ public actor TransferClient {
         controlReadSettled = false; streamReadSettled = false
         let writes = Array(writers.values)
         writers.removeAll()
-        for task in reads + writes { task.cancel() }
-        for task in reads + writes { await task.value }
+        for read in reads { read.task.cancel() }
+        for task in writes { task.cancel() }
+        for read in reads { await read.drain() }
+        for task in writes { await task.value }
     }
 
     private func finish(_ result: Swift.Result<RustStoreClient.Result, Error>) async {
@@ -417,4 +418,36 @@ public actor TransferClient {
 
 public enum CRC32 {
     public static func checksum(_ data: Data) -> UInt32 { RustStoreClient.checksum(data) }
+}
+
+/// Cancellation can release a read before its physical cleanup returns. Both lifetimes belong
+/// to the receive barrier; no cleanup task may reach the next operation's channel.
+private struct ReceiveTask {
+    let task: Task<Void, Never>
+    let cancellation: ReceiveCancellation
+
+    func drain() async {
+        await task.value
+        await cancellation.drain()
+    }
+}
+
+private final class ReceiveCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func request(on link: any TransferLink, stream: Bool) {
+        lock.withLock {
+            guard task == nil else { return }
+            task = Task {
+                if stream { await link.cancelStreamReceive() }
+                else { await link.cancelControlReceive() }
+            }
+        }
+    }
+
+    func drain() async {
+        let pending = lock.withLock { task }
+        await pending?.value
+    }
 }
