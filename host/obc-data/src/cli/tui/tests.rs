@@ -590,3 +590,28 @@ fn deletion_completion_preserves_a_newer_draft_and_reference_review_blocks_confi
     assert_eq!(app.region_editor.draft().unwrap().id, "q");
     assert_eq!(app.screen, Screen::Sources);
 }
+
+#[test]
+fn a_busy_task_keeps_the_previous_plan_and_refuses_plan_keys_or_clicks_without_blocking_navigation() {
+    let mut app = planned(1, false, &[]);
+    app.overlay = None;
+    app.screen = Screen::Live;
+    app.busy = true;
+    assert_eq!(app.key(KeyCode::Char('p')), Effect::None);
+    assert_eq!(app.act(Action::Open(Overlay::Plan)), Effect::None, "mouse actions use the same admission");
+    app.status.as_mut().unwrap().attention[2].kind = AttentionKind::Drift;
+    app.row = app.live_rows().iter().position(|row| *row == LiveRow::Attention(2)).unwrap();
+    assert_eq!(app.key(KeyCode::Enter), Effect::None, "a repair cannot open Plan while another task runs");
+    assert_eq!(app.act(Action::Fix), Effect::None);
+    assert_eq!(app.overlay, None);
+    assert_eq!(app.plan.as_ref().unwrap().group, 1, "refused actions never clear the existing plan");
+    app.key(KeyCode::Char('3'));
+    assert_eq!(app.screen, Screen::Sources);
+    app.key(KeyCode::Char('/'));
+    app.key(KeyCode::Char('q'));
+    assert_eq!(app.source_view.filter, "q", "navigation and input remain available");
+    app.key(KeyCode::Esc);
+    app.busy = false;
+    assert_eq!(app.key(KeyCode::Char('p')), Effect::Plan);
+    assert_eq!(app.overlay, Some(Overlay::Plan));
+}

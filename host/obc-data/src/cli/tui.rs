@@ -421,7 +421,9 @@ impl App {
             Action::Choose => self.chooses(),
             Action::Toggle if self.overlay == Some(Overlay::Plan) => self.plan.as_ref().is_some_and(PlanView::toggles),
             Action::Toggle => matches!(self.live_rows().get(self.row), Some(LiveRow::Layer(_))),
-            Action::Fix => self.fix().is_some(),
+            Action::Fix => {
+                self.fix().is_some_and(|fix| !matches!(fix, Fix::Plan) || self.works(Action::Open(Overlay::Plan)))
+            }
             Action::Steps => self.plan.as_ref().is_some_and(|view| !view.all.groups.is_empty()),
             Action::Undo => self.edited,
             _ => true,
@@ -529,7 +531,9 @@ impl App {
                         _ => {}
                     }
                 }
-                keys.push(bar(KeyCode::Char('p'), Action::Open(Overlay::Plan), "p", "plan"));
+                if self.works(Action::Open(Overlay::Plan)) {
+                    keys.push(bar(KeyCode::Char('p'), Action::Open(Overlay::Plan), "p", "plan"));
+                }
                 if self.works(Action::Undo) {
                     keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo environment"));
                 }
@@ -608,6 +612,9 @@ impl App {
     }
 
     fn act(&mut self, action: Action) -> Effect {
+        if matches!(action, Action::Open(Overlay::Plan)) && !self.works(action) {
+            return Effect::None;
+        }
         let last = match self.overlay {
             Some(_) => self.choices().map_or(usize::MAX, |choices| choices.saturating_sub(1)),
             None => self.rows().saturating_sub(1),
