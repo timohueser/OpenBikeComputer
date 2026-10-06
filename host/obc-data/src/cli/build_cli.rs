@@ -14,7 +14,7 @@ use super::{cells, fetched, print_json, print_table, registry, Code, Error};
 use crate::engine::changes::{self, Against};
 use crate::engine::plan::{self, Cause, Estimate, Group, Plan};
 use crate::engine::release::{self, Release};
-use crate::engine::runs::{Context, Limits, Run};
+use crate::engine::runs::{Context, Event, Limits, Phase, Run};
 #[cfg(test)]
 use crate::engine::Input;
 use crate::engine::Step;
@@ -83,6 +83,15 @@ pub struct EnvPlan {
     /// has no `repair` group, and `remove` lacks the leftovers and the files that a client finds
     /// by name.
     pub listed: bool,
+    /// Discovery could not resolve the step graph. Prepare and review a new plan before replay.
+    pub needs_prepare: bool,
+}
+
+/// Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Prepared {
+    pub run: String,
+    pub plan: EnvPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -125,8 +134,8 @@ pub enum Edit {
 /// What a build did.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Built {
-    /// `None` when there was nothing to fetch or build.
-    pub run: Option<String>,
+    /// The operation journal, including preparation and release creation.
+    pub run: String,
     /// The layers of the run, in dependency order.
     pub layers: Vec<BuiltLayer>,
     /// The release of each product whose every layer is built. For `live`, the release of each
@@ -154,14 +163,59 @@ pub fn plan(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) 
     let (store, http) = (Store::open()?, Http::new());
     let remote = live_remote(&args.env)?;
     let basis = Basis::Moves(&args.moves);
-    let plan =
-        planned(root, &store, &http, remote.as_ref(), products, &args.env, &args.only, basis, !args.moves.is_empty())?
-            .plan;
+    let plan = planned(root, &store, &http, remote.as_ref(), products, &args.env, &args.only, basis, false)?.plan;
     if json {
         return print_json(&plan);
     }
     print_plan(&plan);
     Ok(())
+}
+
+pub fn prepare(root: &Path, products: &[&dyn Product], args: PlanArgs, json: bool) -> Result<(), Error> {
+    let (store, http, remote) = (Store::open()?, Http::new(), live_remote(&args.env)?);
+    let mut run = super::api::start_run(&store, &format!("prepare {}", args.env))?;
+    let result = prepare_plan(root, &store, &http, remote.as_ref(), products, &args, &mut run);
+    let prepared = super::api::finish_run(run, result, None)?;
+    if json {
+        return print_json(&prepared);
+    }
+    println!("run {}", prepared.run);
+    print_plan(&prepared.plan);
+    Ok(())
+}
+
+fn prepare_plan(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: Option<&Remote>,
+    products: &[&dyn Product],
+    args: &PlanArgs,
+    run: &mut Run,
+) -> Result<Prepared, Error> {
+    run.record(&Event::Phase { phase: Phase::Prepare })?;
+    let prepared = planned_run(
+        root,
+        store,
+        http,
+        remote,
+        products,
+        &args.env,
+        &args.only,
+        Basis::Moves(&args.moves),
+        true,
+        Some(run),
+    )?;
+    if let Some((wanted, message)) = prepared.loaded.env.fetch_failures.first() {
+        let source = prepared
+            .loaded
+            .sources
+            .iter()
+            .find(|source| source.id == wanted.source)
+            .ok_or_else(|| Code::InvalidData.error(format!("no source `{}`", wanted.source)))?;
+        return Err(fetched(source, Err(format!("source `{}`: {message}", wanted.source))).unwrap_err());
+    }
+    Ok(Prepared { run: run.id().into(), plan: prepared.plan })
 }
 
 /// The plan as text.
@@ -249,7 +303,9 @@ pub fn build(root: &Path, products: &[&dyn Product], args: BuildArgs, json: bool
     let blocked = built.blocked.iter().filter(|blocked| !blocked.layers.is_empty()).collect::<Vec<_>>();
     let incomplete = || {
         let reasons = blocked.iter().map(|b| format!("{}: {}", b.product, b.reason)).collect::<Vec<_>>().join("; ");
-        Code::Blocked.error(format!("build is incomplete; required layers are blocked: {reasons}"))
+        let mut error = Code::Blocked.error(format!("build is incomplete; required layers are blocked: {reasons}"));
+        error.run = Some(built.run.clone());
+        error
     };
     if json && !blocked.is_empty() {
         return Err(incomplete());
@@ -289,7 +345,24 @@ fn run_build(
     args: &BuildArgs,
 ) -> Result<Built, Error> {
     let saved = args.plan.as_deref().map(read_plan).transpose()?;
-    Ok(build_env(root, store, http, remote, products, args, saved.as_ref())?.0)
+    complete(saved.as_ref())?;
+    let mut run = super::api::start_run(store, &format!("build {}", args.env))?;
+    let result = build_env(root, store, http, remote, products, args, saved.as_ref(), &mut run).map(|built| built.0);
+    let incomplete = result
+        .as_ref()
+        .ok()
+        .filter(|built| built.blocked.iter().any(|blocked| !blocked.layers.is_empty()))
+        .map(|_| "required layers are blocked");
+    super::api::finish_run(run, result, incomplete)
+}
+
+pub(super) fn complete(saved: Option<&EnvPlan>) -> Result<(), Error> {
+    if saved.is_some_and(|plan| plan.needs_prepare) {
+        return Err(Code::PlanOutdated
+            .error("the preview has unresolved inputs; nothing fetched or built")
+            .fix("Run `obc data prepare ENV --json`, review its plan, and save only the .plan object."));
+    }
+    Ok(())
 }
 
 /// Live, and live after an apply of the plan of a build.
@@ -299,6 +372,7 @@ pub(super) struct Applying {
 }
 
 /// Build `args.env`, or the plan `saved`. A build of live also gives what an apply of it changes.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_env(
     root: &Path,
     store: &Store,
@@ -307,13 +381,16 @@ pub(super) fn build_env(
     products: &[&dyn Product],
     args: &BuildArgs,
     saved: Option<&EnvPlan>,
+    run: &mut Run,
 ) -> Result<(Built, Option<Applying>), Error> {
+    complete(saved)?;
+    run.record(&Event::Phase { phase: Phase::Prepare })?;
     let (basis, only) = match saved {
         Some(saved) => (Basis::Saved(saved), &saved.only),
         None => (Basis::Moves(&args.moves), &args.only),
     };
     let Planned { loaded, steps, plan, live } =
-        planned(root, store, http, remote, products, &args.env, only, basis, true)?;
+        planned_run(root, store, http, remote, products, &args.env, only, basis, true, Some(run))?;
     if let Some(saved) = saved {
         let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
             == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
@@ -322,25 +399,23 @@ pub(super) fn build_env(
         }
     }
     suits(products, &plan)?;
-    let mut built = Built { run: None, layers: Vec::new(), releases: Vec::new(), blocked: plan.blocked.clone() };
+    let mut built =
+        Built { run: run.id().into(), layers: Vec::new(), releases: Vec::new(), blocked: plan.blocked.clone() };
     let work = Plan { groups: plan.groups.clone() };
+    run.record(&Event::Phase { phase: Phase::Build })?;
     if work.builds().next().is_some() || !work.fetches().is_empty() {
-        let mut run = Run::create(store, &format!("build {}", loaded.env.name))?;
         let id = run.id().to_string();
-        eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
         let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
         let context =
             Context { store, root, sources: &loaded.sources, http, copies: copies.as_ref(), limits: Limits::machine() };
         let result = run.build(&context, &steps, &work);
-        let incomplete = plan.blocked.iter().any(|b| !b.layers.is_empty()).then_some("required layers are blocked");
-        run.finish(result.as_ref().err().map(String::as_str).or(incomplete))?;
         let layers = result.map_err(|e| Code::RunFailed.error(format!("run {id}: {e}")))?;
         built.layers = layers
             .into_iter()
             .map(|layer| BuiltLayer { step: layer.receipt.step, key: layer.receipt.key, reused: layer.reused })
             .collect();
-        built.run = Some(id);
     }
+    run.record(&Event::Phase { phase: Phase::Verify })?;
     let Some(live) = live else {
         crate::worker::check(root)?;
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
@@ -485,6 +560,22 @@ fn planned(
     basis: Basis,
     prepare: bool,
 ) -> Result<Planned, Error> {
+    planned_run(root, store, http, remote, products, name, only, basis, prepare, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn planned_run(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: Option<&Remote>,
+    products: &[&dyn Product],
+    name: &str,
+    only: &[String],
+    basis: Basis,
+    prepare: bool,
+    mut run: Option<&mut Run>,
+) -> Result<Planned, Error> {
     let mut loaded = load(root, name)?;
     let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
@@ -513,6 +604,7 @@ fn planned(
                     http,
                     &loaded.sources,
                     copies.as_ref(),
+                    run.as_deref_mut(),
                 )?;
                 for source in &loaded.sources {
                     if source.refresh == Refresh::Manual || env.moves.contains_key(&source.id) {
@@ -544,10 +636,12 @@ fn planned(
             }
         }
     }
-    let fetch =
-        super::status_cli::discovery_fetch(fetcher(store, http, &loaded.sources, env, copies.as_ref()), prepare);
+    let fetch = super::status_cli::discovery_fetch(
+        fetcher_recorded(store, http, &loaded.sources, env, copies.as_ref(), run),
+        prepare,
+    );
     let (steps, blocked) = match basis {
-        Basis::Moves(_) => steps(root, products, env, &loaded.regions, store, live.is_some(), fetch)?,
+        Basis::Moves(_) => list_steps(root, products, env, &loaded.regions, store, live.is_some(), fetch, !prepare)?,
         // A fetch without a version is one that the plan does not name.
         Basis::Saved(_) => {
             let mut fetch = fetch;
@@ -660,6 +754,7 @@ fn env_plan(
         blocked,
         remove: Vec::new(),
         listed: false,
+        needs_prepare: !env.fetch_failures.is_empty(),
     }
 }
 
@@ -875,6 +970,17 @@ pub(super) fn fetcher<'a>(
     env: &Env,
     copies: Option<&'a crate::input_copy::Restore<'a>>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
+    fetcher_recorded(store, http, sources, env, copies, None)
+}
+
+pub(super) fn fetcher_recorded<'a>(
+    store: &'a Store,
+    http: &'a Http,
+    sources: &'a [Source],
+    env: &Env,
+    copies: Option<&'a crate::input_copy::Restore<'a>>,
+    mut run: Option<&'a mut Run>,
+) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     let newest: BTreeSet<String> = env.moves.keys().filter(|source| env.moves_to_newest(source)).cloned().collect();
     let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
     let reads = env.live.iter().flat_map(|((source, _), read)| read.iter().map(move |version| (source, version)));
@@ -898,15 +1004,19 @@ pub(super) fn fetcher<'a>(
         let request = Request { source, version: wanted.version.clone(), params: wanted.params.clone() };
         let of_live =
             |version: &String| !moved.contains(&source.id) && live.contains(&(source.id.clone(), version.clone()));
-        fetched(source, crate::input_copy::fetch(store, http, copies, &request, &[]))
-            .map(|snapshot| snapshot.version)
-            .map_err(|e| match e.code == Code::FetchFailed && wanted.version.as_ref().is_some_and(of_live) {
+        let snapshot = match run.as_deref_mut() {
+            Some(run) => run.fetch_request(store, http, copies, &request, &[]),
+            None => crate::input_copy::fetch(store, http, copies, &request, &[]),
+        };
+        fetched(source, snapshot).map(|snapshot| snapshot.version).map_err(|e| {
+            match e.code == Code::FetchFailed && wanted.version.as_ref().is_some_and(of_live) {
                 true => e.fix(format!(
                     "Upstream can stop serving an old version: plan with `--move {}` to read the newest.",
                     source.id
                 )),
                 false => e,
-            })
+            }
+        })
     }
 }
 
@@ -931,7 +1041,21 @@ pub(super) fn steps(
     regions: &Regions,
     store: &Store,
     live: bool,
+    fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+) -> Result<(Vec<Step>, Vec<BlockedProduct>), Error> {
+    list_steps(root, products, env, regions, store, live, fetch, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn list_steps(
+    root: &Path,
+    products: &[&dyn Product],
+    env: &mut Env,
+    regions: &Regions,
+    store: &Store,
+    live: bool,
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+    preview: bool,
 ) -> Result<(Vec<Step>, Vec<BlockedProduct>), Error> {
     check_layers(products, env)?;
     env.fetch_failures.clear();
@@ -942,7 +1066,23 @@ pub(super) fn steps(
             blocked.push(BlockedProduct { product: product.name().into(), reason, layers: Vec::new() });
             continue;
         }
-        match product_steps(root, *product, env, regions, store, &mut fetch)? {
+        let before = env.fetch_failures.len();
+        let listed = match product_steps(root, *product, env, regions, store, &mut fetch) {
+            Err(error)
+                if preview
+                    && env.fetch_failures.len() > before
+                    && matches!(error.code, Code::Blocked | Code::FetchFailed) =>
+            {
+                blocked.push(BlockedProduct {
+                    product: product.name().into(),
+                    reason: format!("{}; {}", error.message, error.fix),
+                    layers: Vec::new(),
+                });
+                continue;
+            }
+            result => result?,
+        };
+        match listed {
             Ok(listed) => {
                 if !listed.blocked.is_empty() {
                     let reason = listed
@@ -1133,6 +1273,128 @@ pub(crate) mod tests {
         .unwrap();
         let message = "data/env/live.toml: no product has the optional layer `snow`";
         assert_eq!((err.code, err.message.as_str()), (Code::InvalidData, message));
+    }
+
+    #[test]
+    fn an_explicit_move_preview_stays_read_only_until_preparation_resolves_its_graph() {
+        use crate::fetch::tests::{serve, whole};
+        struct MovedIndex;
+        impl Product for MovedIndex {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn steps(
+                &self,
+                root: &Path,
+                env: &Env,
+                regions: &Regions,
+                store: &Store,
+            ) -> Result<crate::product::Steps, Unplanned> {
+                assert_eq!(
+                    crate::product::version(env, store, "index", &[]).map_err(Unplanned::Failed)?,
+                    Ok("1".into())
+                );
+                Indexed.steps(root, env, regions, store)
+            }
+        }
+        let (actual, requests) = serve(|_, _| whole(b"index\n"));
+        let actual = actual.replacen("/data/", "/data/1/", 1);
+        let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
+        let fixture = fixture("cli-preview-prepare");
+        let root = fixture.root();
+        write(&root.join("data/sources.toml"), &format!(
+            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
+        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        let http = Http::loopback(&actual);
+        let moves = ["index@1".into()];
+        let preview =
+            planned(&root, &fixture.store, &http, None, &[&MovedIndex], "live", &[], Basis::Moves(&moves), false)
+                .unwrap()
+                .plan;
+        assert!(preview.needs_prepare);
+        assert!(!preview.blocked.is_empty());
+        assert!(requests.lock().unwrap().is_empty(), "--move does not authorize bulk discovery");
+        assert!(!fixture.store.root().join("runs").exists(), "a preview creates no operation journal");
+        let saved = root.join("preview.json");
+        write(&saved, &serde_json::to_string(&preview).unwrap());
+        let args = BuildArgs { env: "live".into(), only: Vec::new(), moves: Vec::new(), plan: Some(saved) };
+        let error = run_build(&root, &fixture.store, &http, None, &[&MovedIndex], &args).unwrap_err();
+        assert_eq!(error.code, Code::PlanOutdated);
+        assert!(requests.lock().unwrap().is_empty(), "replay refuses before preparation");
+
+        let mut run = Run::create(&fixture.store, "prepare live").unwrap();
+        let id = run.id().to_string();
+        run.record(&Event::Phase { phase: Phase::Prepare }).unwrap();
+        let prepared = planned_run(
+            &root,
+            &fixture.store,
+            &http,
+            None,
+            &[&MovedIndex],
+            "live",
+            &[],
+            Basis::Moves(&moves),
+            true,
+            Some(&mut run),
+        )
+        .unwrap();
+        assert!(!prepared.plan.needs_prepare);
+        assert_eq!(prepared.steps.len(), 3);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        run.finish(None).unwrap();
+        let events = crate::engine::runs::events(&fixture.store, &id).unwrap();
+        assert!(matches!(events.last(), Some(Event::Finished { ok: true, .. })));
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::FetchFinished { .. })).count(), 1);
+        assert!(!fixture.store.root().join("layers").exists(), "prepare makes no layer receipts");
+    }
+
+    #[test]
+    fn preparation_fails_when_a_product_keeps_usable_steps_after_a_failed_fetch() {
+        use crate::fetch::tests::{not_found, serve};
+        struct Softened;
+        impl Product for Softened {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+            fn steps(&self, _: &Path, env: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+                if env.fetch_failures.is_empty() {
+                    return Err(Unplanned::NeedsFetch(vec![Wanted {
+                        source: "index".into(),
+                        version: Some("1".into()),
+                        params: Vec::new(),
+                    }]));
+                }
+                let mut listed: crate::product::Steps = pipeline().into();
+                listed.blocked.push(crate::product::BlockedLayer {
+                    layer: "test/content".into(),
+                    reason: env.fetch_failures[0].1.clone(),
+                });
+                Ok(listed)
+            }
+        }
+        let (actual, requests) = serve(|_, _| not_found());
+        let actual = actual.replacen("/data/", "/data/1/", 1);
+        let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
+        let fixture = fixture("prepare-softened-fetch");
+        let root = fixture.root();
+        write(&root.join("data/sources.toml"), &format!(
+            "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
+        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        let mut run = Run::create(&fixture.store, "prepare live").unwrap();
+        let id = run.id().to_string();
+        let args = PlanArgs { env: "live".into(), only: Vec::new(), moves: vec!["index@1".into()] };
+        let result = prepare_plan(&root, &fixture.store, &Http::loopback(&actual), None, &[&Softened], &args, &mut run);
+        let error = super::super::api::finish_run(run, result, None).unwrap_err();
+        assert_eq!((error.code, error.code.exit()), (Code::FetchFailed, 1));
+        assert_eq!(error.run.as_ref(), Some(&id));
+        assert!(error.message.contains("index") && error.message.contains("404"), "{}", error.message);
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        let events = crate::engine::runs::events(&fixture.store, &id).unwrap();
+        assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
+        assert_eq!(events.iter().filter(|event| matches!(event, Event::Finished { .. })).count(), 1);
+        assert!(!events.iter().any(|event| matches!(event, Event::StepStarted { .. })));
     }
 
     /// The test pipeline, once the store has `index@1` and then `box@1`, which only the index names.
@@ -1472,11 +1734,20 @@ pub(crate) mod tests {
         write(&root.join("data/sources.toml"), SOURCES);
         write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
-        let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
+        let preview =
+            planned(&root, &fixture.store, &Http::new(), None, &[&Partial], "live", &[], Basis::Moves(&[]), false)
+                .unwrap()
+                .plan;
+        assert!(!preview.needs_prepare, "blocked readiness does not make the graph unresolved");
+        let file = root.join("partial.json");
+        write(&file, &serde_json::to_string(&preview).unwrap());
+        let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: Some(file), moves: Vec::new() };
         let built = run_build(&root, &fixture.store, &Http::new(), None, &[&Partial], &args).unwrap();
         assert_eq!(built.layers.len(), 3);
         assert!(built.releases.is_empty());
         assert_eq!(built.blocked[0].layers[0].layer, "test/missing");
+        let events = crate::engine::runs::events(&fixture.store, &built.run).unwrap();
+        assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
     }
 
     /// A product that the environment does not suit.
@@ -1520,7 +1791,7 @@ pub(crate) mod tests {
         assert_eq!((built.layers.len(), built.releases.len(), &built.blocked), (3, 1, &blocked));
         assert_eq!(built.releases[0].product, "test", "a blocked product has no release");
         let again = run_build(&root, &fixture.store, &http, None, &products, &args).unwrap();
-        assert_eq!((again.run, again.releases[0].id == built.releases[0].id), (None, true), "up to date");
+        assert_eq!((again.layers.is_empty(), again.releases[0].id == built.releases[0].id), (true, true), "up to date");
         let err = run_build(&root, &fixture.store, &http, None, &[&Refused], &args).unwrap_err();
         assert_eq!((err.code.exit(), err.message.as_str()), (4, "product `other`: no box region"), "no product suits");
     }
@@ -1735,7 +2006,11 @@ pub(crate) mod tests {
         assert_eq!(next.layers[2], release.layers[2], "upper stays the live layer");
         assert_ne!(next.layers[1], release.layers[1]);
         let again = build().unwrap();
-        assert_eq!((again.run, &again.releases[0].id), (None, &built.releases[0].id), "a retry of the same plan");
+        assert_eq!(
+            (again.layers.is_empty(), &again.releases[0].id),
+            (true, &built.releases[0].id),
+            "a retry of the same plan"
+        );
 
         publish(&fixture, &next);
         let err = build().unwrap_err();

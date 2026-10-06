@@ -72,6 +72,25 @@ enum Failure {
 }
 
 impl Http {
+    #[cfg(test)]
+    pub(crate) fn loopback(actual: &str) -> Self {
+        assert!(actual.starts_with("http://127.0.0.1:"));
+        let declared: ureq::http::Uri = actual.replacen("http://", "https://", 1).parse().unwrap();
+        let actual: ureq::http::Uri = actual.parse().unwrap();
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .middleware(
+                move |mut request: ureq::http::Request<ureq::SendBody<'_>>,
+                      next: ureq::middleware::MiddlewareNext<'_>| {
+                    assert_eq!(request.uri(), &declared, "the fixture cannot contact another endpoint");
+                    *request.uri_mut() = actual.clone();
+                    next.handle(request)
+                },
+            )
+            .build();
+        Self { agent: config.into(), backoff: Duration::ZERO }
+    }
+
     pub fn new() -> Self {
         Self::with_backoff(Duration::from_secs(2))
     }

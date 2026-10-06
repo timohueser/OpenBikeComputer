@@ -80,6 +80,8 @@ enum Command {
     Undo { env: String },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
+    /// Resolve the environment's inputs and return a plan for review. Nothing builds or uploads.
+    Prepare(build_cli::PlanArgs),
     /// Fetch and build the environment into the store, and write the release of each product
     /// whose every layer is built. Nothing uploads.
     Build(build_cli::BuildArgs),
@@ -198,6 +200,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         }
         Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
+        Command::Prepare(args) => build_cli::prepare(&root()?, products, args, json),
         Command::Build(args) => build_cli::build(&root()?, products, args, json),
         Command::Apply(args) => apply_cli::apply(&root()?, products, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
@@ -558,6 +561,7 @@ fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Re
             &Http::new(),
             &loaded.sources,
             Some(&copies),
+            None,
         )?)
     } else {
         eprintln!("obc data: {}", live_unknown(live.as_ref().unwrap_err()));
