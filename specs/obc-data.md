@@ -682,6 +682,17 @@ the other products and writes no release of a blocked product. When no product s
 environment, `build` fails with `blocked`. An error of the store, a file or the data of a fetch
 in a step list fails the command with `failed`.
 
+A product returns usable steps and blocked layers together. Each blocked layer has `layer`
+and `reason`. A plan reports an incomplete product in `blocked`, with these rows in `layers`.
+An empty `layers` list means that the whole product is blocked. Independent steps still plan
+and build. A build with required blocked layers exits with `blocked` after usable work. It
+writes no complete release for that product. An apply with these blockers fails before it
+uploads, switches, or removes objects. A failed explicit capture fetch blocks its content and
+artifacts; other map layers keep their steps. Status shows these layers as `blocked`, with the
+reason in attention. Status fetches only small discovery files: Geofabrik outlines and the
+GLO-30 tile list. An absent bulk input gives a not-prepared reason and unknown product layers;
+opening the TUI starts no bulk download.
+
 A product also gives what clients read of a release: its pointer document, and the files that a
 client finds by name under `<prefix>/releases/<id>/`. A plan, a build and an apply of `live` leave
 out a product without them: it is in `blocked` with the reason "no client document yet", and its
@@ -750,8 +761,8 @@ A leaf reads each `dtm-*` source whose `extent` meets the box of its terrain cel
 that the crest rule of `OBCT_Spec.md` §9 reads, which have a halo of two postings. The fetch of a
 model is `bbox=<that box>`. A fetch without files adds nothing, and a leaf where no model has
 data has no `maps/reference` layer. While the store lacks the fetch of a model whose `credential`
-is not on this machine, the product is blocked, and the reason names the layer and the
-credential.
+is not on this machine, its reference and terrain layers are blocked. Bands that read that
+terrain are blocked too. Other leaves and bands keep their steps.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
@@ -766,9 +777,10 @@ credential.
 
 A capture keeps its params while no source of the capture moves: the step list reads the capture
 of the region that the saved plan or live reads, or else the newest capture of the region in the
-store. A new extract alone therefore asks for no new capture. The first capture, a capture that
-moves (stale, or `--move`), and a capture whose extract or `.poly` the store has no more, read the
-extract and the `.poly` of now. `code=` is the digest of the code that makes the boundary and the
+store. A new extract alone therefore asks for no new capture. A missing capture, missing capture inputs, stale capture code, or an automatic stale-source
+move blocks only its content and artifacts. The reason asks for `--move wikidata`. Status and
+plans do not start bulk captures without an explicit move. A capture that moves explicitly
+reads the extract and the `.poly` of now. `code=` is the digest of the code that makes the boundary and the
 candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
 
 `maps/osm`, `maps/reference/<i>-<j>`, `maps/landmark-content` and `maps/peak-content` are
@@ -1218,9 +1230,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "BlockedLayer": {
+      "additionalProperties": false,
+      "properties": {
+        "layer": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "reason"
+      ],
+      "type": "object"
+    },
     "BlockedProduct": {
       "additionalProperties": false,
       "properties": {
+        "layers": {
+          "items": {
+            "$ref": "#/$defs/BlockedLayer"
+          },
+          "type": "array"
+        },
         "product": {
           "type": "string"
         },
@@ -1230,7 +1264,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "product",
-        "reason"
+        "reason",
+        "layers"
       ],
       "type": "object"
     },
@@ -1238,7 +1273,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "What a build did.",
       "properties": {
         "blocked": {
-          "description": "The products that give no steps for the environment; nothing of them is built.",
+          "description": "Incomplete products. Usable layers can build, but these products get no complete release.",
           "items": {
             "$ref": "#/$defs/BlockedProduct"
           },
@@ -1650,7 +1685,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "What a build of an environment would fetch and build.",
       "properties": {
         "blocked": {
-          "description": "The products that give no steps for the environment. The others plan without them.",
+          "description": "Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.",
           "items": {
             "$ref": "#/$defs/BlockedProduct"
           },
