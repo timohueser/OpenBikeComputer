@@ -61,7 +61,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     fetched(&store, "nominatim-country-data", "1", Vec::new(), "nominatim_db-1-py3-none-any.whl", &country_data());
 
-    let text = "name = \"Test\"\nkind = \"geofabrik\"\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
+    let text = "name = \"Test\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
     let regions = Regions::new(vec![parse_region(AREA, text).unwrap()]).unwrap();
     let read = [
         GLO30,

@@ -166,7 +166,9 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         }
     }
 
-    let region = parse_region(AREA, "name = \"Grimsel east\"\nkind = \"geofabrik\"\n").unwrap();
+    let region =
+        parse_region(AREA, "name = \"Grimsel east\"\nkind = \"geofabrik\"\nareas = [\"europe/grimsel-east\"]\n")
+            .unwrap();
     let regions = Regions::new(vec![region]).unwrap();
     let live = BTreeMap::from([
         ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),

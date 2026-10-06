@@ -11,6 +11,7 @@ pub struct Area {
     pub id: String,
     pub name: String,
     pub parent: Option<String>,
+    pub countries: Vec<String>,
     /// Polygons, each with an exterior followed by its holes, longitude first.
     pub polygons: Vec<Vec<Vec<[f64; 2]>>>,
     pub bounds: Bbox,
@@ -37,6 +38,8 @@ struct Properties {
     name: String,
     parent: Option<String>,
     urls: Urls,
+    #[serde(rename = "iso3166-1:alpha2", default)]
+    countries: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,7 +96,17 @@ pub fn parse(body: &[u8]) -> Result<BTreeMap<String, Area>, String> {
         let bounds = Bbox::new(bounds).map_err(|e| format!("Geofabrik area `{id}`: {e}"))?;
         if ids.insert(properties.id, id.clone()).is_some()
             || areas
-                .insert(id.clone(), Area { id, name: properties.name, parent: properties.parent, polygons, bounds })
+                .insert(
+                    id.clone(),
+                    Area {
+                        id,
+                        name: properties.name,
+                        parent: properties.parent,
+                        countries: properties.countries,
+                        polygons,
+                        bounds,
+                    },
+                )
                 .is_some()
         {
             return Err("Geofabrik index repeats an area".into());
@@ -107,6 +120,27 @@ pub fn parse(body: &[u8]) -> Result<BTreeMap<String, Area>, String> {
                     .clone(),
             );
         }
+    }
+    for id in areas.keys().cloned().collect::<Vec<_>>() {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut current = Some(id.as_str());
+        let mut countries = Vec::new();
+        while let Some(parent) = current {
+            if !seen.insert(parent) {
+                return Err(format!("Geofabrik area `{id}` has a parent cycle"));
+            }
+            let area = &areas[parent];
+            if countries.is_empty() {
+                countries = area.countries.clone();
+            }
+            current = area.parent.as_deref();
+        }
+        if countries.iter().any(|code| code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase())) {
+            return Err(format!("Geofabrik area `{id}` has invalid country codes"));
+        }
+        countries.sort();
+        countries.dedup();
+        areas.get_mut(&id).expect("known area").countries = countries;
     }
     Ok(areas)
 }
@@ -124,12 +158,17 @@ mod tests {
                 "geometry": {"type": "MultiPolygon", "coordinates": [[[[7.0,47.0],[8.0,47.0],[8.0,48.0],[7.0,47.0]]]]}
             })
         };
-        let body = serde_json::json!({"type":"FeatureCollection", "features":[
+        let mut body = serde_json::json!({"type":"FeatureCollection", "features":[
             feature("parent", "europe", None), feature("child", "europe/test", Some("parent"))]});
+        body["features"][0]["properties"]["iso3166-1:alpha2"] = serde_json::json!(["DE"]);
         let bytes = serde_json::to_vec(&body).unwrap();
         let areas = parse(&bytes).unwrap();
         assert_eq!(areas["europe/test"].parent.as_deref(), Some("europe"));
         assert_eq!(areas["europe/test"].bounds.west, 7.0);
+        assert_eq!(areas["europe/test"].countries, ["DE"]);
+        let mut cycle = body.clone();
+        cycle["features"][0]["properties"]["parent"] = "child".into();
+        assert!(parse(&serde_json::to_vec(&cycle).unwrap()).unwrap_err().contains("parent cycle"));
         let mut bad = body.clone();
         bad["features"][1]["properties"]["urls"]["pbf"] = "https://download.geofabrik.de/../test-latest.osm.pbf".into();
         assert!(parse(&serde_json::to_vec(&bad).unwrap()).unwrap_err().contains("PBF URL"));

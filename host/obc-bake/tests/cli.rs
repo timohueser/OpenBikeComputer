@@ -69,7 +69,11 @@ fn bake_then_publish_is_the_whole_loop() {
     .unwrap();
     let regions = dir.join("regions");
     std::fs::create_dir_all(regions.join("europe")).unwrap();
-    std::fs::write(regions.join("europe/testland.toml"), "name = \"Testland\"\nkind = \"geofabrik\"\n").unwrap();
+    std::fs::write(
+        regions.join("europe/testland.toml"),
+        "name = \"Testland\"\nkind = \"geofabrik\"\nareas = [\"europe/testland\"]\n",
+    )
+    .unwrap();
     let tree = dir.join("tree");
     let presets = fixture_presets(&dir);
 

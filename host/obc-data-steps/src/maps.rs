@@ -65,8 +65,12 @@ impl Product for Maps {
         let outlines = outlines(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
         // The map cells read the OSM of one Geofabrik area: another kind of region has terrain only.
-        let geofabrik = regions.get(&env.region).is_some_and(|region| region.area == Area::Geofabrik);
-        let area = vec![("area".to_string(), env.region.clone())];
+        let geofabrik = regions.get(&env.region).is_some_and(|region| region.source_area().is_some());
+        let area = regions
+            .get(&env.region)
+            .and_then(|region| region.source_area())
+            .map(|id| vec![("area".to_string(), id.to_string())])
+            .unwrap_or_default();
         let osm_sources = match geofabrik {
             true => (
                 snapshot_version(env, store, EXTRACTS, &area, &mut wanted)?,
@@ -155,7 +159,17 @@ impl Product for Maps {
         if blocked.is_empty() {
             let (body, version) =
                 catalog_index.ok_or_else(|| Unplanned::Failed("catalog index was not fetched".into()))?;
-            match catalog::step(env, store, &outlines, &steps, &extract, &glo30, version, &body) {
+            match catalog::step(
+                env,
+                regions.get(&env.region).expect("the environment names a region"),
+                store,
+                &outlines,
+                &steps,
+                &extract,
+                &glo30,
+                version,
+                &body,
+            ) {
                 Ok(step) => steps.push(step),
                 Err(Unplanned::Invalid(reason)) => blocked.push(BlockedLayer { layer: catalog::LAYER.into(), reason }),
                 Err(error) => return Err(error),
@@ -685,17 +699,23 @@ pub(crate) fn outlines(
 ) -> Result<Option<Vec<Coverage>>, Unplanned> {
     let mut outlines = Some(Vec::new());
     for id in regions.leaves(&env.region).map_err(Unplanned::Failed)? {
-        let poly = match &regions.get(id).expect("a leaf region exists").area {
-            Area::Box { bbox } => Some(box_poly(bbox)),
-            Area::Geofabrik => text(env, store, POLY, &[("area".to_string(), id.to_string())], wanted)?,
-            Area::Polygon { .. } => return Err(invalid(format!("region `{id}`: the device maps read no polygon yet"))),
+        let region = regions.get(id).expect("a leaf region exists");
+        let polys = match &region.area {
+            Area::Box { bbox } => vec![Some(box_poly(bbox))],
+            Area::Geofabrik { areas } => areas
+                .iter()
+                .map(|area| text(env, store, POLY, &[("area".to_string(), area.clone())], wanted))
+                .collect::<Result<Vec<_>, _>>()?,
             Area::Union { .. } => unreachable!("a leaf region is not a union"),
         };
-        let outline =
-            poly.map(|poly| Coverage::parse_poly(&poly).map_err(|e| Unplanned::Failed(format!("{id}.poly: {e}"))));
-        match (outline.transpose()?, &mut outlines) {
-            (Some(outline), Some(outlines)) => outlines.push(outline),
-            _ => outlines = None,
+        for poly in polys {
+            let outline = poly.map(|poly| {
+                Coverage::parse_poly(&poly).map_err(|e| Unplanned::Failed(format!("region `{id}` outline: {e}")))
+            });
+            match (outline.transpose()?, &mut outlines) {
+                (Some(outline), Some(outlines)) => outlines.push(outline),
+                _ => outlines = None,
+            }
         }
     }
     Ok(outlines)
@@ -783,7 +803,11 @@ pub(crate) mod tests {
         fetched(store, POLY, "1", &area, &[("europe/test.poly".into(), FREIBURG.into())]);
         with_index(store);
         with_tile_list(store, &["N47_00_E007", "N48_00_E007"]);
-        let region = obc_data::regions::parse_region("europe/test", "name = \"Test\"\nkind = \"geofabrik\"\n").unwrap();
+        let region = obc_data::regions::parse_region(
+            "europe/test",
+            "name = \"Test\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n",
+        )
+        .unwrap();
         let live = BTreeMap::from([
             ((GLO30.into(), Vec::new()), ["1".to_string()].into()),
             ((TILE_LIST.into(), Vec::new()), ["1".to_string()].into()),
@@ -907,6 +931,57 @@ pub(crate) mod tests {
     fn tiles(step: &Step) -> Vec<&str> {
         let Input::Snapshot { params, .. } = &step.inputs[0] else { unreachable!() };
         params.iter().map(|(_, tile)| &tile["Copernicus_DSM_COG_10_".len()..][..11]).collect()
+    }
+
+    #[test]
+    fn a_saved_id_uses_its_source_path_and_multiple_areas_keep_publication_blocked() {
+        let temp = temp("saved-source-area");
+        let store = Store::at(temp.0.join("store"));
+        let (mut env, _) = freiburg(&store);
+        with_osm(&store);
+        with_captures(&store, "1");
+        env.region = "ride/freiburg".into();
+        let region = obc_data::regions::parse_region(
+            &env.region,
+            "name = \"My ride\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n",
+        )
+        .unwrap();
+        let regions = Regions::new(vec![region]).unwrap();
+        without_models(&store, &env, &regions);
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
+        assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
+        let osm = listed.steps.iter().find(|step| step.name == "maps/osm").unwrap();
+        let Input::Snapshot { params, .. } = &osm.inputs[0] else {
+            panic!("OSM snapshot");
+        };
+        assert_eq!(params, &[("area".into(), "europe/test".into())]);
+        let catalog = listed.steps.iter().find(|step| step.name == catalog::LAYER).unwrap();
+        assert_eq!(catalog.options["sources"][0]["extract_id"], "europe/test");
+        let primary =
+            catalog.options["picks"].as_array().unwrap().iter().find(|pick| pick["id"] == env.region).unwrap();
+        assert_eq!(primary["name"], "My ride");
+
+        fetched(
+            &store,
+            POLY,
+            "1",
+            &[("area".into(), "europe/second".into())],
+            &[("europe/second.poly".into(), FREIBURG.into())],
+        );
+        let region = obc_data::regions::parse_region(
+            &env.region,
+            "name = \"Two areas\"\nkind = \"geofabrik\"\nareas = [\"europe/test\",\"europe/second\"]\n",
+        )
+        .unwrap();
+        let regions = Regions::new(vec![region]).unwrap();
+        without_models(&store, &env, &regions);
+        let listed = Maps.steps(&root(), &env, &regions, &store).unwrap();
+        assert!(listed
+            .blocked
+            .iter()
+            .any(|layer| layer.layer == catalog::LAYER && layer.reason.contains("multi-area")));
+        assert!(listed.steps.iter().any(|step| step.name.starts_with("maps/terrain/")));
+        assert!(!listed.steps.iter().any(|step| step.name == catalog::LAYER));
     }
 
     #[test]

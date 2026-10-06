@@ -51,9 +51,13 @@ pub(super) fn packages(root: &Path, group: Option<&str>) -> Result<BTreeMap<Stri
     Ok(BTreeMap::from([(format!("python/packages/{}", group.unwrap_or("base")), sha256_hex(packages.as_bytes()))]))
 }
 
+pub(crate) fn executable(root: &Path) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(output(&mut interpreter_command(root), "uv offline interpreter")?.trim()))
+}
+
 pub(super) fn identity(root: &Path, runtime: &Python) -> Result<Identity, String> {
     let mut hashes = packages(root, runtime.group.as_deref())?;
-    let executable = PathBuf::from(output(&mut interpreter_command(root), "uv offline interpreter")?.trim());
+    let executable = executable(root)?;
     let script = "import json,sys,sysconfig; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'abi':sysconfig.get_config_var('SOABI')}))";
     let interpreter = output(Command::new(&executable).args(["-c", script]), "Python runtime identity")?;
     let interpreter: serde_json::Value =

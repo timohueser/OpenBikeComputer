@@ -175,7 +175,8 @@ mod tests {
     use crate::regions::parse_region;
 
     fn regions() -> Regions {
-        let region = |id| parse_region(id, "name = \"A region\"\nkind = \"geofabrik\"\n").unwrap();
+        let region =
+            |id| parse_region(id, "name = \"A region\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n").unwrap();
         Regions::new(vec![region("monaco"), region("europe/andorra")]).unwrap()
     }
 

@@ -512,7 +512,10 @@ mod tests {
         let fixture = fixture(name);
         let root = fixture.root();
         write(&root.join("data/sources.toml"), SOURCES);
-        write(&root.join("data/regions/monaco.toml"), "name = \"Monaco\"\nkind = \"geofabrik\"\n");
+        write(
+            &root.join("data/regions/monaco.toml"),
+            "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
+        );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
         let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
         for args in [&["add", "data"][..], &["commit", "-q", "-m", "data"]] {
