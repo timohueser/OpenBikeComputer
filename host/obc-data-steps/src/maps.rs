@@ -9,7 +9,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use obc_bake::coverage::Coverage;
-use obc_bake::planet::LeafId;
 use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
 use obc_data::product::{read, version, BlockedLayer, Product, Steps, Unplanned, Wanted};
@@ -19,13 +18,14 @@ use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::cell_window;
 use obc_dem::step::GLO30;
+use obc_osm::LeafId;
 use obc_pack::grid::{id_width, Band, BandTable, CellId};
 use obc_pack::step::{CAPTURES, LAND};
 
 pub(crate) mod catalog;
 
 /// The cell of the planet bake, and of every device-map layer.
-const LEAF_LOG2: u32 = obc_bake::planet::SOURCE_LEAF_LOG2;
+const LEAF_LOG2: u32 = obc_osm::SOURCE_LEAF_LOG2;
 pub(crate) const POLY: &str = "geofabrik-poly";
 pub const EXTRACTS: &str = "geofabrik-extracts";
 /// The names of the GLO-30 tiles: a square that it does not name is sea.
@@ -61,7 +61,7 @@ impl Product for Maps {
     }
 
     fn steps(&self, root: &std::path::Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_bake::planet::OsmiumRunner::default().identity())
+        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().identity())
     }
 }
 
@@ -529,7 +529,7 @@ fn artifacts(collection: &str, leaf: LeafId, cells: &[CellId]) -> Step {
     let mut inputs = Vec::new();
     let run = match collection {
         "landmarks" => {
-            inputs.push(Input::Layer { name: "maps/osm".into(), files: vec![obc_bake::step::leaf_pbf(leaf)] });
+            inputs.push(Input::Layer { name: "maps/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] });
             obc_pack::step::landmarks
         }
         _ => obc_pack::step::peaks,
@@ -591,9 +591,9 @@ fn osm(extract: Input, leaves: &BTreeSet<LeafId>, identity: serde_json::Value) -
         name: "maps/osm".into(),
         inputs: vec![extract],
         options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>(), "osmium": identity}),
-        code: Code { paths: Vec::new(), crates: vec!["obc-bake".into()], ..Default::default() },
+        code: Code { paths: Vec::new(), crates: vec!["obc-osm".into()], ..Default::default() },
         outputs: vec!["osm".into()],
-        run: Run::Rust(obc_bake::step::osm),
+        run: Run::Rust(obc_osm::step::osm),
         client: Client::None,
     }
 }
@@ -610,7 +610,7 @@ fn map_cells(
 ) -> Step {
     let land_polygons =
         Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
-    let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_bake::step::leaf_pbf(leaf)] };
+    let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] };
     let mut inputs = vec![osm, land_polygons];
     if reads_terrain {
         inputs.push(Input::layer(leaf_layer("maps/terrain", leaf)));
@@ -794,6 +794,7 @@ pub fn box_poly(bbox: &Bbox) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    mod code;
     use std::path::{Path, PathBuf};
 
     use obc_data::engine::plan::{plan, Plan};

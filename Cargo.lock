@@ -3483,6 +3483,7 @@ dependencies = [
  "obc-file-source",
  "obc-formats",
  "obc-map-scene",
+ "obc-osm",
  "obc-pack",
  "obc-reader",
  "obc-render",
@@ -3575,6 +3576,7 @@ dependencies = [
  "obc-file-source",
  "obc-fixtures",
  "obc-formats",
+ "obc-osm",
  "obc-pack",
  "obc-search-bake",
  "obcm-assemble",
@@ -3746,6 +3748,16 @@ dependencies = [
  "getrandom 0.4.2",
  "obc-dfu",
  "obcm-testkit",
+]
+
+[[package]]
+name = "obc-osm"
+version = "0.1.0"
+dependencies = [
+ "obc-data",
+ "obc-formats",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use obc_bake::planet::LeafId;
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run};
 use obc_data::env::Env;
@@ -22,6 +21,7 @@ use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
 use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
 use obc_formats::obcm::SourceId;
+use obc_osm::LeafId;
 use obc_pack::config::Config;
 use obc_pack::cut::{cut, CutOptions};
 use obc_pack::grid::{BandTable, CellId};
@@ -119,7 +119,7 @@ fn copy(request: &Request) -> Result<(), String> {
     std::fs::create_dir(request.output.join("osm")).map_err(|e| e.to_string())?;
     for leaf in request.options["leaves"].as_array().ok_or("no leaves")? {
         let leaf = LeafId { i: leaf[0].as_i64().unwrap(), j: leaf[1].as_i64().unwrap() };
-        std::fs::copy(extract, request.output.join(obc_bake::step::leaf_pbf(leaf))).map_err(|e| e.to_string())?;
+        std::fs::copy(extract, request.output.join(obc_osm::step::leaf_pbf(leaf))).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

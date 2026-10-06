@@ -33,6 +33,7 @@ members = [
     "host/obc-places",
     "host/obc-search-bake",
     "host/obc-bake",
+    "host/obc-osm",
     "host/obc-dem",
     "host/obc-mkimage",
     "host/obc-bench",
@@ -70,6 +71,7 @@ obc-formats = { path = "firmware/obc-formats" }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
+obc-osm = { path = "host/obc-osm" }
 obc-ports = { path = "firmware/obc-ports" }
 obc-reader = { path = "firmware/obc-reader" }
 obc-render = { path = "firmware/obc-render" }

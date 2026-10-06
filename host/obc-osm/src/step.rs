@@ -1,13 +1,12 @@
 //! The OSM step of the device maps in `obc data`: the extract of the region, cut into its source
-//! leaves with the Osmium extract of the planet bake.
+//! leaves with native Osmium extraction.
 
 use std::path::PathBuf;
 
 use obc_data::engine::Request;
-use obc_pack::grid::id_width;
-use obc_pack::progress::Progress;
+use obc_formats::grid::id_width;
 
-use crate::planet::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
+use crate::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
 
 /// The path in the layer of the OSM of a leaf.
 pub fn leaf_pbf(leaf: LeafId) -> String {
@@ -58,7 +57,7 @@ pub fn osm(request: &Request) -> Result<(), String> {
     let dir = request.output.with_file_name("extract");
     let metrics = serde_json::json!({"osmium": osmium.version()?});
     std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))?;
-    osmium.split(extract, &dir, &requests, &Progress::silent())?;
+    osmium.split(extract, &dir, &requests)?;
     let osm = request.output.join("osm");
     std::fs::create_dir(&osm).map_err(|e| format!("{}: {e}", osm.display()))?;
     for leaf in leaves {
