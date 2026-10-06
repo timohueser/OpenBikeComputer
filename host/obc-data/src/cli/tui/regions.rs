@@ -1,7 +1,8 @@
 //! Keyboard editing of saved coverage, through the same verified region API as the CLI.
 
-use super::{App, Effect};
+use super::{App, Effect, Error};
 use crate::cli::regions_cli::{Create, Deletion, Suggestions};
+use crate::cli::Code;
 use ratatui::{
     crossterm::event::KeyCode,
     style::{Color, Stylize},
@@ -309,5 +310,28 @@ impl App {
             }
         }
         lines
+    }
+}
+
+/// These API boundaries validate a form or cached index; other error fixes stay intact.
+pub(super) fn creation_error(error: Error, areas: bool) -> Error {
+    if error.code == Code::Usage && error.fix == Code::Usage.error("").fix {
+        return error.fix(if areas {
+            "Correct the fields, then press F2 to save. For an unavailable area, press F5 to load the list, then F3 and Space to remove it."
+        } else {
+            "Correct the fields, then press F2 to save. Tab and Shift-Tab move between fields."
+        });
+    }
+    if error.code == Code::Blocked && areas {
+        return error.fix("Press F5 to load the area list. If an area has no country metadata, enter ISO codes in Countries, then press F2 to save.");
+    }
+    error
+}
+
+pub(super) fn area_list_error(error: Error) -> Error {
+    if error.code == Code::Blocked {
+        error.fix("Press F5 to load the small public area list, then search again.")
+    } else {
+        error
     }
 }

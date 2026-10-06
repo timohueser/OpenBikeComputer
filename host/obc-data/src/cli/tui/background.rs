@@ -216,11 +216,14 @@ pub(super) fn perform(
     match effect {
         Effect::None | Effect::Quit => Ok(()),
         Effect::Initial => app.reload(root, products, false).and(app.read_live(root, products, false)),
-        Effect::Areas => regions_cli::suggestions(store, "").map(|areas| app.region_editor.areas = Some(areas)),
+        Effect::Areas => regions_cli::suggestions(store, "")
+            .map(|areas| app.region_editor.areas = Some(areas))
+            .map_err(super::regions::area_list_error),
         Effect::LoadAreas => regions_cli::load_areas(root, store).map(|areas| app.region_editor.areas = Some(areas)),
         Effect::CreateRegion(args) => {
             let id = args.id.clone();
-            regions_cli::create(root, store, args)?;
+            let areas = args.bbox.is_none();
+            regions_cli::create(root, store, args).map_err(|error| super::regions::creation_error(error, areas))?;
             app.saved = Some(format!("Saved data/regions/{id}.toml · review and commit before apply"));
             app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;

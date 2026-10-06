@@ -509,7 +509,7 @@ impl App {
                 let close = if self.asking {
                     "cancel"
                 } else if typing {
-                    "clear"
+                    "done"
                 } else {
                     "close"
                 };

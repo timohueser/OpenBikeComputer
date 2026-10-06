@@ -620,3 +620,31 @@ fn a_busy_task_keeps_the_previous_plan_and_refuses_plan_keys_or_clicks_without_b
     assert_eq!(app.key(KeyCode::Char('p')), Effect::Plan);
     assert_eq!(app.overlay, Some(Overlay::Plan));
 }
+
+#[test]
+fn region_validation_uses_working_form_actions_without_relabeling_tool_or_file_failures() {
+    let missing = super::super::Code::Usage.error("no Geofabrik area `europe/removed` in the cached index");
+    let areas = regions::creation_error(missing.clone(), true);
+    assert_eq!((areas.code, areas.message.as_str()), (missing.code, missing.message.as_str()));
+    for action in ["F2", "F5", "F3", "Space"] {
+        assert!(areas.fix.contains(action));
+    }
+    assert!(!areas.fix.contains("obc data"));
+    let box_error = regions::creation_error(missing, false);
+    assert!(box_error.fix.contains("Tab") && box_error.fix.contains("F2"));
+    assert!(!box_error.fix.contains("F5"), "the Box form has no area-list action");
+    let index = regions::area_list_error(super::super::Code::Blocked.error("the index is not in the store"));
+    assert!(index.fix.contains("F5"));
+    let metadata = regions::creation_error(super::super::Code::Blocked.error("no country metadata"), true);
+    assert!(metadata.fix.contains("Countries"));
+    for original in [
+        super::super::Code::Failed.error("cannot read the file").fix("Check filesystem permissions."),
+        super::super::Code::InvalidData.error("index digest differs").fix("Restore verified input bytes."),
+        super::super::Code::Usage
+            .error("cannot validate IANA time zone")
+            .fix("Prepare an offline Python runtime with zoneinfo data."),
+    ] {
+        let adapted = regions::creation_error(original.clone(), true);
+        assert_eq!((adapted.code, adapted.message, adapted.fix), (original.code, original.message, original.fix));
+    }
+}
