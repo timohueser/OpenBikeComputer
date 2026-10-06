@@ -951,12 +951,15 @@ versions are exact `major.minor.patch`. Without this table, all runtime producer
 `planner/runtime/routing`, `planner/runtime/search` and `planner/runtime/downloads` use
 prepared native Linux tools or a local pinned container. Probes read tool and image metadata.
 Builds use locked offline dependencies. The receipt binds the target and actual builder.
+Routing also binds the selected release profile. Search source selection uses Git's
+declared file list on the initiating host; the container receives that same list.
 Each step writes `<service>.tar.gz` and `runtime.json`; only the archive is a client file.
 The descriptor is a named release reference under `runtime/<service>.json`. It binds the
 service, target, archive hash and size, required shared libraries and entry point.
 
 Archives retain dependency metadata and licences. They contain no checkout, virtual
 environment, builder paths or recipe key. Search keeps its model in the separate data input.
+Routing carries the selected Linux executable notices from `THIRD-PARTY.md`.
 Downloads contains its standard-library helper closure. File names are sorted, timestamps
 are zero, and symbolic links are refused. ELF files must match the target architecture
 and require no newer glibc than the baseline.
