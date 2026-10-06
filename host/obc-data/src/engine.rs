@@ -102,15 +102,27 @@ impl Input {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Code {
-    /// Files and directories, relative to the repository root. A step whose bytes use
-    /// `obc_data::sources`, such as an attribution, declares `data/sources.toml` here.
+    /// Files and directories, relative to the repository root.
     pub paths: Vec<String>,
-    /// Workspace crates; each brings its path dependencies. The walk stops at `obc-data`.
+    /// Workspace crates and their resolved normal and build dependencies.
     pub crates: Vec<String>,
+    /// The content settings of these sources. Freshness and access controls are excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    /// The selected Python runtime and its locked package group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<Python>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Python {
+    /// None selects the project's base packages, without default groups.
+    pub group: Option<String>,
 }
 
 impl Code {
-    /// The code files: path relative to `root`, with `/`, to SHA-256.
+    /// File paths and named dependency fingerprints, in byte order, to SHA-256.
     pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
         code::files(root, self)
     }
@@ -356,15 +368,18 @@ impl Step {
 
 /// The code hash and the code files of each `Code`, computed once per value.
 #[derive(Default)]
-struct Codes<'a>(HashMap<&'a Code, (String, BTreeMap<String, String>)>);
+struct Codes<'a> {
+    cached: HashMap<&'a Code, (String, BTreeMap<String, String>)>,
+    context: code::Context,
+}
 
 impl<'a> Codes<'a> {
     fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, BTreeMap<String, String>), String> {
-        if !self.0.contains_key(code) {
-            let files = code::files(root, code)?;
-            self.0.insert(code, (code::hash(&files), files));
+        if !self.cached.contains_key(code) {
+            let files = self.context.files(root, code)?;
+            self.cached.insert(code, (code::hash(&files), files));
         }
-        Ok(&self.0[code])
+        Ok(&self.cached[code])
     }
 }
 
@@ -641,7 +656,9 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
-        Run::Command(argv) => process::run(root, argv, request),
+        Run::Command(argv) => {
+            process::run(root, argv, request, step.code.python.as_ref().map(|_| (&step.code, receipt.code.as_str())))
+        }
     }?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {
@@ -807,6 +824,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             write(&root.join(format!("{name}/src/lib.rs")), "");
         }
         assert!(Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
+        let lock = Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(root).output().unwrap();
+        assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
     }
 
     /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py` and the
@@ -868,7 +887,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     pub(crate) fn steps_crate() -> Code {
-        Code { paths: Vec::new(), crates: vec!["steps".into()] }
+        Code { paths: Vec::new(), crates: vec!["steps".into()], ..Default::default() }
     }
 
     pub(crate) fn snapshot(source: &str, version: &str, files: &[&str]) -> Input {
@@ -884,7 +903,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     /// first: the engine orders them. `test/upper` selects `head.txt`; `test/join` reads every file
     /// of `tail@1`.
     pub(crate) fn pipeline() -> Vec<Step> {
-        let join = Code { paths: vec!["join.py".into()], crates: Vec::new() };
+        let join = Code { paths: vec!["join.py".into()], crates: Vec::new(), ..Default::default() };
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
             step("test/count", vec![Input::layer("test/join")], steps_crate(), "count", Run::Rust(count)),
@@ -1105,18 +1124,23 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     #[test]
-    fn a_crate_brings_its_path_dependencies_its_included_files_and_cargo_lock_only_when_declared() {
+    fn a_crate_binds_path_sources_and_included_files_without_dev_sources_or_lock_comments() {
         let scratch = Scratch::new("engine-crates");
         let app = "[dependencies]\nlib = { path = \"../lib\" }\n[dev-dependencies]\ncheck = { path = \"../check\" }\n";
         repository(&scratch.0, &[("app", app), ("lib", ""), ("check", "")]);
         let hash = |paths: &[&str]| {
-            let code = Code { paths: paths.iter().map(|path| path.to_string()).collect(), crates: vec!["app".into()] };
+            let code = Code {
+                paths: paths.iter().map(|path| path.to_string()).collect(),
+                crates: vec!["app".into()],
+                ..Default::default()
+            };
             code_hash(&scratch.0, &code).unwrap()
         };
         let before = hash(&[]);
         write(&scratch.0.join("check/src/lib.rs"), "pub fn helper() {}\n");
-        write(&scratch.0.join("Cargo.lock"), "version = 4\n");
-        assert_eq!(hash(&[]), before, "a dev-dependency and an undeclared Cargo.lock are not code");
+        let lock = fs::read_to_string(scratch.0.join("Cargo.lock")).unwrap();
+        write(&scratch.0.join("Cargo.lock"), &(lock + "\n# A lock record comment.\n"));
+        assert_eq!(hash(&[]), before, "dev sources and lock comments do not change the resolved producer identity");
         let lib =
             "pub const TABLE: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../\", r\"table.txt\"));
 #[path = \"../../gen/x.rs\"]
@@ -1143,7 +1167,7 @@ mod x;
             &scratch.0,
             &[("steps", "[dependencies]\nobc-data = { path = \"../obc-data\" }\n"), ("obc-data", "")],
         );
-        let code = Code { paths: Vec::new(), crates: vec!["steps".into()] };
+        let code = Code { paths: Vec::new(), crates: vec!["steps".into()], ..Default::default() };
         let before = code_hash(&scratch.0, &code).unwrap();
         write(&scratch.0.join("obc-data/src/lib.rs"), "pub fn select() {}\n");
         assert_eq!(code_hash(&scratch.0, &code).unwrap(), before);
@@ -1164,7 +1188,7 @@ mod x;
     #[test]
     fn a_code_path_that_git_does_not_list_fails() {
         let scratch = Scratch::new("engine-ignored");
-        let code = Code { paths: vec!["ignored.txt".into()], crates: Vec::new() };
+        let code = Code { paths: vec!["ignored.txt".into()], crates: Vec::new(), ..Default::default() };
         write(&scratch.0.join("ignored.txt"), "");
         let err = code_hash(&scratch.0, &code).unwrap_err();
         assert!(err.contains("obc data runs in a git checkout"), "{err}");

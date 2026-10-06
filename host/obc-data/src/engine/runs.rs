@@ -743,7 +743,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     fn together(name: &str, peaks: [Option<u64>; 2], memory_bytes: u64) -> bool {
         let fixture = fixture(name);
         write(&fixture.root().join("sleep.py"), SLEEP);
-        let sleep = || Code { paths: vec!["sleep.py".into()], crates: Vec::new() };
+        let sleep = || Code { paths: vec!["sleep.py".into()], crates: Vec::new(), ..Default::default() };
         let command = || StepRun::Command(vec!["python3".into(), "sleep.py".into()]);
         let steps: Vec<Step> = ["test/a", "test/b"]
             .map(|name| step(name, vec![snapshot("head", "1", &[])], sleep(), "out.txt", command()))

@@ -414,7 +414,7 @@ mod tests {
         }
 
         fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
-            let code = StepCode { paths: Vec::new(), crates: Vec::new() };
+            let code = StepCode { paths: Vec::new(), crates: Vec::new(), ..Default::default() };
             let run = Run::Command(vec!["true".into()]);
             Ok(vec![step("reading/one", vec![Input::layer("test/one")], code, "out", run)].into())
         }
@@ -455,7 +455,7 @@ mod tests {
             "test"
         }
         fn steps(&self, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, crate::product::Unplanned> {
-            let code = StepCode { paths: Vec::new(), crates: Vec::new() };
+            let code = StepCode { paths: Vec::new(), crates: Vec::new(), ..Default::default() };
             let run = Run::Command(vec!["true".into()]);
             let mut listed = crate::product::Steps {
                 steps: vec![

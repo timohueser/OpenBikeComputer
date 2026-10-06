@@ -108,7 +108,7 @@ pub fn step(
         name: LAYER.into(),
         inputs,
         options: serde_json::to_value(options).map_err(|e| Unplanned::Failed(e.to_string()))?,
-        code: Code { paths: vec!["builder/presets".into()], crates: vec!["obc-pack".into()] },
+        code: Code { paths: vec!["builder/presets".into()], crates: vec!["obc-pack".into()], ..Default::default() },
         outputs: ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt", "regions", "objects"]
             .map(String::from)
             .into(),
