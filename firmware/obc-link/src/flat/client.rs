@@ -266,6 +266,11 @@ impl Client {
         if !self.connected {
             return Err(Error::LinkLost);
         }
+        if let (Some(previous), Some(current)) = (expected_store, self.store) {
+            if previous != current {
+                return Err(Error::StoreChanged { previous, current });
+            }
+        }
         if matches!(request, Request::List(ListRequest { cursor: Some(_), .. })) {
             return Err(Error::InvalidInput);
         }

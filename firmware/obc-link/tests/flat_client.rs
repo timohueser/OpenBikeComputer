@@ -604,3 +604,32 @@ fn first_introduction_pins_identity_for_loss_reconciliation() {
         Some(Action::Complete(Err(Error::StoreChanged { previous: StoreId([1; 16]), current: StoreId([2; 16]) })))
     );
 }
+
+#[test]
+fn cached_store_mismatch_refuses_scoped_reads_and_remove_before_send() {
+    let disk = formatted_card(TOTAL_BLOCKS, 23);
+    let mut s = Session::new(&disk);
+    let installed = first_put(&mut s);
+    let bytes = s.source.clone();
+    let current = StoreId(STORE.0);
+    let previous = StoreId([0xab; 16]);
+    assert_eq!(s.client.store_id(), Some(current));
+    let get = Request::Get(GetRequest { id: installed.id, revision: installed.revision });
+    for request in [
+        get,
+        Request::Status(StatusRequest { id: installed.id, revision: installed.revision }),
+        Request::Remove(RemoveRequest { id: installed.id, expected: installed.revision }),
+        Request::List(ListRequest { kind: None, cursor: None }),
+    ] {
+        assert_eq!(
+            s.client.start_scoped(request, Some(previous), s.now),
+            Err(Error::StoreChanged { previous, current })
+        );
+        assert!(!s.client.is_busy());
+        assert_eq!(s.client.next_action(), None);
+        assert_eq!(s.client.store_id(), Some(current));
+    }
+    assert_eq!(s.device.read_object(installed.id.0, 0), Some(bytes.clone()));
+    assert!(matches!(s.run(get), Ok(Outcome::Get(_))));
+    assert_eq!(s.sink, bytes);
+}
