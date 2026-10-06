@@ -36,8 +36,8 @@ export const api = {
     presets: () => getJson<Preset[]>("/presets"),
     schema: () => getJson<SchemaEnvelope>("/schema"),
     palette: () => getJson<Palette>("/palette"),
-    async publishedCatalog(): Promise<{ url: string; body: string }> {
-        const res = await fetch(`${API_BASE}/catalog/root`);
+    async publishedCatalog(refresh = false): Promise<{ url: string; body: string }> {
+        const res = await fetch(`${API_BASE}/catalog/root`, refresh ? { cache: "no-cache" } : undefined);
         if (!res.ok) throw new Error(await errorDetail(res));
         const url = res.headers.get("X-OBC-Catalog-Url");
         if (!url) throw new Error("The maintainer host omitted the catalog URL.");

@@ -20,6 +20,7 @@ import {
     loadCustomSkins,
     persistCustomSkins,
     prepareCustomSkin,
+    validateCustomSkin,
     type CustomSkinRecord,
     type SkinStorage,
 } from "../skin/custom";
@@ -147,6 +148,37 @@ export class CoverageStore {
         this.customSkinRecords = loadCustomSkins(skinStorage, client.catalog.schema);
         void this.loadIndices();
     }
+
+    /** Carry user intent into one new catalog, with no old satellite or resolver cache. */
+    refreshed(client: CatalogClient, rootBody: string): CoverageStore {
+        const next = new CoverageStore(client, rootBody, this.skinStorage);
+        next.selection = this.selection;
+        next.nextPartId = this.nextPartId;
+        next.boxCount = this.boxCount;
+        next.lassoCount = this.lassoCount;
+        for (const part of next.selection.parts) {
+            if (part.kind !== "region") continue;
+            if (next.region(part.regionId)) void next.fetchRegionCells(part.regionId);
+            else next.regionErrors = new Map(next.regionErrors).set(part.regionId, "This region is no longer in the map catalog. Remove it or choose another region.");
+        }
+        const carried = this.customSkinRecords.filter((record) =>
+            !next.customSkinRecords.some((stored) => stored.skin.id === record.skin.id) &&
+            validateCustomSkin(record.skin, next.catalog.schema),
+        );
+        if (carried.length) {
+            const records = [...next.customSkinRecords, ...carried];
+            persistCustomSkins(next.skinStorage, next.catalog.schema, records);
+            next.customSkinRecords = records;
+        }
+        if (next.lightSkins.some((skin) => skin.id === this.lightSkinId)) next.lightSkinId = this.lightSkinId;
+        if (next.darkSkins.some((skin) => skin.id === this.darkSkinId)) next.darkSkinId = this.darkSkinId;
+        if (next.lightSkinId !== this.lightSkinId || next.darkSkinId !== this.darkSkinId) {
+            next.refreshNotice = "A previous map style is unavailable. Check the new map style before downloading.";
+        }
+        return next;
+    }
+
+    refreshNotice = $state<string | null>(null);
 
     /** Resolver cache effectiveness, for tests and devtools. Not rendered. */
     get resolverStats(): { computed: number; reused: number } {
