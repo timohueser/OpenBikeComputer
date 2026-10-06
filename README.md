@@ -108,7 +108,7 @@ The simulator is the best way to explore the project without hardware. It runs t
 application in a desktop window and downloads the map, route, terrain, and ride data for the Grimsel
 Pass demo on first use.
 
-You need [Rust](https://rustup.rs/), Git, and Python 3.11 or newer. Then run:
+Use [Rust](https://rustup.rs/), Git, Python 3.12+ and uv 0.8.17+. Then run:
 
 ```sh
 git clone https://github.com/timohueser/OpenBikeComputer.git
