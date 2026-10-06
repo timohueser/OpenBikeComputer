@@ -10,6 +10,9 @@
  */
 
 import { Crc32 } from "./crc32";
+import { bytesSource, type ObjectSource } from "./source";
+import { DeviceError, asDeviceError, refusalError } from "./errors";
+
 import { PipeError, throwIfAborted, type DeviceLink } from "./pipe";
 import {
     DEVICE_INFO_MAX,
@@ -19,17 +22,13 @@ import {
     MAX_HOST_STREAM_RECORD,
     MAX_STREAM_PAYLOAD,
     RecordChannel,
-    RecordError,
     decodeDeviceInfo,
     frameRecord,
     type DeviceInfo,
 } from "./records";
 import {
-    Detail,
-    ErrorCode,
     NO_OBJECT,
     Opcode,
-    ResponseError,
     decodeResponse,
     encodeArmRequest,
     encodeCancelRequest,
@@ -42,7 +41,6 @@ import {
     encodeStreamRecord,
     hex as hexBytes,
     opcodeName,
-    refusalName,
     splitStreamRecord,
     toSafeNumber,
     type ArmResponse,
@@ -53,11 +51,14 @@ import {
     type ObjectKind,
     type ObjectRef,
     type PutResponse,
-    type Refusal,
     type Response,
     type StatusResponse,
 } from "./protocol";
 
+export { blobSource, bytesSource } from "./source";
+export type { ObjectSource } from "./source";
+export { DeviceError, asDeviceError, refusalError, isFormatRecoveryState } from "./errors";
+export type { DeviceErrorCode } from "./errors";
 export type { DeviceInfo };
 
 /** The destructive confirmation used when LIST cannot report a readable store identity. */
@@ -70,59 +71,6 @@ function mintStoreId(avoid: string): string {
         const id = hexBytes(bytes);
         if (id !== ZERO_STORE_ID && id !== avoid) return id;
     }
-}
-
-/**
- * Why a device operation failed.
- *
- * The wire's fourteen refusal codes each get their own member, because a client's response to them
- * differs: `no-space` asks the rider to delete something, `busy` retries, `catalog-changed` restarts
- * a listing. The last five are this side of the wire, not the device's.
- */
-export type DeviceErrorCode =
-    | "link"
-    | "timeout"
-    | "aborted"
-    | "protocol"
-    | "unavailable"
-    | "unsupported"
-    | "invalid-frame"
-    | "invalid-request"
-    | "not-found"
-    | "revision-conflict"
-    | "no-space"
-    | "checksum"
-    | "media-io"
-    | "busy"
-    | "cancelled"
-    | "rejected"
-    | "internal"
-    | "catalog-changed"
-    | "read-only"
-    | "device-error";
-
-/** A failure at the protocol layer. `refusal` carries the device's own refusal body. */
-export class DeviceError extends Error {
-    readonly code: DeviceErrorCode;
-    /** The wire refusal, when this error is one. Its `context` is code-scoped. */
-    readonly refusal?: Refusal;
-
-    constructor(code: DeviceErrorCode, message: string, options?: { cause?: unknown; refusal?: Refusal }) {
-        super(message, options);
-        this.name = "DeviceError";
-        this.code = code;
-        this.refusal = options?.refusal;
-    }
-}
-
-/** True when LIST cannot name a store but FORMAT is still the intended recovery path. */
-export function isFormatRecoveryState(cause: unknown): cause is DeviceError {
-    return (
-        cause instanceof DeviceError &&
-        cause.code === "read-only" &&
-        (cause.refusal?.detail === Detail.readOnly.unformatted ||
-            cause.refusal?.detail === Detail.readOnly.catalogUnreadable)
-    );
 }
 
 /**
@@ -162,78 +110,6 @@ const CANCEL_ACK_TIMEOUT_MS = 2_000;
  * continuously, and looping forever would be worse than saying so.
  */
 const LIST_RESTARTS = 4;
-
-/** An object to upload, with its length and whole-payload CRC known before the first byte moves. */
-export interface ObjectSource {
-    readonly totalLen: number;
-    readonly crc32: number;
-    /** Yield the payload's bytes in order, in slices of at most `chunkSize`. */
-    chunks(chunkSize: number): AsyncIterable<Uint8Array>;
-}
-
-/** An in-memory object: one CRC pass now, then straight slices. */
-export function bytesSource(bytes: Uint8Array): ObjectSource {
-    return {
-        totalLen: bytes.length,
-        crc32: Crc32.of(bytes),
-        async *chunks(chunkSize: number) {
-            for (let at = 0; at < bytes.length; at += chunkSize) {
-                yield bytes.subarray(at, Math.min(at + chunkSize, bytes.length));
-            }
-        },
-    };
-}
-
-/**
- * A `Blob` — a fetched map, a picked file — without ever holding it twice. The CRC is needed before
- * the first byte streams and the payload cannot be re-derived from a suffix, so the blob is read
- * twice: once to fingerprint, once to send. For a 200 MB map the alternative is a second 200 MB
- * JavaScript buffer.
- */
-export async function blobSource(
-    blob: Blob,
-    options: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void } = {},
-): Promise<ObjectSource> {
-    const crc = new Crc32();
-    let read = 0;
-    for await (const chunk of streamChunks(blob.stream(), options.signal)) {
-        crc.update(chunk);
-        read += chunk.length;
-        options.onProgress?.(read, blob.size);
-    }
-    return {
-        totalLen: blob.size,
-        crc32: crc.value(),
-        async *chunks(chunkSize: number) {
-            for await (const chunk of streamChunks(blob.stream(), options.signal)) {
-                for (let at = 0; at < chunk.length; at += chunkSize) {
-                    yield chunk.subarray(at, Math.min(at + chunkSize, chunk.length));
-                }
-            }
-        },
-    };
-}
-
-async function* streamChunks(
-    stream: ReadableStream<Uint8Array>,
-    signal?: AbortSignal,
-): AsyncGenerator<Uint8Array> {
-    const reader = stream.getReader();
-    const onAbort = () => void reader.cancel(signal?.reason).catch(() => undefined);
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-        signal?.throwIfAborted();
-        for (;;) {
-            const { done, value } = await reader.read();
-            signal?.throwIfAborted();
-            if (done) return;
-            if (value.length) yield value;
-        }
-    } finally {
-        signal?.removeEventListener("abort", onAbort);
-        reader.releaseLock();
-    }
-}
 
 /** Per-call knobs shared by both transfer directions. */
 export interface TransferOptions {
@@ -996,117 +872,6 @@ export class FlatStoreClient {
         if (this.linkFailure) throw this.linkFailure;
         if (this.closed) throw new DeviceError("link", "The device link is closed.");
     }
-}
-
-/** Map a wire refusal onto a caller-facing error, with the sentence that code deserves. */
-export function refusalError(refusal: Refusal, opcode: number): DeviceError {
-    const what = opcodeName(opcode);
-    const named = refusalName(refusal);
-    switch (refusal.code) {
-        case ErrorCode.Unsupported:
-            return new DeviceError(
-                "unsupported",
-                refusal.detail === Detail.unsupported.wireMajor
-                    ? "This device speaks a different protocol version. Update the device firmware, or reload " +
-                      "the page for a newer build."
-                    : `The device does not support that ${refusal.detail === Detail.unsupported.kind ? "object kind" : "request"} (${named}).`,
-                { refusal },
-            );
-        case ErrorCode.InvalidFrame:
-            return new DeviceError("invalid-frame", `The device could not read this ${what} request (${named}).`, {
-                refusal,
-            });
-        case ErrorCode.InvalidRequest:
-            return new DeviceError("invalid-request", `The device refused this ${what} request (${named}).`, {
-                refusal,
-            });
-        case ErrorCode.NotFound:
-            return new DeviceError("not-found", "The device does not have that object.", { refusal });
-        case ErrorCode.RevisionConflict:
-            return new DeviceError(
-                "revision-conflict",
-                refusal.detail === Detail.revisionConflict.headAbsent
-                    ? "That object is no longer on the device, so it cannot be replaced."
-                    : `That object changed on the device (it is now at revision ${refusal.context}). ` +
-                      "Refresh and try again.",
-                { refusal },
-            );
-        case ErrorCode.NoSpace:
-            return new DeviceError(
-                "no-space",
-                refusal.detail === Detail.noSpace.catalogFull
-                    ? "The device's catalog is full. Delete something on the device and try again."
-                    : `The card needs ${refusal.context} bytes for this and does not have them. ` +
-                      "Delete something on the device and try again.",
-                { refusal },
-            );
-        case ErrorCode.ChecksumFailure:
-            return new DeviceError(
-                "checksum",
-                "The device rejected the upload: the payload did not match its checksum. Nothing was " +
-                    "stored — try again.",
-                { refusal },
-            );
-        case ErrorCode.MediaIo:
-            return new DeviceError("media-io", `The device's card refused a ${named.split("/")[1] ?? "read"}.`, {
-                refusal,
-            });
-        case ErrorCode.Busy:
-            return new DeviceError(
-                "busy",
-                refusal.detail === Detail.busy.holds
-                    ? "The device is holding too many objects open. Try again in a moment."
-                    : "The device is already busy with another transfer.",
-                { refusal },
-            );
-        case ErrorCode.Cancelled:
-            return new DeviceError(
-                "cancelled",
-                refusal.detail === Detail.cancelled.byDevice
-                    ? `The device stopped the ${what}.`
-                    : `The ${what} was cancelled. Nothing was stored.`,
-                { refusal },
-            );
-        case ErrorCode.Rejected:
-            return new DeviceError(
-                "rejected",
-                `The device refused that object (${named}, detail ${refusal.detail}).`,
-                { refusal },
-            );
-        case ErrorCode.Internal:
-            return new DeviceError("internal", "The device hit a failure it could not classify.", { refusal });
-        case ErrorCode.CatalogChanged:
-            return new DeviceError(
-                "catalog-changed",
-                `The device's catalog changed while it was being listed (it is now at commit ${refusal.context}).`,
-                { refusal },
-            );
-        case ErrorCode.ReadOnly:
-            return new DeviceError(
-                "read-only",
-                refusal.detail === Detail.readOnly.unformatted
-                    ? "The card in this device is not a flat store. Nothing can be read from it or written to it."
-                    : "The device's card is read-only.",
-                { refusal },
-            );
-        default:
-            // An unknown code is a failure that cannot be classified, never a success.
-            return new DeviceError("device-error", `The device answered the ${what} with ${named}.`, { refusal });
-    }
-}
-
-/** Normalise a channel-level or unknown failure into a {@link DeviceError}. */
-export function asDeviceError(cause: unknown): DeviceError {
-    if (cause instanceof DeviceError) return cause;
-    if (cause instanceof PipeError) {
-        if (cause.code === "aborted") return new DeviceError("aborted", "The transfer was cancelled.", { cause });
-        if (cause.code === "closed") return new DeviceError("link", "The device disconnected.", { cause });
-        return new DeviceError("device-error", cause.message, { cause });
-    }
-    if (cause instanceof RecordError || cause instanceof ResponseError) {
-        return new DeviceError("protocol", cause.message, { cause });
-    }
-    return new DeviceError("device-error", cause instanceof Error ? cause.message : String(cause), { cause });
 }
 
 /** Round a batch size up to whole stream records, so a batch never ends mid-record. */
