@@ -225,8 +225,25 @@ fn runtime_loader_search_paths_do_not_select_native_compiler_libraries() {
             .env("DYLD_FALLBACK_LIBRARY_PATH", "/target/debug/deps");
         command
     };
-    assert_eq!(runtime().output().unwrap().stdout, b"/target/debug/deps:/runtime/geos|/target/debug/deps");
-    assert_eq!(crate::worker::compiler_command(&mut runtime()).output().unwrap().stdout, b"|");
+    let mut retained = runtime();
+    for (name, value) in
+        [("LD_LIBRARY_PATH", "/target/debug/deps:/runtime/geos"), ("DYLD_FALLBACK_LIBRARY_PATH", "/target/debug/deps")]
+    {
+        assert!(retained.get_envs().any(|(key, selected)| key == name && selected == Some(OsStr::new(value))));
+    }
+    // macOS protected executables remove DYLD variables before the script starts.
+    let expected = if cfg!(target_os = "macos") {
+        b"/target/debug/deps:/runtime/geos|".as_slice()
+    } else {
+        b"/target/debug/deps:/runtime/geos|/target/debug/deps".as_slice()
+    };
+    assert_eq!(retained.output().unwrap().stdout, expected);
+    let mut compiler = runtime();
+    crate::worker::compiler_command(&mut compiler);
+    for name in ["LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+        assert!(compiler.get_envs().any(|(key, selected)| key == name && selected.is_none()));
+    }
+    assert_eq!(compiler.output().unwrap().stdout, b"|");
 
     let native = Code { crates: vec!["producer".into()], ..Default::default() };
     let prepared = Code { rust: Some(Rust::Prepared { profile: Profile::Release }), ..native.clone() };
