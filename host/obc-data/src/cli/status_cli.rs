@@ -133,7 +133,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     let http = Http::new();
     let copies = crate::input_copy::Restore { remote: &remote, live: &live };
     loaded.env.retained = crate::input_copy::retained(&live, &store)?;
-    let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env, Some(&copies)));
+    let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
     let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     // `Live::read` gives one live product per product, in their order.
@@ -202,14 +202,20 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
 }
 
 /// Status can prepare the small files that enumerate a region, but never bulk product inputs.
-fn discovery_fetch(
+pub(super) fn discovery_fetch(
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+    prepare: bool,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> {
     move |wanted| {
-        if !matches!(wanted.source.as_str(), "geofabrik-poly" | "copernicus-glo-30-tiles") {
+        if !prepare
+            && !matches!(wanted.source.as_str(), "geofabrik-poly" | "geofabrik-index" | "copernicus-glo-30-tiles")
+        {
             return Err(Code::Blocked
-                .error(format!("source `{}` is not prepared; status does not fetch bulk data", wanted.source))
-                .fix("Run a plan or build to prepare this source."));
+                .error(format!(
+                    "source `{}` is not prepared; status and ordinary plans do not fetch bulk data",
+                    wanted.source
+                ))
+                .fix("Use an explicit `plan --move SOURCE` or a build to prepare this source."));
         }
         fetch(wanted)
     }
@@ -420,7 +426,7 @@ mod tests {
         let store = Store::at(scratch.0.join("store"));
         let regions = Regions::new(Vec::new()).unwrap();
         let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
-        let fetch = discovery_fetch(|_| panic!("a status must not download an extract"));
+        let fetch = discovery_fetch(|_| panic!("a status must not download an extract"), false);
         let found =
             layer_states(&scratch.0, &store, &[&Bulk], &mut Env::default(), &regions, &environment, fetch).unwrap();
         assert!(found["test"].as_ref().unwrap_err().contains("geofabrik-extracts` is not prepared"));

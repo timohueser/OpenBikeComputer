@@ -112,7 +112,7 @@ fn bake_then_publish_is_the_whole_loop() {
     let out = obc_bake()
         .arg("publish")
         .arg(&tree)
-        .args(["--base-url", "https://maps.example/obc", "--dry-run", "--generated-at", "2026-07-29T00:00:00Z"])
+        .args(["--base-url", "https://maps.example/obc", "--dry-run"])
         .output()
         .expect("run publish");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));

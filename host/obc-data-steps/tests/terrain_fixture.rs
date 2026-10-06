@@ -130,7 +130,7 @@ fn a_build_writes_the_terrain_cells_of_obc_bake_terrain_and_they_read_as_the_gri
             std::fs::read(out.join(format!("cells/terrain/{path}.obcd"))).unwrap(),
         );
     }
-    expected.insert("terrain/empty.json".into(), b"[]".to_vec());
+    expected.insert("metadata/empty.json".into(), b"[]".to_vec());
     assert_eq!(built.keys().collect::<Vec<_>>(), expected.keys().collect::<Vec<_>>());
     assert!(built == expected, "the layer and the tree of obc-bake terrain differ");
 

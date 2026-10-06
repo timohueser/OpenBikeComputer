@@ -142,7 +142,7 @@ fn apply_live(
     let plan = match saved {
         Some(plan) => plan,
         None => {
-            now = build_cli::plan_live(root, store, http, remote, products, &[])?;
+            now = build_cli::plan_live(root, store, http, remote, products, &[], true)?;
             &now
         }
     };
@@ -298,7 +298,7 @@ fn switches<'a>(
                 .error(format!("release {} of `{name}`: {e}; nothing changed", &id[..8]))
                 .fix(format!("Correct the steps of product `{name}`, then plan again."))
         };
-        product.verify(release, store).map_err(failed)?;
+        product.verify(live.release.as_ref().map(|(_, release)| release), release, store).map_err(failed)?;
         let pointer = product.pointer().expect("a plan of live blocks a product without a pointer");
         let pointer = pointer(release, store).map_err(failed)?;
         switches.push(Switch { product: name, prefix: next.prefix.clone(), id: id.clone(), pointer });
@@ -643,7 +643,12 @@ mod tests {
             Versioned.pointer()
         }
 
-        fn verify(&self, _: &crate::engine::release::Release, _: &Store) -> Result<(), String> {
+        fn verify(
+            &self,
+            _: Option<&crate::engine::release::Release>,
+            _: &crate::engine::release::Release,
+            _: &Store,
+        ) -> Result<(), String> {
             Err("the reader cannot open it".into())
         }
     }
@@ -766,7 +771,7 @@ mod tests {
         let (fixture, remote) = repository("apply-retry");
         let (root, http, products) = (fixture.root(), Http::new(), [&Versioned as &dyn Product]);
         let Remote::Bucket(bucket) = &remote else { unreachable!() };
-        let plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &products, &[]).unwrap();
+        let plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &products, &[], true).unwrap();
         let scratch = Scratch::new().unwrap();
         let (_, _, staged) =
             stage(&root, &fixture.store, &http, (&remote, bucket), &products, &plan, &scratch).unwrap();

@@ -388,6 +388,7 @@ fn the_terrain_step_reads_its_reference_layer_as_the_archive_of_the_old_bake() {
         step: "maps/terrain/0000-0000".into(),
         snapshots: [(obc_dem::step::GLO30.to_string(), [("plane.tif".to_string(), tile)].into())].into(),
         layers: [("maps/reference/0000-0000".to_string(), layer)].into(),
+        layer_files: Default::default(),
         options: serde_json::json!({"posting_log2": POSTING_LOG2, "cell_log2": CELL_LOG2, "cells": cells}),
         output: output.clone(),
         metrics: scratch.join("step/metrics.json"),
@@ -407,7 +408,7 @@ fn the_terrain_step_reads_its_reference_layer_as_the_archive_of_the_old_bake() {
     }
     assert!(lifted >= 2, "the cone on the seam lifts the cells either side of it");
     let credits: Vec<serde_json::Value> =
-        serde_json::from_slice(&std::fs::read(output.join("terrain/credits.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(output.join("metadata/credits.json")).unwrap()).unwrap();
     let keys: Vec<&str> = credits.iter().map(|credit| credit["key"].as_str().unwrap()).collect();
     let archived: Vec<&str> = archive.credits().iter().map(|credit| credit.key.as_str()).collect();
     assert_eq!(keys, archived, "the layer credits the model that lifts its cells");

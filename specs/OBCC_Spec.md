@@ -61,7 +61,7 @@ the licence record behind it.
 generated from the root's `source` block (§3.1); it keeps a stable key because a
 person, not a pin, is its consumer. `schema.json`, skin documents, cell sidecars,
 region metadata, and boundaries are producer records and MAY retain stable keys
-because no root points at them.
+because clients read inline schema and pinned satellites.
 Every root-referenced cell, satellite, and preview uses an immutable URL (§9).
 Local bake trees keep the unsuffixed names. An object pool uses `objects/<sha256>`
 for the same bytes.
@@ -75,7 +75,6 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 ```jsonc
 {
   "schema_version": 3,
-  "generated_at": "2026-07-30T09:00:00Z",
   "source": { /* SourceEntry, §3.1 */ },
   "schema": { /* SchemaEntry */ },
   "skins": [ /* SkinEntry, sorted by id */ ],
@@ -83,15 +82,13 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
   "cell_index": [ /* CellIndexRef */ ],
   "terrain": { /* TerrainEntry, §13 — optional */ },
   "landmarks": { /* LandmarkEntry, §14 — optional */ },
-  "articles": { /* Detached article index pin, §14.5 — optional */ },
-  "network_terrain_revision": 4
+  "articles": { /* Detached article index pin, §14.5 — optional */ }
 }
 ```
 
 | Field | Type | Meaning |
 | :-- | :-- | :-- |
 | `schema_version` | integer | MUST equal `3`. |
-| `generated_at` | string | RFC 3339 UTC, exactly `YYYY-MM-DDTHH:MM:SSZ`. |
 | `source` | object | The cell store's data provenance and licence (§3.1). |
 | `schema` | object | The catalog's single `SchemaEntry`. |
 | `skins` | array | Non-empty presentation choices, sorted by `id`. |
@@ -100,15 +97,10 @@ references, unsafe URLs, or invalid ordering MUST reject the containing document
 | `terrain` | object | Optional. The terrain artifact class (§13). |
 | `landmarks` | object | Optional. The landmark artifact class (§14). |
 | `articles` | object | Optional. The detached article index pin (§14.5). |
-| `network_terrain_revision` | integer | Optional. The terrain revision the `core` band's nav ascents were integrated from (§13.4). |
 
-Every field but `source`, `terrain`, `landmarks`, `articles` and `network_terrain_revision`
-is required.
-`terrain` and `network_terrain_revision` are absent for a terrain-less catalog,
-which is complete and valid; `source` is required of every producer (§3.1) and
-absent only from catalogs published before it existed, which consumers MUST
-tolerate. `generated_at` is the only wall clock introduced while generating the
-catalog and MAY be supplied explicitly for reproducible output.
+Every field but `terrain`, `landmarks` and `articles` is required.
+A terrain-less catalog has no `terrain` block. Catalog generation introduces no wall clock.
+The live pointer records applied time separately from content identity.
 
 ### 3.1 Source declaration
 
@@ -135,8 +127,7 @@ The cell store is a derivative database of its source dataset, and this block is
 the machine-readable statement of that fact.
 
 All four fields are required and MUST be non-empty when the block is present. A
-**producer MUST publish it** — the compat carve-out in §3 exists for documents
-that predate the field, not as a licence to omit it. §13.5's display rule applies
+**producer MUST publish it**. §13.5's display rule applies
 here the same way it applies to terrain: a consumer that describes the map data
 SHOULD take the strings from the catalog rather than hard-coding them.
 
@@ -150,7 +141,7 @@ published — so the two can never disagree.
 | Field | Type | Meaning |
 | :-- | :-- | :-- |
 | `id` | string | Stable kebab-case schema id. |
-| `revision` | integer | Monotone content revision shared by every cell. |
+| `sha256` | string | Lowercase SHA-256 of the exact named `schema.json` bytes. |
 | `name`, `description` | string | Non-empty display text. |
 | `obcm_version` | integer | Version read from the cells' OBCM headers. |
 | `grid` | object | `origin_udeg` and `world_side_udeg` from OBCA §1.1. |
@@ -236,7 +227,7 @@ The pinned satellite has this shape:
 ```jsonc
 {
   "schema_version": 3,
-  "schema_revision": 7,
+  "schema_sha256": "f5d34d1470f5ff021a5b5d35bb3a844e5a712f83aa7b16c33b2e9983d0de57858",
   "region_id": "europe/switzerland",
   "cells": {
     "coarse": ["20/0301/0263"],
@@ -247,8 +238,7 @@ The pinned satellite has this shape:
 }
 ```
 
-Cell ids are sorted in each band. The satellite MUST agree with the root's schema
-revision and region id. Every named band MUST exist in the schema, and every cell
+Cell ids are sorted in each band. The satellite MUST carry the root's `schema.sha256` and region id. Every named band MUST exist in the schema, and every cell
 id MUST exist in that band's pinned cell index.
 
 `terrain` is a separate field rather than a key of `cells`, because `cells` is keyed
@@ -295,7 +285,7 @@ The pinned cell index has this shape:
 ```jsonc
 {
   "schema_version": 3,
-  "schema_revision": 7,
+  "schema_sha256": "f5d34d1470f5ff021a5b5d35bb3a844e5a712f83aa7b16c33b2e9983d0de57858",
   "band": "fine",
   "cells": [
     {
@@ -303,7 +293,6 @@ The pinned cell index has this shape:
       "bytes": 552,
       "sha256": "8e2803c1749d16d151ec22abb5f541b06cfdc7c102b46ce080807f5cf0504f83",
       "url": "https://maps.example.org/cells/fine/1204/1052.8e2803c1749d16d151ec22abb5f541b06cfdc7c102b46ce080807f5cf0504f83.obcm",
-      "built_at": "2026-07-30T02:12:55Z",
       "sources": [
         { "extract_id": "europe/switzerland", "snapshot": "2026-07-19" }
       ],
@@ -314,7 +303,6 @@ The pinned cell index has this shape:
     {
       "start": "18/1204/1055",
       "end": "18/1204/1058",
-      "built_at": "2026-07-30T02:13:11Z",
       "sources": [
         { "extract_id": "planet", "snapshot": "2026-07-19" }
       ]
@@ -323,8 +311,8 @@ The pinned cell index has this shape:
 }
 ```
 
-Artifact entries are sorted by cell id. `id` is `<cell_log2>/<i>/<j>`. `built_at` is
-RFC 3339 UTC. Every source records its extract id and `YYYY-MM-DD` snapshot.
+Artifact entries are sorted by cell id. `id` is `<cell_log2>/<i>/<j>`.
+Every source records its extract id and `YYYY-MM-DD` snapshot.
 
 There is no stored cell bbox. The id defines the exact grid square, and the
 producer MUST verify that the cell's OBCM header bbox equals that square. It also
@@ -342,7 +330,7 @@ revision.
 coverage. Each entry is an inclusive run from `start` through `end`. Both ids MUST be
 canonical cells of this band, MUST have the same latitude index `i`, and the
 runs MUST be sorted by `(i, j)`, non-overlapping, and non-empty. Adjacent runs
-with identical `built_at` and `sources` MUST be merged. The inclusive cell total
+with identical `sources` MUST be merged. The inclusive cell total
 MUST equal the root reference's `known_empty_count`. An artifact entry and a
 known-empty run MUST NOT cover the same `(band, cell)`.
 
@@ -379,17 +367,16 @@ verification bypass.
 
 ## 10. Version and lockstep law
 
-Every cell MUST have the OBCM version named by `schema.obcm_version` and the
-revision named by `schema.revision`. Producers MUST reject a mixed tree and
-assemblers MUST reject mixed inputs.
+Every cell MUST have the OBCM version named by `schema.obcm_version`.
+Every cell and region index MUST carry `schema_sha256` equal to `schema.sha256`.
+The producer binds artifacts to the schema through dependency receipts and verifies assembled
+changed selections with the production reader. Consumers MUST reject a satellite with another
+schema digest before assembly.
 
-An OBCM version change or schema revision change requires a complete store
-cutover. A skin version change does not. Consumers MUST NOT offer an assembly to
-a device whose reader does not accept `schema.obcm_version`.
-
-The schema revision, grid constants, band table, style-id assignment, routing
-settings, and chunk size are assembly invariants. Equality is exact; there is no
-best-effort compatibility between revisions.
+An OBCM version or schema digest change requires a complete store cutover. A skin change does
+not. Consumers MUST NOT offer an assembly to a device whose reader does not accept
+`schema.obcm_version`. Grid constants, band tables, style ids, routing settings and chunk size
+are exact assembly invariants.
 
 This law is about the **OBCM cell store only**. Terrain objects are not cells of a
 band and are not covered by it; §13.2 states their lockstep, and the two are
@@ -400,7 +387,8 @@ independent in both directions.
 A publish MUST make all referenced content available before replacing the root:
 
 1. generate the satellites, `LICENSE.txt`, and root from the verified tree;
-2. upload cells, sidecars, schema, skins, previews, regions, `LICENSE.txt`, and satellites;
+2. upload client artifacts and pinned satellites; place named schema, terrain, licence and region
+   metadata under `releases/<id>/`;
 3. verify that every uploaded object is fetchable at the expected size;
 4. replace `catalog.json` last.
 
@@ -409,7 +397,7 @@ A failure before step 4 leaves the previously published root authoritative.
 revalidation). Digest-addressed cells, satellites, and previews SHOULD use a long
 immutable cache lifetime.
 
-Generation is deterministic for a fixed tree and `generated_at`: objects and
+Generation is deterministic for fixed inputs: objects and
 entries are sorted by their specified ids, JSON spelling is stable, and the root
 pins the exact serialized satellite bytes.
 
@@ -457,7 +445,6 @@ NOT synthesize elevation from any other source.
   "dataset_version": "2021-1",
   "posting_log2": 9,
   "cell_log2": 19,
-  "terrain_revision": 4,
   "attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. …",
   "references": [
     { "key": "ch", "product": "swissALTI3D 2 m",
@@ -479,7 +466,6 @@ NOT synthesize elevation from any other source.
 | `dataset_version` | string | Its release identity. Opaque: compared for equality, never parsed. |
 | `posting_log2` | integer | `log2(P)` of the sample lattice, µdeg (OBCT §1.1), `4 … 16`. |
 | `cell_log2` | integer | `log2(S)` of the terrain cell, µdeg, `10 … 28`. Independent of any band's. |
-| `terrain_revision` | integer | Monotone content revision of the terrain store, ≥ 1. |
 | `attribution` | string | Non-empty source credit (§13.5). |
 | `references` | array | Optional. The finer reference models the raster's crest lifts come from. |
 | `cell_index` | object | The single pinned index: `cell_count`, `known_empty_count`, `bytes`, `sha256`, `url`. |
@@ -500,7 +486,6 @@ The pinned index:
 ```jsonc
 {
   "schema_version": 3,
-  "terrain_revision": 4,
   "dataset_id": "copernicus-glo-30",
   "dataset_version": "2021-1",
   "posting_log2": 9,
@@ -510,12 +495,11 @@ The pinned index:
       "id": "19/0600/0527",
       "bytes": 2097188,
       "sha256": "…",
-      "url": "https://maps.example.org/cells/terrain/0600/0527.<sha256>.obcd",
-      "built_at": "2026-08-01T04:12:55Z"
+      "url": "https://maps.example.org/cells/terrain/0600/0527.<sha256>.obcd"
     }
   ],
   "known_empty": [
-    { "start": "19/0600/0530", "end": "19/0600/0534", "built_at": "2026-08-01T04:13:02Z" }
+    { "start": "19/0600/0530", "end": "19/0600/0534" }
   ]
 }
 ```
@@ -524,7 +508,7 @@ Entries are sorted by cell id, which is `<cell_log2>/<i>/<j>` on the terrain gri
 OBCA §1.3's zero padding. There is no bbox and no per-cell source list: the id is the
 square, and the provenance is stated once in the root block.
 
-The index carries **no `schema_revision`**. That absence is normative.
+The terrain index carries no schema digest. Terrain has its own dataset and lattice identity.
 
 A producer MUST verify each artifact's own OBCT header against its id before
 publishing it (OBCT §4.2): `Posting Log2` and `Cell Log2` MUST equal the block's,
@@ -534,27 +518,13 @@ the id's `i`/`j`. A published terrain cell is a container whose rectangle is `1 
 
 ### 13.2 The terrain lockstep — the whole rule
 
-> Every terrain cell in one assembly MUST share `(dataset_version, posting_log2,
-> cell_log2, terrain_revision)`.
+> Every terrain cell in one assembly MUST share `(dataset_id, dataset_version, posting_log2,
+> cell_log2)`.
 
-That is the entire rule. In particular:
-
-- An **OBCM version bump MUST NOT invalidate a terrain object.**
-- A **schema-revision bump MUST NOT invalidate a terrain object.**
-- A **terrain re-bake MUST NOT invalidate an OBCM object.**
-
-A producer MUST reject a terrain store that mixes any of the four keys, and MUST NOT
-re-publish objects on one track because the other moved. A skin version, a band table
-change, a chunk-size change and a style-id renumbering are all invisible to terrain.
-
-A terrain re-bake is a complete terrain cutover: a raster resampled at a new posting or
-from a new dataset release does not join at a seam with one that was not.
-
-A **reference archive change is a terrain revision bump**, because a new release of a
-finer reference model moves baked samples wherever it changes a crest (OBCT §9). §13.4
-therefore turns it into a nav re-bake as well. A producer MAY re-bake only the cells the
-changed archive tiles reach, but every published cell MUST carry the new
-`terrain_revision`.
+The producer MUST reject a terrain store that mixes these values. OBCM wire versions and map
+schema digests do not identify terrain bytes. A terrain resample at another posting or from
+another dataset release requires a terrain cutover. A reference archive change rebuilds the
+terrain cells whose inputs change. Artifact pins identify the resulting bytes.
 
 ### 13.3 A region's terrain selection
 
@@ -578,27 +548,11 @@ MUST include these bytes in the displayed total size.
 
 ### 13.4 The one coupling, stated and guarded
 
-Network-band cells are baked **sampling OBCT**: the OBCM §8.3 per-edge `Ascent M` is
-integrated from the raster at bake time. Those bytes are therefore a function of a
-particular terrain revision, and the root records which one:
-
-```jsonc
-"network_terrain_revision": 4
-```
-
-It is `null`/absent when the cell store was baked with no terrain, whose ascents are
-all zero. Every cell in the store MUST have been baked against the same value; a store
-where some cells sampled terrain and others did not is refused.
-
-The field is at the root and **not** in `SchemaEntry`.
-
-The bake guard MUST check it. When a catalog publishes `terrain` and
-`network_terrain_revision` is not that block's `terrain_revision`, the guard MUST fail,
-naming **both** revisions and the remedy (re-bake the cells). A generator MAY still
-produce the document, but it MUST report the drift.
-
-The coupling runs *from* terrain *into* the cell bake and never back. Nothing about the
-OBCM store is an input to a terrain bake.
+Network-band cells sample OBCT when they integrate per-edge ascent. Their dependency receipts
+MUST identify the terrain layer bytes they read. A changed terrain layer invalidates every
+network layer that reads it. Publication verification assembles changed selections with those
+artifacts and checks the result with the production reader. No independent content revision
+counter is needed. Terrain generation has no dependency on the OBCM store.
 
 ### 13.5 Attribution
 
@@ -620,7 +574,7 @@ An all-`NODATA` terrain cell — open ocean, or outside the source's coverage �
 object at all: OBCT §4.3 makes an absent cell and an all-void one answer identically.
 The catalog records it with the same inclusive row runs §8 uses: `start` and `end` MUST be canonical ids of the terrain
 grid with the same `i`, runs MUST be sorted by `(i, j)`, non-overlapping and non-empty,
-and adjacent runs with identical `built_at` MUST be merged. Their inclusive total MUST
+and adjacent runs MUST be merged. Their inclusive total MUST
 equal `cell_index.known_empty_count`. A square MUST NOT be both an artifact entry and
 inside a known-empty run.
 

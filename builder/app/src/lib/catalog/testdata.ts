@@ -54,11 +54,10 @@ export function fixtureIndex(
     if (!band) throw new Error(`no band ${bandId}`);
     const doc = {
         schema_version: 3,
-        schema_revision: catalog.schema.revision,
+        schema_sha256: catalog.schema.sha256,
         band: bandId,
         known_empty: knownEmpty.map((run) => ({
             ...run,
-            built_at: "2026-07-30T02:13:11Z",
             sources: [{ extract_id: "planet", snapshot: "2026-07-19" }],
         })),
         cells: cells.map((c) => ({
@@ -66,7 +65,6 @@ export function fixtureIndex(
             bytes: c.bytes,
             sha256: c.sha256 ?? ZERO_DIGEST,
             url: `https://maps.example.org/catalog/cells/${bandId}/${c.id.split("/").slice(1).join("/")}.${c.sha256 ?? ZERO_DIGEST}.obcm`,
-            built_at: "2026-07-30T02:12:55Z",
             sources: [{ extract_id: "europe/switzerland", snapshot: "2026-07-19" }],
             partial: c.partial ?? false,
         })),

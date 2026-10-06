@@ -116,7 +116,7 @@ describe("live preview skin admission", () => {
             .rejects.toThrow(/drawing order/i);
         expect(bridge.open).not.toHaveBeenCalled();
         expect(fetchImpl).not.toHaveBeenCalled();
-        for (const unknown of [{ ...canonicalSchema, id: "unknown" }, { ...canonicalSchema, revision: 2 }]) {
+        for (const unknown of [{ ...canonicalSchema, id: "unknown" }, { ...canonicalSchema, styles: canonicalSchema.styles.slice(1) }]) {
             await expect(openLiveSkinPreview(JSON.stringify(unknown), JSON.stringify(canonicalSkin), JSON.stringify(canonicalSkin), { fetchImpl }))
                 .rejects.toThrow(/unavailable for this map schema/);
         }

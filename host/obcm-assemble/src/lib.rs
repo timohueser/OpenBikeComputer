@@ -54,6 +54,8 @@ pub mod graft;
 pub mod grid;
 pub mod input;
 pub mod landmarks;
+#[cfg(feature = "cli")]
+pub mod native;
 pub mod nav;
 pub mod peaks;
 pub mod poi;

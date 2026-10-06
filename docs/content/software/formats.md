@@ -1177,7 +1177,7 @@ copies geometry chunks without decoding them. It rebuilds only the global parts:
 tables, the POIs, the hours pool, the navigation graph, and the terrain container. Routing nodes on
 a seam merge when their coordinates are equal.
 
-All cells in one assembly share the schema revision and the map version. The assembler writes the
+All cells in one assembly share the schema digest and the map version. The assembler writes the
 selected Light and Dark presentation records into one file. The browser runs the
 same engine as the command line, through [`obc-builder-bridge`](src:builder/wasm), and
 verifies the result with the production readers. See [`OBCA_Spec.md`](src:specs/OBCA_Spec.md).

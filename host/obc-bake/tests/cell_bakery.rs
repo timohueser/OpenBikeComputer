@@ -46,8 +46,8 @@ const SNAPSHOT: &str = "2026-07-28";
 /// The two licences the fixture's landmark artifact is under: one article, one photo.
 const ARTICLE_LICENSE: &str = "https://creativecommons.org/licenses/by-sa/4.0/";
 const PHOTO_LICENSE: &str = "https://creativecommons.org/licenses/by/2.0/";
+const BUILD_AT: &str = "2026-08-01T00:00:00Z";
 const BASE_URL: &str = "https://maps.example/cells";
-const GENERATED_AT: &str = "2026-07-30T00:00:00Z";
 
 /// A three-level ladder with no simplification, and a `_meta` block so the bakery can load it as
 /// the schema: the config every cell in these tests is cut with.
@@ -396,7 +396,7 @@ impl Fixture {
                 "languages": ["en", "de", "fr", "es"],
                 "compiler_policy_sha256": "compiler",
                 "artifact_sha256": artifact_sha256,
-                "built_at": GENERATED_AT,
+                "built_at": BUILD_AT,
             })
             .to_string(),
         )
@@ -431,7 +431,7 @@ impl Fixture {
 
     /// Generate the catalog into the tree, as the CLI does after a bake.
     fn catalog(&self) -> obc_pack::catalog::GeneratedCatalog {
-        let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+        let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL);
         let generated = obc_pack::catalog::generate(&self.tree, &opts).expect("the cell tree generates a catalog");
         obc_pack::catalog::write_all_atomic(&self.tree, &generated).expect("write");
         generated
@@ -560,7 +560,7 @@ fn the_landmark_class_is_published_credited_and_verified() {
     // A published artifact must say what it was compiled from, although a cut reads a directory
     // that does not.
     std::fs::remove_file(&declaration).unwrap();
-    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL);
     let error = obc_pack::catalog::generate(&f.tree, &opts).expect_err("no declaration, no publication");
     assert!(error.contains("MUST declare what it was compiled from"), "{error}");
     f.write_landmarks("europe/west", "west sources");
@@ -782,7 +782,6 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
 
     // The block, and the pinned digest-keyed index.
     let terrain = root.terrain.as_ref().expect("the catalog publishes terrain");
-    assert_eq!(terrain.terrain_revision, 1);
     assert_eq!(terrain.dataset_id, "copernicus-glo-30");
     assert_eq!((terrain.posting_log2, terrain.cell_log2), (TERRAIN_POSTING_LOG2, TERRAIN_CELL_LOG2));
     assert_eq!(
@@ -808,7 +807,6 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
         &generated.satellites.iter().find(|s| s.rel_path == "cells/terrain/index.json").expect("index").body,
     )
     .expect("parses");
-    assert_eq!(doc.terrain_revision, 1);
     for entry in &doc.cells {
         assert!(entry.url.contains(&entry.sha256), "{}", entry.url);
     }
@@ -827,7 +825,6 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     assert!(cells.terrain.windows(2).all(|w| w[0] < w[1]), "sorted: {:?}", cells.terrain);
 
     // The coupling, recorded from the cells' own sidecars, and consistent here.
-    assert_eq!(root.network_terrain_revision, Some(1));
     assert!(generated.warnings.is_empty(), "{:?}", generated.warnings);
 
     // And the whole tree passes its own acceptance gates.
@@ -939,10 +936,9 @@ fn a_revision_bump_restamps_every_sidecar_and_rasterises_nothing() {
     }
     // Which means the lockstep still holds at the new revision: a sidecar the re-stamp missed would
     // make the generator refuse the whole tree.
-    let generated =
-        obc_pack::catalog::generate(&f.tree, &obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT))
-            .expect("a re-stamped tree generates");
-    assert_eq!(generated.root.terrain.expect("terrain").terrain_revision, 2);
+    let generated = obc_pack::catalog::generate(&f.tree, &obc_pack::catalog::CatalogOptions::new(BASE_URL))
+        .expect("a re-stamped tree generates");
+    assert_eq!(generated.root.terrain.as_ref().unwrap().dataset_version, "2021-1");
 }
 
 /// A terrain re-bake re-publishes no OBCM object, and the guard names the network band stale — with
@@ -978,7 +974,6 @@ fn a_terrain_rebake_leaves_the_obcm_store_alone_and_the_guard_flags_the_network_
     assert!(statuses(&summary).values().all(|s| *s == CellStatus::Cut), "{}", summary.render());
     let guard = obc_bake::guard::check_cell_store(&f.tree).expect("guard");
     assert!(guard.ok(), "{}", guard.render());
-    assert_eq!(f.catalog().root.network_terrain_revision, Some(2));
 }
 
 /// A schema-revision bump re-cuts every OBCM cell and re-publishes not one terrain object.
@@ -1003,12 +998,11 @@ fn a_schema_revision_bump_rebakes_no_terrain_object() {
     assert_eq!(terrain_digests(&f.tree), terrain_before, "a schema bump must not touch one terrain byte");
 
     // …and the terrain track's published shape is byte-identical across the bump.
-    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL);
     let generated = obc_pack::catalog::generate(&f.tree, &opts).expect("catalog");
     let index = generated.satellites.iter().find(|s| s.rel_path == "cells/terrain/index.json").expect("index");
     assert_eq!(generated.root.terrain.as_ref().expect("terrain").cell_index.sha256, index.sha256);
-    assert_eq!(generated.root.schema.revision, 2);
-    assert_eq!(generated.root.terrain.as_ref().expect("terrain").terrain_revision, 1);
+    assert_eq!(generated.root.schema.sha256, obc_data::store::hash_file(&f.tree.join("schema.json")).unwrap().0);
 
     // Re-running the terrain stage after all that is a no-op: nothing it keys on changed.
     let again = f.terrain_bake(&FakeDem::plain(1), 1);
@@ -1037,7 +1031,7 @@ fn a_store_that_mixes_terrain_revisions_is_rejected() {
     assert!(!guard.ok(), "{}", guard.render());
     assert!(guard.render().contains("one raster per revision"), "{}", guard.render());
 
-    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL);
     let error = obc_pack::catalog::generate(&f.tree, &opts).expect_err("a mixed terrain store is not publishable");
     assert!(error.contains("lockstep within its own track"), "{error}");
 }
@@ -1165,7 +1159,7 @@ fn a_curated_bake_clears_overlapping_known_empty_claims() {
         "known_empty": [{
             "start": WEST_CORE,
             "end": WEST_CORE,
-            "built_at": GENERATED_AT,
+            "built_at": BUILD_AT,
             "sources": [{"extract_id": "planet", "snapshot": SNAPSHOT}]
         }]
     });
@@ -1420,7 +1414,7 @@ fn the_tree_generates_a_catalog_that_verifies() {
     let generated = f.catalog();
     let root = &generated.root;
     assert_eq!(root.schema.id, "testschema", "the published id is the schema document's own");
-    assert_eq!(root.schema.revision, 1);
+    assert_eq!(root.schema.sha256, obc_data::store::hash_file(&f.tree.join("schema.json")).unwrap().0);
     assert_eq!(root.schema.obcm_version, obc_formats::obcm::VERSION, "read out of the cells' own headers");
     assert_eq!(root.cell_index.len(), 2, "one index per band");
     assert!(root.cell_index.iter().all(|b| b.cell_count == 15), "{:?}", root.cell_index);
@@ -1503,7 +1497,7 @@ fn a_mixed_revision_store_fails_the_guard() {
     assert!(text.contains("schema revision 2"), "{text}");
     assert!(text.contains("obc-bake bake --out"), "the failure must say what to do: {text}");
     // And the generator refuses the same tree, for the same reason.
-    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL);
     let err = obc_pack::catalog::generate(&f.tree, &opts).expect_err("a mixed-revision tree is unpublishable");
     assert!(err.contains("schema revision"), "{err}");
 }
@@ -1582,7 +1576,7 @@ fn a_cell_tree_publishes_its_root_last() {
 
     let dest = f.dir.join("published");
     let store = obc_bake::publish::DirStore::new(&dest);
-    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL, GENERATED_AT);
+    let opts = obc_pack::catalog::CatalogOptions::new(BASE_URL);
     let report = obc_bake::publish::publish(
         &f.tree,
         &store,
