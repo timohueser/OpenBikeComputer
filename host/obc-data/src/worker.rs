@@ -8,6 +8,8 @@ use crate::engine::code;
 pub const ROOT: &str = "OBC_DATA_WORKER_ROOT";
 pub const CODE: &str = "OBC_DATA_WORKER_CODE";
 pub const EXE: &str = "OBC_DATA_WORKER_EXE";
+pub const COMPILED_ROOT: &str = "OBC_DATA_COMPILED_ROOT";
+pub const COMPILED_CODE: &str = "OBC_DATA_COMPILED_CODE";
 const PRODUCERS: &[&str] = &["obc-data-steps"];
 const RESTART: &str = "Rust producer code changed; quit and restart obc data to build a fresh worker";
 
@@ -23,16 +25,24 @@ pub fn fingerprint(root: &Path) -> Result<String, String> {
 }
 
 /// Require the launcher's checkout and immutable executable before reading any CLI command.
-pub fn enter() -> Result<(), String> {
+pub fn enter(compiled_root: Option<&str>, compiled_code: Option<&str>) -> Result<(), String> {
     let required = |key| std::env::var(key).map_err(|_| "start this worker through obc data".to_string());
     let root = PathBuf::from(required(ROOT)?).canonicalize().map_err(|e| e.to_string())?;
     let binding = Binding { root, code: required(CODE)? };
+    stamp(&binding, compiled_root, compiled_code)?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     if crate::store::hash_file(&executable)?.0 != required(EXE)? {
         return Err("the producer executable differs from the launched worker; restart obc data".into());
     }
     verify(&binding, &binding.root)?;
     BINDING.set(binding).map_err(|_| "the producer worker is already bound".to_string())
+}
+
+fn stamp(binding: &Binding, root: Option<&str>, code: Option<&str>) -> Result<(), String> {
+    if root.map(Path::new) != Some(binding.root.as_path()) || code != Some(binding.code.as_str()) {
+        return Err("the compiled producer belongs to another checkout or code version; restart obc data".into());
+    }
+    Ok(())
 }
 
 /// Reject actions in a long-lived worker after a persistent checkout change.
@@ -68,6 +78,9 @@ mod tests {
         );
         let binding = Binding { root: scratch.0.canonicalize().unwrap(), code: fingerprint(&scratch.0).unwrap() };
         verify(&binding, &scratch.0).unwrap();
+        let credential = format!("{sources}credential={{env=[\"NEW_CREDENTIAL\"]}}\n");
+        write(&scratch.0.join("data/sources.toml"), &credential);
+        assert!(verify(&binding, &scratch.0).unwrap_err().contains("quit and restart"));
         write(
             &scratch.0.join("data/sources.toml"),
             &sources.replace("refresh=7", "refresh=30").replace("redistribute=true", "redistribute=false"),
@@ -82,5 +95,14 @@ mod tests {
         write(&scratch.0.join("obc-data/src/lib.rs"), "pub fn new_steps() {}\n");
         assert!(verify(&binding, &scratch.0).unwrap_err().contains("quit and restart"));
         assert!(verify(&binding, scratch.0.parent().unwrap()).is_err());
+    }
+
+    #[test]
+    fn an_overwritten_artifact_or_unstamped_worker_cannot_use_the_requested_binding() {
+        let binding = Binding { root: PathBuf::from("checkout-a"), code: "code-a".into() };
+        stamp(&binding, Some("checkout-a"), Some("code-a")).unwrap();
+        for (root, code) in [(Some("checkout-b"), Some("code-a")), (Some("checkout-a"), Some("code-b")), (None, None)] {
+            assert!(stamp(&binding, root, code).unwrap_err().contains("another checkout or code version"));
+        }
     }
 }

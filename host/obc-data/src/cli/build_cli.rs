@@ -342,6 +342,7 @@ pub(super) fn build_env(
         built.run = Some(id);
     }
     let Some(live) = live else {
+        crate::worker::check(root)?;
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
         for product in unblocked {
             let (name, optional) = (product.name(), optional(*product, &plan.layers));
@@ -571,6 +572,7 @@ fn planned(
 
     let Some(live) = live else {
         let all = plan::plan(store, root, &steps)?;
+        crate::worker::check(root)?;
         let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
@@ -617,6 +619,7 @@ fn planned(
         }
     }
     (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
+    crate::worker::check(root)?;
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 

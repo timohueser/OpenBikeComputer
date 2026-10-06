@@ -14,6 +14,10 @@ pub(super) struct Metadata {
     resolve: Resolve,
     #[serde(skip)]
     checksums: BTreeMap<(String, String, String), String>,
+    #[serde(skip)]
+    inputs: BTreeMap<PathBuf, Option<String>>,
+    #[serde(skip)]
+    root: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -102,7 +106,29 @@ impl Metadata {
             .into_iter()
             .filter_map(|package| Some(((package.name, package.version, package.source?), package.checksum?)))
             .collect();
+        let paths = metadata
+            .packages
+            .iter()
+            .filter(|package| package.source.is_none())
+            .map(|package| package.manifest_path.clone());
+        let paths = paths.chain(
+            ["Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml"].map(|path| root.join(path)),
+        );
+        metadata.inputs = paths.map(|path| input_hash(&path).map(|hash| (path, hash))).collect::<Result<_, _>>()?;
+        metadata.root = root.to_path_buf();
         Ok(metadata)
+    }
+
+    pub fn unchanged(&self, root: &Path) -> Result<bool, String> {
+        if root != self.root {
+            return Ok(false);
+        }
+        for (path, hash) in &self.inputs {
+            if &input_hash(path)? != hash {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn selected(&self, root: &Path, crates: &[String], include_engine: bool) -> Result<Selected, String> {
@@ -170,6 +196,14 @@ impl Metadata {
             );
         }
         Ok((dirs, identities))
+    }
+}
+
+fn input_hash(path: &Path) -> Result<Option<String>, String> {
+    if path.is_file() {
+        crate::store::hash_file(path).map(|(hash, _)| Some(hash))
+    } else {
+        Ok(None)
     }
 }
 

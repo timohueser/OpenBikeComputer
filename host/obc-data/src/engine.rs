@@ -4,7 +4,7 @@
 //! receipts, plans, runs and states.
 
 pub mod changes;
-mod code;
+pub(crate) mod code;
 pub mod plan;
 mod process;
 pub mod release;
@@ -639,9 +639,10 @@ fn build_step(
     step: &Step,
     mut receipt: Receipt,
     mut request: Request,
+    checks: &std::sync::Mutex<code::Context>,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
-    check_code(root, step, &receipt.code)?;
+    check_code(checks, root, step, &receipt.code)?;
     if let Some(mut stored) = reusable(store, &receipt.key)? {
         stored.inputs = receipt.inputs.clone();
         return Ok(Built { receipt: stored, reused: true });
@@ -650,7 +651,7 @@ fn build_step(
     request.output = work.join("output");
     request.metrics = work.join("metrics.json");
     remove_dir(&work)?;
-    let result = execute(store, root, step, &request, &mut receipt);
+    let result = execute(store, root, step, &request, &mut receipt, checks);
     let removed = remove_dir(&work);
     result?;
     removed?;
@@ -659,7 +660,14 @@ fn build_step(
 }
 
 /// Run the step, move its files into the objects, and record them, its metrics and its cost.
-fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
+fn execute(
+    store: &Store,
+    root: &Path,
+    step: &Step,
+    request: &Request,
+    receipt: &mut Receipt,
+    checks: &std::sync::Mutex<code::Context>,
+) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
@@ -667,7 +675,7 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
             process::run(root, argv, request, step.code.python.as_ref().map(|_| (&step.code, receipt.code.as_str())))
         }
     }?;
-    check_code(root, step, &receipt.code)?;
+    check_code(checks, root, step, &receipt.code)?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the metrics are not a JSON object: {e}"))?,
@@ -683,9 +691,15 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
     Ok(())
 }
 
-fn check_code(root: &Path, step: &Step, expected: &str) -> Result<(), String> {
-    crate::worker::check(root)?;
-    if code::hash(&code::files(root, &step.code)?) != expected {
+fn check_code(
+    checks: &std::sync::Mutex<code::Context>,
+    root: &Path,
+    step: &Step,
+    expected: &str,
+) -> Result<(), String> {
+    let mut context = checks.lock().map_err(|_| "code checking failed")?;
+    context.refresh_python();
+    if code::hash(&context.files(root, &step.code)?) != expected {
         return Err(format!("the code of {} changed; plan again", step.name));
     }
     Ok(())

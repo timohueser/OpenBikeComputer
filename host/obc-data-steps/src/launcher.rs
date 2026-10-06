@@ -11,7 +11,7 @@ pub fn run() -> Result<u8, String> {
     let root = obc_data::find_root(&cwd).ok_or("obc data runs in a repository checkout")?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let code = worker::fingerprint(&root)?;
-    let executable = build(&root)?;
+    let executable = build(&root, &code)?;
     if worker::fingerprint(&root)? != code {
         return Err("Rust producer code changed during compilation; restart obc data".into());
     }
@@ -30,7 +30,7 @@ pub fn run() -> Result<u8, String> {
     Ok(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1))
 }
 
-fn build(root: &Path) -> Result<PathBuf, String> {
+fn build(root: &Path, code: &str) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut child = Command::new(cargo)
         .args([
@@ -44,6 +44,8 @@ fn build(root: &Path) -> Result<PathBuf, String> {
             "--message-format=json",
         ])
         .current_dir(root)
+        .env(worker::COMPILED_ROOT, root)
+        .env(worker::COMPILED_CODE, code)
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("cargo build: {e}"))?;
