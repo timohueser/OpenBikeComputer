@@ -97,6 +97,13 @@ impl Code {
     }
 }
 
+impl Error {
+    pub(super) fn with_run(mut self, run: &str) -> Self {
+        self.run = Some(run.into());
+        self
+    }
+}
+
 /// Finish the caller's journal once, while retaining the original operation failure.
 pub(super) fn finish_run<T>(
     run: crate::engine::runs::Run,
@@ -146,7 +153,10 @@ impl Error {
 }
 
 pub(super) fn start_run(store: &crate::store::Store, command: &str) -> Result<crate::engine::runs::Run, Error> {
-    let run = crate::engine::runs::Run::create(store, command)?;
+    let run = match super::operation_cli::resume(store, command)? {
+        Some(run) => run,
+        None => crate::engine::runs::Run::create(store, command)?,
+    };
     let id = run.id();
     eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
     Ok(run)
@@ -207,11 +217,13 @@ mod tests {
             schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
-            schema("`prepare`", generator.subschema_for::<build_cli::Prepared>()),
-            schema("`build`", generator.subschema_for::<build_cli::Built>()),
-            schema("`apply`", generator.subschema_for::<apply_cli::Applied>()),
+            schema("`prepare`, `build`, `apply`", generator.subschema_for::<crate::cli::operation_cli::Handle>()),
+            schema("Completed prepare output", generator.subschema_for::<build_cli::Prepared>()),
+            schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
+            schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
-            schema("`runs RUN`", generator.subschema_for::<Details>()),
+            schema("`runs RUN` for a detached operation", generator.subschema_for::<crate::cli::operation_cli::View>()),
+            schema("`runs RUN` for other journals", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),
             schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),

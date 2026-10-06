@@ -45,14 +45,14 @@ const IMMUTABLE: Upload<'static> =
 #[derive(Args)]
 pub struct ApplyArgs {
     /// The environment. Only `live` applies.
-    env: String,
+    pub(super) env: String,
     /// Apply this output of `plan live --json`. Exit status 3 when live or the plan of now differs.
     /// Without a terminal, it is the consent.
     #[arg(long)]
-    plan: Option<PathBuf>,
+    pub(super) plan: Option<PathBuf>,
     /// Do not ask.
     #[arg(long)]
-    yes: bool,
+    pub(super) yes: bool,
 }
 
 /// What an apply did.
@@ -101,7 +101,7 @@ pub fn apply(root: &Path, products: &[&dyn Product], args: ApplyArgs, json: bool
 
 /// Whether the apply goes on without a question: with `--yes`, or with `--plan` and no terminal.
 /// Without a terminal, one of them is required.
-fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
+pub(super) fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
     if !terminal && !args.yes && args.plan.is_none() {
         return Err(Code::NoTerminal.error("there is no terminal to ask in; nothing changed"));
     }
@@ -109,7 +109,7 @@ fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
 }
 
 /// The one question before an apply.
-fn question(plan: &EnvPlan) -> String {
+pub(super) fn question(plan: &EnvPlan) -> String {
     let removes = bytes(plan.remove.iter().filter_map(|removal| removal.bytes).sum());
     let changes = match plan.groups.len() {
         1 => "1 change".into(),
