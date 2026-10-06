@@ -452,7 +452,7 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
 - A crate adds its `Cargo.toml`, `build.rs` and `src/` the same way. Automatic manifest hashes
   omit top-level and target-specific dev-dependency tables. The resolved normal and build
   dependencies add local crate files, registry checksums or resolved Git revisions. Local
-  crates must be inside the checkout. Each selected package adds its name, version, edition
+  crates must be inside the checkout. Each selected package adds its name, version, edition,
   resolved package settings and features under `cargo/<name>@<version>#<source>`. Cargo metadata runs locked,
   offline and for the native host target. Features use Cargo's workspace resolution. This
   conservative union can rebuild a step when another producer enables a shared feature.
@@ -472,8 +472,12 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   A null group selects only the base packages. `uv export --locked --offline` selects the
   dependency closure without default groups. The sorted requirement records retain package
   sources, versions, hashes and markers. `python/runtime` holds the implementation, full
-  version and ABI of the interpreter that `uv python find --offline --no-python-downloads`
-  selects for the project. Discovery does not download, install or sync. A missing interpreter
+  version and ABI of the interpreter that `uv python find --system --offline --no-python-downloads`
+  selects for the project, with an explicit `UV_PYTHON` request when set. Before execution, the
+  engine checks this code identity again and sets the child `UV_PYTHON` to that interpreter.
+  The project environment can change the environment location, but not the base interpreter.
+  A no-sync override cannot retain an incompatible interpreter. Discovery does not download,
+  install or sync. A missing interpreter
   fails with a request to prepare the runtime.
 
 The key is the SHA-256 of this JSON object, as the compact output of `serde_json` with the keys

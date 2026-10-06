@@ -656,7 +656,9 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
-        Run::Command(argv) => process::run(root, argv, request),
+        Run::Command(argv) => {
+            process::run(root, argv, request, step.code.python.as_ref().map(|_| (&step.code, receipt.code.as_str())))
+        }
     }?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {

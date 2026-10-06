@@ -19,7 +19,7 @@ pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, Strin
 #[derive(Default)]
 pub(super) struct Context {
     rust: Option<rust::Metadata>,
-    python: HashMap<Option<String>, BTreeMap<String, String>>,
+    python: HashMap<Option<String>, python::Identity>,
 }
 
 impl Context {
@@ -79,7 +79,7 @@ impl Context {
             if !self.python.contains_key(&runtime.group) {
                 self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
             }
-            hashes.extend(self.python[&runtime.group].clone());
+            hashes.extend(self.python[&runtime.group].hashes.clone());
         }
         if !code.sources.is_empty() {
             let registry = crate::sources::Registry::load(&root)?;
@@ -99,6 +99,19 @@ impl Context {
         }
         Ok(hashes)
     }
+}
+
+/// Bind a declared Python command to the interpreter in its checked code identity.
+pub(super) fn python_command(root: &Path, code: &Code, expected: &str, command: &mut Command) -> Result<(), String> {
+    let mut context = Context::default();
+    if hash(&context.files(root, code)?) != expected {
+        return Err("Python step code or interpreter changed; plan again".into());
+    }
+    let runtime = code.python.as_ref().ok_or("the command declares no Python runtime")?;
+    command.env("UV_PYTHON", &context.python[&runtime.group].executable);
+    // A no-sync override can make uv retain an incompatible project interpreter.
+    command.env("UV_NO_SYNC", "0");
+    Ok(())
 }
 
 pub fn hash(files: &BTreeMap<String, String>) -> String {
