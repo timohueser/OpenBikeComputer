@@ -204,6 +204,13 @@ class ReadyPlanTests(unittest.TestCase):
         for gate in gates:
             self.assertTrue(gate.reason.strip(), gate.command)
 
+        gates = self.plan("Cargo.toml", "docs/content/riding.md", suites=selected)
+        lines = {gate.command: gate for gate in gates}
+        self.assertTrue(lines["just check-docs"].run)
+        self.assertIn("and it runs ci.docs", lines["just check-docs"].reason)
+        self.assertNotIn("obc check docs", lines)
+        self.assertFalse(lines["obc test affected --base origin/develop"].run)
+
     def test_the_free_command_rule_reads_every_executable_a_command_names(self):
         # Each row is a form a suite command can take. A separator the lexer does not cut out
         # of its neighbour would hide the executable behind it, which is how a build slips in.
