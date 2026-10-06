@@ -112,6 +112,9 @@ pub struct Code {
     /// The selected Python runtime and its locked package group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python: Option<Python>,
+    /// A locked Python group packaged for another runtime, without selecting its interpreter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_packages: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

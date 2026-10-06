@@ -32,7 +32,7 @@ fn interpreter_command(root: &Path) -> Command {
     command
 }
 
-pub(super) fn identity(root: &Path, runtime: &Python) -> Result<Identity, String> {
+pub(super) fn packages(root: &Path, group: Option<&str>) -> Result<BTreeMap<String, String>, String> {
     let mut export = Command::new("uv");
     export.current_dir(root).args([
         "export",
@@ -43,27 +43,24 @@ pub(super) fn identity(root: &Path, runtime: &Python) -> Result<Identity, String
         "--no-header",
         "--no-annotate",
     ]);
-    if let Some(group) = &runtime.group {
+    if let Some(group) = group {
         export.args(["--group", group]);
     }
     let packages = output(&mut export, "uv locked export")?;
     let packages = normalized(&packages);
+    Ok(BTreeMap::from([(format!("python/packages/{}", group.unwrap_or("base")), sha256_hex(packages.as_bytes()))]))
+}
+
+pub(super) fn identity(root: &Path, runtime: &Python) -> Result<Identity, String> {
+    let mut hashes = packages(root, runtime.group.as_deref())?;
     let executable = PathBuf::from(output(&mut interpreter_command(root), "uv offline interpreter")?.trim());
     let script = "import json,sys,sysconfig; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'abi':sysconfig.get_config_var('SOABI')}))";
     let interpreter = output(Command::new(&executable).args(["-c", script]), "Python runtime identity")?;
     let interpreter: serde_json::Value =
         serde_json::from_str(&interpreter).map_err(|error| format!("Python identity: {error}"))?;
     let interpreter = serde_json::to_vec(&super::super::sorted(interpreter)).map_err(|error| error.to_string())?;
-    Ok(Identity {
-        executable,
-        hashes: BTreeMap::from([
-            ("python/runtime".into(), sha256_hex(&interpreter)),
-            (
-                format!("python/packages/{}", runtime.group.as_deref().unwrap_or("base")),
-                sha256_hex(packages.as_bytes()),
-            ),
-        ]),
-    })
+    hashes.insert("python/runtime".into(), sha256_hex(&interpreter));
+    Ok(Identity { executable, hashes })
 }
 
 fn normalized(export: &str) -> String {
@@ -116,6 +113,11 @@ mod tests {
         let runtime = Python { group: Some("selected".into()) };
         project("1.0.0", "1.0.0", "1.0.0");
         let before = identity(root, &runtime).unwrap().hashes;
+        let packaged = super::super::Code { python_packages: Some("selected".into()), ..Default::default() };
+        let selected = super::super::files(root, &packaged).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected["python/packages/selected"], before["python/packages/selected"]);
+        assert!(!selected.contains_key("python/runtime"), "packaged dependencies select no host interpreter");
         project("1.0.0", "2.0.0", "1.0.0");
         assert_eq!(
             identity(root, &runtime).unwrap().hashes,
