@@ -17,7 +17,8 @@ fn copy_tree(from: &Path, to: &Path) {
 
 fn recipe_root(target: &Path) {
     let repository = root();
-    let mut manifest: toml::Value = std::fs::read_to_string(repository.join("Cargo.toml")).unwrap().parse().unwrap();
+    let mut manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repository.join("Cargo.toml")).unwrap()).unwrap();
     let members = ["host/obc-osm", "host/obc-data", "host/obc-pack", "firmware/obc-formats", "firmware/obc-ports"];
     manifest["workspace"]["members"] =
         toml::Value::Array(members.into_iter().map(|name| toml::Value::String(name.into())).collect());
@@ -131,7 +132,7 @@ fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
     let before = [identity(source), identity(osm), identity(cell)];
     let catalog_before = identity(catalog);
     for id in ["osm-planet", "copernicus-glo-30"] {
-        let mut registry: toml::Value = original.parse().unwrap();
+        let mut registry: toml::Value = toml::from_str(&original).unwrap();
         let record = registry["source"]
             .as_array_mut()
             .unwrap()
@@ -147,7 +148,7 @@ fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
         let changed: Vec<_> = after.keys().filter(|key| after.get(*key) != catalog_before.get(*key)).collect();
         assert_eq!(changed, [&format!("data/sources.toml#{id}")]);
     }
-    let mut registry: toml::Value = original.parse().unwrap();
+    let mut registry: toml::Value = toml::from_str(&original).unwrap();
     for source in registry["source"]
         .as_array_mut()
         .unwrap()
