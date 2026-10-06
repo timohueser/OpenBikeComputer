@@ -1,0 +1,17 @@
+[package]
+name = "obc-map-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "Shared map configuration, grid and byte framing"
+
+[dependencies]
+obc-formats = { workspace = true }
+# The supported feature capacity bounds the config and its schema.
+obc-reader = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+schemars = { workspace = true, features = ["preserve_order"] }
+serde_path_to_error = "0.1"
+indexmap = { version = "2", features = ["serde"] }

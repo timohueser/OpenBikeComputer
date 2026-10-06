@@ -55,6 +55,7 @@
       "obc-host-core",
       "obc-inspect",
       "obc-ios-host",
+      "obc-map-core",
       "obc-mkimage",
       "obc-osm",
       "obc-pack",

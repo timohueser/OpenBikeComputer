@@ -119,6 +119,11 @@ triggers = ["host/obc-bench/golden.txt"]
 name = "obc-pack"
 triggers = ["builder/presets/**", "data/sources.toml"]
 
+# The configuration tests load the shipped presets.
+[[package]]
+name = "obc-map-core"
+triggers = ["builder/presets/**"]
+
 [[package]]
 name = "route-build"
 triggers = ["data/sources.toml"]
@@ -201,6 +206,7 @@ triggers = [
   "builder/app/package-lock.json",
   "tools/planner_mvt_verify.mjs",
   "builder/app/vite.config.ts",
+  "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",
   "host/obc-flat-device/**",
   "apps/planner-search/query/contract.json",
@@ -313,6 +319,7 @@ triggers = [
   "builder/presets/**",
   "builder/server/*.py",
   "builder/server/**/*.py",
+  "host/obc-map-core/schema/config.schema.json",
   "pyproject.toml", "uv.lock",
 ]
 

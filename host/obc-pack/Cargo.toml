@@ -9,6 +9,7 @@ description = "OBCM map packer (OSM .osm.pbf -> .obcm)"
 external-fixtures = []
 
 [dependencies]
+obc-map-core = { workspace = true }
 obc-places = { workspace = true }
 # Normative OBCM constants and primitive codecs shared with every producer/consumer.
 obc-formats = { workspace = true }
@@ -39,11 +40,6 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 # Structural config schema comes from the same serde model the parser uses.
 # This is a host-only packer dependency and never enters a firmware crate.
 schemars = { workspace = true, features = ["preserve_order"] }
-# Keep serde's typed errors actionable by retaining the failing JSON path.
-serde_path_to_error = "0.1"
-# Dynamic OSM tag/value maps must retain JSON document order for style IDs and
-# first-match behavior while still deserializing into typed values.
-indexmap = { version = "2", features = ["serde"] }
 heapless = { workspace = true }
 # `v3_14_0` unlocks the area-assembly API (`build_area`, the even-odd multipolygon
 # primitive) used for relation polygons, and pins the minimum libGEOS to 3.14.

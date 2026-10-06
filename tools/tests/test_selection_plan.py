@@ -402,6 +402,14 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(plan.validate(self.root, self.graph, self.document, self.units), [])
         self.assertEqual(plan.validate_workflow(self.root), [])
 
+    def test_the_shared_config_schema_selects_its_rust_python_and_web_consumers(self) -> None:
+        selected = plan.select(self.units, self.graph, ["host/obc-map-core/schema/config.schema.json"])
+        self.assertEqual(selected.errors, [])
+        self.assertLessEqual(
+            {"rust.obc-map-core", "python.builder", "web.builder-vitest"},
+            {unit.id for unit in selected.selected},
+        )
+
     def test_every_package_reaches_the_jobs_that_compile_it(self) -> None:
         expected = {
             "obc-crc": ["clippy", "fmt", "test"],
