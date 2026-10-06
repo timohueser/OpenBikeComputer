@@ -31,6 +31,10 @@ import {
 } from "../core/grid";
 
 describe("grid constants", () => {
+    it("formats the unchecked indices returned below the grid origin", () => {
+        const cell = cellContaining(18, GRID_ORIGIN - 1, GRID_ORIGIN - 1);
+        expect(formatCellId(cell)).toBe("18/00-1/00-1");
+    });
     it("are OBCA §1.1's, and every permitted size nests", () => {
         expect(GRID_ORIGIN).toBe(-268_435_456);
         expect(WORLD_SIDE).toBe(536_870_912);

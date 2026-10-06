@@ -72,8 +72,8 @@ pub fn obc_grid_parse_id(value: &str) -> Result<Vec<f64>, JsValue> {
 #[wasm_bindgen]
 pub fn obc_grid_format_id(log2: u32, i: f64, j: f64) -> String {
     let width = grid::id_width(log2);
-    let (i, j) = (i as i64, j as i64);
-    format!("{log2}/{i:0width$}/{j:0width$}")
+    let (i, j) = ((i as i64).to_string(), (j as i64).to_string());
+    format!("{log2}/{i:0>width$}/{j:0>width$}")
 }
 
 #[wasm_bindgen]
