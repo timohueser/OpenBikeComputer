@@ -351,8 +351,9 @@ fn validate_environment(env: &BTreeMap<OsString, OsString>) -> Result<(), String
                     | "ARFLAGS"
                     | "SDKROOT"
                     | "MACOSX_DEPLOYMENT_TARGET"
-                    | "LD_LIBRARY_PATH"
+                    | "LIBRARY_PATH"
                     | "LD_PRELOAD"
+                    | "LD_AUDIT"
                     | "DYLD_LIBRARY_PATH"
                     | "DYLD_INSERT_LIBRARIES"
             )
@@ -586,7 +587,8 @@ fn native_binary(path: &Path) -> Result<(), String> {
 }
 
 fn output(root: &Path, program: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
+    let mut command = Command::new(program);
+    let output = crate::worker::compiler_command(&mut command)
         .args(args)
         .current_dir(root)
         .env("RUSTUP_AUTO_INSTALL", "0")

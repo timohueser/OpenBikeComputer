@@ -31,6 +31,9 @@ optimization, debug information, assertions, overflow, LTO, codegen units, panic
 target features, embedded bitcode and stripping. Use an explicit CPU instead of `native`.
 Missing tools or unsupported settings fail before a build. Discovery does not install tools.
 Dev/release profile environment settings and `CARGO_INCREMENTAL=0|1` enter the build identity.
+Compiler children clear runtime loader search paths; workers retain them for runtime libraries.
+Use compiler installations that work without custom loader paths. Preload and link-time search
+overrides are refused.
 
 `prepare`, `build` and `apply` return a run handle. On macOS the retained worker detaches
 from the terminal. On Linux, set `OBC_RUN_ENV_FILE` to an absolute, private environment file.

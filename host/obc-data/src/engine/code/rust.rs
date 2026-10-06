@@ -82,7 +82,8 @@ impl Metadata {
             Some(target) => target.to_string(),
             None => {
                 let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-                let host = Command::new(rustc)
+                let mut command = Command::new(rustc);
+                let host = crate::worker::compiler_command(&mut command)
                     .arg("-vV")
                     .current_dir(root)
                     .env("RUSTUP_AUTO_INSTALL", "0")
@@ -98,7 +99,8 @@ impl Metadata {
             }
         };
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let output = Command::new(cargo)
+        let mut command = Command::new(cargo);
+        let output = crate::worker::compiler_command(&mut command)
             .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", &target])
             .current_dir(root)
             .env("RUSTUP_AUTO_INSTALL", "0")

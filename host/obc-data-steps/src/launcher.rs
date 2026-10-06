@@ -32,7 +32,8 @@ pub fn run() -> Result<u8, String> {
 
 fn build(root: &Path, code: &str) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut child = Command::new(cargo)
+    let mut command = Command::new(cargo);
+    let mut child = worker::compiler_command(&mut command)
         .args([
             "build",
             "--locked",

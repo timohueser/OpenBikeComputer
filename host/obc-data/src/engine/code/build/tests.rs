@@ -103,7 +103,9 @@ fn cargo_config_discovery_and_refusals_do_not_expose_values() {
         "ARFLAGS",
         "HOST_RANLIBFLAGS",
         "TARGET_RANLIBFLAGS",
-        "LD_LIBRARY_PATH",
+        "LIBRARY_PATH",
+        "LD_PRELOAD",
+        "LD_AUDIT",
     ] {
         let env = BTreeMap::from([(name.into(), "secret-value".into())]);
         let error = validate_environment(&env).unwrap_err();
@@ -114,6 +116,7 @@ fn cargo_config_discovery_and_refusals_do_not_expose_values() {
         ("CARGO_BUILD_JOBS".into(), "2".into()),
         ("CARGO_TARGET_DIR".into(), "/tmp/cache".into()),
         ("RUSTC_WRAPPER".into(), "".into()),
+        ("LD_LIBRARY_PATH".into(), "/target/debug/deps:/rust/sysroot/lib:/runtime/geos".into()),
     ]))
     .unwrap();
 }
@@ -209,6 +212,56 @@ fn tool_cache_detects_replaced_bytes_at_the_check_boundary() {
     let second = context.library_hashes(&fixture.root()).unwrap();
     assert_ne!(first["rust/sysroot-library/libstd-fixture.rlib"], second["rust/sysroot-library/libstd-fixture.rlib"]);
     assert_eq!(first["rust/sysroot-library/compiler"], second["rust/sysroot-library/compiler"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_loader_search_paths_do_not_select_native_compiler_libraries() {
+    let runtime = || {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "printf '%s|%s' \"${LD_LIBRARY_PATH-}\" \"${DYLD_FALLBACK_LIBRARY_PATH-}\""])
+            .env("LD_LIBRARY_PATH", "/target/debug/deps:/runtime/geos")
+            .env("DYLD_FALLBACK_LIBRARY_PATH", "/target/debug/deps");
+        command
+    };
+    let mut retained = runtime();
+    for (name, value) in
+        [("LD_LIBRARY_PATH", "/target/debug/deps:/runtime/geos"), ("DYLD_FALLBACK_LIBRARY_PATH", "/target/debug/deps")]
+    {
+        assert!(retained.get_envs().any(|(key, selected)| key == name && selected == Some(OsStr::new(value))));
+    }
+    // macOS protected executables remove DYLD variables before the script starts.
+    let expected = if cfg!(target_os = "macos") {
+        b"/target/debug/deps:/runtime/geos|".as_slice()
+    } else {
+        b"/target/debug/deps:/runtime/geos|/target/debug/deps".as_slice()
+    };
+    assert_eq!(retained.output().unwrap().stdout, expected);
+    let mut compiler = runtime();
+    crate::worker::compiler_command(&mut compiler);
+    for name in ["LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+        assert!(compiler.get_envs().any(|(key, selected)| key == name && selected.is_none()));
+    }
+    assert_eq!(compiler.output().unwrap().stdout, b"|");
+
+    let native = Code { crates: vec!["producer".into()], ..Default::default() };
+    let prepared = Code { rust: Some(Rust::Prepared { profile: Profile::Release }), ..native.clone() };
+    let ordinary = Code::default();
+    for (program, code, normalized) in [
+        ("cargo", &native, true),
+        ("rustc", &native, true),
+        ("obc-bake", &native, false),
+        ("cargo", &prepared, false),
+        ("cargo", &ordinary, false),
+    ] {
+        let command = crate::engine::process::command(Path::new("."), &[program.into()], Some((code, ""))).unwrap();
+        assert_eq!(
+            command.get_envs().any(|(name, value)| name == "LD_LIBRARY_PATH" && value.is_none()),
+            normalized,
+            "{program}"
+        );
+    }
 }
 
 #[cfg(unix)]
