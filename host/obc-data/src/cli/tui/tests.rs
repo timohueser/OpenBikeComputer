@@ -560,7 +560,12 @@ fn box_fields_and_area_buttons_share_the_keyboard_action_without_global_shortcut
     app.region_editor.areas.as_mut().unwrap().areas.clear();
     app.key(KeyCode::F(3));
     let drawn = screen(&mut app, 80, 24).join("\n");
-    assert!(drawn.contains("not in this index"), "missing selections remain visible: {drawn}");
+    let text = drawn.replace('│', "");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        text.contains("[x] europe/a-long-fully-qualified-selected-area · not in this index; deselect before saving"),
+        "missing selections remain visible: {drawn}"
+    );
     app.key(KeyCode::Char(' '));
     assert!(app.region_editor.draft().unwrap().areas.is_empty(), "a removed suggestion can be explicitly deselected");
 }
