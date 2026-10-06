@@ -6,12 +6,20 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-type Selected = (BTreeSet<PathBuf>, BTreeMap<String, String>);
+type Selected = (BTreeSet<PathBuf>, BTreeMap<String, String>, Packages);
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(super) struct Packages {
+    pub names: BTreeSet<String>,
+    pub non_workspace: bool,
+}
 
 #[derive(Deserialize)]
 pub(super) struct Metadata {
     packages: Vec<Package>,
     resolve: Resolve,
+    #[serde(default)]
+    workspace_members: BTreeSet<String>,
     #[serde(skip)]
     checksums: BTreeMap<(String, String, String), String>,
     #[serde(skip)]
@@ -77,6 +85,7 @@ impl Metadata {
                 let host = Command::new(rustc)
                     .arg("-vV")
                     .current_dir(root)
+                    .env("RUSTUP_AUTO_INSTALL", "0")
                     .output()
                     .map_err(|error| format!("rustc: {error}"))?;
                 if !host.status.success() {
@@ -92,6 +101,7 @@ impl Metadata {
         let output = Command::new(cargo)
             .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", &target])
             .current_dir(root)
+            .env("RUSTUP_AUTO_INSTALL", "0")
             .output()
             .map_err(|error| format!("cargo metadata: {error}"))?;
         if !output.status.success() {
@@ -143,7 +153,8 @@ impl Metadata {
                 .ok_or_else(|| format!("the workspace has no crate `{name}`"))?;
             pending.push(package.id.as_str());
         }
-        let (mut seen, mut dirs, mut identities) = (BTreeSet::new(), BTreeSet::new(), BTreeMap::new());
+        let (mut seen, mut dirs, mut identities, mut selected) =
+            (BTreeSet::new(), BTreeSet::new(), BTreeMap::new(), Packages::default());
         while let Some(id) = pending.pop() {
             let package = packages.get(id).ok_or_else(|| format!("cargo has no resolved package `{id}`"))?;
             // Engine plumbing is not producer code. Selected content settings have their own projection.
@@ -151,6 +162,8 @@ impl Metadata {
                 continue;
             }
             let node = nodes.get(id).ok_or_else(|| format!("cargo has no resolved node `{id}`"))?;
+            selected.names.insert(package.name.clone());
+            selected.non_workspace |= !self.workspace_members.contains(id);
             let mut features = node.features.clone();
             features.sort();
             features.dedup();
@@ -195,7 +208,7 @@ impl Metadata {
                     .map(|dep| dep.pkg.as_str()),
             );
         }
-        Ok((dirs, identities))
+        Ok((dirs, identities, selected))
     }
 }
 

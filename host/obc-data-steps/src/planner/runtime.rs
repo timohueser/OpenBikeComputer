@@ -118,6 +118,9 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
                         paths,
                         crates: if service == "routing" { vec!["route-server".into()] } else { Vec::new() },
                         target: (service == "routing").then(|| target["triple"].as_str().unwrap().into()),
+                        rust: (service == "routing").then_some(obc_data::engine::Rust::Prepared {
+                            profile: obc_data::engine::Profile::Release,
+                        }),
                         python: Some(Python::default()),
                         python_packages: (service == "search").then(|| "search-runtime".into()),
                         ..Default::default()
@@ -259,6 +262,10 @@ mod tests {
         assert_eq!(found.blocked.len(), 1);
         assert_eq!(found.blocked[0].layer, "planner/runtime");
         assert_eq!(found.steps[0].code.target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(
+            found.steps[0].code.rust,
+            Some(obc_data::engine::Rust::Prepared { profile: obc_data::engine::Profile::Release })
+        );
         assert_eq!(found.steps[1].code.python_packages.as_deref(), Some("search-runtime"));
         assert!(found.steps[1].code.python.as_ref().unwrap().group.is_none());
         let target_only = std::fs::read_to_string(&recipe).unwrap();

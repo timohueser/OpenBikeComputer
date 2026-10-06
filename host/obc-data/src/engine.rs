@@ -109,6 +109,9 @@ pub struct Code {
     /// Resolve Rust dependencies for this target; None selects the producer host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// None binds the native dev build. Prepared builds bind their toolchain in step options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<Rust>,
     /// The content settings of these sources. Freshness and access controls are excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
@@ -118,6 +121,20 @@ pub struct Code {
     /// A locked Python group packaged for another runtime, without selecting its interpreter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_packages: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Rust {
+    Native { profile: Profile },
+    Prepared { profile: Profile },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    Dev,
+    Release,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -592,6 +609,13 @@ fn prepare(
     match &step.run {
         Run::Rust(_) if step.code.crates.is_empty() => {
             return Err("a Rust step must declare the crate of its function in its code".into());
+        }
+        Run::Rust(_)
+            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Release })) =>
+        {
+            return Err(
+                "a Rust function runs in the native dev worker; use a command for prepared or release code".into()
+            );
         }
         Run::Command(argv) => {
             let outside = |arg: &&String| {
@@ -1138,6 +1162,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             (Run::Rust(nothing), steps_crate(), "did not write its output upper.txt"),
             (Run::Rust(extra), steps_crate(), "wrote extra.txt, which is not one of its outputs"),
             (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
+            (
+                Run::Rust(upper),
+                Code { rust: Some(Rust::Native { profile: Profile::Release }), ..steps_crate() },
+                "native dev worker",
+            ),
+            (
+                Run::Rust(upper),
+                Code {
+                    rust: Some(Rust::Prepared { profile: Profile::Release }),
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    ..steps_crate()
+                },
+                "native dev worker",
+            ),
             (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "argument /usr/bin/true names a path"),
             (Run::Command(vec!["x".into(), "--in=/tmp".into()]), Code::default(), "argument --in=/tmp names a path"),
             (Run::Command(vec!["x".into(), "a/../../b".into()]), Code::default(), "argument a/../../b names a path"),
@@ -1201,8 +1239,12 @@ mod x;
         );
         write(&scratch.0.join("app/build.rs"), "fn main() {}\n");
         let mut context = code::Context::default();
-        let selected =
-            |target: &str| Code { crates: vec!["app".into()], target: Some(target.into()), ..Default::default() };
+        let selected = |target: &str| Code {
+            crates: vec!["app".into()],
+            target: Some(target.into()),
+            rust: Some(Rust::Prepared { profile: Profile::Release }),
+            ..Default::default()
+        };
         let linux = context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap();
         let mac = context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap();
         for kind in ["normal", "build"] {
