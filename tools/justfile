@@ -1015,7 +1015,7 @@ doctor *args:
       riscv)    _run bash "$OBC_TOOLS/install-riscv.sh" ;;
       geos)     _run bash "$OBC_TOOLS/install-geos.sh" ;;
       venv)     _run uv sync --locked --inexact --project "$OBC_ROOT" --group builder ;;
-      uv)       _err "install uv: https://docs.astral.sh/uv/getting-started/installation/" ;;
+      uv)       _err "install uv via your system package manager" ;;
       cargo)    _err "install Rust yourself: https://rustup.rs" ;;
       node)     _err "install Node 22+ via your system package manager (needs sudo)" ;;
       osmium)   _err "install osmium-tool via your system package manager" ;;
