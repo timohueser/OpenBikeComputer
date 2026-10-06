@@ -71,19 +71,13 @@ impl Client {
     }
 
     fn answer(&mut self, response: Response<'_>, now: u64) -> Result<(), Error> {
-        let pending = self.pending.as_ref().ok_or(Error::Protocol)?;
+        let pending = self.pending.ok_or(Error::Protocol)?;
         match pending.purpose {
             Purpose::Introduce | Purpose::Identity => {
                 let Response::List(page) = response else {
                     return Err(Error::Protocol);
                 };
-                if let Some(previous) = self.store {
-                    let own_format = matches!(self.operation.as_ref().unwrap().request, Request::Format(f) if f.replacement == page.store);
-                    if previous != page.store && !own_format {
-                        return Err(Error::StoreChanged { previous, current: page.store });
-                    }
-                }
-                self.store = Some(page.store);
+                self.observe_store(page.store)?;
                 if pending.purpose == Purpose::Identity {
                     self.reconcile(now)
                 } else {
@@ -150,12 +144,7 @@ impl Client {
     }
 
     fn page(&mut self, page: ListPage<'_>, now: u64) -> Result<(), Error> {
-        if let Some(previous) = self.store {
-            if previous != page.store {
-                return Err(Error::StoreChanged { previous, current: page.store });
-            }
-        }
-        self.store = Some(page.store);
+        self.observe_store(page.store)?;
         let pending = self.pending.as_ref().unwrap();
         let Request::List(list) = pending.request else {
             return Err(Error::Protocol);
@@ -226,6 +215,8 @@ impl Client {
     }
 
     pub(super) fn link_lost(&mut self, now: u64) -> Result<(), Error> {
+        self.connected = false;
+        self.store = None;
         let op = self.operation.as_mut().unwrap();
         if self.cancellation.is_some() {
             return Err(Error::LinkLost);
@@ -247,6 +238,24 @@ impl Client {
         self.actions.push_back(Action::ResetChannels);
         self.actions.push_back(Action::Restore);
         self.deadline = now.saturating_add(self.options.timeout_ms);
+        Ok(())
+    }
+
+    fn observe_store(&mut self, current: StoreId) -> Result<(), Error> {
+        let op = self.operation.as_ref().unwrap();
+        let own_format = matches!(op.request, Request::Format(f) if f.replacement == current);
+        if let Some(previous) = op.expected_store {
+            if previous != current && !own_format {
+                return Err(Error::StoreChanged { previous, current });
+            }
+        }
+        if let Some(previous) = self.store {
+            if previous != current {
+                return Err(Error::StoreChanged { previous, current });
+            }
+        }
+        self.store = Some(current);
+        self.operation.as_mut().unwrap().expected_store.get_or_insert(current);
         Ok(())
     }
 

@@ -485,3 +485,122 @@ fn cancel_that_loses_the_commit_race_waits_for_the_authoritative_result() {
         }
     }
 }
+
+fn retired_source() -> (Client, u64) {
+    let mut client = introduced();
+    client.start(put(ObjectId(2), Revision(1), &[9]), 3).unwrap();
+    let (token, request) = take_control(&mut client);
+    let put_id = decode_request(&request).unwrap().0.request;
+    client.event(Event::Written(token), 4);
+    let Some(Action::ReadSource { token: source_token, .. }) = client.next_action() else {
+        panic!("source read");
+    };
+    client.event(Event::Cancel, 5);
+    let (_, cancel) = take_control(&mut client);
+    let cancel_id = decode_request(&cancel).unwrap().0.request;
+    let mut response = [0; 64];
+    let len = encode_error(
+        &mut response,
+        Opcode::Put,
+        put_id,
+        &Refusal::new(ErrorCode::Cancelled, detail::cancelled::BY_CLIENT),
+    )
+    .unwrap();
+    client.event(Event::Control(&response[..len]), 6);
+    let len = encode_cancel(&mut response, cancel_id, true).unwrap();
+    client.event(Event::Control(&response[..len]), 7);
+    assert_eq!(client.next_action(), Some(Action::ResetChannels));
+    assert_eq!(client.next_action(), Some(Action::Complete(Err(Error::Cancelled))));
+    (client, source_token)
+}
+
+#[test]
+fn retired_source_and_failure_tokens_cannot_interrupt_another_operation_kind() {
+    for request in [
+        Request::Get(GetRequest { id: ObjectId(3), revision: Revision(1) }),
+        Request::Status(StatusRequest { id: ObjectId(3), revision: Revision(1) }),
+        Request::List(ListRequest { kind: None, cursor: None }),
+    ] {
+        let (mut client, stale_token) = retired_source();
+        client.start(request, 8).unwrap();
+        let (current_token, _) = take_control(&mut client);
+        client.event(Event::Source { token: stale_token, offset: 0, bytes: &[9] }, 9);
+        client.event(Event::IoFailed(stale_token), 10);
+        assert!(client.is_busy());
+        assert!(client.next_action().is_none());
+        client.event(Event::IoFailed(current_token), 11);
+        // A current failure is still actionable, unlike the retired callbacks.
+        assert!(client.next_action().is_some());
+    }
+}
+
+fn answer_list(client: &mut Client, request: &[u8], store: StoreId, now: u64) {
+    let (header, decoded) = decode_request(request).unwrap();
+    assert!(matches!(decoded, Request::List(_)));
+    let mut response = [0; 256];
+    let writer = ListWriter::start(&mut response, 256, store, 1).unwrap();
+    let len = writer.finish(&mut response, header.request, false).unwrap();
+    client.event(Event::Control(&response[..len]), now);
+}
+
+#[test]
+fn idle_reconnect_reintroduces_identity_before_a_scoped_read_or_mutation() {
+    for request in [
+        Request::Get(GetRequest { id: ObjectId(3), revision: Revision(1) }),
+        Request::Remove(RemoveRequest { id: ObjectId(3), expected: Revision(1) }),
+    ] {
+        let mut client = introduced();
+        client.event(Event::LinkLost, 3);
+        assert_eq!(client.store_id(), None);
+        assert_eq!(client.start_scoped(request, Some(StoreId([1; 16])), 4), Err(Error::LinkLost));
+        client.event(Event::Restored(Ceilings::new(256, 128).unwrap()), 5);
+        client.start_scoped(request, Some(StoreId([1; 16])), 6).unwrap();
+        let (_, identity) = take_control(&mut client);
+        answer_list(&mut client, &identity, StoreId([2; 16]), 7);
+        if matches!(request, Request::Get(_)) {
+            assert_eq!(client.next_action(), Some(Action::ResetSink));
+        }
+        assert_eq!(client.next_action(), Some(Action::ResetChannels));
+        assert_eq!(
+            client.next_action(),
+            Some(Action::Complete(Err(Error::StoreChanged { previous: StoreId([1; 16]), current: StoreId([2; 16]) })))
+        );
+        assert!(!client.is_busy());
+        assert!(client.next_action().is_none());
+    }
+}
+
+#[test]
+fn first_scoped_listing_checks_identity_without_a_cached_store() {
+    let mut client = Client::new(Ceilings::new(256, 128).unwrap(), Options::default());
+    client.start_scoped(Request::List(ListRequest { kind: None, cursor: None }), Some(StoreId([1; 16])), 0).unwrap();
+    let (_, request) = take_control(&mut client);
+    answer_list(&mut client, &request, StoreId([2; 16]), 1);
+    assert_eq!(client.next_action(), Some(Action::ResetChannels));
+    assert_eq!(
+        client.next_action(),
+        Some(Action::Complete(Err(Error::StoreChanged { previous: StoreId([1; 16]), current: StoreId([2; 16]) })))
+    );
+    assert_eq!(client.store_id(), None);
+}
+
+#[test]
+fn first_introduction_pins_identity_for_loss_reconciliation() {
+    let mut client = Client::new(Ceilings::new(256, 128).unwrap(), Options::default());
+    client.start(put(ObjectId(2), Revision(1), &[9]), 0).unwrap();
+    let (_, first) = take_control(&mut client);
+    answer_list(&mut client, &first, StoreId([1; 16]), 1);
+    let (_, put) = take_control(&mut client);
+    assert!(matches!(decode_request(&put).unwrap().1, Request::Put(_)));
+    client.event(Event::LinkLost, 2);
+    assert_eq!(client.next_action(), Some(Action::ResetChannels));
+    assert_eq!(client.next_action(), Some(Action::Restore));
+    client.event(Event::Restored(Ceilings::new(256, 128).unwrap()), 3);
+    let (_, restored) = take_control(&mut client);
+    answer_list(&mut client, &restored, StoreId([2; 16]), 4);
+    assert_eq!(client.next_action(), Some(Action::ResetChannels));
+    assert_eq!(
+        client.next_action(),
+        Some(Action::Complete(Err(Error::StoreChanged { previous: StoreId([1; 16]), current: StoreId([2; 16]) })))
+    );
+}

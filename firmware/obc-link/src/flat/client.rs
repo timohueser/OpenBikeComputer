@@ -95,12 +95,21 @@ pub enum Action {
 pub enum Event<'a> {
     Control(&'a [u8]),
     Stream(&'a [u8]),
-    Source { token: u64, offset: u64, bytes: &'a [u8] },
+    Source {
+        token: u64,
+        offset: u64,
+        bytes: &'a [u8],
+    },
     Written(u64),
-    SinkWritten { token: u64, offset: u64, len: usize },
+    SinkWritten {
+        token: u64,
+        offset: u64,
+        len: usize,
+    },
     Tick,
     Cancel,
-    IoFailed,
+    /// Failure of a Send, ReadSource or WriteSink action with this completion token.
+    IoFailed(u64),
     LinkLost,
     Restored(Ceilings),
 }
@@ -115,6 +124,7 @@ enum Purpose {
     RemoveDuplicate,
 }
 
+#[derive(Clone, Copy)]
 struct Pending {
     id: RequestId,
     request: Request,
@@ -193,6 +203,7 @@ pub struct Client {
     options: Options,
     ceilings: Ceilings,
     store: Option<StoreId>,
+    connected: bool,
     next_id: u32,
     next_token: u64,
     pending: Option<Pending>,
@@ -210,6 +221,7 @@ impl Client {
             options,
             ceilings,
             store: None,
+            connected: true,
             next_id: 1,
             next_token: 1,
             pending: None,
@@ -251,12 +263,15 @@ impl Client {
         if self.is_busy() || !self.actions.is_empty() {
             return Err(Error::Busy);
         }
+        if !self.connected {
+            return Err(Error::LinkLost);
+        }
         if matches!(request, Request::List(ListRequest { cursor: Some(_), .. })) {
             return Err(Error::InvalidInput);
         }
         let mut record = [0u8; MAX_REQUEST_LEN];
         encode_request(&mut record, RequestId(1), request).ok_or(Error::InvalidInput)?;
-        self.operation = Some(Operation::new(request, expected_store));
+        self.operation = Some(Operation::new(request, expected_store.or(self.store)));
         let result = if self.store.is_none() && !matches!(request, Request::List(_) | Request::Format(_)) {
             self.send_request(Request::List(ListRequest { kind: None, cursor: None }), Purpose::Introduce, now_ms)
         } else {
@@ -270,6 +285,18 @@ impl Client {
 
     pub fn event(&mut self, event: Event<'_>, now_ms: u64) {
         if !self.is_busy() {
+            match event {
+                Event::LinkLost => {
+                    self.connected = false;
+                    self.store = None;
+                }
+                Event::Restored(ceilings) => {
+                    self.connected = true;
+                    self.ceilings = ceilings;
+                    self.store = None;
+                }
+                _ => {}
+            }
             return;
         }
         let result = match event {
@@ -279,13 +306,15 @@ impl Client {
             Event::Written(token) => self.written(token, now_ms),
             Event::SinkWritten { token, offset, len } => self.sink_written(token, offset, len, now_ms),
             Event::Cancel => self.cancel(Error::Cancelled, now_ms),
-            Event::IoFailed => self.cancel(Error::Io, now_ms),
+            Event::IoFailed(token) if self.action_pending(token) => self.cancel(Error::Io, now_ms),
+            Event::IoFailed(_) => Ok(()),
             Event::LinkLost => self.link_lost(now_ms),
             Event::Restored(ceilings) => {
                 if !self.restoring {
                     Err(Error::Protocol)
                 } else {
                     self.restoring = false;
+                    self.connected = true;
                     self.ceilings = ceilings;
                     self.send_request(
                         Request::List(ListRequest { kind: None, cursor: None }),
@@ -446,15 +475,15 @@ impl Client {
             return Ok(());
         }
         let op = self.operation.as_mut().unwrap();
-        let Request::Put(put) = op.request else {
-            return Err(Error::Protocol);
-        };
         let Some((expected, due, max_len)) = op.source_due else {
             return Ok(());
         };
         if token != expected {
             return Ok(());
         }
+        let Request::Put(put) = op.request else {
+            return Err(Error::Protocol);
+        };
         op.source_due = None;
         if self.write.is_some()
             || offset != due
@@ -582,5 +611,13 @@ impl Client {
             self.actions.push_back(Action::ResetChannels);
         }
         self.actions.push_back(Action::Complete(result));
+    }
+
+    fn action_pending(&self, token: u64) -> bool {
+        self.write.is_some_and(|(expected, _)| expected == token)
+            || self.operation.as_ref().is_some_and(|op| {
+                op.source_due.is_some_and(|(expected, _, _)| expected == token)
+                    || op.sinks.iter().any(|(expected, _, _)| *expected == token)
+            })
     }
 }
