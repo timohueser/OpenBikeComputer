@@ -11,7 +11,7 @@ use std::process::Command;
 use obc_data::engine::plan::plan;
 use obc_data::engine::release::release;
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{Built, Step};
+use obc_data::engine::{Built, Code, Input, Request, Run, Step};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
 use obc_data::product::Product;
@@ -80,15 +80,24 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     ];
     let live = read.map(|id| ((id.to_string(), Vec::new()), BTreeSet::from(["1".to_string()])));
     let env = Env { name: "test".into(), region: AREA.into(), live: BTreeMap::from(live), ..Env::default() };
-    // The assets and the model read no layer, so this build leaves them out.
-    let steps = |python: bool| {
-        let mut steps = Planner.steps(&env, &regions, &store).unwrap().steps;
+    // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
+    let steps = |python: bool, env: &Env| {
+        let mut steps = Planner.steps(env, &regions, &store).unwrap().steps;
         let rust = ["planner/osm", "planner/terrain", "planner/routing"];
-        let other = ["planner/assets", "planner/model", "planner/basemap"];
-        steps.retain(|step| {
-            rust.contains(&step.name.as_str())
-                || python && !other.iter().any(|name| step.name == *name || step.name.starts_with(&format!("{name}/")))
-        });
+        steps.retain(|step| python || rust.contains(&step.name.as_str()));
+        for step in &mut steps {
+            if step.name == "planner/basemap" {
+                step.inputs = vec![Input::layer("planner/places")];
+                step.options = serde_json::json!({"kind": "planner/basemap"});
+                step.code = Code { paths: Vec::new(), crates: vec!["obc-data".into()] };
+                step.run = Run::Rust(local_files);
+            } else if ["planner/assets", "planner/model"].contains(&step.name.as_str()) {
+                step.inputs.clear();
+                step.options = serde_json::json!({"kind": step.name});
+                step.code = Code { paths: Vec::new(), crates: vec!["obc-data-steps".into()] };
+                step.run = Run::Rust(local_files);
+            }
+        }
         steps
     };
     let http = Http::new();
@@ -100,7 +109,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         built
     };
 
-    let built = build(&steps(false));
+    let built = build(&steps(false, &env));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
     assert_eq!(names.len(), 3);
     for name in ["planner/osm", "planner/terrain", "planner/routing"] {
@@ -135,7 +144,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         .current_dir(&root)
         .status();
     assert!(sync.unwrap().success(), "uv sync of the groups planner-maps and planner-search");
-    let built = build(&steps(true));
+    let built = build(&steps(true, &env));
     let metrics = |step: &str| &built.iter().find(|built| built.receipt.step == step).unwrap().receipt.metrics;
     assert_eq!(
         (&metrics("planner/search/records")["pois"], &metrics("planner/search/records")["addresses"]),
@@ -178,14 +187,126 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         }
     }
 
-    assert_eq!(plan(&store, &root, &steps(true)).unwrap().groups.len(), 0);
-    let release = release(&store, &root, "planner", AREA, &[], &steps(true)).unwrap();
+    let verification = temp.0.join("verified");
+    for receipt in built
+        .iter()
+        .map(|built| &built.receipt)
+        .filter(|receipt| receipt.step.ends_with("/grid") || receipt.step == "planner/index")
+    {
+        for file in &receipt.files {
+            if receipt.step.ends_with("/grid") && file.path == "index.json" {
+                let path = verification.join("indexes").join(&receipt.step).join("index.json");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::hard_link(store.object(&file.sha256), path).unwrap();
+            }
+            if file.path.starts_with("objects/") || receipt.step == "planner/index" && file.path == "release.json" {
+                let path = verification.join(&file.path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                if !path.exists() {
+                    std::fs::hard_link(store.object(&file.sha256), path).unwrap();
+                }
+            }
+        }
+    }
+    let check = Command::new("uv")
+        .args([
+            "run",
+            "--locked",
+            "--offline",
+            "python",
+            "-c",
+            r#"
+import copy, json, pathlib, sqlite3, sys
+from tools import planner_runtime as runtime, planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
+source = pathlib.Path(sys.argv[1])
+_, document = runtime.release(source, include_sources=False)
+assert document['osm_sha256'] == sys.argv[2]
+indexes = {index['kind']: index for path in (source / 'indexes').rglob('index.json')
+    for index in [json.loads(path.read_bytes())]}
+options = {key: document[key] for key in ('region', 'bounds', 'attribution', 'landcover_attribution')}
+for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1])]:
+    wrong = copy.deepcopy(indexes)
+    wrong[kind]['metadata'][field] = value
+    try:
+        grid_index.compose(wrong, options)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('an inconsistent source or coverage is rejected')
+offline.materialize(source, source / 'runtime', document, ('offline/', 'routing/', 'search/'))
+catalog = json.loads((source / 'runtime/offline/catalog.json').read_bytes())
+assert not any(block['kind'] == 'terrain' for block in catalog['map_blocks'])
+assert catalog['release']['terrain_bounds'] == document['terrain_bounds']
+assert catalog['release']['osm_sha256'] == document['osm_sha256']
+search = json.loads((source / 'runtime/search/test.grid.json').read_bytes())
+for cell in search['cells']:
+    for name in cell['files']:
+        with sqlite3.connect(f'{(source / "runtime/search" / name).as_uri()}?mode=ro', uri=True) as db:
+            assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
+            metadata = {key: json.loads(value) for key, value in db.execute('SELECT key,value FROM metadata')}
+            assert metadata['osm_sha256'] == document['osm_sha256'] and metadata['bounds'] == cell['bounds']
+            if metadata['component'] == 'pois':
+                assert db.execute("SELECT source FROM places WHERE name='Bäckerei'").fetchone() == ('n10',)
+            else:
+                assert db.execute('SELECT house,source FROM addresses').fetchone() == ('3', 'n13')
+service = downloads.Downloads(source / 'runtime/offline', source / 'selections', 1000000, 'https://example.org/objects')
+selection = service.prepare({'bounds': document['bounds']})
+bundle = json.loads((source / 'selections' / selection['id'] / 'bundle.json').read_bytes())
+assert any(name.startswith('search/tiles/pois/') for name in bundle['files'])
+assert any(name.startswith('search/tiles/addresses/') for name in bundle['files'])
+assert any(name.startswith('routing/packs/') for name in bundle['files'])
+for name, entry in catalog['files'].items():
+    offline.verify(source / 'objects' / entry['transport']['sha256'], entry['transport'])
+"#,
+        ])
+        .arg(&verification)
+        .arg(sha256_hex(&pbf))
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    assert!(check.success(), "real grid objects and empty terrain form a verified offline selection");
+
+    let mut climate = env.clone();
+    climate.layers = vec!["climate".into()];
+    climate.moves.insert("era5-land".into(), Some(DAY.into()));
+    let climate = plan(&store, &root, &steps(true, &climate)).unwrap();
+    assert_eq!(
+        climate.builds().map(|build| build.step.as_str()).collect::<Vec<_>>(),
+        ["planner/climate", "planner/climate/grid", "planner/index"],
+        "optional climate reuses every other layer"
+    );
+
+    assert_eq!(plan(&store, &root, &steps(true, &env)).unwrap().groups.len(), 0);
+    let release = release(&store, &root, "planner", AREA, &[], &steps(true, &env)).unwrap();
     assert!(release.is_some(), "the store has every layer");
     let release = release.unwrap();
     for layer in release.layers.iter().filter(|layer| layer.step.ends_with("/grid")) {
         assert!(layer.files.iter().any(|file| file.path == "index.json"));
         assert!(layer.client_files().all(|file| file.path.starts_with("objects/")));
     }
+}
+
+fn local_files(request: &Request) -> Result<(), String> {
+    if request.options["kind"] == "planner/basemap" {
+        let source = &request.layers["planner/places"]["places.pmtiles"];
+        return std::fs::hard_link(source, request.output.join("basemap.pmtiles")).map_err(|e| e.to_string());
+    }
+    let files: &[(&str, &[u8])] = match request.options["kind"].as_str() {
+        Some("planner/assets") => &[
+            ("assets/fonts/Noto Sans Regular/0-255.pbf", b"fixture glyph range"),
+            ("assets/fonts/OFL.txt", b"fixture font credit"),
+            ("assets/sprites/v4.json", b"{}"),
+            ("assets/sprites/LICENSE.txt", b"fixture sprite credit"),
+        ],
+        Some("planner/model") => &[("model/model.int8.onnx", b"fixture model"), ("model/labels.json", b"[]")],
+        _ => return Err("unknown fixture producer".into()),
+    };
+    for (name, bytes) in files {
+        let path = request.output.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// A stand-in for the Nominatim archive: the settings of Germany, and a country grid in which the
