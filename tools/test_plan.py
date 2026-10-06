@@ -59,11 +59,11 @@ JOBS: dict[str, Job] = {
     "device": Job(needs=("selection",), packages=("obc-app", "obc-link")),
     "deny": Job(needs=("selection",)),
     # Trunk bundles the demo and the engine is built for wasm32 by hand; wasm-pack drives
-    # the four bridges.  No `cargo` argument list names them, so they are stated here.
+    # the builder core. No `cargo` argument list names it, so it is stated here.
     "wasm": Job(needs=("selection",), packages=("obc-web-demo", "obcm-assemble")),
     "wasm-bridges": Job(
         needs=("selection",),
-        packages=("obc-web-convert", "obc-web-assemble", "obc-skin-preview", "obc-flat-device"),
+        packages=("obc-builder-bridge",),
     ),
     "docs": Job(needs=("selection",)),
     "ios-unit": Job(needs=("selection",)),
