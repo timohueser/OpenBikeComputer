@@ -1218,9 +1218,36 @@ bundle is refused. Before each remote mutation, it fsyncs one intent and its dir
 an acknowledgement, it fsyncs the run event before it clears the intent. A pending intent survives
 owner or machine failure. A later read that looks correct does not clear it. There is no timeout
 or lock takeover. Mutating children inherit the lock; a surviving child still excludes a new owner.
-The owner ignores SSH hangup and finishes its operation after laptop disconnect. Its durable state
+The owner runs as an admitted system service outside the initiating SSH session. Its durable state
 and original run remain on the VPS. Successful replies copy the owner journal to the laptop.
 Planner service activation and retirement run under this same owner and mutation barrier.
+
+
+### Detached operations
+
+Manual `prepare`, `build` and `apply` return `{run, request}`. `request` is the SHA-256 of the
+immutable request. A retained fresh worker owns the run after the caller leaves. One environment
+on one host/store admits one operation, with no waiting queue. Separate machines can prepare;
+only the fixed VPS owner publishes. macOS uses a separate session and private logs. Linux uses
+a transient user service, an active user manager, enabled linger and the operator's private
+`OBC_RUN_ENV_FILE`. Credential values are not copied into arguments, events or control records.
+
+`operations/<run>/control.json` binds kind, environment, selection, moves, any saved plan's exact
+bytes, root and retained worker identity. State is reserved, running, stopping, stopped, owner,
+finished or resolved. Stop invalidates a reserved child. During preparation, it drains admitted
+work, starts no next fetch or step, and prevents publication handoff. Owner handoff records the
+fixed host and bundle SHA before admission; stop is then refused. Terminal resolution retains
+that binding and pins `owner-result.json` by size and SHA. Local completion durably pins
+`result.json` by size and SHA before recording finished. Finished, drained workers release
+their private executable. An unresolved owner retains it.
+
+`runs` reads computed observations. A lost local transport does not prove failure or no writes.
+Owner evidence binds run and bundle to both its inherited per-run lock and the fixed writer lock.
+A held mutation awaits acknowledgement; abandoned pending intent stays unknown. Owner observations
+are noninteractive and bound command execution and output collection to 30 seconds. Neither reads
+nor missing remote state clear a barrier. `runs RUN --reconcile` is an explicit mutation: it checks
+a final bound reply and journal prefix, copies acknowledged events, and resolves local control.
+It refuses while the local worker drains. Result reads verify their sealed bytes.
 
 
 ## Commands
@@ -1242,12 +1269,15 @@ Planner service activation and retirement run under this same owner and mutation
 | `obc data region create ID --name NAME (--area PATH… \| --box W,S,E,N) [--country CODE]… --time-zone ZONE [--json]` | Save one definition. Repeat `--area` for each path. Countries derive from the cached index where possible |
 | `obc data region delete ID [--apply --expected SHA [--yes]] [--json]` | Preview references and definition hash, or delete that reviewed, unused definition after confirmation |
 | `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
-| `obc data prepare ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | Explicit input preparation. Returns `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
-| `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
-| `obc data apply live [--plan FILE] [--yes] [--json]` | Builds the plan of live, uploads what R2 lacks, switches the pointers and removes what no live release uses, as [Apply](#apply) says. Writes what it uploaded, switched and removed |
+| `obc data prepare ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | Starts durable input preparation. Returns `{run, request}`. Its completed result holds `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
+| `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Starts a durable build of the groups into the store. Returns `{run, request}`. Complete products get release manifests; incomplete products stay blocked. It uploads nothing |
+| `obc data apply live [--plan FILE] [--yes] [--json]` | Reviews and starts durable publication, as [Apply](#apply) says. Returns `{run, request}`. The completed owner result lists uploaded, switched and removed keys |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
-| `obc data runs RUN [--json]` | One run, its fetches, and its steps: time, change since the last run that built the step, peak RAM, output, inputs, code hash and users |
-| `obc data runs RUN --follow [--json]` | The events of the run, and each new event until the run ends |
+| `obc data runs RUN [--json]` | One run and its computed operation state, observed owner error and result; fetches and steps retain time, peak RAM, outputs, input and code identities. Reads change no local history |
+| `obc data runs RUN --follow [--json]` | For detached operations, changed observations until a final result or actionable unresolved outcome. Other journals stream their events |
+| `obc data runs RUN --stop [--json]` | Stops after current preparation; refuses after owner handoff |
+| `obc data runs RUN --reconcile [--json]` | Explicitly accepts a verified final bound owner result and mirrors its journal |
+| `obc data runs RUN --result` | One completed preparation/build output, or sealed owner result. Unresolved runs have no result |
 
 `--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
@@ -1378,11 +1408,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
-| `prepare` | `Prepared` |
-| `build` | `Built` |
-| `apply` | `Applied` |
+| `prepare`, `build`, `apply` | `Handle` |
+| Completed prepare output | `Prepared` |
+| Completed build output | `Built` |
+| Completed apply output | `Applied` |
 | `runs` | `RunList` |
-| `runs RUN` | `Details` |
+| `runs RUN` for a detached operation | `View` |
+| `runs RUN` for other journals | `Details` |
 | `runs RUN --follow`, one per line | `Event` |
 | `r2 list`, `r2 stat`, `r2 delete` | `Objects` |
 | `r2 get` | `Downloaded` |
@@ -2671,6 +2703,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "remove_bytes",
         "keep_objects",
         "keep_bytes"
+      ],
+      "type": "object"
+    },
+    "Handle": {
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "request"
       ],
       "type": "object"
     },
@@ -3966,6 +4014,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunList": {
       "description": "Every run in the store, newest first.",
       "properties": {
+        "observation_errors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "operations": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Status2"
+          },
+          "type": "object"
+        },
         "runs": {
           "items": {
             "$ref": "#/$defs/Summary"
@@ -3974,7 +4034,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       },
       "required": [
-        "runs"
+        "runs",
+        "operations",
+        "observation_errors"
       ],
       "type": "object"
     },
@@ -4344,6 +4406,131 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Status2": {
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "starting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "running",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "stopping",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "interrupted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remote absence or a transport error does not resolve a dispatched operation.",
+          "properties": {
+            "bundle": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "status": {
+              "const": "awaiting_owner",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "host",
+            "bundle"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "status": {
+              "const": "finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "ok"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "bundle": {
+              "type": "string"
+            },
+            "host": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unknown_owner",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "host",
+            "bundle",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Stored": {
       "description": "A version of a source in the local store.",
       "properties": {
@@ -4580,6 +4767,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "View": {
+      "properties": {
+        "observation_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Status2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": true,
+        "run": {
+          "$ref": "#/$defs/Details"
+        }
+      },
+      "required": [
+        "run",
+        "operation",
+        "observation_error",
+        "result"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema"

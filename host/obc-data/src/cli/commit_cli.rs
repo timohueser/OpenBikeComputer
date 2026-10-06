@@ -1,5 +1,7 @@
 //! The product-free final writer, with the original operation journal.
 
+pub(super) mod lifetime;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 #[cfg(not(test))]
@@ -41,7 +43,7 @@ pub(super) struct Committed {
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-enum Reply {
+pub(super) enum Reply {
     Done { result: Committed, journal: Vec<Event> },
     Failed { error: Error, journal: Option<Vec<Event>> },
 }
@@ -460,6 +462,17 @@ fn same_pointer(remote: &Remote, product: &crate::live::LiveProduct) -> Result<b
 }
 
 #[cfg(not(test))]
+pub(super) fn host(host: &str) -> Result<(), Error> {
+    if host.is_empty()
+        || !host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-_@".contains(&c))
+        || host.starts_with('-')
+    {
+        return Err(Code::Usage.error("OBC_COMMIT_HOST is not an SSH host"));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
 pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -> Result<Committed, Error> {
     let host = std::env::var("OBC_COMMIT_HOST")
         .map_err(|_| Code::Blocked.error("set OBC_COMMIT_HOST to the configured VPS, or local on that VPS"))?;
@@ -469,59 +482,68 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
         return Err(Code::Usage.error("commit bundle digest is not SHA-256"));
     }
     let incoming = format!("/var/lib/obc-data/incoming/{run}/{digest}");
+    self::host(&host)?;
     if host == "local" {
-        let output = Command::new(worker)
-            .args(["commit", directory.to_str().ok_or_else(|| Code::Usage.error("bundle path is not UTF-8"))?, digest])
+        std::fs::create_dir_all(&incoming).map_err(|e| e.to_string())?;
+    } else {
+        let prepared = Command::new("ssh")
+            .args(["-T", &host, "mkdir", "-p", "--", &incoming])
             .output()
             .map_err(|e| e.to_string())?;
-        return response(output, store, run);
+        if !prepared.status.success() {
+            return Err(Code::Failed.error("commit transfer directory could not be made; no publication owner started"));
+        }
     }
-    if host.is_empty()
-        || !host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-_@".contains(&c))
-        || host.starts_with('-')
-    {
-        return Err(Code::Usage.error("OBC_COMMIT_HOST is not an SSH host"));
-    }
-    let prepared =
-        Command::new("ssh").args(["-T", &host, "mkdir", "-p", "--", &incoming]).output().map_err(|e| e.to_string())?;
-    if !prepared.status.success() {
-        return Err(Code::Failed.error("commit transfer directory could not be made; no publication owner started"));
-    }
+    let target = if host == "local" { format!("{incoming}/") } else { format!("{host}:{incoming}/") };
     let copied = Command::new("rsync")
-        .args(["-r", "--", &format!("{}/", directory.display()), &format!("{host}:{incoming}/")])
+        .args(["-r", "--", &format!("{}/", directory.display()), &target])
         .output()
         .map_err(|e| e.to_string())?;
     if !copied.status.success() {
         return Err(Code::Failed.error("commit bundle transfer failed; no publication owner started"));
     }
-    let output = Command::new("ssh")
-        .args(["-T", &host, "nohup", worker, "commit", &incoming, digest])
-        .output()
-        .map_err(|e| e.to_string())?;
-    response(output, store, run).map_err(|mut error| {
-        if error.message.contains("failed or disconnected") {
-            error.fix =
-                format!("Query commit {run} on the VPS. Do not retry a remote mutation with an unknown outcome.");
+    // Persist the handoff before admission. Transport failure cannot revoke a delayed dispatch.
+    super::operation_cli::handoff(store, run, &host, digest)?;
+    let mut command = if host == "local" {
+        Command::new(worker)
+    } else {
+        let mut command = Command::new("ssh");
+        command.args(["-T", &host, worker]);
+        command
+    };
+    let admitted = command.args(["commit-start", &incoming, digest]).output().map_err(|e| e.to_string())?;
+    if !admitted.status.success() {
+        return Err(Code::Blocked
+            .error("commit service admission failed or is uncertain")
+            .fix("Inspect the bound owner status. A delayed admission is still possible.")
+            .with_run(run));
+    }
+    loop {
+        let observed = lifetime::query(&host, run, digest)?;
+        let pending = observed.state.as_ref().is_some_and(|state| state.pending.is_some());
+        if pending && observed.reply.is_some() {
+            return Err(Code::Blocked
+                .error("commit has an unknown mutation outcome")
+                .fix("Inspect its durable owner intent. A later read alone cannot clear it.")
+                .with_run(run));
         }
-        error.run = Some(run.into());
-        error
-    })
+        if observed.reply.is_some() {
+            super::operation_cli::checked_owner(store, run, &host, digest, &observed)?;
+        }
+        if let Some(reply) = observed.reply {
+            return terminal(reply, store, run, &host, digest);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
-
 #[cfg(not(test))]
-fn response(output: std::process::Output, store: &Store, run: &str) -> Result<Committed, Error> {
-    match serde_json::from_slice(&output.stdout) {
-        Ok(Reply::Done { result, journal }) if output.status.success() => {
-            Run::mirror(store, run, &journal)?;
-            Ok(result)
-        }
-        Ok(Reply::Failed { error, journal }) => {
-            if let Some(journal) = journal {
-                Run::mirror(store, run, &journal)?;
-            }
-            Err(error)
-        }
-        _ => Err(Code::Blocked.error("commit worker failed or disconnected; inspect its durable state and run")),
+fn terminal(reply: Reply, store: &Store, run: &str, host: &str, digest: &str) -> Result<Committed, Error> {
+    let journal = lifetime::journal(&reply).ok_or_else(|| Code::Blocked.error("terminal owner has no run journal"))?;
+    Run::mirror(store, run, journal)?;
+    super::operation_cli::resolved(store, run, host, digest, matches!(reply, Reply::Done { .. }), &reply)?;
+    match reply {
+        Reply::Done { result, .. } => Ok(result),
+        Reply::Failed { error, .. } => Err(error),
     }
 }
 
@@ -529,10 +551,12 @@ fn response(output: std::process::Output, store: &Store, run: &str) -> Result<Co
 pub fn main(args: &[String]) -> Result<u8, String> {
     let store = Store::at("/var/lib/obc-data/store");
     match args {
-        [command, run] if command == "commit-status" => {
-            crate::engine::runs::check_id(run)?;
-            let path = store.root().join("commits").join(format!("{run}.json"));
-            print!("{}", std::fs::read_to_string(path).map_err(|e| e.to_string())?);
+        [command, run, digest] if command == "commit-status" => {
+            println!("{}", serde_json::to_string(&lifetime::observe(&store, run, digest)?).map_err(|e| e.to_string())?);
+            Ok(0)
+        }
+        [command, directory, digest] if command == "commit-start" => {
+            lifetime::admit(&store, Path::new(directory), digest)?;
             Ok(0)
         }
         [command, directory, digest] if command == "commit" => {
@@ -544,17 +568,31 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             unsafe {
                 libc::signal(libc::SIGHUP, libc::SIG_IGN);
             }
-            let remote = Remote::from_env()?;
-            let result = execute(Path::new(directory), digest, &store, &remote, WAIT);
-            let journal = std::fs::read(Path::new(directory).join("bundle.json"))
-                .ok()
-                .filter(|bytes| sha256_hex(bytes) == *digest)
-                .and_then(|bytes| serde_json::from_slice::<Bundle>(&bytes).ok())
-                .and_then(|bundle| crate::engine::runs::events(&store, &bundle.run).ok());
+            let bytes = std::fs::read(Path::new(directory).join("bundle.json")).map_err(|e| e.to_string())?;
+            if sha256_hex(&bytes) != *digest {
+                return Err("commit bundle checksum differs".into());
+            }
+            let bundle: Bundle = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            validate(&bundle).map_err(|error| error.message)?;
+            let result = Remote::from_env()
+                .map_err(|e| Code::Blocked.error(e))
+                .and_then(|remote| execute(Path::new(directory), digest, &store, &remote, WAIT));
+            if let Err(error) = &result {
+                let events =
+                    crate::engine::runs::events(&store, &bundle.run).unwrap_or_else(|_| bundle.journal.clone());
+                if !matches!(events.last(), Some(Event::Finished { .. })) {
+                    let run = Run::attach(&store, &bundle.run, &events)?;
+                    run.finish(Some(&error.message))?;
+                }
+            }
+            let journal = crate::engine::runs::events(&store, &bundle.run).ok();
             let reply = match result {
                 Ok(result) => Reply::Done { result, journal: journal.ok_or("commit journal is missing")? },
                 Err(error) => Reply::Failed { error, journal },
             };
+            if lifetime::observe(&store, &bundle.run, digest)?.state.is_some() {
+                lifetime::persist_reply(&store, &bundle.run, &reply)?;
+            }
             let code = match &reply {
                 Reply::Done { .. } => 0,
                 Reply::Failed { error, .. } => error.code.exit(),
@@ -562,7 +600,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", serde_json::to_string(&reply).map_err(|e| e.to_string())?);
             Ok(code)
         }
-        _ => Err("use commit BUNDLE SHA256 or commit-status RUN".into()),
+        _ => Err("use commit-start BUNDLE SHA256, commit BUNDLE SHA256, or commit-status RUN SHA256".into()),
     }
 }
 
