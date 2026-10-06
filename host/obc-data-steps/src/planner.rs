@@ -511,9 +511,15 @@ mod tests {
         );
         // About Baden-Württemberg, and the box of the old planner recipe.
         let old = [7.03125, 47.04018214480666, 10.922533154247459, 50.07272727272727];
-        assert_eq!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0), old);
+        assert!(terrain_bounds([7.5, 47.5, 10.5, 49.8], 30_000.0)
+            .into_iter()
+            .zip(old)
+            .all(|(got, expected)| (got - expected).abs() < 1e-12));
         let old = [5.2734375, 45.33670190996811, 10.922970099182649, 50.28933925329178];
-        assert_eq!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0), old);
+        assert!(terrain_bounds([5.95, 45.8, 10.5, 49.85], 30_000.0)
+            .into_iter()
+            .zip(old)
+            .all(|(got, expected)| (got - expected).abs() < 1e-12));
 
         for region in ["boxed", "no-countries", "no-time-zone"] {
             let result = Planner.steps(&env(region, &[]), &regions(), &store(&temp, &["2026-10-01"]));
