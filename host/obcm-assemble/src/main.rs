@@ -188,6 +188,7 @@ impl Clock for StdClock {
 #[cfg(feature = "mem-profile")]
 mod mem_profile {
     use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::RefCell;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use obcm_assemble::{Clock, Summary};
