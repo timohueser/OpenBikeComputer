@@ -971,7 +971,7 @@ suites *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    _run uv run --locked --group dev python "$OBC_TOOLS/test_plan.py" "$@"
+    _run uv run --locked --project "$OBC_ROOT" --group dev python "$OBC_TOOLS/test_plan.py" "$@"
 
 # --install fixes what it can: rustup targets, just, probe-rs, the venv, and GEOS / RISC-V
 # gcc via scripts/.
