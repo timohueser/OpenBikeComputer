@@ -102,9 +102,9 @@ Each part of the id is lowercase kebab-case.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `name` | string | The name a person reads; not empty |
-| `kind` | string | `geofabrik`, `box`, `polygon` or `union` |
+| `kind` | string | `geofabrik`, `box` or `union` |
 | `box` | array of 4 numbers | Only for `box`: west, south, east, north in degrees, longitude first |
-| `polygon` | string | Only for `polygon`: an Osmosis `.poly` file, relative to the region file. The file must exist |
+| `areas` | array of strings | Only for `geofabrik`: one or more source paths. Paths are sorted and duplicates removed |
 | `union` | array of strings | Only for `union`: two or more region ids |
 | `countries` | array of strings | Optional: the ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE` |
 | `time_zone` | string | Optional: the IANA time zone of the region, such as `Europe/Berlin` |
@@ -114,17 +114,30 @@ A box that crosses the antimeridian is refused. The order of the numbers is chec
 through these ranges: a latitude-first box is refused only when one of its longitudes is
 outside −90…90.
 
-A `geofabrik` region is the Geofabrik area whose path is the region id, for example
-`europe/germany/baden-wuerttemberg`. A union resolves to the regions in it that are not
-unions. A union that contains itself, or names a region that does not exist, is refused.
+A `geofabrik` region selects source paths such as `europe/germany/baden-wuerttemberg`.
+Its saved id is independent of those paths. Creation writes one definition and no child files.
+Source paths use the same id syntax. An empty selection is refused. Polygon-file regions are refused.
+A union resolves to the regions in it that are not unions. A union that contains itself,
+or names a region that does not exist, is refused. Unions can be read but not created through the API.
+
+Creation requires countries and an explicit IANA time zone. Selected source areas derive country
+codes from the cached index or its parents. `--country` supplies missing metadata; boxes require
+it. The offline Python runtime validates the time zone with `ZoneInfo`. Listing does not need Python.
+Area search reads the newest cached public index and verifies its object hash and size. It does
+not fetch the index. Suggestions expose names, paths, countries and bounds, without polygon data.
+
+Deletion previews the definition SHA-256 and its references. An environment, fixture, planner
+recipe or another region that names it prevents deletion. `--apply --expected SHA` must match
+the preview. References and the definition are checked again after confirmation. Deletion removes
+only the definition; source snapshots, releases and baked files stay. Creation and deletion never commit.
 
 The bakes read this directory:
 
 | Reader | Regions |
 | --- | --- |
-| `obc-bake` (device maps) | Every `geofabrik` region. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
+| `obc-bake` (device maps) | Single-area definitions whose saved id equals the source path. `--regions DIR` reads another directory with this layout; `obc bake` passes the checkout's directory |
 | Planner bake | The `box` region with the id of the recipe in `tools/planner-regions/`: its `name` and its box |
-| `obc data`, product `planner` | The `geofabrik` region of the environment, its `countries` and its `time_zone` |
+| `obc data`, product `planner` | A single-area definition, its `countries` and its `time_zone` |
 | `fixtures/build-map-package.sh` | The `box` regions of the fixtures |
 
 `tools/data_registry.py box ID [--lat-first]` prints the box of a `box` region and refuses
@@ -860,9 +873,10 @@ edits change, as [Changes of live](#changes-of-live) composes it.
 
 The device maps have layers per leaf: a cell of size `2^23` µdeg of the OBCA grid that the
 outline of the region touches. The outline of a `box` region is its box; the outline of a
-`geofabrik` region is its `.poly` from `geofabrik-poly`, `area=<region id>`. The product has no
-steps for a `polygon` region yet. Only a `geofabrik` region has map cells, landmarks and peaks:
-they read the OSM of its area. Another region has terrain only.
+`geofabrik` region is the union of its source `.poly` files from `geofabrik-poly`,
+`area=<source path>`. Only a single-area definition has map cells, landmarks and peaks.
+It reads the OSM of its selected path. Box, multi-area and union definitions can build terrain
+but have a required catalog blocker; they cannot publish a terrain-only map release.
 
 The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), and the step list
 reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
@@ -877,11 +891,11 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `maps/osm` | `geofabrik-extracts`, `area=<region id>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The key holds no Osmium version: another Osmium can give other bytes. The metrics name the version (`osmium`) |
+| `maps/osm` | `geofabrik-extracts`, `area=<source path>` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The key holds no Osmium version: another Osmium can give other bytes. The metrics name the version (`osmium`) |
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
-| `maps/landmark-content`, `maps/peak-content` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<region id>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
+| `maps/landmark-content`, `maps/peak-content` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<source path>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
 | `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | `maps/landmark-content` and `maps/osm`, the file of the leaf; or `maps/peak-content` | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
@@ -899,8 +913,8 @@ intermediate layers; the other layers are client layers.
 
 #### `planner`
 
-The planner has steps for a `geofabrik` region that names its `countries` and its `time_zone`:
-its OSM is the extract of that one area. The bounds of the region are the box around its `.poly`.
+The planner has steps for a single-area definition that names its `countries` and its `time_zone`:
+its OSM is the extract of the selected source path. The bounds of the region are the box around its `.poly`.
 Each snapshot, such as `copernicus-glo-30`, the extract, the `.poly` and the GLO-30 tile list, is
 at its version (see [Versions](#versions)), as for `maps`. The other options come from
 [`data/planner.toml`](#dataplannertoml). A GLO-30 input reads the tile
@@ -909,7 +923,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `planner/osm` | `geofabrik-extracts`, `area=<region id>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
+| `planner/osm` | `geofabrik-extracts`, `area=<source path>` | `path`: `osm.pbf` | `osm.pbf`: the extract as it is. The engine step `pass` writes it, so its code is no file |
 | `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
@@ -1162,6 +1176,9 @@ uploads only what R2 still lacks. The objects, manifests and named files are imm
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the old cache directories with their files and sizes. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
+| `obc data region areas [QUERY] [--json]` | Search cached Geofabrik names and paths. Does not fetch |
+| `obc data region create ID --name NAME (--area PATH… \| --box W,S,E,N) [--country CODE]… --time-zone ZONE [--json]` | Save one definition. Repeat `--area` for each path. Countries derive from the cached index where possible |
+| `obc data region delete ID [--apply --expected SHA [--yes]] [--json]` | Preview references and definition hash, or delete that reviewed, unused definition after confirmation |
 | `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
 | `obc data prepare ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | Explicit input preparation. Returns `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
 | `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Fetches and builds the groups into the store, and writes the release of each product whose every layer is built; for `live`, of each product that the groups or edits change. It uploads nothing |
