@@ -38,3 +38,21 @@ There is no automatic reconciliation or timeout takeover. Reusing a run id with 
 bundle is refused. Planner apply stages and probes stored service artifacts, reloads checked
 endpoint routes, then switches its pointer. Old slots and pinned routes stay through the
 reader window before retirement. Unknown slot ownership blocks apply.
+
+## Terminal controls
+
+Run `obc data` in a terminal. Checks and edits run in the background. Press `q` to quit;
+an admitted check or edit finishes before the terminal closes.
+
+| View | Keys |
+| --- | --- |
+| Live region | `r` opens saved regions; `/` filters; Enter selects |
+| Region editor | `n` creates an area selection; `b` creates a Box; `d` reviews deletion |
+| Area selection | F5 loads the public area list; arrows and Space select; F3 shows selected areas |
+| Region fields | Tab and Shift-Tab move; F2 saves the file; Esc keeps the draft |
+| Sources | `f` changes scope; `/` filters; Enter shows details; `R` checks upstream |
+| Source policy | `e` opens presets; `c` enters 1..65535 whole days |
+| Error | `!` opens the full message and fix; `x` dismisses it outside an input |
+
+Region and policy writes save files for review and commit. `u` resets only the live environment;
+it does not reset region files or source policies. Opening a region view does not fetch inputs.
