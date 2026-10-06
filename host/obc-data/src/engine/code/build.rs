@@ -477,7 +477,7 @@ fn flags(env: &BTreeMap<OsString, OsString>) -> Result<Vec<String>, String> {
 
 fn configs(root: &Path, env: &BTreeMap<OsString, OsString>) -> Vec<PathBuf> {
     let home = env
-        .get("CARGO_HOME".as_ref())
+        .get(OsStr::new("CARGO_HOME"))
         .map(|home| root.join(home))
         .or_else(|| env.get(OsStr::new("HOME")).map(|home| PathBuf::from(home).join(".cargo")));
     root.ancestors()
