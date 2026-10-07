@@ -342,6 +342,9 @@ fn run_observations_cannot_replace_another_run_or_source_draft() {
     assert_eq!(app.key(KeyCode::Enter), Effect::ObserveRun(second.clone()));
     app.execution.handle = Some(crate::cli::operation_cli::Handle { run: first.clone(), request: "a".repeat(64) });
     assert_eq!(app.observed_run(), Some(second.clone()), "the displayed run takes priority over other active work");
+    app.overlay = None;
+    assert_eq!(app.observed_run(), Some(first.clone()), "hidden progress returns to the active operation");
+    app.overlay = Some(Overlay::Run);
     let mut updated = app.clone();
     updated.execution.view = Some(std::sync::Arc::new(View {
         run: app.runs[0].clone(),
@@ -360,8 +363,8 @@ fn run_observations_cannot_replace_another_run_or_source_draft() {
     assert_eq!(app.screen, Screen::Sources);
     assert_eq!(app.source_view.filter, "qrf");
     assert!(app.source_view.typing);
-    assert_eq!(app.observed_run(), Some(first.clone()), "hidden progress returns to the active operation");
-    app.execution.handle = None;
+    assert_eq!(app.observed_run(), None, "the finished operation no longer needs active observation");
+    assert!(app.execution.handle.is_none());
     app.runs[0].summary.outcome = Outcome::Running;
     assert_eq!(app.observed_run(), Some(first), "local run discovery also works without an admitted handle");
 }
