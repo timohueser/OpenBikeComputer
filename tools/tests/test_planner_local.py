@@ -54,6 +54,19 @@ class Local(unittest.TestCase):
             self.assertIs(stopped[0], made[3])
             self.assertCountEqual(stopped, made)
             self.assertEqual(local.read(directory / "state.json")["status"], "stopped")
+            self.assertEqual(local.read(directory / "drained.json"), {"token": "owner"})
+            select(0)
+            (directory / "stop.json").unlink()
+            with patch.object(local, "commands", return_value=(recipes, {})), patch.object(local, "ready", side_effect=ValueError("service failed")), \
+                 patch.object(local.runtime, "release", return_value=("manifest", {"files": {}})), \
+                 patch.object(local.maps, "check_port"), patch.object(local.maps, "stop_process", side_effect=stopped.append), \
+                 patch.object(local.subprocess, "Popen", side_effect=spawn), patch.object(local.time, "monotonic", side_effect=[0, 100]):
+                with self.assertRaisesRegex(ValueError, "service failed"):
+                    local.supervise(directory, "owner", lock)
+            self.assertEqual(local.read(directory / "state.json")["status"], "failed")
+            self.assertEqual(local.read(directory / "state.json")["message"], "service failed")
+            self.assertEqual(local.read(directory / "drained.json"), {"token": "owner"})
+            self.assertTrue(all(child in stopped for child in made))
             with lock.open("a") as released:
                 fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
 

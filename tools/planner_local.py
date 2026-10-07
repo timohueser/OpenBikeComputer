@@ -150,6 +150,7 @@ def supervise(directory, token, lock):
                 maps.stop_process(child)
             if not (directory / "state.json").exists() or read(directory / "state.json").get("status") != "failed":
                 status(status="stopped")
+            write(directory / "drained.json", {"token": token})
 
 
 def check_python(base, expected):

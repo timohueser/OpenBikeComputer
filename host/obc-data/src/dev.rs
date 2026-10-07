@@ -97,9 +97,11 @@ pub fn state(store: &Store) -> Result<Option<State>, String> {
 pub fn stop(store: &Store) -> Result<Option<State>, String> {
     let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
     let state = stop_owner(store)?;
-    if state.as_ref().is_some_and(|state| state.status == "stopped")
-        || state.is_none() && !directory(store).join("desired.json").exists()
-    {
+    let safe = match &state {
+        Some(state) => state.status == "stopped" || drained(store, state)?,
+        None => !directory(store).join("desired.json").exists(),
+    };
+    if safe {
         clean_views(store)?;
     }
     Ok(state)
@@ -125,6 +127,21 @@ fn stop_owner(store: &Store) -> Result<Option<State>, String> {
     state(store)
 }
 
+fn same_ready_owner(store: &Store, original: &State) -> Result<bool, String> {
+    Ok(store.is_locked("dev-local")?
+        && state(store)?.is_some_and(|current| current.token == original.token && current.status == "ready"))
+}
+
+fn drained(store: &Store, state: &State) -> Result<bool, String> {
+    let bytes = match std::fs::read(directory(store).join("drained.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    let proof: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    Ok(proof["token"] == state.token)
+}
+
 pub fn start(root: &Path, store: &Store, prepared: &Prepared) -> Result<State, String> {
     change(root, store, prepared, true)?.ok_or_else(|| "Local start did not admit an owner".into())
 }
@@ -136,8 +153,9 @@ pub fn replace(root: &Path, store: &Store, prepared: &Prepared) -> Result<Option
 
 fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) -> Result<Option<State>, String> {
     let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
-    if !start_stopped && (!store.is_locked("dev-local")? || !state(store)?.is_some_and(|state| state.status == "ready"))
-    {
+    let original = state(store)?;
+    let updating = original.as_ref().filter(|state| state.status == "ready");
+    if !start_stopped && (!store.is_locked("dev-local")? || updating.is_none()) {
         return Ok(None);
     }
     crate::worker::check(root)?;
@@ -155,8 +173,19 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
         crate::engine::digest(prepared.supervisor.files.iter().map(|(key, value)| (key.as_str(), value.as_str())));
     let directory = directory(store);
     crate::commit::durable_directory(&directory)?;
+    if !start_stopped && !same_ready_owner(store, updating.expect("checked above"))? {
+        return Ok(None);
+    }
+    let mut replaced = false;
     if store.is_locked("dev-local")? && state(store)?.is_some_and(|state| state.code.as_ref() != Some(&code)) {
-        stop_owner(store)?;
+        let stopped = stop_owner(store)?;
+        if !start_stopped {
+            let Some(state) = stopped else { return Ok(None) };
+            if state.token != updating.expect("checked above").token || !drained(store, &state)? {
+                return Ok(None);
+            }
+        }
+        replaced = true;
     }
     if !store.is_locked("dev-local")? && state(store)?.is_some_and(|state| state.status == "starting") {
         let stopped = std::fs::read(directory.join("stop.json"))
@@ -184,6 +213,9 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
     if digest != prepared.descriptor {
         return Err("Prepared Local descriptor changed during admission".into());
     }
+    if !start_stopped && !replaced && !same_ready_owner(store, updating.expect("checked above"))? {
+        return Ok(None);
+    }
     crate::commit::durable(
         &directory.join("desired.json"),
         &serde_json::to_vec(&serde_json::json!({
@@ -192,6 +224,9 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
         .map_err(|error| error.to_string())?,
     )?;
     if !store.is_locked("dev-local")? {
+        if !start_stopped && !replaced {
+            return Ok(None);
+        }
         crate::commit::durable(
             &directory.join("state.json"),
             &serde_json::to_vec(&State {
@@ -444,5 +479,26 @@ mod tests {
             .unwrap();
         stop(&store).unwrap();
         assert!(obsolete.exists(), "a delayed or uncertain owner is not a cleanup proof");
+        uncertain.status = "failed".into();
+        uncertain.message = Some("service failure".into());
+        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
+            .unwrap();
+        stop(&store).unwrap();
+        assert!(obsolete.exists(), "failure alone does not prove that children drained");
+        crate::commit::durable(&directory(&store).join("drained.json"), br#"{"token":"another-owner"}"#).unwrap();
+        stop(&store).unwrap();
+        assert!(obsolete.exists(), "a different owner's drain proof is insufficient");
+        crate::commit::durable(&directory(&store).join("drained.json"), br#"{"token":"owner"}"#).unwrap();
+        let failed = stop(&store).unwrap().unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.message.as_deref(), Some("service failure"));
+        assert!(!obsolete.exists());
+        let owner = store.lock("dev-local").unwrap();
+        uncertain.status = "ready".into();
+        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
+            .unwrap();
+        assert!(same_ready_owner(&store, &uncertain).unwrap());
+        drop(owner);
+        assert!(!same_ready_owner(&store, &uncertain).unwrap(), "a lost ready owner cannot be replaced");
     }
 }
