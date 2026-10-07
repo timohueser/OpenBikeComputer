@@ -36,7 +36,7 @@ fn explicit_gletsch_access_survives_packing_and_nearby_roads_do_not_create_acces
     for id in [negative_station, negative_water] {
         assert!(ing.source.pois.iter().find(|poi| poi.metadata.source == id).unwrap().metadata.approach.is_none());
     }
-    let bbox = obc_bake::pipeline::compute_bbox(&ing);
+    let bbox = obc_draw::ingest::compute_bbox(&ing.source);
     let lods = [LodLayer { max_mpp: None, chunk_size: 512, root: Node::Leaf { bbox, features: vec![] } }];
     let (bytes, dropped) = serialize_lods(
         &lods,
