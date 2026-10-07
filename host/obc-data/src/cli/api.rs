@@ -209,6 +209,7 @@ mod tests {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
+            schema("`versions SOURCE`", generator.subschema_for::<crate::cli::versions::Versions>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
             schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),

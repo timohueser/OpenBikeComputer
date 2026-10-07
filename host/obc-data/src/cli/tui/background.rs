@@ -2,7 +2,7 @@
 
 use super::{list_runs, App, Effect, Error, PlanView, Screen, Tui, LIVE, NO_PLAN, TICK};
 use crate::cli::Code;
-use crate::cli::{build_cli::plan_live, clean, clean_plan, edit_cli, policy, regions_cli};
+use crate::cli::{build_cli::plan_live_moves, clean, clean_plan, edit_cli, policy, regions_cli};
 use crate::fetch::http::Http;
 use crate::regions::Regions;
 use crate::{product::Product, store::Store};
@@ -85,7 +85,7 @@ pub(super) fn run_loop(
             }
             match effect {
                 Effect::None => {}
-                Effect::Quit => finishing = true,
+                Effect::Quit | Effect::Reload => finishing = true,
                 next if !app.busy => {
                     app.busy = true;
                     let mut updated = app.clone();
@@ -128,7 +128,14 @@ pub(super) fn run_loop(
                 app.draw(frame);
                 if finishing {
                     let area = Rect { y: frame.area().bottom().saturating_sub(1), height: 1, ..frame.area() };
-                    frame.render_widget(Line::from("Finishing the admitted check or edit before quitting…"), area);
+                    frame.render_widget(
+                        Line::from(if app.reload {
+                            "Finishing the admitted check or edit before reloading current code…"
+                        } else {
+                            "Finishing the admitted check or edit before quitting…"
+                        }),
+                        area,
+                    );
                 }
             })
             .map_err(io)?;
@@ -173,6 +180,14 @@ pub(super) fn run_loop(
                 }
                 read = Instant::now();
             }
+            if app.screen == Screen::Live
+                && app.overlay.is_none()
+                && app.schedule.state.is_none()
+                && !app.busy
+                && effect == Effect::None
+            {
+                effect = Effect::ScheduleRead;
+            }
             if app.screen == Screen::Local
                 && app.overlay.is_none()
                 && app.local.checked.is_none()
@@ -202,6 +217,8 @@ impl App {
     /// Completion changes data, never the user's focus, filters or draft inputs.
     pub(super) fn complete(&mut self, effect: Effect, updated: App) {
         let selected = self.sources.get(self.source).map(|row| row.source.id.clone());
+        let live_row = self.live_rows().get(self.row).cloned();
+        let schedule_result = matches!(effect, Effect::ScheduleRead | Effect::ScheduleChange(_));
         self.saved = updated.saved.clone();
         match effect {
             Effect::Initial => {
@@ -214,6 +231,15 @@ impl App {
             Effect::Policy(_, _) | Effect::CheckNow => {
                 self.sources = updated.sources;
                 self.live = updated.live;
+                if matches!(effect, Effect::CheckNow)
+                    && self.overlay == Some(super::Overlay::Version)
+                    && updated.versions.as_ref().is_some_and(|versions| Some(&versions.source) == selected.as_ref())
+                {
+                    self.versions = updated.versions;
+                    if let Some(versions) = &self.versions {
+                        self.choice = self.choice.min(versions.common.len() + 1);
+                    }
+                }
                 self.source =
                     selected.and_then(|id| self.sources.iter().position(|row| row.source.id == id)).unwrap_or(0);
             }
@@ -342,7 +368,44 @@ impl App {
             }
             Effect::LocalControl(super::local::Control::Logs, _) => self.local.logs = updated.local.logs,
             Effect::LocalControl(_, _) | Effect::LocalState => self.local.state = updated.local.state,
-            Effect::None | Effect::Quit => {}
+            Effect::Versions(id) => {
+                if self.sources.get(self.source).is_some_and(|row| row.source.id == id) {
+                    self.versions = updated.versions;
+                    if self.overlay == Some(super::Overlay::Version) {
+                        if let Some(versions) = &self.versions {
+                            self.choice = match self.moves.get(&versions.source) {
+                                None => 0,
+                                Some(None) => 1,
+                                Some(Some(version)) => {
+                                    versions.common.iter().position(|known| known == version).map_or(0, |at| at + 2)
+                                }
+                            };
+                        }
+                    }
+                }
+            }
+            Effect::ScheduleRead => {
+                self.schedule.state = updated.schedule.state;
+                if self.schedule.calendar.is_empty() {
+                    self.schedule.calendar = updated.schedule.calendar;
+                }
+                if self.schedule.zone.is_empty() {
+                    self.schedule.zone = updated.schedule.zone;
+                }
+            }
+            Effect::ScheduleChange(_) => {
+                self.schedule.state = updated.schedule.state;
+                if updated.schedule.pending.is_none() {
+                    self.schedule.pending = None;
+                    self.asking = false;
+                }
+            }
+            Effect::None | Effect::Quit | Effect::Reload => {}
+        }
+        if schedule_result {
+            if let Some(at) = live_row.and_then(|row| self.live_rows().iter().position(|shown| *shown == row)) {
+                self.row = at;
+            }
         }
     }
 }
@@ -360,7 +423,9 @@ pub(super) fn perform(
     }
     if !matches!(
         effect,
-        Effect::ObserveRun(_)
+        Effect::ScheduleRead
+            | Effect::ScheduleChange(super::schedule::Change::Disable)
+            | Effect::ObserveRun(_)
             | Effect::StopRun(_)
             | Effect::ReconcileRun(_)
             | Effect::LocalState
@@ -370,13 +435,49 @@ pub(super) fn perform(
             )
     ) {
         crate::worker::check(root).map_err(|message| {
-            Code::Blocked.error(message).fix(
-                "Leave any input with Esc, press q to quit, then run obc data again to load the current Rust code.",
-            )
+            Code::Blocked
+                .error(message)
+                .fix("Leave any input with Esc, then press F6 to reload current code. Run controls remain available.")
         })?;
     }
     match effect {
-        Effect::None | Effect::Quit => Ok(()),
+        Effect::None | Effect::Quit | Effect::Reload => Ok(()),
+        Effect::Versions(id) => {
+            let row = app
+                .sources
+                .iter()
+                .find(|row| row.source.id == id)
+                .ok_or_else(|| Code::Usage.error("The selected source no longer exists."))?;
+            app.versions = Some(super::super::versions::read(store, row)?);
+            Ok(())
+        }
+        Effect::ScheduleRead => {
+            app.schedule.state = Some(crate::schedule::state(root, store, LIVE).map(std::sync::Arc::new));
+            if app.schedule.calendar.is_empty() {
+                if let Some(Ok(state)) = &app.schedule.state {
+                    app.schedule.calendar = state.calendar.clone().unwrap_or_else(|| "daily".into());
+                    app.schedule.zone = state.time_zone.clone().unwrap_or_else(|| "UTC".into());
+                }
+            }
+            Ok(())
+        }
+        Effect::ScheduleChange(change) => {
+            match change {
+                super::schedule::Change::Install { calendar, zone } => {
+                    app.schedule.state =
+                        Some(Ok(std::sync::Arc::new(crate::schedule::install(root, store, LIVE, &calendar, &zone)?)));
+                }
+                super::schedule::Change::Disable => {
+                    app.schedule.state = Some(Ok(std::sync::Arc::new(crate::schedule::disable(root, store, LIVE)?)));
+                }
+                super::schedule::Change::Budget => {
+                    crate::schedule::setup_budget(root, store, LIVE)?;
+                    app.schedule.state = Some(crate::schedule::state(root, store, LIVE).map(std::sync::Arc::new));
+                }
+            }
+            app.schedule.pending = None;
+            Ok(())
+        }
         Effect::Initial => app.reload(root, products, false).and(app.read_live(root, products, false)),
         Effect::Areas => regions_cli::suggestions(store, "")
             .map(|areas| app.region_editor.areas = Some(areas))
@@ -407,7 +508,15 @@ pub(super) fn perform(
             let reloaded = app.reload(root, products, false);
             result.and(reloaded)
         }
-        Effect::CheckNow => app.reload(root, products, true),
+        Effect::CheckNow => {
+            app.reload(root, products, true)?;
+            if app.overlay == Some(super::Overlay::Version) {
+                if let Some(row) = app.sources.get(app.source) {
+                    app.versions = Some(super::super::versions::read(store, row)?);
+                }
+            }
+            Ok(())
+        }
         Effect::PlanClean => {
             let result = clean_plan(root, products, store).map(|plan| app.store = Some(plan));
             if result.is_err() {
@@ -437,7 +546,16 @@ pub(super) fn perform(
             edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)).and(app.reload(root, products, false))
         }
         Effect::Plan => {
-            let plan = plan_live(root, &Store::open()?, &Http::new(), &crate::cli::remote()?, products, &[], false);
+            let plan = plan_live_moves(
+                root,
+                &Store::open()?,
+                &Http::new(),
+                &crate::cli::remote()?,
+                products,
+                &[],
+                &app.move_args(),
+                false,
+            );
             let plan = plan.inspect_err(|_| app.overlay = None)?;
             app.plan = Some(PlanView::new(plan));
             Ok(())
@@ -477,10 +595,20 @@ pub(super) fn perform(
             Ok(())
         }
         Effect::Select(only) => {
+            let moves = app.move_args();
             let Some(view) = app.plan.as_mut() else { return Ok(()) };
             let taken = match only.is_empty() {
                 true => Ok(view.all.clone()),
-                false => plan_live(root, &Store::open()?, &Http::new(), &crate::cli::remote()?, products, &only, false),
+                false => plan_live_moves(
+                    root,
+                    &Store::open()?,
+                    &Http::new(),
+                    &crate::cli::remote()?,
+                    products,
+                    &only,
+                    &moves,
+                    false,
+                ),
             };
             view.taken = taken.inspect_err(|_| app.overlay = None)?;
             Ok(())

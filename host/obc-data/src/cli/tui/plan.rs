@@ -167,7 +167,7 @@ impl App {
             }
         }
 
-        if view.dev.is_some() && view.steps && !taken.versions.is_empty() {
+        if view.steps && !taken.versions.is_empty() {
             lines.extend([Line::default(), Line::from("INPUT VERSIONS").dim()]);
             lines.extend(view.versions());
         }
