@@ -134,14 +134,14 @@ pub struct Library {
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Rust {
     Native { profile: Profile },
     Prepared { profile: Profile },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     Dev,
@@ -207,7 +207,8 @@ pub struct SourceIdentity {
     pub git_inputs: std::collections::BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedRust {
     pub target: String,
     pub build: Rust,
@@ -215,6 +216,12 @@ pub struct ResolvedRust {
 
 impl CodeIdentity {
     /// Commitment checks the selected physical inputs, including projected build metadata.
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
+}
+
+impl SourceIdentity {
     pub fn committed(&self, root: &Path) -> Result<(), String> {
         code::committed(root, &self.git_inputs)
     }
@@ -900,6 +907,26 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             let lock =
                 Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&root).output().unwrap();
             assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
+        }
+
+        pub(crate) fn with_sources(&self, sources: &[crate::sources::Source]) {
+            let root = self.root();
+            for source in sources {
+                for path in crate::fetch::owner_code(source).code.paths {
+                    write(&root.join(path), "// fixture acquisition backend\n");
+                }
+            }
+            let mut registry = sources.to_vec();
+            for source in &mut registry {
+                // Registry URLs stay HTTPS; requests use the existing loopback transport seam.
+                if let Some(url) = &mut source.fetch.url {
+                    *url = url.replacen("http://", "https://", 1);
+                }
+            }
+            write(
+                &root.join("data/sources.toml"),
+                &toml::to_string(&std::collections::BTreeMap::from([("source", registry)])).unwrap(),
+            );
         }
 
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {

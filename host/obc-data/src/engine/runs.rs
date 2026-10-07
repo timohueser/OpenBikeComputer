@@ -1080,6 +1080,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let land = crate::fetch::tests::source(&url.replace("file.bin", "{tile}-{version}.bin"), "release");
         let fixture = fixture("runs-fetch");
         fixture.with_acquisition();
+        fixture.with_sources(std::slice::from_ref(&land));
         let tile = Input::Snapshot {
             source: "land".into(),
             version: "v1".into(),

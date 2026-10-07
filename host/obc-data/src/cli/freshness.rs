@@ -145,6 +145,7 @@ mod tests {
             Source { id: "geofabrik-poly".into(), ..source(&url, "release") },
             Source { id: "bulk".into(), ..source(&url, "release") },
         ];
+        fixture.with_sources(&sources);
         let regions = Regions::new(Vec::new()).unwrap();
         let mut run = Run::create(&fixture.store, "prepare live").unwrap();
         let id = run.id().to_string();

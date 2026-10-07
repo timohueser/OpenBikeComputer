@@ -440,6 +440,19 @@ pub(crate) mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
+    fn capture_fixture(name: &str, sources: &[Source]) -> crate::engine::tests::Fixture {
+        let fixture = crate::engine::tests::fixture(name);
+        fixture.with_acquisition();
+        fixture.with_sources(sources);
+        for path in [".python-version", "pyproject.toml", "uv.lock"] {
+            crate::engine::tests::write(
+                &fixture.root().join(path),
+                &std::fs::read_to_string(tooling_root().join(path)).unwrap(),
+            );
+        }
+        fixture
+    }
+
     use crate::fetch::upstream::Upstream;
     use crate::sources::{parse_sources, Refresh};
     use crate::store::tests::Scratch;
@@ -1014,9 +1027,10 @@ pub(crate) mod tests {
         };
         let held = Snapshot { source: "sea".into(), version: version.clone(), files: vec![old] };
         store.put_snapshot(&held).unwrap();
+        let tooling = capture_fixture("capture-conflict-owner", &[land.clone(), sea.clone()]);
         let today = Request { source: &land, version: None, params: vec![] };
         let err = capture::capture(
-            &tooling_root(),
+            &tooling.root(),
             &store,
             &today,
             None,
@@ -1044,6 +1058,7 @@ pub(crate) mod tests {
         let land = Source { refresh: Refresh::Days(90), ..located(FetchKind::Capture, "https://example.org/land") };
         let mut sea = land.clone();
         (sea.id, sea.fetch.url) = ("sea".into(), Some("https://example.org/sea".into()));
+        let tooling = capture_fixture("capture-record-owner", &[land.clone(), sea.clone()]);
         let sources = [&land, &sea];
         let owner = |path: &str| -> &'static [usize] {
             match path {
@@ -1054,7 +1069,7 @@ pub(crate) mod tests {
         };
         let today = Request { source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&tooling_root(), &store, request, None, "q=1", &sources, owner, false, move |work, out| {
+            capture::capture(&tooling.root(), &store, request, None, "q=1", &sources, owner, false, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
                 Ok(command)
@@ -1091,7 +1106,7 @@ pub(crate) mod tests {
         // record of the request that `fetch` writes serves it on another day.
         let boxed = Request { source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
         let nothing = |request: &Request, empty| {
-            capture::capture(&tooling_root(), &store, request, None, "q=2", &sources, owner, empty, |_, _| {
+            capture::capture(&tooling.root(), &store, request, None, "q=2", &sources, owner, empty, |_, _| {
                 Ok(std::process::Command::new("true"))
             })
         };
@@ -1109,10 +1124,11 @@ pub(crate) mod tests {
         let scratch = Scratch::new("manual-capture");
         let store = Store::at(&scratch.0);
         let model = located(FetchKind::Dtm, "https://example.org/model");
+        let tooling = capture_fixture("capture-manual-owner", std::slice::from_ref(&model));
         let request = Request { source: &model, version: None, params: vec![] };
         let run = |script: &'static str| {
             capture::capture(
-                &tooling_root(),
+                &tooling.root(),
                 &store,
                 &request,
                 None,

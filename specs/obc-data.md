@@ -1310,6 +1310,44 @@ It refuses while the local worker drains. Result reads verify their sealed bytes
 The shared run view includes `logs`, the bounded tail of its worker stderr. A missing log yields
 an empty list. A read failure appears in `observation_error` and preserves the run state.
 
+## Manual automatic approval
+
+A manual Live apply reviews automatic approval even when no layer changes. It requires committed
+data and used code. It verifies every available complete product without unchanged-byte shortcuts.
+The parent confirmation retains the exact plan, including the approval review. Preparation and
+Local builds do not establish approval.
+
+The configured publication owner has one `commits/current.approval`. Its observation distinguishes
+absence from failed reads. The plan pins the owner's fingerprint and the exact prior record SHA.
+The fingerprint uses the Linux machine identity and canonical fixed owner root. It contains no
+raw machine identity or credential. The owner checks it, the prior record and original pointers
+under its existing writer lock before mutation. An SSH alias is not an owner identity.
+
+The record binds the effective region, layers, publication target, selected-source settings and
+producer declarations. Actual source versions and freshness cadence are excluded. Selected-source
+access and publication settings remain included. Manual data commitment still includes them all.
+The same code resolver supplies acquisition, planning and producer source/config witnesses.
+Implicit embedded registry bytes use declared source projections; explicit raw registry inputs
+remain raw. Operator UI source stays outside scoped owner code.
+
+Each native target/profile has its latest checked execution entry. A same-context apply replaces
+its old tools. A different context survives only when current declarations reproduce each source
+witness at its recorded Rust target/profile and the common configuration is unchanged. This
+comparison selects no foreign execution tools. It retains the original checked execution identity;
+it does not approve recomputation by another host. Changed acquisition or planning code can remove
+an old entry without rebuilding a layer.
+
+Prepared runtime execution binds its actual target and exact container image. Version-only native
+runtime builders cannot establish automatic approval. Missing unused acquisition tools can also
+leave current execution unavailable. Retained-input manual publication remains supported; the
+approval outcome states what is unavailable. Only comparable prior entries can survive.
+
+Complete publication seals its result and finishes owner state before writing approval. The
+approval record binds that publication SHA, run and bundle. The sealed publication does not
+contain an approval digest. Owner results report publication and approval separately: recorded,
+unavailable or unresolved. A partial or unknown publication writes no approval. An approval write
+failure does not change a checked publication into a failed publication. Observation and explicit
+reconciliation preserve this distinction. No automatic schedule is enabled by this record alone.
 
 ## Commands
 
@@ -1488,6 +1526,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Applied": {
       "description": "What an apply did.",
       "properties": {
+        "approval": {
+          "$ref": "#/$defs/Outcome"
+        },
         "built": {
           "anyOf": [
             {
@@ -1529,7 +1570,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "built",
         "uploaded",
         "switched",
-        "removed"
+        "removed",
+        "approval"
       ],
       "type": "object"
     },
@@ -1913,7 +1955,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "outcome": {
-          "$ref": "#/$defs/Outcome"
+          "$ref": "#/$defs/Outcome2"
         },
         "phase": {
           "anyOf": [
@@ -2107,6 +2149,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "description": "What a build of an environment would fetch and build.",
       "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Review"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Complete manual publication reviews this owner record separately from source refreshes."
+        },
         "blocked": {
           "description": "Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.",
           "items": {
@@ -2199,7 +2252,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "blocked",
         "remove",
         "listed",
-        "needs_prepare"
+        "needs_prepare",
+        "approval"
       ],
       "type": "object"
     },
@@ -2546,6 +2600,29 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         }
       ]
+    },
+    "Execution": {
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "$ref": "#/$defs/Profile"
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Role"
+          },
+          "type": "object"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "profile",
+        "roles"
+      ],
+      "type": "object"
     },
     "Failure": {
       "description": "What `--json` writes when a command fails.",
@@ -3085,6 +3162,82 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Outcome": {
       "oneOf": [
         {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "not_requested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "sha256": {
+              "type": "string"
+            },
+            "status": {
+              "const": "recorded",
+              "type": "string"
+            },
+            "unavailable": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "sha256",
+            "unavailable"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Publication succeeds independently of this owner-local durable write.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unresolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Outcome2": {
+      "oneOf": [
+        {
           "enum": [
             "running",
             "ok"
@@ -3462,6 +3615,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers"
       ],
       "type": "object"
+    },
+    "Profile": {
+      "enum": [
+        "dev",
+        "release"
+      ],
+      "type": "string"
     },
     "Publication": {
       "description": "A remote write that acknowledged success. Verification can still fail afterward.",
@@ -4006,6 +4166,120 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "ResolvedRust": {
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/Rust"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "build"
+      ],
+      "type": "object"
+    },
+    "Review": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "config": {
+              "type": "string"
+            },
+            "executions": {
+              "items": {
+                "$ref": "#/$defs/Execution"
+              },
+              "type": "array"
+            },
+            "expected": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner": {
+              "type": "string"
+            },
+            "status": {
+              "const": "ready",
+              "type": "string"
+            },
+            "unavailable": {
+              "description": "Retained inputs can be applied when unused acquisition tools are absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "owner",
+            "expected",
+            "config",
+            "executions",
+            "unavailable"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "owner": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason",
+            "owner"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Role": {
+      "additionalProperties": false,
+      "properties": {
+        "execution": {
+          "type": "string"
+        },
+        "rust": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResolvedRust"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_config": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rust",
+        "source_config",
+        "execution"
+      ],
+      "type": "object"
+    },
     "RunFetch": {
       "additionalProperties": false,
       "properties": {
@@ -4153,6 +4427,44 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "last_wall_ms"
       ],
       "type": "object"
+    },
+    "Rust": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "native",
+              "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/Profile"
+            }
+          },
+          "required": [
+            "kind",
+            "profile"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "prepared",
+              "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/Profile"
+            }
+          },
+          "required": [
+            "kind",
+            "profile"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Source": {
       "additionalProperties": false,
@@ -4702,7 +5014,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "outcome": {
-          "$ref": "#/$defs/Outcome"
+          "$ref": "#/$defs/Outcome2"
         },
         "started": {
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
