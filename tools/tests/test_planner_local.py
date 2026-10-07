@@ -21,8 +21,8 @@ class Local(unittest.TestCase):
             for number in range(2):
                 view = directory / str(number)
                 view.mkdir()
-                (view / "route-server").write_bytes(binary)
-                value = {"view": str(view), "routing_executable": runtime.digest(view / "route-server"),
+                (view / "planner-service").write_bytes(binary)
+                value = {"view": str(view), "routing_executable": runtime.digest(view / "planner-service"),
                          "fingerprints": {name: number if name == "frontend" else 0
                                           for name in ("routing", "search", "tiles", "frontend")}}
                 local.write(view / "service.json", value)
@@ -90,7 +90,7 @@ class Local(unittest.TestCase):
             binary = root / "compiled"
             binary.write_bytes(b"native artifact")
             request = {"output": str(root / "output"), "options": {"root": str(root), "code": "declared-code"}}
-            artifact = json.dumps({"reason": "compiler-artifact", "target": {"name": "route-server"}, "executable": str(binary)})
+            artifact = json.dumps({"reason": "compiler-artifact", "target": {"name": "planner-service"}, "executable": str(binary)})
             def run(argv, **options):
                 if argv[0] == "cargo":
                     self.assertIn("--locked", argv)
@@ -101,4 +101,4 @@ class Local(unittest.TestCase):
                 return SimpleNamespace(stdout=json.dumps({"root": str(root), "code": "replacement-code"}))
             with patch.object(route.Path, "cwd", return_value=root), patch.object(route.subprocess, "run", side_effect=run):
                 with self.assertRaisesRegex(ValueError, "another root or execution identity"): route.step(request)
-            self.assertEqual((root / "output/route-server").read_bytes(), binary.read_bytes())
+            self.assertEqual((root / "output/planner-service").read_bytes(), binary.read_bytes())

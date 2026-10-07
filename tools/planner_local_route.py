@@ -18,17 +18,17 @@ def step(request):
                    "OBC_ROUTE_BUILD_CODE": code}
     for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
         environment.pop(key, None)
-    cargo = subprocess.run(["cargo", "build", "--locked", "--offline", "--release", "-p", "route-server",
-                            "--bin", "route-server", "--message-format=json"],
+    cargo = subprocess.run(["cargo", "build", "--locked", "--offline", "--release", "-p", "planner-service",
+                            "--bin", "planner-service", "--message-format=json"],
                            env=environment, capture_output=True, text=True)
     if cargo.returncode:
         raise ValueError(cargo.stderr.strip())
     files = [value["executable"] for line in cargo.stdout.splitlines()
              if (value := json.loads(line)).get("reason") == "compiler-artifact"
-             and value["target"]["name"] == "route-server" and value.get("executable")]
+             and value["target"]["name"] == "planner-service" and value.get("executable")]
     if len(files) != 1:
-        raise ValueError("Cargo returned no unique route-server executable")
-    output = Path(request["output"]) / "route-server"
+        raise ValueError("Cargo returned no unique planner-service executable")
+    output = Path(request["output"]) / "planner-service"
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(files[0], output)
     output.chmod(0o500)

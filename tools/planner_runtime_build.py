@@ -196,7 +196,7 @@ def copy_downloads(root, output):
 
 
 def routing_notices(triple):
-    heading = f"## Linux routing service (`route-server`, `{triple}`)\n"
+    heading = f"## Linux routing service (`planner-service`, `{triple}`)\n"
     document = (ROOT / "THIRD-PARTY.md").read_text()
     if heading not in document:
         raise ValueError("Regenerate the Linux routing notices with obc licenses")
@@ -297,10 +297,10 @@ def build(request, inside=False):
                 env["RUSTC"] = rust["rustc"]
                 flags.append(f"-Clinker={rust['cc']}")
             env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
-            run([cargo, "build", "--release", "--locked", "--offline", "-p", "route-server", "--bin", "route-server", "--target", wanted["triple"]], env=env)
+            run([cargo, "build", "--release", "--locked", "--offline", "-p", "planner-service", "--bin", "planner-service", "--target", wanted["triple"]], env=env)
             (payload / "bin").mkdir()
-            shutil.copyfile(work / "target" / wanted["triple"] / "release/route-server", payload / "bin/route-server")
-            (payload / "bin/route-server").chmod(0o755)
+            shutil.copyfile(work / "target" / wanted["triple"] / "release/planner-service", payload / "bin/planner-service")
+            (payload / "bin/planner-service").chmod(0o755)
             (payload / "THIRD-PARTY.md").write_text(routing_notices(wanted["triple"]))
         elif service == "search":
             source = ROOT / "apps/planner-search"
@@ -340,7 +340,7 @@ def build(request, inside=False):
                 raise ValueError("Prepared runtime tools changed during packaging; plan again")
     document = {"format": 1, "service": service, "target": wanted,
                 "payload": {"path": artifact.name, **stored}, "libraries": libraries,
-                "entry": {"routing": "bin/route-server", "search": "server.mjs", "downloads": "tools.planner_downloads"}[service]}
+                "entry": {"routing": "bin/planner-service", "search": "server.mjs", "downloads": "tools.planner_downloads"}[service]}
     (output / "runtime.json").write_bytes(encoded(document))
     step_request.metrics(request, {"bytes": stored["bytes"], "npm_packages": len(packages)})
 

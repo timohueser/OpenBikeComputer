@@ -117,4 +117,4 @@ claim a test is linked.
 - **Alert the owner** when requested behavior contradicts a requirement, or when a test cited as
   evidence was deleted or hollowed out.
 
-[apps/obc-verification/README.md](apps/obc-verification/README.md) has the API and the release flow.
+[tools/verification/README.md](tools/verification/README.md) has the API and the release flow.

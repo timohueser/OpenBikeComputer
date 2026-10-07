@@ -7,7 +7,7 @@ bridge and Wasm. Prepare dependencies from the repository root:
 ```sh
 npm ci --prefix builder/app
 npm ci --prefix apps/planner-search
-npm ci --prefix apps/planner-tiles
+npm ci --prefix planner/tiles
 uv sync --locked --group search-runtime
 ```
 

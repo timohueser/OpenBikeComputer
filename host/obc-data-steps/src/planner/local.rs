@@ -12,9 +12,9 @@ pub(super) fn routing(root: &Path) -> Result<Step, String> {
         json!({}),
         ("tools.planner_local_route", None),
         &["tools/planner_local_route.py"],
-        &["route-server"],
+        &["planner-service"],
     );
-    step.code.crates = vec!["route-server".into()];
+    step.code.crates = vec!["planner-service".into()];
     step.code.rust = Some(Rust::Native { profile: Profile::Release });
     let files = step.code.files(root)?;
     step.options = json!({"root": root.canonicalize().map_err(|e| e.to_string())?, "code": obc_data::engine::digest(files.iter().map(|(key, value)| (key.as_str(), value.as_str())))});
@@ -216,7 +216,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
         .ok_or("Local route service has no artifact")?
         .files
         .iter()
-        .find(|file| file.path == "route-server")
+        .find(|file| file.path == "planner-service")
         .ok_or("Local route service lacks its executable")?;
     let code = services();
     let supervisor = Binding { files: code.files(&root)?, code };
@@ -257,7 +257,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
                 link(store, file, &partial.join(relative))?;
             }
         }
-        let binary = partial.join("route-server");
+        let binary = partial.join("planner-service");
         let original = store.object(&executable.sha256);
         if hash_file(&original)? != (executable.sha256.clone(), executable.size) {
             return Err("Local route artifact changed".into());
@@ -334,8 +334,7 @@ fn providers(root: &Path) -> Result<(BTreeMap<String, Binding>, std::path::PathB
     let executable =
         obc_data::engine::Library { name: "local-node".into(), path: node.clone(), sha256: hash_file(&node)?.0 };
     let mut children = BTreeMap::new();
-    for (name, app) in [("search", "apps/planner-search"), ("tiles", "apps/planner-tiles"), ("frontend", "builder/app")]
-    {
+    for (name, app) in [("search", "apps/planner-search"), ("tiles", "planner/tiles"), ("frontend", "builder/app")] {
         let mut code = Code {
             paths: vec![app.into()],
             libraries: vec![executable.clone()],

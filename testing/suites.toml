@@ -125,7 +125,7 @@ name = "obc-map-core"
 triggers = ["builder/presets/**"]
 
 [[package]]
-name = "route-build"
+name = "planner-router-build"
 triggers = ["data/sources.toml"]
 
 # Both read the checked-in assembly fixture, so a change under `fixtures/` reaches them.
@@ -146,7 +146,7 @@ triggers = ["firmware/obc-fw-nrf54l/src/detour.rs", "firmware/obc-fw-nrf54l/src/
 
 # The answer encoder test reads the shared route answer vector; no Cargo edge carries that.
 [[package]]
-name = "route-engine"
+name = "planner-router"
 triggers = ["specs/vectors/route-answer.json"]
 
 [[package]]
@@ -220,10 +220,10 @@ triggers = [
 [[suite]]
 id = "web.verification"
 route = "ordinary"
-command = "npm run verify --prefix apps/obc-verification"
+command = "npm run verify --prefix tools/verification"
 jobs = ["verification"]
 platforms = ["linux", "macos"]
-triggers = ["apps/obc-verification/**"]
+triggers = ["tools/verification/**"]
 
 [[suite]]
 id = "web.builder-browser"
@@ -507,7 +507,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "apps/route-server/Cargo.toml", "host/route-engine/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "ci.obc-data-licence"
@@ -550,9 +550,9 @@ ci_only = true
 [[suite]]
 id = "ci.ios-app-build"
 scoped = true
-rust_packages = ["route-server", "obc-ios-host"]
+rust_packages = ["planner-service", "obc-ios-host"]
 # The phone library disables the HTTP feature.
-rust_excludes = ["apps/route-server/src/http.rs", "firmware/obc-app/src/harness/**"]
+rust_excludes = ["planner/service/src/http.rs", "firmware/obc-app/src/harness/**"]
 route = "ordinary"
 command = "tools/build-ios-host.sh --sim-only && xcodebuild build-for-testing -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
 jobs = ["ios-app"]
@@ -595,9 +595,9 @@ triggers = [
 [[suite]]
 id = "ci.ios-release-build"
 scoped = true
-rust_packages = ["route-server", "obc-ios-host"]
+rust_packages = ["planner-service", "obc-ios-host"]
 # The phone library disables the HTTP feature.
-rust_excludes = ["apps/route-server/src/http.rs", "firmware/obc-app/src/harness/**"]
+rust_excludes = ["planner/service/src/http.rs", "firmware/obc-app/src/harness/**"]
 route = "ordinary"
 command = "tools/build-ios-host.sh --sim-only && xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -configuration Release"
 jobs = ["ios-release"]
@@ -820,10 +820,10 @@ triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
 [[suite]]
 id = "planner.tiles"
 route = "ordinary"
-command = "npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles"
+command = "npm test --prefix planner/tiles && npm run build --prefix planner/tiles"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-tiles/**"]
+triggers = ["planner/tiles/**"]
 
 [[suite]]
 id = "planner.query-decoder"

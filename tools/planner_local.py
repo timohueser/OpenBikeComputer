@@ -52,9 +52,9 @@ def commands(value):
         env.pop(key, None)
     node = value["node"]
     return {
-        "routing": ([str(view / "route-server"), str(view / "data/routing")], root),
+        "routing": ([str(view / "planner-service"), str(view / "data/routing")], root),
         "search": ([node, "server.mjs"], root / "apps/planner-search"),
-        "tiles": ([node, "src/local.mjs", str(view), "8789"], root / "apps/planner-tiles"),
+        "tiles": ([node, "src/local.mjs", str(view), "8789"], root / "planner/tiles"),
         "frontend": ([node, "node_modules/vite/bin/vite.js", "--mode", "web", "--host", "127.0.0.1",
                       "--port", "5173", "--strictPort"], root / "builder/app"),
     }, env
@@ -112,7 +112,7 @@ def supervise(directory, token, lock):
                     for name, item in manifest["files"].items():
                         if name.startswith(("routing/", "search/")) or name == "maps/terrain.json":
                             offline.verify(Path(value["view"]) / "data" / name, item)
-                    if runtime.digest(Path(value["view"]) / "route-server") != value["routing_executable"]:
+                    if runtime.digest(Path(value["view"]) / "planner-service") != value["routing_executable"]:
                         raise ValueError("Prepared native route service changed")
                     recipes, env = commands(value)
                     changed = [name for name in recipes if not current

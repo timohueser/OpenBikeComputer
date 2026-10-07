@@ -927,14 +927,14 @@ ready *args:
 # `tests QUERY`, `changed --since rN`, `propose plan.json` for a coverage plan, and
 # `suggest file.json` for a requirement that does not exist yet or no longer describes the
 # product. `suggestions` lists the open ones; `--decided` shows the owner's answer. Check
-# `propose` and `suggest` with --check first. Needs the agent token file; see tools/req.py.
+# `propose` and `suggest` with --check first. Needs the agent token file; see tools/verification/req.py.
 [doc("Read and write the verification console. Args: SYS-nnn | list | proposal ID | tests QUERY | changed --since rN | propose plan.json | suggest file.json | suggestions")]
 [group('agent')]
 req *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    _run python3 "$OBC_TOOLS/req.py" "$@"
+    _run python3 "$OBC_TOOLS/verification/req.py" "$@"
 
 # List and view omit bodies and discussion. Body, comments and checks are separate reads.
 # Pass native `gh` filters or a PR number, URL or branch after the mode; view defaults to this branch.

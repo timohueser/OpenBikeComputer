@@ -16,7 +16,7 @@ use obc_data::regions::Regions;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
-use route_build::grid::{mercator, tile_bounds};
+use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -305,12 +305,12 @@ impl Planner {
             }),
             code: Code {
                 paths: Vec::new(),
-                crates: vec!["route-build".into()],
+                crates: vec!["planner-router-build".into()],
                 sources: vec!["osm-planet".into(), "copernicus-glo-30".into()],
                 ..Default::default()
             },
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
-            run: Run::Rust(route_build::step::step),
+            run: Run::Rust(planner_router_build::step::step),
             client: Client::All,
         };
         let overlays = python(
@@ -997,11 +997,14 @@ mod tests {
         for step in &steps {
             let files = step.code.files(&root()).unwrap();
             assert!(!files.contains_key("Cargo.lock"), "{} declares Cargo.lock", step.name);
-            let route_build = files.keys().any(|path| path.starts_with("host/route-build/src/"));
-            assert_eq!(route_build, step.name == "planner/routing", "{}", step.name);
+            let planner_router_build = files.keys().any(|path| path.starts_with("planner/router-build/src/"));
+            assert_eq!(planner_router_build, step.name == "planner/routing", "{}", step.name);
             if step.name == "planner/terrain" {
                 assert!(files.keys().any(|path| path.starts_with("host/obc-dem/src/")));
-                assert!(!files.keys().any(|path| path.starts_with("host/route-build/")), "terrain reads route-build");
+                assert!(
+                    !files.keys().any(|path| path.starts_with("planner/router-build/")),
+                    "terrain reads planner-router-build"
+                );
             }
         }
     }
