@@ -3,6 +3,16 @@ use obc_formats::obcm::{CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATU
 use obc_map_core::serialize::{align_up, lay_out, scaled};
 use obc_map_core::tree::{flatten_tree, FlattenTree, TreeWalk};
 
+/// Max delta (microdegrees) before a segment is densified to keep deltas in 16-bit range.
+/// Crate-visible so `geom::packed_size_budget` can count the midpoints `densify` will insert.
+pub(crate) const MAX_SEGMENT: i64 = 30_000;
+
+/// Largest safe first delta from a feature's exterior anchor to a hole vertex. Unlike a real ring
+/// edge this jump must never be densified: inserted points would become part of the hole boundary.
+/// It is the symmetric positive `i16` limit, because anchor selection reasons about unsigned
+/// Chebyshev distance.
+pub(crate) const MAX_HOLE_ANCHOR_DELTA: i64 = i16::MAX as i64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Line,
