@@ -499,7 +499,7 @@ command = "obc check docs"
 jobs = ["docs"]
 # The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
 # read them; the check that does is the unconditional `guards` job.
-triggers = ["docs/**", "CLAUDE.md", "AGENTS.md"]
+triggers = ["docs/**", "AGENTS.md", "**/AGENTS.md", "companion-ios/README.md"]
 
 [[suite]]
 id = "ci.licenses"

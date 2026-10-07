@@ -436,7 +436,7 @@ class ShippedPlanTests(unittest.TestCase):
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.
-            ("agent prose only", ["CLAUDE.md", "AGENTS.md"], ["docs"]),
+            ("agent prose only", ["AGENTS.md", "companion-ios/AGENTS.md"], ["docs"]),
             ("leaf Rust crate", ["host/obc-bench/src/main.rs"], ["clippy", "fmt", "test"]),
             (
                 "foundational Rust crate",
