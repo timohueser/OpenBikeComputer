@@ -313,8 +313,8 @@ pub fn handoff(store: &Store, run: &str, host: &str, bundle: &str) -> Result<(),
         if control.state != State::Running {
             return Err("operation stopped before publication handoff".into());
         }
-        if !matches!(control.request.kind, Kind::Apply | Kind::Auto) {
-            return Err("only an apply hands off publication".into());
+        if !matches!(control.request.kind, Kind::Apply | Kind::Auto) || control.request.env != "live" {
+            return Err("only live apply or auto can hand off publication".into());
         }
         control.state = State::Owner { host: host.into(), bundle: bundle.into() };
         Ok(())
@@ -439,5 +439,14 @@ mod tests {
             State::Owner { host: "publisher".into(), bundle: "c".repeat(64) }
         );
         assert!(reserve(&store, &first).is_err());
+        let mut local = control("2026-10-06-120001");
+        local.request.kind = Kind::Auto;
+        local.request_sha256 = local.request.digest().unwrap();
+        reserve(&store, &local).unwrap();
+        let local_using = claim(&store, &local.run, &local.request_sha256).unwrap();
+        assert!(handoff(&store, &local.run, "publisher", &"e".repeat(64)).unwrap_err().contains("only live"));
+        assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Running);
+        finish(&store, &local.run, true, None).unwrap();
+        drop(local_using);
     }
 }
