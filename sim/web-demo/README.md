@@ -2,7 +2,7 @@
 
 This host runs the shared firmware application and renderer in the landing page. The page owns the
 frame loop and the controls. The host embeds the tracked Grimsel map, route and ride inputs from
-`apps/obc-sim/assets/`.
+`sim/desktop/assets/`.
 
 ## Build and test
 
@@ -11,11 +11,11 @@ newer. Run from the repository root:
 
 ```sh
 NO_COLOR=true trunk build --config docs/Trunk.toml
-npm ci --prefix apps/obc-web-demo/tests/browser
-cd apps/obc-web-demo/tests/browser
+npm ci --prefix sim/web-demo/tests/browser
+cd sim/web-demo/tests/browser
 npx playwright install chromium --only-shell
 cd ../../../..
-npm test --prefix apps/obc-web-demo/tests/browser
+npm test --prefix sim/web-demo/tests/browser
 ```
 
 On Linux, use `npx playwright install --with-deps chromium --only-shell` to get the system

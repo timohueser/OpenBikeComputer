@@ -77,7 +77,7 @@ fixture. Fetch it once:
 
 ```sh
 obc fixtures sync sim-peak-view
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --peak-view scheidegg
+target/release/obc-sim sim/desktop/assets/grimsel-demo.obcm --peak-view scheidegg
 ```
 
 Files use the standard fixture cache and its `OBC_FIXTURE_ROOT` and `OBC_FIXTURE_CACHE`
@@ -90,14 +90,14 @@ Generation runs in the background from the current heading outward, so a headles
 `f` to finish it before Browse input:
 
 ```sh
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --peak-view scheidegg \
+target/release/obc-sim sim/desktop/assets/grimsel-demo.obcm --peak-view scheidegg \
   --script "B d d d d p f d" --expect-screen PeakView --png peak-view.png
 ```
 
 To reach Mönch through the normal installed-map path instead of a preset:
 
 ```sh
-target/release/obc-sim apps/obc-sim/assets/grimsel-demo.obcm \
+target/release/obc-sim sim/desktop/assets/grimsel-demo.obcm \
   --center 7961000,46585000 --heading 141.25 \
   --script "B d d d p f p f p f" --expect-screen PeakArticle --png peak-article.png
 ```
@@ -153,7 +153,7 @@ Add `--diagnostics PATH` to a headless `--png` run to write a JSONL trace:
 
 ```sh
 cargo build -p obc-sim --bin obc-sim --locked
-target/debug/obc-sim apps/obc-sim/assets/grimsel-demo.obcm --boot \
+target/debug/obc-sim sim/desktop/assets/grimsel-demo.obcm --boot \
   --script 'Q f' --png drawer.png --diagnostics drawer.jsonl
 ```
 

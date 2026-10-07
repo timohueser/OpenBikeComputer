@@ -41,11 +41,11 @@ Four foundation crates carry no policy:
 ## Four hosts, one core
 
 - [`obc-fw-nrf54l`](src:firmware/obc-fw-nrf54l) is the device.
-- [`obc-sim`](src:apps/obc-sim) is the desktop simulator.
-- [`obc-web-demo`](src:apps/obc-web-demo) is the browser demo.
-- [`obc-ios-host`](src:apps/obc-ios-host) is the iPhone host.
+- [`obc-sim`](src:sim/desktop) is the desktop simulator.
+- [`obc-web-demo`](src:sim/web-demo) is the browser demo.
+- [`obc-ios-host`](src:sim/phone/host) is the iPhone host.
 
-[`obc-host-core`](src:host/obc-host-core) holds the behavior that the three non-device hosts share.
+[`obc-host-core`](src:sim/host-core) holds the behavior that the three non-device hosts share.
 
 The iPhone host runs the application over one card file. The phone supplies the position, heading,
 altitude, and battery level. It is a development tool: it tests the user interface, position
@@ -62,7 +62,7 @@ device speed, power use, the display driver, or the Bluetooth link. Only the dev
 
 The host supplies bytes through [`ByteSource`](src:firmware/obc-formats/src/io.rs), which reads any
 offset on request. A map therefore does not have to fit in RAM. Every host reads its objects from
-the same [flat store](src:host/obc-host-core/src/flat_store.rs); only the medium differs, which is a
+the same [flat store](src:sim/host-core/src/flat_store.rs); only the medium differs, which is a
 card on the device, a sparse file on the simulator, and memory pages in the browser.
 
 A reader pins one object revision while it reads. A replacement object gets a new revision, and the
@@ -70,7 +70,7 @@ open reader keeps its bytes until it closes. A map or a route can therefore be r
 rider looks at it.
 
 Recording is the write path with the same rule. The
-[recorder](src:host/obc-host-core/src/flat_recorder.rs) appends bounded batches, writes periodic
+[recorder](src:sim/host-core/src/flat_recorder.rs) appends bounded batches, writes periodic
 checkpoints, and closes a ride with a footer. An interrupted ride restarts from its last
 checkpoint, because the samples before that point are already durable.
 
@@ -105,13 +105,13 @@ returns a plan: what to repaint, when to run again, and at most one bounded effe
 Each effect carries an operation token, and its answer must return that token. A late answer to a
 cancelled operation is therefore refused instead of applied. Effects carry small identifiers and
 results; bulk data stays in caller-owned buffers.
-[`obc-host-core`](src:host/obc-host-core/src/dispatch.rs) performs the effects for the frame-stepped
+[`obc-host-core`](src:sim/host-core/src/dispatch.rs) performs the effects for the frame-stepped
 hosts. The board performs the same effects with its own asynchronous execution.
 
 ## On-device routing: the router seam
 
 Navigator owns the planning lifecycle and issues one physical operation at a time. The
-[host executor](src:host/obc-host-core/src/dispatch.rs) and the
+[host executor](src:sim/host-core/src/dispatch.rs) and the
 [board executor](src:firmware/obc-fw-nrf54l/src/ride.rs) do only the work Navigator asks for. They
 never start the next step or publish a route on their own.
 

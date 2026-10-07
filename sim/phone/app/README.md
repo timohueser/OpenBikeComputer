@@ -8,7 +8,7 @@ It is a development tool. It puts the user interface, the tracking, the route fo
 ride recording in front of real sensors, and says nothing about the device's speed, power use,
 display driver or Bluetooth link.
 
-The Rust side is [`apps/obc-ios-host`](../../apps/obc-ios-host). This target is the shell around
+The Rust side is [`sim/phone/host`](../host). This target is the shell around
 it and links no part of `OBCKit`.
 
 ## Build
@@ -89,7 +89,7 @@ itself, which makes the run scriptable:
 ```sh
 container=$(xcrun simctl get_app_container booted com.openbikecomputer.device data)
 mkdir -p "$container/Documents"
-cp apps/obc-sim/assets/grimsel-demo.obcm "$container/Documents/"
+cp sim/desktop/assets/grimsel-demo.obcm "$container/Documents/"
 cp fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr "$container/Documents/"
 xcrun simctl launch booted com.openbikecomputer.device
 ```

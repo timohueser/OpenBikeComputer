@@ -119,7 +119,7 @@ just sim
 
 First builds take a few minutes; fixture downloads are cached. `just --list` lists tasks;
 `just --show TASK` shows a recipe. Run `./tools/obc setup` for the `obc` alias and completion.
-See the [simulator guide](apps/obc-sim/README.md) for controls and rendering.
+See the [simulator guide](sim/desktop/README.md) for controls and rendering.
 
 ## Roadmap
 
@@ -146,7 +146,8 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | --- | --- |
 | `firmware/` | Device application, rendering, protocols, storage, board image, and bootloader |
 | `host/` | Host tools, map bakers, fixtures, and test support |
-| `apps/` | Desktop simulator, desktop shell, and browser/WebAssembly hosts |
+| `apps/` | Desktop shell and planner services |
+| `sim/` | Desktop, web and phone simulators, host core, replay, feeder and benchmarks |
 | `builder/` | Svelte map builder, shared Rust/WASM core, presets, and maintainer server |
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
