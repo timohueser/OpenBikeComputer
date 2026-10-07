@@ -105,7 +105,7 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
       grimsel) output="$BUILD_DIR/sim-grimsel/grimsel.obcm" ;;
       monaco) output="$BUILD_DIR/sim-monaco/monaco.obcm" ;;
       freiburg) output="$BUILD_DIR/sim-freiburg/freiburg.obcm" ;;
-      grimsel-demo) output="$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" ;;
+      grimsel-demo) output="$REPO_ROOT/sim/desktop/assets/grimsel-demo.obcm" ;;
       *) echo "unknown map package $name" >&2; exit 2 ;;
     esac
     echo "packing $output (bbox $bbox${terrain:+, terrain $(basename "$terrain")}) ..."
@@ -156,7 +156,7 @@ do_grimsel_demo() {
     fi
     repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX" "$surface"
     # obc-pack samples terrain for contours/ascent but leaves the terrain region empty.
-    python3 - "$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" "$surface" \
+    python3 - "$REPO_ROOT/sim/desktop/assets/grimsel-demo.obcm" "$surface" \
       "$REPO_ROOT/firmware/obc-formats/src/obcm.rs" <<'PY_EMBED'
 from pathlib import Path
 import re

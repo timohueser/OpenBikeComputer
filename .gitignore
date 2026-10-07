@@ -85,7 +85,7 @@ builder/app/.env.local
 builder/app/node_modules/
 builder/app/tests/browser/node_modules/
 builder/app/tests/device-smoke/node_modules/
-apps/obc-web-demo/tests/browser/node_modules/
+sim/web-demo/tests/browser/node_modules/
 builder/app/dist/
 planner/tiles/dist/
 planner/tiles/node_modules/

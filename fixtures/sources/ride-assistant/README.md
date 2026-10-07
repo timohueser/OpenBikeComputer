@@ -136,5 +136,5 @@ cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical \
 
 The second command reopens saved routes and recordings without importing the fixture again.
 **The card is user state**: fixture sync does not replace it, so create a new card to test a new
-package. See the [simulator README](../../../apps/obc-sim/README.md) for imports and recording
+package. See the [simulator README](../../../sim/desktop/README.md) for imports and recording
 recovery.

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "artifact": "apps/obc-sim/assets/grimsel-demo.obcm",
+  "artifact": "sim/desktop/assets/grimsel-demo.obcm",
   "obcm_version": 19,
   "map": {
     "bytes": 10084352,

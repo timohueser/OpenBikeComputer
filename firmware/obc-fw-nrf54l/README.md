@@ -273,7 +273,7 @@ See the [bench module](src/bin/flat_store_bench.rs) for phases and output.
 ## Peak View
 
 The menu appears when the selected map (lowest-ID Map object) has indexed terrain.
-See [simulator controls](../../apps/obc-sim/README.md). Generation uses the shared
+See [simulator controls](../../sim/desktop/README.md). Generation uses the shared
 128 KiB scratch arena; Back must release it before navigation, rendering or USB.
 `obc-bake bake` writes the surface index. Convert standalone native terrain with
 `obc-dem surface native.obcd indexed.obcd`.

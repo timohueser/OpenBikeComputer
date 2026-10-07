@@ -56,7 +56,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(self.select("-p", "obc-c*"), ["obc-crc"])
 
     def test_a_manifest_alone_selects_its_default_members(self):
-        self.assertEqual(self.select("--manifest-path", "apps/obc-sim/Cargo.toml", default=(SIM,)), ["obc-sim"])
+        self.assertEqual(self.select("--manifest-path", "sim/desktop/Cargo.toml", default=(SIM,)), ["obc-sim"])
 
     def test_the_whole_workspace_is_selected_only_when_it_is_asked_for(self):
         self.assertEqual(self.select("--workspace"), ["obc-sim", "obc-crc"])
@@ -72,7 +72,7 @@ class LibraryTests(unittest.TestCase):
         self.assertTrue(self.library("-p", "obc-sim", "-p", "obc-crc"))
 
     def test_a_binary_only_member_is_not_rescued_by_a_sibling_library(self):
-        self.assertFalse(self.library("--manifest-path", "apps/obc-sim/Cargo.toml", default=(SIM,)))
+        self.assertFalse(self.library("--manifest-path", "sim/desktop/Cargo.toml", default=(SIM,)))
 
     def test_excluding_every_library_leaves_a_scope_with_none(self):
         self.assertFalse(self.library("--workspace", "--exclude", "obc-crc"))

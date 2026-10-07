@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LIMIT = 256 * 1024
 ALLOWED = {
     # Shipped wasm demo payload, not a developer fixture.
-    "apps/obc-sim/assets/grimsel-demo.obcm",
+    "sim/desktop/assets/grimsel-demo.obcm",
     # Bundled onboarding route and factory demo ride source.
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/Resources/grimsel-pass.gpx",
     # Skin-preview product input/golden, owned and rendered by obc-bake.
@@ -37,7 +37,7 @@ FIXTURE_SUFFIXES = (
     ".gpx",
 )
 FIXTURE_AREAS = (
-    "apps/obc-sim/assets/",
+    "sim/desktop/assets/",
 )
 
 def tracked_files() -> list[str]:

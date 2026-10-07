@@ -27,7 +27,7 @@ pub const FRAME_H: u32 = obc_display::ls021::FRAME_H as u32;
 
 // The wasm-only map stays app-owned. Shared authored route and replay sources live in the fixture
 // registry, so other components never reach through this app's asset directory.
-pub(crate) const DEMO_MAP: &[u8] = include_bytes!("../../obc-sim/assets/grimsel-demo.obcm");
+pub(crate) const DEMO_MAP: &[u8] = include_bytes!("../../desktop/assets/grimsel-demo.obcm");
 const DEMO_ROUTE: &[u8] = include_bytes!("../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
 const DEMO_RIDE_GPX: &str = include_str!("../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb-demo.gpx");
 

@@ -26,4 +26,4 @@ python3 builder/wasm/wasm_size_guard.py
 ```
 
 The fixture cutter needs GEOS. It is a dev dependency and must stay outside the production graph.
-The native flat-device library stays in `host/obc-flat-device`.
+The native flat-device library stays in `sim/flat-device`.

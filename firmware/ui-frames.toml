@@ -33,7 +33,7 @@ monaco = "{fixtures}/sim-monaco/monaco.obcm"
 upgpx = "{fixtures}/sim-monaco/tracks/monaco-upahead.gpx"
 cork = "{fixtures}/sim-assistant-west-cork/west-cork.obcm"
 freiburg = "{fixtures}/sim-freiburg/freiburg.obcm"
-peaks = "{repo}/apps/obc-sim/assets/grimsel-demo.obcm"
+peaks = "{repo}/sim/desktop/assets/grimsel-demo.obcm"
 # A tiny replay that lies *on* specs/vectors' `route-waypoints.obcr` ("Vector Loop") — the Grimsel
 # climb GPX is far off it, so it cannot drive the waypoint chip and ticks. It stops ~300 m short of
 # the "Pass Summit" waypoint; its provenance is pinned in the assets README.

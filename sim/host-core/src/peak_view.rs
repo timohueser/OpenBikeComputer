@@ -180,7 +180,7 @@ mod tests {
     use super::*;
     use obc_app::AppState;
 
-    const MAP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../apps/obc-sim/assets/grimsel-demo.obcm");
+    const MAP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../sim/desktop/assets/grimsel-demo.obcm");
 
     /// Every sector of the circle is built — what the runtime reports as `Status::Ready`. The
     /// status goes into the screen, which keeps no getter, so the panorama itself is asked.
