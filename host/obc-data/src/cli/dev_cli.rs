@@ -105,7 +105,8 @@ pub(super) fn prepare(
     id: &str,
     request: &Request,
 ) -> Result<(), Error> {
-    let mut run = operation_cli::resume(store, "dev local")?.ok_or("Local preparation has no retained operation")?;
+    let mut run = operation_cli::resume(store, "dev local")?
+        .ok_or_else(|| Code::RunFailed.error("Local preparation has no retained operation").with_run(id))?;
     let result = (|| -> Result<Prepared, Error> {
         run.record(&Event::Phase { phase: Phase::Prepare })?;
         let product = products
