@@ -12,7 +12,7 @@ a document.
 Run it as a server for a browser test:
 
     python3 tools/fixture_catalog.py --catalog web-assemble --port 4180 \\
-        --static builder/app/dist/web --log .artifacts/web-builder/catalog.jsonl
+        --static builder/web/dist/web --log .artifacts/web-builder/catalog.jsonl
 """
 
 from __future__ import annotations
@@ -349,7 +349,7 @@ def main() -> None:
     if args.static and not (args.static / "index.html").is_file():
         raise SystemExit(
             f"{args.static}/index.html is missing. Build it first:\n"
-            "  cd builder/app && npm run build:web"
+            "  cd builder/web && npm run build:web"
         )
     server = CatalogServer(CATALOGS[args.catalog](), args.port, args.static, args.log)
     print(f"{server.origin} serving {len(server.objects)} pinned objects", flush=True)

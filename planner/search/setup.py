@@ -75,7 +75,7 @@ def main():
     run('uv', 'sync', '--locked', '--project', str(ROOT.parents[1]),
         '--group', 'search-runtime', '--group', 'search-test',
         env={**os.environ, 'UV_PROJECT_ENVIRONMENT': str(ROOT / '.venv')})
-    npm_ci(ROOT.parents[1] / 'builder/app')
+    npm_ci(ROOT.parents[1] / 'builder/web')
     archive = data / 'query-parser-v2-int8.tar.gz'
     if not archive.exists():
         run('gh', 'release', 'download', 'spike/query-parser-v2', '-R', 'timohueser/OpenBikeComputer',

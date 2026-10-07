@@ -16,7 +16,7 @@ import time
 from .planner_geo import bounds, mercator, tile_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "builder/app"
+APP = ROOT / "builder/web"
 # Child processes start in their own session, so an interrupt reaches only this process. A caller that
 # runs producers in threads sets STOPPING and stops these; `run` then starts no new process.
 RUNNING, STOPPING = set(), threading.Event()

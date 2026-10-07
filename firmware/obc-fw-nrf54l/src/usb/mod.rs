@@ -46,7 +46,7 @@ use device_info::{DeviceInfoHandler, MAX_DEVICE_INFO};
 
 /// Development USB vendor / product id: `0x1209` is [pid.codes](https://pid.codes) and `0x0001` is
 /// its documented prototype pair. A real id moves two constants: [`PRODUCT_ID`] here, and
-/// `OBC_USB_FILTERS` in `builder/app/src/lib/usb/webusb.ts`.
+/// `OBC_USB_FILTERS` in `builder/web/src/lib/usb/webusb.ts`.
 const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0x0001;
 

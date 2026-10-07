@@ -498,13 +498,13 @@ web *args:
     # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
     # and makes the served schema and every preview use this checkout exactly.
     _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
-    [[ -d builder/app/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/app && _run npm ci ); }
+    [[ -d builder/web/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/web && _run npm ci ); }
     # Generated bindings are gitignored; existence cannot prove that any bridge
     # matches its Rust source. Warm wasm-pack builds are incremental.
-    _say "refreshing the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
+    _say "refreshing the wasm bridges…"; ( cd builder/web && _run npm run build:wasm )
     # Always rebuild this small local bundle: tools/obc.local is runtime state,
     # but a source checkout must never keep serving yesterday's platform adapter.
-    _say "building the maintainer frontend…"; ( cd builder/app && _run npm run build )
+    _say "building the maintainer frontend…"; ( cd builder/web && _run npm run build )
     _run uv run --locked --group builder python -m builder.server "$@"
 
 # Run the desktop app (Tauri + the shared published-cell frontend). The Rust side
@@ -526,7 +526,7 @@ desktop *args:
       build|build-only) mode=build ;;
       *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
     esac; done
-    fe="$OBC_ROOT/builder/app"
+    fe="$OBC_ROOT/builder/web"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # The app imports the shared WASM core. Generated bindings are gitignored;
     # existence cannot prove that any bridge matches its Rust source, so always
@@ -537,14 +537,14 @@ desktop *args:
       # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
       _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
       ( cd "$fe" && npm run dev -- --mode desktop & )
-      cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features
+      cd "$OBC_ROOT/builder/desktop"; _run cargo run --no-default-features
     else
       # vite/esbuild strips types without checking them; svelte-check is what
       # fails loudly when the app drifts from a bridge's generated bindings.
       _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
-      cd "$OBC_ROOT/apps/obc-desktop"
+      cd "$OBC_ROOT/builder/desktop"
       [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
       _run cargo run --release
     fi
@@ -617,7 +617,7 @@ site *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     port="${1:-4173}"
-    fe="$OBC_ROOT/builder/app"
+    fe="$OBC_ROOT/builder/web"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # Generated bindings are gitignored; existence cannot prove that any bridge
     # matches its Rust source, so always rebuild — warm builds are incremental.
@@ -745,7 +745,7 @@ fmt:
     _run cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
-    _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
+    _run cargo fmt --manifest-path builder/desktop/Cargo.toml
 
 [doc("Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.")]
 [group('build')]
@@ -818,7 +818,7 @@ check *args:
       step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
       step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
       step "fmt (sensor mock)" cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml
-      step "fmt (desktop app)" cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml
+      step "fmt (desktop app)" cargo fmt --check --manifest-path builder/desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -856,7 +856,7 @@ check *args:
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
-        fe="$OBC_ROOT/builder/app"
+        fe="$OBC_ROOT/builder/web"
         pushd "$fe" >/dev/null
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
@@ -875,7 +875,7 @@ check *args:
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
         step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
         step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
-        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
+        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/builder/desktop/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
     if want wasm; then

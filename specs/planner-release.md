@@ -78,7 +78,7 @@ at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
 without tile quantization. The feature ID is `(type << 44) | osm_id`, where type
 is 1 for nodes, 2 for ways, and 3 for relations. OSM IDs are positive and below
 2^44. Categories are defined in the
-[place categories](../builder/app/src/lib/planner/poi-kinds.json).
+[place categories](../builder/web/src/lib/planner/poi-kinds.json).
 Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
 except that an empty archive contains one empty tile at the southwest bound.
 

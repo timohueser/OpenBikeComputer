@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -43,6 +47,60 @@ def evaluate(*args, **kwargs):
 
 
 class AggregateTests(unittest.TestCase):
+    def test_workflow_files_transport_large_plan_and_needs(self):
+        import yaml
+
+        root = test_plan.repository_root()
+        workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+        step = next(item for item in workflow["jobs"]["ci"]["steps"]
+                    if item.get("name") == "Verify selected suites and required jobs")
+        self.assertNotIn("OBC_SELECTION_PLAN", step.get("env", {}))
+        self.assertNotIn("OBC_NEEDS_RESULTS", step.get("env", {}))
+        graph, _, units = test_plan.load(root)
+        files = [".github/workflows/ci.yml"] + [
+            f"docs/content/{index:04d}-{'x' * 80}.md" for index in range(524)
+        ]
+        files.append('docs/content/\nOBC_SELECTION_PLAN_JSON\n$(touch "$RUNNER_TEMP/injected")`touch "$RUNNER_TEMP/injected"`.md')
+        data = test_plan.plan_data(test_plan.select(units, graph, files))
+        serialized = json.dumps(data)
+        self.assertGreater(len(serialized.encode()), 128 * 1024)
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            environment = dict(os.environ, RUNNER_TEMP=directory)
+            environment.pop("GITHUB_STEP_SUMMARY", None)
+            for result in ("success", "skipped"):
+                with self.subTest(result=result):
+                    job_results = {job: {"result": "success"} for job in test_plan.JOBS}
+                    job_results["test"]["result"] = result
+                    job_results["selection"]["outputs"] = {"plan": serialized}
+                    needs_json = json.dumps(job_results)
+                    self.assertGreater(len(needs_json.encode()), 128 * 1024)
+                    script = step["run"].replace("${{ needs.selection.outputs.plan }}", serialized)
+                    script = script.replace("${{ toJSON(needs) }}", needs_json)
+                    script_file = temp / "aggregate.sh"
+                    script_file.write_text(script)
+                    completed = subprocess.run(
+                        ["bash", "-e", "-o", "pipefail", str(script_file)],
+                        cwd=root, env=environment, text=True, capture_output=True, check=False,
+                    )
+                    expected = aggregate.evaluate(data, job_results, aggregate.upstream_jobs())
+                    self.assertEqual(completed.returncode, 0 if expected.passed else 1, completed.stderr)
+                    self.assertEqual(completed.stdout, aggregate.markdown_summary(expected))
+                    self.assertEqual(json.loads((temp / "ci-selection-plan.json").read_text()), data)
+                    self.assertEqual(json.loads((temp / "ci-needs-results.json").read_text()), job_results)
+                    self.assertFalse((temp / "injected").exists())
+
+    def test_json_file_errors_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "input.json"
+            with self.assertRaises(aggregate.AggregateError):
+                aggregate._json_argument(None, "OBC_SELECTION_PLAN", str(path))
+            for contents in (b"", b"not json", b"[]", b"\xff"):
+                with self.subTest(contents=contents):
+                    path.write_bytes(contents)
+                    with self.assertRaises(aggregate.AggregateError):
+                        aggregate._json_argument(None, "OBC_SELECTION_PLAN", str(path))
+
     def test_table_driven_states(self):
         cases = [
             ("selected success", suite("rust.ok", True), needs(), "pass", True),

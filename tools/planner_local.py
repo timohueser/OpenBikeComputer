@@ -56,7 +56,7 @@ def commands(value):
         "search": ([node, "server.mjs"], root / "planner/search"),
         "tiles": ([node, "src/local.mjs", str(view), "8789"], root / "planner/tiles"),
         "frontend": ([node, "node_modules/vite/bin/vite.js", "--mode", "web", "--host", "127.0.0.1",
-                      "--port", "5173", "--strictPort"], root / "builder/app"),
+                      "--port", "5173", "--strictPort"], root / "builder/web"),
     }, env
 
 
