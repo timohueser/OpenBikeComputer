@@ -32,6 +32,11 @@ impl Limits {
     pub fn machine() -> Self {
         Self { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), memory_bytes: memory() }
     }
+
+    fn within(mut self, host: u64) -> Self {
+        self.memory_bytes = Some(self.memory_bytes.map_or(host, |requested| requested.min(host)));
+        self
+    }
 }
 
 #[cfg(unix)]
@@ -316,6 +321,7 @@ impl Run {
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
+        let limits = self.budget.as_ref().map_or(limits, |(_, budget)| limits.within(budget.memory_bytes));
         self.check_stop(store)?;
         crate::worker::check(root)?;
         let _using = store.using()?;
@@ -1089,8 +1095,12 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
 
     #[test]
     fn the_steps_that_run_together_fit_in_the_memory_budget() {
+        let clamped = Limits { jobs: 4, memory_bytes: Some(16000) }.within(1000);
+        assert_eq!((clamped.jobs, clamped.memory_bytes), (4, Some(1000)));
+        assert_eq!(Limits { jobs: 4, memory_bytes: Some(500) }.within(1000).memory_bytes, Some(500));
+        assert_eq!(Limits { jobs: 4, memory_bytes: None }.within(1000).memory_bytes, Some(1000));
         assert!(together("runs-memory-fits", [Some(600), Some(600)], 1200));
-        assert!(!together("runs-memory-over", [Some(600), Some(600)], 1000));
+        assert!(!together("runs-memory-over", [Some(600), Some(600)], clamped.memory_bytes.unwrap()));
         assert!(!together("runs-memory-alone", [Some(1500), Some(100)], 1000), "a step over the budget runs alone");
         assert!(!together("runs-memory-unknown", [None, Some(100)], 1000), "a step with no estimate runs alone");
     }

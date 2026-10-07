@@ -229,6 +229,7 @@ mod tests {
             schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
             schema("Completed auto output", generator.subschema_for::<crate::cli::auto_cli::Result>()),
             schema("Live timer state", generator.subschema_for::<crate::schedule::State>()),
+            schema("`schedule live --setup-budget`", generator.subschema_for::<crate::operation::budget::Budget>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN` for a detached operation", generator.subschema_for::<crate::cli::operation_cli::View>()),
             schema("`runs RUN` for other journals", generator.subschema_for::<Details>()),

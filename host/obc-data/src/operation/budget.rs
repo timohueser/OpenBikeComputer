@@ -5,7 +5,7 @@ use std::path::Path;
 pub const SLICE: &str = "obc-data-bake.slice";
 const MIB: u64 = 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct Budget {
     pub cpu_percent: u64,
     pub memory_bytes: u64,

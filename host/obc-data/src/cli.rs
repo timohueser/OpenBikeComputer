@@ -107,12 +107,15 @@ enum Command {
     /// Inspect, enable or disable the operator's live timer.
     Schedule {
         env: String,
-        #[arg(long, conflicts_with = "disable", requires = "time_zone")]
+        #[arg(long, conflicts_with_all = ["disable", "setup_budget"], requires = "time_zone")]
         calendar: Option<String>,
         #[arg(long, requires = "calendar")]
         time_zone: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "setup_budget")]
         disable: bool,
+        /// Install and verify bake limits without enabling a timer.
+        #[arg(long)]
+        setup_budget: bool,
     },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
@@ -225,8 +228,18 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Build(args) => operation_cli::build(&root()?, args, json),
         Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
         Command::Auto { env } => auto_cli::start(&root()?, env, json),
-        Command::Schedule { env, calendar, time_zone, disable } => {
+        Command::Schedule { env, calendar, time_zone, disable, setup_budget } => {
             let (root, store) = (root()?, Store::open()?);
+            if setup_budget {
+                let budget =
+                    crate::schedule::setup_budget(&root, &store, &env).map_err(|reason| Code::Blocked.error(reason))?;
+                return if json {
+                    print_json(&budget).map(|()| ExitCode::SUCCESS)
+                } else {
+                    println!("bake CPU/memory limits and disk reserve configured; live timer unchanged");
+                    Ok(ExitCode::SUCCESS)
+                };
+            }
             let state = if disable {
                 crate::schedule::disable(&root, &store, &env)
             } else if let Some(calendar) = calendar {

@@ -70,7 +70,10 @@ impl Units {
         let units = Self {
             directory: user_directory()?,
             root: root.canonicalize().map_err(|e| e.to_string())?,
-            store: store.root().canonicalize().map_err(|e| e.to_string())?,
+            store: store
+                .root()
+                .canonicalize()
+                .map_err(|e| format!("prepare the configured build-store directory: {e}"))?,
             environment: crate::operation::launch::environment()?,
             budget: Budget::environment()?,
         };
@@ -78,6 +81,34 @@ impl Units {
             path(location)?;
         }
         Ok(units)
+    }
+
+    fn check_setup(&self) -> Result<(), String> {
+        if show(&self.budget.alert)?.get("LoadState").map(String::as_str) != Some("loaded") {
+            return Err("install the operator alert service before enabling the timer".into());
+        }
+        self.budget.disk(&self.root, 0)?;
+        self.budget.disk(&self.store, 0)?;
+        let output = crate::operation::launch::bounded_output(
+            Command::new(PREFLIGHT).arg("bake-preflight").arg(&self.root).arg(&self.store),
+            Duration::from_secs(30),
+        )
+        .map_err(|reason| format!("update the installed plumbing binary and host budget setup: {reason}"))?;
+        if output != b"{\"ready\":true}\n" {
+            return Err("installed plumbing binary does not support bake disk preflight".into());
+        }
+        Ok(())
+    }
+
+    fn write_budget(&self) -> Result<(), String> {
+        crate::commit::durable(&self.directory.join(SLICE), self.budget.unit().as_bytes())
+    }
+
+    fn setup_budget(&self) -> Result<(), String> {
+        self.write_budget()?;
+        command(&["daemon-reload"])?;
+        command(&["start", SLICE])?;
+        budget_ready(&self.budget)
     }
 
     fn service(&self) -> Result<String, String> {
@@ -235,6 +266,18 @@ pub(crate) fn budget_ready(budget: &Budget) -> Result<(), String> {
     budget.verify_controllers(&Path::new("/sys/fs/cgroup").join(&group[1..]))
 }
 
+/// Configure bake limits before manual approval; this does not enable or write a timer.
+pub fn setup_budget(root: &Path, store: &Store, env: &str) -> Result<Budget, String> {
+    live(env)?;
+    let units = Units::load(root, store)?;
+    crate::operation::launch::preflight()?;
+    units.check_setup()?;
+    let _admission =
+        store.try_lock("schedule-live")?.ok_or("another schedule change or publication handoff is in progress")?;
+    units.setup_budget()?;
+    Ok(units.budget)
+}
+
 /// Validate all setup before replacing the known timer. This does not start a bake.
 pub fn install(root: &Path, store: &Store, env: &str, calendar: &str, zone: &str) -> Result<State, String> {
     live(env)?;
@@ -246,28 +289,13 @@ pub fn install(root: &Path, store: &Store, env: &str, calendar: &str, zone: &str
         Duration::from_secs(30),
     )
     .map_err(|reason| format!("validate the calendar and time zone with systemd-analyze: {reason}"))?;
-    if show(&units.budget.alert)?.get("LoadState").map(String::as_str) != Some("loaded") {
-        return Err("install the operator alert service before enabling the timer".into());
-    }
-    units.budget.disk(&units.root, 0)?;
-    units.budget.disk(&units.store, 0)?;
-    let output = crate::operation::launch::bounded_output(
-        Command::new(PREFLIGHT).arg("bake-preflight").arg(&units.root).arg(&units.store),
-        Duration::from_secs(30),
-    )
-    .map_err(|reason| format!("update the installed plumbing binary and host budget setup: {reason}"))?;
-    if output != b"{\"ready\":true}\n" {
-        return Err("installed plumbing binary does not support bake disk preflight".into());
-    }
+    units.check_setup()?;
     let _admission =
         store.try_lock("schedule-live")?.ok_or("another schedule change or publication handoff is in progress")?;
-    crate::commit::durable_directory(&units.directory)?;
-    crate::commit::durable(&units.directory.join(SLICE), units.budget.unit().as_bytes())?;
+    units.setup_budget()?;
     crate::commit::durable(&units.directory.join(SERVICE), units.service()?.as_bytes())?;
     crate::commit::durable(&units.directory.join(TIMER), timer.as_bytes())?;
     command(&["daemon-reload"])?;
-    command(&["start", SLICE])?;
-    budget_ready(&units.budget)?;
     command(&["enable", "--now", TIMER])?;
     let observed = units.inspect(show)?;
     if !observed.runnable {
@@ -341,8 +369,21 @@ mod tests {
                 alert: "operator-alert.service".into(),
             },
         };
+        units.write_budget().unwrap();
+        assert_eq!(std::fs::read_to_string(units.directory.join(SLICE)).unwrap(), units.budget.unit());
+        assert!(
+            !units.directory.join(TIMER).exists() && !units.directory.join(SERVICE).exists(),
+            "first budget setup leaves automatic publication disabled"
+        );
         std::fs::write(units.directory.join(TIMER), Units::timer("weekly", "Europe/Berlin").unwrap()).unwrap();
         std::fs::write(units.directory.join(SERVICE), units.service().unwrap()).unwrap();
+        let prior = std::fs::read(units.directory.join(TIMER)).unwrap();
+        units.write_budget().unwrap();
+        assert_eq!(
+            std::fs::read(units.directory.join(TIMER)).unwrap(),
+            prior,
+            "budget setup does not replace an existing timer"
+        );
         let show = |name: &str| {
             Ok(BTreeMap::from([
                 ("LoadState".into(), "loaded".into()),
