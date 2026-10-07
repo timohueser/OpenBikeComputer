@@ -1183,7 +1183,7 @@ it does not change an existing layer key or receipt.
 
 `auto ENV` starts the existing detached operation. Fixture environments refuse it. Non-live
 environments build and verify with normal working-tree rules. They do not publish or create an
-approval record. A busy environment skips the run; it has no waiting queue.
+approval record. A known busy reservation returns a successful structured skip; it has no waiting queue. Other admission failures remain errors.
 
 Live admission observes the configured owner's original approval before acquisition or build.
 The current native target/profile needs an exact checked execution entry. Planning, acquisition,
