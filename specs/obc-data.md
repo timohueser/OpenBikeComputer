@@ -492,9 +492,10 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   boundary checks tool, library, environment and selection/config witnesses. A change runs
   discovery again and invalidates changed file digests.
 - Acquisition and planning declare an owner crate and its source paths. The same resolver
-  selects its normal and build dependencies, profiles and execution tools. The owner and engine
-  source trees use the declared paths. Their dependency metadata stays conservative: an unused
-  UI dependency edit can change owner identity. Ordinary UI source edits do not.
+  selects its normal and build dependencies, profiles and execution tools. Owner source uses the
+  declared paths. Engine backend source is included, apart from its TUI module.
+  Backend CLI edits can change owner identity. Its dependency metadata stays conservative:
+  an unused UI dependency edit can change owner identity. Ordinary TUI source edits do not.
 - Source/config evidence is separate from full execution identity. It uses the same traversal,
   selected source and package projections, repository profile and toolchain configuration.
   It resolves at the recorded producer target and profile without selecting native tools,
