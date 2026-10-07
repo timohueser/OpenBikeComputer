@@ -27,12 +27,18 @@ sets the visible region. Terrain extends at least `distance_m` beyond it.
 | `horizon_step` | 90 / 254 degrees per encoded step |
 | `distance_m` | Positive search distance, at most 30000 metres |
 | `timezone` | Region IANA time zone |
-| `terrain_sha256` | SHA-256 of the terrain PMTiles archive, or the empty terrain MBTiles database |
+| `terrain_grid_sha256` | SHA-256 of the canonical terrain grid index: sorted JSON keys, UTF-8, compact separators and one final newline |
+| `terrain_sha256` | For the archive CLI only: SHA-256 of the input terrain PMTiles archive |
 | `attribution` | Terrain source attribution |
 | `bounds` | Visible west, south, east, north |
 | `coverage` | Terrain archive west, south, east, north |
 
-A valid terrain database with no tiles produces sunlight metadata and no tile archives.
+The step reads the portable terrain grid. It verifies each object before it reconstructs a temporary
+archive. Tile payloads and terrain coverage stay unchanged. The grid composer checks the exact
+`terrain_grid_sha256` before it combines sunlight and terrain. It does not use the reconstructed
+archive bytes as the original archive identity.
+
+A valid terrain grid with no tiles produces sunlight metadata and no tile archives.
 The metadata keeps format 3, terrain identity and coverage. Missing terrain or invalid metadata
 is an error. A tile service returns 204 for this empty coverage. The client treats absent heights
 and horizons as unknown; it does not infer flat ground.
