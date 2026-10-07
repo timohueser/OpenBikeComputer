@@ -2,12 +2,14 @@
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
+import sysconfig
 import time
 from urllib.request import urlopen
 
@@ -44,8 +46,10 @@ def commands(value):
               "layers": {name: tiles + f"/{name}.json" for name in runtime.DATA_LAYERS if f"maps/{name}.json" in files}}
     env = {**os.environ, "ROUTE_LISTEN": "127.0.0.1:8788", "OBC_SEARCH_PORT": "8780",
            "OBC_SEARCH_DATA": str(view / "data/search"), "OBC_SEARCH_REGIONS": manifest["region"],
-           "OBC_SEARCH_PYTHON": sys.executable, "VITE_PLANNER_CONFIG": json.dumps(config),
+           "OBC_SEARCH_PYTHON": sys.executable, "OBC_SEARCH_ORIGINS": "http://127.0.0.1:5173", "VITE_PLANNER_CONFIG": json.dumps(config),
            "OBC_PLANNER_ROUTING_URL": "http://127.0.0.1:8788", "OBC_PLANNER_TILES_URL": "http://127.0.0.1:8789"}
+    for key in ("NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME"):
+        env.pop(key, None)
     node = value["node"]
     return {
         "routing": ([str(view / "route-server"), str(view / "data/routing")], root),
@@ -65,7 +69,8 @@ def ready(value):
     expected = value["expected"]
     if route["package"] != expected["routing"] or not search["parser"]["ready"]:
         raise ValueError("Routing or search is not ready for the prepared data")
-    if len(search["regions"]) != 1 or search["regions"][0]["grid"] != expected["search"]:
+    if len(search["regions"]) != 1 or (search["regions"][0]["grid"] != expected["search"]
+                                       or search["regions"][0]["id"] != value["region"]):
         raise ValueError("Search opened another prepared grid")
     if search["parser"]["model"] != expected["model"]:
         raise ValueError("Search opened another query model")
@@ -79,10 +84,17 @@ def supervise(directory, token, lock):
     directory = directory.resolve()
     children, current = {}, None
     with lock.open("a") as owner:
-        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            desired = read(directory / "desired.json")
+            if desired["token"] == token:
+                write(directory / "state.json", {"token": token, "code": desired["code"], "status": "failed",
+                                                  "message": "Another Local supervisor still owns the services"})
+            raise
         def status(**values):
             if read(directory / "desired.json")["token"] == token:
-                write(directory / "state.json", {"token": token, **values})
+                write(directory / "state.json", {"token": token, "code": read(directory / "desired.json")["code"], **values})
         try:
             while True:
                 stop = directory / "stop.json"
@@ -96,6 +108,12 @@ def supervise(directory, token, lock):
                     raise ValueError("Prepared service view changed")
                 if current != value:
                     status(status="starting", view=value["view"])
+                    manifest = runtime.release(Path(value["view"]) / "planner", include_sources=False)[1]
+                    for name, item in manifest["files"].items():
+                        if name.startswith(("routing/", "search/")) or name == "maps/terrain.json":
+                            offline.verify(Path(value["view"]) / "data" / name, item)
+                    if runtime.digest(Path(value["view"]) / "route-server") != value["routing_executable"]:
+                        raise ValueError("Prepared native route service changed")
                     recipes, env = commands(value)
                     changed = [name for name in recipes if not current
                                or current["fingerprints"][name] != value["fingerprints"][name]]
@@ -134,18 +152,29 @@ def supervise(directory, token, lock):
                 status(status="stopped")
 
 
+def check_python(base, expected):
+    actual = {"implementation": sys.implementation.name, "version": list(sys.version_info[:3]),
+              "abi": sysconfig.get_config_var("SOABI")}
+    digest = hashlib.sha256(json.dumps(actual, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    if Path(sys._base_executable).resolve(strict=True) != base.resolve(strict=True) or digest != expected:
+        raise ValueError("Prepare the Local Python environment with the selected interpreter")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", type=Path)
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--token")
     parser.add_argument("--lock", type=Path)
+    parser.add_argument("--base-python", type=Path)
+    parser.add_argument("--python-runtime")
     args = parser.parse_args()
     if args.prepare:
         prepare(args.prepare)
         return
-    if not args.directory or not args.token or not args.lock:
-        parser.error("Provide one Local owner directory, token and lock")
+    if not args.directory or not args.token or not args.lock or not args.base_python or not args.python_runtime:
+        parser.error("Provide one Local owner directory, token, lock and selected interpreter")
+    check_python(args.base_python, args.python_runtime)
     def stop(_number, _frame):
         raise KeyboardInterrupt("Local services interrupted")
     signal.signal(signal.SIGTERM, stop)

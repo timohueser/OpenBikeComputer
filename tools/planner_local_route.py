@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 from . import step_request
 
@@ -13,6 +12,8 @@ from . import step_request
 def step(request):
     root = Path.cwd().resolve()
     code = request["options"]["code"]
+    if str(root) != request["options"]["root"]:
+        raise ValueError("Route service request names another checkout")
     environment = {**os.environ, "RUSTUP_AUTO_INSTALL": "0", "OBC_ROUTE_BUILD_ROOT": str(root),
                    "OBC_ROUTE_BUILD_CODE": code}
     for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):

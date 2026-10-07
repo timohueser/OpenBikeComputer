@@ -136,6 +136,16 @@ impl Product for Planner {
         obc_data::local::plan(root, store, self, release, &declarations.steps, required).map_err(Unplanned::Failed)
     }
 
+    fn dev_prepare(
+        &self,
+        root: &std::path::Path,
+        store: &Store,
+        request: &obc_data::dev::Request,
+        run: &mut obc_data::engine::runs::Run,
+    ) -> Result<obc_data::dev::Prepared, String> {
+        local::prepare(root, store, request, run)
+    }
+
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
         Some(catalog::pointer)
     }
@@ -745,6 +755,44 @@ mod tests {
     fn tiles(input: &Input) -> Vec<&str> {
         let Input::Snapshot { params, .. } = input else { panic!("not a snapshot") };
         params.iter().map(|(_, tile)| &tile["Copernicus_DSM_COG_10_".len()..][..11]).collect()
+    }
+
+    #[test]
+    fn local_metadata_pins_selected_versions_and_derives_the_current_saved_box() {
+        let temp = temp("planner-local-metadata");
+        let store = store(&temp, &["2026-10-01", "2026-10-02"]);
+        let mut env = env("ride", &[]);
+        env.live.insert((EXTRACTS.into(), vec![("area".into(), AREA.into())]), ["2026-10-01".into()].into());
+        let region = |bbox: &str| {
+            Regions::new(vec![parse_region(
+                "ride",
+                &format!(
+            "name = \"Ride\"\nkind = \"box\"\nbox = [{bbox}]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n"
+        ),
+            )
+            .unwrap()])
+            .unwrap()
+        };
+        let first = Planner
+            .declarations(&root(), &env, &region("7.79, 47.99, 7.82, 48.02"), &store, Ok(None), false)
+            .unwrap()
+            .steps;
+        let changed = Planner
+            .declarations(&root(), &env, &region("7.79, 47.99, 7.81, 48.01"), &store, Ok(None), false)
+            .unwrap()
+            .steps;
+        for steps in [&first, &changed] {
+            assert!(steps.iter().all(|step| !step.name.starts_with("planner/runtime/")));
+            let extract = steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
+            assert!(
+                matches!(&extract.inputs[0], Input::Snapshot { source, version, .. } if source == EXTRACTS && version == "2026-10-01")
+            );
+            assert!(extract.code.libraries.is_empty(), "comparison does not need the original Osmium executable");
+        }
+        let routing = |steps: &[Step]| {
+            steps.iter().find(|step| step.name == "planner/routing").unwrap().options["bounds"].clone()
+        };
+        assert_ne!(routing(&first), routing(&changed), "the same saved ID does not hide a changed box");
     }
 
     #[test]
