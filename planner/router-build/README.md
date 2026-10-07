@@ -5,7 +5,7 @@ Choose bounds inside the source extract, with room around the intended trip.
 The importer clips the graph at those bounds. It does not fetch missing data.
 
 ```sh
-cargo run --release -p route-build -- \
+cargo run --release -p planner-router-build -- \
   /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
   --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all \
   --countries DE
@@ -49,7 +49,7 @@ options before the import.
 OBC bare-earth archive and local Copernicus GeoTIFFs through `obc-dem`:
 
 ```sh
-cargo run --release -p route-build -- \
+cargo run --release -p planner-router-build -- \
   /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
   --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all \
   --reference /data/obc-reference --dem /data/copernicus
@@ -71,7 +71,7 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 | Via-way restrictions | Exclude affected member roads for the restricted mode |
 | `yes`, `designated`, `official`, `permissive`, `mtb`, `optional_sidepath` | Keep the mode |
 | `no`; `dismount` for riding | Exclude the mode |
-| Any other access value, on a way or a node | Keep the mode at three times the road cost, or 300 more at a node; the route reports a possible closure (`route_build::source::classify`) |
+| Any other access value, on a way or a node | Keep the mode at three times the road cost, or 300 more at a node; the route reports a possible closure (`planner_router_build::source::classify`) |
 | Conditional access | Keep the mode; the route reports a possible closure |
 | Conditional turns | Ignored; a turn restriction never closes its member roads |
 | Barrier nodes | Pass gates, bollards, toll booths, cattle grids, kerbs and blocks; stiles admit walkers; unknown barriers admit walking and pushing, and the route reports them |
@@ -125,6 +125,6 @@ the landmark scale. It is separate from map tiles. See [the package contract](..
 Preserve OpenStreetMap attribution and ODbL notices when distributing the data.
 
 ```sh
-obc test -p route-build
-cargo clippy -p route-build --all-targets --all-features -- -D warnings
+obc test -p planner-router-build
+cargo clippy -p planner-router-build --all-targets --all-features -- -D warnings
 ```

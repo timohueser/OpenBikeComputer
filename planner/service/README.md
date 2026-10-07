@@ -1,9 +1,9 @@
 # Route service
 
 ```sh
-cargo build --release -p route-server
-target/release/route-server /data/routes/freiburg --verify
-target/release/route-server /data/routes/freiburg
+cargo build --release -p planner-service
+target/release/planner-service /data/routes/freiburg --verify
+target/release/planner-service /data/routes/freiburg
 ```
 
 | Variable | Default | Purpose |
@@ -14,7 +14,7 @@ target/release/route-server /data/routes/freiburg
 
 A request waits up to 1 second for a free worker, then receives `503 busy`.
 Workers share immutable routing data and use the engine's default memory budget.
-See [engine bounds](../../host/route-engine/README.md#bounds-and-checks) for the
+See [engine bounds](../router/README.md#bounds-and-checks) for the
 estimate and its limits. A route request has a
 15-second cooperative deadline, a shape request 30 seconds. Disconnects cancel
 its work. The body limit is 64 KiB. The service loads the `touring` profile
@@ -36,7 +36,7 @@ handle. `planner_router_cancel` is safe from any thread: it stops the call in
 progress, which then answers `cancelled`.
 
 ```sh
-cargo build --release -p route-server --lib --no-default-features --target aarch64-apple-ios
+cargo build --release -p planner-service --lib --no-default-features --target aarch64-apple-ios
 ```
 
 ## HTTP API
@@ -61,7 +61,7 @@ directory. The planner calls the `routing` prefix of its config. See the
 [planner README](../../builder/app/src/components/planner/README.md).
 
 ```sh
-obc test -p route-server
-cargo clippy -p route-server --all-targets -- -D warnings
-cargo clippy -p route-server --all-targets --no-default-features -- -D warnings
+obc test -p planner-service
+cargo clippy -p planner-service --all-targets -- -D warnings
+cargo clippy -p planner-service --all-targets --no-default-features -- -D warnings
 ```

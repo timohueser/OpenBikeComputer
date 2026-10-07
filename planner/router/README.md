@@ -8,9 +8,9 @@ and WebAssembly. Run browser queries in a worker.
 ## Use
 
 ```rust,no_run
-use route_engine::{data::RoutingData, Control, Request, Router};
+use planner_router::{data::RoutingData, Control, Request, Router};
 
-let package = route_engine::open(std::path::Path::new("/data/freiburg"))?;
+let package = planner_router::open(std::path::Path::new("/data/freiburg"))?;
 let budget = package.default_budget();
 let mut router = Router::new(package, budget);
 let request: Request = serde_json::from_str(r#"{
@@ -31,7 +31,7 @@ needs a network service.
 Run a local query without the HTTP service. It writes the wire answer:
 
 ```sh
-cargo run --release -p route-engine --example query -- /data/freiburg < request.json
+cargo run --release -p planner-router --example query -- /data/freiburg < request.json
 ```
 
 ## API reference
@@ -95,11 +95,11 @@ queries, and 250,000 geometry vertices. `Control` can lower these limits, cap
 the search queues, and supply a cancellation callback. These are service budgets.
 
 ```sh
-obc test -p route-engine
-obc test -p route-build
-cargo clippy -p route-engine --all-targets -- -D warnings
-cargo check -p route-engine --target wasm32-unknown-unknown
-cargo check -p route-engine --target aarch64-apple-ios
+obc test -p planner-router
+obc test -p planner-router-build
+cargo clippy -p planner-router --all-targets -- -D warnings
+cargo check -p planner-router --target wasm32-unknown-unknown
+cargo check -p planner-router --target aarch64-apple-ios
 ```
 
 The builder tests compare prepared coordinate queries with independent
