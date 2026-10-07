@@ -1,4 +1,4 @@
-//! Live: the region of `data/env/live.toml`, each product with its live release, the day of its
+//! Live: the region of the stored settings, each product with its live release, the day of its
 //! apply and its state, the optional layers, and what needs attention. It shows what `status`
 //! writes.
 

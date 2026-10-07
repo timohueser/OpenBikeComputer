@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::runs_cli::{bytes, duration};
-use super::{cells, fetched, print_json, print_table, registry, Code, Error};
+use super::{cells, fetched, print_json, print_table, Code, Error};
 use crate::engine::changes::{self, Against};
 use crate::engine::plan::{self, Cause, Estimate, Group, Plan};
 use crate::engine::release::{self, Release};
@@ -28,7 +28,7 @@ use crate::store::Store;
 
 #[derive(Args)]
 pub struct PlanArgs {
-    /// The environment: `data/env/ENV.toml`.
+    /// The environment: `live` or `local`.
     pub(super) env: String,
     /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',')]
@@ -41,7 +41,7 @@ pub struct PlanArgs {
 
 #[derive(Args)]
 pub struct BuildArgs {
-    /// The environment: `data/env/ENV.toml`.
+    /// The environment: `live` or `local`.
     pub(super) env: String,
     /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
     #[arg(long, value_delimiter = ',', conflicts_with = "plan")]
@@ -63,6 +63,7 @@ pub struct EnvPlan {
     pub env: String,
     pub region: String,
     pub layers: Vec<String>,
+    pub settings: Option<crate::settings::Settings>,
     /// Source move intent: an explicit version, or each request's newest version. Exact resolved
     /// versions are in `versions`; fetching never changes this intent.
     pub moves: BTreeMap<String, Option<String>>,
@@ -70,7 +71,7 @@ pub struct EnvPlan {
     pub versions: Vec<FetchVersion>,
     /// For `live`: the release that each product has live now. Empty for another environment.
     pub live: Vec<LiveRelease>,
-    /// For `live`: what the environment file changes against the live releases.
+    /// For `live`: what the pending settings change against the live releases.
     pub edits: Vec<Edit>,
     /// The groups that `--only` selected: none for every group, `["none"]` for no group.
     pub only: Vec<String>,
@@ -128,7 +129,7 @@ pub struct LiveRelease {
     pub key: String,
 }
 
-/// What the environment file changes against the live release of a product.
+/// What the pending settings change against the live release of a product.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Edit {
@@ -136,6 +137,8 @@ pub enum Edit {
     Region { product: String, from: Option<String>, to: String },
     /// The optional layers that the environment switches on and off.
     Layers { product: String, on: Vec<String>, off: Vec<String> },
+    /// Region definitions or refresh policy changed without a selection change.
+    Settings { product: String },
 }
 
 /// What a build did.
@@ -318,20 +321,26 @@ impl Cost {
 
 /// What a group changes, in a few words.
 pub(super) fn change(group: &Group, edits: &[Edit]) -> String {
-    let edits = |region: bool| {
+    let edit_text = |region: bool| {
         let edits = edits.iter().filter(|edit| matches!(edit, Edit::Region { .. }) == region);
         edits.map(Edit::text).collect::<Vec<_>>().join("; ")
     };
     match &group.cause {
         None => String::new(),
-        Some(Cause::Region) => edits(true),
-        Some(Cause::Layers) => edits(false),
+        Some(Cause::Region) => edit_text(true),
+        Some(Cause::Layers) => edit_text(false),
         Some(Cause::Move { source, from, to }) => {
             format!("move {source} {} → {to}", if from.is_empty() { "—".into() } else { from.join(", ") })
         }
         Some(Cause::Code { paths, crates }) if paths.is_empty() && crates.is_empty() => "no step makes it".into(),
         Some(Cause::Code { paths, crates }) => format!("code of {}", [&paths[..], crates].concat().join(", ")),
-        Some(Cause::Pointer { product, .. }) => format!("client document of {product}"),
+        Some(Cause::Pointer { product, .. }) => {
+            if edits.iter().any(|edit| matches!(edit, Edit::Settings { product: changed } if changed == product)) {
+                format!("settings and client document of {product}")
+            } else {
+                format!("client document of {product}")
+            }
+        }
         Some(Cause::Repair { keys }) => format!("{} keys that R2 lacks", keys.len()),
     }
 }
@@ -426,8 +435,9 @@ pub(super) fn build_env(
     let Planned { loaded, steps, plan, live } =
         planned_run(root, store, http, remote, products, &args.env, only, basis, true, Some(run))?;
     if let Some(saved) = saved {
-        let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
-            == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
+        let unchanged =
+            (&saved.env, &saved.region, &saved.layers, &saved.settings, &saved.blocked, &saved.live, &saved.edits)
+                == (&plan.env, &plan.region, &plan.layers, &plan.settings, &plan.blocked, &plan.live, &plan.edits);
         if !unchanged || !(Plan { groups: plan.groups.clone() }).same_work(&Plan { groups: saved.groups.clone() }) {
             return Err(outdated());
         }
@@ -566,13 +576,22 @@ pub(super) struct Loaded {
     pub(super) regions: Regions,
 }
 
-pub(super) fn load(root: &Path, name: &str) -> Result<Loaded, Error> {
-    let registry = registry(root)?;
-    if !crate::is_kebab(name) || !Env::path(root, name).is_file() {
-        return Err(Code::Usage.error(format!("no environment `{name}` in data/env/")));
-    }
-    let regions = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
-    let env = Env::load(root, name, &regions).map_err(|e| Code::InvalidData.error(e))?;
+pub(super) fn load(root: &Path, name: &str, store: &Store) -> Result<Loaded, Error> {
+    let mut registry = crate::sources::Registry::load(root).map_err(|e| Code::InvalidData.error(e))?;
+    let settings = crate::settings::current(store)?;
+    settings.policies(&mut registry.sources)?;
+    let (mut env, regions) = if name == "live" {
+        (settings.env()?, settings.regions()?)
+    } else {
+        let regions = crate::settings::regions(root, store)?;
+        (Env::load(root, name, &regions)?, regions)
+    };
+    env.manual = registry
+        .sources
+        .iter()
+        .filter(|source| source.refresh == Refresh::Manual)
+        .map(|source| source.id.clone())
+        .collect();
     Ok(Loaded { env, sources: registry.sources, regions })
 }
 
@@ -625,9 +644,13 @@ fn planned_run(
     prepare: bool,
     mut run: Option<&mut Run>,
 ) -> Result<Planned, Error> {
-    let mut loaded = load(root, name)?;
-    let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
+    let sources = crate::sources::Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
+    let live = remote.map(|remote| Live::read(remote, products, &sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
+    if let Some(live) = &live {
+        crate::settings::observe(store, live)?;
+    }
+    let mut loaded = load(root, name, store)?;
     if let (Some(live), Some(remote)) = (&live, remote) {
         live.restore_named(remote, store).map_err(|e| Code::VerifyFailed.error(e))?;
     }
@@ -795,6 +818,7 @@ fn env_plan(
         env: env.name.clone(),
         region: env.region.clone(),
         layers: env.layers.clone(),
+        settings: env.settings.clone(),
         moves: env.moves.clone(),
         versions: versions.collect(),
         live: releases,
@@ -835,7 +859,10 @@ fn edits(products: &[&dyn Product], env: &Env, live: &Live, blocked: &[BlockedPr
         if release.optional != now {
             let on = now.iter().filter(|layer| !release.optional.contains(layer)).cloned().collect();
             let off = release.optional.iter().filter(|layer| !now.contains(layer)).cloned().collect();
-            edits.push(Edit::Layers { product: name, on, off });
+            edits.push(Edit::Layers { product: name.clone(), on, off });
+        }
+        if release.region == env.region && release.optional == now && release.settings != env.settings {
+            edits.push(Edit::Settings { product: name });
         }
     }
     edits
@@ -892,13 +919,14 @@ fn against<'a>(
 impl Edit {
     pub(super) fn product(&self) -> &str {
         match self {
-            Edit::Region { product, .. } | Edit::Layers { product, .. } => product,
+            Edit::Region { product, .. } | Edit::Layers { product, .. } | Edit::Settings { product } => product,
         }
     }
 
     fn text(&self) -> String {
         match self {
             Edit::Region { product, from, to } => format!("{product} {} → {to}", from.as_deref().unwrap_or("—")),
+            Edit::Settings { product } => format!("{product} settings"),
             Edit::Layers { product, on, off } => {
                 let on = on.iter().map(|layer| format!("+{layer}"));
                 format!(
@@ -936,7 +964,8 @@ fn next_reusing(
         let dropped: BTreeSet<String> =
             drops.chain(&missing).map(String::as_str).filter(mine).map(str::to_string).collect();
         let new: Vec<_> = stored.values().filter(|layer| mine(&layer.step.as_str())).cloned().collect();
-        let edited = plan.edits.iter().any(|edit| edit.product() == name);
+        let edited = plan.edits.iter().any(|edit| edit.product() == name)
+            || now.release.as_ref().is_some_and(|(_, release)| release.settings != plan.settings);
         let release = if plan.blocked.iter().any(|b| b.product == name)
             || (new.is_empty() && dropped.is_empty() && !edited)
         {
@@ -950,6 +979,7 @@ fn next_reusing(
         let release = release
             .map(|(_, mut release)| -> Result<_, Error> {
                 if !blocked && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) {
+                    release.settings = plan.settings.clone();
                     release.bind_producers(store)?;
                     release.name_files(product.named(&release)?)?;
                 }
@@ -1172,7 +1202,7 @@ fn list_steps(
 pub(super) fn check_layers(products: &[&dyn Product], env: &Env) -> Result<(), Error> {
     let offered = |layer: &&String| products.iter().any(|product| product.optional().contains(&layer.as_str()));
     if let Some(layer) = env.layers.iter().find(|layer| !offered(layer)) {
-        let message = format!("data/env/{}.toml: no product has the optional layer `{layer}`", env.name);
+        let message = format!("{} settings: no product has the optional layer `{layer}`", env.name);
         return Err(Code::InvalidData.error(message));
     }
     Ok(())
@@ -1371,7 +1401,7 @@ pub(crate) mod tests {
         })
         .err()
         .unwrap();
-        let message = "data/env/live.toml: no product has the optional layer `snow`";
+        let message = "live settings: no product has the optional layer `snow`";
         assert_eq!((err.code, err.message.as_str()), (Code::InvalidData, message));
     }
 
@@ -1409,7 +1439,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         let http = Http::loopback(&actual);
         let moves = ["index@1".into()];
         let preview =
@@ -1489,7 +1519,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         let mut run = Run::create(&fixture.store, "prepare live").unwrap();
         let id = run.id().to_string();
         let args = PlanArgs { env: "live".into(), only: Vec::new(), moves: vec!["index@1".into()] };
@@ -1749,7 +1779,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         let http = Http::new();
         let build = |plan: Option<PathBuf>| {
             let args = BuildArgs { env: "live".into(), only: Vec::new(), plan, moves: Vec::new() };
@@ -1779,7 +1809,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         fixture.fetched("index", "index.txt", b"index\n");
         let http = Http::new();
         let saved = plan_of(&root, &fixture.store, &[&Indexed]);
@@ -1842,7 +1872,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         let preview =
             planned(&root, &fixture.store, &Http::new(), None, &[&Partial], "live", &[], Basis::Moves(&[]), false)
                 .unwrap()
@@ -1887,7 +1917,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         fixture.fetched("index", "index.txt", b"index\n");
         let (http, products): (_, [&dyn Product; 2]) = (Http::new(), [&Indexed, &Refused]);
         let plan = plan_of(&root, &fixture.store, &products);
@@ -1983,7 +2013,7 @@ pub(crate) mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         fixture.fetched_version("head", "2020-01-01", "head.txt", b"head\n");
         std::fs::create_dir_all(fixture.scratch.0.join("bucket")).unwrap();
         let remote = Remote::Bucket(crate::r2::Bucket::local(&fixture.scratch.0.join("bucket")));
@@ -2093,7 +2123,7 @@ pub(crate) mod tests {
             &fixture.root().join("data/regions/andorra.toml"),
             "name = \"Andorra\"\nkind = \"geofabrik\"\nareas = [\"andorra\"]\n",
         );
-        write(&fixture.root().join("data/env/live.toml"), "region = \"andorra\"\n");
+        crate::engine::tests::live_settings(&fixture, "andorra");
         let edit = Edit::Region { product: "test".into(), from: Some("monaco".into()), to: "andorra".into() };
         assert_eq!(live_plan(&fixture, &remote, &[]).unwrap().edits, [edit], "no layer reads the region");
     }

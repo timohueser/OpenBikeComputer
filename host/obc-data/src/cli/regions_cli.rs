@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::api::{confirm, print_json, Code, Error};
-use crate::regions::{geofabrik, parse_region, Bbox, Region, Regions};
+use crate::regions::{geofabrik, parse_region, Bbox, Region};
 use crate::store::{hash_file, Store};
 
 mod delete;
@@ -75,13 +75,16 @@ pub(super) struct Suggestion {
 }
 
 pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(), Error> {
+    let store = Store::open()?;
     match action {
         None | Some(Action::List) => {
-            super::print_regions(&Regions::load(root).map_err(|e| Code::InvalidData.error(e))?, json)
+            super::print_regions(&crate::settings::regions(root, &store).map_err(|e| Code::InvalidData.error(e))?, json)
         }
-        Some(Action::Show { id }) => {
-            super::print_region(&Regions::load(root).map_err(|e| Code::InvalidData.error(e))?, &id, json)
-        }
+        Some(Action::Show { id }) => super::print_region(
+            &crate::settings::regions(root, &store).map_err(|e| Code::InvalidData.error(e))?,
+            &id,
+            json,
+        ),
         Some(Action::Areas { query }) => {
             let suggestions = suggestions(&Store::open()?, &query)?;
             if json {
@@ -103,12 +106,12 @@ pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(),
             if json {
                 print_json(&region)
             } else {
-                eprintln!("Saved {}. Review and commit data/ before apply.", region.id);
+                eprintln!("Saved {} in the data store. Select it for Local or Live.", region.id);
                 Ok(())
             }
         }
         Some(Action::Delete { id, apply, expected, yes }) => {
-            let plan = delete::deletion(root, &id)?;
+            let plan = delete::deletion(root, &store, &id)?;
             if apply {
                 if expected.as_deref() != Some(&plan.sha256) {
                     return Err(Code::PlanOutdated.error("the region definition changed; review deletion again"));
@@ -117,7 +120,7 @@ pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(),
                     return Err(Code::Blocked.error(format!("region `{id}` is used by {}", plan.used_by.join(", "))));
                 }
                 confirm(&format!("Delete saved region `{id}`? Its data stays in the store."), yes)?;
-                delete::remove(root, &plan)?;
+                delete::remove(root, &store, &plan)?;
             }
             if json {
                 print_json(&plan)
@@ -246,7 +249,7 @@ pub(super) fn create(root: &Path, store: &Store, mut args: Create) -> Result<Reg
     let text = toml::to_string(&definition).map_err(|e| e.to_string())?;
     let region = parse_region(&args.id, &text).map_err(|e| Code::Usage.error(e))?;
     time_zone(root, &args.time_zone)?;
-    let path = delete::definition_path(root, &args.id)?;
+    let path = delete::definition_path(store, &args.id)?;
     std::fs::create_dir_all(path.parent().expect("definition parent")).map_err(|e| e.to_string())?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)

@@ -14,16 +14,16 @@ assets, search dependencies and matching-host apps.
 
 Retained workers detach from the terminal. Publication runs on the machine that applies: it
 needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
-settings in `data/env/` and `data/regions/` need no commit. One machine applies at a time. An apply builds services on the VPS,
+settings stay in the store and need no commit. One machine applies at a time. An apply builds services on the VPS,
 stops them, installs the data and probes the new services. Allow a short outage. Before it replaces
 a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a rollback.
 
 | Configuration or credential | Purpose |
 | --- | --- |
-| `data/env/live.toml` | Published region and optional layers |
+| `STORE/settings/pending.json` | Pending Live region definition, layers and refresh policy |
 | `data/env/local.toml` | Local region and layers; ignored by Git |
-| `data/regions/` | Saved Box or area selections |
-| `data/sources.toml` | Source declarations and refresh policy |
+| `STORE/regions/` | Saved Box or area selections; `data/regions/` supplies presets |
+| `data/sources.toml` | Source declarations |
 | `data/planner.toml` | Planner producer options |
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key |
@@ -84,8 +84,8 @@ the terminal. Run controls remain usable after checkout edits.
 | Current Rust code | F6 drains the check, restores the terminal and launches a fresh worker |
 
 
-Region and policy edits save files for review. `u` resets only Live settings, not regions or
-source policies. First entry into Regions or Local does not fetch or build. Required Plan
+Live edits stay pending until apply records them in each release. `u` restores the applied
+region, layers and policies. Saved region definitions stay. First entry into Regions or Local does not fetch or build. Required Plan
 rows always apply; only source moves have checkboxes. Esc hides a Run and `q` quits its viewer;
 neither stops the retained operation.
 

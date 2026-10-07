@@ -13,9 +13,9 @@ The [data contract](src:specs/obc-data.md) defines these boundaries.
 
 ## One plan before work
 
-Live and Local use saved configuration. The interface writes region and source-policy changes
-as ordinary files, so their Git review remains separate from a data apply. Local has its own
-region and layers. Its saved releases retain source versions until an explicit Live refresh.
+Live settings stay in the data store. A selection copies its full region definition, so a
+preset edit cannot silently change coverage. Apply records the reviewed settings in each
+release. Undo restores the applied region, layers and policies. Local has its own region and layers. Its saved releases retain source versions until an explicit Live refresh.
 An upstream check does not silently replace those pins.
 
 A plan separates required work from optional source moves. Changed geometry, product options

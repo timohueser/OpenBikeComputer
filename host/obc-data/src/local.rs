@@ -645,6 +645,7 @@ mod tests {
         (
             steps,
             Release {
+                settings: None,
                 product: "test".into(),
                 region: "monaco".into(),
                 optional: vec![],

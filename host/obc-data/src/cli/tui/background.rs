@@ -4,7 +4,6 @@ use super::{list_runs, App, Effect, Error, PlanView, Screen, Tui, LIVE, NO_PLAN,
 use crate::cli::Code;
 use crate::cli::{build_cli::plan_live_moves, clean, clean_plan, edit_cli, policy, regions_cli};
 use crate::fetch::http::Http;
-use crate::regions::Regions;
 use crate::{product::Product, store::Store};
 use ratatui::{
     crossterm::{
@@ -31,9 +30,9 @@ type ViewContext = (
 
 fn context(root: &Path, store: &Store) -> ViewContext {
     (
-        crate::cli::edit_cli::current(root, super::LIVE).map_err(|error| error.message),
+        crate::cli::edit_cli::current(root, store, super::LIVE).map_err(|error| error.message),
         crate::cli::registry(root).map(|registry| registry.sources).map_err(|error| error.message),
-        crate::regions::Regions::load(root).map(|regions| regions.iter().cloned().collect()),
+        crate::settings::regions(root, store).map(|regions| regions.iter().cloned().collect()),
         match std::fs::read_to_string(crate::env::Env::path(root, "local")) {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -96,8 +95,7 @@ pub(super) fn run_loop(
                     task = Some(scope.spawn(move || {
                         let observes = matches!(
                             next,
-                            Effect::Initial
-                                | Effect::CheckNow
+                            Effect::CheckNow
                                 | Effect::Status { .. }
                                 | Effect::Areas
                                 | Effect::LoadAreas
@@ -205,6 +203,7 @@ impl App {
         self.saved = updated.saved.clone();
         match effect {
             Effect::Initial => {
+                self.regions = updated.regions;
                 self.sources = updated.sources;
                 self.live = updated.live;
                 self.status = updated.status;
@@ -212,8 +211,10 @@ impl App {
                 self.edited = updated.edited;
             }
             Effect::Policy(_, _) | Effect::CheckNow => {
+                self.regions = updated.regions;
                 self.sources = updated.sources;
                 self.live = updated.live;
+                self.edited = updated.edited;
                 if matches!(effect, Effect::CheckNow)
                     && self.overlay == Some(super::Overlay::Version)
                     && updated.versions.as_ref().is_some_and(|versions| Some(&versions.source) == selected.as_ref())
@@ -419,24 +420,25 @@ pub(super) fn perform(
             let id = args.id.clone();
             let areas = args.bbox.is_none();
             regions_cli::create(root, store, args).map_err(|error| super::regions::creation_error(error, areas))?;
-            app.saved = Some(format!("Saved data/regions/{id}.toml · commit and push before apply"));
-            app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+            app.saved = Some(format!("Saved region {id} in the store"));
+            app.regions = crate::settings::regions(root, store).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;
             Ok(())
         }
         Effect::ReviewRegionDeletion(id) => {
-            regions_cli::deletion(root, &id).map(|deletion| app.region_editor.deletion = Some(deletion))
+            regions_cli::deletion(root, store, &id).map(|deletion| app.region_editor.deletion = Some(deletion))
         }
         Effect::DeleteRegion(deletion) => {
-            regions_cli::remove(root, &deletion)?;
-            app.saved = Some(format!("Deleted data/regions/{}.toml · commit and push before apply", deletion.region));
-            app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+            regions_cli::remove(root, store, &deletion)?;
+            app.saved = Some(format!("Deleted saved region {}", deletion.region));
+            app.regions = crate::settings::regions(root, store).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;
             Ok(())
         }
         Effect::Policy(id, refresh) => {
-            let result = policy(root, &id, refresh)
-                .map(|_| app.saved = Some("Saved data/sources.toml · commit and push before apply".into()));
+            let result =
+                policy(root, store, &id, refresh).map(|_| app.saved = Some("Saved pending Live policy".into()));
+            app.edited = edit_cli::edited(root, store, LIVE);
             let reloaded = app.reload(root, products, false);
             result.and(reloaded)
         }
@@ -467,16 +469,16 @@ pub(super) fn perform(
         }
         Effect::Status { check } => app.read_live(root, products, check),
         Effect::Region(id) => {
-            let result = edit_cli::region(root, products, LIVE, &id).map(drop);
+            let result = edit_cli::region(root, store, products, LIVE, &id).map(drop);
             result.and(app.read_live(root, products, false)).and(app.reload(root, products, false))
         }
         Effect::Layer(layer, switch) => {
-            let result = edit_cli::layer(root, products, LIVE, &layer, switch).map(drop);
+            let result = edit_cli::layer(root, store, products, LIVE, &layer, switch).map(drop);
             result.and(app.read_live(root, products, false))
         }
-        Effect::Undo => {
-            edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)).and(app.reload(root, products, false))
-        }
+        Effect::Undo => edit_cli::undo(root, store, LIVE)
+            .and(app.read_live(root, products, false))
+            .and(app.reload(root, products, false)),
         Effect::Plan => {
             let plan = plan_live_moves(
                 root,
@@ -494,12 +496,12 @@ pub(super) fn perform(
         }
         Effect::LocalCheck(request) | Effect::LocalReview(request) => app.read_local(root, products, store, &request),
         Effect::LocalRegion(region) => {
-            edit_cli::region(root, products, "local", &region)?;
+            edit_cli::region(root, store, products, "local", &region)?;
             app.local.request = None;
             app.read_local(root, products, store, &app.local.request(false))
         }
         Effect::LocalLayer(layer, switch) => {
-            edit_cli::layer(root, products, "local", &layer, switch)?;
+            edit_cli::layer(root, store, products, "local", &layer, switch)?;
             app.local.request = None;
             app.read_local(root, products, store, &app.local.request(false))
         }

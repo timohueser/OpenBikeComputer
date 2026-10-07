@@ -32,8 +32,8 @@ use crate::fetch::Request;
 use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::sources::{self, Kind, Refresh, Registry, Source, State, VersionScheme};
-use crate::store::{self, gc, FileRecord, Snapshot, Store};
+use crate::sources::{Kind, Refresh, Registry, Source, State, VersionScheme};
+use crate::store::{gc, FileRecord, Snapshot, Store};
 use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
@@ -79,7 +79,7 @@ enum Command {
     /// Set how old the live version of a source may get before it is stale: 7, 30, 90, 365 or
     /// manual. A manual source moves only with `--move`.
     Policy { source: String, refresh: Refresh },
-    /// The regions in data/regions/. With ENV ID: set the region of data/env/ENV.toml.
+    /// Saved regions and shipped presets. With ENV ID: select the environment region.
     #[command(args_conflicts_with_subcommands = true)]
     Region {
         #[command(subcommand)]
@@ -90,9 +90,9 @@ enum Command {
         /// The region id.
         id: Option<String>,
     },
-    /// Switch an optional layer of data/env/ENV.toml on or off.
+    /// Switch an optional layer of the environment on or off.
     Layer { env: String, layer: String, switch: edit_cli::Switch },
-    /// Restore data/env/ENV.toml to its committed version: the edits that are not applied go.
+    /// Restore applied Live settings, or a committed environment file.
     Undo { env: String },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
@@ -208,21 +208,21 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             )
         }
         Command::Policy { source, refresh } => {
-            let source = policy(&root()?, &source, refresh)?;
-            eprintln!("obc data: the policy of {} is {refresh} in data/sources.toml", source.id);
+            let source = policy(&root()?, &Store::open()?, &source, refresh)?;
+            eprintln!("obc data: the policy of {} is {refresh} in pending Live settings", source.id);
             if json {
                 print_json(&source)?;
             }
             Ok(())
         }
         Command::Region { env: Some(env), id: Some(id), .. } => {
-            edit_cli::print(edit_cli::region(&root()?, products, &env, &id)?, json)
+            edit_cli::print(edit_cli::region(&root()?, &Store::open()?, products, &env, &id)?, json)
         }
         Command::Region { action, .. } => regions_cli::run(&root()?, action, json),
         Command::Layer { env, layer, switch } => {
-            edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
+            edit_cli::print(edit_cli::layer(&root()?, &Store::open()?, products, &env, &layer, switch)?, json)
         }
-        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
+        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &Store::open()?, &env)?, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
         Command::Build(args) => operation_cli::build(&root()?, args, json),
@@ -362,7 +362,7 @@ fn root() -> Result<std::path::PathBuf, Error> {
 }
 
 fn registry(root: &Path) -> Result<Registry, Error> {
-    Registry::load(root).map_err(|e| Code::InvalidData.error(e))
+    Registry::effective(root, &Store::open()?).map_err(|e| Code::InvalidData.error(e))
 }
 
 fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Error> {
@@ -385,16 +385,14 @@ fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot
     result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
 }
 
-/// Set the `refresh` of `id` in `data/sources.toml`.
-fn policy(root: &Path, id: &str, refresh: Refresh) -> Result<Source, Error> {
-    find(&registry(root)?, id)?;
-    let path = root.join("data/sources.toml");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = sources::set_refresh(&text, id, refresh).map_err(|e| Code::Usage.error(e))?;
-    let edited = sources::parse_sources(&text)
-        .map_err(|e| Code::Usage.error(e).fix(format!("Choose `manual`: `obc data policy {id} manual`.")))?;
-    store::write_atomic(&path, text.as_bytes())?;
-    Ok(edited.into_iter().find(|s| s.id == id).expect("the edit keeps the source"))
+/// Save a pending refresh policy in the data store.
+fn policy(root: &Path, store: &Store, id: &str, refresh: Refresh) -> Result<Source, Error> {
+    let mut source = find(&Registry::load(root)?, id)?.clone();
+    let mut settings = crate::settings::current(store)?;
+    settings.refresh.insert(id.into(), refresh);
+    settings.policies(std::slice::from_mut(&mut source)).map_err(|e| Code::Usage.error(e))?;
+    crate::settings::save(store, &settings)?;
+    Ok(source)
 }
 
 /// The requested files of a snapshot.
@@ -541,14 +539,19 @@ fn source_rows(
 type SourceListing = (Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>);
 
 fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Result<SourceListing, Error> {
-    let (store, mut loaded) = (Store::open()?, build_cli::load(root, "live")?);
-    let registry = Registry { sources: loaded.sources.clone() };
+    let store = Store::open()?;
+    let mut registry = registry(root)?;
     let remote = remote();
     let live = match &remote {
         Ok(remote) => read_live(remote, &registry, products, &store),
         Err(error) => Err(Code::Blocked.error(error.message.clone())),
     };
-    let inventory = if let Ok(live) = &live {
+    if let Ok(live) = &live {
+        crate::settings::observe(&store, live)?;
+    }
+    let loaded = build_cli::load(root, "live", &store);
+    let inventory = if let (Ok(live), Ok(mut loaded)) = (&live, loaded) {
+        registry.sources = loaded.sources.clone();
         loaded.env.live = live.versions();
         loaded.env.retained = crate::input_copy::retained(live, &store)?;
         let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
@@ -564,7 +567,9 @@ fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Re
             None,
         )?)
     } else {
-        eprintln!("obc data: {}", live_unknown(live.as_ref().unwrap_err()));
+        if let Err(error) = &live {
+            eprintln!("obc data: {}", live_unknown(error));
+        }
         None
     };
     let versions = live.as_ref().ok().map(Live::by_source);
@@ -712,17 +717,19 @@ redistribute = true
 "#;
 
     #[test]
-    fn a_policy_edits_its_source_in_place() {
+    fn a_policy_edits_pending_settings_and_leaves_the_source_declaration_unchanged() {
         let scratch = Scratch::new("cli-policy");
         let root = scratch.0.join("repository");
+        let store = Store::at(scratch.0.join("store"));
         write(&root.join("data/sources.toml"), SOURCES);
         let sources = || std::fs::read_to_string(root.join("data/sources.toml")).unwrap();
-        let refused = policy(&root, "planetiler", Refresh::Days(30)).unwrap_err();
-        assert!(refused.message.contains("needs `version = \"date\"`"), "{}", refused.message);
-        assert_eq!(policy(&root, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
+        let refused = policy(&root, &store, "planetiler", Refresh::Days(30)).unwrap_err();
+        assert!(refused.message.contains("needs a date version"), "{}", refused.message);
+        assert_eq!(policy(&root, &store, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
         assert_eq!(sources(), SOURCES, "a refused policy changes nothing");
 
-        assert_eq!(policy(&root, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
-        assert_eq!(sources(), SOURCES.replacen("refresh = 90", "refresh = \"manual\"", 1));
+        assert_eq!(policy(&root, &store, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
+        assert_eq!(sources(), SOURCES);
+        assert_eq!(crate::settings::current(&store).unwrap().refresh["osm-planet"], Refresh::Manual);
     }
 }

@@ -67,7 +67,7 @@ impl Prepared {
         {
             return Err("Prepared Local service view belongs to another root".into());
         }
-        let (env, _) = crate::env::Env::local(root, &crate::regions::Regions::load(root)?, None)?;
+        let (env, _) = crate::env::Env::local(root, &crate::settings::regions(root, &Store::open()?)?, None)?;
         if value["region"] != env.region
             || value["layers"] != serde_json::json!(env.layers)
             || value["configuration"] != configuration(root)?
@@ -102,7 +102,7 @@ pub struct State {
 
 /// Bind the selected region definition and layers, including edits under an unchanged region id.
 pub fn configuration(root: &Path) -> Result<String, String> {
-    let regions = crate::regions::Regions::load(root)?;
+    let regions = crate::settings::regions(root, &Store::open()?)?;
     let (env, _) = crate::env::Env::local(root, &regions, None)?;
     configuration_for(&env, &regions)
 }

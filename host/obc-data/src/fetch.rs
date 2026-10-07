@@ -114,10 +114,10 @@ fn fetch_files(
 pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, LiveError> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let root = crate::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
-    let registry = Registry::load(&root)?;
+    let store = Store::open()?;
+    let registry = Registry::effective(&root, &store)?;
     let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
     let version = version.map(str::to_string);
-    let store = Store::open()?;
     let newest = version.is_none();
     let snapshot = match fetch(&root, &store, &Http::new(), &Request { source, version, params: params.clone() }) {
         Ok(snapshot) => snapshot,

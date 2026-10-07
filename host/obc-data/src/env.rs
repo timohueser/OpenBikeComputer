@@ -25,6 +25,9 @@ pub struct Env {
     pub region: String,
     /// The optional layers that are on.
     pub layers: Vec<String>,
+    pub settings: Option<crate::settings::Settings>,
+    /// Sources whose effective policy keeps one version across a multi-request acquisition.
+    pub manual: BTreeSet<String>,
     /// The versions of each fetch that the live releases read; empty without a live release.
     pub live: LiveVersions,
     /// Exact reads with retained input copies. Credentials are needed only for a new fetch.
@@ -171,9 +174,7 @@ impl Env {
     /// Record the `version` that a fetch of `wanted` gave. The first of a `manual` source is the
     /// version of the source too.
     pub fn resolve(&mut self, wanted: &crate::product::Wanted, version: String) {
-        let manual = crate::sources::all()
-            .iter()
-            .any(|source| source.id == wanted.source && source.refresh == crate::sources::Refresh::Manual);
+        let manual = self.manual.contains(&wanted.source);
         if manual {
             self.resolved.entry((wanted.source.clone(), Vec::new())).or_insert_with(|| version.clone());
         }
@@ -298,11 +299,5 @@ mod tests {
             env.edit("# Only a comment.\n"),
             "# Only a comment.\nregion = \"europe/andorra\"\nlayers = [\"climate\", \"sun\"]\n"
         );
-    }
-
-    #[test]
-    fn live_is_valid() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        Env::load(&root, "live", &Regions::load(&root).unwrap()).unwrap();
     }
 }

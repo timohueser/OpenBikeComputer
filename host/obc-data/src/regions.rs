@@ -73,6 +73,20 @@ pub struct Region {
 }
 
 impl Region {
+    /// The complete editable TOML definition, without its file id.
+    pub fn definition(&self) -> Result<String, String> {
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let fields = value.as_object_mut().expect("region object");
+        fields.remove("id");
+        if fields.get("time_zone").is_some_and(serde_json::Value::is_null) {
+            fields.remove("time_zone");
+        }
+        if let Area::Box { bbox } = self.area {
+            fields.insert("box".into(), serde_json::json!([bbox.west, bbox.south, bbox.east, bbox.north]));
+        }
+        toml::to_string(&value).map_err(|e| e.to_string())
+    }
+
     /// The source of a single-area definition. Box and union definitions need coverage resolution.
     pub fn source_area(&self) -> Option<&str> {
         match &self.area {
@@ -167,6 +181,11 @@ impl Regions {
 
     /// Read a directory laid out like `data/regions/`.
     pub fn load_dir(dir: &Path) -> Result<Self, String> {
+        Self::new(Self::definitions(dir)?)
+    }
+
+    /// Parse definitions before resolving references across multiple directories.
+    pub(crate) fn definitions(dir: &Path) -> Result<Vec<Region>, String> {
         let mut files = Vec::new();
         collect(dir, &mut files)?;
         let mut list = Vec::new();
@@ -177,7 +196,7 @@ impl Regions {
             let region = parse_region(&id, &text)?;
             list.push(region);
         }
-        Self::new(list)
+        Ok(list)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Region> {

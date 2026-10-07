@@ -573,6 +573,7 @@ pub(crate) mod tests {
             client: Client::All,
         };
         Release {
+            settings: None,
             product: "test".into(),
             region: "monaco".into(),
             optional: Vec::new(),

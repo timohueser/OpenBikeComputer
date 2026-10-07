@@ -253,6 +253,9 @@ fn publish(
         switched.insert(key, sha256_hex(&body));
     }
 
+    if let Some(settings) = &plan.settings {
+        crate::settings::applied(store, settings)?;
+    }
     if plan.remove.is_empty() {
         return Ok(());
     }
@@ -335,7 +338,7 @@ pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBu
 }
 
 /// The commit that Live publishes from: the checkout has no change that git lacks, and a branch
-/// on `origin` holds `HEAD`. Live settings in `data/env/` and `data/regions/` need no commit.
+/// on `origin` holds `HEAD`. Pending settings live in the data store.
 pub(crate) fn pushed_commit(root: &Path) -> Result<String, Error> {
     let git = |args: &[&str]| -> Result<String, Error> {
         let out = std::process::Command::new("git")
@@ -352,7 +355,7 @@ pub(crate) fn pushed_commit(root: &Path) -> Result<String, Error> {
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     };
-    let status = ["status", "--porcelain", "--untracked-files=all", "--", ".", ":!data/env/", ":!data/regions/"];
+    let status = ["status", "--porcelain", "--untracked-files=all", "--", "."];
     let changed: Vec<String> = git(&status)?.lines().map(|line| line.get(3..).unwrap_or(line).to_string()).collect();
     if !changed.is_empty() {
         let mut shown = changed.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
@@ -563,7 +566,7 @@ mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         commit(&fixture);
         fixture.fetched_version("head", "2020-01-01", "head.txt", b"head\n");
         upstream(&fixture, "head", "2020-01-01");
@@ -931,6 +934,50 @@ mod tests {
         let err = apply(&fixture, &remote, &[&Failing]).unwrap_err();
         assert_eq!(err.code, Code::VerifyFailed);
         assert_eq!(keys(&fixture), before, "pointer-only changes also pass verification before mutation");
+    }
+
+    #[test]
+    fn policy_edits_are_reviewed_and_published_without_a_rebuild() {
+        let (fixture, remote) = repository("apply-policy");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let old = checked(&fixture, &remote).unwrap();
+        let mut settings = crate::settings::current(&fixture.store).unwrap();
+        settings.refresh.insert("head".into(), crate::sources::Refresh::Manual);
+        crate::settings::save(&fixture.store, &settings).unwrap();
+        let plan =
+            build_cli::plan_live(&fixture.root(), &fixture.store, &Http::new(), &remote, &[&Versioned], &[], false)
+                .unwrap();
+        assert_eq!(plan.settings.as_ref(), Some(&settings));
+        assert_eq!(plan.edits, [build_cli::Edit::Settings { product: "test".into() }]);
+        assert_eq!(plan.groups.len(), 1);
+        assert!(plan.groups[0].builds.is_empty());
+        let mut newer = settings.clone();
+        newer.refresh.insert("head".into(), crate::sources::Refresh::Days(30));
+        crate::settings::save(&fixture.store, &newer).unwrap();
+        let before = keys(&fixture);
+        let stale = apply_live(
+            &fixture.root(),
+            &fixture.store,
+            &Http::new(),
+            &remote,
+            &[&Versioned],
+            Some(&plan),
+            |_| Ok(()),
+            NO_WAIT,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, Code::PlanOutdated);
+        assert_eq!(keys(&fixture), before);
+        crate::settings::save(&fixture.store, &settings).unwrap();
+        let published = apply(&fixture, &remote, &[&Versioned]).unwrap();
+        assert!(published.built.as_ref().unwrap().layers.is_empty());
+        assert_ne!(checked(&fixture, &remote).unwrap(), old);
+        let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        assert_eq!(live.products[0].release.as_ref().unwrap().1.settings.as_ref(), Some(&settings));
+        assert!(!crate::settings::edited(&fixture.store).unwrap());
+        let fresh = Store::at(fixture.scratch.0.join("fresh-store"));
+        crate::settings::observe(&fresh, &live).unwrap();
+        assert_eq!(crate::settings::current(&fresh).unwrap(), settings);
     }
 
     #[test]
@@ -1343,9 +1390,13 @@ mod tests {
     fn live_publishes_only_from_a_pushed_commit_and_records_it() {
         let (fixture, remote) = repository("apply-pushed");
         let root = fixture.root();
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\nlayers = []\n");
+        let mut settings = crate::settings::current(&fixture.store).unwrap();
+        settings.refresh.insert("head".into(), crate::sources::Refresh::Manual);
+        crate::settings::save(&fixture.store, &settings).unwrap();
+        assert_eq!(pushed_commit(&root).unwrap().len(), 40, "stored settings need no commit");
         write(&root.join("data/regions/new.toml"), "name = \"New\"\nkind = \"geofabrik\"\nareas = [\"new\"]\n");
-        assert_eq!(pushed_commit(&root).unwrap().len(), 40, "Live settings need no commit");
+        assert!(pushed_commit(&root).is_err(), "tracked presets are code");
+        std::fs::remove_file(root.join("data/regions/new.toml")).unwrap();
         write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
@@ -1358,7 +1409,12 @@ mod tests {
         assert!(err.message.ends_with("is not on GitHub"), "{}", err.message);
         assert_eq!(keys(&fixture), before);
 
-        commit(&fixture);
+        assert!(Command::new("git")
+            .args(["push", "-q", "origin", "HEAD:main"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let pushed = pushed_commit(&root).unwrap();
         let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();

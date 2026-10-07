@@ -1,5 +1,5 @@
 //! The edits of an environment: `region ENV ID`, `layer ENV NAME on|off` and `undo ENV`. An edit
-//! writes `data/env/ENV.toml` and nothing else: it never commits.
+//! saves Live settings in the store or Local settings in its ignored file. It never commits.
 
 use std::path::Path;
 use std::process::Command;
@@ -12,8 +12,7 @@ use super::build_cli::{check_layers, load};
 use super::{print_json, Code, Error};
 use crate::env::Env;
 use crate::product::Product;
-use crate::regions::Regions;
-use crate::store::write_atomic;
+use crate::store::{write_atomic, Store};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Switch {
@@ -21,7 +20,7 @@ pub enum Switch {
     Off,
 }
 
-/// An environment file after an edit.
+/// Environment settings after an edit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Edited {
     pub env: String,
@@ -29,32 +28,46 @@ pub struct Edited {
     pub layers: Vec<String>,
 }
 
-pub fn region(root: &Path, products: &[&dyn Product], name: &str, id: &str) -> Result<Edited, Error> {
-    edit(root, products, name, |env| env.region = id.into())
+pub fn region(root: &Path, store: &Store, products: &[&dyn Product], name: &str, id: &str) -> Result<Edited, Error> {
+    edit(root, store, products, name, true, |env| env.region = id.into())
 }
 
-pub fn layer(root: &Path, products: &[&dyn Product], name: &str, layer: &str, switch: Switch) -> Result<Edited, Error> {
-    edit(root, products, name, |env| match switch {
+pub fn layer(
+    root: &Path,
+    store: &Store,
+    products: &[&dyn Product],
+    name: &str,
+    layer: &str,
+    switch: Switch,
+) -> Result<Edited, Error> {
+    edit(root, store, products, name, false, |env| match switch {
         Switch::On if !env.layers.iter().any(|on| on == layer) => env.layers.push(layer.into()),
         Switch::On => {}
         Switch::Off => env.layers.retain(|on| on != layer),
     })
 }
 
-/// Write `data/env/<name>.toml` as git has it in `HEAD`.
-pub fn undo(root: &Path, name: &str) -> Result<Edited, Error> {
+/// Restore applied Live settings, or the committed settings of another environment.
+pub fn undo(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
+    if name == "live" {
+        let settings = crate::settings::undo(store)?;
+        return Ok(Edited { env: name.into(), region: settings.region, layers: settings.layers });
+    }
     write_atomic(&Env::path(root, name), &committed(root, name)?)?;
-    current(root, name)
+    current(root, store, name)
 }
 
-/// The environment file `name` as it is now.
-pub fn current(root: &Path, name: &str) -> Result<Edited, Error> {
-    let env = load(root, name)?.env;
+/// The current environment settings.
+pub fn current(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
+    let env = load(root, name, store)?.env;
     Ok(Edited { env: env.name, region: env.region, layers: env.layers })
 }
 
-/// Whether `data/env/<name>.toml` differs from its committed version. Not when it has none.
-pub fn edited(root: &Path, name: &str) -> bool {
+/// Whether Live has pending edits, or another environment differs from its committed file.
+pub fn edited(root: &Path, store: &Store, name: &str) -> bool {
+    if name == "live" {
+        return crate::settings::edited(store).unwrap_or(true);
+    }
     let now = std::fs::read(Env::path(root, name)).ok();
     committed(root, name).is_ok_and(|committed| Some(committed) != now)
 }
@@ -75,15 +88,44 @@ fn committed(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
     Ok(shown.stdout)
 }
 
-/// Change the environment `name` and write its file, when the result is valid.
-fn edit(root: &Path, products: &[&dyn Product], name: &str, change: impl FnOnce(&mut Env)) -> Result<Edited, Error> {
+/// Save a valid environment edit. Only an explicit region selection copies a new definition.
+fn edit(
+    root: &Path,
+    store: &Store,
+    products: &[&dyn Product],
+    name: &str,
+    select_region: bool,
+    change: impl FnOnce(&mut Env),
+) -> Result<Edited, Error> {
+    if name == "live" {
+        let mut settings = crate::settings::current(store)?;
+        let regions = crate::settings::regions(root, store)?;
+        let mut env = Env {
+            name: name.into(),
+            region: settings.region.clone(),
+            layers: settings.layers.clone(),
+            ..Env::default()
+        };
+        change(&mut env);
+        if select_region {
+            settings.select(&regions, &env.region).map_err(|e| Code::Usage.error(e))?;
+        } else {
+            settings.env().map_err(|e| Code::Usage.error(e))?;
+        }
+        env.layers.sort();
+        env.layers.dedup();
+        check_layers(products, &env)?;
+        settings.layers = env.layers;
+        crate::settings::save(store, &settings)?;
+        return Ok(Edited { env: name.into(), region: settings.region, layers: settings.layers });
+    }
     let path = Env::path(root, name);
     // Local has no file until its first edit.
     let (mut env, text, regions) = if name == "local" && !path.exists() {
-        let regions = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
+        let regions = crate::settings::regions(root, store).map_err(|e| Code::InvalidData.error(e))?;
         (Env { name: name.into(), ..Env::default() }, String::new(), regions)
     } else {
-        let loaded = load(root, name)?;
+        let loaded = load(root, name, store)?;
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         (loaded.env, text, loaded.regions)
     };
@@ -105,7 +147,7 @@ pub fn print(edited: Edited, json: bool) -> Result<(), Error> {
         return print_json(&edited);
     }
     let layers = if edited.layers.is_empty() { "—".into() } else { edited.layers.join(", ") };
-    println!("data/env/{}.toml · region {} · layers {layers}", edited.env, edited.region);
+    println!("{} settings · region {} · layers {layers}", edited.env, edited.region);
     Ok(())
 }
 
@@ -114,6 +156,7 @@ mod tests {
     use super::*;
     use crate::engine::tests::write;
     use crate::product::Unplanned;
+    use crate::regions::Regions;
     use crate::store::tests::Scratch;
     use crate::store::Store;
 
@@ -139,54 +182,45 @@ mod tests {
         }
     }
 
-    const LIVE: &str = "# Live.\nregion = \"monaco\"\nlayers = []\n";
-
-    fn git(root: &Path, args: &[&str]) {
-        let done = Command::new("git").arg("-C").arg(root).args(args).output().unwrap();
-        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
-    }
-
     #[test]
-    fn an_edit_writes_the_environment_file_and_undo_restores_the_committed_one() {
+    fn live_edits_capture_definitions_in_the_store_and_undo_restores_applied_settings() {
         let scratch = Scratch::new("cli-edit");
         let root = scratch.0.join("repository");
+        let store = Store::at(scratch.0.join("store"));
         write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
         let area = "name = \"A region\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n";
         for region in ["monaco", "europe/andorra"] {
-            let text = format!("{area}countries = [\"AD\"]\ntime_zone = \"Europe/Andorra\"\n");
-            write(&root.join(format!("data/regions/{region}.toml")), &text);
+            write(
+                &root.join(format!("data/regions/{region}.toml")),
+                &format!("{area}countries = [\"AD\"]\ntime_zone = \"Europe/Andorra\"\n"),
+            );
         }
         write(&root.join("data/regions/bare.toml"), area);
-        write(&root.join("data/env/live.toml"), LIVE);
-        let file = || std::fs::read_to_string(root.join("data/env/live.toml")).unwrap();
         let products: &[&dyn Product] = &[&Optional];
-
-        assert!(region(&root, products, "live", "atlantis").unwrap_err().message.contains("atlantis"));
-        assert!(region(&root, products, "live", "bare").unwrap_err().message.contains("time_zone"));
-        assert!(layer(&root, products, "local", "sun", Switch::On).unwrap_err().message.contains("no region"));
-        region(&root, products, "local", "monaco").unwrap();
-        let local = std::fs::read_to_string(root.join("data/env/local.toml")).unwrap();
-        assert_eq!(local, "region = \"monaco\"\nlayers = []\n", "the first Local edit writes its file");
-        let snow = layer(&root, products, "live", "snow", Switch::On).unwrap_err();
-        assert_eq!(snow.code, Code::Usage, "{}", snow.message);
-        assert_eq!(file(), LIVE, "a refused edit changes nothing");
-
-        region(&root, products, "live", "europe/andorra").unwrap();
-        for (name, switch) in [("sun", Switch::On), ("climate", Switch::On), ("sun", Switch::On), ("sun", Switch::Off)]
-        {
-            layer(&root, products, "live", name, switch).unwrap();
-        }
-        assert_eq!(file(), "# Live.\nregion = \"europe/andorra\"\nlayers = [\"climate\"]\n");
-
-        let refused = undo(&root, "live").unwrap_err();
-        assert!(refused.message.contains("has no committed version"), "{}", refused.message);
-        // The repository is above `root`.
-        git(&scratch.0, &["init", "--quiet"]);
-        write(&root.join("data/env/live.toml"), LIVE);
-        git(&root, &["add", "data/env/live.toml"]);
-        git(&root, &["-c", "user.name=test", "-c", "user.email=test@example.org", "commit", "--quiet", "-m", "live"]);
-        region(&root, products, "live", "europe/andorra").unwrap();
-        undo(&root, "live").unwrap();
-        assert_eq!(file(), LIVE);
+        assert!(region(&root, &store, products, "live", "atlantis").unwrap_err().message.contains("atlantis"));
+        assert!(region(&root, &store, products, "live", "bare").unwrap_err().message.contains("time_zone"));
+        assert!(layer(&root, &store, products, "local", "sun", Switch::On).unwrap_err().message.contains("no region"));
+        region(&root, &store, products, "local", "monaco").unwrap();
+        assert!(root.join("data/env/local.toml").is_file());
+        region(&root, &store, products, "live", "monaco").unwrap();
+        let applied = crate::settings::current(&store).unwrap();
+        crate::settings::applied(&store, &applied).unwrap();
+        assert!(!edited(&root, &store, "live"));
+        assert!(layer(&root, &store, products, "live", "snow", Switch::On).is_err());
+        assert_eq!(crate::settings::current(&store).unwrap(), applied);
+        region(&root, &store, products, "live", "europe/andorra").unwrap();
+        layer(&root, &store, products, "live", "climate", Switch::On).unwrap();
+        assert!(edited(&root, &store, "live"));
+        let pending = crate::settings::current(&store).unwrap();
+        assert_eq!(pending.layers, ["climate"]);
+        assert_eq!(pending.definitions.len(), 1);
+        let saved = pending.definitions["europe/andorra"].clone();
+        write(&root.join("data/regions/europe/andorra.toml"), &saved.replace("A region", "Changed preset"));
+        assert_eq!(crate::settings::current(&store).unwrap().definitions["europe/andorra"], saved);
+        layer(&root, &store, products, "live", "sun", Switch::On).unwrap();
+        assert_eq!(crate::settings::current(&store).unwrap().definitions["europe/andorra"], saved);
+        assert!(!root.join("data/env/live.toml").exists());
+        undo(&root, &store, "live").unwrap();
+        assert_eq!(crate::settings::current(&store).unwrap(), applied);
     }
 }

@@ -95,8 +95,8 @@ fn selected_kinds(apps: &std::collections::BTreeSet<obc_data::dev::App>) -> Vec<
 
 pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc_data::cli::EnvPlan, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let regions = Regions::load(&root)?;
-    let registry = Registry::load(&root)?;
+    let regions = obc_data::settings::regions(&root, store)?;
+    let registry = Registry::effective(&root, store)?;
     let (env, _) = read_environment(&root, &regions, request)?;
     let remote = request.refresh_live.then(Remote::from_env).transpose()?;
     let mut checked = obc_data::cli::EnvPlan {
@@ -217,8 +217,8 @@ pub(super) fn inputs(
     request: &Request,
     run: &mut runs::Run,
 ) -> Result<obc_data::cli::EnvPlan, String> {
-    let regions = Regions::load(root)?;
-    let registry = Registry::load(root)?;
+    let regions = obc_data::settings::regions(root, store)?;
+    let registry = Registry::effective(root, store)?;
     let env = environment(root, &regions, request)?;
     let remote = Remote::from_env()?;
     let mut pinned = obc_data::cli::EnvPlan {
@@ -286,8 +286,8 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
         }
     }
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let regions = Regions::load(&root)?;
-    let registry = Registry::load(&root)?;
+    let regions = obc_data::settings::regions(&root, store)?;
+    let registry = Registry::effective(&root, store)?;
     let env = environment(&root, &regions, request)?;
     let configuration = obc_data::dev::configuration_for(&env, &regions)?;
     let apps = selected_apps(store, request)?;
