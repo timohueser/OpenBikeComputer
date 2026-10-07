@@ -54,7 +54,7 @@ pub fn write_cells(
     let extent = job.leaf.square();
     let scheme = config.semantic_scheme();
     let semantic = if job.band.lods.iter().any(|&l| config.lods[l].semantic_coverage) {
-        build_semantic_levels(&ingested.features, &config.lods, &scheme, extent, &progress)?
+        build_semantic_levels(&ingested.features, &config.lods, &scheme, extent, progress)?
     } else {
         vec![None; config.lods.len()]
     };
