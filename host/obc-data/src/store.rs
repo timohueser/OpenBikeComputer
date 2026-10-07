@@ -3,7 +3,6 @@
 //! and the events of each run. `specs/obc-data.md` describes the layout.
 
 pub mod gc;
-pub mod import;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -192,7 +191,7 @@ impl Store {
 
     /// The receipt of the layer with this key.
     pub fn layer(&self, key: &str) -> Result<Option<Receipt>, String> {
-        read_record(&self.layer_path(key))
+        read_receipt(&self.layer_path(key))
     }
 
     pub fn put_layer(&self, receipt: &Receipt) -> Result<(), String> {
@@ -201,7 +200,7 @@ impl Store {
 
     /// Every receipt in the store.
     pub fn layers(&self) -> Result<Vec<Receipt>, String> {
-        read_records(&self.root.join("layers"))
+        read_records(&self.root.join("layers"), read_receipt)
     }
 
     fn code_path(&self, hash: &str) -> PathBuf {
@@ -234,7 +233,7 @@ impl Store {
     }
 
     pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
-        read_records(&self.root.join("local"))
+        read_records(&self.root.join("local"), read_record)
     }
 
     pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
@@ -276,7 +275,7 @@ impl Store {
 
     /// Every record of a fetch of `source`, in any version and with any params.
     pub fn requests_of(&self, source: &str) -> Result<Vec<Requested>, String> {
-        read_records(&self.root.join("requests").join(source))
+        read_records(&self.root.join("requests").join(source), read_record)
     }
 
     pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
@@ -300,16 +299,63 @@ pub struct Requested {
     pub files: Vec<String>,
 }
 
-fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+/// The space that fetches and builds leave free on a disk. Chosen, not measured: room for the
+/// system and the other programs of a laptop.
+const RESERVE: u64 = 4 << 30;
+
+/// Fail when the disk of `path` cannot take `needed` more bytes and keep [`RESERVE`] free.
+pub fn check_free(path: &Path, needed: u64) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let existing = path.ancestors().find(|path| path.exists()).ok_or("the store has no existing directory")?;
+        let name = std::ffi::CString::new(existing.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+        let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: the NUL-terminated path and the writable output stay valid for this call.
+        if unsafe { libc::statvfs(name.as_ptr(), status.as_mut_ptr()) } != 0 {
+            return Err(format!("{}: {}", existing.display(), std::io::Error::last_os_error()));
+        }
+        // SAFETY: statvfs initialized the output on success.
+        let status = unsafe { status.assume_init() };
+        #[allow(clippy::unnecessary_cast)]
+        let free = (status.f_bavail as u64).saturating_mul(status.f_frsize as u64);
+        if free < needed.saturating_add(RESERVE) {
+            let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+            return Err(format!(
+                "{} has {:.1} GiB free; this needs {:.1} GiB and keeps {:.0} GiB free. Release space with `obc data clean`, then retry",
+                existing.display(),
+                gib(free),
+                gib(needed),
+                gib(RESERVE)
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, needed);
+    Ok(())
+}
+
+fn read_text(path: &Path) -> Result<Option<String>, String> {
     match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+        Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
 
+fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    let text = read_text(path)?;
+    text.map(|text| serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))).transpose()
+}
+
+/// A receipt that this build cannot parse, such as one of an older format, is absent: its step
+/// builds again.
+fn read_receipt(path: &Path) -> Result<Option<Receipt>, String> {
+    Ok(read_text(path)?.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
 /// The records in `dir`, or none when it does not exist.
-fn read_records<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, String> {
+fn read_records<T>(dir: &Path, read: fn(&Path) -> Result<Option<T>, String>) -> Result<Vec<T>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -319,7 +365,7 @@ fn read_records<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, String> {
     for entry in entries {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
         if path.extension() == Some("json".as_ref()) {
-            records.extend(read_record(&path)?);
+            records.extend(read(&path)?);
         }
     }
     Ok(records)

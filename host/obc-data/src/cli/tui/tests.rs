@@ -71,7 +71,6 @@ fn status() -> Status {
         ],
         attention: vec![
             attention(AttentionKind::Stale, "osm", "120 d > 90 d"),
-            attention(AttentionKind::OldCache, "/home/rider/obc-bake", "12 files, 1.2 GB"),
             attention(AttentionKind::Unreachable, "maps", "a fetch that the step list needs failed"),
         ],
         check: None,
@@ -162,7 +161,7 @@ fn app() -> App {
         remove_bytes: 1_000_000,
         ..gc::Plan::default()
     };
-    app.store = Some(CleanPlan { store, ..CleanPlan::default() });
+    app.store = Some(CleanPlan { store });
     app.status = Some(status());
     app.env = Some(Edited { env: LIVE.into(), region: REGION.into(), layers: vec!["sun".into()] });
     app.edited = true;
@@ -641,20 +640,20 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
         "[x] sun      not applied",
         "",
         "NEEDS ATTENTION",
-        "stale        osm                   120 d > 90 d",
-        "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
-        "unreachable  maps                  a fetch that the step list needs failed",
+        "stale        osm   120 d > 90 d",
+        "unreachable  maps  a fetch that the step list needs failed",
+        "",
         "r region   R check R2   s schedule   p plan   u undo environment   ? help",
     ];
     assert_eq!(drawn, live, "{drawn:#?}");
     assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
-    // 0 region, 1 maps, 2 planner, 3 climate, 4 sun, 5 stale, 6 old cache, 7 unreachable.
+    // 0 region, 1 maps, 2 planner, 3 climate, 4 sun, 5 stale, 6 unreachable.
     app.row = 3;
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::Layer("climate".into(), Switch::On));
     app.row = 4;
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::Layer("sun".into(), Switch::Off));
     assert_eq!(app.key(KeyCode::Char('u')), Effect::Undo);
-    app.row = 7;
+    app.row = 6;
     assert_eq!(app.key(KeyCode::Enter), Effect::None, "an unreachable product has no fix");
     (app.row, app.source) = (5, 1);
     app.key(KeyCode::Enter);
@@ -1129,8 +1128,8 @@ fn a_busy_task_keeps_the_previous_plan_and_refuses_plan_keys_or_clicks_without_b
     app.busy = true;
     assert_eq!(app.key(KeyCode::Char('p')), Effect::None);
     assert_eq!(app.act(Action::Open(Overlay::Plan)), Effect::None, "mouse actions use the same admission");
-    app.status.as_mut().unwrap().attention[2].kind = AttentionKind::Drift;
-    app.row = app.live_rows().iter().position(|row| *row == LiveRow::Attention(2)).unwrap();
+    app.status.as_mut().unwrap().attention[1].kind = AttentionKind::Drift;
+    app.row = app.live_rows().iter().position(|row| *row == LiveRow::Attention(1)).unwrap();
     assert_eq!(app.key(KeyCode::Enter), Effect::None, "a repair cannot open Plan while another task runs");
     assert_eq!(app.act(Action::Fix), Effect::None);
     assert_eq!(app.overlay, None);

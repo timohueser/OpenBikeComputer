@@ -210,6 +210,7 @@ impl Run {
     }
 
     fn check_disk(&self, store: &Path, estimated: u64) -> Result<(), String> {
+        crate::store::check_free(store, estimated)?;
         if let Some((root, budget)) = &self.budget {
             budget.disk(root, estimated)?;
             budget.disk(store, estimated)?;

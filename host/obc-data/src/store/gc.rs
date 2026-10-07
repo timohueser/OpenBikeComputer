@@ -1,5 +1,5 @@
 //! The collection of `obc data clean`: delete the objects and the snapshot records that no live
-//! release, saved Local adoption or fixture reaches. Receipts and import records stay: they are history.
+//! release, saved Local adoption or fixture reaches. Receipts stay: they are history.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{read_records, sorted, Requested, Snapshot, Store};
+use super::{sorted, Snapshot, Store};
 use crate::engine::{self, InputKind};
 use crate::live::Live;
 
@@ -104,6 +104,9 @@ pub struct Plan {
     /// The objects that stay, and their size.
     pub keep_objects: u64,
     pub keep_bytes: u64,
+    /// The size of `partial/`: unfinished downloads and the work of steps that stopped. A
+    /// collection empties it.
+    pub partial_bytes: u64,
 }
 
 /// A snapshot record, the layers of one step, or the objects that one kind of root names and no
@@ -115,30 +118,23 @@ pub struct Kept {
     /// The size of its files.
     pub bytes: u64,
     /// `live PRODUCT, …`, `newest of the source`, `newest of a request`, `inputs kept`,
-    /// `live release`, `fixture`, `planner recipe` or `import record`.
+    /// `live release`, `fixture` or `planner recipe`.
     pub because: Vec<String>,
 }
 
 /// What a collection deletes. A snapshot record is reached when a live layer read it, or when it is
 /// the newest record of its source or of a request. An object is reached when a live layer, a
-/// fixture, a planner recipe or an import record names it, or a
-/// reached record or layer has it. A layer is reached when each input
-/// is: a snapshot input whose digest is of all the files, or of one file, of a reached record of
-/// its source, and a layer input whose digest is of the files that it selects (all when it names
+/// fixture or a planner recipe names it, or a reached record or layer has it. A layer is reached when each input
+/// is: a snapshot input whose digest is of the files that it names of a reached record of its
+/// source, and a layer input whose digest is of the files that it selects (all when it names
 /// none) of a reached layer of its step.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut roots = roots.clone();
     roots.add_local(store)?;
-    let mut named = roots.sha256s.clone();
-    for path in files(&store.root().join("imports"), &["jsonl"])? {
-        let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        sha256s(&text).for_each(|sha256| {
-            named.entry(sha256).or_insert("import record");
-        });
-    }
+    let named = &roots.sha256s;
     // The objects of the kept records and layers.
     let mut reached = HashSet::new();
-    let mut snapshot_digests = HashSet::new();
+    let mut kept_snapshots = HashMap::<&str, Vec<&Snapshot>>::new();
     let mut plan = Plan::default();
     let mut snapshots = Vec::new();
     for (source, version) in records(store)? {
@@ -156,7 +152,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     // file of that area.
     let mut kept: HashSet<(String, String)> = HashSet::new();
     for source in names(&store.root().join("requests"), "")? {
-        let requests: Vec<Requested> = read_records(&store.root().join("requests").join(&source))?;
+        let requests = store.requests_of(&source)?;
         // Params, then the latest retrieval and its version.
         let mut newest_of = HashMap::<_, (Option<String>, String)>::new();
         for request in requests {
@@ -186,9 +182,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         }
         let bytes = snapshot.files.iter().map(|file| file.size).sum();
         plan.kept.push(Kept { entry: format!("{source}@{version}"), bytes, because });
-        let files = || snapshot.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()));
-        snapshot_digests.insert((source.clone(), engine::digest(files())));
-        snapshot_digests.extend(files().map(|file| (source.clone(), engine::digest([file]))));
+        kept_snapshots.entry(source).or_default().push(snapshot);
         reached.extend(snapshot.files.iter().map(|file| file.sha256.clone()));
     }
     let mut receipts = Vec::new();
@@ -203,7 +197,12 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let before = keys.len();
         for receipt in &receipts {
             let inputs_reached = receipt.inputs.iter().all(|input| match input.kind {
-                InputKind::Snapshot => snapshot_digests.contains(&(input.name.clone(), input.digest.clone())),
+                InputKind::Snapshot => kept_snapshots.get(input.name.as_str()).is_some_and(|snapshots| {
+                    snapshots.iter().any(|snapshot| {
+                        let files = snapshot.files.iter().filter(|file| input.files.contains(&file.name));
+                        engine::digest(files.map(|file| (file.name.as_str(), file.sha256.as_str()))) == input.digest
+                    })
+                }),
                 InputKind::Layer => layers.get(input.name.as_str()).is_some_and(|layers| {
                     layers.iter().any(|layer| engine::layer_digest(&layer.files, &input.files) == input.digest)
                 }),
@@ -246,11 +245,26 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     }
     plan.objects.sort();
     plan.snapshots.sort();
+    plan.partial_bytes = size(&store.root().join("partial"))?;
     Ok(plan)
 }
 
-/// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store, including the verification and publication phases of a run.
+/// The size of the files below `path`, without following links.
+fn size(path: &Path) -> Result<u64, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if !metadata.is_dir() {
+        return Ok(metadata.len());
+    }
+    let entries = fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    entries.map(|entry| size(&entry.map_err(|e| e.to_string())?.path())).sum()
+}
+
+/// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch or a build
+/// holds the store, including the verification and publication phases of a run.
 /// A plan that removes anything but `confirmed` deletes nothing.
 pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
@@ -267,6 +281,14 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
     }
     for (sha256, _) in &plan.objects {
         remove(&store.object(sha256))?;
+    }
+    // No fetch or step writes there while the collection holds the store alone.
+    for name in names(&store.root().join("partial"), "")? {
+        let path = store.partial(&name);
+        match fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.is_dir() {
+            true => fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            false => remove(&path)?,
+        }
     }
     Ok(Some(plan))
 }
@@ -429,8 +451,8 @@ mod tests {
         digest
     }
 
-    fn input(kind: InputKind, name: &str, digest: String) -> InputRecord {
-        InputRecord { kind, name: name.into(), digest, files: Vec::new() }
+    fn input(kind: InputKind, name: &str, digest: String, files: &[&str]) -> InputRecord {
+        InputRecord { kind, name: name.into(), digest, files: files.iter().map(|file| file.to_string()).collect() }
     }
 
     #[test]
@@ -442,7 +464,8 @@ mod tests {
         fs::write(repo.join("fixtures/catalog.toml"), format!("[packages.a]\nsha256 = \"{fixture}\"\n")).unwrap();
         let roots = Roots::from_repo(&repo).unwrap();
 
-        snapshot(&store, "land", "2026-09-01", "2026-09-01", &[("a.zip", b"land new"), ("b.zip", b"land b")]);
+        let new = [("a.zip", &b"land new"[..]), ("b.zip", b"land b"), ("c.zip", b"land c")];
+        snapshot(&store, "land", "2026-09-01", "2026-09-01", &new);
         snapshot(&store, "land", "2026-08-01", "2026-08-01", &[("a.zip", b"land old"), ("b.zip", b"land b")]);
         snapshot(&store, "osm", "release/1", "2026-10-05", &[("planet.pbf", b"planet")]);
         snapshot(&store, "extract", "2026-08-01", "2026-08-01", &[("a.pbf", b"extract old")]);
@@ -455,26 +478,27 @@ mod tests {
             store.put_requested("extract", &Requested { version: version.into(), params, files }).unwrap();
         }
         object(&store, b"fixture");
-        object(&store, b"imported, unused");
-        object(&store, b"imported, kept");
-        let line = format!(
-            "{{\"dir\":\"/old\",\"path\":\"a\",\"size\":14,\"sha256\":\"{}\"}}\n",
-            sha256_hex(b"imported, kept")
-        );
-        write_atomic(&store.root().join("imports/20261005T000000Z.jsonl"), line.as_bytes()).unwrap();
         let land = store.snapshot("land", "2026-09-01").unwrap().unwrap();
-        let whole = engine::digest(land.files.iter().map(|f| (f.name.as_str(), f.sha256.as_str())));
-        let one = engine::digest([("a.zip", land.files[0].sha256.as_str())]);
+        let read = |names: &[&str]| {
+            let files = land.files.iter().filter(|file| names.contains(&file.name.as_str()));
+            input(
+                InputKind::Snapshot,
+                "land",
+                engine::digest(files.map(|f| (f.name.as_str(), f.sha256.as_str()))),
+                names,
+            )
+        };
+        let cells = layer(&store, "cells", vec![read(&["a.zip", "b.zip", "c.zip"])], b"cells");
+        layer(&store, "one", vec![read(&["a.zip"])], b"one");
+        layer(&store, "two", vec![read(&["a.zip", "c.zip"])], b"two");
+        layer(&store, "joined", vec![input(InputKind::Layer, "cells", cells, &[])], b"joined");
         let old = engine::digest([("a.zip", sha256_hex(b"land old").as_str())]);
-        let cells = layer(&store, "cells", vec![input(InputKind::Snapshot, "land", whole)], b"cells");
-        layer(&store, "one", vec![input(InputKind::Snapshot, "land", one)], b"one");
-        layer(&store, "joined", vec![input(InputKind::Layer, "cells", cells)], b"joined");
-        let stale = layer(&store, "stale", vec![input(InputKind::Snapshot, "land", old)], b"stale");
-        layer(&store, "on-stale", vec![input(InputKind::Layer, "stale", stale)], b"on stale");
+        let stale = layer(&store, "stale", vec![input(InputKind::Snapshot, "land", old, &["a.zip"])], b"stale");
+        layer(&store, "on-stale", vec![input(InputKind::Layer, "stale", stale, &[])], b"on stale");
 
         let plan = plan(&store, &roots).unwrap();
         assert_eq!(plan.snapshots, ["extract@2026-08-01", "land@2026-08-01"]);
-        let mut removed: Vec<_> = [&b"land old"[..], b"extract old", b"imported, unused", b"stale", b"on stale"]
+        let mut removed: Vec<_> = [&b"land old"[..], b"extract old", b"stale", b"on stale"]
             .iter()
             .map(|bytes| (sha256_hex(bytes), bytes.len() as u64))
             .collect();
@@ -491,14 +515,11 @@ mod tests {
                 "cells: inputs kept",
                 "joined: inputs kept",
                 "one: inputs kept",
+                "two: inputs kept",
                 "1 object: fixture",
-                "1 object: import record",
             ]
         );
-        assert_eq!(
-            plan.keep_objects, 10,
-            "the newest of each source and request, the fixture, an import and three layers"
-        );
+        assert_eq!(plan.keep_objects, 11, "the newest of each source and request, the fixture and four layers");
 
         let using = store.using().unwrap();
         assert!(apply(&store, &roots, &plan).unwrap().is_none(), "a running fetch stops a collection");
@@ -524,11 +545,9 @@ mod tests {
         snapshot(&store, "osm", "1", "2026-10-05", &[("planet.pbf", b"planet")]);
         let planet = engine::digest([("planet.pbf", sha256_hex(b"planet").as_str())]);
         let leaves = [("osm/a.pbf", &b"leaf a"[..]), ("osm/b.pbf", b"leaf b")];
-        layer_of(&store, "leaves", vec![input(InputKind::Snapshot, "osm", planet)], &leaves);
+        layer_of(&store, "leaves", vec![input(InputKind::Snapshot, "osm", planet, &["planet.pbf"])], &leaves);
         let a = engine::digest([("osm/a.pbf", sha256_hex(b"leaf a").as_str())]);
-        let mut selects = input(InputKind::Layer, "leaves", a);
-        selects.files = vec!["osm/a.pbf".into()];
-        layer(&store, "cells", vec![selects], b"cells a");
+        layer(&store, "cells", vec![input(InputKind::Layer, "leaves", a, &["osm/a.pbf"])], b"cells a");
 
         let plan = plan(&store, &Roots::from_repo(&repo).unwrap()).unwrap();
         assert!(plan.objects.is_empty(), "the layer that reads one leaf is reached: {:?}", plan.objects);

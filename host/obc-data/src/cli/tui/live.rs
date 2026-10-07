@@ -26,8 +26,6 @@ pub(super) enum LiveRow {
 pub(super) enum Fix {
     /// The source on Sources.
     Source(usize),
-    /// Store, whose clean moves an old cache in.
-    Store,
     /// Plan, whose apply repairs drift and removes leftovers.
     Plan,
 }
@@ -68,7 +66,6 @@ impl App {
             AttentionKind::Stale | AttentionKind::Blocked => {
                 self.sources.iter().position(|row| row.source.id == attention.about).map(Fix::Source)
             }
-            AttentionKind::OldCache => Some(Fix::Store),
             AttentionKind::Drift | AttentionKind::Leftovers => Some(Fix::Plan),
             AttentionKind::Uncommitted | AttentionKind::Unreachable => None,
         }

@@ -254,6 +254,13 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
         }
     }
     let using = operation::claim(store, run, request)?;
+    let (watched, id) = (Store::at(store.root()), run.to_string());
+    std::thread::spawn(move || loop {
+        if operation::stopped(&watched, &id).unwrap_or(false) {
+            return crate::fetch::http::stop();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    });
     std::env::set_var("OBC_DATA_STORE", store.root());
     #[cfg(target_os = "linux")]
     std::env::set_var("OBC_BAKE_BUDGETED", "1");
