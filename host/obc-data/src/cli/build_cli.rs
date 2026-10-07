@@ -1354,6 +1354,7 @@ pub(crate) mod tests {
         let actual = actual.replacen("/data/", "/data/1/", 1);
         let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("cli-preview-prepare");
+        fixture.with_acquisition();
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
@@ -1433,6 +1434,7 @@ pub(crate) mod tests {
         let actual = actual.replacen("/data/", "/data/1/", 1);
         let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("prepare-softened-fetch");
+        fixture.with_acquisition();
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));

@@ -1079,6 +1079,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let (url, log) = crate::fetch::tests::serve(|_, _| crate::fetch::tests::whole(b"tile a"));
         let land = crate::fetch::tests::source(&url.replace("file.bin", "{tile}-{version}.bin"), "release");
         let fixture = fixture("runs-fetch");
+        fixture.with_acquisition();
         let tile = Input::Snapshot {
             source: "land".into(),
             version: "v1".into(),

@@ -552,7 +552,7 @@ mod tests {
 
     const NO_WAIT: Wait = Wait { pointer: Duration::ZERO, clock: Duration::ZERO };
 
-    /// A repository whose `data/` git has, `head@2020-01-01` in the store, and a local bucket with a
+    /// A committed repository, `head@2020-01-01` in the store, and a local bucket with a
     /// firmware file and the removal log.
     fn repository(name: &str) -> (Fixture, Remote) {
         let fixture = fixture(name);
@@ -563,10 +563,7 @@ mod tests {
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
-        let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
-        for args in [&["add", "data"][..], &["commit", "-q", "-m", "data"]] {
-            assert!(Command::new("git").args(git).args(args).current_dir(&root).status().unwrap().success());
-        }
+        commit(&fixture);
         fixture.fetched_version("head", "2020-01-01", "head.txt", b"head\n");
         upstream(&fixture, "head", "2020-01-01");
         upstream(&fixture, "tail", "1");
@@ -579,6 +576,13 @@ mod tests {
     fn apply(fixture: &Fixture, remote: &Remote, products: &[&dyn Product]) -> Result<Applied, Error> {
         let (root, http) = (fixture.root(), Http::new());
         apply_live(&root, &fixture.store, &http, remote, products, None, |_| Ok(()), NO_WAIT)
+    }
+
+    fn commit(fixture: &Fixture) {
+        let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
+        for args in [&["add", "."][..], &["commit", "-q", "-m", "fixture"]] {
+            assert!(Command::new("git").args(git).args(args).current_dir(fixture.root()).status().unwrap().success());
+        }
     }
 
     /// Every file in the local bucket.
@@ -950,6 +954,7 @@ mod tests {
         write(&fixture.scratch.0.join("bucket/test/objects/old"), "old");
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Failing]).unwrap_err();
         let events = crate::engine::runs::events(&fixture.store, err.run.as_ref().unwrap()).unwrap();
@@ -967,6 +972,7 @@ mod tests {
         let old = checked(&fixture, &remote).unwrap();
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let root = fixture.root();
         let log = fixture.scratch.0.join("bucket/removed.jsonl");
         let error = apply_live(
@@ -1055,6 +1061,7 @@ mod tests {
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let before = keys(&fixture);
         let error = apply(&fixture, &remote, &[&super::super::build_cli::tests::Partial]).unwrap_err();
         assert_eq!(error.code, Code::Blocked);
@@ -1184,6 +1191,7 @@ mod tests {
         let original = checked(&fixture, &remote).unwrap();
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let pointer = fixture.scratch.0.join("bucket/test/catalog.json");
         let result = apply_live(
             &fixture.root(),

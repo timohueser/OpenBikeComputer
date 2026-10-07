@@ -882,6 +882,26 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             self.scratch.0.join("repository")
         }
 
+        pub(crate) fn with_acquisition(&self) {
+            let root = self.root();
+            let source = crate::fetch::tests::source("https://example.org/file.bin", "date");
+            for path in crate::fetch::owner_code(&source).code.paths {
+                write(&root.join(path), "// fixture acquisition backend\n");
+            }
+            write(&root.join("host/obc-data/src/lib.rs"), "");
+            write(
+                &root.join("host/obc-data/Cargo.toml"),
+                "[package]\nname = \"obc-data\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            );
+            let manifest = root.join("Cargo.toml");
+            let mut workspace: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+            workspace["workspace"]["members"].as_array_mut().unwrap().push("host/obc-data".into());
+            write(&manifest, &toml::to_string(&workspace).unwrap());
+            let lock =
+                Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&root).output().unwrap();
+            assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
+        }
+
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
             plan::plan(&self.store, &self.root(), steps)
         }

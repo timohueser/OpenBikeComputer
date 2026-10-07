@@ -441,7 +441,12 @@ mod tests {
         let root = fixture.root();
         write(&root.join(".python-version"), "3.12\n");
         write(&root.join("pyproject.toml"), "[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[dependency-groups]\ncapture = []\n[tool.uv]\npackage = false\ndefault-groups = []\n");
-        write(&root.join("uv.lock"), "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n[[package]]\nname = \"capture-fixture\"\nversion = \"0\"\nsource = { virtual = \".\" }\n");
+        let lock = Command::new("uv")
+            .args(["lock", "--offline", "--no-python-downloads"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
         let selected = crate::engine::code::python_executable(&root).unwrap();
         let code = crate::engine::Code {
             python: Some(crate::engine::Python { group: Some("capture".into()) }),
