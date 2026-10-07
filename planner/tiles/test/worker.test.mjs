@@ -187,3 +187,40 @@ test('a client over its limit is refused on a cache miss only', async () => {
   assert.equal(keys.length, 1);
   delete globalThis.caches;
 });
+
+test('Local files serve the same grid bytes over loopback without an R2 cache', async () => {
+  const {mkdtemp, mkdir, writeFile, rm, realpath} = await import('node:fs/promises');
+  const {tmpdir} = await import('node:os');
+  const {join, dirname} = await import('node:path');
+  const {Files, serve} = await import('../src/local.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'obc-local-tiles-'));
+  const id = 'f'.repeat(64), prefix = `planner/releases/${id}`;
+  const tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Local data"}');
+  const hash = createHash('sha256').update(tilejson).digest('hex');
+  const objects = new Map([...grid(prefix, {basemap: archive()}),
+    [`${prefix}/public/maps/basemap.json.json`, pointer(hash, tilejson)], [`planner/objects/${hash}`, tilejson]]);
+  let server;
+  try {
+    for (const [key, bytes] of objects) {
+      const path = join(root, key);
+      await mkdir(dirname(path), {recursive:true});
+      await writeFile(path, bytes);
+    }
+    const files = new Files(await realpath(root));
+    assert.equal(await files.get('planner/objects/../secret'), null);
+    const tail = await files.get(`planner/objects/${hash}`, {range:{offset:5, length:16384}});
+    assert.deepEqual(Buffer.from(await tail.arrayBuffer()), tilejson.subarray(5));
+    server = await serve(root, 0);
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const tile = `${origin}/releases/${id}/basemap/0/0/0.mvt`;
+    assert.deepEqual(Buffer.from(await (await fetch(tile)).arrayBuffer()), Buffer.from([26, 0]));
+    assert.equal((await fetch(tile, {method:'HEAD'})).status, 200);
+    const info = await (await fetch(`${origin}/releases/${id}/basemap.json`)).json();
+    assert.equal(info.attribution, 'Local data');
+    assert.deepEqual(info.tiles, [`${origin}/releases/${id}/basemap/{z}/{x}/{y}`]);
+    assert.equal((await fetch(`${origin}/releases/${'1'.repeat(64)}/basemap.json`)).status, 404);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    await rm(root, {recursive:true, force:true});
+  }
+});

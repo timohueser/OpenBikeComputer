@@ -233,7 +233,7 @@ impl Maps {
             match tool
                 .as_ref()
                 .map_err(|reason| Unplanned::Invalid(reason.clone()))
-                .and_then(|tool| crate::region_sources::combined("maps/region-osm", &inputs, tool))
+                .and_then(|tool| crate::region_sources::combined("maps/region-osm", &inputs, Some(tool)))
             {
                 Ok(combined) => steps.push(combined),
                 Err(Unplanned::Invalid(reason)) => {

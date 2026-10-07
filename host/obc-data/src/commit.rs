@@ -172,7 +172,7 @@ pub fn durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Persist directory entries too, including ancestors created by store setup.
-pub(crate) fn durable_directory(path: &Path) -> Result<(), String> {
+pub fn durable_directory(path: &Path) -> Result<(), String> {
     std::fs::create_dir_all(path).map_err(|e| e.to_string())?;
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     for directory in path.ancestors() {

@@ -150,7 +150,7 @@ impl Store {
         Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
     }
 
-    fn lock_path(&self, key: &str) -> PathBuf {
+    pub(crate) fn lock_path(&self, key: &str) -> PathBuf {
         let name: String =
             key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
         self.root.join("locks").join(format!("{name}.lock"))

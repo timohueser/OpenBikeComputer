@@ -73,6 +73,7 @@ pub(super) fn request(kind: Kind, plan: &EnvPlan) -> Request {
             Vec::new()
         },
         plan: None,
+        dev: None,
     }
 }
 

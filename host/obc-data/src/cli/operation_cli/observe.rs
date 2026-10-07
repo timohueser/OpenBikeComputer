@@ -69,7 +69,7 @@ fn local(store: &Store, run: &str) -> Result<View, Error> {
     Ok(view)
 }
 
-fn tail(path: &std::path::Path) -> Result<Vec<String>, String> {
+pub(crate) fn tail(path: &std::path::Path) -> Result<Vec<String>, String> {
     use std::io::{Read, Seek, SeekFrom};
     const BYTES: u64 = 16 * 1024;
     let metadata = match std::fs::metadata(path) {
@@ -265,6 +265,7 @@ mod tests {
             only: Vec::new(),
             moves: Vec::new(),
             plan: None,
+            dev: None,
         };
         let control = operation::Control {
             run: id.clone(),
@@ -301,6 +302,7 @@ mod tests {
             only: Vec::new(),
             moves: Vec::new(),
             plan: None,
+            dev: None,
         };
         for (id, fails) in [("2026-10-06-120000", false), ("2026-10-06-120001", true)] {
             let control = operation::Control {
@@ -427,6 +429,7 @@ mod tests {
             only: Vec::new(),
             moves: Vec::new(),
             plan: Some(crate::engine::LayerFile { path: "plan.json".into(), size: 1, sha256: "d".repeat(64) }),
+            dev: None,
         };
         let control = operation::Control {
             run: id.clone(),

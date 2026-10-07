@@ -62,6 +62,11 @@ pub(crate) fn private_file(file: &Path) -> Result<PathBuf, String> {
 
 /// The command has no credential values, shell, login scope, or automatic restart.
 pub fn service(unit: &str, root: &Path, directory: &Path, file: &Path, user: bool) -> Command {
+    serving(unit, root, directory, file, user)
+}
+
+/// Known app serving is independent of finite bake worker resource policy.
+pub fn serving(unit: &str, root: &Path, directory: &Path, file: &Path, user: bool) -> Command {
     let mut command = Command::new("systemd-run");
     command.args(["--quiet", "--collect", "--service-type=exec"]);
     if user {

@@ -40,8 +40,7 @@ class R2Source {
   }
 }
 
-export default {
-  async fetch(request, env, ctx) {
+export async function fetch(request, env, ctx, cache = globalThis.caches?.default) {
     if (request.method === 'OPTIONS') return new Response(null, { headers });
     if (!['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, HEAD, OPTIONS' } });
     const url = new URL(request.url), route = tileRoute(url.pathname);
@@ -49,7 +48,7 @@ export default {
     try { asset = assetRoute(decodeURIComponent(url.pathname)); } catch { asset = null; }
     if ((!route && !asset) || url.search) return notFound();
     const cacheKey = new Request(url.href);
-    const cached = await caches.default.match(cacheKey);
+    const cached = await cache?.match(cacheKey);
     if (cached) return reply(request.method === 'HEAD' ? null : cached.body, cached);
     // Only a cache miss reads the bucket, so only a miss counts against the limit.
     if (env.LIMITER && !(await env.LIMITER.limit({ key: request.headers.get('cf-connecting-ip') ?? '' })).success) {
@@ -89,8 +88,12 @@ export default {
         }
         response = reply(data?.data, { status: data ? 200 : 204, headers: { ...headers, ...tileHeaders } });
       }
-      ctx.waitUntil(caches.default.put(cacheKey, reply(response.clone().body, response)));
-      return request.method === 'HEAD' ? new Response(null, response) : response;
+      if (cache) ctx.waitUntil(cache.put(cacheKey, reply(response.clone().body, response)));
+      if (request.method === 'HEAD') {
+        if (!cache) await response.body?.cancel();
+        return new Response(null, response);
+      }
+      return response;
     } catch (error) {
       if (!(error instanceof MissingArchive)) console.error(JSON.stringify({ event: 'tile_read_failed', path: url.pathname, error: String(error) }));
       return new Response(error instanceof MissingArchive ? 'Archive not found' : 'Tiles are temporarily unavailable', {
@@ -98,5 +101,6 @@ export default {
         headers: { ...headers, 'Cache-Control': 'no-store' },
       });
     }
-  },
-};
+}
+
+export default { fetch };
