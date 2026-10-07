@@ -677,3 +677,70 @@ fetch = { kind = "http", url = "https://files.pythonhosted.org/packages/fc/9e/3f
 version = "release"
 refresh = "manual"
 redistribute = false
+
+[[source]]
+id = "fixture-assistant-osm"
+kind = "data"
+licence = "ODbL-1.0"
+attribution = "© OpenStreetMap contributors"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "fixture-assistant-terrain"
+kind = "data"
+licence = "LicenseRef-Copernicus-DEM"
+attribution = "Copernicus DEM captured inputs"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = false
+
+[[source]]
+id = "fixture-assistant-replays"
+kind = "data"
+licence = "GPL-3.0-only"
+attribution = "Authored Ride Assistant motion"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = true
+
+[[source]]
+id = "fixture-assistant-switzerland-content"
+kind = "data"
+attribution = "Per-record article and media credits remain in the capture"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = false
+
+[[source]]
+id = "fixture-peak-content"
+kind = "data"
+attribution = "Per-record article and media credits remain in the capture"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = false
+
+[[source]]
+id = "fixture-assistant-wiki"
+kind = "data"
+attribution = "Per-record article and media credits remain in the capture"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = false
+
+[[source]]
+id = "fixture-authored-motion"
+kind = "asset"
+licence = "GPL-3.0-only"
+attribution = "Authored simulator routes, tracks and Ride Assistant replays"
+fetch = { kind = "by-hand", url = "https://github.com/timohueser/OpenBikeComputer/tree/develop/fixtures/sources" }
+version = "digest"
+refresh = "manual"
+redistribute = true

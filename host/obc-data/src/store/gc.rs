@@ -85,6 +85,7 @@ impl Roots {
 
     fn add_fixtures(&mut self, store: &Store) -> Result<(), String> {
         for saved in crate::fixtures::saved(store)? {
+            self.name(saved.assets.iter().map(|asset| asset.sha256.clone()), "fixture");
             self.name([saved.bootstrap.sha256, saved.archive.sha256].into_iter(), "fixture");
             self.name(
                 saved.release.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),

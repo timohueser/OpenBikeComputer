@@ -1,4 +1,5 @@
 [packages.sim-grimsel]
+asset_source = "fixture-authored-motion"
 region = "grimsel"
 map = "grimsel.obcm"
 osm = "switzerland.osm.pbf"
@@ -11,6 +12,7 @@ osm = "switzerland.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/grimsel-demo-v19.json"
 
 [packages.sim-monaco]
+asset_source = "fixture-authored-motion"
 region = "monaco"
 map = "monaco.obcm"
 osm = "monaco.osm.pbf"
@@ -23,12 +25,14 @@ osm = "europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/freiburg-v19.json"
 
 [packages.sim-assistant-meiringen]
+asset_source = "fixture-authored-motion"
 region = "meiringen"
 map = "meiringen.obcm"
 osm = "switzerland.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/meiringen-v19.json"
 
 [packages.sim-assistant-west-cork]
+asset_source = "fixture-authored-motion"
 region = "west-cork"
 map = "west-cork.obcm"
 osm = "west-cork.osm.pbf"

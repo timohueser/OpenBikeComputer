@@ -10,7 +10,89 @@ pub(crate) struct Catalog {
     pub file: LayerFile,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn immutable_update_preserves_unrelated_catalog_and_staged_work_and_refuses_a_changed_pointer() {
+        let scratch = crate::store::tests::Scratch::new("fixture-catalog-apply");
+        let root = &scratch.0;
+        std::fs::create_dir(root.join("fixtures")).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
+        std::fs::write(root.join("unrelated"), "staged owner work").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "unrelated"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        let staged = std::fs::read(root.join(".git/index")).unwrap();
+        let old = "a".repeat(64);
+        let text = format!("schema=1\nbase_url=\"https://fixtures.example/v1/\"\n\n[packages.ride]\nsummary=\"Ride\"\narchive=\"packages/{old}.tar.gz\"\nsha256=\"{old}\"\nbytes=10\nprovenance=\"Original\"\nlicense=\"ODbL-1.0\"\n\n# Owner's unchanged scenario\n[scenarios.ride]\npackages=[\"ride\"]\n");
+        std::fs::write(root.join("fixtures/catalog.toml"), &text).unwrap();
+        let reviewed = Catalog::read(root).unwrap();
+        let digest = "b".repeat(64);
+        let selected = [(
+            "ride".into(),
+            (
+                LayerFile { path: format!("packages/{digest}.tar.gz"), size: 20, sha256: digest.clone() },
+                "Ride".into(),
+                "ODbL-1.0".into(),
+            ),
+        )]
+        .into();
+        reviewed.replace(root, &selected).unwrap();
+        let applied = Catalog::read(root).unwrap();
+        assert_eq!(applied.document["packages"]["ride"]["sha256"].as_str(), Some(digest.as_str()));
+        assert!(applied.text.ends_with("# Owner's unchanged scenario\n[scenarios.ride]\npackages=[\"ride\"]\n"));
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), staged);
+        assert!(reviewed.replace(root, &selected).unwrap_err().contains("catalog changed"));
+        assert_eq!(Catalog::read(root).unwrap().text, applied.text);
+        assert!(applied
+            .replace(
+                root,
+                &[(
+                    "new-map".into(),
+                    (
+                        LayerFile { path: "packages/placeholder.tar.gz".into(), size: 1, sha256: "c".repeat(64) },
+                        "New map".into(),
+                        "ODbL-1.0".into()
+                    )
+                )]
+                .into()
+            )
+            .is_err());
+    }
+}
+
 impl Catalog {
+    pub fn assets(&self, root: &Path, id: &str, map: &str) -> Result<BTreeMap<String, LayerFile>, String> {
+        let mut assets = BTreeMap::new();
+        let tracked = self.document["packages"].get(id).and_then(|p| p.get("tracked_sources"));
+        for (destination, source) in tracked.and_then(toml::Value::as_table).into_iter().flatten() {
+            relative(destination)?;
+            let source = source.as_str().ok_or("fixture tracked source is not a path")?;
+            relative(source)?;
+            if destination == map || destination.starts_with(".obc-") {
+                return Err("fixture tracked asset conflicts with generated output".into());
+            }
+            let path = format!("fixtures/{source}");
+            if !std::fs::symlink_metadata(root.join(&path)).map_err(|e| e.to_string())?.file_type().is_file()
+                || !root
+                    .join(&path)
+                    .canonicalize()
+                    .map_err(|e| e.to_string())?
+                    .starts_with(root.join("fixtures").canonicalize().map_err(|e| e.to_string())?)
+            {
+                return Err("fixture tracked asset must be a regular file inside fixtures".into());
+            }
+            let (sha256, size) = hash_file(&root.join(&path))?;
+            assets.insert(destination.clone(), LayerFile { path, sha256, size });
+        }
+        Ok(assets)
+    }
+
     pub fn read(root: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(root.join("fixtures/catalog.toml")).map_err(|e| e.to_string())?;
         let document: toml::Value = toml::from_str(&text).map_err(|e| e.to_string())?;

@@ -45,6 +45,16 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     };
     let mut content = Vec::new();
     for collection in ["landmarks", "peaks"] {
+        if inputs.empty.iter().any(|name| name == collection) {
+            content.push(copy_step(
+                &content_layer(collection),
+                inputs.osm.input(),
+                serde_json::json!({"kind":"historical-empty","collection":collection,"sha256":inputs.osm_sha256}),
+                &[collection],
+                empty_content,
+            ));
+            continue;
+        }
         let input = inputs.content.get(collection).ok_or_else(|| {
             invalid(format!("fixture {collection} needs an exact raw capture or an explicitly pinned compiled input"))
         })?;
@@ -71,6 +81,49 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
         obc_pack::step::geos_libraries(),
         RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index: None, content: Some(content) },
     )
+}
+
+fn empty_content(request: &Request) -> Result<(), String> {
+    use obc_pack::landmarks::{peaks::PeakContent, Content, Counts};
+    let collection = request.options["collection"].as_str().ok_or("empty fixture collection is missing")?;
+    let digest = request.options["sha256"].as_str().ok_or("empty fixture input identity is missing")?.to_string();
+    let value = match collection {
+        "landmarks" => serde_json::to_value(Content {
+            schema: 2,
+            input_sha256: digest.clone(),
+            policy_sha256: digest.clone(),
+            category_policy_sha256: digest,
+            languages: Vec::new(),
+            source_coverage: serde_json::Value::Null,
+            counts: Counts::default(),
+            candidate_qids: Vec::new(),
+            records: Vec::new(),
+            omissions: Vec::new(),
+            photo_requests: Vec::new(),
+        }),
+        "peaks" => serde_json::to_value(PeakContent {
+            schema: 1,
+            collection: "peaks".into(),
+            input_sha256: digest.clone(),
+            policy_sha256: digest,
+            languages: Vec::new(),
+            source_coverage: serde_json::Value::Null,
+            counts: Counts::default(),
+            associations: Vec::new(),
+            records: Vec::new(),
+            omissions: Vec::new(),
+            photo_requests: Vec::new(),
+        }),
+        _ => return Err("unknown empty fixture collection".into()),
+    }
+    .map_err(|e| e.to_string())?;
+    let output = request.output.join(collection);
+    std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
+    std::fs::write(
+        output.join(if collection == "peaks" { "peaks.json" } else { "content.json" }),
+        serde_json::to_vec(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn copy_step(

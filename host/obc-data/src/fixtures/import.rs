@@ -6,13 +6,55 @@ use crate::fetch::http::{Expect, Http};
 use crate::sources::Source;
 use crate::store::{FileRecord, Snapshot};
 
-pub(crate) fn materialize(root: &Path, args: &[String]) -> Result<serde_json::Value, String> {
-    let code = Code {
+pub(crate) fn packaging(root: &Path) -> Result<BTreeMap<String, String>, String> {
+    materializer().files(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::{fixture, write};
+
+    #[test]
+    fn reviewed_sealer_changes_refuse_before_materializing_any_archive() {
+        let fixture = fixture("reviewed-fixture-sealer");
+        let root = fixture.root();
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for path in ["pyproject.toml", "uv.lock", "tools/data_fixtures.py", "tools/fixtures.py"] {
+            write(&root.join(path), &std::fs::read_to_string(real.join(path)).unwrap());
+        }
+        let reviewed = packaging(&root).unwrap();
+        write(&root.join("tools/data_fixtures.py"), "raise RuntimeError('must not execute changed sealer')\n");
+        let archive = root.join("unreviewed.tar.gz");
+        let error = materialize(
+            &root,
+            &["seal".into(), "ride".into(), root.to_string_lossy().into(), archive.to_string_lossy().into()],
+            Some(&reviewed),
+        )
+        .unwrap_err();
+        assert!(error.contains("changed after review"), "{error}");
+        assert!(!archive.exists());
+    }
+}
+
+fn materializer() -> Code {
+    Code {
         files: vec!["tools/data_fixtures.py".into(), "tools/fixtures.py".into()],
         python: Some(Python::default()),
         ..Default::default()
-    };
+    }
+}
+
+pub(crate) fn materialize(
+    root: &Path,
+    args: &[String],
+    expected: Option<&BTreeMap<String, String>>,
+) -> Result<serde_json::Value, String> {
+    let code = materializer();
     let identity = code.files(root)?;
+    if expected.is_some_and(|expected| expected != &identity) {
+        return Err("fixture sealer or Python changed after review; make a new plan".into());
+    }
     let argv = [vec!["python".into(), "-m".into(), "tools.data_fixtures".into()], args.to_vec()].concat();
     let output = code.command(root, &argv)?.output().map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -60,6 +102,7 @@ pub(crate) fn archives(
                 hash.clone(),
                 directory.to_string_lossy().into(),
             ],
+            None,
         )?;
         let mut files = Vec::new();
         for file in imported["files"].as_array().ok_or("fixture archive has no file inventory")? {
@@ -133,6 +176,29 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             }
         }
     }
+    if captured.is_none() {
+        for snapshot in store.snapshots("geofabrik-extracts")? {
+            if let Some(file) = snapshot.files.iter().find(|f| f.sha256 == osm.sha256 && f.size == osm.bytes) {
+                captured = Some(CapturedInput {
+                    source: snapshot.source.clone(),
+                    version: snapshot.version.clone(),
+                    files: vec![file.name.clone()],
+                });
+                break;
+            }
+        }
+    }
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(&package.bootstrap)).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let empty = [
+        ("landmarks", record["map"]["landmark_records"].as_u64() == Some(0)),
+        ("peaks", record["map"]["peak_associations"].as_array().is_some_and(Vec::is_empty)),
+    ]
+    .into_iter()
+    .filter(|(name, absent)| *absent && !content.contains_key(*name))
+    .map(|(name, _)| name.into())
+    .collect();
     Ok(Inputs {
         osm: captured.ok_or_else(|| {
             format!(
@@ -142,5 +208,6 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
         })?,
         osm_sha256: osm.sha256,
         content,
+        empty,
     })
 }

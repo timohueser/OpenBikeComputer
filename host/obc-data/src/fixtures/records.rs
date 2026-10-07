@@ -10,6 +10,7 @@ pub struct Saved {
     pub inputs: Inputs,
     pub release: Release,
     pub archive: LayerFile,
+    pub assets: Vec<LayerFile>,
 }
 
 impl Saved {
@@ -18,7 +19,12 @@ impl Saved {
             return Err("saved fixture package has no known map release".into());
         }
         digest(&self.bootstrap.sha256)?;
+        self.inputs.check()?;
         digest(&self.archive.sha256)?;
+        for asset in &self.assets {
+            relative(&asset.path)?;
+            digest(&asset.sha256)?;
+        }
         if self.archive.path != format!("packages/{}.tar.gz", self.archive.sha256) {
             return Err("saved fixture archive is not content addressed".into());
         }
@@ -125,9 +131,11 @@ mod tests {
                 osm: CapturedInput { source: "fixture-osm".into(), version: "1".into(), files: Vec::new() },
                 osm_sha256: files[0].sha256.clone(),
                 content: BTreeMap::new(),
+                empty: Vec::new(),
             },
             release: Release::compose("maps", "ride", &[], None, vec![layer], &Default::default()),
             archive: LayerFile { path: format!("packages/{}.tar.gz", files[0].sha256), ..files[0].clone() },
+            assets: Vec::new(),
         };
         selected.write(&store).unwrap();
         let plan = gc::plan(&store, &gc::Roots::default()).unwrap();

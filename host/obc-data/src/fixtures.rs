@@ -17,7 +17,7 @@ pub use records::{saved, Saved};
 mod catalog;
 pub(crate) use catalog::Catalog;
 mod import;
-pub(crate) use import::{archives, inputs, materialize};
+pub(crate) use import::{archives, inputs, materialize, packaging};
 
 pub type Assemble = fn(&Release, &Store, &Path) -> Result<(), String>;
 pub type Recipes = fn(&Env, &Regions, &Store, &Inputs) -> Result<Steps, Unplanned>;
@@ -36,6 +36,8 @@ pub struct Inputs {
     pub osm: CapturedInput,
     pub osm_sha256: String,
     pub content: BTreeMap<String, CapturedInput>,
+    /// Collections explicitly empty in the original package record.
+    pub empty: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -53,6 +55,8 @@ pub struct Plan {
     /// The exact package declarations and canonical regions used for this review.
     pub configuration: String,
     pub destination: String,
+    pub worker: String,
+    pub packaging: BTreeMap<String, String>,
     pub packages: BTreeMap<String, PackagePlan>,
 }
 
@@ -61,6 +65,7 @@ pub struct Plan {
 pub struct PackagePlan {
     pub bootstrap: LayerFile,
     pub inputs: Option<Inputs>,
+    pub assets: BTreeMap<String, LayerFile>,
     pub plan: crate::cli::EnvPlan,
 }
 
@@ -71,6 +76,7 @@ impl Plan {
         }
         digest(&self.catalog.sha256)?;
         digest(&self.configuration)?;
+        digest(&self.worker)?;
         if self.destination.is_empty() {
             return Err("fixture apply has no isolated destination".into());
         }
@@ -82,10 +88,11 @@ impl Plan {
                 return Err(format!("fixture {id} requires preparation and a complete review"));
             }
             digest(&package.bootstrap.sha256)?;
-            let inputs = package.inputs.as_ref().expect("checked above");
-            digest(&inputs.osm_sha256)?;
-            for input in std::iter::once(&inputs.osm).chain(inputs.content.values()) {
-                input.check()?;
+            package.inputs.as_ref().expect("checked above").check()?;
+            for (destination, asset) in &package.assets {
+                relative(destination)?;
+                relative(&asset.path)?;
+                digest(&asset.sha256)?;
             }
         }
         Ok(())
@@ -94,6 +101,22 @@ impl Plan {
     pub fn catalog_unchanged(&self, root: &Path) -> Result<(), String> {
         if hash_file(&root.join("fixtures/catalog.toml"))? != (self.catalog.sha256.clone(), self.catalog.size) {
             return Err("fixture catalog changed; review a new plan before its update".into());
+        }
+        Ok(())
+    }
+}
+
+impl Inputs {
+    pub fn check(&self) -> Result<(), String> {
+        digest(&self.osm_sha256)?;
+        for input in std::iter::once(&self.osm).chain(self.content.values()) {
+            input.check()?;
+        }
+        let mut selected = std::collections::BTreeSet::new();
+        for name in self.content.keys().chain(&self.empty) {
+            if !matches!(name.as_str(), "landmarks" | "peaks") || !selected.insert(name) {
+                return Err("fixture content collection is unknown or selected twice".into());
+            }
         }
         Ok(())
     }
@@ -145,9 +168,8 @@ pub struct Package {
     /// Explicit raw source selections; historical baked terrain is not a raw DEM version.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
-    /// Archive destination to a registered captured source.
     #[serde(default)]
-    pub assets: BTreeMap<String, String>,
+    pub asset_source: Option<String>,
 }
 
 impl Collection {
@@ -174,11 +196,8 @@ impl Collection {
                     return Err(format!("fixture {id} has an invalid raw source selection"));
                 }
             }
-            for (destination, source) in &package.assets {
-                relative(destination)?;
-                if destination == &package.map || !crate::is_kebab(source) {
-                    return Err(format!("fixture {id} has a conflicting map path or invalid asset source"));
-                }
+            if package.asset_source.as_ref().is_some_and(|source| !crate::is_kebab(source)) {
+                return Err(format!("fixture {id} has an invalid tracked asset source"));
             }
         }
         Ok(collection)
