@@ -999,8 +999,9 @@ terrain are blocked too. Other leaves and bands keep their steps.
 A capture keeps its params while no source of the capture moves: the step list reads the capture
 of the region that the saved plan or live reads, or else the newest capture of the region in the
 store. A new extract alone therefore asks for no new capture. Ordinary preparation fetches a
-missing capture. Policy refresh selects the newest version of each stale request and retains
-its capture params. A saved plan replays those exact params. Status and ordinary plans do not
+missing capture. Policy refresh selects one new version for the stale capture bundle: Wikidata, Wikipedia and
+Commons keep matching manifest, article and image bytes. Other areas and collections keep
+their versions. The bundle retains its capture params. A saved plan replays those exact params. Status and ordinary plans do not
 start bulk captures. A capture that moves explicitly reads the extract and the `.poly` of now.
 Missing held capture inputs remain blocked; retained-copy failure never selects replacement data. `code=` is the digest of the code that makes the boundary and the
 candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
