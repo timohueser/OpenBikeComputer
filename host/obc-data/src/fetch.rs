@@ -447,7 +447,7 @@ pub(crate) mod tests {
         for path in [".python-version", "pyproject.toml", "uv.lock"] {
             crate::engine::tests::write(
                 &fixture.root().join(path),
-                &fs::read_to_string(tooling_root().join(path)).unwrap(),
+                &std::fs::read_to_string(tooling_root().join(path)).unwrap(),
             );
         }
         fixture
