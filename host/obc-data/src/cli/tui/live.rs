@@ -125,7 +125,7 @@ impl App {
                     let region = self.env.as_ref().map_or("—".into(), |env| env.region.clone());
                     Line::from(vec![Span::from("region  ").dim(), Span::from(region)])
                 }
-                LiveRow::Schedule => Line::from(format!("automation  {} · s details", self.schedule.summary())),
+                LiveRow::Schedule => Line::from(format!("automation  {}", self.schedule.summary())),
                 LiveRow::Product(p) => {
                     let cells = row_text(&[&table[p + 1][..], &[String::new()]].concat(), &product_widths);
                     Line::from(vec![Span::from(cells), product_state(&products[*p])])

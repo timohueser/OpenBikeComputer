@@ -714,6 +714,8 @@ fn schedule_has_explicit_host_scope_confirmation_and_never_intercepts_form_text(
         assert_eq!(app.key(KeyCode::Char('d')), Effect::None);
     }
     app.schedule.editing = true;
+    app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Custom, time: "00:00".into(), day: 1 });
+    app.schedule.field = 1;
     app.schedule.calendar = "daily".into();
     app.schedule.zone = "UTC".into();
     app.key(KeyCode::Char('q'));
@@ -734,6 +736,77 @@ fn schedule_has_explicit_host_scope_confirmation_and_never_intercepts_form_text(
     app.key(KeyCode::Esc);
     assert!(!app.asking && app.schedule.pending.is_none());
     assert!(app.moves.is_empty() && app.plan.is_none(), "schedule has no manual plan side effects");
+}
+
+#[test]
+fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() {
+    let mut app = app();
+    app.host = "fixture-vps (linux)".into();
+    app.overlay = Some(Overlay::Schedule);
+    app.schedule.editing = true;
+    app.schedule.zone = "UTC".into();
+    app.schedule.calendar = "daily".into();
+    app.key(KeyCode::Down);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Delete);
+    for c in "07:30".chars() {
+        app.key(KeyCode::Char(c));
+    }
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Down);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Enter);
+    let calendar = "Tue *-*-* 07:30:00";
+    assert_eq!(
+        app.key(KeyCode::Char('y')),
+        Effect::ScheduleChange(schedule::Change::Install { calendar: calendar.into(), zone: "UTC".into() })
+    );
+    app.key(KeyCode::Esc);
+    let mut run = crate::cli::operation_cli::View {
+        run: app.runs[0].clone(),
+        operation: Some(crate::operation::Status::Finished { ok: true }),
+        observation_error: None,
+        result: Some(json!({"built":{},"applied":{}})),
+        logs: Vec::new(),
+    };
+    let state = crate::schedule::State {
+        enabled: true,
+        active: false,
+        runnable: false,
+        blocked: Some("Host setup needs repair".into()),
+        calendar: Some(calendar.into()),
+        time_zone: Some("UTC".into()),
+        next: Some("Thu 2026-10-08 07:30:00 UTC".into()),
+        last_trigger: None,
+        last_run: Some(Box::new(run.clone())),
+    };
+    app.schedule.state = Some(Ok(std::sync::Arc::new(state)));
+    assert_eq!(app.schedule.summary(), "weekly Tue 07:30 · next 2026-10-08 07:30 · last applied");
+    app.overlay = None;
+    let live = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        live.contains("weekly Tue 07:30") && live.contains("next 2026-10-08 07:30") && live.contains("last applied"),
+        "{live}"
+    );
+    app.overlay = Some(Overlay::Schedule);
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        drawn.contains("Enabled true")
+            && drawn.contains("active false")
+            && drawn.contains("runnable false")
+            && drawn.contains("needs repair"),
+        "{drawn}"
+    );
+    run.result = Some(json!({"built":{},"applied":null}));
+    let state = std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap();
+    state.enabled = false;
+    state.last_run = Some(Box::new(run));
+    assert_eq!(app.schedule.summary(), "off · last verified");
+    app.schedule.editing = true;
+    app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Daily, time: "25:99".into(), day: 1 });
+    app.key(KeyCode::Enter);
+    assert!(!app.asking && app.schedule.pending.is_none());
+    assert!(app.notice.unwrap().message.contains("00:00 to 23:59"));
 }
 
 #[test]

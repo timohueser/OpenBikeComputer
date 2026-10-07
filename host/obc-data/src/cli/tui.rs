@@ -615,7 +615,15 @@ impl App {
                     keys.insert(0, input(KeyCode::Char('y'), "y", "confirm schedule change"));
                 } else {
                     keys.insert(0, input(KeyCode::Tab, "tab", "field"));
-                    keys.insert(1, input(KeyCode::Enter, "enter", "review"));
+                    if self.schedule.field == 0
+                        || self.schedule.field == 2
+                            && self.schedule.form.as_ref().is_some_and(|form| {
+                                matches!(form.preset, schedule::Preset::Weekly | schedule::Preset::Monthly)
+                            })
+                    {
+                        keys.insert(1, input(KeyCode::Up, "↑ ↓", "select"));
+                    }
+                    keys.push(input(KeyCode::Enter, "enter", "review"));
                 }
             }
             return keys;
