@@ -57,7 +57,7 @@ integrates installation and readiness.
 
 ## Runtime and data limits
 
-[`query/`](query/README.md) parses sentences with the pinned int8 model.
+[`query/`](query/) parses sentences with the pinned int8 model.
 [`query/contract.json`](query/contract.json) defines the decoded request.
 [`validation.mjs`](validation.mjs) checks its plan context. The resolver applies it to the view, route, days, and places. Explicit words override
 pointing; pointing overrides the view. Edited requests bypass inference.
@@ -105,7 +105,7 @@ It reports host query times and combined process memory. It does not measure pho
 ## Model development
 
 The generator, templates, decoder, training, and ONNX export code live in `query/`.
-Use [its README](query/README.md) to restore training data and retrain. Keep the held-out
+Use [the training CLI](query/train.py) to retrain. Keep the held-out
 sentences separate from template and lexicon changes.
 
 Search data carries the `osm-planet` credit of [`data/sources.toml`](../../data/sources.toml).
