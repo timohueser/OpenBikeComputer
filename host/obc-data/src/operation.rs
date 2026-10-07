@@ -483,7 +483,9 @@ mod tests {
         let local_using = claim(&store, &local.run, &local.request_sha256).unwrap();
         assert!(handoff(&store, &local.run, "publisher", &"e".repeat(64)).unwrap_err().contains("only live"));
         assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Running);
-        finish(&store, &local.run, true, None).unwrap();
+        assert_eq!(stop(&store, &local.run).unwrap(), State::Stopping);
+        finish(&store, &local.run, false, None).unwrap();
         drop(local_using);
+        assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Stopped);
     }
 }
