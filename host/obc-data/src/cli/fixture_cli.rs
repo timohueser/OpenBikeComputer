@@ -267,6 +267,14 @@ fn inspect(
                 _ => None,
             });
             licences(ids.chain(inputs.historical.values().map(|input| input.source.as_str())), &sources)?;
+            for input in inputs.historical.values() {
+                if !sources.iter().any(|source| source.id == input.source && source.redistribute) {
+                    return Err(format!(
+                        "{}: historical fixture sidecar redistribution is not confirmed",
+                        input.source
+                    ));
+                }
+            }
             if !assets.is_empty() {
                 let asset_id =
                     package.asset_source.as_deref().ok_or("tracked fixture assets need a registered source")?;
@@ -365,13 +373,37 @@ pub(super) fn perform(
                 let (original, mut env) = match &saved {
                     Some(saved) => {
                         coverage(package, &regions, &saved.selection)?;
+                        let env = saved.selection.environment(&package.region);
+                        let mut fetch =
+                            build_cli::fetcher_recorded(root, store, &http, &sources, &env, None, Some(&mut run));
                         saved.selection.restore(
                             store,
                             &http,
                             &crate::live::Remote::Public(catalog.base_url.trim_end_matches('/').into()),
                             &requested,
+                            &sources,
+                            |wanted| {
+                                let source = sources
+                                    .iter()
+                                    .find(|source| source.id == wanted.source)
+                                    .ok_or("retained source is unregistered")?;
+                                if source.fetch.kind == crate::sources::FetchKind::ByHand
+                                    && source.id.starts_with("fixture-")
+                                {
+                                    fixtures::archive(
+                                        root,
+                                        store,
+                                        &http,
+                                        &catalog,
+                                        source,
+                                        wanted.version.as_deref().ok_or("original capture needs its exact version")?,
+                                    )
+                                } else {
+                                    fetch(wanted).map(|_| ()).map_err(|error| error.message)
+                                }
+                            },
                         )?;
-                        (saved.selection.inputs.clone(), saved.selection.environment(&package.region))
+                        (saved.selection.inputs.clone(), env)
                     }
                     None => {
                         let (_, bootstrap) = package.bootstrap(root, &regions)?;
@@ -550,7 +582,7 @@ pub(super) fn perform(
                 Some(saved) => saved.selection.coverage,
                 None => declaration.bootstrap(root, &regions)?.1.bounds_lon_lat,
             };
-            let selection = Selection::new(
+            let mut selection = Selection::new(
                 store,
                 id.clone(),
                 coverage,
@@ -559,6 +591,18 @@ pub(super) fn perform(
                 &env,
                 package.assets.clone(),
             )?;
+            selection.copied_sources = selection
+                .copies
+                .iter()
+                .filter_map(|copy| {
+                    sources
+                        .iter()
+                        .find(|source| source.id == copy.key.source)
+                        .filter(|source| source.redistribute)
+                        .map(|source| source.id.clone())
+                })
+                .collect();
+            selection.check()?;
             std::fs::write(tree.join(".obc-data.json"), serde_json::to_vec(&selection).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
             let archive = store.partial(&format!("fixture-{id}.tar.gz"));
@@ -604,11 +648,14 @@ pub(super) fn perform(
             completed.push(Saved { selection: selection.clone(), archive: file.clone() });
             run.check_stop(store)?;
             reviewed.catalog_unchanged(root)?;
-            if crate::r2::fixture_destination()? != reviewed.destination {
-                return Err(Code::PlanOutdated.error("fixture destination changed before upload"));
+            if configuration(root, &Collection::load(root, &Regions::load(root)?)?, &Regions::load(root)?)?
+                != reviewed.configuration
+                || crate::r2::fixture_destination()? != reviewed.destination
+            {
+                return Err(Code::PlanOutdated.error("fixture configuration or destination changed before upload"));
             }
             run.record(&Event::Phase { phase: Phase::Upload })?;
-            for copy in &selection.copies {
+            for copy in selection.copies.iter().filter(|copy| selection.copied_sources.contains(&copy.key.source)) {
                 for input in &copy.record.files {
                     let object = store.object(&input.sha256);
                     if hash_file(&object)? != (input.sha256.clone(), input.size) {

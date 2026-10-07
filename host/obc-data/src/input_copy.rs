@@ -150,6 +150,16 @@ impl Record {
         fetch::merge(store, &self.source, &self.version, &self.snapshot().files).map(drop)
     }
 
+    /// Pin original fetches before recovery. Missing objects still make the snapshot unavailable.
+    pub(crate) fn seed(&self, key: &Key, store: &Store) -> Result<(), String> {
+        self.validate(key)?;
+        let _lock = store.lock(&fetch::snapshot_lock(&self.source, &self.version))?;
+        if let Some(snapshot) = fetch::merge(store, &self.source, &self.version, &self.snapshot().files)? {
+            store.put_snapshot(&snapshot)?;
+        }
+        Ok(())
+    }
+
     /// Restore only the named exact objects of a validated immutable input record.
     pub fn materialize(
         &self,

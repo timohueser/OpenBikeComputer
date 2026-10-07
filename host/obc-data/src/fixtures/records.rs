@@ -12,6 +12,7 @@ pub struct Selection {
     pub release: Release,
     pub glo30: String,
     pub copies: Vec<crate::input_copy::Retained>,
+    pub copied_sources: std::collections::BTreeSet<String>,
     pub assets: BTreeMap<String, LayerFile>,
 }
 
@@ -82,8 +83,16 @@ impl Selection {
             .version("copernicus-glo-30", &[])?
             .ok_or("fixture selection lacks its terrain source version")?
             .to_string();
-        let selected =
-            Self { package, coverage, inputs, release, glo30, copies: copies.into_values().collect(), assets };
+        let selected = Self {
+            package,
+            coverage,
+            inputs,
+            release,
+            glo30,
+            copies: copies.into_values().collect(),
+            copied_sources: Default::default(),
+            assets,
+        };
         selected.check()?;
         Ok(selected)
     }
@@ -193,6 +202,8 @@ impl Selection {
         http: &crate::fetch::http::Http,
         remote: &crate::live::Remote,
         moves: &BTreeMap<String, Option<String>>,
+        sources: &[crate::sources::Source],
+        mut original: impl FnMut(&crate::product::Wanted) -> Result<(), String>,
     ) -> Result<(), String> {
         self.check()?;
         let mut requests: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
@@ -219,6 +230,21 @@ impl Selection {
                 ),
             };
             let selected = record.files.iter().map(|file| file.name.clone()).collect::<Vec<_>>();
+            let source =
+                sources.iter().find(|known| &known.id == source).ok_or("retained fixture source is unregistered")?;
+            if !self.copied_sources.contains(&source.id) || !source.redistribute {
+                record.seed(&key, store)?;
+                if record.files.iter().any(|file| !store.object(&file.sha256).is_file()) {
+                    original(&crate::product::Wanted {
+                        source: source.id.clone(),
+                        version: Some(version.clone()),
+                        params: params.clone(),
+                    })?;
+                }
+                if record.files.iter().any(|file| !store.object(&file.sha256).is_file()) {
+                    return Err(format!("{}@{version}: original input bytes are missing; restore this exact version or select an explicit move", source.id));
+                }
+            }
             record.materialize(&key, store, http, remote, params, &selected)?;
         }
         Ok(())
@@ -236,6 +262,9 @@ impl Selection {
             digest(&asset.sha256)?;
         }
         self.release.check_named()?;
+        if self.copied_sources.iter().any(|source| !self.copies.iter().any(|copy| &copy.key.source == source)) {
+            return Err("fixture public copy selection names an unretained source".into());
+        }
         let mut copies = std::collections::BTreeSet::new();
         let mut files = BTreeMap::new();
         for copy in &self.copies {
@@ -422,8 +451,21 @@ mod tests {
         };
         let release = Release::compose("maps", "ride", &[], None, vec![layer], &Default::default());
         let env = Env { moves: [("copernicus-glo-30".into(), Some("2022-05-09".into()))].into(), ..Default::default() };
-        let selection =
+        let mut selection =
             Selection::new(&store, "ride".into(), [0., 0., 1., 1.], inputs, release, &env, BTreeMap::new()).unwrap();
+        let mut sources = crate::sources::parse_sources(
+            r#"[[source]]
+id = "fixture-osm"
+kind = "data"
+licence = "ODbL-1.0"
+fetch = { kind = "http", url = "https://fixtures.example/{version}" }
+version = "release"
+refresh = "manual"
+redistribute = true
+"#,
+        )
+        .unwrap();
+        selection.copied_sources.insert("fixture-osm".into());
         assert!(selection.inputs.terrain.is_none(), "unused terrain is absent, never an empty all-files selector");
         let mut subsets = selection.clone();
         let mut extra = subsets.copies[0].clone();
@@ -471,11 +513,20 @@ mod tests {
         std::fs::copy(store.object(&files[0].sha256), &copy).unwrap();
         let cold = Store::at(scratch.0.join("cold"));
         let remote = crate::live::Remote::Bucket(crate::r2::Bucket::local(&remote));
-        recovered.selection.restore(&cold, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new()).unwrap();
+        recovered
+            .selection
+            .restore(&cold, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| {
+                Err("original recovery was not expected".into())
+            })
+            .unwrap();
         assert_eq!(std::fs::read(cold.object(&files[0].sha256)).unwrap(), b"old");
         assert!(cold.snapshot("fixture-osm", "2").unwrap().is_none());
         let cold_leaves = Store::at(scratch.0.join("cold-leaves"));
-        requested.restore(&cold_leaves, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new()).unwrap();
+        requested
+            .restore(&cold_leaves, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| {
+                Err("original recovery was not expected".into())
+            })
+            .unwrap();
         assert_eq!(
             cold_leaves.requested("fixture-osm", "1", &params).unwrap().unwrap(),
             ["another-leaf.tif", "crop.osm.pbf"]
@@ -492,7 +543,9 @@ mod tests {
         std::fs::remove_file(copy).unwrap();
         assert!(recovered
             .selection
-            .restore(&missing, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new())
+            .restore(&missing, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| Err(
+                "original recovery was not expected".into()
+            ))
             .is_err());
         assert!(missing.snapshot("fixture-osm", "1").unwrap().is_none());
         recovered
@@ -502,12 +555,53 @@ mod tests {
                 &crate::fetch::http::Http::new(),
                 &remote,
                 &[("fixture-osm".into(), Some("2".into()))].into(),
+                &sources,
+                |_| Err("moved source must not be recovered".into()),
             )
             .unwrap();
         assert!(
             missing.snapshot("fixture-osm", "1").unwrap().is_none(),
             "an explicit refresh does not require the lost old copy"
         );
+        let mut originally_private = recovered.selection.clone();
+        originally_private.copied_sources.clear();
+        let upstream = Store::at(scratch.0.join("upstream"));
+        let mut fetched = 0;
+        originally_private
+            .restore(&upstream, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |wanted| {
+                assert_eq!(
+                    (&wanted.source, wanted.version.as_deref(), &wanted.params),
+                    (&"fixture-osm".to_string(), Some("1"), &Vec::new())
+                );
+                let pinned = upstream.snapshot("fixture-osm", "1").unwrap().unwrap();
+                assert_eq!(pinned.files[0].sha256, files[0].sha256);
+                crate::store::write_atomic(&upstream.object(&files[0].sha256), b"old")?;
+                fetched += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fetched, 1, "false to true cannot invent a public copy in the original archive");
+        sources[0].redistribute = false;
+        let restricted = Store::at(scratch.0.join("restricted"));
+        assert!(recovered
+            .selection
+            .restore(&restricted, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| Err(
+                "historical input unavailable".into()
+            ))
+            .unwrap_err()
+            .contains("historical input unavailable"));
+        assert!(crate::engine::snapshot_files(&restricted, "fixture-osm", "1", &[], &[]).unwrap().is_none());
+        assert!(originally_private
+            .restore(
+                &Store::at(scratch.0.join("empty-original")),
+                &crate::fetch::http::Http::new(),
+                &remote,
+                &BTreeMap::new(),
+                &sources,
+                |_| Ok(())
+            )
+            .unwrap_err()
+            .contains("original input bytes are missing"));
         let plan = gc::plan(&store, &gc::Roots::default()).unwrap();
         assert!(!plan.snapshots.contains(&"fixture-osm@1".into()));
         assert!(plan.kept.iter().any(|kept| kept.entry == "fixture-osm@1" && kept.because == ["fixture ride"]));

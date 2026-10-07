@@ -551,6 +551,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retained_metadata_pins_an_original_fetch_before_missing_objects_are_restored() {
+        let (url, _) = serve(|_, _| whole(b"changed"));
+        let source = source(&url, "release");
+        let scratch = Scratch::new("retained-original");
+        let store = Store::at(&scratch.0);
+        let record = crate::input_copy::Record {
+            source: source.id.clone(),
+            version: "1".into(),
+            files: vec![crate::input_copy::File { name: "file.bin".into(), url, size: 3, sha256: sha256_hex(b"old") }],
+        };
+        let key = crate::input_copy::Key {
+            source: record.source.clone(),
+            version: record.version.clone(),
+            digest: crate::engine::digest(record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()))),
+        };
+        record.seed(&key, &store).unwrap();
+        assert!(crate::engine::snapshot_files(&store, &source.id, "1", &[], &[]).unwrap().is_none());
+        let request = Request { source: &source, version: Some("1".into()), params: Vec::new() };
+        assert!(fetch(&tooling_root(), &store, &quick(), &request).unwrap_err().contains("SHA-256"));
+        assert!(!store.object(&record.files[0].sha256).exists());
+        assert!(store.snapshot(&source.id, "2").unwrap().is_none());
+    }
+
+    #[test]
     fn an_interrupted_fetch_resumes_from_the_part_file() {
         let body: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
         let served = body.clone();
