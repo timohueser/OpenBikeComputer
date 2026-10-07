@@ -239,7 +239,7 @@ mod tests {
         release.named.sort_by(|a, b| a.path.cmp(&b.path));
         let expected = [Service::Routing, Service::Search, Service::Downloads]
             .into_iter()
-            .map(|service| ready(service, &document).unwrap())
+            .map(|service| Ready::from_document(service, &document).unwrap())
             .collect();
         let mut fake = Fake {
             state: State {
@@ -312,7 +312,7 @@ mod tests {
         release.named.insert(0, put("release.json", &serde_json::to_vec(&document).unwrap()));
         release.layers[4].files.retain(|file| file.path != "release.json");
         release.layers[4].files.push(release.named[0].clone());
-        fake.expected[2] = ready(Service::Downloads, &document).unwrap();
+        fake.expected[2] = Ready::from_document(Service::Downloads, &document).unwrap();
         release.layers[4].digest = sha256_hex(b"index with optional map");
         let changed = staged(&release, &first, &mut fake).unwrap();
         assert_eq!(&changed[..2], &first[..2]);
