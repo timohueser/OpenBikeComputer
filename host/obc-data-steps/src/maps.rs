@@ -1750,6 +1750,60 @@ pub(crate) mod tests {
         assert!(matches!(terrain.inputs.last(), Some(Input::Layer { name, .. }) if *name == reference.name));
     }
 
+    /// Fetch each model tile that the step list asks for, as the fetch rounds of a plan do. A
+    /// fetch without a version gives `day` when it is the first of its source in the run, and else
+    /// the next day.
+    fn fetch_models(store: &Store, env: &mut Env, regions: &Regions, day: &str) {
+        let mut seen = BTreeSet::new();
+        for _ in 0..3 {
+            let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), env, regions, store) else { return };
+            for wanted in &wanted {
+                let wanted = env.pinned(wanted);
+                let first = seen.insert(wanted.source.clone());
+                let version = wanted.version.clone().unwrap_or_else(|| if first { day } else { "2099-01-01" }.into());
+                let tile = &wanted.params[0].1;
+                fetched(store, &wanted.source, &version, &[], &[(format!("#tile={tile}/{tile}.tif"), tile.clone())]);
+                env.resolve(&wanted, version);
+            }
+        }
+        panic!("the step list still asks for a model tile");
+    }
+
+    #[test]
+    fn a_model_fetched_tile_by_tile_has_one_version_also_when_a_plan_moves_it() {
+        let temp = temp("model-version");
+        let store = Store::at(temp.0.join("store"));
+        with_tile_list(&store, &["N46_00_E008"]);
+        let (mut env, regions) = grimsel(&store, "1");
+        with_model_areas(&store);
+        let read = |env: &Env| -> BTreeSet<(String, String)> {
+            let steps = map_steps(&root(), env, &regions, &store).unwrap().steps;
+            let inputs =
+                steps.into_iter().filter(|step| step.name.starts_with("maps/reference/")).flat_map(|s| s.inputs);
+            inputs
+                .map(|input| match input {
+                    Input::Snapshot { source, version, .. } => (source, version),
+                    Input::Layer { name, .. } => panic!("{name}"),
+                })
+                .collect()
+        };
+        // No live version and none in the store: the first tile names the version of the model.
+        fetch_models(&store, &mut env, &regions, "2026-10-06");
+        let versions = |ch: &str| -> BTreeSet<(String, String)> {
+            let models = [("dtm-ch", ch), ("dtm-de-by", "2026-10-06"), ("dtm-fr", "2026-10-06")];
+            models.iter().map(|(source, version)| (source.to_string(), version.to_string())).collect()
+        };
+        assert_eq!(read(&env), versions("2026-10-06"));
+
+        // `--move dtm-ch` fetches every tile of the model again, at one new version.
+        let mut moved = Env { resolved: Default::default(), ..env.clone() };
+        moved.moves.insert("dtm-ch".into(), None);
+        fetch_models(&store, &mut moved, &regions, "2026-10-07");
+        assert_eq!(read(&moved), versions("2026-10-07"));
+        let stored: BTreeSet<_> = store.snapshots("dtm-ch").unwrap().into_iter().map(|s| s.version).collect();
+        assert_eq!(stored, ["2026-10-06".to_string(), "2026-10-07".into()].into());
+    }
+
     #[test]
     fn a_model_whose_credential_this_machine_lacks_blocks_its_reference_and_terrain() {
         let temp = temp("credential");

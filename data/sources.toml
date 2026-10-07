@@ -199,7 +199,7 @@ attribution = "© swisstopo"
 obligations = "Open data, attribution required"
 fetch = { kind = "dtm", url = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items" }
 extent = [5.9, 45.8, 10.5, 47.9]
-areas = ["europe/switzerland"]
+areas = ["europe/switzerland", "europe/liechtenstein"]
 version = "date"
 refresh = "manual"
 redistribute = true

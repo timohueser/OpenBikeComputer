@@ -19,8 +19,11 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,6 +113,9 @@ def command_fetch(args) -> int:
     one tile's rasters at a time and the store never sees them.
     """
 
+    # A stop ends the fetch through `finally`, which removes the raw rasters.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    stop_with_parent()
     ti, tj = parse_tile(args.tile)
     source = registered(args.source)
     work, out = Path(args.work), Path(args.out)
@@ -145,6 +151,25 @@ def command_fetch(args) -> int:
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return 0
+
+
+def stop_with_parent() -> None:
+    """Stop this process when the process `OBC_PARENT_PID` names ends, so an orphan never removes
+    the work directory of a later run."""
+
+    parent = int(os.environ.get("OBC_PARENT_PID") or 0)
+
+    def watch():
+        while True:
+            time.sleep(2)
+            try:
+                os.kill(parent, 0)
+            except ProcessLookupError:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    if parent:
+        threading.Thread(target=watch, daemon=True).start()
 
 
 def parse_tile(text: str) -> tuple[int, int]:

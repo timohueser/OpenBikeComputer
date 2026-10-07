@@ -382,8 +382,12 @@ no fetcher yet; the fetch fails.
   model in the tile, pooled onto the lattice as an archive tile. Where the model has no height in
   the tile, the file is the empty `<ti:04>-<tj:04>.none`. The raw rasters stay in the work
   directory, which the program removes; the store never holds them. A service is asked only for
-  the part of the tile inside the `extent`. A request that the version of a `manual` source lacks
-  joins that version, so a model fetched tile by tile over days has one version. A `by-hand` model takes the rasters of its delivery:
+  the part of the tile inside the `extent`. A request that a version of a `manual` source in the
+  store lacks joins that version, so a model fetched tile by tile over days has one version; a
+  version that the store does not have is refused, as for any capture. In one run, a request of
+  a `manual` source without a version takes the version of the first fetch of that source. So one
+  version can hold tiles of several upstream releases: its label is the day of the first tile,
+  and the credits and `fetched` of the model name that day. A `by-hand` model takes the rasters of its delivery:
   `OBC_REFERENCE_<KEY>_INPUT` names the directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states. The two
   are the `credential` of the source.

@@ -1346,6 +1346,7 @@ fn listed_steps(
             break;
         }
         for wanted in fetches {
+            let wanted = &env.pinned(wanted);
             let version = match fetch(wanted) {
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
@@ -1355,7 +1356,7 @@ fn listed_steps(
                 }
                 Err(error) => return Err(error),
             };
-            env.resolved.insert((wanted.source.clone(), crate::store::sorted(&wanted.params)), version);
+            env.resolve(wanted, version);
         }
         fetched.extend(fetches.iter().cloned());
         crate::worker::check(root)?;

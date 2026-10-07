@@ -40,6 +40,8 @@ pub(crate) fn dtm(
             let mut command = python(root, Some("terrain-reference"))?;
             command.arg("host/obc-dem/reference/ingest.py");
             command.args(["fetch", &key, "--tile", tile, "--work"]).arg(work).arg("--out").arg(out);
+            // The program stops when this process does, so no orphan writes into a later run.
+            command.env("OBC_PARENT_PID", std::process::id().to_string());
             Ok(command)
         },
     )
@@ -251,9 +253,11 @@ pub(super) fn capture(
     if store.requested(&source.id, &version, &request.params)?.is_some_and(|files| files.is_empty()) {
         return Ok(snapshot(Vec::new()));
     }
-    // A manual source moves only by `--move`, so a request that its version lacks joins that
-    // version: a national model is fetched tile by tile over days.
-    if version != today && source.refresh != Refresh::Manual {
+    // A manual source moves only by `--move`, so a request that a started version lacks joins it:
+    // a national model is fetched tile by tile over days. A version that the store never started
+    // is a day the service cannot answer for.
+    let joins = source.refresh == Refresh::Manual && store.snapshot(&source.id, &version)?.is_some();
+    if version != today && !joins {
         return Err(format!(
             "source `{}`: {version} with {query} is not in the store, and the service answers with today's data",
             source.id
@@ -288,6 +292,10 @@ pub(super) fn capture(
     eprintln!("obc data: capturing {}#{query}", source.id);
     // Standard output is the answer of `obc data`, so the program writes its progress to standard error.
     let status = command.stdout(std::io::stderr()).status();
+    if source.refresh == Refresh::Manual && !status.as_ref().is_ok_and(|status| status.success()) {
+        // A manual run never resumes, so the raw downloads of a failed one go now.
+        let _ = fs::remove_dir_all(&staging);
+    }
     let status = status.map_err(|e| format!("source `{}`: {:?}: {e}", source.id, command.get_program()))?;
     if !status.success() {
         return Err(format!("source `{}`: {:?} failed with {status}", source.id, command.get_program()));
