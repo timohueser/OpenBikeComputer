@@ -1105,6 +1105,9 @@ mod tests {
         assert_eq!(error.code, Code::Blocked);
         assert!(error.message.contains("test/missing"));
         assert_eq!(keys(&fixture), before);
+        let previous =
+            Live::read_products(&remote, &[("test", "test")], &parse_sources(SOURCES).unwrap(), &fixture.store)
+                .unwrap();
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
         let mut run = Run::create(&fixture.store, "partial build").unwrap();
         let (built, applying) = build_cli::build_env(
@@ -1120,7 +1123,7 @@ mod tests {
         .unwrap();
         assert!(built.releases.is_empty());
         let applying = applying.unwrap();
-        assert_eq!(applying.next.products[0].release, applying.live.products[0].release);
+        assert_eq!(applying.next.products[0].release, previous.products[0].release);
         assert_eq!(keys(&fixture), before);
     }
 
