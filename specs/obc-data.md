@@ -492,8 +492,9 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   installation path does not enter that identity. Each execution boundary checks the current
   file against the declared digest. GEOS producers bind the loaded shared C and C++ libraries
   at worker startup. A missing or changed file blocks these producers until a fresh worker
-  starts. New captures bind the same two digests. Held captures retain their original inputs
-  and must pass their content checks before reconstruction writes output.
+  starts. New captures bind the same two digests. Selector children check the requested capture
+  code before selection and check the provider again before success. Held captures retain their
+  original inputs and must pass their content checks before reconstruction writes output.
 - Native discovery checks Cargo config in the checkout, its ancestors and Cargo home. It
   refuses build overrides except jobs and target directories. Network, registry, terminal and
   alias settings add no byte identity. The supported flags are ordered `--cfg` and explicit
