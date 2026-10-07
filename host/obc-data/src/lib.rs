@@ -11,6 +11,7 @@ pub mod dev;
 pub mod engine;
 pub mod env;
 pub mod fetch;
+pub mod fixtures;
 pub mod input_copy;
 pub mod live;
 pub mod local;

@@ -1,0 +1,35 @@
+[packages.sim-grimsel]
+region = "grimsel"
+map = "grimsel.obcm"
+osm = "switzerland.osm.pbf"
+bootstrap = "fixtures/sources/ride-assistant/grimsel-v19.json"
+
+[packages.grimsel-demo]
+region = "grimsel-demo"
+map = "grimsel-demo.obcm"
+osm = "switzerland.osm.pbf"
+bootstrap = "fixtures/sources/ride-assistant/grimsel-demo-v19.json"
+
+[packages.sim-monaco]
+region = "monaco"
+map = "monaco.obcm"
+osm = "monaco.osm.pbf"
+bootstrap = "fixtures/sources/ride-assistant/monaco-v19.json"
+
+[packages.sim-freiburg]
+region = "freiburg"
+map = "freiburg.obcm"
+osm = "europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
+bootstrap = "fixtures/sources/ride-assistant/freiburg-v19.json"
+
+[packages.sim-assistant-meiringen]
+region = "meiringen"
+map = "meiringen.obcm"
+osm = "switzerland.osm.pbf"
+bootstrap = "fixtures/sources/ride-assistant/meiringen-v19.json"
+
+[packages.sim-assistant-west-cork]
+region = "west-cork"
+map = "west-cork.obcm"
+osm = "west-cork.osm.pbf"
+bootstrap = "fixtures/sources/ride-assistant/west-cork-v19.json"
