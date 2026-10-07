@@ -1250,6 +1250,9 @@ fn quantize_multiplier_value(v: &MultiplierValue, profile: &str, kind: &str, cla
     }
 }
 
+/// The skin used by published device cells.
+pub const CELL_SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"));
+
 #[cfg(test)]
 mod tests {
     use super::*;

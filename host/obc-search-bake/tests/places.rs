@@ -9,7 +9,8 @@ use std::{
 #[test]
 fn device_and_search_keep_the_same_shared_places_and_search_metadata() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config = obc_pack::config::Config::load(root.join("builder/presets/schema.json").to_str().unwrap()).unwrap();
+    let config =
+        obc_map_core::config::Config::load(root.join("builder/presets/schema.json").to_str().unwrap()).unwrap();
     let temporary = tempfile::tempdir().unwrap();
     let policy = temporary.path().join("policy.json");
     fs::write(&policy, r#"{"countries":{"de":{"names":{"name":"Deutschland"},"postcode":{"pattern":"ddddd"}}},"levels":[{"tags":{"place":{"city":16,"town":[18,16],"village":[19,16],"hamlet":20},"highway":{"":26},"boundary":{"administrative8":16}}}]}"#).unwrap();
@@ -17,10 +18,9 @@ fn device_and_search_keep_the_same_shared_places_and_search_metadata() {
         ["builder/tests/corpus/data/poi.osm.pbf", "host/obc-search-bake/tests/data/places.osm.pbf"].iter().enumerate()
     {
         let source = root.join(source);
-        let device = obc_pack::ingest::ingest_osm(
+        let device = obc_places::osm::harvest(
             &[source.to_str().unwrap().to_owned()],
             &config,
-            None,
             &obc_map_core::progress::Progress::silent(),
         )
         .unwrap();

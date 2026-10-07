@@ -18,9 +18,10 @@ use obc_data::store::Store;
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
 use obc_dem::crest::cell_window;
 use obc_dem::step::GLO30;
+use obc_draw::step::LAND;
+use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
-use obc_pack::grid::{id_width, Band, BandTable, CellId};
-use obc_pack::step::{CAPTURES, LAND};
+use obc_pack::step::CAPTURES;
 
 pub(crate) mod catalog;
 
@@ -182,7 +183,9 @@ impl Maps {
         let mut osm_leaves = BTreeSet::new();
         let mut network = BTreeMap::new();
         for band in BandTable::recommended().bands {
-            let reads_terrain = obc_pack::step::reads_terrain(&band).map_err(Unplanned::Failed)?;
+            let config =
+                obc_map_core::config::Config::parse(obc_map_core::config::CELL_SCHEMA).map_err(Unplanned::Failed)?;
+            let reads_terrain = obc_map_core::cell::has_contours(&config, &band) || band.has_nav() || band.has_poi();
             let boundary = source_coverage.boundary_cells(band.cell_log2);
             for (leaf, cells) in leaves(outlines, band.cell_log2) {
                 osm_leaves.insert(leaf);
@@ -665,7 +668,10 @@ fn map_cells(
     let land_polygons =
         Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
     let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] };
-    let mut inputs = vec![osm, land_polygons];
+    let mut inputs = vec![osm];
+    if !band.lods.is_empty() {
+        inputs.push(land_polygons);
+    }
     if reads_terrain {
         inputs.push(Input::layer(leaf_layer("maps/terrain", leaf)));
     }
@@ -678,9 +684,13 @@ fn map_cells(
             "leaf": [i64::from(LEAF_LOG2), leaf.i, leaf.j],
             "cells": cells.iter().map(|cell| [cell.i, cell.j]).collect::<Vec<_>>(),
         }),
-        code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()], ..Default::default() },
+        code: Code {
+            paths: Vec::new(),
+            crates: vec![if band.has_nav() || band.has_poi() { "obc-network".into() } else { "obc-draw".into() }],
+            ..Default::default()
+        },
         outputs: vec!["cells".into(), "metadata".into()],
-        run: Run::Rust(obc_pack::step::cells),
+        run: Run::Rust(if band.has_nav() || band.has_poi() { obc_network::step::cells } else { obc_draw::step::cells }),
         client: Client::Paths(vec!["cells".into()]),
     }
 }
@@ -1231,9 +1241,10 @@ pub(crate) mod tests {
             "no client reads an intermediate"
         );
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
-        for band in ["mid", "fine", "network"] {
+        for band in ["mid", "fine"] {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
         }
+        assert_eq!(reads("maps/network/0037-0032"), [osm, "maps/terrain/0037-0032 []"]);
         assert!(steps.iter().all(|step| !step.code.paths.iter().any(|path| path == "Cargo.lock")));
     }
 

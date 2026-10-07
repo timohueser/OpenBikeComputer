@@ -4,11 +4,33 @@ use crate::config::LineStyle;
 use obc_formats::obcm::{
     nav_index_padding, OffsetScale, UnitWriter, CHUNK_END, FEATURE_HEADER_COMPACT_LEN, HEADER_LEN, LOD_ENTRY_LEN,
     MAGIC, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_MAX_PROFILES, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
-    NAV_PROFILE_RESERVED_LEN, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
-    STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT, VERSION as OBCM_VERSION,
+    NAV_PROFILE_RESERVED_LEN, POI_HOURS_BLOB_LEN, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT,
+    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT, VERSION as OBCM_VERSION,
 };
 use std::convert::Infallible;
 use std::io::{self, Seek, SeekFrom, Write};
+
+/// Largest coordinate delta before inserting intermediate wire points.
+pub const MAX_SEGMENT: i64 = 30_000;
+
+/// Append intermediate points between `p1` and `p2` (then `p2`) so no single (dx, dy) step exceeds
+/// the 16-bit delta range, using an integer step count and banker's-rounded midpoints.
+pub fn densify(p1: (i64, i64), p2: (i64, i64), out: &mut Vec<(i64, i64)>) {
+    let dx = p2.0 - p1.0;
+    let dy = p2.1 - p1.1;
+    let max_dist = dx.abs().max(dy.abs());
+    if max_dist > MAX_SEGMENT {
+        let steps = max_dist / MAX_SEGMENT + 1;
+        for step in 1..steps {
+            let t = step as f64 / steps as f64;
+            out.push((
+                (p1.0 as f64 + dx as f64 * t).round_ties_even() as i64,
+                (p1.1 as f64 + dy as f64 * t).round_ties_even() as i64,
+            ));
+        }
+    }
+    out.push(p2);
+}
 
 /// The `Offset Scale` every `.obcm` this packer writes carries: `U = 16`, a 64 GiB addressable
 /// interior. A constant rather than a knob, which pins the byte for determinism.
@@ -515,4 +537,85 @@ impl<W: Write + Seek> MapWriter<W> {
         self.output.seek(SeekFrom::Start(self.cursor))?;
         Ok(self.cursor)
     }
+}
+
+/// Pack the hours-pool section: `count u16` then the blobs back to back. An empty pool is just the
+/// `0` count.
+pub fn pack_hours_pool(pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + pool.len() * POI_HOURS_BLOB_LEN);
+    out.extend_from_slice(&(pool.len() as u16).to_le_bytes());
+    for blob in pool {
+        out.extend_from_slice(blob);
+    }
+    out
+}
+
+/// Encoded category bytes, with counts for the POI directory.
+pub struct PoiBytes {
+    pub cat_id: u8,
+    pub index: Vec<u8>,
+    pub node_count: u32,
+    pub chunks: Vec<u8>,
+    pub chunk_count: u32,
+}
+
+/// Frame encoded POI category blocks and their shared hours pool.
+pub fn emit_poi_section(section_offset: usize, blocks: &[PoiBytes], pool: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
+    use obc_formats::obcm::{POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE};
+    // Directory size: count byte, chunk_size u16, one entry per category, and the hours-pool
+    // offset and count.
+    let dir_len = 1 + 2 + blocks.len() * POI_CAT_ENTRY_LEN + 4 + 2;
+
+    // Categories are laid out sequentially after the directory: [index][filler][chunks] each, with
+    // empties contributing nothing but their directory entry. Every `Index Offset` is scaled, so
+    // each index starts on a unit boundary. 512 is a multiple of `U` at every legal scale, so the
+    // chunks need no filler between them and the region ends aligned for the next category, which
+    // is why every `begin_section` in the loop below is a no-op after the first.
+    //
+    // The cursor starts past the directory, because the directory's own bytes cannot be written
+    // until this walk has resolved the offsets they carry.
+    let (payload, (cat_entries, hours_pool_offset)) = lay_out(section_offset + dir_len, |w| {
+        let mut cat_entries = Vec::with_capacity(blocks.len());
+        for b in blocks {
+            cat_entries.push((b.cat_id, scaled(w.begin_section()? as usize), b.node_count, b.chunk_count));
+            w.put(&b.index)?;
+            w.begin_section()?;
+            w.put(&b.chunks)?;
+        }
+        // The hours pool, then the run that leaves the nav directory behind it nameable.
+        let hours_pool_offset = w.begin_section()? as usize;
+        w.put(&pack_hours_pool(pool))?;
+        w.begin_section()?;
+        Ok((cat_entries, hours_pool_offset))
+    });
+
+    let mut out = Vec::with_capacity(dir_len + payload.len());
+    out.push(blocks.len() as u8);
+    out.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
+    for (cat_id, index_offset, node_count, chunk_count) in cat_entries {
+        out.push(cat_id);
+        out.extend_from_slice(&index_offset.to_le_bytes());
+        out.extend_from_slice(&node_count.to_le_bytes());
+        out.extend_from_slice(&chunk_count.to_le_bytes());
+    }
+    out.extend_from_slice(&scaled(hours_pool_offset).to_le_bytes());
+    out.extend_from_slice(&(pool.len() as u16).to_le_bytes());
+    debug_assert_eq!(out.len(), dir_len);
+    out.extend_from_slice(&payload);
+    out
+}
+
+/// The same POI directory and empty hours pool as a map with no place records.
+pub fn empty_poi_section(section_offset: usize) -> Vec<u8> {
+    let blocks: Vec<_> = obc_formats::obcm::PoiCategory::ALL
+        .iter()
+        .map(|category| PoiBytes {
+            cat_id: category.id(),
+            index: Vec::new(),
+            node_count: 0,
+            chunks: Vec::new(),
+            chunk_count: 0,
+        })
+        .collect();
+    emit_poi_section(section_offset, &blocks, &[])
 }

@@ -6,7 +6,7 @@ description: How OpenBikeComputer builds maps, navigation graphs, routes, and ro
 
 # Packer and routing
 
-[`obc-pack`](src:host/obc-pack) converts OpenStreetMap extracts into the OBCM map format, with the
+[`obc-pack`](src:host/obc-bake) converts OpenStreetMap extracts into the OBCM map format, with the
 POIs, the opening hours, the contours, and the navigation graph the device plans routes on. The
 GPX converter writes OBCR routes, and the matcher puts the live position on the active route.
 
@@ -312,15 +312,15 @@ region's texts and photos are under. Each place keeps its own notices.
 
 ## Implementation
 
-- Packer pipeline: [`pipeline.rs`](src:host/obc-pack/src/pipeline.rs)
-- Configuration: [`config.rs`](src:host/obc-pack/src/config.rs)
-- OSM ingest: [`ingest.rs`](src:host/obc-pack/src/ingest.rs)
+- Packer pipeline: [`pipeline.rs`](src:host/obc-bake/src/pipeline.rs)
+- Configuration: [`config.rs`](src:host/obc-map-core/src/config.rs)
+- OSM ingest: [`ingest.rs`](src:host/obc-draw/src/ingest.rs)
 - POIs and opening hours: [`metadata.rs`](src:host/obc-places/src/metadata.rs), [`hours.rs`](src:host/obc-places/src/hours.rs)
 - Landmark preparation: [`landmarks`](src:host/obc-pack/src/landmarks/mod.rs)
 - Landmark discovery: [`discover.rs`](src:host/obc-pack/src/landmarks/discover.rs)
 - Landmark bake stage: [`landmarks.rs`](src:host/obc-bake/src/landmarks.rs)
-- Navigation graph: [`nav.rs`](src:host/obc-pack/src/nav.rs)
-- Quadtree: [`quadtree.rs`](src:host/obc-pack/src/quadtree.rs)
+- Navigation graph: [`nav.rs`](src:host/obc-network/src/nav.rs)
+- Quadtree: [`quadtree.rs`](src:host/obc-draw/src/quadtree.rs)
 - Builder: [`builder/`](src:builder)
 - Web assembler: [`obc-builder-bridge`](src:builder/wasm)
 - Device router: [`nav.rs`](src:firmware/obc-route/src/nav.rs)

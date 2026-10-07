@@ -23,10 +23,12 @@ obc-ports = { workspace = true }
 obc-reader = { workspace = true }
 
 [dev-dependencies]
-# The nav-router tests build real §8 maps with the actual packer serializer (the same
-# writer↔reader loop obc-pack's nav_round_trip pins) and parse them with the real
-# obc-reader. Host-only: dev-dependencies never touch the crate's no_std build.
-obc-pack = { workspace = true }
+# Host tests compose real maps and parse them with the device reader.
+# Dev-dependencies do not enter the no_std build.
+obc-bake = { workspace = true }
+obc-draw = { workspace = true }
+obc-map-core = { workspace = true }
+obc-network = { workspace = true }
 # Shared OBCM byte builder — the corridor tests need a real packed POI quadtree to query.
 obcm-testkit = { workspace = true }
 obc-fixtures = { workspace = true }

@@ -3480,18 +3480,24 @@ dependencies = [
  "image",
  "obc-data",
  "obc-dem",
+ "obc-draw",
+ "obc-elevation",
  "obc-file-source",
+ "obc-fixtures",
  "obc-formats",
  "obc-map-core",
  "obc-map-scene",
+ "obc-network",
  "obc-osm",
  "obc-pack",
  "obc-pbf",
  "obc-places",
  "obc-reader",
  "obc-render",
+ "obc-vectors",
  "obcm-assemble",
  "obcm-testkit",
+ "rayon",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3528,12 +3534,15 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
+ "obc-bake",
+ "obc-draw",
  "obc-flat-device",
  "obc-formats",
  "obc-host-core",
  "obc-link",
  "obc-map-core",
  "obc-map-scene",
+ "obc-network",
  "obc-pack",
  "obc-places",
  "obc-ports",
@@ -3577,11 +3586,13 @@ dependencies = [
  "obc-bake",
  "obc-data",
  "obc-dem",
+ "obc-draw",
  "obc-elevation",
  "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-map-core",
+ "obc-network",
  "obc-osm",
  "obc-pack",
  "obc-search-bake",
@@ -3630,6 +3641,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-draw"
+version = "0.1.0"
+dependencies = [
+ "geos",
+ "obc-data",
+ "obc-elevation",
+ "obc-formats",
+ "obc-map-core",
+ "obc-map-scene",
+ "obc-pbf",
+ "obc-places",
+ "obc-reader",
+ "obc-render",
+ "obcm-testkit",
+ "osmpbf",
+ "rayon",
+ "serde_json",
+ "sha2 0.11.0",
+ "zip",
+]
+
+[[package]]
 name = "obc-elevation"
 version = "0.1.0"
 dependencies = [
@@ -3673,13 +3706,17 @@ dependencies = [
  "getrandom 0.2.17",
  "heapless 0.8.0",
  "obc-app",
+ "obc-bake",
  "obc-crc",
+ "obc-draw",
  "obc-elevation",
  "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-link",
+ "obc-map-core",
  "obc-map-scene",
+ "obc-network",
  "obc-pack",
  "obc-places",
  "obc-ports",
@@ -3745,8 +3782,11 @@ name = "obc-map-core"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "obc-elevation",
+ "obc-file-source",
  "obc-formats",
  "obc-reader",
+ "obc-tree-walk",
  "schemars",
  "serde",
  "serde_json",
@@ -3771,6 +3811,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-network"
+version = "0.1.0"
+dependencies = [
+ "obc-data",
+ "obc-elevation",
+ "obc-formats",
+ "obc-map-core",
+ "obc-map-scene",
+ "obc-pbf",
+ "obc-places",
+ "obc-tree-walk",
+ "serde_json",
+]
+
+[[package]]
 name = "obc-osm"
 version = "0.1.0"
 dependencies = [
@@ -3786,12 +3841,10 @@ version = "0.1.0"
 dependencies = [
  "boon",
  "geos",
- "heapless 0.8.0",
  "image",
  "obc-data",
  "obc-dem",
  "obc-elevation",
- "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-map-core",
@@ -3800,12 +3853,10 @@ dependencies = [
  "obc-places",
  "obc-reader",
  "obc-render",
- "obc-tree-walk",
  "obc-vectors",
  "obcm-testkit",
  "osmpbf",
  "percent-encoding",
- "rayon",
  "schemars",
  "scraper",
  "serde",
@@ -3814,7 +3865,6 @@ dependencies = [
  "sha2 0.11.0",
  "ureq",
  "url",
- "zip",
  "zlib-rs",
 ]
 
@@ -3837,7 +3887,9 @@ dependencies = [
  "obc-elevation",
  "obc-formats",
  "obc-map-core",
+ "obc-pbf",
  "obc-render",
+ "osmpbf",
  "unicode-normalization",
 ]
 
@@ -3903,12 +3955,15 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-bake",
  "obc-crc",
+ "obc-draw",
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "obc-map-core",
  "obc-map-scene",
- "obc-pack",
+ "obc-network",
  "obc-ports",
  "obc-reader",
  "obcm-testkit",
@@ -3923,7 +3978,6 @@ dependencies = [
  "geo",
  "obc-data",
  "obc-map-core",
- "obc-pack",
  "obc-places",
  "osmpbfreader",
  "regex",
@@ -4058,14 +4112,17 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "obc-app",
+ "obc-bake",
  "obc-dem",
  "obc-display",
+ "obc-draw",
  "obc-elevation",
  "obc-file-source",
  "obc-formats",
  "obc-host-core",
  "obc-map-core",
  "obc-map-scene",
+ "obc-network",
  "obc-pack",
  "obc-places",
  "obc-reader",

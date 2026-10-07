@@ -7,6 +7,9 @@ license = "GPL-3.0-only"
 description = "Shared map configuration, grid and byte framing"
 
 [dependencies]
+obc-elevation = { workspace = true }
+obc-file-source = { workspace = true }
+obc-tree-walk = { workspace = true }
 obc-formats = { workspace = true }
 # The supported feature capacity bounds the config and its schema.
 obc-reader = { workspace = true }

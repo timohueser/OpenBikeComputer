@@ -1,138 +1,15 @@
-//! The device-map steps of `obc data` whose code is the packer: the cells of one band in one
-//! source leaf, with the bytes that [`crate::cut::cut`] writes when it cuts the whole leaf, as the
-//! planet bake does; and the compiled landmarks and peaks of a region and their artifacts per cell.
+//! Compiled landmark and peak content, and per-cell article artifacts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use obc_data::engine::{view, Request};
+use obc_data::engine::Request;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::Config;
-use crate::cut::{artifact_path, cut, CutOptions};
-use crate::grid::{Band, BandTable, CellId};
+use obc_map_core::config::{Config, CELL_SCHEMA as SCHEMA};
+use obc_map_core::grid::CellId;
 use obc_map_core::progress::{CancelToken, Progress};
-
-/// The schema that every cell is cut with.
-pub(crate) const SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"));
-/// The source of the land polygons, which every cell reads.
-pub const LAND: &str = "land-polygons";
-
-/// Whether the cells of `band`, cut with the schema, read terrain.
-pub fn reads_terrain(band: &Band) -> Result<bool, String> {
-    Ok(crate::cut::reads_terrain(&Config::parse(SCHEMA)?, band))
-}
-
-/// The options name the `band` of the recommended table, the source `leaf` as `[log2, i, j]`, and
-/// the `cells` of the band to write, as `[i, j]`. The step reads the one `.osm.pbf` and every
-/// `.obcd` of its layers, and the zip of `land-polygons`. The layer is
-/// `cells/<band>/<i>/<j>.obcm` for each cell with content, and `metadata/empty.json`: the ids
-/// of fully covered cells with no content. Partial empty cells keep their OBCM artifact.
-pub fn cells(request: &Request) -> Result<(), String> {
-    let options = &request.options;
-    let band = options["band"].as_str().ok_or("option `band` is not a string")?;
-    let bands = BandTable::recommended();
-    let log2 = bands.band(band).ok_or(format!("no band `{band}`"))?.cell_log2;
-    let numbers = |value: &Value| value.as_array()?.iter().map(Value::as_i64).collect::<Option<Vec<i64>>>();
-    let leaf = match numbers(&options["leaf"]).as_deref() {
-        Some(&[log2, i, j]) => u32::try_from(log2).ok().and_then(|log2| CellId::new(log2, i, j).ok()),
-        _ => None,
-    };
-    let leaf = leaf.ok_or("option `leaf` is not [log2, i, j]")?;
-    let cells = options["cells"].as_array().ok_or("option `cells` is not a list")?.iter().map(|cell| {
-        match numbers(cell).as_deref() {
-            Some(&[i, j]) => CellId::new(log2, i, j).ok(),
-            _ => None,
-        }
-    });
-    let cells = cells.collect::<Option<Vec<_>>>().ok_or("a cell is not [i, j] of the band")?;
-
-    let files: BTreeMap<&String, &PathBuf> = request.layers.values().flatten().collect();
-    let pbfs: Vec<String> = files
-        .iter()
-        .filter(|(path, _)| path.ends_with(".osm.pbf"))
-        .map(|(_, object)| object.to_string_lossy().into_owned())
-        .collect();
-    if pbfs.len() != 1 {
-        return Err(format!("the step reads {} .osm.pbf files, not one", pbfs.len()));
-    }
-    let land = request.snapshots.get(LAND).map(|files| files.values().collect::<Vec<_>>());
-    let Some([land]) = land.as_deref() else {
-        return Err(format!("the step reads no single file of `{LAND}`"));
-    };
-    let terrain: BTreeMap<String, PathBuf> = files
-        .into_iter()
-        .filter(|(path, _)| path.ends_with(".obcd"))
-        .map(|(path, object)| (path.clone(), object.clone()))
-        .collect();
-    let terrain = match terrain.is_empty() {
-        // A leaf at sea has no terrain cell.
-        true => None,
-        false => {
-            let dir = request.output.with_file_name("view");
-            view(&terrain, &dir)?;
-            Some(dir)
-        }
-    };
-
-    let mut requested = cells.clone();
-    requested.sort_unstable();
-    requested.dedup();
-    let opts = CutOptions {
-        bands,
-        select: cells,
-        only_bands: vec![band.to_string()],
-        land: Some(land.to_path_buf()),
-        terrain,
-        source_extent: Some(leaf.square()),
-        ..CutOptions::default()
-    };
-    let config = Config::parse(SCHEMA)?;
-    let progress = Progress::new(CancelToken::new(), |_, line| eprintln!("{line}"));
-    let tree = request.output.with_file_name("cut");
-    let summary = cut(&pbfs, &config, &tree, &opts, &progress).map_err(|e| e.to_string())?;
-    let mut produced: Vec<CellId> = summary.cells.iter().map(|artifact| artifact.id).collect();
-    produced.sort_unstable();
-    if produced != requested {
-        let (written, asked) = (produced.len(), requested.len());
-        return Err(format!("the cut wrote other cells than the cells of the step ({written} written, {asked} asked)"));
-    }
-
-    write_cells(request, &tree, &summary.cells)
-}
-
-fn write_cells(request: &Request, tree: &Path, artifacts: &[crate::cut::CellArtifact]) -> Result<(), String> {
-    let options = &request.options;
-    let band = options["band"].as_str().ok_or("missing band")?;
-    let dir = request.output.join("cells").join(band);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let partial: std::collections::BTreeSet<String> =
-        serde_json::from_value::<Vec<String>>(options["partial_cells"].clone())
-            .map_err(|e| format!("option `partial_cells`: {e}"))?
-            .into_iter()
-            .collect();
-    let selected = artifacts.iter().map(|artifact| artifact.id.to_string()).collect();
-    if !partial.is_subset(&selected) {
-        return Err("partial cell is not selected by this step".into());
-    }
-    let mut empty = Vec::new();
-    for artifact in artifacts {
-        if artifact.empty && !partial.contains(&artifact.id.to_string()) {
-            empty.push(artifact.id.to_string());
-            continue;
-        }
-        let path = request.output.join(&artifact.path);
-        std::fs::create_dir_all(path.parent().expect("a cell path has a parent"))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        std::fs::rename(artifact_path(tree, artifact), &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    let metadata = request.output.join("metadata");
-    std::fs::create_dir_all(&metadata).map_err(|e| e.to_string())?;
-    let path = metadata.join("empty.json");
-    std::fs::write(&path, serde_json::to_string(&empty).expect("strings serialize"))
-        .map_err(|e| format!("{}: {e}", path.display()))
-}
 
 /// The sources of one landmark or peak capture.
 pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
@@ -159,8 +36,8 @@ pub fn capture_code() -> Result<String, String> {
 fn capture_hash(libraries: &[obc_data::engine::Library]) -> String {
     let code = [
         include_str!("catalog/boundary.rs"),
-        include_str!("geom.rs"),
         include_str!("../../obc-pbf/src/area.rs"),
+        include_str!("../../obc-places/src/osm.rs"),
         include_str!("../../obc-places/src/lib.rs"),
         include_str!("../../obc-places/src/metadata.rs"),
         include_str!("../../obc-places/src/name.rs"),
@@ -262,8 +139,8 @@ pub fn landmarks(request: &Request) -> Result<(), String> {
     }
     let content = content_views(request, "landmarks", crate::landmarks::CONTENT_DOC)?;
     let progress = Progress::new(CancelToken::new(), |_, line| eprintln!("{line}"));
-    let (ingested, _) = crate::ingest::ingest_osm_ways(&pbfs, &Config::parse(SCHEMA)?, None, &progress)?;
-    let artifacts = crate::landmark_map::artifacts(&content, &ingested.landmark_links, &cells)?;
+    let places = obc_places::osm::harvest(&pbfs, &Config::parse(SCHEMA)?, &progress)?;
+    let artifacts = crate::landmark_map::artifacts(&content, &places.links, &cells)?;
     write_artifacts(request, "landmarks", artifacts)
 }
 
@@ -320,7 +197,7 @@ fn content_views(request: &Request, dir: &str, doc: &str) -> Result<Vec<PathBuf>
 fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec<u8>>) -> Result<(), String> {
     std::fs::create_dir_all(request.output.join(dir)).map_err(|e| e.to_string())?;
     for (cell, bytes) in artifacts {
-        let width = crate::grid::id_width(cell.log2);
+        let width = obc_map_core::grid::id_width(cell.log2);
         let path = request.output.join(format!("{dir}/{:0width$}/{:0width$}.bin", cell.i, cell.j));
         std::fs::create_dir_all(path.parent().expect("an artifact path has a parent"))
             .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -362,70 +239,6 @@ mod tests {
             assert_ne!(capture_hash(&changed), before);
         }
     }
-    #[test]
-    fn partial_empty_cells_keep_real_artifacts_and_full_empty_cells_have_no_payload() {
-        use crate::serialize::{serialize_lods, LodLayer, Node};
-        let dir = obcm_testkit::scratch::scratch_dir("step", "empty-coverage");
-        let config = Config::parse(SCHEMA).unwrap();
-        let ids = [CellId::new(18, 1204, 1052).unwrap(), CellId::new(18, 1204, 1053).unwrap()];
-        let tree = dir.join("cut");
-        let mut artifacts = Vec::new();
-        for id in ids {
-            let lods = config
-                .lods
-                .iter()
-                .map(|lod| LodLayer {
-                    max_mpp: lod.max_mpp,
-                    chunk_size: config.chunk_size,
-                    root: Node::Leaf { bbox: id.square(), features: Vec::new() },
-                })
-                .collect::<Vec<_>>();
-            let (body, dropped) = serialize_lods(
-                &lods,
-                &config.styles(),
-                config.marker_color,
-                id.square(),
-                &[],
-                &Default::default(),
-                &config.routing.profiles,
-                &mut obc_elevation::NullElevation,
-            );
-            assert_eq!(dropped, 0);
-            let path = format!("cells/network/{:04}/{:04}.obcm", id.i, id.j);
-            std::fs::create_dir_all(tree.join(&path).parent().unwrap()).unwrap();
-            std::fs::write(tree.join(&path), &body).unwrap();
-            artifacts.push(crate::cut::CellArtifact {
-                id,
-                band: "network".into(),
-                path,
-                bytes: body.len() as u64,
-                sha256: obc_data::store::sha256_hex(&body),
-                partial: false,
-                dropped,
-                pois: 0,
-                nav_nodes: 0,
-                nav_edges: 0,
-                empty: true,
-            });
-        }
-        let request = Request {
-            step: "maps/network/leaf".into(),
-            snapshots: BTreeMap::new(),
-            layers: BTreeMap::new(),
-            layer_files: BTreeMap::new(),
-            options: serde_json::json!({"band":"network", "partial_cells":[ids[1].to_string()]}),
-            output: dir.join("output"),
-            metrics: dir.join("metrics"),
-        };
-        let partial_body = std::fs::read(tree.join(&artifacts[1].path)).unwrap();
-        write_cells(&request, &tree, &artifacts).unwrap();
-        let empty: Vec<String> =
-            serde_json::from_slice(&std::fs::read(request.output.join("metadata/empty.json")).unwrap()).unwrap();
-        assert_eq!(empty, [ids[0].to_string()]);
-        assert!(!request.output.join(&artifacts[0].path).exists());
-        assert_eq!(std::fs::read(request.output.join(&artifacts[1].path)).unwrap(), partial_body);
-    }
-
     #[test]
     fn area_content_with_the_same_relative_path_preserves_unique_and_overlapping_articles() {
         use obc_formats::io::SliceSource;

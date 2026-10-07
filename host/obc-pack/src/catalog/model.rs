@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::LineStyle;
-use crate::grid::{GRID_ORIGIN, WORLD_SIDE};
+use obc_map_core::config::LineStyle;
+use obc_map_core::grid::{GRID_ORIGIN, WORLD_SIDE};
 
 use super::boundary;
 
-// The grid itself lives in [`crate::grid`]. What is local here is the catalog's two obligations on
+// The grid itself lives in [`obc_map_core::grid`]. What is local here is the catalog's two obligations on
 // top of it: the JSON boundary is `i32`, and an id that reaches a content-addressed store must be
 // canonical.
 

@@ -29,10 +29,10 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::config::Config;
-use crate::grid::UBox;
 use obc_formats::io::rd_i32;
 use obc_formats::obcm::{HEADER_LEN, MAGIC};
+use obc_map_core::config::Config;
+use obc_map_core::grid::UBox;
 
 pub mod boundary;
 pub mod engine;

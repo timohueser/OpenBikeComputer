@@ -112,7 +112,7 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
     # `${extra[@]+…}`, not a bare `"${extra[@]}"`: under `set -u` the bash 3.2 that ships
     # with macOS treats an EMPTY array expansion as an unbound variable, so the terrain-less
     # targets (monaco, grimsel-demo) died on the guard meant to protect them.
-    (cd "$REPO_ROOT" && cargo run --release --bin obc-pack -- \
+    (cd "$REPO_ROOT" && cargo run --release -p obc-bake --bin obc-pack -- \
         "$src" "$PRESET" "$output" --bbox "$bbox" ${extra[@]+"${extra[@]}"})
     (cd "$REPO_ROOT" && cargo run --release --bin obcm-assemble -- restamp \
         --map "$output" --schema "$PRESET" \

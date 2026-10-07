@@ -264,7 +264,7 @@ pack *args:
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
-    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
     _say "preset $preset"
     cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
@@ -497,7 +497,7 @@ web *args:
     # This is the maintainer schema host: a present binary may still predate the
     # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
     # and makes the served schema and every preview use this checkout exactly.
-    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
     [[ -d builder/app/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/app && _run npm ci ); }
     # Generated bindings are gitignored; existence cannot prove that any bridge
     # matches its Rust source. Warm wasm-pack builds are incremental.

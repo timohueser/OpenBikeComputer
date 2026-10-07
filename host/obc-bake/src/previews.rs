@@ -29,8 +29,8 @@ use embedded_graphics::primitives::Rectangle;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use obc_formats::io::SliceSource;
+use obc_map_core::config::Config;
 use obc_pack::catalog::{feature_type_ids, Catalog};
-use obc_pack::config::Config;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obcm_assemble::emit::{restamp_style_table, RestampError};
@@ -247,7 +247,7 @@ mod tests {
 
     fn shipped_schema() -> Schema {
         let config = Config::parse(include_str!("../../../builder/presets/schema.json")).expect("schema config parses");
-        let bands = obc_pack::grid::BandTable::recommended();
+        let bands = obc_map_core::grid::BandTable::recommended();
         let lods: Vec<_> = config
             .lods
             .iter()
