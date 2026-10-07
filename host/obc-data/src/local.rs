@@ -757,6 +757,12 @@ mod tests {
                 .map(|layer| layer.state)
                 .collect::<Vec<_>>()
         };
+        assert_eq!(
+            states(&steps, &original.producers),
+            [State::CodeChanged, State::InputChanged],
+            "the synthetic declaration exposes an originally private input"
+        );
+        steps[0].client = original.layers[0].client.clone();
         assert_eq!(states(&steps, &original.producers), [State::Ok, State::Ok]);
         assert!(!root.join("absent-original-provider").exists());
         steps[0].options = json!({"changed":true});
