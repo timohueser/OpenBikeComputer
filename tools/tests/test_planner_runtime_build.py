@@ -167,6 +167,10 @@ class RuntimeBuild(unittest.TestCase):
             output.mkdir()
             request = {"output": str(output), "metrics": "unused", "options": {"builder": {"image": image}}}
             with patch.dict(os.environ, {"UV_PYTHON": "/laptop/python", "DOCKER_HOST": "unix:///local.sock", "CARGO_BUILD_JOBS": "2"}, clear=True), patch.object(runtime, "run") as run:
+                with patch.dict(os.environ, {"OBC_BAKE_BUDGETED": "1"}):
+                    with self.assertRaisesRegex(ValueError, "BUILDER=native"):
+                        runtime.container(request)
+                    run.assert_not_called()
                 runtime.container(request)
                 argv = run.call_args.args[0]
                 self.assertIn("--network=none", argv)

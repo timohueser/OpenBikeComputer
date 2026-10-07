@@ -375,6 +375,7 @@ pub(super) fn complete(saved: Option<&EnvPlan>) -> Result<(), Error> {
 /// The complete desired publication after the build.
 pub(super) struct Applying {
     pub(super) next: Live,
+    pub(super) plan: EnvPlan,
 }
 
 /// Recheck the approval after verification, including code for reused layers and unused acquisition.
@@ -464,7 +465,8 @@ pub(super) fn build_env(
         }
         return Ok((built, None));
     };
-    let (next, missing) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
+    let (mut next, missing) = next_reusing(root, store, products, &live, &steps, &plan, &run.originals)?;
+    retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     if let Some(layer) = missing.first() {
         return Err(Code::Failed.error(format!("the store lacks the layer `{layer}` after the build")));
     }
@@ -474,7 +476,7 @@ pub(super) fn build_env(
             built.releases.push(BuiltRelease { product: release.product.clone(), id: id.clone() });
         }
     }
-    Ok((built, Some(Applying { next })))
+    Ok((built, Some(Applying { next, plan })))
 }
 
 /// Fail with `blocked` when no product suits the environment of `plan`.
@@ -628,6 +630,34 @@ fn planned_run(
     let env = &mut loaded.env;
     let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
     env.retained = live.as_ref().map(|live| crate::input_copy::retained(live, store)).transpose()?.unwrap_or_default();
+    if let (Some(approved), Some(remote), Some(live)) =
+        (run.as_deref().and_then(|run| run.automatic.as_ref()), remote, live.as_ref())
+    {
+        let mut original = env.clone();
+        original.live = live.versions();
+        original.moves.clear();
+        let fetch = |wanted: &Wanted| {
+            Err(Code::Blocked
+                .error(format!("automatic admission lacks retained planning inputs for `{}`", wanted.source,)))
+        };
+        let (current, blocked) = list_steps(root, products, &mut original, &loaded.regions, store, true, fetch, true)?;
+        if !blocked.is_empty() {
+            return Err(Code::Blocked
+                .error("automatic admission needs the complete retained product declarations")
+                .fix("Restore the retained planning inputs with a manual prepare, then retry."));
+        }
+        let review = crate::approval::review(
+            root,
+            &original,
+            &loaded.regions,
+            &current,
+            products,
+            &loaded.sources,
+            remote.describe(),
+            Ok(approved.observation.clone()),
+        );
+        approved.check(&review).map_err(|reason| Code::Blocked.error(reason))?;
+    }
     match basis {
         Basis::Saved(saved) => {
             let versions = saved.versions.iter().map(|v| ((v.source.clone(), v.params.clone()), v.version.clone()));
@@ -654,6 +684,15 @@ fn planned_run(
                         continue;
                     }
                     for request in super::freshness::requests(store, http, source, &inventory, false) {
+                        if run.as_deref().is_some_and(|run| run.automatic.is_some())
+                            && request.state == crate::sources::State::Blocked
+                        {
+                            return Err(Code::Blocked.error(format!(
+                                "required refresh `{}`: {}",
+                                source.id,
+                                request.reason.as_deref().unwrap_or("upstream check failed")
+                            )));
+                        }
                         if request.state == crate::sources::State::Stale {
                             env.stale_requests.insert((source.id.clone(), request.params.clone()));
                             env.moves.insert(source.id.clone(), None);
@@ -680,7 +719,7 @@ fn planned_run(
         }
     }
     let fetch = super::status_cli::discovery_fetch(
-        fetcher_recorded(root, store, http, &loaded.sources, env, copies.as_ref(), run),
+        fetcher_recorded(root, store, http, &loaded.sources, env, copies.as_ref(), run.as_deref_mut()),
         prepare,
     );
     let (steps, blocked) = match basis {
@@ -713,6 +752,37 @@ fn planned_run(
         let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
+    let mut originals = BTreeMap::new();
+    if let Some(run) = run.filter(|run| run.automatic.is_some()) {
+        let approved = run.automatic.as_ref().expect("filtered above");
+        if !blocked.is_empty() {
+            return Err(Code::Blocked.error("automatic product declarations are incomplete"));
+        }
+        let review = crate::approval::review(
+            root,
+            env,
+            &loaded.regions,
+            &steps,
+            products,
+            &loaded.sources,
+            remote.expect("Live has a remote").describe(),
+            Ok(approved.observation.clone()),
+        );
+        approved.check(&review).map_err(|reason| Code::Blocked.error(reason))?;
+        for (product, published) in products.iter().zip(&live.products) {
+            if let Some((_, release)) = &published.release {
+                originals.extend(crate::local::reuse(
+                    root,
+                    store,
+                    remote.expect("Live has a remote"),
+                    *product,
+                    release,
+                    &steps,
+                )?);
+            }
+        }
+        run.originals = originals.clone();
+    }
     let edits = edits(products, env, &live, &blocked);
     let mut listed = match remote {
         Some(remote @ Remote::Bucket(_)) => Some(live.list(remote).map_err(|e| Code::R2Failed.error(e))?),
@@ -720,9 +790,10 @@ fn planned_run(
     };
     let check = listed.as_deref().map(|listed| live.check(listed));
     let against = against(&live, env, &edits, &blocked, check.as_ref(), store);
-    let all = changes::changes(store, root, &steps, &against)?;
+    let all = changes::changes_reusing(store, root, &steps, &against, &originals)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
-    let (next, _) = next(root, store, products, &loaded.sources, &live, &steps, &plan)?;
+    let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &originals)?;
+    retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     for (now, next) in live.products.iter().zip(&next.products) {
         let layered = plan.groups.iter().any(|group| {
             group
@@ -925,20 +996,19 @@ impl Edit {
 
 /// Live after an apply of `plan`, as far as the store knows it: the release of each product that
 /// the plan changes, of its live layers and the layers of the groups that the store has; and the
-/// input copies that the releases and the layers to build read. Also the layers of the groups that
-/// the store lacks.
-fn next(
+/// layers of the groups that the store lacks.
+fn next_reusing(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
-    sources: &[Source],
     live: &Live,
     steps: &[Step],
     plan: &EnvPlan,
+    originals: &BTreeMap<String, release::Layer>,
 ) -> Result<(Live, Vec<String>), Error> {
     crate::worker::check(root)?;
     let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
-    let stored = release::stored(store, root, steps, &taken)?;
+    let stored = release::stored_reusing(store, root, steps, &taken, originals)?;
     let missing: Vec<String> =
         taken.into_iter().filter(|name| !stored.contains_key(*name)).map(str::to_string).collect();
     let mut next = Live::default();
@@ -999,7 +1069,11 @@ fn next(
             document,
         });
     }
-    for read in crate::input_copy::reads(&next)? {
+    Ok((next, missing))
+}
+
+fn retain_input_copies(store: &Store, sources: &[Source], live: &Live, next: &mut Live) -> Result<(), Error> {
+    for read in crate::input_copy::reads(next)? {
         if !live.inputs.contains_key(&read.key)
             && !sources.iter().any(|s| s.id == read.key.source && s.r2_copy && s.redistribute)
         {
@@ -1014,7 +1088,7 @@ fn next(
         };
         next.inputs.insert(read.key, record);
     }
-    Ok((next, missing))
+    Ok(())
 }
 
 /// The `--move SOURCE[@VERSION]` of a plan or a build.

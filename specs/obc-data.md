@@ -1179,6 +1179,52 @@ The projection comes from the same resolver traversal.
 A missing witness does not permit portable adoption. Witness metadata changes the release id;
 it does not change an existing layer key or receipt.
 
+### Automatic work
+
+`auto ENV` starts the existing detached operation. Fixture environments refuse it. Non-live
+environments build and verify with normal working-tree rules. They do not publish or create an
+approval record. A known busy reservation returns a successful structured skip; it has no waiting queue. Other admission failures remain errors.
+
+Live admission observes the configured owner's original approval before acquisition or build.
+The current native target/profile needs an exact checked execution entry. Planning, acquisition,
+producer and runtime declarations must match that entry and the current publication configuration.
+A prospective manual review cannot approve replacement tools. Missing retained planning inputs
+require explicit preparation. Changed code or settings require reviewed manual apply.
+
+Freshness discovery checks only requests used by the complete selected product declarations.
+Stale automatic requests refresh; manual sources retain their selected versions. A failed required
+upstream check blocks the run. Compatible portable layers keep the original full identity and
+producer provenance. Their verified files can feed a new native consumer. Private metadata does
+not imply that unpublished intermediates or native executables are portable. Reuse does not change
+a saved Local adoption or create a foreign build receipt.
+
+The run verifies complete desired products, then rechecks the reviewed declarations, pointers and
+original approval. Any final automatic publication reuses the existing owner mutation barrier and
+original approval CAS; it does not establish or replace manual approval. Publication requires the
+checked enabled live timer at the first owner handoff. A disabled timer leaves the active run
+building and verifying; its result is verified, not applied. Disable and the first handoff share
+one short admission lock. An admitted irreversible owner completes normally. `auto` installs no timer.
+
+`schedule live` reads actual operator systemd unit state, calendar, time zone, next trigger and
+last run. `--setup-budget` configures only the bake slice before manual approval; it leaves the timer unchanged. Installed enablement and activity are separate from runnable setup. Missing or changed
+setup reports a blocked reason without hiding enablement. `--calendar` and `--time-zone` validate
+calendar and host setup before replacing the known units. `--disable` stops only the timer;
+it never stops retained work, serving or final publication. Non-live schedules are unsupported.
+
+The timer is persistent. One missed occurrence causes one catch-up admission, without a missed-run
+backlog. Its locked offline Cargo entry uses the existing fresh producer launcher. Entry compilation
+and retained bake workers share the operator's CPU and memory slice. Serving and installed commit
+owners stay outside that slice. Effective cgroup-v2 limits are checked before bake admission. Step scheduling clamps its existing
+memory ceiling to the configured host budget, preserving any lower caller limit.
+An actual Docker runtime build is refused on a budgeted Linux worker because the daemon does not
+inherit those limits. Verified stored runtimes and laptop container publication remain supported.
+
+Host setup supplies CPU, memory, minimum free disk and an alert service. The installed MIT plumbing
+binary checks disk reserve before entry compilation. Retained workers check reserve before work,
+and known output/fetch estimates before a build. These checks are disk preflights, not a filesystem
+quota. Failure notification attaches to actual retained workers as well as the timer entry.
+The next calendar occurrence retries failed or busy work; there is no restart or waiting queue.
+
 ### Local portable data
 
 `local::plan` compares supplied producer declarations at the original Rust target/profile.
@@ -1551,6 +1597,7 @@ changes nothing.
 
 | Code | Exit | When | Fix |
 | --- | --- | --- | --- |
+| `busy` | 2 | Another admitted operation owns the environment. No work waits for it. | Observe the current run or retry after it drains. No work is queued. |
 | `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
 another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
 | `no_terminal` | 2 | A command that changes live has no terminal to ask in, and no `--yes`. | Show the plan to a person. When they agree, run the command again with `--yes`. |
@@ -1593,6 +1640,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Completed prepare output | `Prepared2` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |
+| `auto` admission | `Started` |
+| Completed auto output | `Result` |
+| Live timer state | `State3` |
+| `schedule live --setup-budget` | `Budget` |
 | `runs` | `RunList` |
 | `runs RUN` for a detached operation | `View` |
 | `runs RUN` for other journals | `Details` |
@@ -1798,6 +1849,35 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Budget": {
+      "properties": {
+        "alert": {
+          "type": "string"
+        },
+        "cpu_percent": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minimum_free": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cpu_percent",
+        "memory_bytes",
+        "minimum_free",
+        "alert"
+      ],
+      "type": "object"
+    },
     "Built": {
       "description": "What a build did.",
       "properties": {
@@ -1998,6 +2078,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Code2": {
       "description": "The kind of an error. It sets the exit status and the fix.",
       "oneOf": [
+        {
+          "const": "busy",
+          "description": "Another admitted operation owns the environment. No work waits for it.",
+          "type": "string"
+        },
         {
           "const": "usage",
           "description": "An argument is not valid, an id names nothing, the command runs outside the repository, or\nanother command must run first.",
@@ -4453,6 +4538,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Result": {
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Applied"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approval": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "built": {
+          "$ref": "#/$defs/Built"
+        },
+        "publication": {
+          "description": "Publication requires checked enabled-timer admission.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "built",
+        "approval",
+        "publication",
+        "applied"
+      ],
+      "type": "object"
+    },
     "Review": {
       "oneOf": [
         {
@@ -4999,6 +5118,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Started": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Handle"
+        },
+        {
+          "properties": {
+            "env": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "skipped",
+            "env",
+            "reason",
+            "run"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "State": {
       "description": "The state of a source or a layer. A source is only ok, stale or blocked. When more than one\nstate applies to a layer, the first in this order is its state, so the least of several states\nis the one to show for all of them.",
       "enum": [
@@ -5048,6 +5200,71 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "token",
         "status"
+      ],
+      "type": "object"
+    },
+    "State3": {
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "blocked": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "calendar": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "last_run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/View"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_trigger": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runnable": {
+          "type": "boolean"
+        },
+        "time_zone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "active",
+        "runnable",
+        "blocked",
+        "calendar",
+        "time_zone",
+        "next",
+        "last_trigger",
+        "last_run"
       ],
       "type": "object"
     },

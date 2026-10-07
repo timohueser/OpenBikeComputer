@@ -47,6 +47,17 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         return Err(Code::Usage.error("an operation worker cannot start a second operation"));
     }
     let environment = operation::launch::preflight().map_err(|e| Code::Blocked.error(e))?;
+    let budget = environment
+        .as_ref()
+        .map(|_| {
+            let budget = operation::budget::Budget::environment()?;
+            crate::schedule::budget_ready(&budget)?;
+            budget.disk(root, 0)?;
+            budget.disk(store.root(), 0)?;
+            Ok::<_, String>(budget)
+        })
+        .transpose()
+        .map_err(|e| Code::Blocked.error(e))?;
     let code = crate::worker::bound_code(root).map_err(|e| Code::Blocked.error(e))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let plan_bytes = plan
@@ -77,6 +88,7 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
             Kind::Prepare => "prepare",
             Kind::Build => "build",
             Kind::Apply => "apply",
+            Kind::Auto => "auto",
             Kind::DevPrepare => "dev",
         },
         request.env
@@ -104,7 +116,9 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     };
     let mut reserved = false;
     let initialized = (|| -> Result<(), Error> {
-        operation::reserve(store, &control)?;
+        if let operation::Reservation::Busy(reason) = operation::reserve(store, &control)? {
+            return Err(Code::Busy.error(reason));
+        }
         reserved = true;
         #[cfg(unix)]
         {
@@ -135,6 +149,10 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         }
         if let Err(message) = run.finish(Some(&error.message)) {
             error.message += &format!("; run journal could not finish: {message}");
+            if error.code == Code::Busy {
+                error.code = Code::Failed;
+                error.fix = Code::Failed.fix().into();
+            }
         }
         return Err(error.with_run(&id));
     }
@@ -142,12 +160,12 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     drop(run);
     let mut child = match environment {
         Some(environment) => {
-            let mut command = operation::launch::service(
+            let mut command = operation::launch::bake(
                 &format!("obc-data-run-{}", crate::store::sha256_hex(directory.as_os_str().as_encoded_bytes())),
                 &control.root,
                 &directory,
                 &environment,
-                true,
+                budget.as_ref().expect("Linux setup checked the bake budget"),
             );
             for (key, value) in [
                 (
@@ -237,6 +255,8 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
     }
     let using = operation::claim(store, run, request)?;
     std::env::set_var("OBC_DATA_STORE", store.root());
+    #[cfg(target_os = "linux")]
+    std::env::set_var("OBC_BAKE_BUDGETED", "1");
     SESSION
         .set(Session { store: Store::at(store.root()), control })
         .map_err(|_| Code::Usage.error("this worker already owns an operation"))?;
@@ -253,6 +273,7 @@ pub(super) fn resume(store: &Store, command: &str) -> Result<Option<Run>, String
                     Kind::Prepare => "prepare",
                     Kind::Build => "build",
                     Kind::Apply => "apply",
+                    Kind::Auto => "auto",
                     Kind::DevPrepare => "dev",
                 },
                 session.control.request.env
@@ -260,7 +281,18 @@ pub(super) fn resume(store: &Store, command: &str) -> Result<Option<Run>, String
     {
         return Err("operation child cannot start another run or environment".into());
     }
-    Ok(Some(Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?))
+    let run = Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?;
+    #[cfg(target_os = "linux")]
+    let run = {
+        let mut run = run;
+        let budget = operation::budget::Budget::environment()?;
+        crate::schedule::budget_ready(&budget)?;
+        budget.disk(&session.control.root, 0)?;
+        budget.disk(store.root(), 0)?;
+        run.host_budget(&session.control.root, budget);
+        run
+    };
+    Ok(Some(run))
 }
 
 fn finish_result(store: &Store, run: &str, mut result: Result<(), Error>) -> Result<(), Error> {
@@ -327,6 +359,7 @@ pub(super) fn perform(
     let request = request()?;
     let root = super::root()?;
     let result = match request.kind {
+        Kind::Auto => super::auto_cli::perform(&root, products, &request.env),
         Kind::DevPrepare => {
             super::dev_cli::prepare(&root, store, products, run, request.dev.as_ref().expect("checked Local request"))
         }
@@ -380,7 +413,7 @@ fn remove_worker(store: &Store, run: &str) {
     }
 }
 
-fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
+pub(super) fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
     if json {
         return super::print_json(handle);
     }

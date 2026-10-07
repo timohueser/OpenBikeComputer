@@ -48,6 +48,46 @@ impl Declaration {
     }
 }
 
+pub(super) fn configuration(
+    root: &Path,
+    env: &Env,
+    regions: &Regions,
+    products: &[&dyn Product],
+    source_settings: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut config = BTreeMap::new();
+    for product in products {
+        config.insert(product.name(), product.approval_config(root)?);
+    }
+    let mut selected_regions = Vec::new();
+    selected_regions.push(regions.get(&env.region).ok_or("approval region is missing")?);
+    for leaf in regions.leaves(&env.region)? {
+        if leaf != env.region {
+            selected_regions.push(regions.get(leaf).ok_or("approval region leaf is missing")?);
+        }
+    }
+    let mut layers = env.layers.clone();
+    layers.sort();
+    hash(&json!({"regions":selected_regions,"layers":layers,"products":config,"sources":source_settings}))
+}
+
+pub(super) fn checked_owner(
+    root: &Path,
+    context: &mut Context,
+    owner: &OwnerCode,
+    expected: &Role,
+) -> Result<(), String> {
+    let identity = context.owner_identity(root, owner)?;
+    identity.committed(root)?;
+    if identity.rust != expected.rust
+        || hash(&(&identity.source_config, None::<&serde_json::Value>))? != expected.source_config
+        || hash(&(&identity.files, None::<&RuntimeBinding>))? != expected.execution
+    {
+        return Err("approved acquisition/planning code or tools changed; complete a reviewed manual apply".into());
+    }
+    Ok(())
+}
+
 /// Geographic step IDs and source versions are data; roles name existing code declarations.
 fn producer(
     declarations: &mut BTreeMap<String, Declaration>,
@@ -108,19 +148,6 @@ pub(crate) fn review(
     let build = || -> Result<Review, String> {
         let prior = prior?;
         prior.check()?;
-        let mut config = BTreeMap::new();
-        for product in products {
-            config.insert(product.name(), product.approval_config(root)?);
-        }
-        let mut selected_regions = Vec::new();
-        selected_regions.push(regions.get(&env.region).ok_or("approval region is missing")?);
-        for leaf in regions.leaves(&env.region)? {
-            if leaf != env.region {
-                selected_regions.push(regions.get(leaf).ok_or("approval region leaf is missing")?);
-            }
-        }
-        let mut layers = env.layers.clone();
-        layers.sort();
         let mut declarations = BTreeMap::new();
         for product in products {
             if let Some(owner) = product.planning_code(env)? {
@@ -174,8 +201,7 @@ pub(crate) fn review(
             let owner = crate::fetch::owner_code(source);
             declarations.insert(format!("acquisition/{id}"), Declaration::owner(owner));
         }
-        let config =
-            hash(&json!({"regions":selected_regions,"layers":layers,"products":config,"sources":source_settings}))?;
+        let config = configuration(root, env, regions, products, &source_settings)?;
         if declarations.is_empty() {
             return Ok(Review::Unavailable {
                 reason: "no complete product declares acquisition, planning or producer code".into(),
