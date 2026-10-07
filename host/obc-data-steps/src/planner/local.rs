@@ -58,12 +58,8 @@ pub(super) fn environment(root: &Path, regions: &Regions, request: &Request) -> 
 }
 
 fn read_environment(root: &Path, regions: &Regions, request: &Request) -> Result<(Env, String), String> {
-    let (mut env, text) = Env::local(root, regions)?;
-    if let Some(region) = &request.region {
-        env.region = region.clone();
-    }
+    let (env, text) = Env::local(root, regions, request.region.as_deref())?;
     let text = env.edit(&text);
-    let env = Env::parse("local", &text, regions)?;
     Ok((env, text))
 }
 

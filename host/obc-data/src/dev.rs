@@ -67,7 +67,7 @@ impl Prepared {
         {
             return Err("Prepared Local service view belongs to another root".into());
         }
-        let (env, _) = crate::env::Env::local(root, &crate::regions::Regions::load(root)?)?;
+        let (env, _) = crate::env::Env::local(root, &crate::regions::Regions::load(root)?, None)?;
         if value["region"] != env.region
             || value["layers"] != serde_json::json!(env.layers)
             || value["configuration"] != configuration(root)?
@@ -103,7 +103,7 @@ pub struct State {
 /// Bind the selected region definition and layers, including edits under an unchanged region id.
 pub fn configuration(root: &Path) -> Result<String, String> {
     let regions = crate::regions::Regions::load(root)?;
-    let (env, _) = crate::env::Env::local(root, &regions)?;
+    let (env, _) = crate::env::Env::local(root, &regions, None)?;
     configuration_for(&env, &regions)
 }
 
@@ -564,7 +564,11 @@ mod tests {
         }
         assert!(Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap().success());
         let region = root.join("data/regions/ride.toml");
-        std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,8,48]\n").unwrap();
+        std::fs::write(
+            &region,
+            "name='Ride'\nkind='box'\nbox=[7,47,8,48]\ncountries=['DE']\ntime_zone='Europe/Berlin'\n",
+        )
+        .unwrap();
         std::fs::write(crate::env::Env::path(&root, "local"), "region='ride'\nlayers=[]\n").unwrap();
         let binary = root.join("view/obc-sim");
         std::fs::write(&binary, b"retained Simulator").unwrap();
@@ -605,9 +609,13 @@ mod tests {
             "an absent Web provider cannot admit Web"
         );
         let captured_regions = crate::regions::Regions::load(&root).unwrap();
-        let (captured_env, _) = crate::env::Env::local(&root, &captured_regions).unwrap();
+        let (captured_env, _) = crate::env::Env::local(&root, &captured_regions, None).unwrap();
         let captured = configuration_for(&captured_env, &captured_regions).unwrap();
-        std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,7.5,48]\n").unwrap();
+        std::fs::write(
+            &region,
+            "name='Ride'\nkind='box'\nbox=[7,47,7.5,48]\ncountries=['DE']\ntime_zone='Europe/Berlin'\n",
+        )
+        .unwrap();
         assert_eq!(
             captured,
             configuration_for(&captured_env, &captured_regions).unwrap(),

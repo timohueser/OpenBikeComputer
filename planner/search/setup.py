@@ -8,9 +8,11 @@ import shutil
 import signal
 import subprocess
 import tarfile
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+MODEL_URL = 'https://maps.openbikecomputer.com/assets/query-model/v2/query-parser-v2-int8.tar.gz'
 MODEL_SHA = 'a8e1a42794fc101aace3982b991ce9f1f8852fcc5da1c056ddd1fe2699e8e48a'
 
 
@@ -78,8 +80,10 @@ def main():
     npm_ci(ROOT.parents[1] / 'builder/web')
     archive = data / 'query-parser-v2-int8.tar.gz'
     if not archive.exists():
-        run('gh', 'release', 'download', 'spike/query-parser-v2', '-R', 'timohueser/OpenBikeComputer',
-            '-p', archive.name, '-D', str(data))
+        part = archive.with_suffix('.part')
+        with urllib.request.urlopen(MODEL_URL, timeout=120) as source, part.open('wb') as destination:
+            shutil.copyfileobj(source, destination)
+        part.rename(archive)
     verify(archive, MODEL_SHA)
     install_model(archive, data)
     print(f'Search dependencies and model ready: {data}')

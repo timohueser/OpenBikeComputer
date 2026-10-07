@@ -186,6 +186,10 @@ pub struct Source {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
     pub version: VersionScheme,
+    /// The version that a plan reads while no live release reads the source. `--move` overrides
+    /// it. Without it, the first fetch takes the newest version upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
     pub refresh: Refresh,
     pub redistribute: bool,
     /// R2 keeps a copy, because upstream cannot give a version again.
@@ -237,6 +241,9 @@ impl Source {
             if !(inside && west < east && south < north) {
                 return fail("`extent` is [west, south, east, north] in degrees, west < east, south < north");
             }
+        }
+        if let Some(start) = &self.start {
+            crate::fetch::check_version(self, start)?;
         }
         if self.r2_copy && !self.redistribute {
             return fail("`r2_copy` needs `redistribute`: R2 is public");
@@ -371,12 +378,15 @@ pub enum State {
     Stale,
     Blocked,
     Ok,
+    /// A source that no live layer and no active request reads. Only sources have it.
+    Unused,
 }
 
 impl std::fmt::Display for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             State::Ok => "ok",
+            State::Unused => "unused",
             State::Stale => "stale",
             State::CodeChanged => "code changed",
             State::InputChanged => "input changed",
