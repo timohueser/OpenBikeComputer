@@ -1,10 +1,8 @@
 //! Join compiled content to explicit OSM approaches and encode one map section.
 
-use crate::{
-    grid::CellId,
-    landmarks::{Content, Photo},
-};
+use crate::landmarks::{Content, Photo};
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
+use obc_map_core::grid::CellId;
 use obc_places::{hours::Schedule, metadata::LandmarkLink};
 use sha2::{Digest, Sha256};
 use std::{

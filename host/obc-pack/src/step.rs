@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use obc_data::engine::{view, Request};
+use obc_data::engine::Request;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
