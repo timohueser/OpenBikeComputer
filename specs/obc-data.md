@@ -18,8 +18,8 @@ and size. The payload does not contain its own archive hash. The Git catalog mar
 with `selection = true`; it remains the consumer authority.
 
 Read-only planning does not download archives. Explicit preparation can recover the exact catalog
-archive and restore its input objects. Public raw copies require both the saved copy selection
-and current redistribution permission. Other inputs recover from their exact original source at
+archive and restore its input objects. Recorded public raw copies remain readable after a policy change. New raw uploads require current
+redistribution permission. Other inputs recover from their exact original source at
 the recorded version, parameters and hashes. Missing history refuses without newest substitution.
 `--move SOURCE[@VERSION]` permits acquisition for that source. Saved requests keep their own exact
 versions; a new request needs an explicit move. Coverage outside the saved PBF is refused.
