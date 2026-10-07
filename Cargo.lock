@@ -3823,9 +3823,11 @@ name = "obc-pbf"
 version = "0.1.0"
 dependencies = [
  "geos",
+ "libc",
  "obc-map-core",
  "osmpbf",
  "rayon",
+ "sha2 0.11.0",
 ]
 
 [[package]]

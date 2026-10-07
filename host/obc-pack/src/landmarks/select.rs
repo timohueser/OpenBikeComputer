@@ -16,7 +16,28 @@ use std::path::Path;
 
 /// Run the command `args[0]`, or `None` when it is not one of these commands.
 pub fn run(args: &[String]) -> Option<Result<(), String>> {
+    let expected = std::env::var("OBC_CAPTURE_CODE");
+    run_bound(args, expected.as_deref().ok())
+}
+
+fn run_bound(args: &[String], expected: Option<&str>) -> Option<Result<(), String>> {
     let (command, rest) = args.split_first()?;
+    if !matches!(
+        command.as_str(),
+        "landmark-candidates"
+            | "landmark-content"
+            | "landmark-photo-requests"
+            | "peak-candidates"
+            | "peaks"
+            | "boundary"
+    ) {
+        return None;
+    }
+    let before = match crate::step::capture_code() {
+        Ok(code) if expected.is_none_or(|expected| expected == code) => code,
+        Ok(_) => return Some(Err("capture code changed; prepare the capture with a fresh worker".into())),
+        Err(error) => return Some(Err(error)),
+    };
     let result = match command.as_str() {
         "landmark-candidates" => Flags::parse(command, rest, &["osm", "out"], &[])
             .and_then(|flags| super::discover::discover(Path::new(flags.get("osm")?), Path::new(flags.get("out")?))),
@@ -34,9 +55,14 @@ pub fn run(args: &[String]) -> Option<Result<(), String>> {
             let poly = std::fs::read_to_string(flags.get("poly")?).map_err(|e| format!("--poly: {e}"))?;
             std::fs::write(flags.get("out")?, crate::catalog::boundary::geojson(&poly)?).map_err(|e| e.to_string())
         }),
-        _ => return None,
+        _ => unreachable!("recognized selector"),
     };
-    Some(result)
+    Some(result.and_then(|()| {
+        if crate::step::capture_code()? != before {
+            return Err("capture code changed during selection; start a fresh worker".into());
+        }
+        Ok(())
+    }))
 }
 
 fn landmark_content(command: &str, args: &[String]) -> Result<(), String> {
@@ -140,7 +166,28 @@ impl<'a> Flags<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{run, run_bound};
+
+    #[test]
+    fn a_capture_selector_requires_its_requested_implementation_before_output() {
+        let dir = obcm_testkit::scratch::scratch_dir("select", "capture-code");
+        let (poly, out) = (dir.join("area.poly"), dir.join("boundary.geojson"));
+        let text = "area\n1\n 7.79 47.99\n 7.82 47.99\n 7.82 48.02\n 7.79 47.99\nEND\nEND\n";
+        std::fs::write(&poly, text).unwrap();
+        let args = vec![
+            "boundary".into(),
+            "--poly".into(),
+            poly.to_str().unwrap().into(),
+            "--out".into(),
+            out.to_str().unwrap().into(),
+        ];
+        let error = run_bound(&args, Some("old implementation")).unwrap().unwrap_err();
+        assert!(error.contains("capture code changed"), "{error}");
+        assert!(!out.exists());
+        let code = crate::step::capture_code().unwrap();
+        run_bound(&args, Some(&code)).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(out).unwrap(), crate::catalog::boundary::geojson(text).unwrap());
+    }
 
     #[test]
     fn the_capture_gets_its_boundary_from_the_poly_and_other_commands_pass_on() {

@@ -145,6 +145,7 @@ fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) 
     capture(store, request, &query, &owners, wiki_owners, false, |_, out| {
         // The capture needs no package beyond the standard library.
         let mut command = python(root, &[]);
+        command.env("OBC_CAPTURE_CODE", code);
         command.arg(&tool).arg("--poly").arg(&poly_file);
         match collection {
             "peaks" => command.arg("--peaks-osm").arg(&osm_file),

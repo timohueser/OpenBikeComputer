@@ -209,7 +209,7 @@ impl Context {
         Ok(&self.native.as_ref().unwrap().1)
     }
 
-    fn tool_hash(&mut self, path: &Path) -> Result<String, String> {
+    pub(super) fn tool_hash(&mut self, path: &Path) -> Result<String, String> {
         self.watch(path)?;
         let fingerprint = stamp(path)?.ok_or_else(|| format!("{} is missing", path.display()))?;
         if self.tools.get(path).is_none_or(|(previous, _)| previous != &fingerprint) {
