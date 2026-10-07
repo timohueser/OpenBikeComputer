@@ -310,6 +310,7 @@ fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
 
 #[test]
 fn no_change_confirmation_displays_the_exact_approval_and_run_keeps_its_separate_outcome() {
+    let shown_run = app().runs[0].clone();
     let mut app = planned(0, false, &[]);
     let taken = &mut app.plan.as_mut().unwrap().taken;
     taken.groups.clear();
@@ -330,9 +331,9 @@ fn no_change_confirmation_displays_the_exact_approval_and_run_keeps_its_separate
         crate::approval::Outcome::Unavailable { reason: "native routing execution is not bound".into() },
         crate::approval::Outcome::Unresolved { reason: "approval write was not acknowledged".into() },
     ] {
-        app.execution.selected = Some(app.runs[0].summary.id.clone());
+        app.execution.selected = Some(shown_run.summary.id.clone());
         app.execution.view = Some(std::sync::Arc::new(crate::cli::operation_cli::View {
-            run: app.runs[0].clone(),
+            run: shown_run.clone(),
             operation: Some(crate::operation::Status::Finished { ok: true }),
             observation_error: None,
             logs: Vec::new(),

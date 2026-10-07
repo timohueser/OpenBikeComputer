@@ -909,6 +909,26 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
         }
 
+        pub(crate) fn with_sources(&self, sources: &[crate::sources::Source]) {
+            let root = self.root();
+            for source in sources {
+                for path in crate::fetch::owner_code(source).code.paths {
+                    write(&root.join(path), "// fixture acquisition backend\n");
+                }
+            }
+            let mut registry = sources.to_vec();
+            for source in &mut registry {
+                // Registry URLs stay HTTPS; requests use the existing loopback transport seam.
+                if let Some(url) = &mut source.fetch.url {
+                    *url = url.replacen("http://", "https://", 1);
+                }
+            }
+            write(
+                &root.join("data/sources.toml"),
+                &toml::to_string(&std::collections::BTreeMap::from([("source", registry)])).unwrap(),
+            );
+        }
+
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
             plan::plan(&self.store, &self.root(), steps)
         }
