@@ -85,6 +85,7 @@ impl Budget {
         }
     }
 
+    #[cfg(any(target_os = "linux", test))]
     fn check_space(&self, available: u128, estimated: u64) -> Result<(), String> {
         if available < u128::from(self.minimum_free) + u128::from(estimated) {
             return Err(
