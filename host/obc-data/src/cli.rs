@@ -286,8 +286,8 @@ fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::
     let roots = roots(root, products, store)?;
     let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
-            .error("a fetch, a build or an import uses the store; nothing was deleted")
-            .fix("Run `obc data clean --apply` again when the fetch, the build or the import ends.")
+            .error("a run, fetch or import uses the store; nothing was deleted")
+            .fix("Run `obc data clean --apply` again when the run, fetch or import ends.")
     })?;
     Ok(CleanPlan { store: removed, import: import::apply(store, &old_dirs()?)? })
 }
