@@ -51,7 +51,8 @@ pub fn plan(
     if release.product != product.name() || !crate::is_kebab(product.name()) {
         return Err("the portable release belongs to another product".into());
     }
-    let mut check = Compatibility { root, store, release, steps, checked: BTreeMap::new(), codes: Vec::new() };
+    let mut check =
+        Compatibility { root, store, release, steps, checked: BTreeMap::new(), codes: Witnesses::default() };
     let mut plan =
         Plan { product: release.product.clone(), release: release.id(), layers: Vec::new(), blocked: Vec::new() };
     for (name, extra) in required {
@@ -205,13 +206,38 @@ fn reuse_selection(
     ))
 }
 
+/// The same recorded-target comparison serves adoption and read-only layer status.
+#[derive(Default)]
+pub(crate) struct Witnesses(Vec<(Code, Option<ResolvedRust>, SourceIdentity)>);
+
+impl Witnesses {
+    pub(crate) fn matches(
+        &mut self,
+        root: &Path,
+        code: &Code,
+        digest: &str,
+        producer: &engine::release::Producer,
+    ) -> Result<bool, String> {
+        producer.check(digest)?;
+        let at = match self.0.iter().position(|(selected, rust, _)| selected == code && rust == &producer.rust) {
+            Some(at) => at,
+            None => {
+                self.0.push((code.clone(), producer.rust.clone(), code.source_config(root, producer.rust.as_ref())?));
+                self.0.len() - 1
+            }
+        };
+        let identity = &self.0[at].2;
+        Ok(identity.files == producer.source_config && identity.rust == producer.rust)
+    }
+}
+
 struct Compatibility<'a> {
     root: &'a Path,
     store: &'a Store,
     release: &'a Release,
     steps: &'a [Step],
     checked: BTreeMap<String, Result<(), String>>,
-    codes: Vec<(Code, Option<ResolvedRust>, SourceIdentity)>,
+    codes: Witnesses,
 }
 
 impl Compatibility<'_> {
@@ -237,17 +263,7 @@ impl Compatibility<'_> {
             return Err("the original output digest differs from its files".into());
         }
         let producer = self.release.producers.get(&layer.code).ok_or("the original producer witness is unavailable")?;
-        producer.check(&layer.code)?;
-        let at = match self.codes.iter().position(|(code, rust, _)| code == &step.code && rust == &producer.rust) {
-            Some(at) => at,
-            None => {
-                let identity = step.code.source_config(self.root, producer.rust.as_ref())?;
-                self.codes.push((step.code.clone(), producer.rust.clone(), identity));
-                self.codes.len() - 1
-            }
-        };
-        let identity = &self.codes[at].2;
-        if identity.files != producer.source_config || identity.rust != producer.rust {
+        if !self.codes.matches(self.root, &step.code, &layer.code, producer)? {
             return Err("the source/config differs at the original target and profile".into());
         }
         let command = match &step.run {
@@ -721,6 +737,44 @@ mod tests {
             .is_empty(),
             "a new consumer cannot infer portability for a private ancestor"
         );
+    }
+
+    #[test]
+    fn published_status_keeps_specific_causes_without_the_original_execution_provider() {
+        use crate::engine::state::{published, Environment};
+        use crate::sources::State;
+        let fixture = fixture("published-status");
+        let root = fixture.root();
+        let (mut steps, original) = authored(&root);
+        let environment = Environment {
+            live: original.layers.iter().map(|layer| (layer.step.clone(), layer.clone())).collect(),
+            sources: BTreeMap::new(),
+        };
+        let states = |steps: &[Step], producers: &BTreeMap<String, Producer>| {
+            published(&fixture.store, &root, steps, &environment, producers)
+                .unwrap()
+                .into_iter()
+                .map(|layer| layer.state)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            states(&steps, &original.producers),
+            [State::CodeChanged, State::InputChanged],
+            "the synthetic declaration exposes an originally private input"
+        );
+        steps[0].client = original.layers[0].client.clone();
+        assert_eq!(states(&steps, &original.producers), [State::Ok, State::Ok]);
+        assert!(!root.join("absent-original-provider").exists());
+        steps[0].options = json!({"changed":true});
+        assert_eq!(states(&steps, &original.producers), [State::NotApplied, State::InputChanged]);
+        assert_eq!(states(&steps, &BTreeMap::new()), [State::NotApplied, State::InputChanged]);
+        steps[0].options = json!({});
+        assert_eq!(states(&steps, &BTreeMap::new()), [State::Blocked, State::Blocked]);
+        std::fs::write(root.join("linux/src/lib.rs"), "// changed selected Linux source\n").unwrap();
+        assert_eq!(states(&steps, &original.producers), [State::CodeChanged, State::CodeChanged]);
+        let mut changed = original.producers.clone();
+        changed.values_mut().next().unwrap().source_config.insert("forged".into(), "a".repeat(64));
+        assert_eq!(states(&steps, &changed), [State::Blocked, State::Blocked]);
     }
 
     #[test]

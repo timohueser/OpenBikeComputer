@@ -1301,12 +1301,43 @@ pub(super) fn product_steps(
     store: &Store,
     fetch: &mut impl FnMut(&Wanted) -> Result<String, Error>,
 ) -> Result<Result<crate::product::Steps, String>, Error> {
+    listed_steps(root, product, env, regions, store, fetch, false)
+}
+
+pub(super) fn status_steps(
+    root: &Path,
+    product: &dyn Product,
+    env: &mut Env,
+    regions: &Regions,
+    store: &Store,
+    fetch: &mut impl FnMut(&Wanted) -> Result<String, Error>,
+) -> Result<Result<crate::product::Steps, String>, Error> {
+    listed_steps(root, product, env, regions, store, fetch, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn listed_steps(
+    root: &Path,
+    product: &dyn Product,
+    env: &mut Env,
+    regions: &Regions,
+    store: &Store,
+    fetch: &mut impl FnMut(&Wanted) -> Result<String, Error>,
+    observation: bool,
+) -> Result<Result<crate::product::Steps, String>, Error> {
+    let declarations = |env: &Env| {
+        if observation {
+            product.status_steps(root, env, regions, store)
+        } else {
+            product.steps(root, env, regions, store)
+        }
+    };
     let name = product.name();
     let mut failure = None;
     // A refusal belongs to the product that is listed now.
     env.refused.borrow_mut().clear();
     crate::worker::check(root)?;
-    let mut listed = product.steps(root, env, regions, store);
+    let mut listed = declarations(env);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
     let mut fetched: Vec<Wanted> = Vec::new();
     for _ in 0..ROUNDS {
@@ -1328,7 +1359,7 @@ pub(super) fn product_steps(
         }
         fetched.extend(fetches.iter().cloned());
         crate::worker::check(root)?;
-        listed = product.steps(root, env, regions, store);
+        listed = declarations(env);
     }
     let steps = match listed {
         Ok(steps) => steps,

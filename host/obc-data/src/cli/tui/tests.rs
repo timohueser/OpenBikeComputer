@@ -56,6 +56,7 @@ fn status() -> Status {
     ];
     let attention = |kind, about: &str, reason: &str| Attention { kind, about: about.into(), reason: reason.into() };
     Status {
+        vps: None,
         from: "https://maps.openbikecomputer.com".into(),
         products: vec![
             product("maps", "3f9a2c1e", None, 980_000_000, &[], None),

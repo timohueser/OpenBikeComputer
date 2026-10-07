@@ -93,13 +93,22 @@ fn argv() -> Vec<String> {
 }
 
 fn probe(root: &Path, service: &str, target: &Value) -> Result<Probe, String> {
-    let args = argv();
-    let python = obc_data::engine::python_executable(root)?;
+    describe(root, service, target, true)
+}
+
+fn metadata(root: &Path, service: &str, target: &Value) -> Result<Probe, String> {
+    describe(root, service, target, false)
+}
+
+fn describe(root: &Path, service: &str, target: &Value, execution: bool) -> Result<Probe, String> {
+    let args =
+        if execution { argv() } else { ["python3", "-I", "-S", "-B", "-X", "utf8", BUILD].map(str::to_string).into() };
+    let python = execution.then(|| obc_data::engine::python_executable(root)).transpose()?;
     let mut child = Command::new(&args[0])
         .args(&args[1..])
-        .args(["--probe", service])
+        .args([if execution { "--probe" } else { "--declarations" }, service])
         .current_dir(root)
-        .env("UV_PYTHON", &python)
+        .envs(python.as_ref().map(|path| ("UV_PYTHON", path)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -116,13 +125,30 @@ fn probe(root: &Path, service: &str, target: &Value) -> Result<Probe, String> {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let probe: Probe = serde_json::from_slice(&output.stdout).map_err(|e| format!("runtime probe: {e}"))?;
-    if probe.builder["kind"] == "native"
+    if execution
+        && probe.builder["kind"] == "native"
         && probe.builder["providers"]["commands"]["python"].as_str().map(Path::new)
-            != Some(python.canonicalize().map_err(|e| e.to_string())?.as_path())
+            != Some(
+                python.as_ref().expect("execution interpreter").canonicalize().map_err(|e| e.to_string())?.as_path(),
+            )
     {
         return Err("native runtime adapter differs from the selected Python interpreter".into());
     }
     Ok(probe)
+}
+
+pub(super) fn declarations(root: &Path) -> Steps {
+    listed(root, metadata)
+}
+
+pub(super) fn status_options(layer: &str, options: &Value) -> Value {
+    let mut options = options.clone();
+    if SERVICES.iter().any(|service| layer == format!("planner/runtime/{service}")) {
+        if let Some(options) = options.as_object_mut() {
+            options.remove("builder");
+        }
+    }
+    options
 }
 
 fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Probe, String>) -> Steps {
@@ -408,6 +434,16 @@ mod tests {
                 files: Vec::new(),
             })
         });
+        let metadata_only =
+            listed(&fixture.0, |_, _, _| Ok(Probe { builder: Value::Null, paths: Vec::new(), files: Vec::new() }));
+        assert!(metadata_only.blocked.is_empty());
+        for (current, bound) in metadata_only.steps.iter().zip(&configured.steps) {
+            assert_eq!(current.code, bound.code);
+            assert_eq!(status_options(&current.name, &current.options), status_options(&bound.name, &bound.options));
+            let mut changed = current.options.clone();
+            changed["target"]["glibc"] = json!("9.99");
+            assert_ne!(status_options(&current.name, &changed), status_options(&bound.name, &bound.options));
+        }
         assert!(configured.blocked.is_empty());
         assert_eq!(
             configured.steps.iter().map(|step| &step.options).collect::<Vec<_>>(),

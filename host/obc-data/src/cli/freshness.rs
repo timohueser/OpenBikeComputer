@@ -52,7 +52,8 @@ pub(super) fn discover(
         false,
     );
     for product in products {
-        match build_cli::product_steps(root, *product, &mut inventory, regions, store, &mut fetch) {
+        let listed = build_cli::status_steps(root, *product, &mut inventory, regions, store, &mut fetch);
+        match listed {
             Ok(_) => (),
             Err(error) if matches!(error.code, Code::Blocked | Code::FetchFailed) => (),
             Err(error) => return Err(error),

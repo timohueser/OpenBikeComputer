@@ -72,6 +72,30 @@ After a disconnect, observe the original Run. A missing owner record does not pe
 or timeout takeover. Inspect `/var/lib/obc-data/store/runs/RUN.jsonl` for acknowledged writes.
 An unresolved intent blocks another commit; do not delete it.
 
+## Read-only report
+
+`obc data status --check --json` checks R2 and the installed VPS services. Layer states compare
+current source/configuration at the recorded producer target. This does not check the bake
+host's current compiler or build providers. Installed readiness checks actual runtime files,
+process bindings and opened data. Missing helper or read access is unavailable, not healthy.
+
+Set `OBC_STATUS_HOST` to a separate SSH alias. Its key has only a forced read command:
+
+```text
+restrict,command="/opt/obc-data/bin/obc-data-plumbing live-status" ssh-ed25519 PUBLIC_KEY
+```
+
+The account needs read access to service files, process metadata and `systemctl show`.
+It does not stage a helper or change a service. Install the reviewed downloads runtime first.
+Use a separate bucket token with object-read and listing permissions only.
+
+The weekly `data-status.yml` workflow uses `OBC_STATUS_SSH_HOST` and `OBC_STATUS_SSH_USER`
+repository variables, plus `OBC_STATUS_SSH_KEY` and `OBC_STATUS_KNOWN_HOSTS` secrets.
+Its read-only bucket secrets are `OBC_STATUS_R2_ACCESS_KEY_ID` and
+`OBC_STATUS_R2_SECRET_ACCESS_KEY`; the bucket/account variables match the table above.
+It keeps one attention issue, changes its body only when evidence changes, and closes it only
+when all comparisons are complete and clear. It never bakes, publishes or deletes data.
+
 ## Terminal controls
 
 Checks and edits run in the background. An admitted check or edit finishes before `q` closes

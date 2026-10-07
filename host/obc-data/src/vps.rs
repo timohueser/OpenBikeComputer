@@ -2,6 +2,7 @@
 
 pub(crate) mod commit;
 pub(crate) mod local;
+pub mod observe;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use crate::engine::LayerFile;
 use serde::{Deserialize, Serialize};
 
 /// Publication configuration is separate from the service code and data identity.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Origins {
     pub site_origin: String,
@@ -41,7 +42,7 @@ impl Origins {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Service {
     Routing,
@@ -60,7 +61,7 @@ impl Service {
 }
 
 /// Actual host prerequisites. Absent interpreters cannot satisfy a runtime target.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Host {
     pub triple: String,
@@ -69,7 +70,7 @@ pub struct Host {
     pub python: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Installed {
     pub service: Service,
@@ -92,7 +93,7 @@ impl Installed {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub host: Host,
@@ -100,7 +101,7 @@ pub struct State {
 }
 
 /// A verified view of existing release metadata and objects, valid during `Vps::stage`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Candidate {
     pub service: Service,
@@ -190,7 +191,7 @@ pub fn document(
     Ok(chosen)
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Stage {
     pub installed: Installed,
@@ -198,12 +199,39 @@ pub struct Stage {
 }
 
 /// Identities reported by the opened service data, rather than its requested configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(tag = "service", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Ready {
     Routing { package: String },
     Search { grid: String, model: BTreeMap<String, String> },
     Downloads { catalog: String },
+}
+
+impl Ready {
+    pub fn from_document(service: Service, document: &serde_json::Value) -> Result<Self, String> {
+        let text = |value: &serde_json::Value| {
+            value.as_str().map(str::to_string).ok_or_else(|| "missing service data identity".to_string())
+        };
+        Ok(match service {
+            Service::Routing => Self::Routing { package: text(&document["routing_package"])? },
+            Service::Downloads => {
+                Self::Downloads { catalog: text(&document["files"]["offline/catalog.json"]["sha256"])? }
+            }
+            Service::Search => {
+                let region = text(&document["region"])?;
+                let files = &document["files"];
+                Self::Search {
+                    grid: text(&files[format!("search/{region}.grid.json")]["sha256"])?,
+                    model: ["labels.json", "tokenizer.json", "model.int8.onnx"]
+                        .into_iter()
+                        .map(|name| {
+                            text(&files[format!("search/model/{name}")]["sha256"]).map(|digest| (name.into(), digest))
+                        })
+                        .collect::<Result<_, _>>()?,
+                }
+            }
+        })
+    }
 }
 
 /// Staging starts and checks a candidate. It does not activate traffic or retire another slot.

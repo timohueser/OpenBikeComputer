@@ -12,7 +12,7 @@ use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
-use obc_data::product::{version, Product, Unplanned, Wanted};
+use obc_data::product::{version, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::Regions;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
@@ -124,17 +124,16 @@ impl Product for Planner {
         step.name.starts_with("planner/") && !step.name.starts_with("planner/runtime/") && !step.client.is_none()
     }
 
-    fn local_plan(
-        &self,
-        root: &std::path::Path,
-        env: &Env,
-        regions: &Regions,
-        store: &Store,
-        release: &obc_data::engine::release::Release,
-        required: &std::collections::BTreeMap<String, Vec<String>>,
-    ) -> Result<obc_data::local::Plan, Unplanned> {
-        let declarations = self.declarations(root, env, regions, store, Ok(None), false)?;
-        obc_data::local::plan(root, store, self, release, &declarations.steps, required).map_err(Unplanned::Failed)
+    fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        let mut result = self.declarations(root, env, regions, store, Ok(None), false)?;
+        let mut runtimes = runtime::declarations(root);
+        result.steps.append(&mut runtimes.steps);
+        result.blocked.append(&mut runtimes.blocked);
+        Ok(result)
+    }
+
+    fn status_options(&self, layer: &str, options: &serde_json::Value) -> serde_json::Value {
+        runtime::status_options(layer, options)
     }
 
     fn dev_check(

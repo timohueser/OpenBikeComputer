@@ -136,9 +136,36 @@ pub(crate) fn bounded_status(
     command: &mut Command,
     limit: Duration,
 ) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
+    bounded_read(command, limit, Stdio::null())
+}
+
+/// Two bounded metadata documents plus the fixed candidate and slot envelope.
+pub(crate) const READ_INPUT_LIMIT: usize = 2 * 1024 * 1024 + 64 * 1024;
+
+pub(crate) fn bounded_input(command: &mut Command, input: &[u8], limit: Duration) -> Result<Vec<u8>, String> {
+    if input.len() > READ_INPUT_LIMIT {
+        return Err("host observation request is too large".into());
+    }
+    let scratch = crate::r2::Scratch::new()?;
+    let path = scratch.0.join("request.json");
+    std::fs::write(&path, input).map_err(|e| e.to_string())?;
+    let (status, output) =
+        bounded_read(command, limit, Stdio::from(std::fs::File::open(path).map_err(|e| e.to_string())?))?;
+    if status.success() {
+        Ok(output)
+    } else {
+        Err("read-only host observation failed; check the installed helper and permissions".into())
+    }
+}
+
+fn bounded_read(
+    command: &mut Command,
+    limit: Duration,
+    input: Stdio,
+) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
     #[cfg(not(unix))]
     {
-        let _ = (command, limit);
+        let _ = (command, limit, input);
         Err("host observation needs a supported Unix host".into())
     }
     #[cfg(unix)]
@@ -150,7 +177,7 @@ pub(crate) fn bounded_status(
         use std::time::Instant;
         let mut child = command
             .process_group(0)
-            .stdin(Stdio::null())
+            .stdin(input)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -172,7 +199,12 @@ pub(crate) fn bounded_status(
             loop {
                 match stdout.read(&mut buffer) {
                     Ok(0) => eof = true,
-                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    Ok(count) => {
+                        bytes.extend_from_slice(&buffer[..count]);
+                        if bytes.len() > 1024 * 1024 {
+                            return Err("host observation output is too large".into());
+                        }
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(error) => return Err(error.to_string()),
                 }
@@ -233,6 +265,23 @@ mod tests {
         assert!(!owner
             .get_args()
             .any(|arg| arg.to_string_lossy().contains("Slice=") || arg.to_string_lossy().contains("OnFailure=")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_transport_passes_bounded_input_and_drains_at_the_same_deadline() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "cat"]);
+        assert_eq!(
+            bounded_input(&mut command, b"exact published slots", Duration::from_secs(2)).unwrap(),
+            b"exact published slots"
+        );
+        let mut blocked = Command::new("/bin/sh");
+        blocked.args(["-c", "sleep 10"]);
+        assert!(bounded_input(&mut blocked, b"request", Duration::from_millis(20)).unwrap_err().contains("deadline"));
+        assert!(bounded_input(&mut command, &vec![0; READ_INPUT_LIMIT + 1], Duration::from_secs(2))
+            .unwrap_err()
+            .contains("too large"));
     }
 
     #[cfg(unix)]

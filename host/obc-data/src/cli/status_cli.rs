@@ -1,5 +1,5 @@
 //! `obc data status`: what is live, the state of its layers, and what needs attention. `--check`
-//! also lists the prefixes that live owns on R2.
+//! also lists the prefixes that live owns on R2 and observes installed VPS services.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -9,7 +9,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::build_cli::{check_layers, fetcher, load, product_steps};
+use super::build_cli::{check_layers, fetcher, load, status_steps};
 use super::{bytes, cells, old_dirs, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
 use crate::engine::state::{self, Environment};
 use crate::engine::Step;
@@ -23,8 +23,8 @@ use crate::store::{import, Store};
 
 #[derive(Args)]
 pub struct StatusArgs {
-    /// Also list the prefixes that live owns on R2, for drift and leftovers. Exit status 1 when
-    /// it finds either.
+    /// Also check owned R2 prefixes and installed VPS runtime/data. Exit status 1 for
+    /// R2 drift or leftovers.
     #[arg(long)]
     pub check: bool,
 }
@@ -38,6 +38,8 @@ pub struct Status {
     pub attention: Vec<Attention>,
     /// Only with `--check`.
     pub check: Option<Check>,
+    /// Installed runtime and opened data, independently from recorded-target source comparison.
+    pub vps: Option<crate::vps::observe::Observation>,
 }
 
 #[derive(Clone, Serialize, JsonSchema)]
@@ -148,7 +150,22 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let fetch = discovery_fetch(fetcher(root, &store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
-    let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
+    let producers = live
+        .products
+        .iter()
+        .filter_map(|product| product.release.as_ref())
+        .flat_map(|(_, release)| release.producers.clone())
+        .collect();
+    let mut layers = layer_states_published(
+        root,
+        &store,
+        products,
+        &mut loaded.env,
+        &loaded.regions,
+        &environment,
+        fetch,
+        Some(&producers),
+    )?;
     let mut attention = Vec::new();
     // `Live::read` gives one live product per product, in their order.
     let products = live.products.iter().zip(products).map(|(product, offered)| {
@@ -212,7 +229,22 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
             attention.push(Attention { kind: AttentionKind::Leftovers, about, reason });
         }
     }
-    Ok(Status { from: remote.describe().into(), products, attention, check })
+    let vps = check
+        .as_ref()
+        .map(|_| crate::vps::observe::read(live.products.iter().find(|product| product.product == "planner"), &remote));
+    if let Some(observation) = &vps {
+        if let Some(reason) = &observation.unavailable {
+            attention.push(Attention { kind: AttentionKind::Unreachable, about: "VPS".into(), reason: reason.clone() });
+        }
+        for service in observation.services.iter().filter(|service| !service.ready) {
+            attention.push(Attention {
+                kind: AttentionKind::Blocked,
+                about: format!("VPS/{}", service.service.name()),
+                reason: service.reason.clone().unwrap_or_else(|| "service readiness is unavailable".into()),
+            });
+        }
+    }
+    Ok(Status { from: remote.describe().into(), products, attention, check, vps })
 }
 
 /// Status can prepare the small files that enumerate a region, but never bulk product inputs.
@@ -238,6 +270,7 @@ pub(super) fn discovery_fetch(
 /// The state of each layer of `live`, by product. `Err` with the reason for a product that is
 /// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
 /// rest of `status` does not need its steps.
+#[cfg(test)]
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -245,7 +278,21 @@ fn layer_states(
     env: &mut Env,
     regions: &Regions,
     environment: &Environment,
+    fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
+    layer_states_published(root, store, products, env, regions, environment, fetch, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layer_states_published(
+    root: &Path,
+    store: &Store,
+    products: &[&dyn Product],
+    env: &mut Env,
+    regions: &Regions,
+    environment: &Environment,
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+    producers: Option<&BTreeMap<String, crate::engine::release::Producer>>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
     check_layers(products, env)?;
     env.fetch_failures.clear();
@@ -257,7 +304,7 @@ fn layer_states(
     );
     let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
     for product in products {
-        let steps = product_steps(root, *product, env, regions, store, &mut fetch);
+        let steps = status_steps(root, *product, env, regions, store, &mut fetch);
         refused.extend(env.refused.borrow().iter().cloned());
         match steps {
             Ok(Ok(steps)) => {
@@ -285,8 +332,25 @@ fn layer_states(
         listed.retain(|(product, _)| *product != name);
         found.insert(name, Err(reason));
     }
-    let steps: Vec<Step> = listed.into_iter().flat_map(|(_, steps)| steps).collect();
-    for layer in state::state(store, root, &steps, environment)? {
+    let mut environment = Environment { sources: environment.sources.clone(), live: environment.live.clone() };
+    let steps: Vec<Step> = listed
+        .into_iter()
+        .flat_map(|(name, mut steps)| {
+            let product = products.iter().find(|product| product.name() == name).expect("listed product");
+            for step in &mut steps {
+                step.options = product.status_options(&step.name, &step.options);
+                if let Some(layer) = environment.live.get_mut(&step.name) {
+                    layer.options = product.status_options(&step.name, &layer.options);
+                }
+            }
+            steps
+        })
+        .collect();
+    let states = match producers {
+        Some(producers) => state::published(store, root, &steps, &environment, producers)?,
+        None => state::state(store, root, &steps, &environment)?,
+    };
+    for layer in states {
         let product = layer.layer.split('/').next().unwrap_or_default().to_string();
         if let Some(Ok(layers)) = found.get_mut(&product) {
             layers.push(LayerStatus { layer: layer.layer, state: layer.state, reason: layer.reason });
@@ -342,6 +406,16 @@ fn print_status(status: &Status) {
         println!("  nothing");
     }
     print_table(&rows);
+    if let Some(observation) = &status.vps {
+        println!("VPS {}", observation.unavailable.as_deref().unwrap_or("installed runtime and opened data"));
+        for service in &observation.services {
+            println!(
+                "  {}: {}",
+                service.service.name(),
+                if service.ready { "ready" } else { service.reason.as_deref().unwrap_or("unavailable") }
+            );
+        }
+    }
     let Some(check) = &status.check else { return };
     println!("CHECK {}", check.prefixes.iter().map(|prefix| format!("{prefix}/")).collect::<Vec<_>>().join(", "));
     let mut table = Vec::new();

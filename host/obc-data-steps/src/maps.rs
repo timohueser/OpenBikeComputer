@@ -95,6 +95,16 @@ impl Product for Maps {
         catalog::verify(previous, release, store)
     }
 
+    fn status_steps(
+        &self,
+        _root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+    ) -> Result<Steps, Unplanned> {
+        self.steps_with_bindings(env, regions, store, Ok(None), Ok(Vec::new()))
+    }
+
     fn steps(&self, root: &std::path::Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().binding())
     }
