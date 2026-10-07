@@ -131,9 +131,13 @@ fn discover() -> Result<[Library; 2], String> {
 fn loaded_images() -> Vec<PathBuf> {
     use std::ffi::CStr;
     use std::os::unix::ffi::OsStrExt;
-    (0..unsafe { libc::_dyld_image_count() })
+    unsafe extern "C" {
+        fn _dyld_image_count() -> u32;
+        fn _dyld_get_image_name(index: u32) -> *const libc::c_char;
+    }
+    (0..unsafe { _dyld_image_count() })
         .filter_map(|index| {
-            let name = unsafe { libc::_dyld_get_image_name(index) };
+            let name = unsafe { _dyld_get_image_name(index) };
             (!name.is_null())
                 .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(unsafe { CStr::from_ptr(name) }.to_bytes())))
         })
