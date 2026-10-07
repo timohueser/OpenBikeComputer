@@ -30,8 +30,9 @@ account and download steps of a source behind a login, then runs the ingest. `ch
 tile against the contract below. `publish` and `mirror` are `rclone copy`; a publish only ever
 adds, and it merges its index with the one already on R2.
 
-`merge.py --step` is the `obc data` step `maps/reference/<leaf>`: the models of one map leaf,
-best first, into an empty archive (`specs/obc-data.md`, `maps`).
+`ingest.py fetch <key> --tile <ti>-<tj>` is the `obc data` fetch: one tile, pooled, its raw
+rasters removed. `merge.py --step` is the step `maps/reference/<leaf>`: those tiles of each
+model, best first, into an empty archive (`specs/obc-data.md`, `maps`).
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
 time, the work wiped after each and the finished tile marked done in the source manifest, so disk
@@ -84,7 +85,6 @@ the first of them. `index` rebuilds all of this from the manifests in `sources/<
 | `cli.py` | The subcommands. |
 
 An adapter has one job: `fetch(bbox, workdir) -> list[Path]`, rasters in any CRS and dtype.
-WMS, ArcGIS and WCS adapters may return a void raster; `ingest.py fetch` drops it.
 The shared tail turns voids and heights outside −500 m to 9 000 m into absence, max-pools pixel
 centres onto the lattice as `int16` metres, and cuts the window into whole tiles.
 

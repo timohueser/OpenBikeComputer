@@ -28,7 +28,6 @@ from . import publish, wizard
 from .archive import (ingest_rasters, load_manifests, local_rasters, rebuild_index, read_index,
                       tile_path, tile_problems, tile_digest, write_manifest)
 from .lattice import Refuse, box_tiles, check_world, tile_bounds, tile_id
-from .pool import read_source
 from .sources import SOURCES, ManualSource
 
 
@@ -103,55 +102,56 @@ def ingest_today(rasters, source, root: Path) -> None:
 
 
 def command_fetch(args) -> int:
-    """Fetch the rasters of a box into `--out`, for `obc data fetch`; the ingest runs later.
+    """One archive tile of a model into `--out`, for `obc data fetch`: `<ti>-<tj>.tif`, the
+    rasters of the tile pooled onto the lattice, or the empty file `<ti>-<tj>.none` where the
+    model has no height in the tile.
 
-    Each raster goes to `--out` at its path under `--work`, or under the delivery of a row
-    without a service, with its `.prj` when it has one. `--work` keeps what the adapter
-    downloads, and a later run with the same `--work` reuses it; `obc data` gives each run an
-    empty `--work`, because each `dtm-*` source is manual. A box where the product has no data
-    writes nothing: a raster without a height is no data.
+    The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
+    one tile's rasters at a time and the store never sees them.
     """
 
-    bbox = parse_bbox(args.bbox)
-    check_world(bbox, "--bbox")
+    ti, tj = parse_tile(args.tile)
     source = registered(args.source)
     work, out = Path(args.work), Path(args.out)
-    if isinstance(source, ManualSource):
-        # A delivery is like a credential: the environment names its directory and the datum
-        # that the owner read in the order's metadata.
-        prefix = f"OBC_REFERENCE_{source.key.upper().replace('-', '_')}"
-        base = Path(os.environ.get(f"{prefix}_INPUT", "").strip())
-        # `obc data` runs the fetch in the repository root, not where the variable was set.
-        if base.name and not base.is_absolute():
-            raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
-        if not base.name or not base.is_dir():
-            raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
-                         f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
-        require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
-        rasters = local_rasters(source, base, bbox, work)
-    else:
-        source.require_credential()
-        base = work
-        # Outside its `extent` the product has no data, so only the overlap is downloaded.
-        west, south, east, north = source.extent
-        bbox = (max(bbox[0], west), max(bbox[1], south), min(bbox[2], east), min(bbox[3], north))
-        rasters = source.fetch(bbox, work) if bbox[0] < bbox[2] and bbox[1] < bbox[3] else []
-    # A service answers a box outside its model with a raster of voids.
-    rasters = [raster for raster in rasters if read_source(raster, source.grid_crs())[4] < 1]
-    for raster in rasters:
-        # `local_rasters` unpacks a zip, and places a grid without a `.prj`, in the work directory.
-        fetched = work.resolve() in raster.resolve().parents
-        for path in (raster, raster.with_suffix(".prj")):
-            if not path.is_file():
-                continue
-            target = out / path.relative_to(work if fetched else base)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if fetched:
-                os.replace(path, target)
-            else:
-                # A delivery stays as the portal left it.
-                shutil.copy2(path, target)
+    box = tile_bounds(ti, tj)
+    check_world(box, f"--tile {args.tile}")
+    try:
+        if isinstance(source, ManualSource):
+            # A delivery is like a credential: the environment names its directory and the datum
+            # that the owner read in the order's metadata.
+            prefix = f"OBC_REFERENCE_{source.key.upper().replace('-', '_')}"
+            base = Path(os.environ.get(f"{prefix}_INPUT", "").strip())
+            # `obc data` runs the fetch in the repository root, not where the variable was set.
+            if base.name and not base.is_absolute():
+                raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
+            if not base.name or not base.is_dir():
+                raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
+                             f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
+            require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
+            rasters = local_rasters(source, base, box, work)
+        else:
+            source.require_credential()
+            # Outside its `extent` the product has no data, so only the overlap is downloaded.
+            west, south, east, north = source.extent
+            box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
+            rasters = source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
+        pooled = work / "pooled"
+        ingest_rasters(rasters, source, pooled, "", "", {tile_id(ti, tj)})
+        out.mkdir(parents=True, exist_ok=True)
+        if tile_path(pooled, ti, tj).is_file():
+            os.replace(tile_path(pooled, ti, tj), out / f"{ti:04}-{tj:04}.tif")
+        else:
+            (out / f"{ti:04}-{tj:04}.none").touch()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     return 0
+
+
+def parse_tile(text: str) -> tuple[int, int]:
+    ti, _, tj = text.partition("-")
+    if not (len(ti) == len(tj) == 4 and ti.isdigit() and tj.isdigit()):
+        raise Refuse(f"--tile {text} is <ti>-<tj>, two four-digit archive tile indices")
+    return int(ti), int(tj)
 
 
 def ingest_per_tile(bbox, source, root: Path, work: Path) -> None:
@@ -363,11 +363,11 @@ def main(argv=None) -> int:
     for_source("wizard", "walk the account and download steps of a source behind a login",
                command_wizard)
 
-    fetch = commands.add_parser("fetch", help="fetch the rasters of a box into --out, for obc data fetch")
+    fetch = commands.add_parser("fetch", help="pool one archive tile of a source into --out, for obc data fetch")
     fetch.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
-    fetch.add_argument("--bbox", required=True, help="min_lon,min_lat,max_lon,max_lat")
-    fetch.add_argument("--work", required=True, help="where the adapter keeps its downloads")
-    fetch.add_argument("--out", required=True, help="where the rasters go")
+    fetch.add_argument("--tile", required=True, help="<ti>-<tj>, the archive tile")
+    fetch.add_argument("--work", required=True, help="where the raw rasters go; removed at the end")
+    fetch.add_argument("--out", required=True, help="where the pooled tile goes")
     fetch.set_defaults(run=command_fetch)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)

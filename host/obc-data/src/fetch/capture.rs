@@ -11,9 +11,9 @@ use crate::date;
 use crate::sources::{Refresh, Registry, Source};
 use crate::store::{self, FileRecord, Snapshot, Store};
 
-/// The rasters of a national terrain model that cover `bbox=WEST,SOUTH,EAST,NORTH`, from the
-/// adapter of the reference ingest (`ingest.py fetch`). A box where the model has no data gives a
-/// fetch without files.
+/// Archive tile `tile=<ti>-<tj>` of a national terrain model, from the adapter of the reference
+/// ingest (`ingest.py fetch`): the pooled tile `<ti>-<tj>.tif`, or the empty `<ti>-<tj>.none` where
+/// the model has no height. The raw rasters stay in the work directory, which the program removes.
 pub(crate) fn dtm(
     root: &Path,
     store: &Store,
@@ -21,22 +21,25 @@ pub(crate) fn dtm(
     checks: Option<crate::fetch::Checks<'_>>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
-    let [bbox] = values(request, ["bbox"])?;
-    let bbox = parse_bbox(bbox)?;
+    let [tile] = values(request, ["tile"])?;
+    let digits = |part: &str| part.len() == 4 && part.bytes().all(|b| b.is_ascii_digit());
+    if !tile.split_once('-').is_some_and(|(ti, tj)| digits(ti) && digits(tj)) {
+        return Err(format!("`tile={tile}` is <ti>-<tj>, two four-digit archive tile indices"));
+    }
     let key = source.id.strip_prefix("dtm-").unwrap_or(&source.id).to_string();
     capture(
         root,
         store,
         request,
         checks,
-        &format!("bbox={bbox}"),
+        &format!("tile={tile}"),
         &[source],
         |_| &[0],
-        true,
+        false,
         |work, out| {
             let mut command = python(root, Some("terrain-reference"))?;
             command.arg("host/obc-dem/reference/ingest.py");
-            command.args(["fetch", &key, &format!("--bbox={bbox}"), "--work"]).arg(work).arg("--out").arg(out);
+            command.args(["fetch", &key, "--tile", tile, "--work"]).arg(work).arg("--out").arg(out);
             Ok(command)
         },
     )
@@ -248,7 +251,9 @@ pub(super) fn capture(
     if store.requested(&source.id, &version, &request.params)?.is_some_and(|files| files.is_empty()) {
         return Ok(snapshot(Vec::new()));
     }
-    if version != today {
+    // A manual source moves only by `--move`, so a request that its version lacks joins that
+    // version: a national model is fetched tile by tile over days.
+    if version != today && source.refresh != Refresh::Manual {
         return Err(format!(
             "source `{}`: {version} with {query} is not in the store, and the service answers with today's data",
             source.id
