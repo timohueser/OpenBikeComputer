@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.fixtures import MAX_ARCHIVE_BYTES, Catalog, FixtureError, Store, build_package, command_publish, resolve_path, sha256_file
+from tools import data_fixtures
 
 
 def catalog_text(base_url: str, digest: str, size: int) -> str:
@@ -36,6 +37,29 @@ scenarios = ["sample"]
 
 
 class FixtureRegistryTests(unittest.TestCase):
+    def test_data_collection_imports_exact_history_and_keeps_the_shared_archive_format(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            source = root / "source"
+            source.mkdir()
+            (source / "crop.osm.pbf").write_bytes(b"exact stored crop")
+            provenance = {"sha256": sha256_file(source / "crop.osm.pbf"),
+                          "source_sha256": "f" * 64, "transform": "captured crop"}
+            (source / "provenance.json").write_text(json.dumps(provenance))
+            archive = root / "original.tar.gz"
+            sealed = data_fixtures.sealed("sample", source, archive)
+            repeated = data_fixtures.sealed("sample", source, root / "repeated.tar.gz")
+            self.assertEqual(sealed, repeated)
+            selected = root / "imported"
+            with self.assertRaisesRegex(FixtureError, "pinned SHA-256"):
+                data_fixtures.imported("sample", archive, "0" * 64, selected)
+            self.assertFalse(selected.exists(), "a refused history cannot create a selected input view")
+            imported = data_fixtures.imported("sample", archive, sealed["sha256"], selected)
+            self.assertEqual(imported["archive"], sealed["sha256"])
+            self.assertEqual(json.loads((selected / "provenance.json").read_bytes()), provenance)
+            self.assertEqual((selected / "crop.osm.pbf").read_bytes(), b"exact stored crop")
+            self.assertEqual([entry["path"] for entry in imported["files"]], ["crop.osm.pbf", "provenance.json"])
+
     def test_catalog_enforces_archive_budget_without_downloading(self):
         with tempfile.TemporaryDirectory() as scratch:
             path = Path(scratch) / "catalog.toml"
