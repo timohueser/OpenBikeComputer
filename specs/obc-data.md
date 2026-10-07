@@ -2036,6 +2036,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
         "source": {
           "type": "string"
         },
@@ -2046,6 +2062,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "source",
         "version",
+        "params",
         "files"
       ],
       "type": "object"
@@ -3251,6 +3268,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "destination": {
           "type": "string"
         },
+        "moves": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "packages": {
           "additionalProperties": {
             "$ref": "#/$defs/PackagePlan"
@@ -3273,7 +3296,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "destination",
         "worker",
         "packaging",
-        "packages"
+        "packages",
+        "moves"
       ],
       "type": "object"
     },
@@ -3861,7 +3885,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         },
         "bootstrap": {
-          "$ref": "#/$defs/LayerFile"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerFile"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "inputs": {
           "anyOf": [
@@ -3875,10 +3906,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "plan": {
           "$ref": "#/$defs/EnvPlan"
+        },
+        "selection": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "bootstrap",
+        "selection",
         "inputs",
         "assets",
         "plan"
