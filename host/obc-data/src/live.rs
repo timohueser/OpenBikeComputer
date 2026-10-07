@@ -528,6 +528,7 @@ pub(crate) mod tests {
             optional: Vec::new(),
             layers: vec![layer],
             named: Vec::new(),
+            producers: BTreeMap::new(),
         }
     }
 

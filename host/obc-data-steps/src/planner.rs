@@ -118,6 +118,10 @@ impl Product for Planner {
         }))
     }
 
+    fn portable(&self, step: &Step) -> bool {
+        step.name.starts_with("planner/") && !step.name.starts_with("planner/runtime/") && !step.client.is_none()
+    }
+
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
         Some(catalog::pointer)
     }
@@ -160,7 +164,7 @@ impl Product for Planner {
         regions: &Regions,
         store: &Store,
     ) -> Result<obc_data::product::Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().identity())
+        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().binding())
     }
 }
 
@@ -172,7 +176,7 @@ impl Planner {
         env: &Env,
         regions: &Regions,
         store: &Store,
-        tool: Result<serde_json::Value, String>,
+        tool: Result<obc_data::engine::Library, String>,
     ) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
@@ -747,7 +751,11 @@ mod tests {
                 &env,
                 &Regions::new(vec![region]).unwrap(),
                 &store,
-                Ok(json!({"sha256":"0".repeat(64), "version":"authored merge fixture"})),
+                Ok(obc_data::engine::Library {
+                    name: "osmium".into(),
+                    path: std::path::PathBuf::from("/authored-copy-osmium"),
+                    sha256: "0".repeat(64),
+                }),
             )
             .unwrap()
             .steps;
@@ -902,7 +910,7 @@ mod tests {
                 &env(AREA, &[]),
                 &regions(),
                 &store,
-                Ok(json!({"sha256": "0".repeat(64), "version": "authored copy fixture"})),
+                Ok(crate::maps::tests::authored_tool(store.root())),
             )
             .unwrap()
             .steps,

@@ -964,6 +964,7 @@ fn next(
         let release = release
             .map(|(_, mut release)| -> Result<_, Error> {
                 if !blocked && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) {
+                    release.bind_producers(store)?;
                     release.name_files(product.named(&release)?)?;
                 }
                 Ok((release.id(), release))

@@ -214,21 +214,21 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
         .collect()
 }
 
-pub fn combined(name: &str, inputs: &[Step], identity: &serde_json::Value) -> Result<Step, Unplanned> {
-    Ok(Step {
-        client: Client::None,
-        ..crate::python(
-            name,
-            inputs
-                .iter()
-                .map(|step| Input::Layer { name: step.name.clone(), files: vec!["source.osm.pbf".into()] })
-                .collect(),
-            json!({"osmium": identity}),
-            ("tools.region_osm", None),
-            &["tools/region_osm.py"],
-            &["osm.pbf"],
-        )
-    })
+pub fn combined(name: &str, inputs: &[Step], binding: &obc_data::engine::Library) -> Result<Step, Unplanned> {
+    let mut step = crate::python(
+        name,
+        inputs
+            .iter()
+            .map(|step| Input::Layer { name: step.name.clone(), files: vec!["source.osm.pbf".into()] })
+            .collect(),
+        json!({}),
+        ("tools.region_osm", None),
+        &["tools/region_osm.py"],
+        &["osm.pbf"],
+    );
+    step.client = Client::None;
+    step.code.libraries.push(binding.clone());
+    Ok(step)
 }
 
 #[cfg(test)]

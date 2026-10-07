@@ -333,6 +333,7 @@ mod tests {
             region: "test".into(),
             optional: Vec::new(),
             named: Vec::new(),
+            producers: Default::default(),
             layers: [
                 "planner/runtime/routing",
                 "planner/runtime/search",
@@ -395,6 +396,7 @@ mod tests {
                 optional: Vec::new(),
                 layers: vec![runtime],
                 named: vec![LayerFile { path: "runtime/routing.json".into(), sha256, size }],
+                producers: Default::default(),
             }
         };
         let first = release(&body);

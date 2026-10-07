@@ -71,7 +71,11 @@ fn without_models(store: &Store, env: &Env, regions: &Regions) {
         env,
         regions,
         store,
-        Ok(serde_json::json!({"sha256": "0".repeat(64), "version":"authored copy fixture"})),
+        Ok(obc_data::engine::Library {
+            name: "osmium".into(),
+            path: std::path::PathBuf::from("/authored-copy-osmium"),
+            sha256: "0".repeat(64),
+        }),
     ) else {
         return;
     };
@@ -185,7 +189,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             &env,
             &regions,
             &store,
-            Ok(serde_json::json!({"sha256": "0".repeat(64), "version":"authored copy fixture"})),
+            Ok(obc_data::engine::Library {
+                name: "osmium".into(),
+                path: std::path::PathBuf::from("/authored-copy-osmium"),
+                sha256: "0".repeat(64),
+            }),
         )
         .unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
@@ -193,7 +201,10 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     for step in &mut steps {
         match step.name.as_str() {
-            "maps/osm" => step.run = Run::Rust(copy),
+            "maps/osm" => {
+                step.run = Run::Rust(copy);
+                step.code.libraries.clear();
+            }
             name if name.starts_with("maps/landmark-content/") => step.run = Run::Rust(landmark_content),
             name if name.starts_with("maps/peak-content/") => step.run = Run::Rust(peak_content),
             name if name.starts_with("maps/coarse/") || name.starts_with("maps/mid/") => {

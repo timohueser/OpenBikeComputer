@@ -12,6 +12,7 @@ pub mod env;
 pub mod fetch;
 pub mod input_copy;
 pub mod live;
+pub mod local;
 pub mod operation;
 pub mod product;
 pub mod r2;

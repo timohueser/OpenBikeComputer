@@ -98,3 +98,10 @@ confirmation. `applied.approval` reports the separate owner result. Native plann
 need exact execution binding before automatic approval is available; manual publication still works.
 The configured Linux owner needs a valid `/etc/machine-id` and the fixed `/var/lib/obc-data/store`.
 Its current approval is owner-local. `commit-approval` reads it without changing any state.
+
+## Portable-data API
+
+Compare current declarations and an exact release through `local::plan`.
+Name original client layers and extra paths. Review blockers before `local::adopt`.
+`local::saved` reads collection roots. Adoption keeps original provenance, creates no build
+receipt and starts no apps. See the [Local contract](../../specs/obc-data.md#local-portable-data).

@@ -121,7 +121,7 @@ pub struct Code {
     /// A locked Python group packaged for another runtime, without selecting its interpreter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_packages: Option<String>,
-    /// Native library files bound by the provider before its code runs.
+    /// Native library or executable files bound by the provider before its code runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<Library>,
 }
@@ -249,6 +249,8 @@ pub struct Request {
     /// Receipt metadata for exactly the selected files of each layer input.
     pub layer_files: BTreeMap<String, Vec<LayerFile>>,
     pub options: Value,
+    /// Exact native providers from the checked execution identity.
+    pub libraries: Vec<Library>,
     /// An empty directory: the layer is the files the step writes in it.
     pub output: PathBuf,
     /// Where the step may write a JSON object of metrics.
@@ -468,15 +470,15 @@ impl Step {
 /// The code hash and the code files of each `Code`, computed once per value.
 #[derive(Default)]
 struct Codes<'a> {
-    cached: HashMap<&'a Code, (String, BTreeMap<String, String>)>,
+    cached: HashMap<&'a Code, (String, CodeIdentity)>,
     context: code::Context,
 }
 
 impl<'a> Codes<'a> {
-    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, BTreeMap<String, String>), String> {
+    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, CodeIdentity), String> {
         if !self.cached.contains_key(code) {
-            let files = self.context.files(root, code)?;
-            self.cached.insert(code, (code::hash(&files), files));
+            let identity = self.context.identity(root, code)?;
+            self.cached.insert(code, (code::hash(&identity.files), identity));
         }
         Ok(&self.cached[code])
     }
@@ -619,6 +621,7 @@ fn prepare(
         layers: BTreeMap::new(),
         layer_files: BTreeMap::new(),
         options: step.options.clone(),
+        libraries: step.code.libraries.clone(),
         output: PathBuf::new(),
         metrics: PathBuf::new(),
     };

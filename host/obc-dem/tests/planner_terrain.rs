@@ -43,6 +43,7 @@ fn the_step_writes_the_mbtiles_of_planner_dem_from_the_same_tile() {
         snapshots: BTreeMap::from([(GLO30.to_string(), files)]),
         layers: BTreeMap::new(),
         layer_files: BTreeMap::new(),
+        libraries: Vec::new(),
         options: serde_json::json!({"bounds": [8.31, 46.55, 8.34, 46.57]}),
         output: output.clone(),
         metrics: temp.0.join("metrics.json"),

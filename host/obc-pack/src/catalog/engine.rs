@@ -464,6 +464,7 @@ mod tests {
                     sha256: obc_data::store::sha256_hex(&body),
                 }],
             )]),
+            libraries: Vec::new(),
             options: serde_json::to_value(&options).unwrap(),
             output: dir.join("output"),
             metrics: dir.join("metrics"),
