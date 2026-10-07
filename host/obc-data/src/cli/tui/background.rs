@@ -90,6 +90,9 @@ pub(super) fn run_loop(
                     app.busy = true;
                     let mut updated = app.clone();
                     updated.notice = None;
+                    if matches!(next, Effect::LocalCheck(_) | Effect::LocalReview(_)) {
+                        updated.local.checked = Some(Instant::now());
+                    }
                     task = Some(scope.spawn(move || {
                         let observes = matches!(
                             next,
@@ -170,7 +173,12 @@ pub(super) fn run_loop(
                 }
                 read = Instant::now();
             }
-            if app.screen == Screen::Local && app.local.checked.is_none() && !app.busy && effect == Effect::None {
+            if app.screen == Screen::Local
+                && app.overlay.is_none()
+                && app.local.checked.is_none()
+                && !app.busy
+                && effect == Effect::None
+            {
                 effect = Effect::LocalCheck(app.local.request(false));
             }
             if app.screen == Screen::Store && app.store.is_none() && !app.busy && effect == Effect::None {

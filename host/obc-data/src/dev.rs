@@ -68,7 +68,10 @@ impl Prepared {
             return Err("Prepared Local service view belongs to another root".into());
         }
         let (env, _) = crate::env::Env::local(root, &crate::regions::Regions::load(root)?)?;
-        if value["region"] != env.region || value["layers"] != serde_json::json!(env.layers) || value["configuration"] != configuration(root)? {
+        if value["region"] != env.region
+            || value["layers"] != serde_json::json!(env.layers)
+            || value["configuration"] != configuration(root)?
+        {
             return Err("Prepare the selected Local region and layers before starting this app".into());
         }
         self.supervisor.check(root)?;
@@ -100,8 +103,9 @@ pub struct State {
 /// Bind the selected region definition and layers, including edits under an unchanged region id.
 pub fn configuration(root: &Path) -> Result<String, String> {
     let regions = crate::regions::Regions::load(root)?;
-    let (env,_) = crate::env::Env::local(root,&regions)?;
-    Ok(sha256_hex(&serde_json::to_vec(&(regions.get(&env.region),env.layers)).map_err(|e| e.to_string())?))
+    let (env, _) = crate::env::Env::local(root, &regions)?;
+    let leaves: Vec<_> = regions.leaves(&env.region)?.into_iter().map(|id| regions.get(id)).collect();
+    Ok(sha256_hex(&serde_json::to_vec(&(regions.get(&env.region), leaves, env.layers)).map_err(|e| e.to_string())?))
 }
 
 fn directory(store: &Store) -> PathBuf {
@@ -545,6 +549,62 @@ pub struct Logs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_app_admits_only_its_providers_and_rejects_pending_region_changes() {
+        let scratch = crate::store::tests::Scratch::new("dev-app-providers");
+        let root = scratch.0.canonicalize().unwrap();
+        for dir in ["data/env", "data/regions", "view"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        assert!(Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap().success());
+        let region = root.join("data/regions/ride.toml");
+        std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,8,48]\n").unwrap();
+        std::fs::write(crate::env::Env::path(&root, "local"), "region='ride'\nlayers=[]\n").unwrap();
+        let binary = root.join("view/obc-sim");
+        std::fs::write(&binary, b"retained Simulator").unwrap();
+        let code = Code {
+            libraries: vec![crate::engine::Library {
+                name: "simulator".into(),
+                path: binary.clone(),
+                sha256: hash_file(&binary).unwrap().0,
+            }],
+            ..Default::default()
+        };
+        let simulator = Binding { files: code.files(&root).unwrap(), code };
+        let code = Code::default();
+        let supervisor = Binding { files: code.files(&root).unwrap(), code };
+        let missing = Binding {
+            code: Code {
+                libraries: vec![crate::engine::Library {
+                    name: "node".into(),
+                    path: root.join("absent-node"),
+                    sha256: "0".repeat(64),
+                }],
+                ..Default::default()
+            },
+            files: Default::default(),
+        };
+        let body = serde_json::to_vec(&serde_json::json!({"root":root,"view":root.join("view"),"region":"ride","layers":[],"configuration":configuration(&root).unwrap()})).unwrap();
+        std::fs::write(root.join("view/service.json"), &body).unwrap();
+        let prepared = Prepared {
+            view: root.join("view"),
+            descriptor: sha256_hex(&body),
+            supervisor,
+            children: [("simulator".into(), simulator), ("routing".into(), missing)].into(),
+            apps: App::ALL.into(),
+        };
+        prepared.check_apps(&root, &[App::Simulator].into()).unwrap();
+        assert!(
+            prepared.check_apps(&root, &[App::WebPlanner].into()).is_err(),
+            "an absent Web provider cannot admit Web"
+        );
+        std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,7.5,48]\n").unwrap();
+        assert!(
+            prepared.check_apps(&root, &[App::Simulator].into()).unwrap_err().contains("selected Local region"),
+            "the saved id cannot hide changed geometry"
+        );
+    }
 
     #[test]
     fn preparation_leaves_stopped_apps_and_cleanup_preserves_current_or_busy_views() {

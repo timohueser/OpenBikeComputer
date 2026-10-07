@@ -504,7 +504,9 @@ impl App {
             Action::Fix => {
                 self.fix().is_some_and(|fix| !matches!(fix, Fix::Plan) || self.works(Action::Open(Overlay::Plan)))
             }
-            Action::Steps => self.plan.as_ref().is_some_and(|view| !view.all.groups.is_empty()),
+            Action::Steps => self.plan.as_ref().is_some_and(|view| {
+                !view.all.groups.is_empty() || (view.dev.is_some() && !view.taken.versions.is_empty())
+            }),
             Action::Prepare => self.plan.is_some() && !self.asking,
             Action::Build => {
                 self.plan.as_ref().is_some_and(|view| {
@@ -614,7 +616,16 @@ impl App {
                             let steps = self.plan.as_ref().is_some_and(|view| view.steps);
                             offer(KeyCode::Char('d'), Action::Steps, "d", if steps { "changes" } else { "steps" });
                             offer(KeyCode::Char('f'), Action::Prepare, "f", "prepare inputs");
-                            offer(KeyCode::Char('b'), Action::Build, "b", "build only");
+                            offer(
+                                KeyCode::Char('b'),
+                                Action::Build,
+                                "b",
+                                if self.plan.as_ref().is_some_and(|view| view.dev.is_some()) {
+                                    "review Local build"
+                                } else {
+                                    "build only"
+                                },
+                            );
                             offer(KeyCode::Char('a'), Action::ReviewApply, "a", "review apply");
                         }
                     }
@@ -765,10 +776,18 @@ impl App {
             None => self.rows().saturating_sub(1),
         };
         match action {
-            Action::Show(screen) => self.screen = screen,
+            Action::Show(screen) => {
+                self.screen = screen;
+                if screen == Screen::Local {
+                    self.local.checked = None;
+                }
+            }
             Action::NextScreen => {
                 let at = SCREENS.iter().position(|&(_, _, screen)| screen == self.screen).unwrap_or(0);
                 self.screen = SCREENS[(at + 1) % SCREENS.len()].2;
+                if self.screen == Screen::Local {
+                    self.local.checked = None;
+                }
             }
             // The drawing stops the scroll of an overlay at its end.
             Action::Up if self.overlay.is_none() && self.screen == Screen::Sources => self.source_move(false),
@@ -781,6 +800,7 @@ impl App {
                         if self.local.app != Some(app) {
                             self.local.app = Some(app);
                             self.local.checked = None;
+                            self.local.plan = None;
                         }
                     }
                 }
@@ -923,7 +943,14 @@ impl App {
                             .clone()
                             .filter(|(id, _)| Some(id) == self.execution.selected.as_ref())
                         {
-                            Some((_, request)) if plan.env == "local" => PlanView::local(plan, request),
+                            Some((_, mut request)) if plan.env == "local" => {
+                                request.reviewed = Some(Box::new(plan.clone()));
+                                self.local.plan = Some(plan.clone());
+                                self.local.request = Some(request.clone());
+                                self.local.app = Some(request.app);
+                                self.local.checked = None;
+                                PlanView::local(plan, request)
+                            }
                             _ => PlanView::new(plan),
                         },
                     );
@@ -979,6 +1006,9 @@ impl App {
             Some(Hit::Screen(screen)) => {
                 self.overlay = None;
                 self.screen = screen;
+                if screen == Screen::Local {
+                    self.local.checked = None;
+                }
             }
             Some(Hit::Row(row)) if self.overlay.is_none() && self.screen == Screen::Sources => {
                 if let Some((index, _)) = self.source_view.rows(&self.sources).get(row) {
@@ -991,7 +1021,18 @@ impl App {
                 }
                 self.run = row;
             }
-            Some(Hit::Row(row)) if self.overlay.is_none() => *self.selected() = row,
+            Some(Hit::Row(row)) if self.overlay.is_none() => {
+                *self.selected() = row;
+                if self.screen == Screen::Local {
+                    if let Some(app) = self.local.selected_app() {
+                        if self.local.app != Some(app) {
+                            self.local.app = Some(app);
+                            self.local.checked = None;
+                            self.local.plan = None;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Effect::None
@@ -1191,21 +1232,21 @@ impl App {
                 if self.asking && self.plan.as_ref().is_some_and(|view| view.dev.is_some()) {
                     let view = self.plan.as_ref().unwrap();
                     let request = view.dev.as_ref().unwrap();
-                    (
-                        " CONFIRM LOCAL PREPARATION ".into(),
-                        vec![
-                            Line::from(format!(
-                                "Prepare {} for {} on this machine?",
-                                request.app.name(),
-                                view.taken.region
-                            ))
-                            .bold(),
-                            Line::from("The exact source versions and pending work stay pinned."),
-                            Line::from("Only already running apps update. Stopped apps remain stopped."),
-                        ],
-                        Vec::new(),
-                        None,
-                    )
+                    let mut lines = vec![
+                        Line::from(format!(
+                            "Prepare {} for {} on this machine?",
+                            request.app.name(),
+                            view.taken.region
+                        ))
+                        .bold(),
+                        Line::from("The exact source versions and pending work stay pinned."),
+                        Line::from("Only already running apps update. Stopped apps remain stopped."),
+                    ];
+                    if !view.taken.versions.is_empty() {
+                        lines.extend([Line::default(), Line::from("INPUT VERSIONS").dim()]);
+                        lines.extend(view.versions());
+                    }
+                    (" CONFIRM LOCAL PREPARATION ".into(), lines, Vec::new(), None)
                 } else if self.asking {
                     let plan = &self.plan.as_ref().expect("confirmation has a plan").taken;
                     let owner = std::env::var("OBC_COMMIT_HOST").unwrap_or_else(|_| "not configured".into());

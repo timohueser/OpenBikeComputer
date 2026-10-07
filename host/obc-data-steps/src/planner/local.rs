@@ -7,10 +7,6 @@ use std::path::Path;
 use obc_data::engine::{Code, Profile, Rust, Step};
 use serde_json::json;
 
-pub(super) fn routing(root: &Path) -> Result<Step, String> {
-    native(root, "planner-service")
-}
-
 fn native(root: &Path, package: &str) -> Result<Step, String> {
     let mut step = crate::python(
         &format!("local/{package}"),
@@ -78,6 +74,29 @@ fn kinds(app: obc_data::dev::App) -> &'static [data::Kind] {
     }
 }
 
+fn selected_apps(store: &Store, request: &Request) -> Result<std::collections::BTreeSet<obc_data::dev::App>, String> {
+    let mut apps: std::collections::BTreeSet<_> = obc_data::dev::state(store)?
+        .into_iter()
+        .flat_map(|state| state.apps)
+        .filter(|(_, state)| state.status == "ready")
+        .map(|(app, _)| app)
+        .collect();
+    apps.insert(request.app);
+    Ok(apps)
+}
+
+fn selected_kinds(apps: &std::collections::BTreeSet<obc_data::dev::App>) -> Vec<data::Kind> {
+    let mut selected = Vec::new();
+    for app in apps {
+        for kind in kinds(*app) {
+            if !selected.contains(kind) {
+                selected.push(*kind);
+            }
+        }
+    }
+    selected
+}
+
 pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc_data::cli::EnvPlan, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let regions = Regions::load(&root)?;
@@ -90,7 +109,8 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
         layers: env.layers.clone(),
         ..Default::default()
     };
-    for kind in kinds(request.app) {
+    let apps = selected_apps(store, request)?;
+    for kind in selected_kinds(&apps) {
         let product = kind.product();
         let result = (|| -> Result<(), String> {
             if request.reviewed.is_none()
@@ -99,18 +119,15 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
             {
                 return Err("Prepare Local inputs to select the initial Live versions".into());
             }
-            let (selected, live, mut steps) = data::metadata(
-                &root,
-                store,
-                env.clone(),
-                &regions,
-                &registry,
-                *kind,
-                request.refresh_live,
-                request.reviewed.as_deref(),
-                remote.as_ref(),
-                None,
-            )?;
+            let (selected, live, mut steps) =
+                data::Inputs { root: &root, store, regions: &regions, registry: &registry }.metadata(
+                    env.clone(),
+                    kind,
+                    request.refresh_live,
+                    request.reviewed.as_deref(),
+                    remote.as_ref(),
+                    None,
+                )?;
             let prior = live.releases().next().map(|(_, _, release)| release);
             let reused = prior
                 .map(|prior| obc_data::local::reusable(&root, store, product, prior, &steps))
@@ -129,7 +146,9 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
                         obc_osm::OsmiumRunner::default().binding().map(Some),
                     )
                     .map_err(|e| format!("{e:?}"))?;
-                if !declared.blocked.is_empty() { return Err(format!("Local input execution is blocked: {:?}",declared.blocked)); }
+                if !declared.blocked.is_empty() {
+                    return Err(format!("Local input execution is blocked: {:?}", declared.blocked));
+                }
                 steps = declared.steps;
             }
             checked.groups.extend(obc_data::engine::plan::plan_reusing(store, &root, &steps, &reused)?.groups);
@@ -154,22 +173,37 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
         }
     }
     if checked.blocked.is_empty() {
-        let package = if request.app == obc_data::dev::App::WebPlanner {
-            Some("planner-service")
-        } else if request.app == obc_data::dev::App::Simulator {
-            Some("obc-sim")
-        } else {
-            None
-        };
-        if let Some(package) = package {
+        for (app, package) in
+            [(obc_data::dev::App::WebPlanner, "planner-service"), (obc_data::dev::App::Simulator, "obc-sim")]
+        {
+            if !apps.contains(&app) {
+                continue;
+            }
             match native(&root, package).and_then(|step| obc_data::engine::plan::plan(store, &root, &[step])) {
                 Ok(plan) => checked.groups.extend(plan.groups),
                 Err(reason) => checked.blocked.push(obc_data::cli::BlockedProduct {
-                    product: request.app.name().into(),
+                    product: app.name().into(),
                     reason,
                     layers: Vec::new(),
                 }),
             }
+        }
+    }
+    if checked.blocked.is_empty() {
+        let browser = apps.iter().any(|app| *app != obc_data::dev::App::Simulator);
+        let providers = services().files(&root).and_then(|_| {
+            if browser {
+                providers(&root, apps.contains(&obc_data::dev::App::WebPlanner)).map(drop)
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(reason) = providers {
+            checked.blocked.push(obc_data::cli::BlockedProduct {
+                product: request.app.name().into(),
+                reason,
+                layers: Vec::new(),
+            });
         }
     }
     Ok(checked)
@@ -191,14 +225,11 @@ pub(super) fn inputs(
         layers: env.layers.clone(),
         ..Default::default()
     };
-    for kind in kinds(request.app) {
-        let (selected, live, _) = data::metadata(
-            root,
-            store,
+    let apps = selected_apps(store, request)?;
+    for kind in selected_kinds(&apps) {
+        let (selected, live, _) = data::Inputs { root, store, regions: &regions, registry: &registry }.metadata(
             env.clone(),
-            &regions,
-            &registry,
-            *kind,
+            kind,
             request.refresh_live,
             None,
             Some(&remote),
@@ -231,25 +262,15 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
     let regions = Regions::load(&root)?;
     let registry = Registry::load(&root)?;
     let env = environment(&root, &regions, request)?;
-    let mut apps: std::collections::BTreeSet<_> = obc_data::dev::state(store)?
-        .into_iter()
-        .flat_map(|state| state.apps)
-        .filter(|(_, state)| state.status == "ready")
-        .map(|(app, _)| app)
-        .collect();
-    apps.insert(request.app);
+    let apps = selected_apps(store, request)?;
     let browser = apps.iter().any(|app| *app != App::Simulator);
     let web = apps.contains(&App::WebPlanner);
     let maps = apps.iter().any(|app| *app != App::WebPlanner);
     let mut releases = BTreeMap::new();
     for (needed, kind) in [(web, data::Kind::Planner), (maps, data::Kind::Maps)] {
         if needed {
-            let release = data::build(
-                &root,
-                store,
+            let release = data::Inputs { root: &root, store, regions: &regions, registry: &registry }.build(
                 env.clone(),
-                &regions,
-                &registry,
                 kind,
                 request.refresh_live,
                 request.reviewed.as_deref(),

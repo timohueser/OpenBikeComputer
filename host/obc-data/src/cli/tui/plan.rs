@@ -52,6 +52,26 @@ impl PlanView {
         only
     }
 
+    pub fn versions(&self) -> Vec<Line<'static>> {
+        self.taken
+            .versions
+            .iter()
+            .map(|read| {
+                let params =
+                    read.params.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", ");
+                format!(
+                    "{} @ {}{}",
+                    read.source,
+                    read.version,
+                    if params.is_empty() { String::new() } else { format!(" · {params}") }
+                )
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(Line::from)
+            .collect()
+    }
+
     /// Whether `space` takes or leaves the selected group: a move.
     pub fn toggles(&self) -> bool {
         self.all.groups.get(self.group).is_some_and(|group| !self.steps && is_move(group))
@@ -145,6 +165,11 @@ impl App {
             }
         }
 
+        if view.dev.is_some() && view.steps && !taken.versions.is_empty() {
+            lines.extend([Line::default(), Line::from("INPUT VERSIONS").dim()]);
+            lines.extend(view.versions());
+        }
+
         let removed = taken.remove.iter().map(|removal| removal.bytes).sum::<Option<u64>>();
         let mut footer = vec![Line::default()];
         if taken.env == "live" {
@@ -156,7 +181,7 @@ impl App {
         if taken.env == "local" {
             footer.extend(taken.live.iter().map(|product| {
                 Line::from(format!(
-                    "Saved {}: {}",
+                    "Input baseline {}: {}",
                     product.product,
                     product.release.as_deref().map_or("no Live release", |id| &id[..id.len().min(8)])
                 ))

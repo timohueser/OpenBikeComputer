@@ -180,7 +180,7 @@ fn planned(group: usize, steps: bool, skipped: &[&str]) -> App {
 
 fn view(app: &App) -> String {
     let plan = app.plan.as_ref().map(|plan| (plan.group, plan.steps, plan.skipped.clone()));
-    let selected = [app.row, app.source, app.kept, app.run, app.choice];
+    let selected = [app.row, app.source, app.kept, app.run, app.choice, app.local.row];
     format!(
         "{:?}",
         (
@@ -217,8 +217,14 @@ fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
 fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
     let mut states = vec![app(), App::new(Vec::new(), Vec::new())];
     states.extend((0..app().live_rows().len()).map(|row| App { row, ..app() }));
-    for screen in [Screen::Sources, Screen::Store, Screen::Runs] {
+    for screen in [Screen::Local, Screen::Sources, Screen::Store, Screen::Runs] {
         states.push(App { screen, ..app() });
+    }
+    let mut local = App { screen: Screen::Local, ..app() };
+    local.local.env = Some(Edited { env: "local".into(), region: REGION.into(), layers: vec![] });
+    local.local.optional = vec!["sun".into()];
+    for row in 0..local.local.rows().len() {
+        states.push(App { local: local::View { row, ..local.local.clone() }, ..local.clone() });
     }
     states.push(App { screen: Screen::Sources, source: 1, ..app() });
     for overlay in [
@@ -283,6 +289,79 @@ fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
             assert!(effect != Effect::None || view(&after) != view(&app), "{:?} in {}", binding.key, view(&app));
         }
     }
+}
+
+#[test]
+fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_selection() {
+    use crate::dev::{App as LocalApp, Request};
+    let mut app = app();
+    assert_eq!(app.key(KeyCode::Char('2')), Effect::None);
+    assert_eq!(app.screen, Screen::Local);
+    assert!(app.local.checked.is_none());
+    assert!(app.local.env.is_none(), "entry does not create Local configuration or admit work");
+    app.local.env = Some(Edited { env: "local".into(), region: REGION.into(), layers: vec!["sun".into()] });
+    app.local.optional = vec!["sun".into()];
+    app.local.row = app.local.rows().iter().position(|row| *row == local::Row::App(LocalApp::Simulator)).unwrap();
+    let request =
+        Request { region: None, refresh_live: false, app: LocalApp::Simulator, inputs_only: false, reviewed: None };
+    assert_eq!(app.key(KeyCode::Char('s')), Effect::LocalControl(local::Control::Start, LocalApp::Simulator));
+    assert_eq!(app.key(KeyCode::Char('o')), Effect::None, "Simulator does not offer a browser key");
+    let mut pending = plan();
+    pending.env = "local".into();
+    pending.needs_prepare = true;
+    pending.blocked = vec![crate::cli::build_cli::BlockedProduct {
+        product: "maps".into(),
+        reason: "Prepare Local inputs to select the initial Live versions".into(),
+        layers: Vec::new(),
+    }];
+    app.local.plan = Some(pending.clone());
+    let selected = app.local.row;
+    app.local.row = app.local.rows().len() - 1;
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    app.local.row = selected;
+    assert!(
+        drawn.split_whitespace().collect::<Vec<_>>().join(" ").contains("Check Live inputs to plan Local"),
+        "{drawn}"
+    );
+    let mut refreshed = request.clone();
+    refreshed.inputs_only = true;
+    refreshed.refresh_live = true;
+    assert_eq!(app.key(KeyCode::Char('f')), Effect::LocalStart(refreshed));
+    assert_eq!(app.key(KeyCode::Char('b')), Effect::LocalCheck(request.clone()));
+    let mut updated = app.clone();
+    updated.local.plan = Some(pending);
+    updated.local.request = Some(request.clone());
+    app.complete(Effect::LocalCheck(request.clone()), updated);
+    assert_eq!(app.key(KeyCode::Char('b')), Effect::None, "incomplete plans cannot confirm a build");
+    let mut resolved = plan();
+    resolved.env = "local".into();
+    resolved.blocked.clear();
+    resolved.needs_prepare = false;
+    resolved.moves.clear();
+    resolved.versions = vec![crate::cli::build_cli::FetchVersion {
+        source: "geofabrik-extracts".into(),
+        params: vec![("area".into(), "europe/test".into())],
+        version: "2026-10-01".into(),
+    }];
+    resolved.groups.retain(|group| !plan::is_move(group));
+    let mut updated = app.clone();
+    updated.local.plan = Some(resolved.clone());
+    app.complete(Effect::LocalCheck(request.clone()), updated);
+    assert_eq!(app.key(KeyCode::Char('b')), Effect::LocalReview(request.clone()));
+    let updated = app.clone();
+    app.complete(Effect::LocalReview(request.clone()), updated);
+    assert!(app.asking);
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(drawn.contains("Simulator") && drawn.contains("local"), "{drawn}");
+    assert!(drawn.contains("2026-10-01") && drawn.contains("area=europe/test"), "{drawn}");
+    let mut reviewed = request;
+    reviewed.reviewed = Some(Box::new(resolved));
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::LocalStart(reviewed));
+    assert_eq!(app.local.selected_app(), Some(LocalApp::Simulator));
+    app.overlay = Some(Overlay::Region);
+    app.filtering = true;
+    assert_eq!(app.key(KeyCode::Char('s')), Effect::None);
+    assert_eq!(app.filter, "s", "typing never starts an app");
 }
 
 #[test]

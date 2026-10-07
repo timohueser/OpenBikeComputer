@@ -93,7 +93,7 @@ impl App {
                 }
             }
             if matches!(row, Row::Pending) {
-                lines.extend([Line::default(), Line::from("LOCAL BAKE · saved Local versions").dim()]);
+                lines.extend([Line::default(), Line::from("LOCAL BAKE · selected inputs").dim()]);
             }
             at.push(lines.len());
             match row {
@@ -140,7 +140,7 @@ impl App {
         let checked = self
             .local
             .checked
-            .map_or("not checked".into(), |time| format!("checked {}s ago", time.elapsed().as_secs()));
+            .map_or("not checked".into(), |time| format!("last check {}s ago", time.elapsed().as_secs()));
         lines.push(Line::from(format!("{checked} · preparation leaves stopped apps stopped")).dim());
         self.draw_lines(frame, area, Line::from("LOCAL").bold(), lines, &at, self.local.row);
     }
