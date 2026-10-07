@@ -359,7 +359,7 @@ pub(super) fn perform(
                 let mut saved = Selection::local(store, id)?;
                 if let Some(archive) = catalog.selection(id)? {
                     if saved.as_ref().is_none_or(|saved| saved.archive != archive) {
-                        saved = Some(Selection::recover(root, store, &http, &catalog, id, archive, &requested)?);
+                        saved = Some(Selection::recover(root, store, &http, &catalog, id, archive)?);
                     }
                 }
                 let (original, mut env) = match &saved {

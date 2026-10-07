@@ -124,7 +124,6 @@ impl Selection {
         catalog: &Catalog,
         package: &str,
         archive: LayerFile,
-        moves: &BTreeMap<String, Option<String>>,
     ) -> Result<Saved, String> {
         let url = format!("{}{}", catalog.base_url, archive.path);
         let _lock = crate::fetch::http::Http::lock(store, &url)?;
@@ -165,12 +164,6 @@ impl Selection {
             std::fs::copy(path, &part).map_err(|e| e.to_string())?;
             store.insert(&part, &asset.sha256)?;
         }
-        selection.restore(
-            store,
-            http,
-            &crate::live::Remote::Public(catalog.base_url.trim_end_matches('/').into()),
-            moves,
-        )?;
         let saved = Saved { selection, archive };
         saved.write(store)?;
         Ok(saved)
@@ -227,12 +220,17 @@ impl Selection {
         }
         self.release.check_named()?;
         let mut copies = std::collections::BTreeSet::new();
+        let mut files = BTreeMap::new();
         for copy in &self.copies {
             copy.record.validate(&copy.key)?;
-            if crate::store::sorted(&copy.params) != copy.params
-                || !copies.insert((&copy.key.source, &copy.key.version, &copy.params))
-            {
+            if crate::store::sorted(&copy.params) != copy.params || !copies.insert((&copy.key, &copy.params)) {
                 return Err("fixture input copies have duplicate or non-canonical requests".into());
+            }
+            for file in &copy.record.files {
+                let name = (&copy.key.source, &copy.key.version, &file.name);
+                if files.insert(name, file).is_some_and(|previous| previous != file) {
+                    return Err("fixture input copies have conflicting file metadata".into());
+                }
             }
         }
         for read in crate::input_copy::reads_release(&self.release)? {
@@ -410,6 +408,20 @@ mod tests {
         let selection =
             Selection::new(&store, "ride".into(), [0., 0., 1., 1.], inputs, release, &env, BTreeMap::new()).unwrap();
         assert!(selection.inputs.terrain.is_none(), "unused terrain is absent, never an empty all-files selector");
+        let mut subsets = selection.clone();
+        let mut extra = subsets.copies[0].clone();
+        extra.record.files[0].name = "another-leaf.tif".into();
+        extra.key.digest =
+            crate::engine::digest(extra.record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())));
+        subsets.copies.push(extra);
+        subsets.check().unwrap();
+        let mut conflicting = subsets.copies[0].clone();
+        conflicting.record.files[0].sha256 = "f".repeat(64);
+        conflicting.key.digest = crate::engine::digest(
+            conflicting.record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())),
+        );
+        subsets.copies.push(conflicting);
+        assert!(subsets.check().unwrap_err().contains("conflicting file metadata"));
         let selected = Saved {
             selection,
             archive: LayerFile { path: format!("packages/{}.tar.gz", files[0].sha256), ..files[0].clone() },
