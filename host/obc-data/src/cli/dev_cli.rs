@@ -13,7 +13,7 @@ use clap::Args;
 #[derive(Args)]
 #[command(group(clap::ArgGroup::new("action").args(["prepare", "start", "stop", "open", "logs", "status", "check", "inputs"]).multiple(false)))]
 pub(super) struct Dev {
-    /// The saved region; defaults to the prior Local selection, then live.
+    /// The saved region; defaults to the prior Local selection.
     pub region: Option<String>,
     /// Take the current published versions instead of the saved Local versions.
     #[arg(long)]

@@ -80,6 +80,14 @@ impl Region {
             _ => None,
         }
     }
+
+    /// The planner needs both. Selection checks them, so a region without them fails before a fetch.
+    pub fn selectable(&self) -> Result<(), String> {
+        if self.countries.is_empty() || self.time_zone.is_none() {
+            return Err(format!("region `{}` needs `countries` and `time_zone` in its file", self.id));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -319,6 +327,9 @@ mod tests {
     #[test]
     fn the_checked_in_regions_load() {
         let regions = Regions::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        for region in regions.iter() {
+            region.selectable().unwrap();
+        }
         let dach = regions.leaves("dach").unwrap();
         assert_eq!(dach, ["europe/austria", "europe/germany", "europe/switzerland"]);
         assert_eq!(

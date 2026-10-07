@@ -5,7 +5,7 @@ The registry is the one list of external data, and its licence and attribution a
 complete as that list. URL literals in justfile, host/, planner/, sim/, tools/, fixtures/,
 builder/server/ and builder/usb/ name a host. That host is the host of a source's `fetch.url`, one of its
 `hosts`, or one of the non-bake hosts in `NOT_SOURCES`. The check is per host, not per URL: a
-new download from a host that a source already declares (github.com, for one) passes. Tests
+new download from a host that a source already declares (api.github.com, for one) passes. Tests
 and reserved example domains are not checked. A host built at run time (`https://{site}/…`)
 cannot be checked; a placeholder in front of a fixed domain counts as `*.domain`.
 """
@@ -45,6 +45,7 @@ NOT_SOURCES = {
     "www.w3.org": "XML namespace",
     "cdn.jsdelivr.net": "search lexicon setup instructions",
     "writewithharper.com": "prose checker documentation",
+    "github.com": "repository links, user agents, sign-in and the RISC-V toolchain; no bake reads it",
     # Toolchain installers: build tools, not bake inputs.
     "download.osgeo.org": "GEOS for obc-pack",
     "nodejs.org": "Node for the verification console",

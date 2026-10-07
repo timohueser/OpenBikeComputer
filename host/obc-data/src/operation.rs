@@ -216,8 +216,9 @@ pub fn reserve(store: &Store, control: &Control) -> Result<Reservation, String> 
     let active = active_path(store, &control.request.env);
     match std::fs::read_to_string(&active) {
         Ok(id) => {
-            let previous = read(store, &id)?.ok_or("active operation has no control")?;
-            if !previous.state.terminal() {
+            // No worker holds the environment lock, so a control that this build cannot read,
+            // such as one of an older format, has ended.
+            if read(store, &id).ok().flatten().is_some_and(|previous| !previous.state.terminal()) {
                 return Ok(Reservation::Busy(format!(
                     "operation {} already owns {}; inspect or stop it",
                     id, control.request.env

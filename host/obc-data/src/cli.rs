@@ -35,7 +35,7 @@ use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::sources::{self, Kind, Refresh, Registry, Source, State, VersionScheme};
-use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
+use crate::store::{self, gc, FileRecord, Snapshot, Store};
 use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
@@ -124,8 +124,8 @@ enum Command {
     Runs(runs_cli::Runs),
     /// Prepare and open the Local Web planner; serving does not hold the bake lock.
     Dev(dev_cli::Dev),
-    /// Clean the local store: delete what no live release or fixture reaches, and move the
-    /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
+    /// Clean the local store: delete what no live release reaches, and empty `partial/`.
+    /// Shows the plan; `--apply` asks, then cleans.
     Clean {
         #[arg(long)]
         apply: bool,
@@ -306,39 +306,26 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
     done.map(|()| ExitCode::SUCCESS)
 }
 
-/// What `clean` removes from the store and moves into it, or removed and moved.
+/// What `clean` removes from the store, or removed.
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 struct CleanPlan {
     /// The snapshot records and the objects that nothing reaches, and what stays.
     store: gc::Plan,
-    /// The cache directories of the older bake tools.
-    import: import::Plan,
 }
 
 impl CleanPlan {
     fn is_empty(&self) -> bool {
-        let moves = self.import.dirs.iter().any(|dir| dir.files > 0);
-        self.store.snapshots.is_empty() && self.store.objects.is_empty() && !moves
+        self.store.snapshots.is_empty() && self.store.objects.is_empty() && self.store.partial_bytes == 0
     }
 
     /// The one question before a clean.
     fn question(&self) -> String {
-        let removes = match (self.store.objects.len(), self.store.snapshots.len()) {
-            (0, 0) => None,
-            (0, 1) => Some("1 record".into()),
-            (0, records) => Some(format!("{records} records")),
-            _ => Some(bytes(self.store.remove_bytes)),
-        };
-        let moves = self.import.dirs.iter().any(|dir| dir.files > 0).then(|| bytes(self.import.bytes));
-        // A process that writes an old cache while it moves can change an object.
-        const STOP: &str = "Stop the bakes, the planner and every fetch first.";
-        match (removes, moves) {
-            (Some(removes), Some(moves)) => {
-                format!("Remove {removes} from the local store and move {moves} of old caches into it? {STOP}")
-            }
-            (Some(removes), None) => format!("Remove {removes} from the local store?"),
-            (None, Some(moves)) => format!("Move {moves} of old caches into the local store? {STOP}"),
-            (None, None) => "Nothing to clean.".into(),
+        let gc = &self.store;
+        match (gc.objects.len(), gc.snapshots.len(), gc.partial_bytes) {
+            (0, 0, 0) => "Nothing to clean.".into(),
+            (0, 1, 0) => "Remove 1 record from the local store?".into(),
+            (0, records, 0) => format!("Remove {records} records from the local store?"),
+            _ => format!("Remove {} from the local store?", bytes(gc.remove_bytes + gc.partial_bytes)),
         }
     }
 }
@@ -364,27 +351,21 @@ fn roots(root: &Path, products: &[&dyn Product], store: &Store) -> Result<gc::Ro
     Ok(roots)
 }
 
-fn old_dirs() -> Result<Vec<std::path::PathBuf>, Error> {
-    let home = std::env::var_os("HOME").ok_or_else(|| Code::Usage.error("HOME is not set"))?;
-    Ok(import::old_dirs(Path::new(&home)))
-}
-
 /// The plan of `clean`.
 fn clean_plan(root: &Path, products: &[&dyn Product], store: &Store) -> Result<CleanPlan, Error> {
     let roots = roots(root, products, store)?;
-    Ok(CleanPlan { store: gc::plan(store, &roots)?, import: import::plan(store, &old_dirs()?)? })
+    Ok(CleanPlan { store: gc::plan(store, &roots)? })
 }
 
-/// Delete what nothing reaches, only when that is still `confirmed`; then move the old cache
-/// directories in.
+/// Delete what nothing reaches, only when that is still `confirmed`.
 fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::Plan) -> Result<CleanPlan, Error> {
     let roots = roots(root, products, store)?;
     let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
-            .error("a run, fetch or import uses the store; nothing was deleted")
-            .fix("Run `obc data clean --apply` again when the run, fetch or import ends.")
+            .error("a run or fetch uses the store; nothing was deleted")
+            .fix("Run `obc data clean --apply` again when the run or fetch ends.")
     })?;
-    Ok(CleanPlan { store: removed, import: import::apply(store, &old_dirs()?)? })
+    Ok(CleanPlan { store: removed })
 }
 
 fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool, json: bool) -> Result<(), Error> {
@@ -414,12 +395,7 @@ fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool,
     if json {
         return print_json(&done);
     }
-    let left: Vec<_> = done.import.dirs.iter().flat_map(|dir| &dir.left).collect();
-    println!("Removed {} from the store; moved {} into it.", bytes(done.store.remove_bytes), bytes(done.import.bytes));
-    if !left.is_empty() {
-        println!("THESE STAY:");
-        left.iter().for_each(|path| println!("  {}", path.display()));
-    }
+    println!("Removed {} from the store.", bytes(done.store.remove_bytes + done.store.partial_bytes));
     Ok(())
 }
 
@@ -433,18 +409,13 @@ fn clean_text(store: &Store, plan: &CleanPlan) -> String {
     gc.objects.iter().for_each(|(sha256, size)| text += &format!("  object {sha256}  {}\n", bytes(*size)));
     text +=
         &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(gc.remove_bytes));
+    if gc.partial_bytes > 0 {
+        text += &format!("  partial/: unfinished downloads and stopped steps, {}\n", bytes(gc.partial_bytes));
+    }
     text += &format!("KEEP {}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
     let kept =
         gc.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
     text += &table(&kept.collect::<Vec<_>>());
-    let moved: Vec<_> = plan.import.dirs.iter().filter(|dir| dir.files > 0).collect();
-    if !moved.is_empty() {
-        text += &format!("MOVE INTO {}\n", store.root().display());
-        let rows = moved
-            .iter()
-            .map(|dir| vec![format!("  {}", dir.dir.display()), format!("{} files", dir.files), bytes(dir.bytes)]);
-        text += &table(&rows.collect::<Vec<_>>());
-    }
     text
 }
 
@@ -599,11 +570,14 @@ fn source_rows(
         .map(|source| {
             let requests =
                 inventory.map(|env| freshness::requests(&store, &http, source, env, check_now)).unwrap_or_default();
+            let read = live.is_none_or(|live| live.get(&source.id).is_some_and(|versions| !versions.is_empty()));
             let state = requests.iter().map(|r| r.state).min().unwrap_or_else(|| {
                 if source.kind != Kind::Tool && source.licence.is_none() {
                     State::Blocked
-                } else {
+                } else if read {
                     State::Ok
+                } else {
+                    State::Unused
                 }
             });
             let reason = requests

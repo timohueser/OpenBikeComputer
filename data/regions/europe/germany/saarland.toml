@@ -1,3 +1,5 @@
 name = "Saarland"
 kind = "geofabrik"
 areas = ["europe/germany/saarland"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

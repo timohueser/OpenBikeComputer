@@ -21,6 +21,7 @@ One `[[source]]` table per source.
 | `fetch` | table | yes | `kind`, `url`, and for `osm` only `from`: the id of the source whose version is the base day. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
+| `start` | string | no | The version that a plan reads while no live release reads the source. It has the form of `version` |
 | `refresh` | integer or string | yes | `1` through `65535` whole days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
@@ -106,8 +107,11 @@ Each part of the id is lowercase kebab-case.
 | `box` | array of 4 numbers | Only for `box`: west, south, east, north in degrees, longitude first |
 | `areas` | array of strings | Only for `geofabrik`: one or more source paths. Paths are sorted and duplicates removed |
 | `union` | array of strings | Only for `union`: two or more region ids |
-| `countries` | array of strings | Optional: the ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE` |
-| `time_zone` | string | Optional: the IANA time zone of the region, such as `Europe/Berlin` |
+| `countries` | array of strings | The ISO 3166-1 alpha-2 codes of the countries in the region, such as `DE`. The first is the country of a place outside each country polygon |
+| `time_zone` | string | The IANA time zone of the region, such as `Europe/Berlin` |
+
+The planner needs `countries` and `time_zone`. An edit that selects a region without them, and
+`dev` with such a region, fail before a fetch.
 
 A box has longitude in −180…180 and latitude in −90…90, with west < east and south < north.
 A box that crosses the antimeridian is refused. The order of the numbers is checked only
@@ -166,6 +170,7 @@ provenance, not an active acquisition request. Request identity is the source id
 | --- | --- |
 | `blocked` | A `data` or `asset` source has no `licence`, an active request has conflicting live versions, or a due request has no successful upstream result |
 | `stale` | An active date request is older than its maximum data age and upstream names a later version, or the request is an on-demand capture. Or its live version is before the live version of the source that `fetch.from` names |
+| `unused` | Live is known, and no live layer and no active request reads the source |
 | `ok` | Otherwise. A request without a live version is never stale. A `manual` source is never stale by age |
 
 Data age is the number of days from the live version date to today (UTC). A request is due only
@@ -204,8 +209,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
-| `imports/<YYYYMMDDTHHMMSSZ>.jsonl` | The import record of one `obc data clean --apply`, see [Clean](#clean) |
-| `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write |
+| `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -216,8 +220,8 @@ Rules:
   rename.
 - One process at a time downloads a URL, one process at a time writes a snapshot record, and one
   process at a time builds a layer key.
-- A fetch, a run of the engine and an import hold the store lock (`locks/store.lock`) shared. A
-  collection holds it alone.
+- A fetch and a run of the engine hold the store lock (`locks/store.lock`) shared. A collection
+  holds it alone.
 
 A snapshot record is a JSON object:
 
@@ -240,38 +244,11 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
 
 ### Clean
 
-`obc data clean` shows one plan: the collection, then the import. With `--apply`, it asks once,
-as [Errors](#errors) says, and then collects and imports. The collection deletes only the plan
-that it showed: when the plan of now differs, it deletes nothing. The import moves the files that
-exist when it runs, and records each one.
-
-The import moves the cache directories of the older bake tools into the store:
-`~/.cache/obcm`, `~/.cache/obc/planner`, `~/.cache/openbikecomputer`, `~/obc-bake` and
-`~/obc-reference`. Each regular file becomes an object, so the same bytes are one object.
-
-- The command resolves symbolic links in the path of the store and of each directory. The store
-  and the files below it stay where they are, also when the store is in one of these
-  directories. A directory inside the store is refused.
-- The plan counts the files and their size, hashes nothing and changes nothing. It does not
-  follow a link. What stays is symbolic links and other entries that are not regular files.
-- One import runs at a time, and it holds the store lock shared. For each file,
-  it checks the size and the modification time before and after it reads the file. On the file
-  system of the store, it hashes the file in place and renames it into `objects/`, or deletes it
-  when the object exists. On another file system, it copies the file to `partial/import-<pid>`,
-  hashes the copy, makes it an object and deletes the file. A file that changed stays where it is.
-  When it changed after the rename, it goes back to its path, or, when a new file has that path,
-  beside it as `<name>.changed-<pid>`. The import starts by deleting the copies that a stopped
-  import left.
-- Before a file moves, the import adds its line to the import record and writes it to the disk.
-  A line of a file that then stays is only one more root of a collection. After the files, the
-  import deletes each directory that is empty, and a symbolic link whose target it deleted. What
-  it did not move stays, and the command lists it. An import that stops keeps its record; the next
-  import moves the rest.
-- A process that writes a file after the last check can change an object. Stop the bakes, the
-  planner and every fetch before `--apply`.
-
-The import record has one JSON object per line: `dir` (without symbolic links), `path` (below
-`dir`, with `/`), `size` and `sha256`.
+`obc data clean` shows one plan. With `--apply`, it asks once, as [Errors](#errors) says, and
+then collects. The collection deletes only the plan that it showed: when the plan of now differs,
+also in the size of `partial/`, it deletes nothing. A receipt that the command cannot read, such
+as one that a newer `obc data` wrote, stops the collection. For reuse, such a receipt is absent and
+its step builds again.
 
 The collection deletes what no live release, saved Local adoption or fixture reaches. Its roots are the live
 releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
@@ -282,13 +259,12 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   upstream gives only its newest file cannot give it again. So is the newest version of each request record (`requests/`), by the
   latest `retrieved` of its files, such as the extract of each Geofabrik area.
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
-  SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
-  planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import
-  record releases its objects.
+  SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
+  planner region recipe in `tools/planner-regions/`.
 - A saved Local adoption roots its selected file SHA-256 values and every source version in
   their transitive original layer provenance. A malformed saved anchor stops collection.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
-  digest of all the files, or of one file, of a reached record of its source, and a layer input
+  digest of the files that it names (`files`) of a reached record of its source, and a layer input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
   `files` of the input, or all files when it names none.
 
@@ -296,11 +272,11 @@ The plan lists what the collection deletes and what stays. What stays is one ent
 reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the source`,
 `newest of a request` and `local PRODUCT, …`. Then one entry for the reached layers of each step (`inputs kept`). Then
 one entry for each kind of root that names objects that no reached record or layer has:
-`live release`, `local release`, `fixture`, `planner recipe` or `import record`. The size of
-an entry is the size of its files. The collection takes the store lock alone, or refuses to start
-while a mutating run, fetch or import holds it. A writer run holds it through verification and
+`live release`, `local release`, `fixture` or `planner recipe`. The size of
+an entry is the size of its files, and the plan gives the size of `partial/`. The collection
+takes the store lock alone, or refuses to start while a mutating run or fetch holds it. A writer run holds it through verification and
 publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
-that is not reached. Receipts, release manifests, import records and upstream checks stay. A
+that is not reached, and empties `partial/`. Receipts, release manifests and upstream checks stay. A
 clean that cannot read live deletes nothing.
 
 ## Fetch
@@ -821,8 +797,9 @@ one function (`obc_data::product::version`), in this order:
    fetch at two versions, no order of versions chooses: a step list that reads it without a
    `--move` fails the command with `blocked` and the fix `Plan with --move SOURCE@VERSION`, and
    `status` shows the source as blocked. Another environment has no live release.
-3. The newest version of the fetch in the store.
-4. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it. A
+3. The `start` of the source, when live reads no version of the fetch.
+4. The newest version of the fetch in the store.
+5. The newest version upstream: the product names the fetch, and `plan` or `build` fetches it. A
    source whose URL needs a `NAME=VALUE`, such as the GLO-30 tiles, has no one newest version: a
    fetch of it without that value fails with `usage` and the fix `Plan with --move
    SOURCE@VERSION`.
@@ -833,9 +810,9 @@ using its own upstream observation of the last hour. Other requests keep their l
 Each source remains one group, `move:SOURCE`. A held input, an unused source and a `manual`
 source do not move this way. A stale capture requires an explicit move for its collection.
 
-A source with `refresh = "manual"` moves only with `--move`: step 4 does not fetch it, and the
-command fails with `blocked` and the fix `Plan with --move SOURCE@VERSION`. Before the first apply,
-nothing is live, so a plan takes the versions of the store and of upstream. The fetch of a
+A source with `refresh = "manual"` is never stale: after its first version it moves only with
+`--move`. Before the first apply, nothing is live, so a plan takes the `start` of each source, and
+else the versions of the store and of upstream. The fetch of a
 `--move SOURCE` resolves each normalized request independently. `--move SOURCE@VERSION` fixes
 that version for all requests of the source. Fetches never mutate source move intent. A saved
 plan records both the intent and each exact resolved request version. Upstream can
@@ -1256,8 +1233,8 @@ Local rebuilds keep their full execution identity. These APIs do not start apps 
 ### Local app services
 
 `dev` prepares current working-tree data. `data/env/local.toml` holds its region and
-optional layers. The first preparation copies Live settings. An explicit region changes
-Local. Each saved Local product release pins source versions. Only `--refresh-live` replaces those
+optional layers. Local has no region until `dev REGION` or `region local REGION` writes the
+file; it never takes the region of Live. Each saved Local product release pins source versions. Only `--refresh-live` replaces those
 pins with the current published versions. A failed pointer observation is not absence.
 Current declarations derive region geometry, source requests, inputs and semantic options.
 Compatible portable layers retain original provenance through the shared verified reuse
@@ -1509,14 +1486,14 @@ reconciliation preserve this distinction. No automatic schedule is enabled by th
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and the installed VPS runtime/data observation and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and the installed VPS runtime/data observation and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE DAYS\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
 | `obc data region ENV ID [--json]` | Writes `region` of `data/env/ENV.toml`. Writes the environment |
 | `obc data layer ENV NAME on\|off [--json]` | Adds the optional layer to `layers` of `data/env/ENV.toml`, or removes it. A layer that no product has is refused. Writes the environment |
 | `obc data undo ENV [--json]` | Writes `data/env/ENV.toml` as git has it in `HEAD`: the edits that are not applied go. Writes the environment |
-| `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the old cache directories with their files and sizes. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
+| `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
 | `obc data region areas [QUERY] [--json]` | Search cached Geofabrik names and paths. Does not fetch |
@@ -1807,11 +1784,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         {
-          "const": "old_cache",
-          "description": "A cache directory of the older bake tools that `clean` moves into the store.",
-          "type": "string"
-        },
-        {
           "const": "drift",
           "description": "Keys that live uses and R2 lacks, or holds with another size.",
           "type": "string"
@@ -2048,20 +2020,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "CleanPlan": {
-      "description": "What `clean` removes from the store and moves into it, or removed and moved.",
+      "description": "What `clean` removes from the store, or removed.",
       "properties": {
-        "import": {
-          "$ref": "#/$defs/ImportPlan",
-          "description": "The cache directories of the older bake tools."
-        },
         "store": {
           "$ref": "#/$defs/GcPlan",
           "description": "The snapshot records and the objects that nothing reaches, and what stays."
         }
       },
       "required": [
-        "store",
-        "import"
+        "store"
       ],
       "type": "object"
     },
@@ -3153,6 +3120,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "partial_bytes": {
+          "description": "The size of `partial/`: unfinished downloads and the work of steps that stopped. A\ncollection empties it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "remove_bytes": {
           "description": "The size of `objects`.",
           "format": "uint64",
@@ -3173,7 +3146,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "objects",
         "remove_bytes",
         "keep_objects",
-        "keep_bytes"
+        "keep_bytes",
+        "partial_bytes"
       ],
       "type": "object"
     },
@@ -3221,65 +3195,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "glibc",
         "node",
         "python"
-      ],
-      "type": "object"
-    },
-    "ImportDir": {
-      "properties": {
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "dir": {
-          "description": "The directory, without symbolic links when it is present.",
-          "type": "string"
-        },
-        "files": {
-          "description": "The regular files that it moves, or moved, and their size.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "left": {
-          "description": "What stays in the directory: symbolic links and other entries that are not regular files,\nand after an import each file that changed while it was read.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "present": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "dir",
-        "present",
-        "files",
-        "bytes",
-        "left"
-      ],
-      "type": "object"
-    },
-    "ImportPlan": {
-      "description": "What `clean` moves into the store, or moved, and what stays.",
-      "properties": {
-        "bytes": {
-          "description": "The size of every file.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "dirs": {
-          "items": {
-            "$ref": "#/$defs/ImportDir"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "dirs",
-        "bytes"
       ],
       "type": "object"
     },
@@ -3351,7 +3266,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`live PRODUCT, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`live release`, `fixture`, `planner recipe` or `import record`.",
+          "description": "`live PRODUCT, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`live release`, `fixture` or `planner recipe`.",
           "items": {
             "type": "string"
           },
@@ -5188,6 +5103,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "refresh": {
           "$ref": "#/$defs/Refresh"
         },
+        "start": {
+          "description": "The version that a plan reads while no live release reads the source. `--move` overrides\nit. Without it, the first fetch takes the newest version upstream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "version": {
           "$ref": "#/$defs/VersionScheme"
         }
@@ -5320,6 +5242,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "start": {
+          "description": "The version that a plan reads while no live release reads the source. `--move` overrides\nit. Without it, the first fetch takes the newest version upstream.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "state": {
           "$ref": "#/$defs/State"
         },
@@ -5407,15 +5336,24 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "State": {
       "description": "The state of a source or a layer. A source is only ok, stale or blocked. When more than one\nstate applies to a layer, the first in this order is its state, so the least of several states\nis the one to show for all of them.",
-      "enum": [
-        "not_applied",
-        "code_changed",
-        "input_changed",
-        "stale",
-        "blocked",
-        "ok"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "not_applied",
+            "code_changed",
+            "input_changed",
+            "stale",
+            "blocked",
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unused",
+          "description": "A source that no live layer and no active request reads. Only sources have it.",
+          "type": "string"
+        }
+      ]
     },
     "State2": {
       "additionalProperties": false,

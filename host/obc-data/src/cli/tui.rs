@@ -29,7 +29,7 @@ use crate::engine::runs::{self, Details, Outcome, Summary};
 use crate::product::Product;
 use crate::regions::Regions;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
-use crate::store::{gc, import, Store};
+use crate::store::{gc, Store};
 
 use super::edit_cli::{self, Edited, Switch};
 use super::runs_cli::{bytes, duration, mark, step_cells};
@@ -295,8 +295,8 @@ static NO_PLAN: CleanPlan = CleanPlan {
         remove_bytes: 0,
         keep_objects: 0,
         keep_bytes: 0,
+        partial_bytes: 0,
     },
-    import: import::Plan { dirs: Vec::new(), bytes: 0 },
 };
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<std::process::ExitCode, Error> {
@@ -987,7 +987,6 @@ impl App {
             Action::Toggle => return self.toggle(),
             Action::Fix => match self.fix() {
                 Some(Fix::Source(source)) => (self.screen, self.source) = (Screen::Sources, source),
-                Some(Fix::Store) => self.screen = Screen::Store,
                 Some(Fix::Plan) => return self.act(Action::Open(Overlay::Plan)),
                 None => {}
             },
@@ -1446,9 +1445,6 @@ impl App {
             gc.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
         let objects = gc::objects_text(gc.objects.len() as u64);
         lines.push(Line::from(format!("{objects}  {}", bytes(gc.remove_bytes))));
-        for dir in plan.import.dirs.iter().filter(|dir| dir.files > 0) {
-            lines.push(Line::from(format!("move {}  {} files  {}", dir.dir.display(), dir.files, bytes(dir.bytes))));
-        }
         if self.asking {
             lines.extend([Line::default(), Line::from(plan.question()).bold()]);
         }
@@ -1461,6 +1457,7 @@ fn state_style(state: State) -> Style {
         State::Ok => Color::Green,
         State::Blocked => Color::Red,
         State::NotApplied => Color::Cyan,
+        State::Unused => Color::DarkGray,
         State::Stale | State::CodeChanged | State::InputChanged => Color::Yellow,
     })
 }

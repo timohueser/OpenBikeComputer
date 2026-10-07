@@ -119,6 +119,7 @@ attribution = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and �
 obligations = "Credit on every product derived from the dataset"
 fetch = { kind = "glo30", url = "https://copernicus-dem-30m.s3.amazonaws.com/{tile}/{tile}.tif" }
 version = "date"
+start = "2022-05-09"
 refresh = "manual"
 redistribute = false
 
@@ -550,6 +551,7 @@ licence_url = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-202
 attribution = "Hansen/UMD/Google/USGS/NASA"
 fetch = { kind = "http", url = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{version}/Hansen_GFC-2023-{version}_treecover2000_{tile}.tif" }
 version = "release"
+start = "v1.11"
 refresh = "manual"
 redistribute = true
 
@@ -616,6 +618,7 @@ obligations = "Keep the OFL text with the fonts and the MIT notice with the spri
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps-assets/zip/{version}" }
 hosts = ["api.github.com"]
 version = "commit"
+start = "028c18f713baecad011301ff7a69acc39bcc2ae7"
 refresh = "manual"
 redistribute = true
 
@@ -629,6 +632,7 @@ obligations = "Keep the MIT notice with the sprites"
 fetch = { kind = "github", url = "https://raw.githubusercontent.com/tangrams/icons/{version}/LICENSE.md" }
 hosts = ["api.github.com"]
 version = "commit"
+start = "92510779634f4a006c61ea70e50cb8c52c765a81"
 refresh = "manual"
 redistribute = true
 
@@ -637,9 +641,10 @@ id = "query-model"
 kind = "asset"
 licence = "MIT"
 obligations = "Keep the MIT notice of mmBERT-small, the model it derives from"
-fetch = { kind = "github", url = "https://github.com/timohueser/OpenBikeComputer/releases/download/{version}/query-parser-v2-int8.tar.gz" }
-hosts = ["api.github.com"]
+# `planner/search/setup.py` pins the SHA-256 of the archive.
+fetch = { kind = "http", url = "https://maps.openbikecomputer.com/assets/query-model/{version}/query-parser-v2-int8.tar.gz" }
 version = "release"
+start = "v2"
 refresh = "manual"
 redistribute = true
 
@@ -663,6 +668,7 @@ licence_url = "https://github.com/protomaps/basemaps"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps/tar.gz/{version}" }
 hosts = ["api.github.com"]
 version = "commit"
+start = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123"
 refresh = "manual"
 redistribute = false
 
@@ -675,5 +681,6 @@ attribution = "© OpenStreetMap contributors"
 obligations = "Credit OpenStreetMap; keep the country grid under ODbL and country settings under their GPL licences"
 fetch = { kind = "http", url = "https://files.pythonhosted.org/packages/fc/9e/3f6a9706fdf54241e3adfffcb80f6fdba6d439c7506564cdc0f1b91bc5aa/nominatim_db-{version}-py3-none-any.whl" }
 version = "release"
+start = "5.3.2"
 refresh = "manual"
 redistribute = false

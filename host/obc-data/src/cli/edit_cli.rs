@@ -12,6 +12,7 @@ use super::build_cli::{check_layers, load};
 use super::{print_json, Code, Error};
 use crate::env::Env;
 use crate::product::Product;
+use crate::regions::Regions;
 use crate::store::write_atomic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -89,14 +90,24 @@ fn committed(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
 
 /// Change the environment `name` and write its file, when the result is valid.
 fn edit(root: &Path, products: &[&dyn Product], name: &str, change: impl FnOnce(&mut Env)) -> Result<Edited, Error> {
-    let loaded = load(root, name)?;
     let path = Env::path(root, name);
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut env = loaded.env;
+    // Local has no file until its first edit.
+    let (mut env, text, regions) = if name == "local" && !path.exists() {
+        let regions = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
+        (Env { name: name.into(), ..Env::default() }, String::new(), regions)
+    } else {
+        let loaded = load(root, name)?;
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        (loaded.env, text, loaded.regions)
+    };
     change(&mut env);
-    let text = env.edit(&text);
     let refused = |e: String| Code::Usage.error(e).fix("Nothing changed.");
-    let env = Env::parse(name, &text, &loaded.regions).map_err(|e| refused(format!("data/env/{name}.toml: {e}")))?;
+    if env.region.is_empty() {
+        return Err(refused("Local has no region: choose one with `obc data region local REGION`".into()));
+    }
+    let text = env.edit(&text);
+    let env = Env::parse(name, &text, &regions).map_err(|e| refused(format!("data/env/{name}.toml: {e}")))?;
+    regions.get(&env.region).expect("parse checks the region").selectable().map_err(refused)?;
     check_layers(products, &env).map_err(|e| refused(e.message))?;
     write_atomic(&path, text.as_bytes())?;
     Ok(Edited { env: env.name, region: env.region, layers: env.layers })
@@ -116,7 +127,6 @@ mod tests {
     use super::*;
     use crate::engine::tests::write;
     use crate::product::Unplanned;
-    use crate::regions::Regions;
     use crate::store::tests::Scratch;
     use crate::store::Store;
 
@@ -154,17 +164,22 @@ mod tests {
         let scratch = Scratch::new("cli-edit");
         let root = scratch.0.join("repository");
         write(&root.join("data/sources.toml"), include_str!("../../../../data/sources.toml"));
+        let area = "name = \"A region\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n";
         for region in ["monaco", "europe/andorra"] {
-            write(
-                &root.join(format!("data/regions/{region}.toml")),
-                "name = \"A region\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\n",
-            );
+            let text = format!("{area}countries = [\"AD\"]\ntime_zone = \"Europe/Andorra\"\n");
+            write(&root.join(format!("data/regions/{region}.toml")), &text);
         }
+        write(&root.join("data/regions/bare.toml"), area);
         write(&root.join("data/env/live.toml"), LIVE);
         let file = || std::fs::read_to_string(root.join("data/env/live.toml")).unwrap();
         let products: &[&dyn Product] = &[&Optional];
 
         assert!(region(&root, products, "live", "atlantis").unwrap_err().message.contains("atlantis"));
+        assert!(region(&root, products, "live", "bare").unwrap_err().message.contains("time_zone"));
+        assert!(layer(&root, products, "local", "sun", Switch::On).unwrap_err().message.contains("no region"));
+        region(&root, products, "local", "monaco").unwrap();
+        let local = std::fs::read_to_string(root.join("data/env/local.toml")).unwrap();
+        assert_eq!(local, "region = \"monaco\"\nlayers = []\n", "the first Local edit writes its file");
         let snow = layer(&root, products, "live", "snow", Switch::On).unwrap_err();
         assert_eq!(snow.code, Code::Usage, "{}", snow.message);
         assert_eq!(file(), LIVE, "a refused edit changes nothing");

@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::build_cli::{check_layers, fetcher, load, status_steps};
-use super::{bytes, cells, old_dirs, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
+use super::{bytes, cells, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
 use crate::engine::state::{self, Environment};
 use crate::engine::Step;
 use crate::env::Env;
@@ -19,7 +19,7 @@ use crate::live::{Check, Remote};
 use crate::product::{Product, Wanted};
 use crate::regions::Regions;
 use crate::sources::{self, State};
-use crate::store::{import, Store};
+use crate::store::Store;
 
 #[derive(Args)]
 pub struct StatusArgs {
@@ -84,8 +84,6 @@ pub enum AttentionKind {
     Blocked,
     /// Edits in `data/` that git does not have; an apply refuses them.
     Uncommitted,
-    /// A cache directory of the older bake tools that `clean` moves into the store.
-    OldCache,
     /// Keys that live uses and R2 lacks, or holds with another size.
     Drift,
     /// Keys under the owned prefixes that no live release uses.
@@ -100,7 +98,6 @@ impl AttentionKind {
             AttentionKind::Stale => "stale",
             AttentionKind::Blocked => "blocked",
             AttentionKind::Uncommitted => "uncommitted",
-            AttentionKind::OldCache => "old cache",
             AttentionKind::Drift => "drift",
             AttentionKind::Leftovers => "leftovers",
             AttentionKind::Unreachable => "unreachable",
@@ -217,11 +214,6 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         let reason = format!("live reads it at {}: plan with `--move {source}@VERSION`", versions.join(" and "));
         attention.push(Attention { kind: AttentionKind::Blocked, about: source.clone(), reason });
     }
-    for dir in import::plan(&store, &old_dirs()?)?.dirs.into_iter().filter(|dir| dir.files > 0) {
-        let reason =
-            format!("{} files, {}; `obc data clean --apply` moves them into the store", dir.files, bytes(dir.bytes));
-        attention.push(Attention { kind: AttentionKind::OldCache, about: dir.dir.display().to_string(), reason });
-    }
     let check = check
         .then(|| live.list(&remote).map(|listed| live.check(&listed)))
         .transpose()
@@ -270,7 +262,7 @@ pub(super) fn discovery_fetch(
                     "source `{}` is not prepared; status and ordinary plans do not fetch bulk data",
                     wanted.source
                 ))
-                .fix("Use `obc data prepare ENV --move SOURCE` or a build to prepare this source."));
+                .fix("Run `obc data prepare ENV` or a build to fetch it."));
         }
         fetch(wanted)
     }

@@ -185,15 +185,3 @@ pub(super) fn start(root: &Path, store: &Store, request: Request) -> Result<crat
         None,
     )
 }
-
-pub(super) fn ensure_environment(root: &Path) -> Result<(), Error> {
-    let file = crate::env::Env::path(root, "local");
-    match std::fs::read(&file) {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let (_, body) = crate::env::Env::local(root, &Regions::load(root)?)?;
-            crate::store::write_atomic(&file, body.as_bytes()).map_err(Into::into)
-        }
-        Err(error) => Err(error.to_string().into()),
-    }
-}

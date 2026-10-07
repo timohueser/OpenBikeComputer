@@ -79,16 +79,23 @@ impl Env {
         Env::parse(name, &text, regions).map_err(|e| format!("data/env/{name}.toml: {e}"))
     }
 
-    /// Local defaults to Live until an explicit Local edit or preparation writes its file.
-    pub fn local(root: &Path, regions: &Regions) -> Result<(Env, String), String> {
-        let text = match std::fs::read_to_string(Self::path(root, "local")) {
+    /// Local has a region only when a Local edit or preparation wrote `data/env/local.toml`. It
+    /// never borrows the region of Live: that region is large. `region` replaces the file's region.
+    pub fn local(root: &Path, regions: &Regions, region: Option<&str>) -> Result<(Env, String), String> {
+        let mut text = match std::fs::read_to_string(Self::path(root, "local")) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::read_to_string(Self::path(root, "live")).map_err(|e| e.to_string())?
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => return Err(error.to_string()),
         };
-        Ok((Self::parse("local", &text, regions)?, text))
+        if let Some(region) = region {
+            text = set(&text, "region", toml::Value::String(region.into()));
+        }
+        if text.trim().is_empty() {
+            return Err("Local has no region: choose one with `obc data dev REGION`".into());
+        }
+        let env = Self::parse("local", &text, regions).map_err(|e| format!("data/env/local.toml: {e}"))?;
+        regions.get(&env.region).expect("parse checks the region").selectable()?;
+        Ok((env, text))
     }
 
     pub fn parse(name: &str, text: &str, regions: &Regions) -> Result<Env, String> {
@@ -110,7 +117,8 @@ impl Env {
     }
 
     /// The version of the fetch of `source` with `params` that a plan names: that of the saved
-    /// plan; or else its `--move`; or else the version that live reads. Without params, a source
+    /// plan; or else its `--move`; or else the version that live reads; or else the `start` of the
+    /// source in the `data/sources.toml` of this build. Without params, a source
     /// that live reads per params gives the version of all of them, such as the GLO-30 tiles that
     /// one version names. `product::version` decides for a fetch that this does not name. `Err`
     /// when live reads it at more versions.
@@ -125,16 +133,20 @@ impl Env {
         if let Some(version) = self.resolved.get(&fetch) {
             return Ok(Some(version));
         }
+        let start = crate::sources::all().iter().find(|s| s.id == source).and_then(|s| s.start.as_deref());
         let versions: BTreeSet<&str> = match self.live.get(&fetch) {
             Some(read) => read.iter().map(String::as_str).collect(),
-            None if params.is_empty() => {
+            // A source with a `start` has one version for all its requests: a new request, such
+            // as a tile of a new region, reads the version that live reads.
+            None if params.is_empty() || start.is_some() => {
                 let reads = self.live.iter().filter(|((id, _), _)| id == source).flat_map(|(_, read)| read);
                 reads.map(String::as_str).collect()
             }
             None => BTreeSet::new(),
         };
         match versions.len() {
-            0 | 1 => Ok(versions.first().copied()),
+            0 => Ok(start),
+            1 => Ok(versions.first().copied()),
             _ => {
                 let versions = versions.into_iter().collect::<Vec<_>>().join(" and ");
                 Err(format!("the live layers read `{source}` {params:?} at {versions}"))
@@ -240,6 +252,15 @@ mod tests {
         env.resolved.insert(("extract".into(), area("b")), "2026-09-20".into());
         assert_eq!(env.version("extract", &area("a")), Ok(Some("2026-09-01")), "an unrelated request keeps live");
         assert_eq!(env.version("extract", &area("b")), Ok(Some("2026-09-20")), "the selected request moves");
+    }
+
+    #[test]
+    fn a_start_version_serves_only_a_source_that_live_does_not_read() {
+        let tile = |id: &str| vec![("tile".to_string(), id.to_string())];
+        let mut env = Env::default();
+        assert_eq!(env.version("hansen-gfc", &tile("a")), Ok(Some("v1.11")));
+        env.live.insert(("hansen-gfc".into(), tile("a")), ["v1.12".into()].into());
+        assert_eq!(env.version("hansen-gfc", &tile("b")), Ok(Some("v1.12")), "a new tile keeps the moved version");
     }
 
     #[test]

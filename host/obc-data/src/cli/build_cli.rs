@@ -237,7 +237,14 @@ pub(super) fn print_plan(plan: &EnvPlan) {
         println!("blocked {}: {}", blocked.product, blocked.reason);
     }
     if plan.groups.is_empty() {
-        println!("{}", if plan.live.is_empty() { "The store has every layer." } else { "Live has every change." });
+        println!(
+            "{}",
+            match (plan.blocked.is_empty(), plan.live.is_empty()) {
+                (false, _) => "Nothing to build until the blocked products can plan.",
+                (true, true) => "The store has every layer.",
+                (true, false) => "Live has every change.",
+            }
+        );
     } else {
         let mut table = vec![cells(["GROUP", "CHANGE", "FETCH", "BUILD", "TIME", "OUTPUT"])];
         for group in &plan.groups {
@@ -1128,8 +1135,7 @@ fn moves(sources: &[Source], moves: &[String]) -> Result<BTreeMap<String, Option
 }
 
 /// Fetch what a product names, and give the version fetched; with the code of a failed fetch:
-/// `fetch_failed` or `blocked`. A `manual` source is fetched at the newest version upstream only
-/// when `env` moves it there.
+/// `fetch_failed` or `blocked`. A fetch without a version takes the newest version upstream.
 pub(super) fn fetcher<'a>(
     root: &'a Path,
     store: &'a Store,
@@ -1150,7 +1156,6 @@ pub(super) fn fetcher_recorded<'a>(
     copies: Option<&'a crate::input_copy::Restore<'a>>,
     mut run: Option<&'a mut Run>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
-    let newest: BTreeSet<String> = env.moves.keys().filter(|source| env.moves_to_newest(source)).cloned().collect();
     let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
     let reads = env.live.iter().flat_map(|((source, _), read)| read.iter().map(move |version| (source, version)));
     let live: BTreeSet<(String, String)> = reads.map(|(source, version)| (source.clone(), version.clone())).collect();
@@ -1160,11 +1165,6 @@ pub(super) fn fetcher_recorded<'a>(
             .find(|source| source.id == wanted.source)
             .ok_or_else(|| Code::InvalidData.error(format!("no source `{}` in data/sources.toml", wanted.source)))?;
         let pick = format!("Plan with `--move {}@VERSION`.", source.id);
-        if wanted.version.is_none() && source.refresh == Refresh::Manual && !newest.contains(&source.id) {
-            let message =
-                format!("source `{}` is manual, and neither live nor the store has a version of it", source.id);
-            return Err(Code::Blocked.error(message).fix(pick));
-        }
         let unnamed = fetch::params(source).into_iter().find(|name| wanted.params.iter().all(|(n, _)| n != name));
         if let Some(name) = unnamed.filter(|_| wanted.version.is_none()) {
             let message = format!("source `{}` is fetched per `{name}=`: it has no one newest version", source.id);
@@ -1728,7 +1728,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_source_that_nothing_names_is_fetched_at_the_newest_version_unless_it_is_manual() {
+    fn a_source_that_nothing_names_is_fetched_at_the_newest_version() {
         use crate::fetch::tests::{quick, serve, source, whole};
         let (url, log) = serve(|_, _| whole(b"outline"));
         let fixture = fixture("cli-newest");
@@ -1737,23 +1737,11 @@ pub(crate) mod tests {
         let (regions, http) = (Regions::new(Vec::new()).unwrap(), quick());
         let mut live = env(&[]);
         let fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&manual), &live, None);
-        let err =
-            steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
-        assert_eq!(
-            (err.code, err.fix.as_str()),
-            (Code::Blocked, "Plan with `--move land@VERSION`."),
-            "{}",
-            err.message
-        );
-        assert!(log.lock().unwrap().is_empty(), "a manual source does not move by itself");
-
-        live.moves.insert("land".into(), None);
-        let fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&manual), &live, None);
         steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(
             live.resolved[&("land".into(), vec![("area".into(), "europe/monaco".into())])].as_str(),
             "2026-10-05",
-            "the fetch resolves only this request"
+            "a manual source without a version takes the newest; the fetch resolves only this request"
         );
         let requests = log.lock().unwrap().len();
 

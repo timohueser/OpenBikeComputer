@@ -562,13 +562,11 @@ pub(super) fn perform(
         }
         Effect::LocalCheck(request) | Effect::LocalReview(request) => app.read_local(root, products, store, &request),
         Effect::LocalRegion(region) => {
-            super::local::ensure_environment(root)?;
             edit_cli::region(root, products, "local", &region)?;
             app.local.request = None;
             app.read_local(root, products, store, &app.local.request(false))
         }
         Effect::LocalLayer(layer, switch) => {
-            super::local::ensure_environment(root)?;
             edit_cli::layer(root, products, "local", &layer, switch)?;
             app.local.request = None;
             app.read_local(root, products, store, &app.local.request(false))

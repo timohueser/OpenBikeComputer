@@ -74,6 +74,8 @@ builder/web/test-support/flat-device/pkg/
 tools/obc.local
 # Planner tile settings for a local desktop build (see builder/desktop/README.md).
 builder/web/.env.local
+# The Local region and layers of `obc data`.
+/data/env/local.toml
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
