@@ -1633,6 +1633,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Command | Schema |
 | --- | --- |
 | `sources` | `Sources` |
+| `versions SOURCE` | `Versions` |
 | `fetch` | `Fetched` |
 | `policy` | `Source` |
 | `region`, `region list` | `RegionList` |
@@ -4517,6 +4518,58 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Request": {
+      "properties": {
+        "live": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "stored": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "params",
+        "live",
+        "stored",
+        "upstream",
+        "unavailable"
+      ],
+      "type": "object"
+    },
     "RequestStatus": {
       "properties": {
         "age_days": {
@@ -5751,6 +5804,36 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "Versions": {
+      "properties": {
+        "common": {
+          "description": "Exact versions known for every active request, newest first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "newest": {
+          "type": "boolean"
+        },
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/Request"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "requests",
+        "common",
+        "newest"
+      ],
+      "type": "object"
     },
     "View": {
       "properties": {
