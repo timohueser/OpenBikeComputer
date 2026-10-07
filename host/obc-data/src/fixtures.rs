@@ -72,6 +72,14 @@ pub struct PackagePlan {
     pub plan: crate::cli::EnvPlan,
 }
 
+/// Preparation returns its review; apply returns only verified immutable archives and the new Git pointer.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum Outcome {
+    Prepared(Plan),
+    Applied { archives: BTreeMap<String, LayerFile>, catalog: LayerFile },
+}
+
 impl Plan {
     pub fn check(&self) -> Result<(), String> {
         if self.catalog.path != "fixtures/catalog.toml" || self.packages.is_empty() {

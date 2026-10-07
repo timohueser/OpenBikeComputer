@@ -254,7 +254,7 @@ pub(super) fn perform(
         store,
         &format!("{} fixtures", if request.kind == Kind::Prepare { "prepare" } else { "apply" }),
     )?;
-    let result = (|| -> Result<Plan, Error> {
+    let result = (|| -> Result<fixtures::Outcome, Error> {
         let regions = Regions::load(root)?;
         let declarations = Collection::load(root, &regions)?;
         let catalog = Catalog::read(root)?;
@@ -299,7 +299,7 @@ pub(super) fn perform(
                 )?
                 .map_err(|reason| Code::Blocked.error(reason))?;
             }
-            return inspect(root, store, collection, &request.only);
+            return inspect(root, store, collection, &request.only).map(fixtures::Outcome::Prepared);
         }
         let reviewed =
             request.fixture.as_deref().ok_or_else(|| Code::Usage.error("fixture apply has no reviewed plan"))?;
@@ -481,7 +481,10 @@ pub(super) fn perform(
             }
         }
         catalog.replace(root, &updates)?;
-        Ok(reviewed.clone())
+        Ok(fixtures::Outcome::Applied {
+            archives: updates.into_iter().map(|(id, (file, _, _))| (id, file)).collect(),
+            catalog: Catalog::read(root)?.file,
+        })
     })();
     let plan = api::finish_run(run, result, None)?;
     print_json(&plan)
