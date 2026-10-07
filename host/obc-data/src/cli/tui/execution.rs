@@ -75,6 +75,7 @@ pub(super) fn request(kind: Kind, plan: &EnvPlan) -> Request {
         },
         plan: None,
         dev: None,
+        fixture: None,
     }
 }
 

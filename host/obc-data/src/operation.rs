@@ -33,12 +33,36 @@ pub struct Request {
     pub plan: Option<LayerFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev: Option<crate::dev::Request>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture: Option<Box<crate::fixtures::Plan>>,
 }
 
 impl Request {
     pub fn check(&self) -> Result<(), String> {
         if !crate::is_kebab(&self.env) {
             return Err("operation environment is not a normalized name".into());
+        }
+        if self.env == "fixtures"
+            && self.fixture.is_none()
+            && (self.kind != Kind::Prepare
+                || self.dev.is_some()
+                || self.plan.is_some()
+                || !self.moves.is_empty()
+                || self.only.iter().any(|id| !crate::is_kebab(id)))
+        {
+            return Err("fixture operations need exact package preparation or a typed reviewed apply plan".into());
+        }
+        if let Some(fixture) = &self.fixture {
+            if self.kind != Kind::Apply
+                || self.env != "fixtures"
+                || self.dev.is_some()
+                || self.plan.is_some()
+                || !self.only.is_empty()
+                || !self.moves.is_empty()
+            {
+                return Err("fixture apply takes only its reviewed collection plan".into());
+            }
+            return fixture.check();
         }
         if (self.kind == Kind::DevPrepare) != self.dev.is_some()
             || self.dev.is_some()
@@ -358,6 +382,7 @@ mod tests {
             moves: Vec::new(),
             plan: None,
             dev: None,
+            fixture: None,
         };
         Control {
             run: run.into(),
@@ -368,6 +393,22 @@ mod tests {
             code: "b".repeat(64),
             state: State::Reserved,
         }
+    }
+
+    #[test]
+    fn fixture_requests_accept_only_exact_preparation_or_reviewed_apply() {
+        let mut request = control("2026-10-07-120000").request;
+        request.env = "fixtures".into();
+        request.kind = Kind::Prepare;
+        request.only = vec!["sim-monaco".into()];
+        request.check().unwrap();
+        for kind in [Kind::Build, Kind::Auto, Kind::Apply, Kind::DevPrepare] {
+            request.kind = kind;
+            assert!(request.check().unwrap_err().contains("fixture"));
+        }
+        request.kind = Kind::Prepare;
+        request.moves.push("land-polygons@2026-06-19".into());
+        assert!(request.check().is_err(), "preparation cannot introduce an upstream move");
     }
 
     #[test]

@@ -1658,7 +1658,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `config commit` | `ConfigCommit` |
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
-| `plan`, `dev --check` | `EnvPlan` |
+| `plan fixtures` | `FixturePlan` |
+| Completed fixture prepare or apply output | `FixtureOutcome` |
+| `plan ENV` except fixtures, `dev --check` | `EnvPlan` |
 | `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
 | `dev --start`, `dev --stop`, `dev --status` | `Observed` |
 | `dev --logs` | `Logs` |
@@ -2000,6 +2002,29 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "product",
         "id"
+      ],
+      "type": "object"
+    },
+    "CapturedInput": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "files"
       ],
       "type": "object"
     },
@@ -2515,6 +2540,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers"
       ],
       "type": "object"
+    },
+    "Empty": {
+      "enum": [
+        "historical",
+        "selected"
+      ],
+      "type": "string"
     },
     "EnvPlan": {
       "additionalProperties": false,
@@ -3158,6 +3190,71 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "FixtureOutcome": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FixturePlan"
+        },
+        {
+          "properties": {
+            "archives": {
+              "additionalProperties": {
+                "$ref": "#/$defs/LayerFile"
+              },
+              "type": "object"
+            },
+            "catalog": {
+              "$ref": "#/$defs/LayerFile"
+            }
+          },
+          "required": [
+            "archives",
+            "catalog"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "Preparation returns its review; apply returns only verified immutable archives and the new Git pointer."
+    },
+    "FixturePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/LayerFile"
+        },
+        "configuration": {
+          "description": "The exact package declarations and canonical regions used for this review.",
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "packages": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PackagePlan"
+          },
+          "type": "object"
+        },
+        "packaging": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "worker": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog",
+        "configuration",
+        "destination",
+        "worker",
+        "packaging",
+        "packages"
+      ],
+      "type": "object"
+    },
     "GcPlan": {
       "description": "What `clean` deletes from the store, or deleted, and what stays.",
       "properties": {
@@ -3331,6 +3428,57 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "name",
         "digest",
         "files"
+      ],
+      "type": "object"
+    },
+    "Inputs": {
+      "additionalProperties": false,
+      "description": "Exact imported inputs of one package, separate from producer receipts.",
+      "properties": {
+        "content": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CapturedInput"
+          },
+          "type": "object"
+        },
+        "empty": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Empty"
+          },
+          "description": "Record-proven emptiness stays distinct from an explicit fixture selection.",
+          "type": "object"
+        },
+        "historical": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CapturedInput"
+          },
+          "description": "Pinned compiled sidecars stay separate from current producer outputs.",
+          "type": "object"
+        },
+        "osm": {
+          "$ref": "#/$defs/CapturedInput"
+        },
+        "osm_sha256": {
+          "type": "string"
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapturedInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "osm",
+        "osm_sha256",
+        "content",
+        "terrain",
+        "historical",
+        "empty"
       ],
       "type": "object"
     },
@@ -3680,6 +3828,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "PackagePlan": {
+      "additionalProperties": false,
+      "properties": {
+        "assets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LayerFile"
+          },
+          "type": "object"
+        },
+        "bootstrap": {
+          "$ref": "#/$defs/LayerFile"
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "$ref": "#/$defs/EnvPlan"
+        }
+      },
+      "required": [
+        "bootstrap",
+        "inputs",
+        "assets",
+        "plan"
+      ],
+      "type": "object"
     },
     "Phase": {
       "enum": [

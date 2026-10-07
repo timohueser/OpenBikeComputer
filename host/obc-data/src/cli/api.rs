@@ -222,7 +222,9 @@ mod tests {
             schema("`config commit`", generator.subschema_for::<crate::cli::config_cli::Committed>()),
             schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
-            schema("`plan`, `dev --check`", generator.subschema_for::<build_cli::EnvPlan>()),
+            schema("`plan fixtures`", generator.subschema_for::<crate::fixtures::Plan>()),
+            schema("Completed fixture prepare or apply output", generator.subschema_for::<crate::fixtures::Outcome>()),
+            schema("`plan ENV` except fixtures, `dev --check`", generator.subschema_for::<build_cli::EnvPlan>()),
             schema(
                 "`prepare`, `build`, `apply`, `dev --prepare`",
                 generator.subschema_for::<crate::cli::operation_cli::Handle>(),

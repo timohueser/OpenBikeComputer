@@ -25,6 +25,7 @@ use crate::date;
 use crate::store::{hash_file, sha256_hex, FileRecord, Snapshot, Store};
 
 /// What a step reads, the code that makes its layer, and how it runs.
+#[derive(Clone)]
 pub struct Step {
     /// The layer name: kebab-case segments joined by `/`.
     pub name: String,
@@ -78,6 +79,7 @@ fn covers(prefix: &str, path: &str) -> bool {
     path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
 }
 
+#[derive(Clone)]
 pub enum Input {
     Snapshot {
         source: String,
@@ -235,6 +237,7 @@ impl SourceIdentity {
     }
 }
 
+#[derive(Clone)]
 pub enum Run {
     /// A function in this process. Its code must declare the crate of the function. One binary
     /// links every product, so Cargo unifies their features: a step crate enables every feature

@@ -33,5 +33,5 @@ fn main() -> ExitCode {
         Ok(binary) => obc_data::fetch::capture::select_with(binary),
         Err(error) => return obc_data::cli::failed(error.to_string()),
     }
-    obc_data::cli::main(obc_data_steps::PRODUCTS)
+    obc_data::cli::main_with_fixtures(obc_data_steps::PRODUCTS, Some(&obc_data_steps::FIXTURES))
 }

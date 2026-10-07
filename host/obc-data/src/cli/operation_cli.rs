@@ -354,42 +354,51 @@ pub(super) fn perform(
     run: &str,
     digest: &str,
     products: &[&dyn crate::product::Product],
+    fixtures: Option<&crate::fixtures::FixtureCollection>,
 ) -> Result<(), Error> {
     let _using = enter(store, run, digest)?;
     let request = request()?;
     let root = super::root()?;
-    let result = match request.kind {
-        Kind::Auto => super::auto_cli::perform(&root, products, &request.env),
-        Kind::DevPrepare => {
-            super::dev_cli::prepare(&root, store, products, run, request.dev.as_ref().expect("checked Local request"))
+    let result = if request.env == "fixtures" {
+        super::fixture_cli::perform(&root, store, request, fixtures)
+    } else {
+        match request.kind {
+            Kind::Auto => super::auto_cli::perform(&root, products, &request.env),
+            Kind::DevPrepare => super::dev_cli::prepare(
+                &root,
+                store,
+                products,
+                run,
+                request.dev.as_ref().expect("checked Local request"),
+            ),
+            Kind::Prepare => super::build_cli::prepare(
+                &root,
+                products,
+                super::build_cli::PlanArgs {
+                    env: request.env.clone(),
+                    only: request.only.clone(),
+                    moves: request.moves.clone(),
+                },
+                true,
+            ),
+            Kind::Build => super::build_cli::build(
+                &root,
+                products,
+                super::build_cli::BuildArgs {
+                    env: request.env.clone(),
+                    only: request.only.clone(),
+                    moves: request.moves.clone(),
+                    plan: plan_path()?,
+                },
+                true,
+            ),
+            Kind::Apply => super::apply_cli::apply(
+                &root,
+                products,
+                super::apply_cli::ApplyArgs { env: request.env.clone(), plan: plan_path()?, yes: true },
+                true,
+            ),
         }
-        Kind::Prepare => super::build_cli::prepare(
-            &root,
-            products,
-            super::build_cli::PlanArgs {
-                env: request.env.clone(),
-                only: request.only.clone(),
-                moves: request.moves.clone(),
-            },
-            true,
-        ),
-        Kind::Build => super::build_cli::build(
-            &root,
-            products,
-            super::build_cli::BuildArgs {
-                env: request.env.clone(),
-                only: request.only.clone(),
-                moves: request.moves.clone(),
-                plan: plan_path()?,
-            },
-            true,
-        ),
-        Kind::Apply => super::apply_cli::apply(
-            &root,
-            products,
-            super::apply_cli::ApplyArgs { env: request.env.clone(), plan: plan_path()?, yes: true },
-            true,
-        ),
     };
     let result = finish_result(store, run, result);
     // All admitted producers and publication transport have drained before dropping the binary.
@@ -425,15 +434,29 @@ pub(super) fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
 }
 
 pub(super) fn prepare(root: &Path, args: super::build_cli::PlanArgs, json: bool) -> Result<(), Error> {
-    let request =
-        Request { kind: Kind::Prepare, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Prepare,
+        env: args.env,
+        only: args.only,
+        moves: args.moves,
+        plan: None,
+        dev: None,
+        fixture: None,
+    };
     print_handle(&start(root, &Store::open()?, request, None)?, json)
 }
 
 pub(super) fn build(root: &Path, args: super::build_cli::BuildArgs, json: bool) -> Result<(), Error> {
     let plan = args.plan.as_deref().map(super::build_cli::read_plan).transpose()?;
-    let request =
-        Request { kind: Kind::Build, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Build,
+        env: args.env,
+        only: args.only,
+        moves: args.moves,
+        plan: None,
+        dev: None,
+        fixture: None,
+    };
     print_handle(&start(root, &Store::open()?, request, plan.as_ref())?, json)
 }
 
@@ -465,8 +488,15 @@ pub(super) fn apply(
         super::build_cli::print_plan(&plan);
     }
     super::api::confirm(&super::apply_cli::question(&plan), consent)?;
-    let request =
-        Request { kind: Kind::Apply, env: args.env, only: Vec::new(), moves: Vec::new(), plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Apply,
+        env: args.env,
+        only: Vec::new(),
+        moves: Vec::new(),
+        plan: None,
+        dev: None,
+        fixture: None,
+    };
     print_handle(&start(root, &store, request, Some(&plan))?, json)
 }
 
