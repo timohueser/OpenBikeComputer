@@ -36,6 +36,7 @@ obc-render = { workspace = true }
 embedded-graphics = { workspace = true }
 
 [dev-dependencies]
+obc-map-core = { workspace = true }
 obc-draw = { workspace = true }
 obc-network = { workspace = true }
 obc-bake = { workspace = true }

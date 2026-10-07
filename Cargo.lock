@@ -3714,6 +3714,7 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-link",
+ "obc-map-core",
  "obc-map-scene",
  "obc-network",
  "obc-pack",
