@@ -249,6 +249,8 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
     }
     let using = operation::claim(store, run, request)?;
     std::env::set_var("OBC_DATA_STORE", store.root());
+    #[cfg(target_os = "linux")]
+    std::env::set_var("OBC_BAKE_BUDGETED", "1");
     SESSION
         .set(Session { store: Store::at(store.root()), control })
         .map_err(|_| Code::Usage.error("this worker already owns an operation"))?;
