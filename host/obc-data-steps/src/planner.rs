@@ -81,6 +81,7 @@ struct Routing {
 
 mod catalog;
 pub mod install;
+mod local;
 mod runtime;
 
 pub struct Planner;
@@ -120,6 +121,19 @@ impl Product for Planner {
 
     fn portable(&self, step: &Step) -> bool {
         step.name.starts_with("planner/") && !step.name.starts_with("planner/runtime/") && !step.client.is_none()
+    }
+
+    fn local_plan(
+        &self,
+        root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        release: &obc_data::engine::release::Release,
+        required: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> Result<obc_data::local::Plan, Unplanned> {
+        let declarations = self.declarations(root, env, regions, store, Ok(None), false)?;
+        obc_data::local::plan(root, store, self, release, &declarations.steps, required).map_err(Unplanned::Failed)
     }
 
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
@@ -178,6 +192,18 @@ impl Planner {
         store: &Store,
         tool: Result<obc_data::engine::Library, String>,
     ) -> Result<obc_data::product::Steps, Unplanned> {
+        self.declarations(root, env, regions, store, tool.map(Some), true)
+    }
+
+    fn declarations(
+        &self,
+        root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<Option<obc_data::engine::Library>, String>,
+        execution: bool,
+    ) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let region =
@@ -221,7 +247,7 @@ impl Planner {
                 client: Client::None,
             }
         } else {
-            crate::region_sources::combined("planner/osm", &source_steps, &tool.map_err(Unplanned::Invalid)?)?
+            crate::region_sources::combined("planner/osm", &source_steps, tool.map_err(Unplanned::Invalid)?.as_ref())?
         };
         let mut inputs = vec![Input::layer(osm.name.clone())];
         for source in BASEMAP_SOURCES {
@@ -513,7 +539,7 @@ impl Planner {
         });
         match wanted.is_empty() {
             true => {
-                let mut runtime = runtime::steps(root);
+                let mut runtime = if execution { runtime::steps(root) } else { Default::default() };
                 steps.append(&mut runtime.steps);
                 Ok(obc_data::product::Steps { steps, blocked: runtime.blocked })
             }

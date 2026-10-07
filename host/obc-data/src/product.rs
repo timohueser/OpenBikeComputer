@@ -61,6 +61,19 @@ pub trait Product: Sync {
         false
     }
 
+    /// Compare current semantic declarations without admitting their execution tools.
+    fn local_plan(
+        &self,
+        _root: &Path,
+        _env: &Env,
+        _regions: &Regions,
+        _store: &Store,
+        _release: &Release,
+        _required: &BTreeMap<String, Vec<String>>,
+    ) -> Result<crate::local::Plan, Unplanned> {
+        Err(Unplanned::Invalid("this product has no Local declarations".into()))
+    }
+
     /// Prepare the three planner service views in caller-owned storage, before handoff.
     fn services(
         &self,

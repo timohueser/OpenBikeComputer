@@ -4,6 +4,12 @@ use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--obc-build-identity") {
+        println!("{}", serde_json::json!({
+            "root": option_env!("OBC_ROUTE_BUILD_ROOT"), "code": option_env!("OBC_ROUTE_BUILD_CODE")
+        }));
+        return Ok(());
+    }
     let directory = std::env::args().nth(1).ok_or("Usage: route-server PACKAGE_DIRECTORY [--verify]")?;
     if std::env::args().nth(2).as_deref() == Some("--verify") {
         let path = Path::new(&directory);

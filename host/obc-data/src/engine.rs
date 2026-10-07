@@ -161,6 +161,12 @@ impl Code {
         code::files(root, self)
     }
 
+    /// Start tools with the same checked runtime policy as an engine step.
+    pub fn command(&self, root: &Path, argv: &[String]) -> Result<std::process::Command, String> {
+        let expected = code::hash(&self.files(root)?);
+        process::command(root, argv, Some((self, &expected)))
+    }
+
     /// Resolve source/config at a recorded target without selecting its execution tools.
     pub fn source_config(&self, root: &Path, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
         code::source_config(root, self, rust)
