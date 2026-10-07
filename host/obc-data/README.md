@@ -81,7 +81,8 @@ an admitted check or edit finishes before the terminal closes.
 | Sources | `f` changes scope; `/` filters; Enter shows details; `R` checks upstream |
 | Source versions | `v` lists requests; Enter selects a source-wide move |
 | Source policy | `e` opens presets; `c` enters 1..65535 whole days |
-| Automation | `s` state; `e` calendar; `d` disable; `b` limits; Tab field; Enter review; `y` confirm |
+| Automation | `s` details; `e` edits Daily/Weekly/Monthly/Custom; arrows select; Tab field; Enter reviews; `y` confirms |
+| Automation host | `d` disables future runs; `b` reviews limits; the Live row shows cadence, next run and last result |
 | Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
 | Apply | `a` reviews the machine, live changes and removals; `y` starts the exact reviewed plan |
 | Run | Enter opens progress; `R` observes; `x` stops admitted local work; `c` reconciles an owner result |
