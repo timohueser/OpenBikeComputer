@@ -16,6 +16,8 @@ mod records;
 pub use records::{saved, Saved};
 mod catalog;
 pub(crate) use catalog::Catalog;
+mod import;
+pub(crate) use import::{archives, inputs, materialize};
 
 pub type Assemble = fn(&Release, &Store, &Path) -> Result<(), String>;
 pub type Recipes = fn(&Env, &Regions, &Store, &Inputs) -> Result<Steps, Unplanned>;

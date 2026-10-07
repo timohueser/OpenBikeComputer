@@ -89,6 +89,7 @@ pub(super) fn run(root: &Path, products: &[&dyn Product], args: Dev, json: bool)
                 only: Vec::new(),
                 moves: Vec::new(),
                 plan: None,
+                fixture: None,
                 dev: Some(Request {
                     region: args.region,
                     refresh_live: args.refresh_live,

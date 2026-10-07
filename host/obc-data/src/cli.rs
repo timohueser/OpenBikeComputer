@@ -10,6 +10,7 @@ pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
 pub mod commit_cli;
 mod dev_cli;
 mod edit_cli;
+mod fixture_cli;
 mod freshness;
 pub mod operation_cli;
 mod r2_cli;
@@ -136,6 +137,13 @@ enum Command {
 
 /// Run `obc data` with the products whose steps this binary links.
 pub fn main(products: &[&dyn Product]) -> ExitCode {
+    main_with_fixtures(products, None)
+}
+
+pub fn main_with_fixtures(
+    products: &[&dyn Product],
+    fixtures: Option<&crate::fixtures::FixtureCollection>,
+) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -148,7 +156,7 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli, products) {
+    match run(cli, products, fixtures) {
         Ok(code) => code,
         Err(error) => error.report(json),
     }
@@ -159,7 +167,11 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
+fn run(
+    cli: Cli,
+    products: &[&dyn Product],
+    fixtures: Option<&crate::fixtures::FixtureCollection>,
+) -> Result<ExitCode, Error> {
     crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -168,9 +180,12 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         None => return status_cli::status(&root()?, products, false, json),
         Some(command) => command,
     };
+    let command = fixture_cli::dispatch(&root()?, command, fixtures, json)?;
+    let Some(command) = command else { return Ok(ExitCode::SUCCESS) };
     let done = match command {
         Command::Perform { store, run, request } => {
-            return operation_cli::perform(&Store::at(store), &run, &request, products).map(|()| ExitCode::SUCCESS);
+            return operation_cli::perform(&Store::at(store), &run, &request, products, fixtures)
+                .map(|()| ExitCode::SUCCESS);
         }
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),

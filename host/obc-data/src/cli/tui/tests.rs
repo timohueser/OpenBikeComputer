@@ -516,8 +516,15 @@ fn the_run_stop_action_uses_the_shared_draining_boundary_without_a_checkout() {
     let store = Store::at(&scratch.0);
     let run = runs::Run::create(&store, "prepare live").unwrap();
     let id = run.id().to_string();
-    let request =
-        Request { kind: Kind::Prepare, env: LIVE.into(), only: Vec::new(), moves: Vec::new(), plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Prepare,
+        env: LIVE.into(),
+        only: Vec::new(),
+        moves: Vec::new(),
+        plan: None,
+        dev: None,
+        fixture: None,
+    };
     let digest = request.digest().unwrap();
     operation::reserve(
         &store,

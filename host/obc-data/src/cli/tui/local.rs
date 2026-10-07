@@ -181,6 +181,7 @@ pub(super) fn start(root: &Path, store: &Store, request: Request) -> Result<crat
             moves: Vec::new(),
             plan: None,
             dev: Some(request),
+            fixture: None,
         },
         None,
     )

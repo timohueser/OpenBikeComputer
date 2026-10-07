@@ -852,7 +852,7 @@ fn planned_run(
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
-fn env_plan(
+pub(super) fn env_plan(
     env: &Env,
     only: &[String],
     plan: Plan,
