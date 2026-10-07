@@ -148,6 +148,7 @@ pub struct Run {
     _using: Lock,
     codes: super::code::Context,
     committed_code: bool,
+    budget: Option<(std::path::PathBuf, crate::operation::budget::Budget)>,
     pub(crate) originals: BTreeMap<String, super::release::Layer>,
     pub(crate) automatic: Option<crate::approval::Admission>,
 }
@@ -176,6 +177,7 @@ impl Run {
                 _using: using,
                 codes: Default::default(),
                 committed_code: false,
+                budget: None,
                 originals: BTreeMap::new(),
                 automatic: None,
             };
@@ -197,7 +199,21 @@ impl Run {
         self.file.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.id))
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn host_budget(&mut self, root: &Path, budget: crate::operation::budget::Budget) {
+        self.budget = Some((root.into(), budget));
+    }
+
+    fn check_disk(&self, store: &Path, estimated: u64) -> Result<(), String> {
+        if let Some((root, budget)) = &self.budget {
+            budget.disk(root, estimated)?;
+            budget.disk(store, estimated)?;
+        }
+        Ok(())
+    }
+
     pub fn check_stop(&self, store: &Store) -> Result<(), String> {
+        self.check_disk(store.root(), 0)?;
         if crate::operation::stopped(store, self.id())? {
             return Err("stopped after the current work; no publication handoff started".into());
         }
@@ -243,6 +259,7 @@ impl Run {
             _using: using,
             codes: Default::default(),
             committed_code: false,
+            budget: None,
             originals: BTreeMap::new(),
             automatic: None,
         };
@@ -305,6 +322,12 @@ impl Run {
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
         }
+        let estimated = plan
+            .builds()
+            .filter_map(|build| build.estimate)
+            .fold(0u64, |total, estimate| total.saturating_add(estimate.bytes_out));
+        let estimated = plan.fetches().iter().filter_map(|fetch| fetch.bytes).fold(estimated, u64::saturating_add);
+        self.check_disk(store.root(), estimated)?;
         let ordered = order(steps)?;
         if self.committed_code {
             for step in ordered.iter().filter(|step| !self.originals.contains_key(&step.name)) {

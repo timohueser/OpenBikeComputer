@@ -526,6 +526,18 @@ pub(super) fn host(host: &str) -> Result<(), Error> {
 
 #[cfg(not(test))]
 pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -> Result<Committed, Error> {
+    submit_checked(directory, digest, run, store, None)?
+        .ok_or_else(|| Code::Blocked.error("manual publication was not admitted"))
+}
+
+#[cfg(not(test))]
+pub(super) fn submit_checked(
+    directory: &Path,
+    digest: &str,
+    run: &str,
+    store: &Store,
+    automatic_root: Option<&Path>,
+) -> Result<Option<Committed>, Error> {
     let host = std::env::var("OBC_COMMIT_HOST")
         .map_err(|_| Code::Blocked.error("set OBC_COMMIT_HOST to the configured VPS, or local on that VPS"))?;
     let worker = "/opt/obc-data/bin/obc-data-plumbing";
@@ -554,8 +566,16 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
     if !copied.status.success() {
         return Err(Code::Failed.error("commit bundle transfer failed; no publication owner started"));
     }
+    let schedule = match automatic_root {
+        Some(root) => match crate::schedule::handoff(root, store)? {
+            Some(lock) => Some(lock),
+            None => return Ok(None),
+        },
+        None => None,
+    };
     // Persist the handoff before admission. Transport failure cannot revoke a delayed dispatch.
     super::operation_cli::handoff(store, run, &host, digest)?;
+    drop(schedule);
     let mut command = if host == "local" {
         Command::new(worker)
     } else {
@@ -583,7 +603,7 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
             super::operation_cli::checked_owner(store, run, &host, digest, &observed)?;
         }
         if let Some(reply) = observed.reply {
-            return terminal(reply, store, run, &host, digest);
+            return terminal(reply, store, run, &host, digest).map(Some);
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
@@ -603,6 +623,17 @@ fn terminal(reply: Reply, store: &Store, run: &str, host: &str, digest: &str) ->
 pub fn main(args: &[String]) -> Result<u8, String> {
     let store = Store::at("/var/lib/obc-data/store");
     match args {
+        [command, root, store] if command == "bake-preflight" => {
+            let (root, store) = (Path::new(root), Path::new(store));
+            if !root.is_absolute() || !store.is_absolute() {
+                return Err("bake preflight needs the configured absolute checkout and store".into());
+            }
+            let budget = crate::operation::budget::Budget::environment()?;
+            budget.disk(root, 0)?;
+            budget.disk(store, 0)?;
+            println!("{{\"ready\":true}}");
+            Ok(0)
+        }
         [command] if command == "commit-approval" => {
             println!("{}", serde_json::to_string(&crate::approval::read(&store)?).map_err(|error| error.to_string())?);
             Ok(0)

@@ -170,68 +170,22 @@ fn apply_live(
     let mut run = super::api::start_run(store, "apply live")?;
     run.require_committed_code();
     let preparation = (|| {
-        let expected = super::commit_cli::expected(plan, products)?;
-        let scratch = Scratch::new()?;
         let (built, next) = stage(root, store, http, remote, products, plan, &mut run)?;
-        crate::worker::check(root)?;
-        let directory = scratch.0.join("bundle");
-        let sources = registry(root)?.sources;
-        let previous = Live::read(remote, products, &sources, store).map_err(r2_failed)?;
-        if previous.products.iter().any(|product| {
-            expected
-                .get(&format!("{}/catalog.json", product.prefix))
-                .is_some_and(|observed| observed != &product.observed)
-        }) {
-            return Err(Code::PlanOutdated.error("live changed while preparing service metadata"));
-        }
-        previous.restore_named(remote, store).map_err(r2_failed)?;
-        let views = |live: &Live, folder: &str| -> Result<Vec<crate::vps::Candidate>, Error> {
-            let mut services = Vec::new();
-            for product in products {
-                let Some(now) = live.products.iter().find(|now| now.product == product.name()) else { continue };
-                let Some((_, release)) = &now.release else { continue };
-                let mut candidates = product.services(root, release, store, &directory.join(folder))?;
-                if !candidates.is_empty() {
-                    let origins: crate::vps::Origins = serde_json::from_value(
-                        now.document
-                            .as_ref()
-                            .and_then(|document| document.get("origins"))
-                            .cloned()
-                            .ok_or_else(|| Code::VerifyFailed.error("service view has no pointer origins"))?,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    origins.check()?;
-                    for candidate in &mut candidates {
-                        candidate.site_origin = origins.site_origin.clone();
-                        candidate.api_origin = origins.api_origin.clone();
-                        candidate.objects_url = origins.objects_url();
-                    }
-                }
-                services.extend(candidates);
-            }
-            Ok(services)
-        };
-        let services = (views(&next, "services")?, views(&previous, "previous-services")?);
-        build_cli::recheck_approval(root, store, http, remote, products, plan, &mut run)?;
-        let approval =
-            plan.approval.clone().ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?;
-        let digest =
-            super::commit_cli::pack(&directory, store, &run, expected, next, sources, remote, services, approval)?;
-        run.sync()?;
-        Ok((built, scratch, directory, digest))
+        let pending = publication(root, store, http, remote, products, plan, next, &mut run)?;
+        Ok((built, pending))
     })();
-    let (built, _scratch, directory, digest) = match preparation {
+    let (built, pending) = match preparation {
         Ok(prepared) => prepared,
         Err(error) => return super::api::finish_run(run, Err(error), None),
     };
     let id = run.id().to_string();
     drop(run);
     #[cfg(test)]
-    let committed = super::commit_cli::execute_for_test(&directory, &digest, store, remote, wait)?;
+    let committed = super::commit_cli::execute_for_test(&pending.directory, &pending.digest, store, remote, wait)?;
     #[cfg(not(test))]
     let committed = {
         let _ = wait;
-        super::commit_cli::submit(&directory, &digest, &id, store).map_err(|mut error| {
+        super::commit_cli::submit(&pending.directory, &pending.digest, &id, store).map_err(|mut error| {
             error.run = Some(id.clone());
             error
         })?
@@ -239,6 +193,72 @@ fn apply_live(
     let mut applied = Applied { run: id, built: (!noop).then_some(built), ..Applied::default() };
     committed.apply(&mut applied);
     Ok(applied)
+}
+
+pub(super) struct Pending {
+    pub(super) _scratch: Scratch,
+    pub(super) directory: PathBuf,
+    pub(super) digest: String,
+}
+
+/// Seal the verified desired graph for the existing installed publication owner.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn publication(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: &Remote,
+    products: &[&dyn Product],
+    plan: &EnvPlan,
+    next: Live,
+    run: &mut Run,
+) -> Result<Pending, Error> {
+    let expected = super::commit_cli::expected(plan, products)?;
+    let scratch = Scratch::new()?;
+    crate::worker::check(root)?;
+    let directory = scratch.0.join("bundle");
+    let sources = registry(root)?.sources;
+    let previous = Live::read(remote, products, &sources, store).map_err(r2_failed)?;
+    if previous.products.iter().any(|product| {
+        expected.get(&format!("{}/catalog.json", product.prefix)).is_some_and(|observed| observed != &product.observed)
+    }) {
+        return Err(Code::PlanOutdated.error("live changed while preparing service metadata"));
+    }
+    previous.restore_named(remote, store).map_err(r2_failed)?;
+    let views = |live: &Live, folder: &str| -> Result<Vec<crate::vps::Candidate>, Error> {
+        let mut services = Vec::new();
+        for product in products {
+            let Some(now) = live.products.iter().find(|now| now.product == product.name()) else { continue };
+            let Some((_, release)) = &now.release else { continue };
+            let mut candidates = product.services(root, release, store, &directory.join(folder))?;
+            if !candidates.is_empty() {
+                let origins: crate::vps::Origins = serde_json::from_value(
+                    now.document
+                        .as_ref()
+                        .and_then(|document| document.get("origins"))
+                        .cloned()
+                        .ok_or_else(|| Code::VerifyFailed.error("service view has no pointer origins"))?,
+                )
+                .map_err(|e| e.to_string())?;
+                origins.check()?;
+                for candidate in &mut candidates {
+                    candidate.site_origin = origins.site_origin.clone();
+                    candidate.api_origin = origins.api_origin.clone();
+                    candidate.objects_url = origins.objects_url();
+                }
+            }
+            services.extend(candidates);
+        }
+        Ok(services)
+    };
+    let services = (views(&next, "services")?, views(&previous, "previous-services")?);
+    build_cli::recheck_approval(root, store, http, remote, products, plan, run)?;
+    let approval =
+        plan.approval.clone().ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?;
+    let digest = super::commit_cli::pack(&directory, store, run, expected, next, sources, remote, services, approval)?;
+    run.sync()?;
+
+    Ok(Pending { _scratch: scratch, directory, digest })
 }
 
 /// Remove what no live release uses once no client can still read an older pointer: `wait` after

@@ -225,6 +225,7 @@ mod tests {
             schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
             schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
             schema("Completed auto output", generator.subschema_for::<crate::cli::auto_cli::Result>()),
+            schema("Live timer state", generator.subschema_for::<crate::schedule::State>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
             schema("`runs RUN` for a detached operation", generator.subschema_for::<crate::cli::operation_cli::View>()),
             schema("`runs RUN` for other journals", generator.subschema_for::<Details>()),

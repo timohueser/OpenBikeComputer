@@ -46,6 +46,17 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         return Err(Code::Usage.error("an operation worker cannot start a second operation"));
     }
     let environment = operation::launch::preflight().map_err(|e| Code::Blocked.error(e))?;
+    let budget = environment
+        .as_ref()
+        .map(|_| {
+            let budget = operation::budget::Budget::environment()?;
+            crate::schedule::budget_ready(&budget)?;
+            budget.disk(root, 0)?;
+            budget.disk(store.root(), 0)?;
+            Ok::<_, String>(budget)
+        })
+        .transpose()
+        .map_err(|e| Code::Blocked.error(e))?;
     let code = crate::worker::bound_code(root).map_err(|e| Code::Blocked.error(e))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let plan_bytes = plan
@@ -141,12 +152,12 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     drop(run);
     let mut child = match environment {
         Some(environment) => {
-            let mut command = operation::launch::service(
+            let mut command = operation::launch::bake(
                 &format!("obc-data-run-{}", crate::store::sha256_hex(directory.as_os_str().as_encoded_bytes())),
                 &control.root,
                 &directory,
                 &environment,
-                true,
+                budget.as_ref().expect("Linux setup checked the bake budget"),
             );
             for (key, value) in [
                 (
@@ -259,7 +270,18 @@ pub(super) fn resume(store: &Store, command: &str) -> Result<Option<Run>, String
     {
         return Err("operation child cannot start another run or environment".into());
     }
-    Ok(Some(Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?))
+    let run = Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?;
+    #[cfg(target_os = "linux")]
+    let run = {
+        let mut run = run;
+        let budget = operation::budget::Budget::environment()?;
+        crate::schedule::budget_ready(&budget)?;
+        budget.disk(&session.control.root, 0)?;
+        budget.disk(store.root(), 0)?;
+        run.host_budget(&session.control.root, budget);
+        run
+    };
+    Ok(Some(run))
 }
 
 fn finish_result(store: &Store, run: &str, mut result: Result<(), Error>) -> Result<(), Error> {

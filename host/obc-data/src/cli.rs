@@ -103,6 +103,16 @@ enum Command {
     Apply(apply_cli::ApplyArgs),
     /// Start a durable refresh of used stale sources, then build and verify.
     Auto { env: String },
+    /// Inspect, enable or disable the operator's live timer.
+    Schedule {
+        env: String,
+        #[arg(long, conflicts_with = "disable", requires = "time_zone")]
+        calendar: Option<String>,
+        #[arg(long, requires = "calendar")]
+        time_zone: Option<String>,
+        #[arg(long)]
+        disable: bool,
+    },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
     /// Clean the local store: delete what no live release or fixture reaches, and move the
@@ -212,6 +222,48 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Build(args) => operation_cli::build(&root()?, args, json),
         Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
         Command::Auto { env } => auto_cli::start(&root()?, env, json),
+        Command::Schedule { env, calendar, time_zone, disable } => {
+            let (root, store) = (root()?, Store::open()?);
+            let state = if disable {
+                crate::schedule::disable(&root, &store, &env)
+            } else if let Some(calendar) = calendar {
+                crate::schedule::install(
+                    &root,
+                    &store,
+                    &env,
+                    &calendar,
+                    time_zone.as_deref().expect("clap requires a time zone"),
+                )
+            } else {
+                crate::schedule::state(&root, &store, &env)
+            }
+            .map_err(|reason| Code::Blocked.error(reason))?;
+            if json {
+                print_json(&state)
+            } else {
+                println!("live timer: {}", if state.enabled { "enabled" } else { "disabled" });
+                if let Some(reason) = &state.blocked {
+                    println!("not runnable: {reason}");
+                } else if state.enabled && !state.active {
+                    println!("not runnable: the installed timer is inactive");
+                }
+                if let (Some(calendar), Some(zone)) = (&state.calendar, &state.time_zone) {
+                    println!("{calendar} {zone}");
+                }
+                println!(
+                    "next: {}; last trigger: {}",
+                    state.next.as_deref().unwrap_or("none"),
+                    state.last_trigger.as_deref().unwrap_or("none")
+                );
+                if let Some(run) = &state.last_run {
+                    println!("last run: {} {:?}", run.run.summary.id, run.run.summary.outcome);
+                    if let Some(error) = &run.observation_error {
+                        println!("observation: {error}");
+                    }
+                }
+                Ok(())
+            }
+        }
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

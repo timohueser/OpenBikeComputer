@@ -17,6 +17,7 @@ pub struct Result {
     pub approval: Option<String>,
     /// Publication requires checked enabled-timer admission.
     pub publication: String,
+    pub applied: Option<apply_cli::Applied>,
 }
 
 pub(super) fn check_env(name: &str) -> std::result::Result<(), Error> {
@@ -53,8 +54,67 @@ pub(super) fn perform(root: &Path, products: &[&dyn Product], env: &str) -> std:
     let http = Http::new();
     let remote = (env == "live").then(super::remote).transpose()?;
     let mut run = api::start_run(&store, &format!("auto {env}"))?;
-    let result = execute(root, &store, &http, remote.as_ref(), products, env, &mut run);
-    let result = api::finish_run(run, result, None)?;
+    let (mut result, applying) = match execute(root, &store, &http, remote.as_ref(), products, env, &mut run) {
+        Ok(executed) => executed,
+        Err(error) => return api::finish_run(run, Err(error), None),
+    };
+    let pending = (|| -> std::result::Result<Option<apply_cli::Pending>, Error> {
+        if let Some(applying) = applying {
+            if cfg!(target_os = "linux") && crate::schedule::state(root, &store, env)?.runnable {
+                return apply_cli::publication(
+                    root,
+                    &store,
+                    &http,
+                    remote.as_ref().expect("Live remote"),
+                    products,
+                    &applying.plan,
+                    applying.next,
+                    &mut run,
+                )
+                .map(Some);
+            }
+        }
+        Ok(None)
+    })();
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(error) => return api::finish_run(run, Err(error), None),
+    };
+    if let Some(pending) = pending {
+        let id = run.id().to_string();
+        drop(run);
+        #[cfg(not(test))]
+        let committed = commit_cli::submit_checked(&pending.directory, &pending.digest, &id, &store, Some(root));
+        #[cfg(test)]
+        let committed = match crate::schedule::handoff(root, &store)? {
+            Some(lock) => {
+                drop(lock);
+                commit_cli::execute_for_test(
+                    &pending.directory,
+                    &pending.digest,
+                    &store,
+                    remote.as_ref().unwrap(),
+                    apply_cli::WAIT,
+                )
+                .map(Some)
+            }
+            None => Ok(None),
+        };
+        match committed {
+            Ok(Some(committed)) => {
+                let mut applied = apply_cli::Applied { run: id, ..Default::default() };
+                committed.apply(&mut applied);
+                result.publication = "applied under the original manual approval".into();
+                result.applied = Some(applied);
+                return api::print_json(&result);
+            }
+            Ok(None) => {
+                run = crate::engine::runs::Run::attach(&store, &id, &crate::engine::runs::events(&store, &id)?)?
+            }
+            Err(error) => return Err(error.with_run(&id)),
+        }
+    }
+    let result = api::finish_run(run, Ok(result), None)?;
     api::print_json(&result)
 }
 
@@ -67,7 +127,7 @@ fn execute(
     products: &[&dyn Product],
     env: &str,
     run: &mut crate::engine::runs::Run,
-) -> std::result::Result<Result, Error> {
+) -> std::result::Result<(Result, Option<build_cli::Applying>), Error> {
     check_env(env)?;
     if let Some(remote) = remote {
         apply_cli::committed(root)?;
@@ -92,7 +152,7 @@ fn execute(
     if !built.blocked.is_empty() {
         return Err(Code::Blocked.error("automatic build is incomplete; no publication starts"));
     }
-    if let Some(applying) = applying {
+    if let Some(applying) = &applying {
         apply_cli::verify_products(root, products, store, &applying.next)?;
         build_cli::recheck_approval(
             root,
@@ -119,11 +179,15 @@ fn execute(
     }
     run.check_stop(store)?;
     crate::worker::check(root)?;
-    Ok(Result {
-        built,
-        approval: run.automatic.as_ref().map(|approved| approved.digest().into()),
-        publication: "disabled: checked enabled-timer admission is unavailable".into(),
-    })
+    Ok((
+        Result {
+            built,
+            approval: run.automatic.as_ref().map(|approved| approved.digest().into()),
+            publication: "verified, not applied: no checked enabled live timer at publication handoff".into(),
+            applied: None,
+        },
+        applying,
+    ))
 }
 
 #[cfg(test)]
@@ -196,13 +260,13 @@ mod tests {
         let data = Data { calls: AtomicUsize::new(0), verifies: AtomicUsize::new(0), fail: AtomicBool::new(false) };
         let http = Http::new();
         let mut run = crate::engine::runs::Run::create(&fixture.store, "auto local").unwrap();
-        let local = execute(&root, &fixture.store, &http, None, &[&data], "local", &mut run).unwrap();
+        let (local, _) = execute(&root, &fixture.store, &http, None, &[&data], "local", &mut run).unwrap();
         assert!(local.approval.is_none());
         assert_eq!(local.built.layers.len(), 1);
-        assert!(local.publication.starts_with("disabled"));
+        assert!(local.publication.starts_with("verified, not applied"));
         assert_eq!(data.verifies.load(Ordering::SeqCst), 1);
         data.fail.store(true, Ordering::SeqCst);
-        let error = execute(&root, &fixture.store, &http, None, &[&data], "local", &mut run).unwrap_err();
+        let error = execute(&root, &fixture.store, &http, None, &[&data], "local", &mut run).err().unwrap();
         assert_eq!(error.code, Code::VerifyFailed);
         assert_eq!(data.verifies.load(Ordering::SeqCst), 2, "an unchanged build still has real verification");
         run.finish(None).unwrap();
@@ -217,7 +281,7 @@ mod tests {
         let remote = Remote::Bucket(crate::r2::Bucket::local(&bucket));
         let before = data.calls.load(Ordering::SeqCst);
         let mut run = crate::engine::runs::Run::create(&fixture.store, "auto live").unwrap();
-        let error = execute(&root, &fixture.store, &http, Some(&remote), &[&data], "live", &mut run).unwrap_err();
+        let error = execute(&root, &fixture.store, &http, Some(&remote), &[&data], "live", &mut run).err().unwrap();
         assert!(error.message.contains("reviewed manual apply"), "{error:?}");
         assert_eq!(data.calls.load(Ordering::SeqCst), before, "no product planning or acquisition precedes approval");
         assert!(!fixture.store.root().join("commits/current.approval").exists());
