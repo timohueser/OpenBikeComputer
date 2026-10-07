@@ -92,3 +92,12 @@ Stop drains admitted local work and prevents publication handoff. After handoff,
 reconcile the owner result. Progress shows acknowledged writes and unresolved owner outcomes.
 After a Rust edit, new planning or work requires quitting and launching `obc data` again.
 Existing Run observation, stop and reconciliation stay available.
+
+## Portable-data API
+
+Pass the current producer declarations and an exact published release to `local::plan`.
+Request client layers and any extra file paths needed by Local consumers. Inspect blocked
+selections before passing the unchanged plan to `local::adopt`. Use `local::saved` to read
+the saved anchors. These APIs preserve the original producer and create no build receipt.
+They do not start apps or services. The [Local contract](../../specs/obc-data.md#local-portable-data)
+defines comparison, transfer checks and collection roots.

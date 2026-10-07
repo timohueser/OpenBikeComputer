@@ -191,6 +191,8 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `releases/<product>/<id>.json` | The manifest of a release, see [Releases](#releases) |
 | `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
+| `producers/<hash>.json` | The full code fingerprints, source/config fingerprints and resolved Rust target/profile from the same traversal. The full fingerprints must hash to `<hash>` |
+| `local/<product>.json` | One saved portable adoption: its original release and exact selected files. It remains a collection root while apps are stopped |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
@@ -263,7 +265,7 @@ The import moves the cache directories of the older bake tools into the store:
 The import record has one JSON object per line: `dir` (without symbolic links), `path` (below
 `dir`, with `/`), `size` and `sha256`.
 
-The collection deletes what no live release or fixture reaches. Its roots are the live
+The collection deletes what no live release, saved Local adoption or fixture reaches. Its roots are the live
 releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
 
 - A snapshot record is reached when a layer of a live release read its source and version. The
@@ -275,6 +277,8 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
   planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import
   record releases its objects.
+- A saved Local adoption roots its selected file SHA-256 values and every source version in
+  their transitive original layer provenance. A malformed saved anchor stops collection.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of all the files, or of one file, of a reached record of its source, and a layer input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -282,9 +286,9 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the source`,
-`newest of a request`. Then one entry for the reached layers of each step (`inputs kept`). Then
+`newest of a request` and `local PRODUCT, …`. Then one entry for the reached layers of each step (`inputs kept`). Then
 one entry for each kind of root that names objects that no reached record or layer has:
-`live release`, `fixture`, `planner recipe` or `import record`. The size of
+`live release`, `local release`, `fixture`, `planner recipe` or `import record`. The size of
 an entry is the size of its files. The collection takes the store lock alone, or refuses to start
 while a mutating run, fetch or import holds it. A writer run holds it through verification and
 publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
@@ -1135,7 +1139,7 @@ byte order.
 ### Releases
 
 `releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
-"layers", "named"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+"layers", "named", "producers"}`, as the compact output of `serde_json` with the keys of each object in byte order.
 `region` is the region of the environment that it was built for, and `optional` the optional layers
 of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
 the same layers make the same release. `layers` is sorted by `step`, and each layer has:
@@ -1162,6 +1166,31 @@ product's verification.
 The objects of a release are the selected client files, with one object per distinct SHA-256.
 The manifest records every file of every layer, so a plan compares it with live and live names
 the versions that it read. Uploads, live ownership and cleanup use the same selection.
+
+`producers` deduplicates witnesses by the original full `code` digest. Each witness has `files`,
+`source_config` and resolved `rust` target/build profile (`null` without Rust). The full fingerprints must
+produce that digest. The source/config projection comes from the same resolver traversal.
+A missing witness does not permit portable adoption. Witness metadata changes the release id;
+it does not change an existing layer key or receipt.
+
+### Local portable data
+
+`local::plan` compares supplied producer declarations at the original Rust target/profile.
+It selects no original native compiler, library or Python interpreter. The owner must declare
+the layer portable. Native service archives are excluded. Options, commands, declared outputs,
+exact snapshot versions/parameters and selected dependency file digests must match. Dependency
+comparison uses original byte provenance, not the Local host's native producer key.
+
+A selection includes client files and the extra exact paths the caller needs. A file can come
+from its immutable client object key, an exact named release key, or verified local bytes.
+An unpublished missing intermediate blocks adoption; it needs a Local build or materializer.
+Planning performs no transfer. It reports each blocked selection with its reason.
+
+`local::adopt` requires the exact reviewed complete selection. It checks source/config before
+and after transfer, and checks every selected file's SHA-256 and size. It saves the original
+release and selection in a separate adoption record. It creates no Local receipt or replacement
+producer identity. A failure leaves verified cache bytes and keeps the previous anchor.
+Local rebuilds keep their full execution identity. These APIs do not start apps or services.
 
 ### State of a layer
 
