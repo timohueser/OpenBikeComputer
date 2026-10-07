@@ -58,7 +58,7 @@ impl View {
 impl App {
     pub(super) fn version_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![
-            Line::from("Move ALL active requests of this source. Nothing fetches until preparation."),
+            Line::from("Move ALL active requests of this source. Choosing here does not fetch data."),
             Line::from("Pending intent enters Plan; apply needs the exact reviewed plan."),
         ];
         let Some(versions) = &self.versions else { return lines };
