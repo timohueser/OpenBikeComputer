@@ -353,7 +353,7 @@ fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_s
     app.complete(Effect::LocalReview(request.clone()), updated);
     assert!(app.asking);
     let drawn = screen(&mut app, 80, 24).join(" ");
-    assert!(drawn.contains("Simulator") && drawn.contains("local"), "{drawn}");
+    assert!(drawn.contains("Simulator") && drawn.contains("CONFIRM LOCAL PREPARATION"), "{drawn}");
     assert!(drawn.contains("2026-10-01") && drawn.contains("area=europe/test"), "{drawn}");
     let mut reviewed = request;
     reviewed.reviewed = Some(Box::new(resolved));
@@ -620,7 +620,7 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
     let mut app = app();
     let drawn = screen(&mut app, 80, 18);
     let live = [
-        " 1 Live   3 Sources   4 Store   5 Runs",
+        " 1 Live   2 Local   3 Sources   4 Store   5 Runs",
         "",
         "LIVE from https://maps.openbikecomputer.com",
         "region  europe/germany/baden-wuerttemberg",
