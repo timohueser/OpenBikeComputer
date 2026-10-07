@@ -713,6 +713,9 @@ class RcloneSeam(ArchiveCase):
         real = ingest.publish.run_rclone
         ingest.publish.run_rclone = self.record
         self.addCleanup(lambda: setattr(ingest.publish, "run_rclone", real))
+        guard = unittest.mock.patch.object(ingest.publish.r2, "r2_client", return_value="")
+        self.guard = guard.start()
+        self.addCleanup(guard.stop)
 
     #: What the fake R2 already holds: another region's tile, from another source.
     PUBLISHED = {
@@ -767,8 +770,14 @@ class RcloneSeam(ArchiveCase):
 
         self.LSF = ""
         self.assertEqual(ingest.main(["publish", "--archive", str(self.archive)]), 0)
+        self.guard.assert_called_once_with(["check-owned", "reference/v1/index.json"])
         self.assertEqual([argv[0] for argv, _ in self.calls], ["copy", "lsf", "copy"])
         self.assertEqual(self.uploaded["tiles"], self.index()["tiles"])
+
+    def test_an_owned_reference_refuses_before_any_rclone_write(self):
+        self.guard.side_effect = ingest.publish.r2.Refuse("reference/v1 belongs to obc data apply live")
+        self.assertEqual(ingest.main(["publish", "--archive", str(self.archive)]), 1)
+        self.assertEqual(self.calls, [])
 
     def test_a_secondary_contributor_survives_the_next_publish(self):
         """The published index keeps every contributor's attribution, not only the best."""
@@ -811,6 +820,7 @@ class RcloneSeam(ArchiveCase):
         target = self.root / "mirror"
         bbox = bbox_of(self.inputs / "tower.tif")
         self.assertEqual(ingest.main(["mirror", "--archive", str(target), "--bbox", bbox]), 0)
+        self.guard.assert_not_called()
         copyto, copy = (argv for argv, _ in self.calls)
         self.assertEqual(copyto[1], "OBCR2:maps/reference/v1/index.json")
         # The box needs its own tile and the ring around it; only the one is in the index.
