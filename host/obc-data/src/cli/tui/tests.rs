@@ -627,7 +627,6 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
     let drawn = screen(&mut app, 80, 18);
     let live = [
         " 1 Live   2 Local   3 Sources   4 Store   5 Runs",
-        "",
         "LIVE from https://maps.openbikecomputer.com",
         "region  europe/germany/baden-wuerttemberg",
         "",
@@ -643,7 +642,8 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
         "stale        osm                   120 d > 90 d",
         "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
         "unreachable  maps                  a fetch that the step list needs failed",
-        "r region   R check R2   s schedule   p plan   u undo environment   ? help",
+        "r region   R check R2   s schedule   p plan   u undo environment",
+        "C review config   ? help",
     ];
     assert_eq!(drawn, live, "{drawn:#?}");
     assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
@@ -801,11 +801,70 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
     state.enabled = false;
     state.last_run.as_mut().unwrap().result = Some(json!({"built":{},"applied":null}));
     assert_eq!(app.schedule.summary(), "off · last verified");
+    std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap().blocked =
+        Some("Long host repair details. ".repeat(100));
+    app.scroll = 80;
     app.schedule.editing = true;
+    app.schedule.field = 1;
     app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Daily, time: "25:99".into(), day: 1 });
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(drawn.contains("Time (HH:MM): 25:99") && drawn.contains("Time zone: UTC"), "{drawn}");
     app.key(KeyCode::Enter);
     assert!(!app.asking && app.schedule.pending.is_none());
     assert!(app.notice.unwrap().message.contains("00:00 to 23:59"));
+}
+
+#[test]
+fn configuration_review_keeps_message_keys_in_the_field_and_commits_only_after_consent() {
+    let mut app = app();
+    app.host = "runnervmmprz5 (linux)".into();
+    assert_eq!(app.key(KeyCode::Char('C')), Effect::ConfigRead);
+    app.config.review = Some(
+        serde_json::from_value(json!({
+            "head": "a".repeat(40),
+            "files": { "data/regions/new.toml": { "sha256": "b".repeat(64), "mode": "100644" } },
+            "diff": format!("New file: data/regions/new.toml\nname = 'Region'\n{}", "long configuration change\n".repeat(100))
+        }))
+        .unwrap(),
+    );
+    app.scroll = 80;
+    assert!(!screen(&mut app, 80, 24).join(" ").contains("Message:"));
+    app.key(KeyCode::Char('e'));
+    assert!(screen(&mut app, 80, 24).join(" ").contains("Message: Update bake configuration"));
+    app.key(KeyCode::Delete);
+    for c in "q message".chars() {
+        assert_eq!(app.key(KeyCode::Char(c)), Effect::None);
+    }
+    assert_eq!(app.config.message, "q message");
+    assert!(app.config.editing && !app.asking);
+    app.key(KeyCode::Enter);
+    let frame = screen(&mut app, 80, 24);
+    let drawn = frame.join(" ");
+    let content = frame
+        .iter()
+        .filter_map(|line| line.split('│').nth(1))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        app.asking
+            && drawn.contains("CONFIGURATION REVIEW")
+            && content.contains("This machine: runnervmmprz5 (linux)")
+            && content.contains("Git hooks and signing")
+            && content.contains("Git commit only · no push"),
+        "{drawn}"
+    );
+    app.busy = true;
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::None);
+    app.busy = false;
+    assert_eq!(
+        app.key(KeyCode::Char('y')),
+        Effect::ConfigCommit(Box::new(app.config.review.clone().unwrap()), "q message".into())
+    );
+    app.key(KeyCode::Esc);
+    assert!(!app.asking && app.config.message == "q message");
+    app.config.review = None;
+    assert_eq!(app.key(KeyCode::Enter), Effect::None);
 }
 
 #[test]

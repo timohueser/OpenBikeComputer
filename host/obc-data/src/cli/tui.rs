@@ -2,6 +2,7 @@
 //! through the shared command API. Preparation, build and apply retain their worker after exit.
 
 mod background;
+mod config;
 mod execution;
 mod host;
 mod live;
@@ -73,6 +74,7 @@ enum Overlay {
     AppLogs,
     Version,
     Schedule,
+    Config,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,9 @@ enum Action {
     Dismiss,
     SourceScope,
     SourceFilter,
+    ConfigRead,
+    ConfigEdit,
+    ConfigConfirm,
     ScheduleRead,
     ScheduleEdit,
     ScheduleDisable,
@@ -174,6 +179,8 @@ enum Effect {
     StopRun(String),
     ReconcileRun(String),
     Versions(String),
+    ConfigRead,
+    ConfigCommit(Box<super::config_cli::Review>, String),
     ScheduleRead,
     ScheduleChange(schedule::Change),
     Reload,
@@ -258,6 +265,7 @@ struct App {
     versions: Option<super::versions::Versions>,
     moves: std::collections::BTreeMap<String, Option<String>>,
     schedule: schedule::View,
+    config: config::View,
     reload: bool,
     /// The plan of Plan, once it is made.
     plan: Option<PlanView>,
@@ -383,6 +391,7 @@ impl App {
             versions: None,
             moves: Default::default(),
             schedule: schedule::View::default(),
+            config: config::View::default(),
             reload: false,
             plan: None,
             execution: execution::Execution::default(),
@@ -473,6 +482,7 @@ impl App {
         self.overlay == Some(Overlay::Region) && (self.filtering || self.region_editor.mode.is_some())
             || self.overlay.is_none() && self.screen == Screen::Sources && self.source_view.typing
             || self.overlay == Some(Overlay::Policy) && self.policy_days.is_some()
+            || self.overlay == Some(Overlay::Config) && self.config.editing
             || self.overlay == Some(Overlay::Schedule) && self.schedule.editing
     }
 
@@ -518,17 +528,26 @@ impl App {
                     | Action::LocalApp
                     | Action::LocalOpen
                     | Action::LocalLogs
+                    | Action::ConfigRead
+                    | Action::ConfigEdit
+                    | Action::ConfigConfirm
                     | Action::ScheduleRead
                     | Action::ScheduleEdit
                     | Action::ScheduleDisable
                     | Action::ScheduleBudget
-                    | Action::Open(Overlay::Clean | Overlay::Plan | Overlay::Version | Overlay::Schedule)
+                    | Action::Open(
+                        Overlay::Clean | Overlay::Plan | Overlay::Version | Overlay::Schedule | Overlay::Config
+                    )
             )
         {
             return false;
         }
         match action {
             Action::Open(Overlay::Source | Overlay::Version) => self.source_visible(),
+            Action::ConfigConfirm => {
+                self.config.review.as_ref().is_some_and(|review| !review.files.is_empty())
+                    && !self.config.message.trim().is_empty()
+            }
             Action::Reload => crate::worker::can_reload(),
             Action::ScheduleEdit | Action::ScheduleDisable | Action::ScheduleBudget => cfg!(target_os = "linux"),
             Action::Open(Overlay::Policy) => {
@@ -608,6 +627,20 @@ impl App {
             }
             return keys;
         }
+        if self.overlay == Some(Overlay::Config) && (self.config.editing || self.asking) {
+            let mut keys = vec![input(KeyCode::Esc, "esc", "cancel")];
+            if !self.busy {
+                keys.insert(
+                    0,
+                    if self.asking {
+                        input(KeyCode::Char('y'), "y", "commit reviewed files")
+                    } else {
+                        input(KeyCode::Enter, "enter", "review commit")
+                    },
+                );
+            }
+            return keys;
+        }
         if self.overlay == Some(Overlay::Schedule) && (self.schedule.editing || self.asking) {
             let mut keys = vec![input(KeyCode::Esc, "esc", if self.asking { "cancel" } else { "back" })];
             if !self.busy {
@@ -655,6 +688,11 @@ impl App {
                     }
                 };
                 match overlay {
+                    Overlay::Config => {
+                        offer(KeyCode::Char('R'), Action::ConfigRead, "R", "refresh review");
+                        offer(KeyCode::Char('e'), Action::ConfigEdit, "e", "message");
+                        offer(KeyCode::Enter, Action::ConfigConfirm, "enter", "review commit");
+                    }
                     Overlay::Schedule => {
                         offer(KeyCode::Char('R'), Action::ScheduleRead, "R", "observe");
                         offer(KeyCode::Char('e'), Action::ScheduleEdit, "e", "edit calendar");
@@ -747,6 +785,9 @@ impl App {
                 if self.screen != Screen::Local && self.works(Action::Undo) {
                     keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo environment"));
                 }
+                if self.works(Action::Open(Overlay::Config)) {
+                    keys.push(bar(KeyCode::Char('C'), Action::Open(Overlay::Config), "C", "review config"));
+                }
                 keys.push(bar(KeyCode::Char('?'), Action::Open(Overlay::Help), "?", "help"));
             }
         }
@@ -770,6 +811,9 @@ impl App {
     }
 
     fn key(&mut self, key: KeyCode) -> Effect {
+        if self.overlay == Some(Overlay::Config) {
+            return self.config_key(key);
+        }
         if self.overlay == Some(Overlay::Schedule) {
             return self.schedule_key(key);
         }
@@ -849,11 +893,14 @@ impl App {
                 | Action::LocalApp
                 | Action::LocalOpen
                 | Action::LocalLogs
+                | Action::ConfigRead
+                | Action::ConfigEdit
+                | Action::ConfigConfirm
                 | Action::ScheduleRead
                 | Action::ScheduleEdit
                 | Action::ScheduleDisable
                 | Action::ScheduleBudget
-                | Action::Open(Overlay::Version | Overlay::Schedule)
+                | Action::Open(Overlay::Version | Overlay::Schedule | Overlay::Config)
         ) && !self.works(action)
         {
             return Effect::None;
@@ -863,6 +910,22 @@ impl App {
             None => self.rows().saturating_sub(1),
         };
         match action {
+            Action::ConfigRead => return Effect::ConfigRead,
+            Action::ConfigEdit => {
+                self.scroll = 0;
+                self.config.editing = true;
+            }
+            Action::ConfigConfirm if self.works(action) => {
+                self.scroll = 0;
+                self.asking = true;
+            }
+            Action::ConfigConfirm => {
+                self.notice = Some(
+                    super::Code::Usage
+                        .error("A commit needs changed configuration and a message.")
+                        .fix("Refresh the configuration review or enter a commit message."),
+                );
+            }
             Action::ScheduleRead | Action::ScheduleEdit | Action::ScheduleDisable | Action::ScheduleBudget => {
                 return self.schedule_action(action)
             }
@@ -917,6 +980,10 @@ impl App {
                         self.choice = 0;
                         self.versions = None;
                         return Effect::Versions(self.sources[self.source].source.id.clone());
+                    }
+                    Overlay::Config => {
+                        self.config.editing = false;
+                        return Effect::ConfigRead;
                     }
                     Overlay::Schedule => {
                         self.schedule.editing = false;
@@ -1178,7 +1245,8 @@ impl App {
             let area = Rect { x, width: tabs.right().saturating_sub(x), ..tabs };
             frame.render_widget(Span::from(text), area);
         }
-        let body = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
+        let gap = u16::from(self.busy || self.bar_rows(frame.area().width).len() < 2);
+        let body = Rect { y: body.y + gap, height: body.height.saturating_sub(gap), ..body };
         match self.screen {
             Screen::Live => self.draw_live(frame, body),
             Screen::Local => self.draw_local(frame, body),
@@ -1312,7 +1380,18 @@ impl App {
             Overlay::Attribution => (" ATTRIBUTION ".into(), attribution(&self.sources), Vec::new(), None),
             Overlay::Source => (format!(" SOURCE · {id} "), self.source_lines(), Vec::new(), None),
             Overlay::Version => (format!(" VERSION · {id} "), self.version_lines(), Vec::new(), Some(self.choice + 2)),
-            Overlay::Schedule => (" LIVE SCHEDULE ".into(), self.schedule_lines(), Vec::new(), None),
+            Overlay::Config => (
+                " CONFIGURATION REVIEW ".into(),
+                self.config_lines(),
+                Vec::new(),
+                if self.asking { Some(4) } else { self.config.editing.then_some(2) },
+            ),
+            Overlay::Schedule => (
+                " LIVE SCHEDULE ".into(),
+                self.schedule_lines(),
+                Vec::new(),
+                if self.asking { Some(2) } else { self.schedule.editing.then_some(self.schedule.field + 2) },
+            ),
             Overlay::Error => (
                 " ERROR ".into(),
                 self.notice
@@ -1535,6 +1614,7 @@ fn help() -> Vec<Line<'static>> {
         line(&format!("{} tab", numbers.join(" ")), "screens".into()),
         line("↑ ↓ j k", "move".into()),
         line("p", "plan".into()),
+        line("C", "review and commit bake configuration; no push".into()),
         line("u", format!("undo the edits of data/env/{LIVE}.toml")),
         line("esc", "close".into()),
         line("q", "quit".into()),
