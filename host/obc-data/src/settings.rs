@@ -210,13 +210,15 @@ mod tests {
             version: None,
             params: vec![("area".into(), "a".into())],
         };
-        let mut env = Env::default();
-        env.manual = registry
-            .sources
-            .iter()
-            .filter(|source| source.refresh == Refresh::Manual)
-            .map(|source| source.id.clone())
-            .collect();
+        let mut env = Env {
+            manual: registry
+                .sources
+                .iter()
+                .filter(|source| source.refresh == Refresh::Manual)
+                .map(|source| source.id.clone())
+                .collect(),
+            ..Env::default()
+        };
         env.resolve(&request, "2026-01-01".into());
         assert_eq!(
             env.pinned(&crate::product::Wanted { params: vec![("area".into(), "b".into())], ..request.clone() })
