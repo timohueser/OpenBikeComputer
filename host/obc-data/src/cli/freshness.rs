@@ -47,8 +47,10 @@ pub(super) fn discover(
     inventory.requests.borrow_mut().clear();
     inventory.read.borrow_mut().clear();
     inventory.fetch_failures.clear();
-    let mut fetch =
-        status_cli::discovery_fetch(build_cli::fetcher_recorded(store, http, sources, &inventory, copies, run), false);
+    let mut fetch = status_cli::discovery_fetch(
+        build_cli::fetcher_recorded(root, store, http, sources, &inventory, copies, run),
+        false,
+    );
     for product in products {
         match build_cli::product_steps(root, *product, &mut inventory, regions, store, &mut fetch) {
             Ok(_) => (),

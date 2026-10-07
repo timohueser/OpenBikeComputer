@@ -163,6 +163,7 @@ fn apply_live(
         ask(plan)?;
     }
     let mut run = super::api::start_run(store, "apply live")?;
+    run.require_committed_code();
     if noop {
         let applied = Applied { run: run.id().into(), ..Applied::default() };
         let result = build_cli::recheck_noop(root, store, http, remote, products, plan, &mut run).map(|()| applied);

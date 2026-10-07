@@ -90,6 +90,28 @@ impl Product for Planner {
         "planner"
     }
 
+    fn planning_code(&self, _env: &Env) -> Result<Option<obc_data::engine::OwnerCode>, String> {
+        Ok(Some(obc_data::engine::OwnerCode {
+            crate_name: "obc-data-steps".into(),
+            code: Code {
+                paths: [
+                    "host/obc-data-steps/src/planner.rs",
+                    "host/obc-data-steps/src/planner",
+                    "host/obc-data-steps/src/region_sources.rs",
+                    "host/obc-data-steps/src/lib.rs",
+                    "host/obc-data/src/env.rs",
+                    "host/obc-data/src/regions.rs",
+                    "host/obc-data/src/product.rs",
+                    "host/obc-data/src/sources.rs",
+                ]
+                .map(String::from)
+                .into(),
+                libraries: obc_pack::step::geos_libraries()?,
+                ..Default::default()
+            },
+        }))
+    }
+
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
         Some(catalog::pointer)
     }

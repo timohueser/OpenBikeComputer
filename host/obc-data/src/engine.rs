@@ -160,6 +160,64 @@ impl Code {
     pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
         code::files(root, self)
     }
+
+    /// Resolve source/config at a recorded target without selecting its execution tools.
+    pub fn source_config(&self, root: &Path, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
+        code::source_config(root, self, rust)
+    }
+
+    /// Resolve content, execution and commitment inputs in one traversal.
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::identity(root, self)
+    }
+}
+
+/// Native acquisition or planning code, with scoped owner source and its actual dependencies.
+#[derive(Debug, Clone)]
+pub struct OwnerCode {
+    pub crate_name: String,
+    pub code: Code,
+}
+
+impl OwnerCode {
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::owner_identity(root, self)
+    }
+
+    pub fn source_config(&self, root: &Path, rust: &ResolvedRust) -> Result<SourceIdentity, String> {
+        code::owner_source_config(root, self, rust)
+    }
+}
+
+/// Source compatibility is resolved at the recorded producer target and profile.
+/// It permits consuming existing bytes; it does not prove that another host emits them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeIdentity {
+    pub files: BTreeMap<String, String>,
+    pub source_config: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+    /// Repository-relative physical inputs, before manifest or source projection.
+    pub git_inputs: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceIdentity {
+    pub files: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+    pub git_inputs: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRust {
+    pub target: String,
+    pub build: Rust,
+}
+
+impl CodeIdentity {
+    /// Commitment checks the selected physical inputs, including projected build metadata.
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
 }
 
 pub enum Run {

@@ -12,16 +12,42 @@ mod rust;
 
 pub(crate) use python::executable as python_executable;
 
-use super::Code;
+use super::{Code, CodeIdentity, OwnerCode, Profile, ResolvedRust, Rust, SourceIdentity};
 use crate::store::hash_file;
 
 /// File paths and named dependency fingerprints, in byte order, to SHA-256.
 pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
-    Context::default().files(root, code)
+    identity(root, code).map(|identity| identity.files)
+}
+
+pub fn identity(root: &Path, code: &Code) -> Result<CodeIdentity, String> {
+    Context::default().identity(root, code)
+}
+
+pub fn source_config(root: &Path, code: &Code, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
+    let identity = Context::default().resolve(root, code, Mode::Source(rust), None)?;
+    Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+}
+
+pub fn owner_identity(root: &Path, owner: &OwnerCode) -> Result<CodeIdentity, String> {
+    Context::default().owner_identity(root, owner)
+}
+
+pub fn owner_source_config(root: &Path, owner: &OwnerCode, rust: &ResolvedRust) -> Result<SourceIdentity, String> {
+    let mut code = owner.code.clone();
+    code.crates.push(owner.crate_name.clone());
+    let identity = Context::default().resolve(root, &code, Mode::Source(Some(rust)), Some(&owner.crate_name))?;
+    Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+}
+
+#[derive(Clone, Copy)]
+enum Mode<'a> {
+    Execution,
+    Source(Option<&'a ResolvedRust>),
 }
 
 #[derive(Default)]
-pub(super) struct Context {
+pub(crate) struct Context {
     rust: HashMap<Option<String>, Arc<rust::Metadata>>,
     python: HashMap<Option<String>, python::Identity>,
     packages: HashMap<String, BTreeMap<String, String>>,
@@ -37,8 +63,49 @@ impl Context {
     }
 
     pub fn files(&mut self, root: &Path, code: &Code) -> Result<BTreeMap<String, String>, String> {
+        self.identity(root, code).map(|identity| identity.files)
+    }
+
+    pub fn identity(&mut self, root: &Path, code: &Code) -> Result<CodeIdentity, String> {
+        self.resolve(root, code, Mode::Execution, None)
+    }
+
+    pub fn owner_identity(&mut self, root: &Path, owner: &OwnerCode) -> Result<CodeIdentity, String> {
+        if owner.code.paths.is_empty() {
+            return Err("a native owner must declare its source paths".into());
+        }
+        if !matches!(owner.code.rust, None | Some(Rust::Native { profile: Profile::Dev })) {
+            return Err("native owner callbacks require the retained worker's native dev build".into());
+        }
+        let mut code = owner.code.clone();
+        code.crates.push(owner.crate_name.clone());
+        self.resolve(root, &code, Mode::Execution, Some(&owner.crate_name))
+    }
+
+    fn resolve(
+        &mut self,
+        root: &Path,
+        code: &Code,
+        mode: Mode<'_>,
+        owner: Option<&str>,
+    ) -> Result<CodeIdentity, String> {
         let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
-        let native = self.build.preflight(&root, code)?;
+        let native = match mode {
+            Mode::Execution => self.build.preflight(&root, code)?,
+            Mode::Source(_) => None,
+        };
+        let target = match mode {
+            Mode::Execution => code.target.clone(),
+            Mode::Source(rust) if !code.crates.is_empty() => {
+                let rust = rust.ok_or("source/config resolution requires the recorded Rust target and profile")?;
+                let declared = code.rust.clone().unwrap_or(Rust::Native { profile: Profile::Dev });
+                if declared != rust.build || code.target.as_ref().is_some_and(|target| target != &rust.target) {
+                    return Err("recorded Rust target/profile does not match the producer declaration".into());
+                }
+                Some(rust.target.clone())
+            }
+            Mode::Source(_) => None,
+        };
         if let Some((_, identity)) = &native {
             let current = (root.clone(), identity.clone());
             if self.native.as_ref() != Some(&current) {
@@ -56,16 +123,23 @@ impl Context {
         let (crates, dependencies, packages) = if code.crates.is_empty() {
             (BTreeSet::new(), BTreeMap::new(), rust::Packages::default())
         } else {
-            if self.rust.get(&code.target).map(|metadata| metadata.unchanged(&root)).transpose()? != Some(true) {
-                let target = code.target.as_deref().or_else(|| native.as_ref().map(|(target, _)| target.as_str()));
-                self.rust.insert(code.target.clone(), Arc::new(rust::Metadata::load(&root, target)?));
+            if self.rust.get(&target).map(|metadata| metadata.unchanged(&root)).transpose()? != Some(true) {
+                let selected_target = target.as_deref().or_else(|| native.as_ref().map(|(target, _)| target.as_str()));
+                self.rust.insert(target.clone(), Arc::new(rust::Metadata::load(&root, selected_target)?));
             }
-            self.rust[&code.target].selected(&root, &code.crates, self.include_engine)?
+            self.rust[&target].selected(&root, &code.crates, self.include_engine || owner.is_some())?
         };
         for dir in &crates {
             let dir =
                 dir.strip_prefix(&root).map_err(|_| format!("{} is outside {}", dir.display(), root.display()))?;
-            pathspecs.extend(["Cargo.toml", "build.rs", "src"].map(|name| dir.join(name)));
+            pathspecs.extend(["Cargo.toml", "build.rs"].map(|name| dir.join(name)));
+            let scoped = owner.is_some_and(|owner| {
+                self.rust[&target].directory(owner).as_deref() == Some(&root.join(dir))
+                    || self.rust[&target].directory(env!("CARGO_PKG_NAME")).as_deref() == Some(&root.join(dir))
+            });
+            if !scoped {
+                pathspecs.push(dir.join("src"));
+            }
         }
         let mut files = listed(&root, &pathspecs)?;
         if let Some(path) = code.paths.iter().find(|path| !files.iter().any(|file| file.starts_with(root.join(path)))) {
@@ -83,21 +157,9 @@ impl Context {
                 }
             }
         }
+        let mut git_inputs: BTreeSet<_> = files.iter().map(|file| relative(&root, file)).collect::<Result<_, _>>()?;
+        git_inputs.extend(pathspecs.iter().map(|path| path.to_string_lossy().replace('\\', "/")));
         let mut hashes = BTreeMap::new();
-        for library in &code.libraries {
-            let name = format!("native/library/{}", library.name);
-            if !crate::is_kebab(&library.name) || hashes.contains_key(&name) || !library.path.is_absolute() {
-                return Err("native libraries need unique kebab-case names and absolute paths".into());
-            }
-            let hash = self
-                .build
-                .tool_hash(&library.path)
-                .map_err(|error| format!("native library {}: {error}; start a fresh worker", library.name))?;
-            if hash != library.sha256 {
-                return Err(format!("native library {} changed; start a fresh worker", library.name));
-            }
-            hashes.insert(name, hash);
-        }
         for file in files {
             let relative =
                 file.strip_prefix(&root).map_err(|_| format!("{} is outside {}", file.display(), root.display()))?;
@@ -111,22 +173,76 @@ impl Context {
             hashes.insert(relative.replace('\\', "/"), hash);
         }
         hashes.extend(dependencies);
-        if !packages.names.is_empty() {
-            hashes.extend(self.build.identity(&root, code, &packages)?);
-        }
-        if let Some(runtime) = &code.python {
-            if !self.python.contains_key(&runtime.group) {
-                self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
+        let mut source_config = hashes.clone();
+        let rust = if !packages.names.is_empty() {
+            let rust = match mode {
+                Mode::Execution => {
+                    let build = self.build.identity(&root, code, &packages)?;
+                    source_config.extend(build.source_config);
+                    hashes.extend(build.files);
+                    build.rust
+                }
+                Mode::Source(Some(rust)) => {
+                    let profile = match rust.build {
+                        Rust::Native { profile } | Rust::Prepared { profile } => profile,
+                    };
+                    source_config.extend(build::source_config(&root, profile, &packages)?);
+                    rust.clone()
+                }
+                Mode::Source(None) => unreachable!("a Rust closure requires a recorded target/profile"),
+            };
+            for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config", ".cargo/config.toml"] {
+                if root.join(path).is_file() {
+                    git_inputs.insert(path.into());
+                }
             }
-            hashes.extend(self.python[&runtime.group].hashes.clone());
+            Some(rust)
+        } else {
+            None
+        };
+        for library in code.libraries.iter().filter(|_| matches!(mode, Mode::Execution)) {
+            let name = format!("native/library/{}", library.name);
+            if !crate::is_kebab(&library.name) || hashes.contains_key(&name) || !library.path.is_absolute() {
+                return Err("native libraries need unique kebab-case names and absolute paths".into());
+            }
+            let hash = self
+                .build
+                .tool_hash(&library.path)
+                .map_err(|error| format!("native library {}: {error}; start a fresh worker", library.name))?;
+            if hash != library.sha256 {
+                return Err(format!("native library {} changed; start a fresh worker", library.name));
+            }
+            hashes.insert(name, hash);
+        }
+
+        if let Some(runtime) = &code.python {
+            match mode {
+                Mode::Execution => {
+                    if !self.python.contains_key(&runtime.group) {
+                        self.python.insert(runtime.group.clone(), python::identity(&root, runtime)?);
+                    }
+                    source_config.extend(self.python[&runtime.group].packages.clone());
+                    hashes.extend(self.python[&runtime.group].hashes.clone());
+                }
+                Mode::Source(_) => source_config.extend(python::packages(&root, runtime.group.as_deref())?),
+            }
         }
         if let Some(group) = &code.python_packages {
             if !self.packages.contains_key(group) {
                 self.packages.insert(group.clone(), python::packages(&root, Some(group))?);
             }
+            source_config.extend(self.packages[group].clone());
             hashes.extend(self.packages[group].clone());
         }
+        if code.python.is_some() || code.python_packages.is_some() {
+            for path in ["pyproject.toml", "uv.lock", ".python-version"] {
+                if root.join(path).is_file() {
+                    git_inputs.insert(path.into());
+                }
+            }
+        }
         if !code.sources.is_empty() {
+            git_inputs.insert("data/sources.toml".into());
             let registry = crate::sources::Registry::load(&root)?;
             for id in &code.sources {
                 let source = registry
@@ -134,14 +250,43 @@ impl Context {
                     .iter()
                     .find(|source| &source.id == id)
                     .ok_or_else(|| format!("code names no source `{id}`"))?;
-                hashes.insert(
-                    format!("data/sources.toml#{id}"),
-                    source_hash(source, &["refresh", "credential", "r2_copy", "redistribute", "hosts"])?,
-                );
+                let key = format!("data/sources.toml#{id}");
+                let hash = source_hash(source, &["refresh", "credential", "r2_copy", "redistribute", "hosts"])?;
+                source_config.insert(key.clone(), hash.clone());
+                hashes.insert(key, hash);
             }
         }
-        Ok(hashes)
+        Ok(CodeIdentity { files: hashes, source_config, rust, git_inputs })
     }
+}
+
+fn relative(root: &Path, file: &Path) -> Result<String, String> {
+    file.strip_prefix(root)
+        .map_err(|_| format!("{} is outside {}", file.display(), root.display()))?
+        .to_str()
+        .map(|path| path.replace('\\', "/"))
+        .ok_or_else(|| format!("{} is not UTF-8", file.display()))
+}
+
+pub(super) fn committed(root: &Path, inputs: &BTreeSet<String>) -> Result<(), String> {
+    if inputs.is_empty() {
+        return Ok(());
+    }
+    let output = Command::new("git")
+        .args(["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--"])
+        .args(inputs)
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("git status: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("git status: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    if !output.stdout.is_empty() {
+        return Err(
+            "used producer code or build metadata is not committed; commit these inputs before applying Live".into()
+        );
+    }
+    Ok(())
 }
 
 /// Bind a declared Python command to the interpreter in its checked code identity.
@@ -298,6 +443,90 @@ fn manifest_hash(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::engine::tests::{fixture, write};
+
+    #[test]
+    fn owner_projection_excludes_ui_and_resolves_recorded_targets_without_execution_tools() {
+        let fixture = fixture("owner-code-inputs");
+        let root = fixture.root();
+        crate::engine::tests::repository(&root, &[
+            ("steps", "[dependencies]\nobc-data = { path = \"../obc-data\" }\n[target.'cfg(target_os = \"linux\")'.dependencies]\nlinux = { path = \"../linux\" }\n"),
+            ("obc-data", ""),
+            ("linux", ""),
+        ]);
+        write(&root.join("steps/src/lib.rs"), "mod plan; mod ui;\n");
+        write(&root.join("steps/src/plan.rs"), "pub fn requests() {}\n");
+        write(&root.join("steps/src/ui.rs"), "pub fn draw() {}\n");
+        write(&root.join("obc-data/src/cli.rs"), "pub fn screen() {}\n");
+        let owner = OwnerCode {
+            crate_name: "steps".into(),
+            code: Code { paths: vec!["steps/src/lib.rs".into(), "steps/src/plan.rs".into()], ..Default::default() },
+        };
+        let mut context = Context::default();
+        let before = context.owner_identity(&root, &owner).unwrap();
+        assert!(before.files.contains_key("rust/compiler"));
+        assert!(!before.files.contains_key("steps/src/ui.rs"));
+        assert!(!before.files.contains_key("obc-data/src/cli.rs"));
+        assert!(before.git_inputs.contains("Cargo.lock"));
+        assert!(before.git_inputs.contains("steps/Cargo.toml"));
+        let git = |args: &[&str]| {
+            assert!(Command::new("git").args(args).current_dir(&root).status().unwrap().success());
+        };
+        git(&["add", "."]);
+        git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture"]);
+        before.committed(&root).unwrap();
+        write(&root.join("steps/src/ui.rs"), "pub fn new_screen() {}\n");
+        write(&root.join("obc-data/src/cli.rs"), "pub fn new_controls() {}\n");
+        assert_eq!(context.owner_identity(&root, &owner).unwrap(), before);
+        before.committed(&root).unwrap();
+        write(&root.join("steps/src/plan.rs"), "pub fn other_requests() {}\n");
+        assert_ne!(context.owner_identity(&root, &owner).unwrap().files, before.files);
+        assert!(before.committed(&root).unwrap_err().contains("not committed"));
+
+        let recorded =
+            ResolvedRust { target: "x86_64-unknown-linux-gnu".into(), build: Rust::Native { profile: Profile::Dev } };
+        let witness = owner.source_config(&root, &recorded).unwrap();
+        assert_eq!(witness.rust.as_ref(), Some(&recorded));
+        assert!(witness.files.contains_key("linux/src/lib.rs"));
+        assert!(!witness.files.contains_key("rust/compiler"));
+        assert!(witness.files.contains_key("rust/profile"));
+        let mut unavailable = owner.clone();
+        unavailable.code.libraries.push(super::super::Library {
+            name: "provider".into(),
+            path: root.join("absent-provider"),
+            sha256: "a".repeat(64),
+        });
+        assert_eq!(unavailable.source_config(&root, &recorded).unwrap(), witness);
+        assert!(unavailable.identity(&root).unwrap_err().contains("native library provider"));
+        let mut cross = owner.clone();
+        cross.code.target = Some(recorded.target.clone());
+        if before.rust.as_ref().unwrap().target != recorded.target {
+            assert!(cross.identity(&root).unwrap_err().contains("native Rust code requires its compiler host"));
+        }
+        let layer = Code { crates: vec!["steps".into()], ..Default::default() };
+        let full = context.identity(&root, &layer).unwrap();
+        assert_eq!(
+            full.files,
+            context.files(&root, &layer).unwrap(),
+            "per-layer keys retain the full execution identity"
+        );
+    }
+
+    #[test]
+    fn local_preparation_accepts_working_tree_code_and_live_apply_refuses_it() {
+        let fixture = fixture("owner-commit-policy");
+        let root = fixture.root();
+        let owner = OwnerCode {
+            crate_name: "steps".into(),
+            code: Code { paths: vec!["steps/src/lib.rs".into()], ..Default::default() },
+        };
+        let mut run = crate::engine::runs::Run::create(&fixture.store, "prepare local").unwrap();
+        run.check_owner(&root, &owner).unwrap();
+        write(&root.join("steps/src/lib.rs"), "pub fn working_tree() {}\n");
+        run.check_owner(&root, &owner).unwrap();
+        run.require_committed_code();
+        assert!(run.check_owner(&root, &owner).unwrap_err().contains("not committed"));
+        run.finish(None).unwrap();
+    }
 
     #[test]
     fn rust_resolution_is_reused_until_a_workspace_manifest_or_lock_changes() {

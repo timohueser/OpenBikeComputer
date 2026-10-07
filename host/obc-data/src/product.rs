@@ -25,6 +25,11 @@ pub trait Product: Sync {
         &[]
     }
 
+    /// The native owner that selects requests and constructs this product's recipes.
+    fn planning_code(&self, _env: &Env) -> Result<Option<crate::engine::OwnerCode>, String> {
+        Ok(None)
+    }
+
     /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
     fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;

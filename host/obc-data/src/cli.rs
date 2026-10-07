@@ -180,7 +180,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 remote.as_ref().zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
             print_snapshot(
                 &store,
-                &fetched(source, crate::input_copy::fetch(&store, &Http::new(), copies.as_ref(), &request, &[]))?,
+                &fetched(source, crate::input_copy::fetch(root, &store, &Http::new(), copies.as_ref(), &request, &[]))?,
                 json,
             )
         }

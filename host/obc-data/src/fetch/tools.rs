@@ -1,7 +1,8 @@
 //! Tool preparation may download pinned packages. The bake reads the prepared tool from the store.
 
 use std::fs;
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::Stdio;
 
 use super::{files, record, Request};
 use crate::date;
@@ -15,7 +16,13 @@ pub fn basemap_jar() -> String {
 }
 
 /// The basemaps source archive and its executable jar, including Planetiler and its dependencies.
-pub(super) fn basemap(store: &Store, http: &Http, request: &Request) -> Result<Snapshot, String> {
+pub(super) fn basemap(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    request: &Request,
+    checks: Option<crate::fetch::Checks<'_>>,
+) -> Result<Snapshot, String> {
     let version = request.version.as_deref().ok_or("protomaps-basemaps needs a commit: give SOURCE@VERSION")?;
     if version.len() != 40 || !version.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
         return Err("protomaps-basemaps needs a full commit SHA".into());
@@ -32,16 +39,17 @@ pub(super) fn basemap(store: &Store, http: &Http, request: &Request) -> Result<S
             return Ok(snapshot);
         }
     }
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = crate::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
+    super::check_owner(root, request.source, checks)?;
     let work = store.partial(&format!("{version}-{name}"));
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let work = std::path::absolute(work).map_err(|e| e.to_string())?;
+    let code = super::owner_code(request.source).code;
+    let before = code.files(root)?;
     let result = (|| {
         let input = std::path::absolute(store.object(&archive.files[0].sha256)).map_err(|e| e.to_string())?;
         let jar = work.join("basemap.jar");
-        let status = Command::new("uv")
-            .args(["run", "--locked", "--offline", "python", "-m", "tools.basemap_tool"])
+        let status = super::capture::python(root, None)?
+            .args(["-m", "tools.basemap_tool"])
             .arg(input)
             .arg(&jar)
             .current_dir(root)
@@ -50,6 +58,9 @@ pub(super) fn basemap(store: &Store, http: &Http, request: &Request) -> Result<S
             .map_err(|e| format!("basemap tool preparation: {e}"))?;
         if !status.success() {
             return Err(format!("basemap tool preparation failed: {status}"));
+        }
+        if code.files(root)? != before {
+            return Err("tool preparation code or Python runtime changed; plan again".into());
         }
         let (sha256, size) = hash_file(&jar)?;
         store.insert(&jar, &sha256)?;
@@ -95,8 +106,26 @@ mod tests {
         let snapshot = Snapshot { source: source.id.clone(), version: version.into(), files };
         store.put_snapshot(&snapshot).unwrap();
         let request = Request { source, version: Some(version.into()), params: Vec::new() };
-        assert_eq!(basemap(&store, &Http::new(), &request).unwrap(), snapshot);
+        assert_eq!(
+            basemap(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(),
+                &store,
+                &Http::new(),
+                &request,
+                None
+            )
+            .unwrap(),
+            snapshot
+        );
         let request = Request { version: Some("main".into()), ..request };
-        assert!(basemap(&store, &Http::new(), &request).unwrap_err().contains("full commit SHA"));
+        assert!(basemap(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(),
+            &store,
+            &Http::new(),
+            &request,
+            None
+        )
+        .unwrap_err()
+        .contains("full commit SHA"));
     }
 }
