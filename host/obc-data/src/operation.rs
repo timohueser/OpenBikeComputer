@@ -42,6 +42,16 @@ impl Request {
         if !crate::is_kebab(&self.env) {
             return Err("operation environment is not a normalized name".into());
         }
+        if self.env == "fixtures"
+            && self.fixture.is_none()
+            && (self.kind != Kind::Prepare
+                || self.dev.is_some()
+                || self.plan.is_some()
+                || !self.moves.is_empty()
+                || self.only.iter().any(|id| !crate::is_kebab(id)))
+        {
+            return Err("fixture operations need exact package preparation or a typed reviewed apply plan".into());
+        }
         if self.fixture.is_some() {
             if self.kind != Kind::Apply
                 || self.env != "fixtures"
