@@ -1179,6 +1179,30 @@ The projection comes from the same resolver traversal.
 A missing witness does not permit portable adoption. Witness metadata changes the release id;
 it does not change an existing layer key or receipt.
 
+### Automatic work
+
+`auto ENV` starts the existing detached operation. Fixture environments refuse it. Non-live
+environments build and verify with normal working-tree rules. They do not publish or create an
+approval record. A busy environment skips the run; it has no waiting queue.
+
+Live admission observes the configured owner's original approval before acquisition or build.
+The current native target/profile needs an exact checked execution entry. Planning, acquisition,
+producer and runtime declarations must match that entry and the current publication configuration.
+A prospective manual review cannot approve replacement tools. Missing retained planning inputs
+require explicit preparation. Changed code or settings require reviewed manual apply.
+
+Freshness discovery checks only requests used by the complete selected product declarations.
+Stale automatic requests refresh; manual sources retain their selected versions. A failed required
+upstream check blocks the run. Compatible portable layers keep the original full identity and
+producer provenance. Their verified files can feed a new native consumer. Private metadata does
+not imply that unpublished intermediates or native executables are portable. Reuse does not change
+a saved Local adoption or create a foreign build receipt.
+
+The run verifies complete desired products, then rechecks the reviewed declarations, pointers and
+original approval. Any final automatic publication reuses the existing owner mutation barrier and
+original approval CAS; it does not establish or replace manual approval. Publication remains disabled
+while checked enabled-timer admission is unavailable. No timer or schedule is installed by `auto`.
+
 ### Local portable data
 
 `local::plan` compares supplied producer declarations at the original Rust target/profile.
