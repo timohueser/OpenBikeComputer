@@ -109,15 +109,8 @@ impl Context {
             .collect()
     }
 
-    pub(super) fn providers(&self) -> BTreeMap<PathBuf, String> {
-        let native = &self.native.as_ref().expect("resolved native tools").1;
-        self.tools
-            .iter()
-            .filter(|(path, (_, hash))| {
-                native.inputs.contains_key(*path) && native.hashes.values().any(|value| value == hash)
-            })
-            .map(|(path, (_, hash))| (path.clone(), hash.clone()))
-            .collect()
+    pub(super) fn providers(&mut self) -> Result<BTreeMap<PathBuf, String>, String> {
+        self.executables().into_values().map(|path| self.tool_hash(&path).map(|hash| (path, hash))).collect()
     }
 
     fn native(&mut self, root: &Path) -> Result<&Native, String> {

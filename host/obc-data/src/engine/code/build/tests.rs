@@ -201,6 +201,15 @@ fn native_release_alias_profile_changes_and_plan_use_the_same_identity() {
     assert!(implicit.files.contains_key("rust/compiler-version") && implicit.files.contains_key("rust/target"));
     assert!(!implicit.files.keys().any(|name| name.contains("library") || name == "rust/compiler"));
     assert!(context.native.is_some());
+    let providers = context.providers().unwrap();
+    for path in context.executables().values() {
+        assert_eq!(providers[path], hash_file(path).unwrap().0, "execution binds the actual tool bytes");
+    }
+    assert_eq!(
+        context.identity(&root, &code, &packages).unwrap(),
+        implicit,
+        "execution hashes do not enter layer identity"
+    );
     let tools = context.tools.len();
     context.identity(&root, &code, &packages).unwrap();
     assert_eq!(context.tools.len(), tools, "one context reuses compiler fingerprints");

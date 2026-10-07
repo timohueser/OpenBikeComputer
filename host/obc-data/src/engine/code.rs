@@ -47,7 +47,7 @@ pub fn runtime_rust(root: &Path, prepared: &Code) -> Result<RuntimeRust, String>
     Ok(RuntimeRust {
         identity: hash(&identity.files),
         executables: context.build.executables(),
-        files: context.build.providers(),
+        files: context.build.providers()?,
         configuration: context.build.configuration(root)?,
     })
 }
