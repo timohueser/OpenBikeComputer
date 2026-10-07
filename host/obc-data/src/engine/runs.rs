@@ -139,16 +139,19 @@ pub enum Publication {
 
 /// A run that this process writes. The process that holds the lock of a run is the process that
 /// runs it, so a reader knows that a run without `finished` still runs.
+/// Its store stays in use through verification and publication preparation, until finish or drop.
 pub struct Run {
     id: String,
     file: File,
     start: Instant,
     _lock: Lock,
+    _using: Lock,
 }
 
 impl Run {
     /// Start a run with the id `YYYY-MM-DD-HHMMSS`, and a suffix `-N` when that id is taken.
     pub fn create(store: &Store, command: &str) -> Result<Run, String> {
+        let using = store.using()?;
         let at = date::timestamp(date::now());
         let base = format!("{}-{}", &at[..10], at[11..19].replace(':', ""));
         for n in 1.. {
@@ -161,7 +164,7 @@ impl Run {
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             };
-            let mut run = Run { id, file, start: Instant::now(), _lock: lock };
+            let mut run = Run { id, file, start: Instant::now(), _lock: lock, _using: using };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
             File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
@@ -200,6 +203,7 @@ impl Run {
         {
             return Err("commit journal is not an unfinished preparation".into());
         }
+        let using = store.using()?;
         let lock = store.try_lock(&format!("run-{id}"))?.ok_or("the originating run still has an owner")?;
         let path = store.run(id);
         crate::commit::durable_directory(path.parent().unwrap())?;
@@ -217,7 +221,7 @@ impl Run {
             _ => None,
         };
         let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
-        let mut run = Self { id: id.into(), file, start, _lock: lock };
+        let mut run = Self { id: id.into(), file, start, _lock: lock, _using: using };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
                 run.record(event)?;
@@ -864,6 +868,65 @@ mod tests {
         let error = details(&fixture.store, &failed.id).unwrap().steps[1].error.clone();
         assert_eq!(error.as_deref(), Some(&err["step `test/join`: ".len()..]));
         assert_eq!(followed(&fixture.store, &failed.id), events(&fixture.store, &failed.id).unwrap());
+    }
+
+    #[test]
+    fn a_run_keeps_old_inputs_and_outputs_through_verification_and_bundle_preparation() {
+        use crate::store::gc;
+
+        let fixture = fixture("run-gc-phases");
+        let steps = [step(
+            "test/upper",
+            vec![snapshot("head", "1", &["head.txt"])],
+            steps_crate(),
+            "upper.txt",
+            StepRun::Rust(crate::engine::tests::upper),
+        )];
+        let plan = fixture.plan(&steps).unwrap();
+        let mut run = Run::create(&fixture.store, "apply test").unwrap();
+        let (root, http) = (fixture.root(), Http::new());
+        let context = Context {
+            store: &fixture.store,
+            root: &root,
+            sources: &[],
+            http: &http,
+            copies: None,
+            limits: Limits { jobs: 1, memory_bytes: None },
+        };
+        let built = run.build(&context, &steps, &plan).unwrap();
+        let output = &built[0].receipt.files[0];
+        fixture.fetched_version("head", "2", "head.txt", b"newer head\n");
+        let mut newest = fixture.store.snapshot("head", "2").unwrap().unwrap();
+        newest.files.iter_mut().for_each(|file| file.retrieved = "2026-10-06T00:00:00Z".into());
+        fixture.store.put_snapshot(&newest).unwrap();
+        let roots = gc::Roots::default();
+        let cleanup = gc::plan(&fixture.store, &roots).unwrap();
+        assert!(cleanup.snapshots.contains(&"head@1".into()));
+        assert!(cleanup.objects.iter().any(|(sha256, _)| sha256 == &output.sha256));
+
+        run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
+        assert!(fixture.store.snapshot("head", "1").unwrap().is_some());
+        let object = fixture.store.object(&output.sha256);
+        assert_eq!(std::fs::read(&object).unwrap(), b"HEAD\n");
+        run.record(&Event::Phase { phase: Phase::Upload }).unwrap();
+        let bundle = fixture.scratch.0.join("bundle-payload");
+        std::fs::copy(&object, &bundle).unwrap();
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
+        assert_eq!(std::fs::read(&bundle).unwrap(), b"HEAD\n");
+
+        let id = run.id().to_string();
+        let prefix = events(&fixture.store, &id).unwrap();
+        drop(run);
+        let attached = Run::attach(&fixture.store, &id, &prefix).unwrap();
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
+        attached.finish(None).unwrap();
+        let read = details(&fixture.store, &id).unwrap();
+        assert_eq!(read.summary.outcome, Outcome::Ok);
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_some());
+        assert!(fixture.store.snapshot("head", "1").unwrap().is_none());
+        assert!(!object.exists());
+        assert_eq!(std::fs::read(&bundle).unwrap(), b"HEAD\n");
     }
 
     #[test]

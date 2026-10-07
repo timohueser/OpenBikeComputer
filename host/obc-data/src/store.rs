@@ -130,7 +130,7 @@ impl Store {
         }
     }
 
-    /// The shared lock that a fetch, a build or an import holds while it adds objects and their
+    /// The shared lock that a mutating run, fetch or import holds while it uses objects and their
     /// records. A collection waits for no holder: it refuses to start.
     pub fn using(&self) -> Result<Lock, String> {
         let (file, path) = self.lock_file(STORE_LOCK)?;
@@ -138,7 +138,7 @@ impl Store {
         Ok(Lock(file))
     }
 
-    /// The store alone, for a collection, or `None` while a fetch, a build or an import runs.
+    /// The store alone, for a collection, or `None` while a mutating run, fetch or import runs.
     pub fn try_alone(&self) -> Result<Option<Lock>, String> {
         self.try_lock(STORE_LOCK)
     }
