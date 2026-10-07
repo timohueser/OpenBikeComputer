@@ -1200,8 +1200,29 @@ a saved Local adoption or create a foreign build receipt.
 
 The run verifies complete desired products, then rechecks the reviewed declarations, pointers and
 original approval. Any final automatic publication reuses the existing owner mutation barrier and
-original approval CAS; it does not establish or replace manual approval. Publication remains disabled
-while checked enabled-timer admission is unavailable. No timer or schedule is installed by `auto`.
+original approval CAS; it does not establish or replace manual approval. Publication requires the
+checked enabled live timer at the first owner handoff. A disabled timer leaves the active run
+building and verifying; its result is verified, not applied. Disable and the first handoff share
+one short admission lock. An admitted irreversible owner completes normally. `auto` installs no timer.
+
+`schedule live` reads actual operator systemd unit state, calendar, time zone, next trigger and
+last run. Installed enablement and activity are separate from runnable setup. Missing or changed
+setup reports a blocked reason without hiding enablement. `--calendar` and `--time-zone` validate
+calendar and host setup before replacing the known units. `--disable` stops only the timer;
+it never stops retained work, serving or final publication. Non-live schedules are unsupported.
+
+The timer is persistent. One missed occurrence causes one catch-up admission, without a missed-run
+backlog. Its locked offline Cargo entry uses the existing fresh producer launcher. Entry compilation
+and retained bake workers share the operator's CPU and memory slice. Serving and installed commit
+owners stay outside that slice. Effective cgroup-v2 limits are checked before bake admission.
+An actual Docker runtime build is refused on a budgeted Linux worker because the daemon does not
+inherit those limits. Verified stored runtimes and laptop container publication remain supported.
+
+Host setup supplies CPU, memory, minimum free disk and an alert service. The installed MIT plumbing
+binary checks disk reserve before entry compilation. Retained workers check reserve before work,
+and known output/fetch estimates before a build. These checks are disk preflights, not a filesystem
+quota. Failure notification attaches to actual retained workers as well as the timer entry.
+The next calendar occurrence retries failed or busy work; there is no restart or waiting queue.
 
 ### Local portable data
 

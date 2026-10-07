@@ -38,7 +38,7 @@ overrides are refused.
 `prepare`, `build` and `apply` return a run handle. On macOS the retained worker detaches
 from the terminal. On Linux, set `OBC_RUN_ENV_FILE` to an absolute, private environment file.
 Use standard systemd environment syntax and absolute tool paths. Prepare the locked tools,
-an active systemd user manager and enabled linger for the operator. Missing setup blocks start.
+an active systemd user manager and enabled linger. Use the [Linux setup](src/operation/README.md).
 
 Run `obc data prepare live --json`. Inspect `obc data runs RUN --follow`, then get its output
 with `obc data runs RUN --result`. Review and save `.plan`. Run
