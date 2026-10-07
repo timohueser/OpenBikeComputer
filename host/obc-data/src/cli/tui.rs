@@ -1245,7 +1245,8 @@ impl App {
             let area = Rect { x, width: tabs.right().saturating_sub(x), ..tabs };
             frame.render_widget(Span::from(text), area);
         }
-        let body = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
+        let gap = u16::from(self.busy || self.bar_rows(frame.area().width).len() < 2);
+        let body = Rect { y: body.y + gap, height: body.height.saturating_sub(gap), ..body };
         match self.screen {
             Screen::Live => self.draw_live(frame, body),
             Screen::Local => self.draw_local(frame, body),

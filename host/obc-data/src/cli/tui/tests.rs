@@ -627,7 +627,6 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
     let drawn = screen(&mut app, 80, 18);
     let live = [
         " 1 Live   2 Local   3 Sources   4 Store   5 Runs",
-        "",
         "LIVE from https://maps.openbikecomputer.com",
         "region  europe/germany/baden-wuerttemberg",
         "",
@@ -643,7 +642,8 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
         "stale        osm                   120 d > 90 d",
         "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
         "unreachable  maps                  a fetch that the step list needs failed",
-        "r region   R check R2   s schedule   p plan   u undo environment   ? help",
+        "r region   R check R2   s schedule   p plan   u undo environment",
+        "C review config   ? help",
     ];
     assert_eq!(drawn, live, "{drawn:#?}");
     assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
