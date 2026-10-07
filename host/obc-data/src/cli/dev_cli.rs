@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use super::{operation_cli, Code, Error};
-use crate::dev::{self, Prepared, Request, Source};
+use crate::dev::{self, Prepared, Request};
 use crate::engine::runs::{Event, Phase};
 use crate::operation::{Kind, Status};
 use crate::product::Product;
@@ -15,8 +15,9 @@ use clap::Args;
 pub(super) struct Dev {
     /// The saved region; defaults to the prior Local selection, then live.
     pub region: Option<String>,
-    #[arg(long, value_enum)]
-    pub source: Option<Source>,
+    /// Take the current published versions instead of the saved Local versions.
+    #[arg(long)]
+    pub refresh_live: bool,
     #[arg(long)]
     pub prepare: bool,
     #[arg(long)]
@@ -34,9 +35,9 @@ pub(super) struct Dev {
 pub(super) fn run(root: &Path, args: Dev, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     if (args.start || args.stop || args.open || args.logs || args.status)
-        && (args.region.is_some() || args.source.is_some())
+        && (args.region.is_some() || args.refresh_live)
     {
-        return Err(Code::Usage.error("region and source apply only to Local preparation"));
+        return Err(Code::Usage.error("region and version refresh apply only to Local preparation"));
     }
     if args.stop {
         return super::print_json(&dev::Observed { state: dev::stop(&store)? });
@@ -67,7 +68,7 @@ pub(super) fn run(root: &Path, args: Dev, json: bool) -> Result<(), Error> {
                 only: Vec::new(),
                 moves: Vec::new(),
                 plan: None,
-                dev: Some(Request { region: args.region, source: args.source }),
+                dev: Some(Request { region: args.region, refresh_live: args.refresh_live }),
             },
             None,
         )?;
@@ -89,6 +90,7 @@ pub(super) fn run(root: &Path, args: Dev, json: bool) -> Result<(), Error> {
                 _ => std::thread::sleep(std::time::Duration::from_millis(250)),
             }
         }
+        return super::print_json(&dev::prepared(&store)?);
     }
     let prepared = dev::prepared(&store)?;
     let state = dev::start(root, &store, &prepared)?;
@@ -119,6 +121,7 @@ pub(super) fn prepare(
             &store.root().join("dev/local/prepared.json"),
             &serde_json::to_vec(&prepared).map_err(|e| e.to_string())?,
         )?;
+        dev::replace(root, store, &prepared)?;
         Ok(prepared)
     })();
     let error = result.as_ref().err().map(|e| e.message.as_str());

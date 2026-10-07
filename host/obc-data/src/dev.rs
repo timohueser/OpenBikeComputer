@@ -9,18 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::engine::Code;
 use crate::store::{hash_file, sha256_hex, Store};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, clap::ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum Source {
-    Live,
-    Local,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub region: Option<String>,
-    pub source: Option<Source>,
+    pub refresh_live: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -103,7 +96,13 @@ pub fn state(store: &Store) -> Result<Option<State>, String> {
 
 pub fn stop(store: &Store) -> Result<Option<State>, String> {
     let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
-    stop_owner(store)
+    let state = stop_owner(store)?;
+    if state.as_ref().is_some_and(|state| state.status == "stopped")
+        || state.is_none() && !directory(store).join("desired.json").exists()
+    {
+        clean_views(store)?;
+    }
+    Ok(state)
 }
 
 fn stop_owner(store: &Store) -> Result<Option<State>, String> {
@@ -127,6 +126,20 @@ fn stop_owner(store: &Store) -> Result<Option<State>, String> {
 }
 
 pub fn start(root: &Path, store: &Store, prepared: &Prepared) -> Result<State, String> {
+    change(root, store, prepared, true)?.ok_or_else(|| "Local start did not admit an owner".into())
+}
+
+/// A completed preparation updates only an already running owner.
+pub fn replace(root: &Path, store: &Store, prepared: &Prepared) -> Result<Option<State>, String> {
+    change(root, store, prepared, false)
+}
+
+fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) -> Result<Option<State>, String> {
+    let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
+    if !start_stopped && (!store.is_locked("dev-local")? || !state(store)?.is_some_and(|state| state.status == "ready"))
+    {
+        return Ok(None);
+    }
     crate::worker::check(root)?;
     let environment = crate::operation::launch::preflight()?;
     if !prepared
@@ -140,7 +153,6 @@ pub fn start(root: &Path, store: &Store, prepared: &Prepared) -> Result<State, S
     prepared.check(root)?;
     let code =
         crate::engine::digest(prepared.supervisor.files.iter().map(|(key, value)| (key.as_str(), value.as_str())));
-    let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
     let directory = directory(store);
     crate::commit::durable_directory(&directory)?;
     if store.is_locked("dev-local")? && state(store)?.is_some_and(|state| state.code.as_ref() != Some(&code)) {
@@ -267,7 +279,7 @@ pub fn start(root: &Path, store: &Store, prepared: &Prepared) -> Result<State, S
                     stop_owner(store)?;
                     return Err(error);
                 }
-                return Ok(state);
+                return Ok(Some(state));
             }
             if matches!(state.status.as_str(), "failed" | "stopped" | "interrupted") {
                 return Err(state.message.unwrap_or_else(|| format!("Local services are {}", state.status)));
@@ -278,6 +290,58 @@ pub fn start(root: &Path, store: &Store, prepared: &Prepared) -> Result<State, S
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn clean_views(store: &Store) -> Result<(), String> {
+    let Some(_control) = store.try_lock("operation-control-local")? else { return Ok(()) };
+    let Some(_preparing) = store.try_lock("operation-active-local")? else { return Ok(()) };
+    match std::fs::read_to_string(crate::operation::active_path(store, "local")) {
+        Ok(run) => {
+            if !crate::operation::read(store, &run)?.is_some_and(|control| control.state.terminal()) {
+                return Ok(());
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let kept = read_prepared(store)?.map(|prepared| prepared.view);
+    let views = directory(store).join("views");
+    let metadata = match std::fs::symlink_metadata(&views) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err("Local views directory must not be a symlink".into());
+    }
+    for entry in std::fs::read_dir(&views).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() || kept.as_ref() == Some(&entry.path()) {
+            continue;
+        }
+        if let Some(run) = name.strip_prefix('.') {
+            if crate::engine::runs::check_id(run).is_err()
+                || !crate::operation::read(store, run)?.is_some_and(|control| {
+                    control.request.kind == crate::operation::Kind::DevPrepare && control.state.terminal()
+                })
+            {
+                continue;
+            }
+        } else {
+            if name.len() != 64 || !name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                continue;
+            }
+            let descriptor = std::fs::read(entry.path().join("service.json")).map_err(|e| e.to_string())?;
+            let value: serde_json::Value = serde_json::from_slice(&descriptor).map_err(|e| e.to_string())?;
+            if value["view"].as_str() != entry.path().to_str() {
+                return Err("Obsolete Local view has no matching ownership descriptor".into());
+            }
+        }
+        std::fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+    }
+    crate::commit::durable_directory(&views)
 }
 
 pub fn open(store: &Store) -> Result<(), String> {
@@ -306,10 +370,15 @@ pub fn logs(store: &Store) -> Result<Vec<String>, String> {
 
 /// Read the last completed preparation without starting any producer or service.
 pub fn prepared(store: &Store) -> Result<Prepared, String> {
-    serde_json::from_slice(
-        &std::fs::read(directory(store).join("prepared.json")).map_err(|e| format!("Prepare Local data first: {e}"))?,
-    )
-    .map_err(|e| e.to_string())
+    read_prepared(store)?.ok_or_else(|| "Prepare Local data first".into())
+}
+
+fn read_prepared(store: &Store) -> Result<Option<Prepared>, String> {
+    match std::fs::read(directory(store).join("prepared.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| e.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -320,4 +389,60 @@ pub struct Observed {
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct Logs {
     pub logs: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparation_leaves_stopped_apps_and_cleanup_preserves_current_or_busy_views() {
+        let scratch = crate::store::tests::Scratch::new("dev-stopped-views");
+        let store = Store::at(&scratch.0);
+        let views = directory(&store).join("views");
+        let current = views.join("a".repeat(64));
+        let obsolete = views.join("b".repeat(64));
+        for view in [&current, &obsolete] {
+            crate::commit::durable(
+                &view.join("service.json"),
+                &serde_json::to_vec(&serde_json::json!({"view":view})).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(view.join("planner-service"), b"retained native bytes").unwrap();
+        }
+        let binding = Binding { code: Code::default(), files: Default::default() };
+        let prepared = Prepared {
+            view: current.clone(),
+            descriptor: "unused".into(),
+            supervisor: binding,
+            children: Default::default(),
+        };
+        crate::commit::durable(&directory(&store).join("prepared.json"), &serde_json::to_vec(&prepared).unwrap())
+            .unwrap();
+        assert!(replace(Path::new("/absent-checkout"), &store, &prepared).unwrap().is_none());
+        assert!(state(&store).unwrap().is_none(), "preparation does not admit a stopped app owner");
+        let stopped = State {
+            token: "owner".into(),
+            code: None,
+            status: "stopped".into(),
+            view: Some(obsolete.clone()),
+            url: None,
+            message: None,
+        };
+        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&stopped).unwrap()).unwrap();
+        let preparing = store.lock("operation-active-local").unwrap();
+        stop(&store).unwrap();
+        assert!(obsolete.join("planner-service").exists(), "an active preparation prevents view cleanup");
+        drop(preparing);
+        stop(&store).unwrap();
+        assert!(!obsolete.exists());
+        assert!(current.join("planner-service").exists());
+        std::fs::create_dir_all(&obsolete).unwrap();
+        let mut uncertain = stopped;
+        uncertain.status = "starting".into();
+        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
+            .unwrap();
+        stop(&store).unwrap();
+        assert!(obsolete.exists(), "a delayed or uncertain owner is not a cleanup proof");
+    }
 }

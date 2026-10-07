@@ -37,7 +37,7 @@ pub(super) fn services() -> Code {
     }
 }
 
-use obc_data::dev::{Binding, Prepared, Request, Source};
+use obc_data::dev::{Binding, Prepared, Request};
 use obc_data::engine::release;
 use obc_data::engine::runs::{self, Event, Phase};
 use obc_data::env::Env;
@@ -47,45 +47,41 @@ use obc_data::product::Unplanned;
 use obc_data::regions::Regions;
 use obc_data::sources::Registry;
 use obc_data::store::{hash_file, sha256_hex, Store};
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Selection {
-    region: String,
-    source: Source,
-    release: String,
+pub(super) fn environment(root: &Path, regions: &Regions, request: &Request) -> Result<Env, String> {
+    let path = Env::path(root, "local");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::read_to_string(Env::path(root, "live")).map_err(|e| e.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut env = Env::parse("local", &text, regions)?;
+    if let Some(region) = &request.region {
+        env.region = region.clone();
+    }
+    let text = env.edit(&text);
+    let env = Env::parse("local", &text, regions)?;
+    obc_data::store::write_atomic(&path, text.as_bytes())?;
+    Ok(env)
 }
 
 pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut runs::Run) -> Result<Prepared, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     let regions = Regions::load(&root)?;
     let registry = Registry::load(&root)?;
-    let mut env = Env::load(&root, "live", &regions)?;
+    let mut env = environment(&root, &regions, request)?;
     let directory = store.root().join("dev/local");
-    let previous: Option<Selection> = match std::fs::read(directory.join("selection.json")) {
-        Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.to_string()),
+    let pinned = if request.refresh_live {
+        None
+    } else {
+        obc_data::local::saved(store)?
+            .into_iter()
+            .find(|saved| saved.original.product == "planner")
+            .map(|saved| saved.original)
     };
-    env.region =
-        request.region.clone().or_else(|| previous.as_ref().map(|saved| saved.region.clone())).unwrap_or(env.region);
-    if regions.get(&env.region).is_none() {
-        return Err("Local region is not a saved definition".into());
-    }
-    let source = request.source.or_else(|| previous.as_ref().map(|saved| saved.source)).unwrap_or(Source::Live);
-    let saved = obc_data::local::saved(store)?.into_iter().find(|saved| saved.original.product == "planner");
-    let pinned = previous
-        .as_ref()
-        .filter(|previous| previous.source == source)
-        .map(|previous| {
-            saved
-                .filter(|saved| saved.original.id() == previous.release)
-                .map(|saved| saved.original)
-                .ok_or("saved Local selection has no matching adoption root")
-        })
-        .transpose()?;
     let remote = Remote::from_env()?;
     let live = if let Some(original) = pinned {
         Live {
@@ -102,19 +98,13 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
     } else {
         Live::read_products(&remote, &[("planner", "planner")], &registry.sources, store)?
     };
-    if source == Source::Live && live.releases().next().is_none() {
-        return Err("Live has no planner release; select Local to build it".into());
-    }
-    env.name = "local".into();
     env.live = live.versions();
     env.retained = obc_data::input_copy::retained(&live, store)?;
     let http = Http::new();
     let copies = obc_data::input_copy::Restore { remote: &remote, live: &live };
-    let execution = source == Source::Local;
-    let tool = if execution { obc_osm::OsmiumRunner::default().binding().map(Some) } else { Ok(None) };
-    let steps = loop {
+    let mut steps = loop {
         run.check_stop(store)?;
-        match super::Planner.declarations(&root, &env, &regions, store, tool.clone(), false) {
+        match super::Planner.declarations(&root, &env, &regions, store, Ok(None), false) {
             Ok(steps) if steps.blocked.is_empty() => break steps.steps,
             Ok(steps) => return Err(format!("Local planner is blocked: {:?}", steps.blocked)),
             Err(Unplanned::NeedsFetch(wanted)) => {
@@ -122,15 +112,6 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
                     return Err("Local metadata discovery made no progress".into());
                 }
                 for wanted in wanted {
-                    if !execution
-                        && !["geofabrik-index", "geofabrik-poly", crate::maps::TILE_LIST]
-                            .contains(&wanted.source.as_str())
-                    {
-                        return Err(format!(
-                            "Live has no current {} input selection; select Local to build",
-                            wanted.source
-                        ));
-                    }
                     let source =
                         registry.sources.iter().find(|s| s.id == wanted.source).ok_or("unknown Local source")?;
                     let fetched = run.fetch_request(
@@ -147,29 +128,48 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
             Err(Unplanned::Invalid(reason) | Unplanned::Failed(reason)) => return Err(reason),
         }
     };
-    let original = if execution {
-        run.record(&Event::Phase { phase: Phase::Build })?;
-        let work = obc_data::engine::plan::plan(store, &root, &steps)?;
-        run.build(
-            &runs::Context {
-                store,
-                root: &root,
-                sources: &registry.sources,
-                http: &http,
-                copies: Some(&copies),
-                limits: runs::Limits::machine(),
-            },
-            &steps,
-            &work,
-        )?;
-        let mut release = release::release(store, &root, "planner", &env.region, &env.layers, &steps)?
-            .ok_or("Local build has no complete planner release")?;
-        release.name_files(super::catalog::named(&release)?)?;
-        release.write(store)?;
-        release
+    let prior = live.releases().next().map(|(_, _, release)| release);
+    let reused = if let Some(prior) = prior {
+        obc_data::local::reuse(&root, store, &remote, &super::Planner, prior, &steps)?
     } else {
-        live.releases().next().expect("checked Live").2.clone()
+        BTreeMap::new()
     };
+    if steps
+        .iter()
+        .any(|step| !reused.contains_key(&step.name) && step.code.crates.iter().any(|name| name == "obc-osm"))
+    {
+        let tool = obc_osm::OsmiumRunner::default().binding()?;
+        let declared = super::Planner
+            .declarations(&root, &env, &regions, store, Ok(Some(tool)), false)
+            .map_err(|e| format!("Local execution declarations changed: {e:?}"))?;
+        if !declared.blocked.is_empty() {
+            return Err(format!("Local planner is blocked: {:?}", declared.blocked));
+        }
+        steps = declared.steps;
+    }
+    run.record(&Event::Phase { phase: Phase::Build })?;
+    run.reuse_layers(&reused);
+    let work = obc_data::engine::plan::plan_reusing(store, &root, &steps, &reused)?;
+    run.build(
+        &runs::Context {
+            store,
+            root: &root,
+            sources: &registry.sources,
+            http: &http,
+            copies: Some(&copies),
+            limits: runs::Limits::machine(),
+        },
+        &steps,
+        &work,
+    )?;
+    let mut original = if let Some(prior) = prior {
+        release::release_reusing(store, &root, &env.region, &env.layers, &steps, prior, &reused)?
+    } else {
+        release::release(store, &root, "planner", &env.region, &env.layers, &steps)?
+    }
+    .ok_or("Local build has no complete planner release")?;
+    original.name_files(super::catalog::named(&original)?)?;
+    original.write(store)?;
     let index = original.layers.iter().find(|layer| layer.step == "planner/index").ok_or("planner has no index")?;
     let required = BTreeMap::from([(
         "planner/index".into(),
@@ -182,10 +182,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
     )]);
     let selection = obc_data::local::plan(&root, store, &super::Planner, &original, &steps, &required)?;
     if !selection.blocked.is_empty() {
-        return Err(format!(
-            "Live data does not match this Local request: {:?}; select Local to build",
-            selection.blocked
-        ));
+        return Err(format!("Local data does not match this request: {:?}", selection.blocked));
     }
     run.record(&Event::Phase { phase: Phase::Verify })?;
     obc_data::local::adopt(&root, store, &remote, &super::Planner, &original, &steps, &required, &selection)?;
@@ -296,11 +293,6 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
     }
     let prepared = Prepared { view, descriptor: descriptor_sha, supervisor, children };
     prepared.check(&root)?;
-    obc_data::commit::durable(
-        &directory.join("selection.json"),
-        &serde_json::to_vec(&Selection { region: env.region, source, release: original.id() })
-            .map_err(|e| e.to_string())?,
-    )?;
     Ok(prepared)
 }
 

@@ -131,7 +131,7 @@ pub fn status(store: &Store, run: &str) -> Result<Option<Status>, String> {
 }
 
 impl State {
-    fn terminal(&self) -> bool {
+    pub(crate) fn terminal(&self) -> bool {
         matches!(self, Self::Stopped | Self::Finished { .. } | Self::Resolved { .. })
     }
 }
@@ -182,7 +182,7 @@ fn save(store: &Store, control: &Control) -> Result<(), String> {
     crate::commit::durable(&path(store, &control.run)?, &serde_json::to_vec(control).map_err(|e| e.to_string())?)
 }
 
-fn active_path(store: &Store, env: &str) -> PathBuf {
+pub(crate) fn active_path(store: &Store, env: &str) -> PathBuf {
     store.root().join("operations").join(format!("{env}.active"))
 }
 

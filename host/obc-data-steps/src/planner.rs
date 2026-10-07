@@ -778,6 +778,19 @@ mod tests {
             .unwrap()])
             .unwrap()
         };
+        std::fs::create_dir_all(temp.join("data/env")).unwrap();
+        std::fs::write(Env::path(&temp, "live"), "region = \"ride\"\nlayers = []\n").unwrap();
+        let definitions = region("7.79, 47.99, 7.82, 48.02");
+        let request = obc_data::dev::Request { region: Some("ride".into()), refresh_live: false };
+        let configured = local::environment(&temp, &definitions, &request).unwrap();
+        assert_eq!(configured, Env::load(&temp, "local", &definitions).unwrap());
+        std::fs::write(Env::path(&temp, "local"), "region = \"ride\"\nlayers = [\"sun\"]\n").unwrap();
+        let configured =
+            local::environment(&temp, &definitions, &obc_data::dev::Request { region: None, refresh_live: true })
+                .unwrap();
+        assert_eq!(configured.layers, ["sun"]);
+        assert_eq!(configured, Env::load(&temp, "local", &definitions).unwrap());
+        assert!(!std::fs::read_to_string(Env::path(&temp, "local")).unwrap().contains("pins"));
         let first = Planner
             .declarations(&root(), &env, &region("7.79, 47.99, 7.82, 48.02"), &store, Ok(None), false)
             .unwrap()
