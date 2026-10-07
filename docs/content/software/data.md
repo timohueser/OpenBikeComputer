@@ -1,6 +1,6 @@
 ---
 title: Data operations
-description: Saved inputs, exact plans, retained work and one publication owner.
+description: Saved inputs, exact plans, retained work and a direct Live apply.
 copy: ai
 ---
 
@@ -26,31 +26,23 @@ An incomplete preview needs input preparation before it can become an exact revi
 
 Apply uses the reviewed plan. If its inputs or configuration change, the operator must review
 again. Preparation and build can return usable work without publishing it. Even a no-change
-Live apply verifies the selected data and asks for consent before it records automatic approval.
-See [publication and approval](src:specs/obc-data.md).
+Live apply verifies the selected data and asks for consent.
 
-## Retained work and one owner
+## Retained work and a direct apply
 
 The selected machine builds and verifies. Its admitted worker survives a closed terminal.
-The viewer can hide, reopen or observe that Run without changing it. Stop drains local work;
-it does not kill an admitted publication after handoff.
+The viewer can hide, reopen or observe that Run without changing it. Stop drains the current
+work and asks first.
 
-One configured VPS owner changes published pointers. A durable intent prevents a competing
-commit from guessing whether an interrupted write completed. Observing an unknown owner result
-keeps it unknown. Explicit reconciliation records only a verified final reply.
-This keeps publication separate from the lifetime of a laptop connection.
+The machine that applies also publishes. It uploads only what R2 lacks, so a repeated apply
+continues where a stopped one ended. Clients read only the pointer, and the apply writes the
+pointers last, after one more check that no pointer changed since the review. Until then, live
+does not change.
 
-Publication and automatic approval have separate outcomes. A result can publish data while
-approval remains unavailable. An enabled schedule can also be blocked by its host setup or
-approval.
-
-The schedule sets when to check. Each source's freshness policy decides whether its selected
-inputs are stale. Automatic work refreshes only stale sources used by the approved products;
-unchanged layers reuse their verified bytes. Changes to approved producer code or Live build
-configuration need a reviewed manual apply before automatic publication resumes.
-
-Disable leaves an active build and verification running. It prevents publication before handoff.
-After handoff, the publication owner finishes. The [automatic-work contract](src:specs/obc-data.md) defines admission.
+Old data stays until it is replaced. An apply removes only the files of earlier releases of this
+tool that the reviewed plan listed, after clients that read an old pointer had time to finish.
+Files of the older publishers are never removed. The [apply contract](src:specs/obc-data.md)
+defines the order.
 
 ## Local keeps original provenance
 
