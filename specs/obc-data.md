@@ -1290,6 +1290,8 @@ are noninteractive and bound command execution and output collection to 30 secon
 nor missing remote state clear a barrier. `runs RUN --reconcile` is an explicit mutation: it checks
 a final bound reply and journal prefix, copies acknowledged events, and resolves local control.
 It refuses while the local worker drains. Result reads verify their sealed bytes.
+The shared run view includes `logs`, the bounded tail of its worker stderr. A missing log yields
+an empty list. A read failure appears in `observation_error` and preserves the run state.
 
 
 ## Commands
