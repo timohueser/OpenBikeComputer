@@ -1292,8 +1292,8 @@ jobs:
       - run: UV_PROJECT_ENVIRONMENT="$PWD/apps/planner-search/.venv" uv sync --locked --group search-test
       - run: npm test --prefix apps/planner-search
       - run: npm run test:query --prefix apps/planner-search
-      - run: npm ci --prefix apps/planner-tiles
-      - run: npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles
+      - run: npm ci --prefix planner/tiles
+      - run: npm test --prefix planner/tiles && npm run build --prefix planner/tiles
 
   verification:
     needs: selection
