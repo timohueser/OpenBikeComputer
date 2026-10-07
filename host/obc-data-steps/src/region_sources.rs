@@ -214,7 +214,7 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
         .collect()
 }
 
-pub fn combined(name: &str, inputs: &[Step], binding: &obc_data::engine::Library) -> Result<Step, Unplanned> {
+pub fn combined(name: &str, inputs: &[Step], binding: Option<&obc_data::engine::Library>) -> Result<Step, Unplanned> {
     let mut step = crate::python(
         name,
         inputs
@@ -227,7 +227,7 @@ pub fn combined(name: &str, inputs: &[Step], binding: &obc_data::engine::Library
         &["osm.pbf"],
     );
     step.client = Client::None;
-    step.code.libraries.push(binding.clone());
+    step.code.libraries.extend(binding.cloned());
     Ok(step)
 }
 

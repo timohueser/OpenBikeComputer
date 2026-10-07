@@ -1199,6 +1199,37 @@ release and selection in a separate adoption record. It creates no Local receipt
 producer identity. A failure leaves verified cache bytes and keeps the previous anchor.
 Local rebuilds keep their full execution identity. These APIs do not start apps or services.
 
+### Local app services
+
+`dev` prepares current working-tree data. `data/env/local.toml` holds its region and
+optional layers. The first preparation copies Live settings. An explicit region changes
+Local. The saved Local release pins source versions. Only `--refresh-live` replaces those
+pins with the current published versions. A failed pointer observation is not absence.
+Current declarations derive region geometry, source requests, inputs and semantic options.
+Compatible portable layers retain original provenance through the shared verified reuse
+path. Only missing or changed layers execute with their full current native identity.
+Unused original execution tools are not required for reuse.
+Matching-host native route execution keeps its full compiler/profile identity and compiled
+root/code stamp. Startup rejects a changed stamp or prepared descriptor. It requires prepared
+Python, Node dependency trees and builder bridge/Wasm; it installs nothing.
+
+Preparation is a retained finite `dev_prepare` operation in environment `local`. It shares
+normal Run fetch/build/verify events. `dev --prepare` returns its handle. Preparation never
+starts a stopped app owner. It replaces only affected children of an already running owner.
+Serving owns a distinct
+stable store lock; it does not retain the environment operation lock. The known supervisor
+starts routing, search, grid tiles and Vite. It compares child-specific code/config/data
+fingerprints before replacement. A token-bound stop drains owned process groups. It does not
+signal an arbitrary PID or restart failed children.
+
+Views are immutable and contain verified objects, native execution and service metadata.
+Readiness binds the opened routing package, search region/grid and query model to that view.
+Frontend asset checks and HTTP availability are separate from browser workflow verification.
+`dev --status` and `dev --logs` are observations. Start, stop and open are explicit actions.
+After proven drain, stop removes obsolete known views and completed preparation scratch
+views. It retains the current prepared view and saved portable-data roots. Active or
+uncertain app and preparation ownership prevent cleanup.
+
 ### State of a layer
 
 The engine computes the state of each layer when it is asked, and stores nothing. It compares
@@ -1555,8 +1586,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
-| `prepare`, `build`, `apply` | `Handle` |
-| Completed prepare output | `Prepared` |
+| `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
+| `dev --start`, `dev --stop`, `dev --status` | `Observed` |
+| `dev --logs` | `Logs` |
+| `dev`, completed dev preparation | `Prepared` |
+| Completed prepare output | `Prepared2` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |
 | `runs` | `RunList` |
@@ -1703,6 +1737,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "south",
         "east",
         "north"
+      ],
+      "type": "object"
+    },
+    "Binding": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "code",
+        "files"
       ],
       "type": "object"
     },
@@ -1868,6 +1921,81 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Code": {
+      "additionalProperties": false,
+      "description": "The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little\ngives stale data.",
+      "properties": {
+        "crates": {
+          "description": "Workspace crates and their resolved normal and build dependencies.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "libraries": {
+          "description": "Native library or executable files bound by the provider before its code runs.",
+          "items": {
+            "$ref": "#/$defs/Library"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "description": "Files and directories, relative to the repository root.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "python": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Python"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The selected Python runtime and its locked package group."
+        },
+        "python_packages": {
+          "description": "A locked Python group packaged for another runtime, without selecting its interpreter.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rust": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rust"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "None binds the native dev build. Prepared builds bind their toolchain in step options."
+        },
+        "sources": {
+          "description": "The content settings of these sources. Freshness and access controls are excluded.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "description": "Resolve Rust dependencies for this target; None selects the producer host.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "paths",
+        "crates"
+      ],
+      "type": "object"
+    },
+    "Code2": {
       "description": "The kind of an error. It sets the exit status and the fix.",
       "oneOf": [
         {
@@ -2309,7 +2437,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "Why a command failed, and what to do about it.",
       "properties": {
         "code": {
-          "$ref": "#/$defs/Code"
+          "$ref": "#/$defs/Code2"
         },
         "fix": {
           "type": "string"
@@ -3096,6 +3224,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Library": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
@@ -3129,6 +3277,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "release",
         "pointer",
         "observed"
+      ],
+      "type": "object"
+    },
+    "Logs": {
+      "properties": {
+        "logs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "logs"
       ],
       "type": "object"
     },
@@ -3204,6 +3366,24 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "checked_at",
         "result",
         "last_success"
+      ],
+      "type": "object"
+    },
+    "Observed": {
+      "properties": {
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/State2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state"
       ],
       "type": "object"
     },
@@ -3593,6 +3773,33 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Prepared": {
+      "additionalProperties": false,
+      "properties": {
+        "children": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Binding"
+          },
+          "type": "object"
+        },
+        "descriptor": {
+          "type": "string"
+        },
+        "supervisor": {
+          "$ref": "#/$defs/Binding"
+        },
+        "view": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "view",
+        "descriptor",
+        "supervisor",
+        "children"
+      ],
+      "type": "object"
+    },
+    "Prepared2": {
       "description": "Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.",
       "properties": {
         "plan": {
@@ -3804,6 +4011,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         }
       ]
+    },
+    "Python": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "description": "None selects the project's base packages, without default groups.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
     },
     "Receipt": {
       "additionalProperties": false,
@@ -4787,6 +5010,46 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "ok"
       ],
       "type": "string"
+    },
+    "State2": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "view": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "token",
+        "status"
+      ],
+      "type": "object"
     },
     "Status": {
       "description": "What `status` writes.",

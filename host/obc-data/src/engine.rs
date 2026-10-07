@@ -101,7 +101,7 @@ impl Input {
 
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
 /// gives stale data.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Code {
     /// Files and directories, relative to the repository root.
@@ -128,7 +128,7 @@ pub struct Code {
     pub libraries: Vec<Library>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Library {
     pub name: String,
@@ -150,7 +150,7 @@ pub enum Profile {
     Release,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Python {
     /// None selects the project's base packages, without default groups.
@@ -161,6 +161,12 @@ impl Code {
     /// File paths and named dependency fingerprints, in byte order, to SHA-256.
     pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
         code::files(root, self)
+    }
+
+    /// Start tools with the same checked runtime policy as an engine step.
+    pub fn command(&self, root: &Path, argv: &[String]) -> Result<std::process::Command, String> {
+        let expected = code::hash(&self.files(root)?);
+        process::command(root, argv, Some((self, &expected)))
     }
 
     /// Resolve source/config at a recorded target without selecting its execution tools.
@@ -611,7 +617,7 @@ fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
 fn prepare(
     store: &Store,
     step: &Step,
-    layers: &HashMap<&str, Receipt>,
+    layers: &HashMap<&str, release::Layer>,
     code: &str,
 ) -> Result<(Receipt, Request), String> {
     if !step.options.is_object() {
