@@ -156,8 +156,8 @@ each of them once in `references` (`OBCC_Spec.md` §13.1).
 
 ## Publishing and mirroring
 
-`publish` and `mirror` define their rclone remote through the child process's environment, the
-same way `host/obc-bake/src/publish.rs` does. The variables come from `tools/obc.local`:
+`publish` refuses once live reads `dtm-*`. Run `obc data apply live`.
+Both commands pass these R2 variables through the child environment:
 
 ```
 OBC_R2_ACCOUNT_ID        Cloudflare account id (builds the endpoint)

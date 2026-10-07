@@ -391,11 +391,29 @@ pub fn refuse_older_publish(bucket: &Bucket, prefix: &str) -> Result<(), String>
 }
 
 /// Refuse a write to `keys` that only an apply makes: a key under the prefix of a product whose
-/// pointer has `release`, or under `inputs` once any pointer has.
+/// pointer has `release`, under `inputs` once any pointer has, or under the reference
+/// archive once a verified current manifest reads a national terrain model.
 pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
     let under = |prefix: &str| keys.iter().any(|key| key.starts_with(&format!("{prefix}/")));
     for prefix in PRODUCT_PREFIXES.iter().filter(|prefix| under(prefix) || under(INPUTS)) {
         refuse_older_publish(bucket, prefix)?;
+    }
+    if under(REFERENCE) {
+        for prefix in PRODUCT_PREFIXES {
+            let bytes = bucket.read(&format!("{prefix}/catalog.json"))?;
+            let Some((id, _, _)) = pointer(bytes.as_deref(), prefix)? else { continue };
+            let key = format!("{prefix}/releases/{id}.json");
+            let bytes = bucket.read(&key)?.ok_or_else(|| format!("{key}: current manifest is missing"))?;
+            let product = match *prefix {
+                "cell-catalog" => "maps",
+                "planner" => "planner",
+                _ => return Err(format!("{prefix}: unknown product prefix")),
+            };
+            let release = verified(&bytes, product, &id, &key)?;
+            if release.layers.iter().flat_map(|layer| layer.snapshots.keys()).any(|source| source.starts_with("dtm-")) {
+                return Err(format!("{REFERENCE} belongs to `obc data apply live`; apply live instead"));
+            }
+        }
     }
     Ok(())
 }
@@ -645,6 +663,32 @@ pub(crate) mod tests {
         write(&dir.join("cell-catalog/catalog.json"), &format!("{{\"release\": \"{}\"}}", "a".repeat(64)));
         assert!(refuse_owned(&bucket, &cell).is_err() && refuse_owned(&bucket, &copy).is_err());
         assert!(refuse_owned(&bucket, &keys(&["planner/objects/a", "firmware/v1/app.bin"])).is_ok());
+
+        let reference = keys(&["reference/v1/index.json", "reference/v1/16/1.tif"]);
+        assert!(refuse_owned(&bucket, &reference).is_err(), "a missing current manifest refuses");
+        write(&dir.join("cell-catalog/catalog.json"), "{\"schema_version\": 3}");
+        assert!(refuse_owned(&bucket, &reference).is_ok(), "the older reference publisher remains available");
+        let mut current = release(b"layer");
+        current.product = "maps".into();
+        current.layers[0].step = "maps/one".into();
+        let publish_current = |release: &Release| {
+            write(&dir.join("cell-catalog/catalog.json"), &format!("{{\"release\":\"{}\"}}", release.id()));
+            write(
+                &dir.join(format!("cell-catalog/releases/{}.json", release.id())),
+                &String::from_utf8(release.canonical()).unwrap(),
+            );
+        };
+        publish_current(&current);
+        assert!(refuse_owned(&bucket, &reference).is_ok(), "a release without national terrain does not own reference");
+        let read = current.layers[0].snapshots.remove("land").unwrap();
+        current.layers[0].snapshots.insert("dtm-ch".into(), read);
+        current.layers[0].inputs[0].name = "dtm-ch".into();
+        publish_current(&current);
+        assert!(refuse_owned(&bucket, &reference).unwrap_err().contains("apply live"));
+        write(&dir.join(format!("cell-catalog/releases/{}.json", current.id())), "{}");
+        assert!(refuse_owned(&bucket, &reference).is_err(), "changed authoritative bytes refuse");
+        write(&dir.join("cell-catalog/catalog.json"), "{\"release\":");
+        assert!(refuse_owned(&bucket, &reference).is_err(), "malformed authoritative pointer refuses");
     }
 
     #[test]
