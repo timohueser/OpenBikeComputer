@@ -52,9 +52,9 @@ mod tests {
         let empty: Vec<String> =
             serde_json::from_slice(&std::fs::read(output.join("metadata/empty.json")).unwrap()).unwrap();
         assert_eq!(empty, [ids[0].to_string()]);
-        assert!(!output.join(&obc_map_core::cell::cell_path(&job.band, &ids[0])).exists());
+        assert!(!output.join(obc_map_core::cell::cell_path(&job.band, &ids[0])).exists());
         assert_eq!(
-            std::fs::read(output.join(&obc_map_core::cell::cell_path(&job.band, &ids[1]))).unwrap(),
+            std::fs::read(output.join(obc_map_core::cell::cell_path(&job.band, &ids[1]))).unwrap(),
             partial_body
         );
     }

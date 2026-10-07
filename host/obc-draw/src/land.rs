@@ -433,6 +433,59 @@ fn prune(cache: &Path, keep: &std::ffi::OsStr) {
     }
 }
 
+/// Clip the global land-polygon dataset to `global_bbox` and append the faces to the working set as
+/// `natural.land`. When land is the actual backdrop, also append `bbox - land` as `natural.sea`;
+/// final LOD construction removes the redundant land records after coverage processing. A no-op
+/// when the config has no land style or `no_land` is set.
+///
+/// Shared with the cell cutter: land is generated once over the whole extract and then cut like any
+/// other feature, so a cell's coastline geometry cannot depend on which cell asked for it.
+pub fn add_land(
+    ingested: &mut Ingested,
+    config: &Config,
+    global_bbox: (i64, i64, i64, i64),
+    no_land: bool,
+    land_zip: Option<&Path>,
+    progress: &Progress,
+) -> Result<(), String> {
+    if no_land {
+        return Ok(());
+    }
+    let Some(land) = config.land_style() else { return Ok(()) };
+    let (lid, lmin) = (land.id, land.min_lod);
+    let implicit_land = config.implicit_land_style_id() == Some(lid);
+    let sea_style = config.sea_style().map(|style| (style.id, style.min_lod));
+    progress.stage(Phase::Land, if implicit_land { "Generating coastline..." } else { "Generating land..." });
+    let bbox_deg = (
+        global_bbox.0 as f64 / 1e6,
+        global_bbox.1 as f64 / 1e6,
+        global_bbox.2 as f64 / 1e6,
+        global_bbox.3 as f64 / 1e6,
+    );
+    let land_polys = get_land_polygons(bbox_deg, land_zip, progress)?;
+    progress.check()?;
+    let sea_polys =
+        if implicit_land && sea_style.is_some() { sea_complement(bbox_deg, &land_polys)? } else { Vec::new() };
+    let land_count = land_polys.len();
+    let sea_count = sea_polys.len();
+    for geom in land_polys {
+        ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
+    }
+    if let Some((style_id, min_lod)) = sea_style {
+        for geom in sea_polys {
+            ingested.features.push(IngestFeature { style_id, min_lod, geom });
+        }
+    }
+    if implicit_land {
+        progress.log(format!(
+            "Added {land_count} internal land polygon(s) and {sea_count} serialized sea-complement polygon(s)."
+        ));
+    } else {
+        progress.log(format!("Successfully added {land_count} land polygons."));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,57 +749,4 @@ mod tests {
             panic!("expected a Polygon");
         }
     }
-}
-
-/// Clip the global land-polygon dataset to `global_bbox` and append the faces to the working set as
-/// `natural.land`. When land is the actual backdrop, also append `bbox - land` as `natural.sea`;
-/// final LOD construction removes the redundant land records after coverage processing. A no-op
-/// when the config has no land style or `no_land` is set.
-///
-/// Shared with the cell cutter: land is generated once over the whole extract and then cut like any
-/// other feature, so a cell's coastline geometry cannot depend on which cell asked for it.
-pub fn add_land(
-    ingested: &mut Ingested,
-    config: &Config,
-    global_bbox: (i64, i64, i64, i64),
-    no_land: bool,
-    land_zip: Option<&Path>,
-    progress: &Progress,
-) -> Result<(), String> {
-    if no_land {
-        return Ok(());
-    }
-    let Some(land) = config.land_style() else { return Ok(()) };
-    let (lid, lmin) = (land.id, land.min_lod);
-    let implicit_land = config.implicit_land_style_id() == Some(lid);
-    let sea_style = config.sea_style().map(|style| (style.id, style.min_lod));
-    progress.stage(Phase::Land, if implicit_land { "Generating coastline..." } else { "Generating land..." });
-    let bbox_deg = (
-        global_bbox.0 as f64 / 1e6,
-        global_bbox.1 as f64 / 1e6,
-        global_bbox.2 as f64 / 1e6,
-        global_bbox.3 as f64 / 1e6,
-    );
-    let land_polys = get_land_polygons(bbox_deg, land_zip, progress)?;
-    progress.check()?;
-    let sea_polys =
-        if implicit_land && sea_style.is_some() { sea_complement(bbox_deg, &land_polys)? } else { Vec::new() };
-    let land_count = land_polys.len();
-    let sea_count = sea_polys.len();
-    for geom in land_polys {
-        ingested.features.push(IngestFeature { style_id: lid, min_lod: lmin, geom });
-    }
-    if let Some((style_id, min_lod)) = sea_style {
-        for geom in sea_polys {
-            ingested.features.push(IngestFeature { style_id, min_lod, geom });
-        }
-    }
-    if implicit_land {
-        progress.log(format!(
-            "Added {land_count} internal land polygon(s) and {sea_count} serialized sea-complement polygon(s)."
-        ));
-    } else {
-        progress.log(format!("Successfully added {land_count} land polygons."));
-    }
-    Ok(())
 }

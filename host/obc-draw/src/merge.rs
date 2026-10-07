@@ -510,6 +510,22 @@ fn merge_edge_covering_trails(lines: &[&Geom]) -> Option<Vec<Geom>> {
     Some(trails)
 }
 
+/// One-line per-LOD merge report, reported only when something actually merged. `noun` names the
+/// consumed input and `verb` bridges to the output count.
+pub fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb: &str) {
+    if m.merged_inputs == 0 && m.fallbacks == 0 {
+        return;
+    }
+    let mut line = format!(
+        "  merged {} {noun}(s) {verb} {} across {} style class(es)",
+        m.merged_inputs, m.merged_outputs, m.merged_classes
+    );
+    if m.fallbacks > 0 {
+        line.push_str(&format!(" ({} group(s) fell back unmerged)", m.fallbacks));
+    }
+    progress.log(line);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,20 +940,4 @@ mod tests {
             Geom::Empty => 0,
         }
     }
-}
-
-/// One-line per-LOD merge report, reported only when something actually merged. `noun` names the
-/// consumed input and `verb` bridges to the output count.
-pub fn report_merge(progress: &Progress, m: MergeStats, noun: &str, verb: &str) {
-    if m.merged_inputs == 0 && m.fallbacks == 0 {
-        return;
-    }
-    let mut line = format!(
-        "  merged {} {noun}(s) {verb} {} across {} style class(es)",
-        m.merged_inputs, m.merged_outputs, m.merged_classes
-    );
-    if m.fallbacks > 0 {
-        line.push_str(&format!(" ({} group(s) fell back unmerged)", m.fallbacks));
-    }
-    progress.log(line);
 }
