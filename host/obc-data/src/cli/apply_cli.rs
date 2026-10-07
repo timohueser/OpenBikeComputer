@@ -159,6 +159,7 @@ fn apply_live(
             reasons.join("; ")
         )));
     }
+    refuse_planner(plan)?;
     let noop = plan.groups.is_empty() && plan.remove.is_empty();
     ask(plan)?;
     let mut run = super::api::start_run(store, "apply live")?;
@@ -186,13 +187,16 @@ fn publish(
 ) -> Result<(), Error> {
     let (built, next) = stage(root, store, http, remote, products, plan, run)?;
     applied.built = Some(built);
+    if pushed_commit(root)? != commit {
+        return Err(Code::PlanOutdated
+            .error("the checkout moved to another commit during the build; nothing changed")
+            .fix("Apply again from the commit that you want to publish."));
+    }
     let previous = Live::read(remote, products, &[], store).map_err(r2_failed)?;
     let changed: Vec<usize> =
         (0..next.products.len()).filter(|&at| build_cli::changed(&previous.products[at], &next.products[at])).collect();
     if changed.iter().any(|&at| next.products[at].product == "planner") {
-        return Err(Code::Blocked
-            .error("an apply cannot switch the planner yet: it does not install the planner services; nothing changed")
-            .fix("Apply with the planner unchanged. The service install step comes in the next change."));
+        return Err(planner_refused());
     }
 
     run.check_stop(store)?;
@@ -291,6 +295,27 @@ fn publish(
     Ok(())
 }
 
+fn planner_refused() -> Error {
+    Code::Blocked
+        .error("Live apply cannot publish the planner yet: the planner service install is not implemented (next PR). Nothing changed.")
+        .fix("Wait for the planner service install step.")
+}
+
+/// Refuse a plan that changes the planner before anything is built: an apply does not install
+/// the planner services yet.
+pub(super) fn refuse_planner(plan: &EnvPlan) -> Result<(), Error> {
+    let planner = |step: &str| step.starts_with("planner/");
+    let groups = plan.groups.iter().any(|group| {
+        group.id == "pointer:planner"
+            || group.layers.iter().any(|layer| planner(&layer.step))
+            || group.drops.iter().any(|step| planner(step))
+    });
+    if groups || plan.edits.iter().any(|edit| edit.product() == "planner") {
+        return Err(planner_refused());
+    }
+    Ok(())
+}
+
 /// Build `plan` and verify its releases. Live does not change.
 #[allow(clippy::too_many_arguments)]
 fn stage(
@@ -355,7 +380,7 @@ pub(crate) fn pushed_commit(root: &Path) -> Result<String, Error> {
     if !branches.lines().any(|branch| branch.starts_with("origin/")) {
         return Err(Code::Usage
             .error(format!("Live publishes from a pushed commit: commit {} is not on GitHub", &commit[..7]))
-            .fix("Push it first, then apply again."));
+            .fix("Push it, or `git fetch` when it is pushed, then apply again."));
     }
     Ok(commit)
 }
@@ -1164,6 +1189,28 @@ mod tests {
         assert_eq!((retry.switched.len(), retry.removed.len()), (1, 0));
         checked(&fixture, &remote).unwrap();
         assert!(keys(&fixture).contains_key(&copy), "the input copy of the stopped apply stays");
+    }
+
+    #[test]
+    fn a_plan_that_changes_the_planner_is_refused_before_any_build() {
+        let group = |id: &str, drops: &[&str]| crate::engine::plan::Group {
+            id: id.into(),
+            cause: None,
+            layers: Vec::new(),
+            drops: drops.iter().map(|step| step.to_string()).collect(),
+            fetches: Vec::new(),
+            builds: Vec::new(),
+        };
+        let mut plan = EnvPlan { groups: vec![group("pointer:maps", &["maps/old"])], ..EnvPlan::default() };
+        refuse_planner(&plan).unwrap();
+        for groups in [vec![group("pointer:planner", &[])], vec![group("code:x", &["planner/old"])]] {
+            plan.groups = groups;
+            assert!(refuse_planner(&plan).unwrap_err().message.contains("cannot publish the planner yet"));
+        }
+        plan.groups.clear();
+        let edit = build_cli::Edit::Region { product: "planner".into(), from: None, to: "monaco".into() };
+        plan.edits = vec![edit];
+        assert!(refuse_planner(&plan).is_err(), "a first planner publish is an edit");
     }
 
     #[test]

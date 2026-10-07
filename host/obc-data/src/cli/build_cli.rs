@@ -125,7 +125,6 @@ pub struct LiveRelease {
     /// SHA-256 of the exact pointer bytes that consent observed; None means absent.
     pub observed: Option<String>,
     /// The key of the pointer on R2.
-    #[serde(default)]
     pub key: String,
 }
 
@@ -270,7 +269,14 @@ pub(super) fn print_plan(plan: &EnvPlan) {
 /// The pointers of older publishers that an apply of `plan` replaces. The apply keeps their bytes
 /// in its run directory.
 pub(super) fn replaced(plan: &EnvPlan) -> Vec<String> {
+    let changes = |product: &str| {
+        plan.groups.iter().any(|group| {
+            group.id == format!("pointer:{product}")
+                || group.layers.iter().any(|layer| layer.step.starts_with(&format!("{product}/")))
+        }) || plan.edits.iter().any(|edit| edit.product() == product)
+    };
     let older = plan.live.iter().filter(|live| live.release.is_none() && live.observed.is_some());
+    let older = older.filter(|live| changes(&live.product));
     older.map(|live| format!("REPLACES {} of an older publisher", live.key)).collect()
 }
 
@@ -884,7 +890,7 @@ fn against<'a>(
 }
 
 impl Edit {
-    fn product(&self) -> &str {
+    pub(super) fn product(&self) -> &str {
         match self {
             Edit::Region { product, .. } | Edit::Layers { product, .. } => product,
         }

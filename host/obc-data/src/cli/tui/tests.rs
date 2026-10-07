@@ -113,7 +113,7 @@ fn plan() -> EnvPlan {
         "layers": ["sun"],
         "moves": {"land": "2024-01-03", "osm": "2024-01-09"},
         "versions": [],
-        "live": [{"product": "planner", "release": "8b0d47a5".repeat(8)}],
+        "live": [{"product": "planner", "release": "8b0d47a5".repeat(8), "key": "planner/catalog.json"}],
         "edits": [{"kind": "layers", "product": "planner", "on": ["sun"], "off": []}],
         "only": [],
         "groups": groups,

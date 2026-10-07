@@ -161,7 +161,7 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
                 release: prior.map(|release| release.id()),
                 pointer: None,
                 observed: None,
-                key: String::new(),
+                key: format!("{}/catalog.json", product.prefix()),
             });
             Ok(())
         })();

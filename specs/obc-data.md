@@ -3131,7 +3131,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "properties": {
         "key": {
-          "default": "",
           "description": "The key of the pointer on R2.",
           "type": "string"
         },

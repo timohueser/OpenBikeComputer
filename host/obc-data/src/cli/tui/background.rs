@@ -419,7 +419,7 @@ pub(super) fn perform(
             let id = args.id.clone();
             let areas = args.bbox.is_none();
             regions_cli::create(root, store, args).map_err(|error| super::regions::creation_error(error, areas))?;
-            app.saved = Some(format!("Saved data/regions/{id}.toml · review and commit before apply"));
+            app.saved = Some(format!("Saved data/regions/{id}.toml · commit and push before apply"));
             app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;
             Ok(())
@@ -429,14 +429,14 @@ pub(super) fn perform(
         }
         Effect::DeleteRegion(deletion) => {
             regions_cli::remove(root, &deletion)?;
-            app.saved = Some(format!("Deleted data/regions/{}.toml · review and commit before apply", deletion.region));
+            app.saved = Some(format!("Deleted data/regions/{}.toml · commit and push before apply", deletion.region));
             app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;
             Ok(())
         }
         Effect::Policy(id, refresh) => {
             let result = policy(root, &id, refresh)
-                .map(|_| app.saved = Some("Saved data/sources.toml · review and commit before apply".into()));
+                .map(|_| app.saved = Some("Saved data/sources.toml · commit and push before apply".into()));
             let reloaded = app.reload(root, products, false);
             result.and(reloaded)
         }

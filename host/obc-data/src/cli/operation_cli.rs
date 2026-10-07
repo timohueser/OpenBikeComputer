@@ -46,6 +46,9 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     }
     if request.kind == Kind::Apply {
         super::apply_cli::pushed_commit(root)?;
+        if let Some(plan) = plan {
+            super::apply_cli::refuse_planner(plan)?;
+        }
     }
     let code = crate::worker::bound_code(root).map_err(|e| Code::Blocked.error(e))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -371,7 +374,6 @@ pub(super) fn apply(
     if args.env != "live" {
         return Err(Code::Usage.error("only live applies"));
     }
-    super::apply_cli::pushed_commit(root)?;
     let store = Store::open()?;
     let plan = match args.plan.as_deref() {
         Some(path) => super::build_cli::read_plan(path)?,
