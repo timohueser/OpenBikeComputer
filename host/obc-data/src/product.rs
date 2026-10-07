@@ -194,12 +194,7 @@ pub fn version(
     let named = named.map(str::to_string);
     let version = match &named {
         Some(version) => Some(version.clone()),
-        None if env.planned.is_some()
-            || env.moves_to_newest(source)
-            || (env.moves.contains_key(source) && env.stale_requests.contains(&(source.into(), sorted(params)))) =>
-        {
-            None
-        }
+        None if env.planned.is_some() || env.moves_to_newest(source) => None,
         None if params.is_empty() => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).max(),
         None => store.requests(source, params)?.into_iter().map(|request| request.version).max(),
     };

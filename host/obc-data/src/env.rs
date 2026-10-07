@@ -136,9 +136,6 @@ impl Env {
         if let Some(version) = self.resolved.get(&fetch) {
             return Ok(Some(version));
         }
-        if self.stale_requests.contains(&fetch) && self.moves.contains_key(source) {
-            return Ok(None);
-        }
         let start = crate::sources::all().iter().find(|s| s.id == source).and_then(|s| s.start.as_deref());
         let versions: BTreeSet<&str> = match self.live.get(&fetch) {
             Some(read) => read.iter().map(String::as_str).collect(),

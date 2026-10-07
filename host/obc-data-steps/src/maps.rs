@@ -335,10 +335,24 @@ fn captures_at(
         });
         return Ok(Vec::new());
     }
+    let bundle = capture_refresh(env, &params)?;
     let mut inputs = Vec::new();
     let mut missing = Vec::new();
     for source in CAPTURES {
-        if let Some(version) = snapshot_version(env, store, source, &params, &mut missing)? {
+        let version = match &bundle {
+            Some(version) => {
+                let key = (source.into(), obc_data::store::sorted(&params));
+                env.requests.borrow_mut().insert(key.clone());
+                if let Some(version) = version {
+                    env.read.borrow_mut().insert(key, version.clone());
+                } else {
+                    missing.push(Wanted { source: source.into(), version: None, params: params.clone() });
+                }
+                version.clone()
+            }
+            None => snapshot_version(env, store, source, &params, &mut missing)?,
+        };
+        if let Some(version) = version {
             if snapshot_files(store, source, &version, &params, &[]).map_err(Unplanned::Failed)?.is_none() {
                 missing.push(Wanted { source: source.into(), version: Some(version), params: params.clone() });
                 continue;
@@ -352,6 +366,32 @@ fn captures_at(
     }
     inputs.extend(read);
     Ok(vec![(collection, inputs)])
+}
+
+/// A capture manifest pins its sibling article and image files from the same acquisition.
+fn capture_refresh(env: &Env, params: &[(String, String)]) -> Result<Option<Option<String>>, Unplanned> {
+    if env.planned.is_some() {
+        return Ok(None);
+    }
+    let key = |source: &str| (source.to_string(), obc_data::store::sorted(params));
+    let explicit = |source: &str| env.moves.contains_key(source) && !env.stale.contains(source);
+    let resolved = CAPTURES.iter().filter_map(|source| env.resolved.get(&key(source))).max().cloned();
+    let refreshing = resolved.is_some()
+        || CAPTURES.iter().any(|source| {
+            explicit(source) || (env.moves.contains_key(*source) && env.stale_requests.contains(&key(source)))
+        });
+    if !refreshing {
+        return Ok(None);
+    }
+    let named = CAPTURES
+        .iter()
+        .filter(|source| explicit(source))
+        .filter_map(|source| env.moves.get(*source)?.as_ref())
+        .collect::<BTreeSet<_>>();
+    if named.len() > 1 {
+        return Err(invalid("a Wikimedia capture needs one version for Wikidata, Wikipedia and Commons".into()));
+    }
+    Ok(Some(named.first().map(|version| (*version).clone()).or(resolved)))
 }
 
 /// The params of a fetch.
@@ -1425,14 +1465,28 @@ pub(crate) mod tests {
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
             panic!("the policy refreshes the stale request without a manual move")
         };
-        assert_eq!(wanted.len(), 1, "fresh collections and sources keep their versions");
+        assert_eq!(wanted.len(), 3, "all siblings refresh; unrelated collections keep their versions");
         assert_eq!(wanted[0].source, "wikidata");
         assert_eq!(obc_data::store::sorted(&wanted[0].params), obc_data::store::sorted(&params));
         assert_eq!(wanted[0].version, None);
+        let mut refreshed = env.clone();
+        for source in CAPTURES {
+            fetched(&store, source, "2", &params, &[("#landmarks=0/recipe.json".into(), "updated".into())]);
+        }
+        refreshed.resolve(&wanted[0], "2".into());
+        let steps = map_steps(&root(), &refreshed, &regions, &store).unwrap().steps;
+        for (layer, expected) in [("maps/landmark-content", "2"), ("maps/peak-content", "1")] {
+            let content = steps.iter().find(|step| step.name == layer).unwrap();
+            for source in CAPTURES {
+                assert!(content.inputs.iter().any(|input| matches!(input,
+                    Input::Snapshot { source: found, version, .. } if found == source && version == expected)));
+            }
+        }
         let mut replay = env.clone();
         replay.stale.clear();
         replay.stale_requests.clear();
-        replay.planned = Some([(("wikidata".into(), obc_data::store::sorted(&params)), "2".into())].into());
+        replay.planned =
+            Some(CAPTURES.map(|source| ((source.into(), obc_data::store::sorted(&params)), "2".into())).into());
         let (saved, _) = super::capture_params(
             &replay,
             &store,
@@ -1447,11 +1501,7 @@ pub(crate) mod tests {
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
             panic!("an explicit move overrides stale sibling capture blocking")
         };
-        assert_eq!(wanted.len(), 2);
-        assert!(
-            wanted.iter().all(|fetch| fetch.source == "wikidata"),
-            "automatic sibling markers do not force newest fetches"
-        );
+        assert_eq!(wanted.len(), 6, "an explicit source move refreshes both complete bundles");
         env.stale.clear();
         env.moves = CAPTURES.map(|source| (source.into(), None)).into();
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
