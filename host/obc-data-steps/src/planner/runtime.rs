@@ -94,7 +94,7 @@ fn argv() -> Vec<String> {
 
 fn probe(root: &Path, service: &str, target: &Value) -> Result<Probe, String> {
     let args = argv();
-    let python = obc_data::engine::code::python_executable(root)?;
+    let python = obc_data::engine::python_executable(root)?;
     let mut child = Command::new(&args[0])
         .args(&args[1..])
         .args(["--probe", service])
@@ -187,7 +187,7 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
                     let bind = || -> Result<Value, String> {
                         let mut providers = probe.builder["providers"].clone();
                         if service == "routing" {
-                            providers["rust"] = serde_json::to_value(obc_data::engine::code::runtime_rust(
+                            providers["rust"] = serde_json::to_value(obc_data::engine::runtime_rust(
                                 root,
                                 &Code { paths: Vec::new(), python: None, python_packages: None, ..code.clone() },
                             )?)
@@ -246,7 +246,7 @@ pub(super) fn native_routing(args: &[String]) -> Option<Result<Value, String>> {
             rust: Some(obc_data::engine::Rust::Prepared { profile: obc_data::engine::Profile::Release }),
             ..Default::default()
         };
-        serde_json::to_value(obc_data::engine::code::runtime_rust(root, &code)?).map_err(|e| e.to_string())
+        serde_json::to_value(obc_data::engine::runtime_rust(root, &code)?).map_err(|e| e.to_string())
     })())
 }
 
