@@ -711,29 +711,35 @@ redistribute = true
 [[source]]
 id = "fixture-assistant-switzerland-content"
 kind = "data"
+licence = "CC0-1.0 AND CC-BY-SA-4.0 AND LicenseRef-Commons-per-file"
+obligations = "Each record states the licence and the notices of its own text and photo"
 attribution = "Per-record article and media credits remain in the capture"
 fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
 version = "digest"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "fixture-peak-content"
 kind = "data"
+licence = "ODbL-1.0 AND CC0-1.0 AND CC-BY-SA-4.0 AND LicenseRef-Commons-per-file"
+obligations = "Each record states the licence and the notices of its own text and photo"
 attribution = "Per-record article and media credits remain in the capture"
 fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
 version = "digest"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "fixture-assistant-wiki"
 kind = "data"
+licence = "CC0-1.0 AND CC-BY-SA-4.0 AND LicenseRef-Commons-per-file"
+obligations = "Each record states the licence and the notices of its own text and photo"
 attribution = "Per-record article and media credits remain in the capture"
 fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
 version = "digest"
 refresh = "manual"
-redistribute = false
+redistribute = true
 
 [[source]]
 id = "fixture-authored-motion"

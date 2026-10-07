@@ -2,7 +2,7 @@
 
 use super::*;
 use obc_data::engine::Request;
-use obc_data::fixtures::Inputs;
+use obc_data::fixtures::{Empty, Inputs};
 use obc_data::regions::Area;
 use obc_data::store::hash_file;
 
@@ -45,11 +45,15 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     };
     let mut content = Vec::new();
     for collection in ["landmarks", "peaks"] {
-        if inputs.empty.iter().any(|name| name == collection) {
+        if let Some(kind) = inputs.empty.get(collection) {
+            let kind = match kind {
+                Empty::Historical => "historical-empty",
+                Empty::Selected => "selected-empty",
+            };
             content.push(copy_step(
                 &content_layer(collection),
                 inputs.osm.input(),
-                serde_json::json!({"kind":"historical-empty","collection":collection,"sha256":inputs.osm_sha256}),
+                serde_json::json!({"kind":kind,"collection":collection,"sha256":inputs.osm_sha256}),
                 &[collection],
                 empty_content,
             ));
@@ -58,13 +62,19 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
         let input = inputs.content.get(collection).ok_or_else(|| {
             invalid(format!("fixture {collection} needs an exact raw capture or an explicitly pinned compiled input"))
         })?;
-        content.push(copy_step(
+        let raw = collection == "landmarks" && input.source == "fixture-assistant-wiki";
+        let mut step = copy_step(
             &content_layer(collection),
             input.input(),
-            serde_json::json!({"kind":"historical-compiled","collection":collection}),
+            serde_json::json!({"kind":if raw { "captured-raw" } else { "historical-compiled" },"collection":collection}),
             &[collection],
-            copy_content,
-        ));
+            if raw { compile_raw_content } else { copy_content },
+        );
+        if raw {
+            step.code.crates.push("obc-pack".into());
+            step.code.libraries = obc_pack::step::geos_libraries().map_err(Unplanned::Invalid)?;
+        }
+        content.push(step);
     }
     let mut wanted = Vec::new();
     let glo30 = env
@@ -144,7 +154,7 @@ pub(super) fn bind_terrain(
     }
     step.code.crates.push("obc-data-steps".into());
     step.code.sources.push(input.source.clone());
-    step.options["dataset"] = serde_json::json!("captured-glo-30");
+    step.options["dataset"] = serde_json::json!("selected-glo-30");
     step.run = Run::Rust(captured_terrain);
     Ok(())
 }
@@ -250,6 +260,24 @@ fn copy_osm(request: &Request) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn compile_raw_content(request: &Request) -> Result<(), String> {
+    let files = request
+        .snapshots
+        .values()
+        .flat_map(|selected| selected.iter())
+        .map(|(name, path)| (name.clone(), path.clone()))
+        .collect();
+    let view = request.output.with_file_name("fixture-content-input");
+    obc_pack::step::copied_view(&files, &view)?;
+    obc_pack::landmarks::compile(
+        &view.join("manifest.json"),
+        &view.join("regions.geojson"),
+        &request.output.join("landmarks"),
+        false,
+    )
+    .map(drop)
+}
+
 fn copy_content(request: &Request) -> Result<(), String> {
     let collection = request.options["collection"].as_str().ok_or("compiled fixture input lacks its collection")?;
     let document = match collection {
@@ -275,6 +303,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_raw_content_uses_the_shared_writer_and_refuses_changed_source_bytes() {
+        let temporary = super::super::tests::temp("legacy-fixture-content");
+        std::fs::create_dir_all(&temporary.0).unwrap();
+        let response = temporary.0.join("source.json");
+        std::fs::write(&response, b"{}").unwrap();
+        let manifest = temporary.0.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "schema":1,"places":[],"sources":[{"path":"source.json", "bytes":2,
+                    "sha256":hash_file(&response).unwrap().0,"url":"https://en.wikipedia.org/w/api.php"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let boundary = temporary.0.join("regions.geojson");
+        std::fs::write(
+            &boundary,
+            serde_json::to_vec(&serde_json::json!({
+                "type":"FeatureCollection", "features":[{"type":"Feature","geometry":{
+                    "type":"Polygon","coordinates":[[[-9.9,51.43],[-9.5,51.43],[-9.5,51.65],[-9.9,51.65],[-9.9,51.43]]]
+                }}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut request = Request {
+            step: "maps/landmark-content".into(),
+            snapshots: [(
+                "fixture-assistant-wiki".into(),
+                [
+                    ("source.json".into(), response.clone()),
+                    ("manifest.json".into(), manifest),
+                    ("regions.geojson".into(), boundary),
+                ]
+                .into(),
+            )]
+            .into(),
+            layers: BTreeMap::new(),
+            layer_files: BTreeMap::new(),
+            options: serde_json::json!({}),
+            libraries: Vec::new(),
+            output: temporary.0.join("out"),
+            metrics: temporary.0.join("metrics.json"),
+        };
+        compile_raw_content(&request).unwrap();
+        let compiled: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(request.output.join("landmarks/content.json")).unwrap()).unwrap();
+        assert_eq!(compiled["schema"], 2);
+        assert!(compiled["records"].as_array().unwrap().is_empty());
+        assert!(!request.output.with_file_name("fixture-content-input").join("recipe.json").exists());
+        std::fs::write(&response, b"[]").unwrap();
+        request.output = temporary.0.join("retry/output");
+        let error = compile_raw_content(&request).unwrap_err();
+        assert!(error.contains("source checksum changed"), "{error}");
+        assert!(!request.output.join("landmarks/content.json").exists());
+    }
+
+    #[test]
     fn captured_terrain_requires_the_full_cell_window_and_keeps_its_actual_snapshot() {
         let cell = CellId::containing(V1_CELL_LOG2.into(), 46_600_000, 8_300_000);
         let files: Vec<_> = obc_dem::fetch::tiles_for(obc_bake::terrain::source_bbox([cell]).unwrap())
@@ -298,7 +385,7 @@ mod tests {
         assert_eq!(version, &input.version);
         assert!(params.is_empty());
         assert_eq!(selected, &files);
-        assert_eq!(step.options["dataset"], "captured-glo-30");
+        assert_eq!(step.options["dataset"], "selected-glo-30");
         let missing = input.files.pop().unwrap();
         assert!(format!("{:?}", bind_terrain(&env, &store, &mut step, &input, &[cell]).unwrap_err()).contains(&missing));
         let env = Env { moves: [(GLO30.into(), Some("2022-05-09".into()))].into(), ..Default::default() };

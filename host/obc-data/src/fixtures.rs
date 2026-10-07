@@ -39,8 +39,15 @@ pub struct Inputs {
     pub terrain: Option<CapturedInput>,
     /// Pinned compiled sidecars stay separate from current producer outputs.
     pub historical: BTreeMap<String, CapturedInput>,
-    /// Collections explicitly empty in the original package record.
-    pub empty: Vec<String>,
+    /// Record-proven emptiness stays distinct from an explicit fixture selection.
+    pub empty: BTreeMap<String, Empty>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Empty {
+    Historical,
+    Selected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -53,6 +60,7 @@ pub struct CapturedInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "FixturePlan")]
 pub struct Plan {
     pub catalog: LayerFile,
     /// The exact package declarations and canonical regions used for this review.
@@ -75,6 +83,7 @@ pub struct PackagePlan {
 /// Preparation returns its review; apply returns only verified immutable archives and the new Git pointer.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
+#[schemars(rename = "FixtureOutcome")]
 pub enum Outcome {
     Prepared(Plan),
     Applied { archives: BTreeMap<String, LayerFile>, catalog: LayerFile },
@@ -132,7 +141,7 @@ impl Inputs {
             }
         }
         let mut selected = std::collections::BTreeSet::new();
-        for name in self.content.keys().chain(&self.empty) {
+        for name in self.content.keys().chain(self.empty.keys()) {
             if !matches!(name.as_str(), "landmarks" | "peaks") || !selected.insert(name) {
                 return Err("fixture content collection is unknown or selected twice".into());
             }
@@ -149,12 +158,6 @@ impl CapturedInput {
             || self.version.chars().any(char::is_control)
         {
             return Err("fixture captured input has no normalized source and version".into());
-        }
-        for (path, input) in &self.historical {
-            relative(path)?;
-            if input.files.len() != 1 {
-                return Err("historical fixture sidecar must select one file".into());
-            }
         }
         let mut selected = std::collections::BTreeSet::new();
         for file in &self.files {
@@ -195,6 +198,9 @@ pub struct Package {
     pub sources: BTreeMap<String, String>,
     #[serde(default)]
     pub asset_source: Option<String>,
+    /// Explicitly omitted collections, separate from original-record emptiness.
+    #[serde(default)]
+    pub empty: Vec<String>,
 }
 
 impl Collection {
@@ -220,6 +226,12 @@ impl Collection {
                 if !crate::is_kebab(source) || version.is_empty() {
                     return Err(format!("fixture {id} has an invalid raw source selection"));
                 }
+            }
+            let unique: std::collections::BTreeSet<_> = package.empty.iter().collect();
+            if unique.len() != package.empty.len()
+                || unique.iter().any(|name| !matches!(name.as_str(), "landmarks" | "peaks"))
+            {
+                return Err(format!("fixture {id} has an invalid empty collection selection"));
             }
             if package.asset_source.as_ref().is_some_and(|source| !crate::is_kebab(source)) {
                 return Err(format!("fixture {id} has an invalid tracked asset source"));
@@ -322,6 +334,15 @@ mod tests {
         let regions = Regions::load(&root).unwrap();
         let collection = Collection::load(&root, &regions).unwrap();
         assert_eq!(collection.packages.len(), 6);
+        assert_eq!(collection.packages["sim-assistant-west-cork"].empty, ["peaks"]);
+        let original: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(&collection.packages["sim-assistant-west-cork"].bootstrap)).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            original["map"].get("peak_associations").is_none(),
+            "selection is explicit, not inferred historical emptiness"
+        );
         for package in collection.packages.values() {
             let (record, bootstrap) = package.bootstrap(&root, &regions).unwrap();
             assert_eq!(hash_file(&root.join(&record.path)).unwrap(), (record.sha256, record.size));

@@ -133,7 +133,7 @@ mod tests {
                 osm: CapturedInput { source: "fixture-osm".into(), version: "1".into(), files: Vec::new() },
                 osm_sha256: files[0].sha256.clone(),
                 content: BTreeMap::new(),
-                empty: Vec::new(),
+                empty: BTreeMap::new(),
             },
             release: Release::compose("maps", "ride", &[], None, vec![layer], &Default::default()),
             archive: LayerFile { path: format!("packages/{}.tar.gz", files[0].sha256), ..files[0].clone() },

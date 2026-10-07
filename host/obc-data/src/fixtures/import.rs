@@ -186,6 +186,20 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
                 }
             }
         }
+        if id == "assistant-wiki" {
+            if !["manifest.json", "regions.geojson"].iter().all(|name| snapshot.files.iter().any(|f| f.name == *name)) {
+                return Err("raw fixture Wiki input lacks its exact manifest or boundary".into());
+            }
+            if content
+                .insert(
+                    "landmarks".into(),
+                    CapturedInput { source: source.clone(), version: version.clone(), files: Vec::new() },
+                )
+                .is_some()
+            {
+                return Err("bootstrap selects conflicting landmarks inputs".into());
+            }
+        }
     }
     if captured.is_none() {
         for snapshot in store.snapshots("geofabrik-extracts")? {
@@ -234,14 +248,19 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             CapturedInput { source: source.into(), version: version.into(), files: vec![name.into()] },
         );
     }
-    let empty = [
+    let mut empty: BTreeMap<_, _> = [
         ("landmarks", record["map"]["landmark_records"].as_u64() == Some(0)),
         ("peaks", record["map"]["peak_associations"].as_array().is_some_and(Vec::is_empty)),
     ]
     .into_iter()
     .filter(|(name, absent)| *absent && !content.contains_key(*name))
-    .map(|(name, _)| name.into())
+    .map(|(name, _)| (name.into(), Empty::Historical))
     .collect();
+    for name in &package.empty {
+        if content.contains_key(name) || empty.insert(name.clone(), Empty::Selected).is_some() {
+            return Err(format!("fixture collection `{name}` is selected twice"));
+        }
+    }
     let terrain_version =
         bootstrap.source_packages.get("assistant-terrain").or_else(|| package.sources.get("fixture-assistant-terrain"));
     let terrain = terrain_version
