@@ -114,8 +114,8 @@ impl ShardRunner for OsmiumRunner {
 }
 
 impl OsmiumRunner {
-    /// The prepared executable and its version. Discovery only reads local tooling.
-    pub fn identity(&self) -> Result<serde_json::Value, String> {
+    /// The canonical executable binding. Discovery checks its local version.
+    pub fn binding(&self) -> Result<obc_data::engine::Library, String> {
         let binary = if self.binary.components().count() > 1 {
             self.binary.clone()
         } else {
@@ -130,7 +130,26 @@ impl OsmiumRunner {
         if !output.status.success() {
             return Err("prepared Osmium --version failed".into());
         }
-        Ok(serde_json::json!({"sha256": sha256, "version": String::from_utf8_lossy(&output.stdout).trim()}))
+        Ok(obc_data::engine::Library { name: "osmium".into(), path: binary, sha256 })
+    }
+
+    /// Use the exact canonical executable selected by the checked request.
+    pub fn bound(libraries: &[obc_data::engine::Library]) -> Result<(Self, &obc_data::engine::Library), String> {
+        let providers: Vec<_> = libraries.iter().filter(|provider| provider.name == "osmium").collect();
+        let [provider] = providers[..] else { return Err("the request needs one named Osmium binding".into()) };
+        let runner = Self { binary: provider.path.clone() };
+        runner.check_binding(provider)?;
+        Ok((runner, provider))
+    }
+
+    pub fn check_binding(&self, provider: &obc_data::engine::Library) -> Result<(), String> {
+        if !provider.path.is_absolute()
+            || provider.path.canonicalize().map_err(|e| format!("prepared Osmium: {e}"))? != provider.path
+            || obc_data::store::hash_file(&provider.path)?.0 != provider.sha256
+        {
+            return Err("prepared Osmium changed; prepare a new plan".into());
+        }
+        Ok(())
     }
 
     /// The first line of `osmium --version`.
@@ -150,6 +169,28 @@ mod tests {
 
     fn repo(path: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
+    }
+
+    #[test]
+    fn declared_osmium_uses_exact_provider_and_refuses_persistent_replacement() {
+        let dir = std::env::temp_dir().join(format!("obc-osmium-binding-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let binary = dir.join("selected-osmium");
+        std::fs::write(&binary, "original executable bytes").unwrap();
+        let provider = obc_data::engine::Library {
+            name: "osmium".into(),
+            path: binary.clone(),
+            sha256: obc_data::store::hash_file(&binary).unwrap().0,
+        };
+        assert!(OsmiumRunner::bound(&[]).err().unwrap().contains("one named"));
+        let providers = [provider];
+        let (runner, binding) = OsmiumRunner::bound(&providers).unwrap();
+        assert_eq!(runner.binary, binary, "the callback uses the declared path instead of PATH/OBC_OSMIUM");
+        std::fs::write(&binary, "changed executable bytes").unwrap();
+        assert!(runner.check_binding(binding).unwrap_err().contains("changed"));
+        assert!(OsmiumRunner::bound(&providers).err().unwrap().contains("changed"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

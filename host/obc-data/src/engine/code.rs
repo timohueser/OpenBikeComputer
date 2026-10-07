@@ -266,6 +266,11 @@ impl Context {
                 hashes.insert(key, hash);
             }
         }
+        if matches!(mode, Mode::Execution)
+            && hashes.insert(SOURCE_BINDING.into(), source_binding(&source_config, rust.as_ref())).is_some()
+        {
+            return Err("code uses the reserved source/config binding key".into());
+        }
         Ok(CodeIdentity { files: hashes, source_config, rust, git_inputs })
     }
 }
@@ -312,6 +317,12 @@ pub(super) fn python_command(root: &Path, code: &Code, expected: &str, command: 
     Ok(())
 }
 
+pub(crate) const SOURCE_BINDING: &str = "identity/source-config";
+
+pub(crate) fn source_binding(files: &BTreeMap<String, String>, rust: Option<&ResolvedRust>) -> String {
+    crate::store::sha256_hex(&serde_json::to_vec(&(files, rust)).expect("source identity is serializable"))
+}
+
 pub fn hash(files: &BTreeMap<String, String>) -> String {
     super::digest(files.iter().map(|(path, sha256)| (path.as_str(), sha256.as_str())))
 }
@@ -324,6 +335,7 @@ pub fn compiled(root: &Path, crates: &[String]) -> Result<String, String> {
     let mut files = context.files(root, &code)?;
     // Embedded credits use the content projection; controls are read from the checkout.
     files.remove("data/sources.toml");
+    files.remove(SOURCE_BINDING);
     for source in &registry.sources {
         // Product preflight reads embedded credential descriptors as well as content settings.
         files.insert(

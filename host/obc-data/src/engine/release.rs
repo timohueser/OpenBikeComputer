@@ -53,6 +53,11 @@ impl Producer {
         if super::code::hash(&self.files) != code {
             return Err(format!("producer witness differs from full code digest {code}"));
         }
+        if self.files.get(super::code::SOURCE_BINDING)
+            != Some(&super::code::source_binding(&self.source_config, self.rust.as_ref()))
+        {
+            return Err(format!("producer source/config binding differs from full code digest {code}"));
+        }
         Ok(())
     }
 }

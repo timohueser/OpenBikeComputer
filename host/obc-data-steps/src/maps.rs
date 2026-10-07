@@ -84,7 +84,7 @@ impl Product for Maps {
     }
 
     fn steps(&self, root: &std::path::Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().identity())
+        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().binding())
     }
 }
 
@@ -97,7 +97,7 @@ impl Maps {
         env: &Env,
         regions: &Regions,
         store: &Store,
-        tool: Result<serde_json::Value, String>,
+        tool: Result<obc_data::engine::Library, String>,
     ) -> Result<Steps, Unplanned> {
         self.steps_with_bindings(env, regions, store, tool, obc_pack::step::geos_libraries())
     }
@@ -107,7 +107,7 @@ impl Maps {
         env: &Env,
         regions: &Regions,
         store: &Store,
-        tool: Result<serde_json::Value, String>,
+        tool: Result<obc_data::engine::Library, String>,
         libraries: Result<Vec<obc_data::engine::Library>, String>,
     ) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
@@ -647,12 +647,12 @@ fn snapshot_version(
 
 /// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo. Only
 /// the map cells read it.
-fn osm(extract: Input, leaves: &BTreeSet<LeafId>, identity: serde_json::Value) -> Step {
+fn osm(extract: Input, leaves: &BTreeSet<LeafId>, binding: obc_data::engine::Library) -> Step {
     Step {
         name: "maps/osm".into(),
         inputs: vec![extract],
-        options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>(), "osmium": identity}),
-        code: Code { paths: Vec::new(), crates: vec!["obc-osm".into()], ..Default::default() },
+        options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>()}),
+        code: Code { crates: vec!["obc-osm".into()], libraries: vec![binding], ..Default::default() },
         outputs: vec!["osm".into()],
         run: Run::Rust(obc_osm::step::osm),
         client: Client::None,
@@ -881,7 +881,11 @@ pub(crate) mod tests {
             env,
             regions,
             store,
-            Ok(serde_json::json!({"sha256": "0".repeat(64), "version": "authored copy fixture"})),
+            Ok(obc_data::engine::Library {
+                name: "osmium".into(),
+                path: std::path::PathBuf::from("/authored-copy-osmium"),
+                sha256: "0".repeat(64),
+            }),
         )
     }
 
@@ -1268,7 +1272,11 @@ pub(crate) mod tests {
                     &env,
                     &regions,
                     &store,
-                    Ok(serde_json::json!({"sha256": "0".repeat(64), "version": "authored copy fixture"})),
+                    Ok(obc_data::engine::Library {
+                        name: "osmium".into(),
+                        path: std::path::PathBuf::from("/authored-copy-osmium"),
+                        sha256: "0".repeat(64),
+                    }),
                     Err("GEOS library missing; start a fresh worker".into()),
                 )
                 .unwrap();

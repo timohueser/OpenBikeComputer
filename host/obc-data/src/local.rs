@@ -37,7 +37,7 @@ pub struct Adoption {
 }
 
 /// Compare declared producers at the original target/profile, without selecting execution tools.
-/// Each requested layer includes its client files and the extra exact paths named in `required`.
+/// Each requested layer includes its original published client files and the exact extra paths in `required`.
 /// A private intermediate is eligible only when its verified bytes already exist locally.
 pub fn plan(
     root: &Path,
@@ -425,7 +425,8 @@ mod tests {
         let witness = code.source_config(root, Some(&recorded)).unwrap();
         assert!(witness.files.contains_key("linux/src/lib.rs"), "the original Linux dependency is selected");
         let mut full = witness.files.clone();
-        full.insert("native/original-provider".into(), "a".repeat(64));
+        full.insert("native/library/original-provider".into(), "a".repeat(64));
+        full.insert(engine::code::SOURCE_BINDING.into(), engine::code::source_binding(&witness.files, Some(&recorded)));
         let producer = Producer { files: full, source_config: witness.files, rust: Some(recorded) };
         let code_digest = engine::code::hash(&producer.files);
         let steps = vec![
@@ -509,11 +510,38 @@ mod tests {
         let root = fixture.root();
         let (mut steps, original) = authored(&root);
         let required = BTreeMap::from([("test/client".into(), Vec::new())]);
+        let producer = &original.producers[&original.layers[0].code];
+        for mutation in 0..4 {
+            let mut forged = producer.clone();
+            match mutation {
+                0 => {
+                    forged.source_config.insert("linux/src/lib.rs".into(), "f".repeat(64));
+                }
+                1 => {
+                    forged.source_config.insert("new/source-key".into(), "f".repeat(64));
+                }
+                2 => {
+                    forged.rust.as_mut().unwrap().target = "aarch64-apple-darwin".into();
+                }
+                _ => {
+                    forged.rust.as_mut().unwrap().build = Rust::Prepared { profile: Profile::Release };
+                }
+            }
+            assert!(forged.check(&original.layers[0].code).unwrap_err().contains("source/config binding"));
+            let path = fixture.store.root().join("producers").join(format!("{}.json", original.layers[0].code));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, serde_json::to_vec(&forged).unwrap()).unwrap();
+            assert!(original.clone().bind_producers(&fixture.store).unwrap_err().contains("source/config binding"));
+        }
+        for step in &mut steps {
+            step.code.libraries[0].path = root.join("absent-local-provider");
+            step.code.libraries[0].sha256 = "b".repeat(64);
+        }
         let selected = plan(&root, &fixture.store, &Portable, &original, &steps, &required).unwrap();
         assert!(selected.blocked.is_empty(), "{selected:?}");
         assert!(!root.join("absent-original-provider").exists());
         let mut local_full = original.producers[&original.layers[0].code].files.clone();
-        local_full.insert("native/original-provider".into(), "b".repeat(64));
+        local_full.insert("native/library/original-provider".into(), "b".repeat(64));
         assert_ne!(engine::code::hash(&local_full), original.layers[0].code, "a Local execution has its own full key");
         object(&fixture.store, &original.layers[1].files[0], b"client");
         let adopted = adopt(

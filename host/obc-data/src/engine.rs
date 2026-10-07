@@ -121,7 +121,7 @@ pub struct Code {
     /// A locked Python group packaged for another runtime, without selecting its interpreter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_packages: Option<String>,
-    /// Native library files bound by the provider before its code runs.
+    /// Native library or executable files bound by the provider before its code runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub libraries: Vec<Library>,
 }
@@ -243,6 +243,8 @@ pub struct Request {
     /// Receipt metadata for exactly the selected files of each layer input.
     pub layer_files: BTreeMap<String, Vec<LayerFile>>,
     pub options: Value,
+    /// Exact native providers from the checked execution identity.
+    pub libraries: Vec<Library>,
     /// An empty directory: the layer is the files the step writes in it.
     pub output: PathBuf,
     /// Where the step may write a JSON object of metrics.
@@ -613,6 +615,7 @@ fn prepare(
         layers: BTreeMap::new(),
         layer_files: BTreeMap::new(),
         options: step.options.clone(),
+        libraries: step.code.libraries.clone(),
         output: PathBuf::new(),
         metrics: PathBuf::new(),
     };

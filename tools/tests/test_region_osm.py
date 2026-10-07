@@ -45,9 +45,34 @@ class RegionOsm(unittest.TestCase):
             self.assertFalse(info["data"]["multiple_versions"])
 
     def test_changed_prepared_tool_refuses_before_reading_area_bytes(self):
-        request = {"options": {"osmium": {"sha256": "old", "version": "old"}}}
-        with patch.object(region_osm, "probe", return_value=(Path("osmium"), {"sha256": "new"})), \
+        request = {"options": {}, "libraries": [{"name": "osmium", "path": str(Path("osmium").resolve()), "sha256": "old"}]}
+        with patch.object(region_osm, "digest", return_value="new"), \
+                patch.object(region_osm.subprocess, "run") as execute, \
                 patch.object(region_osm, "union") as union:
             with self.assertRaisesRegex(ValueError, "Prepared Osmium changed"):
                 region_osm.step(request)
             union.assert_not_called()
+            execute.assert_not_called()
+
+    def test_named_binding_ignores_ambient_tool_and_checks_after_union(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            binary = root / "selected-osmium"
+            request = {"libraries": [{"name": "osmium", "path": str(binary), "sha256": "old"}],
+                       "options": {}, "layers": {"area": {"source.osm.pbf": "input"}},
+                       "output": str(root), "metrics": str(root / "metrics.json")}
+            with patch.dict(os.environ, {"OBC_OSMIUM": "/unused-ambient-tool"}), \
+                    patch.object(region_osm, "probe", return_value=(binary, {"sha256": "old", "version": "fixture"})) as probe, \
+                    patch.object(region_osm, "digest", return_value="new") as digest, \
+                    patch.object(region_osm, "union") as union:
+                with self.assertRaisesRegex(ValueError, "changed during"):
+                    region_osm.step(request)
+                probe.assert_called_once_with(binary, "old")
+                digest.assert_called_once_with(binary)
+                union.assert_called_once_with(binary, [Path("input")], root / "osm.pbf")
+                self.assertFalse((root / "metrics.json").exists())
+            request["libraries"] = []
+            with patch.object(region_osm, "probe") as probe:
+                with self.assertRaisesRegex(ValueError, "one named"):
+                    region_osm.step(request)
+                probe.assert_not_called()
