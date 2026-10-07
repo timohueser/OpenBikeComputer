@@ -1597,6 +1597,7 @@ changes nothing.
 
 | Code | Exit | When | Fix |
 | --- | --- | --- | --- |
+| `busy` | 2 | Another admitted operation owns the environment. No work waits for it. | Observe the current run or retry after it drains. No work is queued. |
 | `usage` | 2 | An argument is not valid, an id names nothing, the command runs outside the repository, or
 another command must run first. | Correct the command. `obc data --help` lists the commands and their arguments. |
 | `no_terminal` | 2 | A command that changes live has no terminal to ask in, and no `--yes`. | Show the plan to a person. When they agree, run the command again with `--yes`. |
@@ -1639,6 +1640,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Completed prepare output | `Prepared2` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |
+| `auto` admission | `Started` |
+| Completed auto output | `Result` |
+| Live timer state | `State3` |
+| `schedule live --setup-budget` | `Budget` |
 | `runs` | `RunList` |
 | `runs RUN` for a detached operation | `View` |
 | `runs RUN` for other journals | `Details` |
@@ -1844,6 +1849,35 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Budget": {
+      "properties": {
+        "alert": {
+          "type": "string"
+        },
+        "cpu_percent": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minimum_free": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cpu_percent",
+        "memory_bytes",
+        "minimum_free",
+        "alert"
+      ],
+      "type": "object"
+    },
     "Built": {
       "description": "What a build did.",
       "properties": {
@@ -2044,6 +2078,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Code2": {
       "description": "The kind of an error. It sets the exit status and the fix.",
       "oneOf": [
+        {
+          "const": "busy",
+          "description": "Another admitted operation owns the environment. No work waits for it.",
+          "type": "string"
+        },
         {
           "const": "usage",
           "description": "An argument is not valid, an id names nothing, the command runs outside the repository, or\nanother command must run first.",
@@ -4499,6 +4538,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Result": {
+      "properties": {
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Applied"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approval": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "built": {
+          "$ref": "#/$defs/Built"
+        },
+        "publication": {
+          "description": "Publication requires checked enabled-timer admission.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "built",
+        "approval",
+        "publication",
+        "applied"
+      ],
+      "type": "object"
+    },
     "Review": {
       "oneOf": [
         {
@@ -5045,6 +5118,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Started": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Handle"
+        },
+        {
+          "properties": {
+            "env": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "run": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "skipped",
+            "env",
+            "reason",
+            "run"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "State": {
       "description": "The state of a source or a layer. A source is only ok, stale or blocked. When more than one\nstate applies to a layer, the first in this order is its state, so the least of several states\nis the one to show for all of them.",
       "enum": [
@@ -5094,6 +5200,71 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "token",
         "status"
+      ],
+      "type": "object"
+    },
+    "State3": {
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "blocked": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "calendar": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "last_run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/View"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_trigger": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runnable": {
+          "type": "boolean"
+        },
+        "time_zone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "active",
+        "runnable",
+        "blocked",
+        "calendar",
+        "time_zone",
+        "next",
+        "last_trigger",
+        "last_run"
       ],
       "type": "object"
     },
