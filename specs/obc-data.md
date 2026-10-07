@@ -4,6 +4,31 @@
 the environments. It fetches sources into the store. The crate is `host/obc-data`.
 All files under `data/` are TOML. A file with an unknown key is refused.
 
+## Fixture collection
+
+`data/env/fixtures.toml` selects packages and canonical box regions. It is a collection, not an
+ordinary environment. First-import fields select exact recorded inputs only while no saved or
+published package selection exists.
+
+Each rebuilt archive contains `.obc-data.json`: the package id, original PBF coverage, selected
+source versions, request parameters, file hashes, immutable input-copy records, asset identities
+and the Maps release with its producer receipts. `copied_sources` names the raw copies published
+with that selection. The local saved envelope adds the archive hash
+and size. The payload does not contain its own archive hash. The Git catalog marks these archives
+with `selection = true`; it remains the consumer authority.
+
+Read-only planning does not download archives. Explicit preparation can recover the exact catalog
+archive and restore its input objects. Recorded public raw copies remain readable after a policy change. New raw uploads require current
+redistribution permission. Other inputs recover from their exact original source at
+the recorded version, parameters and hashes. Missing history refuses without newest substitution.
+`--move SOURCE[@VERSION]` permits acquisition for that source. Saved requests keep their own exact
+versions; a new request needs an explicit move. Coverage outside the saved PBF is refused.
+
+Apply binds the prior selection, catalog bytes, current recipe and packaging identities. It verifies
+all outputs, uploads immutable archives and permitted raw input objects to the isolated Fixture bucket, then
+replaces only the reviewed Git catalog entries. It does not commit or push. Saved selections and
+their exact objects remain store collection roots.
+
 ## Files
 
 ### `data/sources.toml`
@@ -2034,6 +2059,22 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
         "source": {
           "type": "string"
         },
@@ -2044,6 +2085,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "source",
         "version",
+        "params",
         "files"
       ],
       "type": "object"
@@ -3249,6 +3291,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "destination": {
           "type": "string"
         },
+        "moves": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "packages": {
           "additionalProperties": {
             "$ref": "#/$defs/PackagePlan"
@@ -3271,7 +3319,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "destination",
         "worker",
         "packaging",
-        "packages"
+        "packages",
+        "moves"
       ],
       "type": "object"
     },
@@ -3950,7 +3999,14 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         },
         "bootstrap": {
-          "$ref": "#/$defs/LayerFile"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LayerFile"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "inputs": {
           "anyOf": [
@@ -3964,10 +4020,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "plan": {
           "$ref": "#/$defs/EnvPlan"
+        },
+        "selection": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "bootstrap",
+        "selection",
         "inputs",
         "assets",
         "plan"

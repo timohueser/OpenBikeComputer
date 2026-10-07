@@ -13,15 +13,15 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     };
     let poly = box_poly(bbox);
     let coverage = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
-    let obc_data::fixtures::CapturedInput { source, version, files } = &inputs.osm;
-    let paths = snapshot_files(store, source, version, &[], files)
+    let obc_data::fixtures::CapturedInput { source, version, params, files } = &inputs.osm;
+    let paths = snapshot_files(store, source, version, params, files)
         .map_err(Unplanned::Failed)?
         .ok_or_else(|| invalid(format!("import the exact fixture PBF {} before building", inputs.osm_sha256)))?;
     let [path] = paths.values().collect::<Vec<_>>()[..] else {
         return Err(invalid("fixture PBF input must select exactly one file".into()));
     };
     if hash_file(path).map_err(Unplanned::Failed)?.0 != inputs.osm_sha256 {
-        return Err(invalid("fixture PBF differs from the bootstrap's stored bytes".into()));
+        return Err(invalid("fixture PBF differs from its recorded stored bytes".into()));
     }
     let prepared = copy_step(
         "maps/source/captured",
@@ -78,11 +78,11 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     }
     let mut wanted = Vec::new();
     let glo30 = env
-        .moves
-        .get(GLO30)
-        .and_then(Option::as_ref)
-        .ok_or_else(|| invalid("fixture terrain needs an explicitly selected GLO30 version".into()))?
-        .clone();
+        .version(GLO30, &[])
+        .map_err(Unplanned::Invalid)?
+        .ok_or_else(|| invalid("fixture terrain needs an exact selected GLO30 version".into()))?
+        .to_string();
+    env.read.borrow_mut().insert((GLO30.into(), Vec::new()), glo30.clone());
     let selected_terrain = match &inputs.terrain {
         Some(terrain) => {
             snapshot_files(store, &terrain.source, &terrain.version, &[], &terrain.files)
@@ -90,7 +90,12 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
                 .ok_or_else(|| invalid("restore the exact captured terrain files before building".into()))?;
             terrain.clone()
         }
-        None => obc_data::fixtures::CapturedInput { source: GLO30.into(), version: glo30.clone(), files: Vec::new() },
+        None => obc_data::fixtures::CapturedInput {
+            source: GLO30.into(),
+            version: glo30.clone(),
+            params: Vec::new(),
+            files: Vec::new(),
+        },
     };
     let land_polygons = snapshot_version(env, store, LAND, &[], &mut wanted)?;
     if !wanted.is_empty() {
@@ -135,10 +140,10 @@ pub(super) fn bind_terrain(
         files: required.iter().filter(|file| input.files.contains(file)).cloned().collect(),
     }];
     if !missing.is_empty() {
-        let Some(Some(version)) = env.moves.get(GLO30) else {
-            return Err(invalid(format!("captured terrain lacks full required coverage: {}; select the exact historical `{GLO30}` version in data/env/fixtures.toml before preparation", missing.join(", "))));
-        };
         let params: Vec<_> = missing.iter().map(|name| ("tile".into(), name.trim_end_matches(".tif").into())).collect();
+        let Some(version) = env.version(GLO30, &params).map_err(Unplanned::Failed)? else {
+            return Err(invalid(format!("captured terrain lacks full required coverage: {}; prepare with --move {GLO30}@VERSION for this exact tile request", missing.join(", "))));
+        };
         let files = match read(env, store, GLO30, &params).map_err(Unplanned::Failed)? {
             Ok(files) => files,
             Err(fetch) => return Err(Unplanned::NeedsFetch(vec![fetch])),
@@ -146,7 +151,7 @@ pub(super) fn bind_terrain(
         if missing.iter().any(|name| !files.contains_key(name)) {
             return Err(invalid(format!("historical terrain still lacks required raw TIFFs: {}; restore this exact source version, never substitute sea or newest", missing.join(", "))));
         }
-        step.inputs.push(Input::Snapshot { source: GLO30.into(), version: version.clone(), params, files: missing });
+        step.inputs.push(Input::Snapshot { source: GLO30.into(), version: version.into(), params, files: missing });
         step.code.sources.push(GLO30.into());
     }
     if matches!(&step.inputs[0], Input::Snapshot { files, .. } if files.is_empty()) {
@@ -371,6 +376,7 @@ mod tests {
         let mut input = obc_data::fixtures::CapturedInput {
             source: "fixture-assistant-terrain".into(),
             version: "a".repeat(64),
+            params: Vec::new(),
             files: files.clone(),
         };
         let mut step = terrain(LeafId { i: 0, j: 0 }, &[cell], &HashSet::new(), "unused", None);
@@ -395,6 +401,49 @@ mod tests {
         assert_eq!(wanted.len(), 1);
         assert_eq!(wanted[0].version.as_deref(), Some("2022-05-09"));
         assert_eq!(wanted[0].params, vec![("tile".into(), missing.trim_end_matches(".tif").into())]);
+        let params = wanted[0].params.clone();
+        let version = "2022-05-09".to_string();
+        let restored =
+            Env { live: [((GLO30.into(), params.clone()), [version.clone()].into())].into(), ..Default::default() };
+        let Unplanned::NeedsFetch(wanted) = bind_terrain(&restored, &store, &mut step, &input, &[cell]).unwrap_err()
+        else {
+            panic!("saved exact request remains recoverable without a move")
+        };
+        assert_eq!(wanted[0].version.as_deref(), Some(version.as_str()));
+        let tile_hash = obc_data::store::sha256_hex(b"raw");
+        obc_data::store::write_atomic(&store.object(&tile_hash), b"raw").unwrap();
+        store
+            .put_snapshot(&obc_data::store::Snapshot {
+                source: GLO30.into(),
+                version: version.clone(),
+                files: vec![obc_data::store::FileRecord {
+                    name: missing.clone(),
+                    url: "https://terrain.invalid/tile".into(),
+                    size: 3,
+                    sha256: tile_hash,
+                    retrieved: "2022-05-09T00:00:00Z".into(),
+                }],
+            })
+            .unwrap();
+        store
+            .put_requested(
+                GLO30,
+                &obc_data::store::Requested {
+                    version: version.clone(),
+                    params: params.clone(),
+                    files: vec![missing.clone()],
+                },
+            )
+            .unwrap();
+        bind_terrain(&restored, &store, &mut step, &input, &[cell]).unwrap();
+        assert!(
+            matches!(&step.inputs[1], Input::Snapshot { source, version: selected, params: selected_params, files } if source == GLO30 && selected == &version && selected_params == &params && files == &[missing])
+        );
+        let unrelated = Env {
+            live: [((GLO30.into(), vec![("tile".into(), "different".into())]), [version].into())].into(),
+            ..Default::default()
+        };
+        assert!(matches!(bind_terrain(&unrelated, &store, &mut step, &input, &[cell]), Err(Unplanned::Invalid(_))));
     }
 
     #[test]

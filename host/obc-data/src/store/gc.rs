@@ -85,27 +85,32 @@ impl Roots {
 
     fn add_fixtures(&mut self, store: &Store) -> Result<(), String> {
         for saved in crate::fixtures::saved(store)? {
-            self.name(saved.assets.iter().map(|asset| asset.sha256.clone()), "fixture");
-            self.name([saved.bootstrap.sha256, saved.archive.sha256].into_iter(), "fixture");
+            self.name([saved.archive.sha256].into_iter(), "fixture");
+            let selected = saved.selection;
+            self.name(selected.assets.values().map(|asset| asset.sha256.clone()), "fixture");
             self.name(
-                saved.release.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
+                selected.copies.iter().flat_map(|copy| &copy.record.files).map(|file| file.sha256.clone()),
                 "fixture",
             );
-            for input in std::iter::once(&saved.inputs.osm)
-                .chain(saved.inputs.content.values())
-                .chain(&saved.inputs.terrain)
-                .chain(saved.inputs.historical.values())
+            self.name(
+                selected.release.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
+                "fixture",
+            );
+            for input in std::iter::once(&selected.inputs.osm)
+                .chain(selected.inputs.content.values())
+                .chain(&selected.inputs.terrain)
+                .chain(selected.inputs.historical.values())
             {
                 let packages = self.fixtures.entry((input.source.clone(), input.version.clone())).or_default();
-                if !packages.contains(&saved.package) {
-                    packages.push(saved.package.clone());
+                if !packages.contains(&selected.package) {
+                    packages.push(selected.package.clone());
                 }
             }
-            for layer in &saved.release.layers {
+            for layer in &selected.release.layers {
                 for (source, read) in &layer.snapshots {
                     let packages = self.fixtures.entry((source.clone(), read.version.clone())).or_default();
-                    if !packages.contains(&saved.package) {
-                        packages.push(saved.package.clone());
+                    if !packages.contains(&selected.package) {
+                        packages.push(selected.package.clone());
                     }
                 }
             }

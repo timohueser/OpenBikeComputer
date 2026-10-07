@@ -13,11 +13,11 @@ use crate::regions::{Area, Regions};
 use crate::store::{hash_file, sha256_hex, Store};
 
 mod records;
-pub use records::{saved, Saved};
+pub use records::{saved, Saved, Selection};
 mod catalog;
 pub(crate) use catalog::Catalog;
 mod import;
-pub(crate) use import::{archives, inputs, materialize, packaging};
+pub(crate) use import::{archive, archives, inputs, materialize, packaging};
 
 pub type Assemble = fn(&Release, &Store, &Path) -> Result<(), String>;
 pub type Recipes = fn(&Env, &Regions, &Store, &Inputs) -> Result<Steps, Unplanned>;
@@ -55,6 +55,7 @@ pub enum Empty {
 pub struct CapturedInput {
     pub source: String,
     pub version: String,
+    pub params: Vec<(String, String)>,
     pub files: Vec<String>,
 }
 
@@ -69,12 +70,14 @@ pub struct Plan {
     pub worker: String,
     pub packaging: BTreeMap<String, String>,
     pub packages: BTreeMap<String, PackagePlan>,
+    pub moves: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackagePlan {
-    pub bootstrap: LayerFile,
+    pub bootstrap: Option<LayerFile>,
+    pub selection: Option<String>,
     pub inputs: Option<Inputs>,
     pub assets: BTreeMap<String, LayerFile>,
     pub plan: crate::cli::EnvPlan,
@@ -107,7 +110,12 @@ impl Plan {
             if !package.plan.blocked.is_empty() || package.plan.needs_prepare || package.inputs.is_none() {
                 return Err(format!("fixture {id} requires preparation and a complete review"));
             }
-            digest(&package.bootstrap.sha256)?;
+            if let Some(bootstrap) = &package.bootstrap {
+                digest(&bootstrap.sha256)?;
+            }
+            if let Some(selection) = &package.selection {
+                digest(selection)?;
+            }
             package.inputs.as_ref().expect("checked above").check()?;
             for (destination, asset) in &package.assets {
                 relative(destination)?;
@@ -159,6 +167,9 @@ impl CapturedInput {
         {
             return Err("fixture captured input has no normalized source and version".into());
         }
+        if crate::store::sorted(&self.params) != self.params {
+            return Err("fixture source request parameters are not canonical".into());
+        }
         let mut selected = std::collections::BTreeSet::new();
         for file in &self.files {
             relative(file)?;
@@ -173,7 +184,7 @@ impl CapturedInput {
         Input::Snapshot {
             source: self.source.clone(),
             version: self.version.clone(),
-            params: Vec::new(),
+            params: self.params.clone(),
             files: self.files.clone(),
         }
     }
@@ -190,8 +201,10 @@ pub struct Collection {
 pub struct Package {
     pub region: String,
     pub map: String,
+    #[serde(default)]
     pub osm: String,
     /// The original build record supplies bootstrap inputs, never producer receipts.
+    #[serde(default)]
     pub bootstrap: String,
     /// Explicit raw source selections; historical baked terrain is not a raw DEM version.
     #[serde(default)]
@@ -220,8 +233,12 @@ impl Collection {
                 _ => return Err(format!("fixture {id} needs a canonical box region")),
             }
             relative(&package.map)?;
-            relative(&package.osm)?;
-            relative(&package.bootstrap)?;
+            if !package.osm.is_empty() {
+                relative(&package.osm)?;
+            }
+            if !package.bootstrap.is_empty() {
+                relative(&package.bootstrap)?;
+            }
             for (source, version) in &package.sources {
                 if !crate::is_kebab(source) || version.is_empty() {
                     return Err(format!("fixture {id} has an invalid raw source selection"));

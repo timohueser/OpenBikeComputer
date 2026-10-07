@@ -4,7 +4,7 @@ use super::*;
 use crate::engine::{Code, Python};
 use crate::fetch::http::{Expect, Http};
 use crate::sources::Source;
-use crate::store::{FileRecord, Snapshot};
+use crate::store::FileRecord;
 
 pub(crate) fn packaging(root: &Path) -> Result<BTreeMap<String, String>, String> {
     materializer().files(root)
@@ -66,47 +66,65 @@ pub(crate) fn archives(
         let registered = sources.iter().find(|s| s.id == source).ok_or_else(|| {
             format!("register captured fixture source `{source}` with its confirmed licence before preparation")
         })?;
-        if registered.licence.is_none() {
-            return Err(format!("{source}: capture redistribution terms are unconfirmed; review source notices first"));
-        }
-        let url = format!("{}packages/{hash}.tar.gz", catalog.base_url);
-        let _lock = Http::lock(store, &url)?;
-        let archive = http.download(store, &url, &Expect { sha256: Some(hash), ..Default::default() })?;
-        if hash_file(&archive.object)?.0 != *hash {
-            return Err(format!("bootstrap archive {hash} changed"));
-        }
-        let scratch = crate::r2::Scratch::new()?;
-        let directory = scratch.0.join("input");
-        let imported = materialize(
-            root,
-            &[
-                "import".into(),
-                id.clone(),
-                archive.object.to_string_lossy().into(),
-                hash.clone(),
-                directory.to_string_lossy().into(),
-            ],
-            None,
-        )?;
-        let mut files = Vec::new();
-        for file in imported["files"].as_array().ok_or("fixture archive has no file inventory")? {
-            let name = file["path"].as_str().ok_or("fixture archive has no file path")?;
-            relative(name)?;
-            let path = directory.join(name);
-            let (sha256, size) = hash_file(&path)?;
-            let copy = store.partial(&format!("fixture-{sha256}"));
-            std::fs::create_dir_all(copy.parent().expect("partial has a parent")).map_err(|e| e.to_string())?;
-            std::fs::copy(path, &copy).map_err(|e| e.to_string())?;
-            store.insert(&copy, &sha256)?;
-            files.push(FileRecord {
-                name: name.into(),
-                url: format!("{url}#{name}"),
-                size,
-                sha256,
-                retrieved: crate::date::timestamp(crate::date::now()),
-            });
-        }
-        store.put_snapshot(&Snapshot { source, version: hash.clone(), files })?;
+        archive(root, store, http, catalog, registered, hash)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn archive(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    catalog: &Catalog,
+    registered: &Source,
+    hash: &str,
+) -> Result<(), String> {
+    digest(hash)?;
+    let id = registered.id.strip_prefix("fixture-").ok_or("recorded source is not a fixture capture")?;
+    let source = registered.id.clone();
+    if registered.licence.is_none() {
+        return Err(format!("{source}: original capture has no recorded licence"));
+    }
+    let url = format!("{}packages/{hash}.tar.gz", catalog.base_url);
+    let _lock = Http::lock(store, &url)?;
+    let archive = http.download(store, &url, &Expect { sha256: Some(hash), ..Default::default() })?;
+    if hash_file(&archive.object)?.0 != *hash {
+        return Err(format!("bootstrap archive {hash} changed"));
+    }
+    let scratch = crate::r2::Scratch::new()?;
+    let directory = scratch.0.join("input");
+    let imported = materialize(
+        root,
+        &[
+            "import".into(),
+            id.into(),
+            archive.object.to_string_lossy().into(),
+            hash.into(),
+            directory.to_string_lossy().into(),
+        ],
+        None,
+    )?;
+    let mut files = Vec::new();
+    for file in imported["files"].as_array().ok_or("fixture archive has no file inventory")? {
+        let name = file["path"].as_str().ok_or("fixture archive has no file path")?;
+        relative(name)?;
+        let path = directory.join(name);
+        let (sha256, size) = hash_file(&path)?;
+        let copy = store.partial(&format!("fixture-{sha256}"));
+        std::fs::create_dir_all(copy.parent().expect("partial has a parent")).map_err(|e| e.to_string())?;
+        std::fs::copy(path, &copy).map_err(|e| e.to_string())?;
+        store.insert(&copy, &sha256)?;
+        files.push(FileRecord {
+            name: name.into(),
+            url: format!("{url}#{name}"),
+            size,
+            sha256,
+            retrieved: crate::date::timestamp(crate::date::now()),
+        });
+    }
+    let _snapshot = store.lock(&crate::fetch::snapshot_lock(&source, hash))?;
+    if let Some(snapshot) = crate::fetch::merge(store, &source, hash, &files)? {
+        store.put_snapshot(&snapshot)?;
     }
     Ok(())
 }
@@ -143,6 +161,7 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             captured = Some(CapturedInput {
                 source: source.clone(),
                 version: version.clone(),
+                params: Vec::new(),
                 files: vec![package.osm.clone()],
             });
         }
@@ -151,7 +170,12 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
                 && content
                     .insert(
                         collection.into(),
-                        CapturedInput { source: source.clone(), version: version.clone(), files: Vec::new() },
+                        CapturedInput {
+                            source: source.clone(),
+                            version: version.clone(),
+                            params: Vec::new(),
+                            files: Vec::new(),
+                        },
                     )
                     .is_some()
             {
@@ -165,7 +189,12 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             if content
                 .insert(
                     "landmarks".into(),
-                    CapturedInput { source: source.clone(), version: version.clone(), files: Vec::new() },
+                    CapturedInput {
+                        source: source.clone(),
+                        version: version.clone(),
+                        params: Vec::new(),
+                        files: Vec::new(),
+                    },
                 )
                 .is_some()
             {
@@ -179,6 +208,14 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
                 captured = Some(CapturedInput {
                     source: snapshot.source.clone(),
                     version: snapshot.version.clone(),
+                    params: vec![(
+                        "area".into(),
+                        package
+                            .osm
+                            .strip_suffix("-latest.osm.pbf")
+                            .ok_or("fixture area source has no recorded extract path")?
+                            .into(),
+                    )],
                     files: vec![file.name.clone()],
                 });
                 break;
@@ -217,7 +254,12 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
         }
         historical.insert(
             name.into(),
-            CapturedInput { source: source.into(), version: version.into(), files: vec![name.into()] },
+            CapturedInput {
+                source: source.into(),
+                version: version.into(),
+                params: Vec::new(),
+                files: vec![name.into()],
+            },
         );
     }
     let mut empty: BTreeMap<_, _> = [
@@ -261,7 +303,7 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             if files.is_empty() {
                 return Err("captured terrain archive has no raw TIFFs".into());
             }
-            Ok(Some(CapturedInput { source: source.into(), version: version.clone(), files }))
+            Ok(Some(CapturedInput { source: source.into(), version: version.clone(), params: Vec::new(), files }))
         })
         .transpose()?
         .flatten();
