@@ -86,7 +86,7 @@ fn read_file(root: &Path, path: &str) -> Result<Option<File>, Error> {
     #[cfg(unix)]
     let executable = {
         use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
+        metadata.permissions().mode() & 0o100 != 0
     };
     #[cfg(not(unix))]
     let executable = false;
@@ -115,7 +115,10 @@ pub(super) fn review(root: &Path) -> Result<Review, Error> {
     let mut diff = if files.is_empty() { String::new() } else { git(root, &args)? };
     for path in new.split('\0').filter(|path| !path.is_empty()) {
         let text = std::fs::read_to_string(root.join(path)).map_err(|error| format!("{path}: {error}"))?;
-        let mode = &files[path].as_ref().ok_or("A new configuration file disappeared.")?.mode;
+        let mode = &files[path]
+            .as_ref()
+            .ok_or_else(|| Code::PlanOutdated.error("A new configuration file disappeared."))?
+            .mode;
         diff += &format!("\nNew file: {path} ({mode})\n{text}");
         if !text.ends_with('\n') {
             diff += "\n\\ No newline at end of file\n";
@@ -281,7 +284,9 @@ mod tests {
         write(&file, "changed\n");
         assert_eq!(commit(root, &reviewed, "Refused").unwrap_err().code, Code::PlanOutdated);
         write(&file, "reviewed\n");
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o645)).unwrap();
+        assert_eq!(review(root).unwrap(), reviewed, "group/other execute does not change Git mode");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o744)).unwrap();
         assert_eq!(commit(root, &reviewed, "Refused").unwrap_err().code, Code::PlanOutdated);
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
         write(&root.join("data/regions/new.toml"), "new\n");

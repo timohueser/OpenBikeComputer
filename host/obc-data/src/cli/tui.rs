@@ -911,8 +911,14 @@ impl App {
         };
         match action {
             Action::ConfigRead => return Effect::ConfigRead,
-            Action::ConfigEdit => self.config.editing = true,
-            Action::ConfigConfirm if self.works(action) => self.asking = true,
+            Action::ConfigEdit => {
+                self.scroll = 0;
+                self.config.editing = true;
+            }
+            Action::ConfigConfirm if self.works(action) => {
+                self.scroll = 0;
+                self.asking = true;
+            }
             Action::ConfigConfirm => {
                 self.notice = Some(
                     super::Code::Usage
@@ -1373,8 +1379,18 @@ impl App {
             Overlay::Attribution => (" ATTRIBUTION ".into(), attribution(&self.sources), Vec::new(), None),
             Overlay::Source => (format!(" SOURCE · {id} "), self.source_lines(), Vec::new(), None),
             Overlay::Version => (format!(" VERSION · {id} "), self.version_lines(), Vec::new(), Some(self.choice + 2)),
-            Overlay::Config => (" CONFIGURATION REVIEW ".into(), self.config_lines(), Vec::new(), None),
-            Overlay::Schedule => (" LIVE SCHEDULE ".into(), self.schedule_lines(), Vec::new(), None),
+            Overlay::Config => (
+                " CONFIGURATION REVIEW ".into(),
+                self.config_lines(),
+                Vec::new(),
+                if self.asking { Some(4) } else { self.config.editing.then_some(2) },
+            ),
+            Overlay::Schedule => (
+                " LIVE SCHEDULE ".into(),
+                self.schedule_lines(),
+                Vec::new(),
+                if self.asking { Some(2) } else { self.schedule.editing.then_some(self.schedule.field + 2) },
+            ),
             Overlay::Error => (
                 " ERROR ".into(),
                 self.notice

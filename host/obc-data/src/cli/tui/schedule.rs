@@ -207,6 +207,7 @@ impl App {
             if key == KeyCode::Enter && !self.busy {
                 match form.calendar(&self.schedule.calendar) {
                     Ok(calendar) if !self.schedule.zone.is_empty() => {
+                        self.scroll = 0;
                         self.schedule.calendar = calendar.clone();
                         self.schedule.editing = false;
                         self.schedule.pending = Some(Change::Install { calendar, zone: self.schedule.zone.clone() });
@@ -271,6 +272,7 @@ impl App {
             Action::ScheduleRead => return Effect::ScheduleRead,
             Action::ScheduleEdit => {
                 self.schedule.form.get_or_insert_with(|| Form::read(&self.schedule.calendar));
+                self.scroll = 0;
                 self.schedule.editing = true;
                 self.schedule.field = 0;
             }
@@ -304,32 +306,34 @@ impl App {
             }));
         } else {
             lines.push(Line::from(self.schedule.summary()));
-            match &self.schedule.state {
-                Some(Err(reason)) => lines.push(Line::from(reason.clone())),
-                Some(Ok(state)) => {
-                    lines.push(Line::from(format!(
-                        "Enabled {} · active {} · runnable {}",
-                        state.enabled, state.active, state.runnable
-                    )));
-                    for (label, value) in [
-                        ("Calendar", &state.calendar),
-                        ("Time zone", &state.time_zone),
-                        ("Next", &state.next),
-                        ("Last trigger", &state.last_trigger),
-                        ("Blocked", &state.blocked),
-                    ] {
-                        if let Some(value) = value {
-                            lines.push(Line::from(format!("{label}: {value}")));
+            if !self.schedule.editing {
+                match &self.schedule.state {
+                    Some(Err(reason)) => lines.push(Line::from(reason.clone())),
+                    Some(Ok(state)) => {
+                        lines.push(Line::from(format!(
+                            "Enabled {} · active {} · runnable {}",
+                            state.enabled, state.active, state.runnable
+                        )));
+                        for (label, value) in [
+                            ("Calendar", &state.calendar),
+                            ("Time zone", &state.time_zone),
+                            ("Next", &state.next),
+                            ("Last trigger", &state.last_trigger),
+                            ("Blocked", &state.blocked),
+                        ] {
+                            if let Some(value) = value {
+                                lines.push(Line::from(format!("{label}: {value}")));
+                            }
+                        }
+                        if let Some(run) = &state.last_run {
+                            lines.push(Line::from(format!(
+                                "Last run: {} · {:?}",
+                                run.run.summary.id, run.run.summary.outcome
+                            )));
                         }
                     }
-                    if let Some(run) = &state.last_run {
-                        lines.push(Line::from(format!(
-                            "Last run: {} · {:?}",
-                            run.run.summary.id, run.run.summary.outcome
-                        )));
-                    }
+                    None => {}
                 }
-                None => {}
             }
             if self.schedule.editing {
                 if let Some(form) = &self.schedule.form {

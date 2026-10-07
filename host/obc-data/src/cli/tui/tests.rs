@@ -801,8 +801,14 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
     state.enabled = false;
     state.last_run.as_mut().unwrap().result = Some(json!({"built":{},"applied":null}));
     assert_eq!(app.schedule.summary(), "off · last verified");
+    std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap().blocked =
+        Some("Long host repair details. ".repeat(100));
+    app.scroll = 80;
     app.schedule.editing = true;
+    app.schedule.field = 1;
     app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Daily, time: "25:99".into(), day: 1 });
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(drawn.contains("Time (HH:MM): 25:99") && drawn.contains("Time zone: UTC"), "{drawn}");
     app.key(KeyCode::Enter);
     assert!(!app.asking && app.schedule.pending.is_none());
     assert!(app.notice.unwrap().message.contains("00:00 to 23:59"));
@@ -816,11 +822,14 @@ fn configuration_review_keeps_message_keys_in_the_field_and_commits_only_after_c
         serde_json::from_value(json!({
             "head": "a".repeat(40),
             "files": { "data/regions/new.toml": { "sha256": "b".repeat(64), "mode": "100644" } },
-            "diff": "New file: data/regions/new.toml\nname = 'Region'\n"
+            "diff": format!("New file: data/regions/new.toml\nname = 'Region'\n{}", "long configuration change\n".repeat(100))
         }))
         .unwrap(),
     );
+    app.scroll = 80;
+    assert!(!screen(&mut app, 80, 24).join(" ").contains("Message:"));
     app.key(KeyCode::Char('e'));
+    assert!(screen(&mut app, 80, 24).join(" ").contains("Message: Update bake configuration"));
     app.key(KeyCode::Delete);
     for c in "q message".chars() {
         assert_eq!(app.key(KeyCode::Char(c)), Effect::None);

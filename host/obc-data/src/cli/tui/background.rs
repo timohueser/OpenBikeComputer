@@ -390,17 +390,6 @@ impl App {
                     }
                 }
             }
-            Effect::ConfigRead => {
-                app.config.review = Some(super::super::config_cli::review(root)?);
-                Ok(())
-            }
-            Effect::ConfigCommit(review, message) => {
-                let committed = super::super::config_cli::commit(root, &review, &message)?;
-                app.saved = Some(format!("Committed bake configuration {} · nothing pushed", committed.commit));
-                app.config.review = None;
-                app.edited = edit_cli::edited(root, LIVE);
-                Ok(())
-            }
             Effect::ScheduleRead => {
                 self.schedule.state = updated.schedule.state;
                 if self.schedule.calendar.is_empty() {
@@ -468,6 +457,17 @@ pub(super) fn perform(
                 .find(|row| row.source.id == id)
                 .ok_or_else(|| Code::Usage.error("The selected source no longer exists."))?;
             app.versions = Some(super::super::versions::read(store, row)?);
+            Ok(())
+        }
+        Effect::ConfigRead => {
+            app.config.review = Some(super::super::config_cli::review(root)?);
+            Ok(())
+        }
+        Effect::ConfigCommit(review, message) => {
+            let committed = super::super::config_cli::commit(root, &review, &message)?;
+            app.saved = Some(format!("Committed bake configuration {} · nothing pushed", committed.commit));
+            app.config.review = None;
+            app.edited = edit_cli::edited(root, LIVE);
             Ok(())
         }
         Effect::ScheduleRead => {
