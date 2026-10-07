@@ -234,8 +234,8 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
             .map_err(|e| e.to_string())?;
     let expected = json!({"routing": document["routing_package"],
             "search": document["files"][format!("search/{}.grid.json", document["region"].as_str().ok_or("missing region")?)]["sha256"],
-            "model": ["labels.json", "tokenizer.json", "model.int8.onnx"].into_iter().map(|name| (
-                name, document["files"][format!("search/model/{name}")]["sha256"].clone())).collect::<BTreeMap<_, _>>()});
+            "model": (["labels.json", "tokenizer.json", "model.int8.onnx"].into_iter().map(|name| (
+                name, document["files"][format!("search/model/{name}")]["sha256"].clone())).collect::<BTreeMap<_, _>>())});
     let service = json!({"root":root, "view":view, "node":node, "release":original.id(), "region":document["region"], "expected":expected, "routing_executable":executable.sha256,
             "fingerprints": {"routing":executable.sha256.clone()+expected["routing"].as_str().ok_or("missing routing identity")?,
                 "search":(&children["search"].files, &expected["search"], &expected["model"]),
