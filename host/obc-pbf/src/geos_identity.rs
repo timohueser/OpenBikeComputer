@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::fs::File;
 use std::fs::{self, Metadata};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -41,7 +43,14 @@ fn bind(name: &'static str, path: PathBuf) -> Result<Library, String> {
     let before = stamp(&metadata(&path)?);
     let mut file = File::open(&path).map_err(|error| format!("GEOS {}: {error}", path.display()))?;
     let mut hash = Sha256::new();
-    std::io::copy(&mut file, &mut hash).map_err(|error| format!("GEOS {}: {error}", path.display()))?;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let size = file.read(&mut buffer).map_err(|error| format!("GEOS {}: {error}", path.display()))?;
+        if size == 0 {
+            break;
+        }
+        hash.update(&buffer[..size]);
+    }
     if stamp(&metadata(&path)?) != before {
         return Err("GEOS libraries changed at startup; start a fresh worker".into());
     }
