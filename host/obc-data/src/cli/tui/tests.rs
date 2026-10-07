@@ -339,6 +339,7 @@ fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_s
     resolved.needs_prepare = false;
     resolved.moves.clear();
     resolved.versions = vec![crate::cli::build_cli::FetchVersion {
+        product: Some("maps".into()),
         source: "geofabrik-extracts".into(),
         params: vec![("area".into(), "europe/test".into())],
         version: "2026-10-01".into(),

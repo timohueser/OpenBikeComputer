@@ -153,7 +153,12 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
             }
             checked.groups.extend(obc_data::engine::plan::plan_reusing(store, &root, &steps, &reused)?.groups);
             checked.versions.extend(selected.read.borrow().iter().map(|((source, params), version)| {
-                obc_data::cli::FetchVersion { source: source.clone(), params: params.clone(), version: version.clone() }
+                obc_data::cli::FetchVersion {
+                    product: Some(kind.product().name().into()),
+                    source: source.clone(),
+                    params: params.clone(),
+                    version: version.clone(),
+                }
             }));
             checked.live.push(obc_data::cli::LiveRelease {
                 product: product.name().into(),
@@ -236,7 +241,12 @@ pub(super) fn inputs(
             Some(run),
         )?;
         pinned.versions.extend(selected.read.borrow().iter().map(|((source, params), version)| {
-            obc_data::cli::FetchVersion { source: source.clone(), params: params.clone(), version: version.clone() }
+            obc_data::cli::FetchVersion {
+                product: Some(kind.product().name().into()),
+                source: source.clone(),
+                params: params.clone(),
+                version: version.clone(),
+            }
         }));
         pinned.live.extend(live.products.iter().map(|product| obc_data::cli::LiveRelease {
             product: product.product.clone(),
@@ -248,6 +258,25 @@ pub(super) fn inputs(
     let mut request = request.clone();
     request.reviewed = Some(Box::new(pinned));
     check(root, store, &request)
+}
+
+fn view_identity(
+    configuration: &str,
+    releases: &BTreeMap<String, release::Release>,
+    supervisor: &Binding,
+    children: &BTreeMap<String, Binding>,
+    executables: &BTreeMap<String, obc_data::engine::LayerFile>,
+) -> Result<String, String> {
+    Ok(sha256_hex(
+        &serde_json::to_vec(&(
+            releases.iter().map(|(name, release)| (name, release.id())).collect::<BTreeMap<_, _>>(),
+            configuration,
+            supervisor,
+            children.iter().map(|(name, binding)| (name, &binding.files)).collect::<BTreeMap<_, _>>(),
+            executables,
+        ))
+        .map_err(|e| e.to_string())?,
+    ))
 }
 
 pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut runs::Run) -> Result<Prepared, String> {
@@ -262,6 +291,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
     let regions = Regions::load(&root)?;
     let registry = Registry::load(&root)?;
     let env = environment(&root, &regions, request)?;
+    let configuration = obc_data::dev::configuration_for(&env, &regions)?;
     let apps = selected_apps(store, request)?;
     let browser = apps.iter().any(|app| *app != App::Simulator);
     let web = apps.contains(&App::WebPlanner);
@@ -334,15 +364,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
     } else {
         None
     };
-    let identity = sha256_hex(
-        &serde_json::to_vec(&(
-            releases.iter().map(|(name, release)| (name, release.id())).collect::<BTreeMap<_, _>>(),
-            &supervisor,
-            children.iter().map(|(name, binding)| (name, &binding.files)).collect::<BTreeMap<_, _>>(),
-            &executables,
-        ))
-        .map_err(|e| e.to_string())?,
-    );
+    let identity = view_identity(&configuration, &releases, &supervisor, &children, &executables)?;
     let directory = store.root().join("dev/local");
     let view = directory.join("views").join(identity);
     for (child, package) in [("routing", "planner-service"), ("simulator", "obc-sim")] {
@@ -356,7 +378,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
                 .path = view.join(package);
         }
     }
-    let mut service = json!({"root":root, "view":view, "node":node, "region":env.region, "layers":env.layers, "configuration":obc_data::dev::configuration(&root)?, "executables":executables.iter().map(|(name,file)| (name.clone(),file.sha256.clone())).collect::<BTreeMap<_,_>>()});
+    let mut service = json!({"root":root, "view":view, "node":node, "region":env.region, "layers":env.layers, "configuration":configuration, "executables":executables.iter().map(|(name,file)| (name.clone(),file.sha256.clone())).collect::<BTreeMap<_,_>>()});
     if let Some(original) = releases.get("planner") {
         let file = original.named.iter().find(|file| file.path == "release.json").ok_or("planner has no manifest")?;
         if hash_file(&store.object(&file.sha256))? != (file.sha256.clone(), file.size) {
@@ -570,4 +592,33 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
         children.insert(name.into(), Binding { files: code.files(root)?, code });
     }
     Ok((children, node))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equivalent_product_bytes_get_a_new_view_for_changed_captured_configuration() {
+        let regions =
+            Regions::new(vec![
+                obc_data::regions::parse_region("ride", "name='Ride'\nkind='box'\nbox=[7,47,8,48]\n").unwrap()
+            ])
+            .unwrap();
+        let mut env = Env { region: "ride".into(), ..Default::default() };
+        let original = obc_data::dev::configuration_for(&env, &regions).unwrap();
+        let supervisor = Binding { code: Code::default(), files: Default::default() };
+        let identity = |configuration: &str| {
+            view_identity(configuration, &BTreeMap::new(), &supervisor, &BTreeMap::new(), &BTreeMap::new()).unwrap()
+        };
+        let prior = identity(&original);
+        env.layers.push("sun".into());
+        let changed = obc_data::dev::configuration_for(&env, &regions).unwrap();
+        assert_ne!(
+            prior,
+            identity(&changed),
+            "an unused Planner option still changes the prepared Local configuration"
+        );
+        assert_eq!(prior, identity(&original), "the preparation snapshot remains stable despite later edits");
+    }
 }

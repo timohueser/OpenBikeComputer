@@ -104,8 +104,13 @@ pub struct State {
 pub fn configuration(root: &Path) -> Result<String, String> {
     let regions = crate::regions::Regions::load(root)?;
     let (env, _) = crate::env::Env::local(root, &regions)?;
+    configuration_for(&env, &regions)
+}
+
+/// The exact semantic configuration captured for one preparation.
+pub fn configuration_for(env: &crate::env::Env, regions: &crate::regions::Regions) -> Result<String, String> {
     let leaves: Vec<_> = regions.leaves(&env.region)?.into_iter().map(|id| regions.get(id)).collect();
-    Ok(sha256_hex(&serde_json::to_vec(&(regions.get(&env.region), leaves, env.layers)).map_err(|e| e.to_string())?))
+    Ok(sha256_hex(&serde_json::to_vec(&(regions.get(&env.region), leaves, &env.layers)).map_err(|e| e.to_string())?))
 }
 
 fn directory(store: &Store) -> PathBuf {
@@ -599,7 +604,16 @@ mod tests {
             prepared.check_apps(&root, &[App::WebPlanner].into()).is_err(),
             "an absent Web provider cannot admit Web"
         );
+        let captured_regions = crate::regions::Regions::load(&root).unwrap();
+        let (captured_env, _) = crate::env::Env::local(&root, &captured_regions).unwrap();
+        let captured = configuration_for(&captured_env, &captured_regions).unwrap();
         std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,7.5,48]\n").unwrap();
+        assert_eq!(
+            captured,
+            configuration_for(&captured_env, &captured_regions).unwrap(),
+            "preparation keeps its original configuration snapshot"
+        );
+        assert_ne!(captured, configuration(&root).unwrap());
         assert!(
             prepared.check_apps(&root, &[App::Simulator].into()).unwrap_err().contains("selected Local region"),
             "the saved id cannot hide changed geometry"

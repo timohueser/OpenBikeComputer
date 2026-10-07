@@ -8,6 +8,7 @@
 //! that are the same for each region.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;

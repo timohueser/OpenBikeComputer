@@ -107,6 +107,9 @@ pub struct BlockedProduct {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchVersion {
+    /// Local product whose saved release supplies this pin; absent for the shared Live plan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub product: Option<String>,
     pub source: String,
     /// The `NAME=VALUE`s of the fetch, sorted.
     pub params: Vec<(String, String)>,
@@ -858,6 +861,7 @@ fn env_plan(
 ) -> EnvPlan {
     let read = env.read.borrow();
     let versions = read.iter().map(|((source, params), version)| FetchVersion {
+        product: None,
         source: source.clone(),
         params: params.clone(),
         version: version.clone(),
@@ -1820,7 +1824,10 @@ pub(crate) mod tests {
         };
         let first = build(None)[0].id.clone();
         let saved = plan_of(&root, &fixture.store, &[&Versioned]);
-        assert_eq!(saved.versions, [FetchVersion { source: "head".into(), params: Vec::new(), version: "1".into() }]);
+        assert_eq!(
+            saved.versions,
+            [FetchVersion { product: None, source: "head".into(), params: Vec::new(), version: "1".into() }]
+        );
         let file = root.join("plan.json");
         write(&file, &serde_json::to_string(&saved).unwrap());
 

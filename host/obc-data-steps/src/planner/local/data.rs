@@ -18,6 +18,16 @@ impl Kind {
         }
     }
 
+    fn reviewed(self, env: &mut Env, plan: &obc_data::cli::EnvPlan) {
+        env.planned = Some(
+            plan.versions
+                .iter()
+                .filter(|read| read.product.as_deref() == Some(self.product().name()))
+                .map(|read| ((read.source.clone(), read.params.clone()), read.version.clone()))
+                .collect(),
+        );
+    }
+
     pub fn declarations(
         self,
         root: &Path,
@@ -180,12 +190,7 @@ impl Inputs<'_> {
         };
         env.live = live.versions();
         if let Some(plan) = reviewed {
-            env.planned = Some(
-                plan.versions
-                    .iter()
-                    .map(|read| ((read.source.clone(), read.params.clone()), read.version.clone()))
-                    .collect(),
-            );
+            kind.reviewed(&mut env, plan);
         }
         env.retained = obc_data::input_copy::retained(&live, store)?;
         let http = Http::new();
@@ -230,5 +235,43 @@ impl Inputs<'_> {
             }
         };
         Ok((env, live, steps))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reviewed_source_requests_keep_distinct_product_pins_without_latest_fallback() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Store::at(scratch.path());
+        let params = vec![("area".into(), "europe/test".into())];
+        let plan = obc_data::cli::EnvPlan {
+            versions: [("planner", "2026-10-01"), ("maps", "2026-10-02")]
+                .into_iter()
+                .map(|(product, version)| obc_data::cli::FetchVersion {
+                    product: Some(product.into()),
+                    source: "geofabrik-extracts".into(),
+                    params: params.clone(),
+                    version: version.into(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        for (kind, expected) in [(Kind::Planner, "2026-10-01"), (Kind::Maps, "2026-10-02")] {
+            let mut env = Env::default();
+            env.live.insert(("geofabrik-extracts".into(), params.clone()), [expected.into()].into());
+            kind.reviewed(&mut env, &plan);
+            let selected = obc_data::product::version(&env, &store, "geofabrik-extracts", &params).unwrap().unwrap();
+            assert_eq!(selected, expected, "the shared review must not overwrite a saved product's pin");
+            assert_eq!(env.read.borrow()[&("geofabrik-extracts".into(), params.clone())], expected);
+            assert!(
+                obc_data::product::version(&env, &store, "geofabrik-extracts", &[("area".into(), "another".into())])
+                    .unwrap()
+                    .is_err(),
+                "an unreviewed request cannot select a latest version"
+            );
+        }
     }
 }

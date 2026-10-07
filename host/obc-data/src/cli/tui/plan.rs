@@ -61,7 +61,9 @@ impl PlanView {
                     read.params.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", ");
                 format!(
                     "{} @ {}{}",
-                    read.source,
+                    read.product
+                        .as_ref()
+                        .map_or_else(|| read.source.clone(), |product| format!("{product}: {}", read.source)),
                     read.version,
                     if params.is_empty() { String::new() } else { format!(" · {params}") }
                 )
