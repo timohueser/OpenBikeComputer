@@ -1068,35 +1068,29 @@ in its options, so it needs no source content projection.
 
 ### Service runtimes
 
-`data/planner-runtime.toml` has one optional `[target]` table: `triple`, `glibc`, `node`
-and `python`. Supported triples are `x86_64-unknown-linux-gnu` and
-`aarch64-unknown-linux-gnu`. The glibc baseline is `major.minor`; Node and CPython
-versions are exact `major.minor.patch`. Without this table, all runtime producers are blocked.
-The optional `[publication]` table names HTTPS `site_origin`, `api_origin` and `objects_origin`.
-Without it, planner publication is blocked. Origins affect endpoint bindings, not runtime bytes.
-The shared pool is `<objects_origin>/planner/objects`. Tile URLs keep the tile Worker origin.
+`data/planner-runtime.toml` names the Linux target triple and the `major.minor` versions
+of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`
+and `objects_origin`. The shared pool is `<objects_origin>/planner/objects`.
+Tile URLs keep the tile Worker origin.
 
-`planner/runtime/routing`, `planner/runtime/search` and `planner/runtime/downloads` use
-prepared native Linux tools or a local pinned container. Probes read tool and image metadata.
-Builds use locked offline dependencies. The receipt binds the target and actual builder.
-Routing also binds the selected release profile. Search source selection uses Git's
-declared file list on the initiating host; the container receives that same list.
-Each step writes `<service>.tar.gz` and `runtime.json`; only the archive is a client file.
-The descriptor is a named release reference under `runtime/<service>.json`. It binds the
-service, target, archive hash and size, required host libraries and entry point.
-Libraries supplied by archive ELF files are not host requirements.
+The final planner index binds the service source, the Rust release target, the locked
+search Python packages and the Node package lock. Service code changes thus change the
+release identity. The pointer names routing, search and downloads under
+`<api_origin>/planner-api/releases/<release>/SERVICE`. Its `device_catalog` names
+`<objects_origin>/cell-catalog/catalog.json`.
 
-Archives retain dependency metadata and licences. They contain no checkout, virtual
-environment, builder paths or recipe key. Search keeps its model in the separate data input.
-Routing carries the selected Linux executable notices from `THIRD-PARTY.md`.
-Downloads contains its standard-library helper closure. File names are sorted, timestamps
-are zero, and symbolic links are refused. ELF files must match the target architecture
-and require no newer glibc than the baseline.
+An apply sends an archive of the pushed commit and the release's service objects to the
+VPS. It builds the routing executable and installs the locked search dependencies there.
+It then stops the services, materializes routing, search and offline data, installs the
+units and routes, starts the services and probes them. Service files are world-readable
+for `DynamicUser`. A short outage is allowed. Old release routes are removed before the
+new services start. Both legacy routing and search slots and the legacy downloads unit
+are stopped during takeover. The old service directories stay on disk.
 
-The pointer's `services` identities bind runtime content to routing grid content, search
-grid and model content, or the offline index for downloads. They do not bind receipt keys
-or unrelated optional layers. An apply does not install services yet, so it refuses to switch
-the planner pointer. Data producers can build independently.
+Local and public probes must confirm the routing package hash, search region, grid and
+model hashes, and offline catalog hash before any product pointer switches. A failed
+installation or probe leaves the catalog pointers unchanged. Services can remain stopped
+or changed. The apply checks the reviewed pointers again after installation.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
@@ -1291,8 +1285,8 @@ two machines must not apply at once. The machine that runs it writes R2 in this 
    holds with another size, in one transfer per set of headers; a key with another size goes
    first. Then it checks the size of each key.
 6. It reads the pointer of each product that changes again. When its SHA-256 is not the
-   `observed` of the plan, it switches nothing. A planner switch is refused before the upload,
-   because an apply does not install the planner services yet.
+   `observed` of the plan, it switches nothing. It installs and probes planner services when
+   the planner changes, then checks the reviewed pointers again.
 7. It writes the pointer of each product whose full desired document changes: the document with
    `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
    `Cache-Control: public, max-age=60, must-revalidate`. Then it checks the pointer. Before
@@ -1311,7 +1305,7 @@ two machines must not apply at once. The machine that runs it writes R2 in this 
 An apply never removes a key that its reviewed plan did not list. A record on R2 of a version that
 live reads stays, also when `r2_copy` of its source is off now.
 
-A failure before step 7 leaves live as it was. A new plan uploads only what R2 still lacks.
+A failure before step 7 leaves the catalog pointers unchanged. Service installation can cause an outage. A new plan uploads only what R2 still lacks.
 A stop takes effect before the upload, before the switch and during the wait. A removal that
 stops or fails keeps every manifest and record that names a remaining key, so the next apply
 finds and removes the rest. The objects, manifests and named files are immutable,

@@ -14,8 +14,8 @@ assets, search dependencies and matching-host apps.
 
 Retained workers detach from the terminal. Publication runs on the machine that applies: it
 needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
-settings in `data/env/` and `data/regions/` need no commit. One machine applies at a time. An apply refuses
-to switch the planner, because it does not install the planner services yet. Before it replaces
+settings in `data/env/` and `data/regions/` need no commit. One machine applies at a time. An apply builds services on the VPS,
+stops them, installs the data and probes the new services. Allow a short outage. Before it replaces
 a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a rollback.
 
 | Configuration or credential | Purpose |
@@ -30,6 +30,7 @@ a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a 
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `OBC_DATA_STORE` | Build store |
+| `OBC_PLANNER_HOST` | VPS SSH address, `USER@HOST`; needs service and Caddy administration |
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |

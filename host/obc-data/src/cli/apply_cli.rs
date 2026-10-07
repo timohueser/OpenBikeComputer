@@ -1,7 +1,7 @@
 //! `obc data apply live`: build the plan of live and verify its releases, upload what R2 lacks,
 //! check that no pointer changed since the review, switch the pointer of each product that the
 //! plan changes, and after the wait remove the keys of earlier releases that the plan listed.
-//! Until the pointers switch, live does not change.
+//! Service installation can cause a short outage before the pointers switch.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
@@ -159,7 +159,6 @@ fn apply_live(
             reasons.join("; ")
         )));
     }
-    refuse_planner(plan)?;
     let noop = plan.groups.is_empty() && plan.remove.is_empty();
     ask(plan)?;
     let mut run = super::api::start_run(store, "apply live")?;
@@ -195,9 +194,6 @@ fn publish(
     let previous = Live::read(remote, products, &[], store).map_err(r2_failed)?;
     let changed: Vec<usize> =
         (0..next.products.len()).filter(|&at| build_cli::changed(&previous.products[at], &next.products[at])).collect();
-    if changed.iter().any(|&at| next.products[at].product == "planner") {
-        return Err(planner_refused());
-    }
 
     run.check_stop(store)?;
     run.record(&Event::Phase { phase: Phase::Upload })?;
@@ -206,18 +202,31 @@ fn publish(
 
     run.check_stop(store)?;
     run.record(&Event::Phase { phase: Phase::Switch })?;
-    for &at in &changed {
-        let observed = remote.get(&format!("{}/catalog.json", next.products[at].prefix))?.as_deref().map(sha256_hex);
-        let reviewed = plan.live.iter().find(|live| live.product == next.products[at].product);
-        if reviewed.is_none_or(|reviewed| reviewed.observed != observed) {
-            return Err(Code::PlanOutdated
-                .error(format!(
-                    "the pointer of `{}` changed since the review; nothing switched",
-                    next.products[at].product
-                ))
-                .fix("Plan again, review, then apply."));
+    let check_pointers = || -> Result<(), Error> {
+        for &at in &changed {
+            let observed =
+                remote.get(&format!("{}/catalog.json", next.products[at].prefix))?.as_deref().map(sha256_hex);
+            let reviewed = plan.live.iter().find(|live| live.product == next.products[at].product);
+            if reviewed.is_none_or(|reviewed| reviewed.observed != observed) {
+                return Err(Code::PlanOutdated
+                    .error(format!(
+                        "the pointer of `{}` changed since the review; nothing switched",
+                        next.products[at].product
+                    ))
+                    .fix("Plan again, review, then apply."));
+            }
         }
+        Ok(())
+    };
+    check_pointers()?;
+    for &at in &changed {
+        let product = &next.products[at];
+        let (_, release) = product.release.as_ref().expect("a changed product has a release");
+        let owner = products.iter().find(|owner| owner.name() == product.product).expect("planned product");
+        owner.activate(root, release, store, commit).map_err(|error| Code::VerifyFailed.error(error))?;
     }
+    run.check_stop(store)?;
+    check_pointers()?;
     let mut switched = BTreeMap::new();
     for &at in &changed {
         let product = &next.products[at];
@@ -291,27 +300,6 @@ fn publish(
     for pass in 0..3 {
         let keys: Vec<Object> = removals.iter().filter(|object| removal_pass(&object.key) == pass).cloned().collect();
         delete(bucket, &keys, "obc data apply live: no live release uses it", run, &mut applied.removed)?;
-    }
-    Ok(())
-}
-
-fn planner_refused() -> Error {
-    Code::Blocked
-        .error("Live apply cannot publish the planner yet: the planner service install is not implemented (next PR). Nothing changed.")
-        .fix("Wait for the planner service install step.")
-}
-
-/// Refuse a plan that changes the planner before anything is built: an apply does not install
-/// the planner services yet.
-pub(super) fn refuse_planner(plan: &EnvPlan) -> Result<(), Error> {
-    let planner = |step: &str| step.starts_with("planner/");
-    let groups = plan.groups.iter().any(|group| {
-        group.id == "pointer:planner"
-            || group.layers.iter().any(|layer| planner(&layer.step))
-            || group.drops.iter().any(|step| planner(step))
-    });
-    if groups || plan.edits.iter().any(|edit| edit.product() == "planner") {
-        return Err(planner_refused());
     }
     Ok(())
 }
@@ -636,6 +624,58 @@ mod tests {
         let check = live.check(remote, &fixture.store).unwrap();
         assert!(check.drift.is_empty() && check.leftovers.is_empty(), "R2 holds what live uses: {check:?}");
         live.products[0].release.as_ref().map(|(id, _)| id.clone())
+    }
+
+    #[test]
+    fn failed_service_activation_keeps_the_pointer_and_can_retry() {
+        struct Service(bool);
+        impl Product for Service {
+            fn name(&self) -> &'static str {
+                Versioned.name()
+            }
+            fn pointer(&self) -> Option<PointerFn> {
+                Versioned.pointer()
+            }
+            fn named(
+                &self,
+                release: &crate::engine::release::Release,
+            ) -> Result<Vec<crate::engine::LayerFile>, String> {
+                Versioned.named(release)
+            }
+            fn steps(
+                &self,
+                root: &Path,
+                env: &Env,
+                regions: &Regions,
+                store: &Store,
+            ) -> Result<crate::product::Steps, Unplanned> {
+                Versioned.steps(root, env, regions, store)
+            }
+            fn activate(
+                &self,
+                _root: &Path,
+                _release: &crate::engine::release::Release,
+                _store: &Store,
+                commit: &str,
+            ) -> Result<(), String> {
+                assert_eq!(commit.len(), 40);
+                if self.0 {
+                    Err("service probe failed".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let (fixture, remote) = repository("service-failure");
+        let before = b"{\"format\": 0}";
+        std::fs::create_dir_all(fixture.scratch.0.join("bucket/test")).unwrap();
+        std::fs::write(fixture.scratch.0.join("bucket/test/catalog.json"), before).unwrap();
+        let error = apply(&fixture, &remote, &[&Service(true)]).unwrap_err();
+        assert!(error.message.contains("service probe failed"));
+        assert_eq!(remote.get("test/catalog.json").unwrap().unwrap(), before);
+        let retried = apply(&fixture, &remote, &[&Service(false)]).unwrap();
+        assert_eq!(retried.switched.len(), 1);
+        assert!(retried.uploaded.is_empty());
     }
 
     #[test]
@@ -1189,28 +1229,6 @@ mod tests {
         assert_eq!((retry.switched.len(), retry.removed.len()), (1, 0));
         checked(&fixture, &remote).unwrap();
         assert!(keys(&fixture).contains_key(&copy), "the input copy of the stopped apply stays");
-    }
-
-    #[test]
-    fn a_plan_that_changes_the_planner_is_refused_before_any_build() {
-        let group = |id: &str, drops: &[&str]| crate::engine::plan::Group {
-            id: id.into(),
-            cause: None,
-            layers: Vec::new(),
-            drops: drops.iter().map(|step| step.to_string()).collect(),
-            fetches: Vec::new(),
-            builds: Vec::new(),
-        };
-        let mut plan = EnvPlan { groups: vec![group("pointer:maps", &["maps/old"])], ..EnvPlan::default() };
-        refuse_planner(&plan).unwrap();
-        for groups in [vec![group("pointer:planner", &[])], vec![group("code:x", &["planner/old"])]] {
-            plan.groups = groups;
-            assert!(refuse_planner(&plan).unwrap_err().message.contains("cannot publish the planner yet"));
-        }
-        plan.groups.clear();
-        let edit = build_cli::Edit::Region { product: "planner".into(), from: None, to: "monaco".into() };
-        plan.edits = vec![edit];
-        assert!(refuse_planner(&plan).is_err(), "a first planner publish is an edit");
     }
 
     #[test]
