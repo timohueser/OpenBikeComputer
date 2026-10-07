@@ -47,7 +47,6 @@ impl Request {
             && (self.kind != Kind::Prepare
                 || self.dev.is_some()
                 || self.plan.is_some()
-                || !self.moves.is_empty()
                 || self.only.iter().any(|id| !crate::is_kebab(id)))
         {
             return Err("fixture operations need exact package preparation or a typed reviewed apply plan".into());
@@ -408,7 +407,9 @@ mod tests {
         }
         request.kind = Kind::Prepare;
         request.moves.push("land-polygons@2026-06-19".into());
-        assert!(request.check().is_err(), "preparation cannot introduce an upstream move");
+        request.check().unwrap();
+        request.only.push("../outside".into());
+        assert!(request.check().is_err(), "fixture preparation still names normalized packages");
     }
 
     #[test]

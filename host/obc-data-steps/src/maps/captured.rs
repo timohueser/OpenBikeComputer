@@ -78,11 +78,11 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     }
     let mut wanted = Vec::new();
     let glo30 = env
-        .moves
-        .get(GLO30)
-        .and_then(Option::as_ref)
-        .ok_or_else(|| invalid("fixture terrain needs an explicitly selected GLO30 version".into()))?
-        .clone();
+        .version(GLO30, &[])
+        .map_err(Unplanned::Invalid)?
+        .ok_or_else(|| invalid("fixture terrain needs an exact selected GLO30 version".into()))?
+        .to_string();
+    env.read.borrow_mut().insert((GLO30.into(), Vec::new()), glo30.clone());
     let selected_terrain = match &inputs.terrain {
         Some(terrain) => {
             snapshot_files(store, &terrain.source, &terrain.version, &[], &terrain.files)

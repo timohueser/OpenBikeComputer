@@ -10,7 +10,7 @@ use crate::engine::{
 };
 use crate::env::Env;
 use crate::fetch::http::Http;
-use crate::fixtures::{self, Catalog, Collection, FixtureCollection, PackagePlan, Plan, Saved};
+use crate::fixtures::{self, Catalog, Collection, FixtureCollection, PackagePlan, Plan, Saved, Selection};
 use crate::operation::{Kind, Request};
 use crate::product::{Product, Steps, Unplanned, Wanted};
 use crate::regions::Regions;
@@ -34,7 +34,7 @@ impl Product for CapturedMaps<'_> {
         "maps"
     }
     fn steps(&self, _: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        (self.collection.recipes)(env, regions, store, self.inputs)
+        recipes(self.collection, env, regions, store, self.inputs)
     }
 }
 
@@ -62,17 +62,13 @@ pub(super) fn dispatch(
         }
         _ => return Ok(Some(command)),
     };
-    if !moves.is_empty() {
-        return Err(Code::Usage
-            .error("fixture packages have exact independent source selections; edit their collection, not --move"));
-    }
     let collection = provider(collection)?;
     let store = Store::open()?;
     let mut request = Request {
         kind: kind.unwrap_or(Kind::Prepare),
         env: "fixtures".into(),
         only,
-        moves: Vec::new(),
+        moves,
         plan: None,
         dev: None,
         fixture: None,
@@ -87,7 +83,7 @@ pub(super) fn dispatch(
         let plan: Plan = match file {
             Some(path) => serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
                 .map_err(|e| Code::InvalidData.error(e.to_string()))?,
-            None => inspect(root, &store, collection, &request.only)?,
+            None => inspect(root, &store, collection, &request.only, &request.moves, None)?,
         };
         if kind.is_none() {
             print_json(&plan)?;
@@ -101,6 +97,7 @@ pub(super) fn dispatch(
                 yes,
             )?;
             request.only.clear();
+            request.moves.clear();
             request.fixture = Some(Box::new(plan));
             super::operation_cli::print_handle(&super::operation_cli::start(root, &store, request, None)?, json)?;
         }
@@ -111,12 +108,13 @@ pub(super) fn dispatch(
 fn configuration(root: &Path, collection: &Collection, regions: &Regions) -> Result<String, String> {
     let selected: Vec<_> = collection.packages.values().map(|p| regions.get(&p.region)).collect();
     let sources = hash_file(&root.join("data/sources.toml"))?;
-    let osm = hash_file(&root.join("fixtures/sources/ride-assistant/assistant-osm.json"))?;
-    let terrain = hash_file(&root.join("fixtures/sources/ride-assistant/assistant-terrain.json"))?;
-    Ok(sha256_hex(&serde_json::to_vec(&(collection, selected, sources, osm, terrain)).map_err(|e| e.to_string())?))
+    Ok(sha256_hex(&serde_json::to_vec(&(collection, selected, sources)).map_err(|e| e.to_string())?))
 }
 
-fn environment(id: &str, package: &fixtures::Package) -> Result<Env, String> {
+fn environment(id: &str, package: &fixtures::Package, saved: Option<&Saved>) -> Result<Env, String> {
+    if let Some(saved) = saved {
+        return Ok(saved.selection.environment(&package.region));
+    }
     for source in ["copernicus-glo-30", "land-polygons"] {
         if !package.sources.contains_key(source) {
             return Err(format!("{id}: declare the exact historical `{source}` version in data/env/fixtures.toml; a baked terrain sidecar or newest source is not a raw input"));
@@ -132,19 +130,81 @@ fn environment(id: &str, package: &fixtures::Package) -> Result<Env, String> {
 
 fn recipes(
     collection: &FixtureCollection,
-    package: &fixtures::Package,
     env: &Env,
     regions: &Regions,
     store: &Store,
     inputs: &fixtures::Inputs,
-) -> Result<crate::product::Steps, String> {
-    let steps = (collection.recipes)(env, regions, store, inputs).map_err(|e| format!("{e:?}"))?;
-    for ((source, _), version) in env.read.borrow().iter() {
-        if package.sources.get(source) != Some(version) {
-            return Err(format!("fixture planning reads `{source}@{version}` without an exact package selection; declare that historical source version before preparation"));
+) -> Result<crate::product::Steps, Unplanned> {
+    let steps = (collection.recipes)(env, regions, store, inputs)?;
+    for (source, params) in env.requests.borrow().iter() {
+        if !env.moves.contains_key(source) && !env.live.contains_key(&(source.clone(), params.clone())) {
+            return Err(Unplanned::Invalid(format!("fixture selection has no exact request for `{source}` {params:?}; explicitly prepare with --move {source}@VERSION")));
         }
     }
     Ok(steps)
+}
+
+fn selected_inputs(
+    store: &Store,
+    env: &Env,
+    original: &fixtures::Inputs,
+    moves: &BTreeMap<String, Option<String>>,
+) -> Result<fixtures::Inputs, Unplanned> {
+    let mut inputs = original.clone();
+    if moves.contains_key("copernicus-glo-30") {
+        inputs.terrain = None;
+    }
+    for input in std::iter::once(&mut inputs.osm).chain(inputs.content.values_mut()).chain(&mut inputs.terrain) {
+        if env.moves.contains_key(&input.source) {
+            let version = crate::product::version(env, store, &input.source, &input.params)
+                .map_err(Unplanned::Failed)?
+                .map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
+            if crate::engine::snapshot_files(store, &input.source, &version, &input.params, &input.files)
+                .map_err(Unplanned::Failed)?
+                .is_none()
+            {
+                return Err(Unplanned::NeedsFetch(vec![Wanted {
+                    source: input.source.clone(),
+                    version: Some(version),
+                    params: input.params.clone(),
+                }]));
+            }
+            input.version = version;
+        }
+    }
+    let paths = crate::engine::snapshot_files(
+        store,
+        &inputs.osm.source,
+        &inputs.osm.version,
+        &inputs.osm.params,
+        &inputs.osm.files,
+    )
+    .map_err(Unplanned::Failed)?
+    .ok_or_else(|| Unplanned::Invalid("prepare fixtures to restore their exact selected PBF".into()))?;
+    let [path] = paths.values().collect::<Vec<_>>()[..] else {
+        return Err(Unplanned::Invalid("fixture PBF must select one file".into()));
+    };
+    let sha256 = hash_file(path).map_err(Unplanned::Failed)?.0;
+    if inputs.osm.version == original.osm.version && sha256 != original.osm_sha256 {
+        return Err(Unplanned::Invalid("fixture PBF differs from its exact recorded bytes".into()));
+    }
+    inputs.osm_sha256 = sha256;
+    for input in std::iter::once(&inputs.osm).chain(inputs.content.values()).chain(&inputs.terrain) {
+        env.read.borrow_mut().insert((input.source.clone(), input.params.clone()), input.version.clone());
+    }
+    Ok(inputs)
+}
+
+fn coverage(package: &fixtures::Package, regions: &Regions, selected: &Selection) -> Result<(), String> {
+    let Some(crate::regions::Region { area: crate::regions::Area::Box { bbox }, .. }) = regions.get(&package.region)
+    else {
+        return Err("fixture region is not a canonical box".into());
+    };
+    let [west, south, east, north] = selected.coverage;
+    if bbox.west < west || bbox.south < south || bbox.east > east || bbox.north > north {
+        return Err("fixture region expands beyond its recorded PBF coverage; retain a reviewed input that covers the larger box before rebuilding".into());
+    }
+    Ok(())
 }
 
 fn licences<'a>(
@@ -159,7 +219,14 @@ fn licences<'a>(
     .collect()
 }
 
-fn inspect(root: &Path, store: &Store, collection: &FixtureCollection, only: &[String]) -> Result<Plan, Error> {
+fn inspect(
+    root: &Path,
+    store: &Store,
+    collection: &FixtureCollection,
+    only: &[String],
+    moves: &[String],
+    resolved: Option<&BTreeMap<String, crate::env::Versions>>,
+) -> Result<Plan, Error> {
     let regions = Regions::load(root)?;
     let declarations = Collection::load(root, &regions)?;
     if only.iter().any(|id| !declarations.packages.contains_key(id)) {
@@ -168,15 +235,33 @@ fn inspect(root: &Path, store: &Store, collection: &FixtureCollection, only: &[S
     let mut packages = BTreeMap::new();
     let catalog = Catalog::read(root)?;
     let sources = super::registry(root)?.sources;
+    let requested = build_cli::moves(&sources, moves)?;
     for (id, package) in declarations.packages.iter().filter(|(id, _)| only.is_empty() || only.contains(id)) {
-        let (bootstrap, original) = package.bootstrap(root, &regions)?;
-        let mut env = Env { name: format!("fixtures-{id}"), region: package.region.clone(), ..Default::default() };
-        let inputs = fixtures::inputs(root, store, package, &original);
+        let basis = Selection::basis(store, &catalog, id);
+        let saved = basis.as_ref().ok().and_then(Option::as_ref);
+        let selection = saved.map(|saved| saved.selection.identity()).transpose()?;
+        let bootstrap = if saved.is_none() && basis.is_ok() { Some(package.bootstrap(root, &regions)?) } else { None };
+        let mut env = environment(id, package, saved).unwrap_or_else(|_| Env {
+            name: format!("fixtures-{id}"),
+            region: package.region.clone(),
+            ..Default::default()
+        });
+        env.moves.extend(requested.clone());
+        env.resolved = resolved.and_then(|resolved| resolved.get(id)).cloned().unwrap_or_default();
+        let inputs = match saved {
+            Some(saved) => coverage(package, &regions, &saved.selection).map(|_| saved.selection.inputs.clone()),
+            None => basis.as_ref().map_err(Clone::clone).and_then(|_| {
+                bootstrap
+                    .as_ref()
+                    .ok_or_else(|| "fixture first import needs exact bootstrap inputs".to_string())
+                    .and_then(|(_, original)| fixtures::inputs(root, store, package, original))
+            }),
+        }
+        .and_then(|inputs| selected_inputs(store, &env, &inputs, &requested).map_err(|reason| format!("{reason:?}")));
         let assets = catalog.assets(root, id, &package.map)?;
         let listed = (|| {
-            env = environment(id, package)?;
             let inputs = inputs.as_ref().map_err(Clone::clone)?;
-            let steps = recipes(collection, package, &env, &regions, store, inputs)?;
+            let steps = recipes(collection, &env, &regions, store, inputs).map_err(|e| format!("{e:?}"))?;
             let ids = steps.steps.iter().flat_map(|step| &step.inputs).filter_map(|input| match input {
                 crate::engine::Input::Snapshot { source, .. } => Some(source.as_str()),
                 _ => None,
@@ -217,7 +302,10 @@ fn inspect(root: &Path, store: &Store, collection: &FixtureCollection, only: &[S
         };
         let mut plan = build_cli::env_plan(&env, &[], work, blocked, None);
         plan.needs_prepare = !plan.blocked.is_empty() || inputs.is_err();
-        packages.insert(id.clone(), PackagePlan { bootstrap, inputs: inputs.ok(), assets, plan });
+        packages.insert(
+            id.clone(),
+            PackagePlan { bootstrap: bootstrap.map(|(file, _)| file), selection, inputs: inputs.ok(), assets, plan },
+        );
     }
     let packaging = match fixtures::packaging(root) {
         Ok(packaging) => packaging,
@@ -240,6 +328,7 @@ fn inspect(root: &Path, store: &Store, collection: &FixtureCollection, only: &[S
         worker: crate::worker::bound_code(root)?,
         packaging,
         packages,
+        moves: moves.to_vec(),
     })
 }
 
@@ -261,33 +350,80 @@ pub(super) fn perform(
         let sources = super::registry(root)?.sources;
         let http = Http::new();
         if request.kind == Kind::Prepare {
+            let requested = build_cli::moves(&sources, &request.moves)?;
+            let mut resolved = BTreeMap::new();
             for (id, package) in
                 declarations.packages.iter().filter(|(id, _)| request.only.is_empty() || request.only.contains(id))
             {
                 run.check_stop(store)?;
-                let (_, bootstrap) = package.bootstrap(root, &regions)?;
-                fixtures::archives(root, store, &http, &catalog, &bootstrap, package, &sources)
-                    .map_err(|e| Code::Blocked.error(format!("{id}: {e}")))?;
-                if let Some(version) = package.sources.get("geofabrik-extracts") {
-                    let area = package.osm.strip_suffix("-latest.osm.pbf").ok_or_else(|| {
-                        Code::InvalidData.error("exact Geofabrik fixture recovery needs its recorded area path")
-                    })?;
-                    let env = environment(id, package)?;
-                    build_cli::fetcher_recorded(root, store, &http, &sources, &env, None, Some(&mut run))(
-                        &Wanted { source: "geofabrik-extracts".into(), version: Some(version.clone()), params: vec![("area".into(), area.into())] }
-                    ).map_err(|error| error.fix("Restore the exact recorded Geofabrik bytes, then prepare fixtures again. A newest extract is not a substitute."))?;
+                let mut saved = Selection::local(store, id)?;
+                if let Some(archive) = catalog.selection(id)? {
+                    if saved.as_ref().is_none_or(|saved| saved.archive != archive) {
+                        saved = Some(Selection::recover(root, store, &http, &catalog, id, archive, &requested)?);
+                    }
                 }
-                let inputs = fixtures::inputs(root, store, package, &bootstrap)?;
-                let mut env = environment(id, package)?;
+                let (original, mut env) = match &saved {
+                    Some(saved) => {
+                        coverage(package, &regions, &saved.selection)?;
+                        saved.selection.restore(
+                            store,
+                            &http,
+                            &crate::live::Remote::Public(catalog.base_url.trim_end_matches('/').into()),
+                            &requested,
+                        )?;
+                        (saved.selection.inputs.clone(), saved.selection.environment(&package.region))
+                    }
+                    None => {
+                        let (_, bootstrap) = package.bootstrap(root, &regions)?;
+                        fixtures::archives(root, store, &http, &catalog, &bootstrap, package, &sources)?;
+                        let env = environment(id, package, None)?;
+                        if let Some(version) = package.sources.get("geofabrik-extracts") {
+                            let area = package
+                                .osm
+                                .strip_suffix("-latest.osm.pbf")
+                                .ok_or("exact fixture recovery needs its recorded Geofabrik area")?;
+                            build_cli::fetcher_recorded(root, store, &http, &sources, &env, None, Some(&mut run))(
+                                &Wanted {
+                                    source: "geofabrik-extracts".into(),
+                                    version: Some(version.clone()),
+                                    params: vec![("area".into(), area.into())],
+                                },
+                            )?;
+                        }
+                        (fixtures::inputs(root, store, package, &bootstrap)?, env)
+                    }
+                };
+                env.moves.extend(requested.clone());
                 let mut fetch = build_cli::fetcher_recorded(root, store, &http, &sources, &env, None, Some(&mut run));
+                let mut fetched = Vec::new();
+                let inputs = loop {
+                    match selected_inputs(store, &env, &original, &requested) {
+                        Ok(inputs) => break inputs,
+                        Err(Unplanned::NeedsFetch(wanted)) => {
+                            for wanted in wanted {
+                                if fetched.contains(&wanted) {
+                                    return Err(Code::Blocked.error("refreshed fixture request still lacks its selected files; restore that exact input"));
+                                }
+                                fetched.push(wanted.clone());
+                                let version = fetch(&wanted)?;
+                                env.resolved.insert((wanted.source, crate::store::sorted(&wanted.params)), version);
+                            }
+                        }
+                        Err(reason) => return Err(Code::Blocked.error(format!("{id}: {reason:?}"))),
+                    }
+                };
+                let moved = env.moves.clone();
+                let retained = env.live.clone();
                 let mut exact = |wanted: &Wanted| {
-                    if wanted.version.as_ref() != package.sources.get(&wanted.source) {
+                    if !moved.contains_key(&wanted.source)
+                        && !retained.contains_key(&(wanted.source.clone(), crate::store::sorted(&wanted.params)))
+                    {
                         return Err(Code::Blocked.error(format!(
-                            "{id}: select exact `{}` history in data/env/fixtures.toml before preparation",
-                            wanted.source
+                            "{id}: new request {} {:?} requires --move {}@VERSION",
+                            wanted.source, wanted.params, wanted.source
                         )));
                     }
-                    fetch(wanted).map_err(|error| error.fix(format!("Restore `obc data fetch {}@{} {}` from the exact retained input record, then prepare fixtures again. Do not replace missing history with newest or Live.", wanted.source, wanted.version.as_deref().unwrap_or("VERSION"), wanted.params.iter().map(|(k,v)| format!("{k}={v}")).collect::<Vec<_>>().join(" "))))
+                    fetch(wanted)
                 };
                 build_cli::product_steps(
                     root,
@@ -298,26 +434,48 @@ pub(super) fn perform(
                     &mut exact,
                 )?
                 .map_err(|reason| Code::Blocked.error(reason))?;
+                resolved.insert(id.clone(), env.resolved);
             }
-            return inspect(root, store, collection, &request.only).map(fixtures::Outcome::Prepared);
+            return inspect(root, store, collection, &request.only, &request.moves, Some(&resolved))
+                .map(fixtures::Outcome::Prepared);
         }
         let reviewed =
             request.fixture.as_deref().ok_or_else(|| Code::Usage.error("fixture apply has no reviewed plan"))?;
+        let requested = build_cli::moves(&sources, &reviewed.moves)?;
         let selected = reviewed.packages.keys().cloned().collect::<Vec<_>>();
-        let current = inspect(root, store, collection, &selected)?;
+        let resolved = reviewed
+            .packages
+            .iter()
+            .map(|(id, package)| {
+                (
+                    id.clone(),
+                    package
+                        .plan
+                        .versions
+                        .iter()
+                        .map(|version| ((version.source.clone(), version.params.clone()), version.version.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+        let current = inspect(root, store, collection, &selected, &reviewed.moves, Some(&resolved))?;
         if reviewed != &current {
             return Err(Code::PlanOutdated.error("fixture configuration, inputs, work, catalog or destination changed"));
         }
         reviewed.check()?;
         let bucket = crate::r2::Bucket::from_env(crate::r2::Credentials::Fixtures)?;
         let mut updates = BTreeMap::new();
+        let mut completed = Vec::new();
         for (id, package) in &reviewed.packages {
             run.check_stop(store)?;
             let declaration = &declarations.packages[id];
-            let env = environment(id, declaration)?;
+            let saved = Selection::local(store, id)?;
+            let mut env = environment(id, declaration, saved.as_ref())?;
+            env.moves.extend(package.plan.moves.clone());
+            env.planned = resolved.get(id).cloned();
             let inputs = package.inputs.as_ref().expect("reviewed inputs");
-            let steps =
-                recipes(collection, declaration, &env, &regions, store, inputs).map_err(|e| Code::Blocked.error(e))?;
+            let steps = recipes(collection, &env, &regions, store, inputs)
+                .map_err(|e| Code::Blocked.error(format!("{e:?}")))?;
             let work = plan::plan(store, root, &steps.steps)?;
             if !work.same_work(&plan::Plan { groups: package.plan.groups.clone() }) {
                 return Err(Code::PlanOutdated.error("fixture work changed before build"));
@@ -348,19 +506,27 @@ pub(super) fn perform(
                 std::fs::copy(&copied, &retained).map_err(|e| e.to_string())?;
                 store.insert(&retained, &asset.sha256)?;
             }
-            let (current_bootstrap, original) = declaration.bootstrap(root, &regions)?;
-            if current_bootstrap != package.bootstrap
-                || fixtures::inputs(root, store, declaration, &original)? != *inputs
+            let unchanged =
+                Selection::local(store, id)?.map(|saved| saved.selection.identity()).transpose()? == package.selection;
+            let bootstrap_unchanged = package
+                .bootstrap
+                .as_ref()
+                .map(|file| hash_file(&root.join(&file.path)).map(|actual| actual == (file.sha256.clone(), file.size)))
+                .transpose()?
+                .unwrap_or(true);
+            if !unchanged
+                || !bootstrap_unchanged
+                || selected_inputs(store, &env, inputs, &requested).map_err(|error| format!("{error:?}"))? != *inputs
             {
-                return Err(Code::PlanOutdated.error("fixture bootstrap or historical input changed during the build"));
+                return Err(Code::PlanOutdated.error("fixture selection changed during the build"));
             }
-            let mut retained_assets = package.assets.values().cloned().collect::<Vec<_>>();
             for (destination, input) in &inputs.historical {
                 if destination == &declaration.map || package.assets.contains_key(destination) {
                     return Err(Code::InvalidData.error("historical sidecar collides with a current fixture output"));
                 }
-                let files = crate::engine::snapshot_files(store, &input.source, &input.version, &[], &input.files)?
-                    .ok_or_else(|| Code::Blocked.error("historical sidecar input is missing"))?;
+                let files =
+                    crate::engine::snapshot_files(store, &input.source, &input.version, &input.params, &input.files)?
+                        .ok_or_else(|| Code::Blocked.error("historical sidecar input is missing"))?;
                 let [path] = files.values().collect::<Vec<_>>()[..] else {
                     return Err(Code::InvalidData.error("historical sidecar must select one file"));
                 };
@@ -380,14 +546,22 @@ pub(super) fn perform(
                         Code::VerifyFailed.error("historical sidecar bytes differ from their exact retained record")
                     );
                 }
-                retained_assets.push(crate::engine::LayerFile { path: destination.clone(), sha256, size });
             }
-            std::fs::write(
-                tree.join(".obc-data.json"),
-                serde_json::to_vec(&(&package.bootstrap, inputs, &declaration.asset_source, &package.assets, &release))
-                    .map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
+            let coverage = match &saved {
+                Some(saved) => saved.selection.coverage,
+                None => declaration.bootstrap(root, &regions)?.1.bounds_lon_lat,
+            };
+            let selection = Selection::new(
+                store,
+                id.clone(),
+                coverage,
+                inputs.clone(),
+                release.clone(),
+                &env,
+                package.assets.clone(),
+            )?;
+            std::fs::write(tree.join(".obc-data.json"), serde_json::to_vec(&selection).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
             let archive = store.partial(&format!("fixture-{id}.tar.gz"));
             crate::worker::check(root)?;
             fixtures::materialize(
@@ -428,21 +602,26 @@ pub(super) fn perform(
                 );
             }
             let licence = licences.into_iter().collect::<Vec<_>>().join(" AND ");
-            Saved {
-                package: id.clone(),
-                bootstrap: package.bootstrap.clone(),
-                inputs: inputs.clone(),
-                release,
-                archive: file.clone(),
-                assets: retained_assets,
-            }
-            .write(store)?;
+            completed.push(Saved { selection: selection.clone(), archive: file.clone() });
             run.check_stop(store)?;
             reviewed.catalog_unchanged(root)?;
             if crate::r2::fixture_destination()? != reviewed.destination {
                 return Err(Code::PlanOutdated.error("fixture destination changed before upload"));
             }
             run.record(&Event::Phase { phase: Phase::Upload })?;
+            for copy in &selection.copies {
+                for input in &copy.record.files {
+                    let object = store.object(&input.sha256);
+                    if hash_file(&object)? != (input.sha256.clone(), input.size) {
+                        return Err(Code::VerifyFailed.error("fixture selected input changed before upload"));
+                    }
+                    bucket.put(
+                        &object,
+                        &format!("{}inputs/objects/{}", catalog.prefix, input.sha256),
+                        &crate::r2::Upload { immutable: true, cache_control: None, content_type: None },
+                    )?;
+                }
+            }
             let key = format!("{}{}", catalog.prefix, file.path);
             bucket.put(
                 &object,
@@ -474,13 +653,16 @@ pub(super) fn perform(
             return Err(Code::PlanOutdated.error("fixture configuration or destination changed before catalog update"));
         }
         for package in reviewed.packages.values() {
-            if hash_file(&root.join(&package.bootstrap.path))?
-                != (package.bootstrap.sha256.clone(), package.bootstrap.size)
-            {
-                return Err(Code::PlanOutdated.error("fixture bootstrap changed before catalog update"));
+            if let Some(file) = &package.bootstrap {
+                if hash_file(&root.join(&file.path))? != (file.sha256.clone(), file.size) {
+                    return Err(Code::PlanOutdated.error("fixture bootstrap changed before catalog update"));
+                }
             }
         }
         catalog.replace(root, &updates)?;
+        for saved in completed {
+            saved.write(store)?;
+        }
         Ok(fixtures::Outcome::Applied {
             archives: updates.into_iter().map(|(id, (file, _, _))| (id, file)).collect(),
             catalog: Catalog::read(root)?.file,
@@ -488,4 +670,104 @@ pub(super) fn perform(
     })();
     let plan = api::finish_run(run, result, None)?;
     print_json(&plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::{CapturedInput, Inputs};
+    use crate::store::{FileRecord, Requested, Snapshot};
+
+    struct Maps;
+    impl Product for Maps {
+        fn name(&self) -> &'static str {
+            "maps"
+        }
+        fn steps(&self, _: &Path, _: &Env, _: &Regions, _: &Store) -> Result<Steps, Unplanned> {
+            Ok(Steps::default())
+        }
+    }
+
+    #[test]
+    fn saved_fixture_requests_stay_exact_and_only_an_explicit_move_admits_new_requests() {
+        let temporary = crate::store::tests::Scratch::new("fixture-refresh");
+        let store = Store::at(&temporary.0);
+        let params = |area: &str| vec![("area".into(), area.into())];
+        let mut hashes = Vec::new();
+        for (version, bytes) in [("1", b"old".as_slice()), ("2", b"new")] {
+            let sha256 = sha256_hex(bytes);
+            crate::store::write_atomic(&store.partial("pbf"), bytes).unwrap();
+            store.insert(&store.partial("pbf"), &sha256).unwrap();
+            store
+                .put_snapshot(&Snapshot {
+                    source: "geofabrik-extracts".into(),
+                    version: version.into(),
+                    files: vec![FileRecord {
+                        name: "area.osm.pbf".into(),
+                        url: format!("https://example.invalid/{version}"),
+                        size: bytes.len() as u64,
+                        sha256: sha256.clone(),
+                        retrieved: version.into(),
+                    }],
+                })
+                .unwrap();
+            store
+                .put_requested(
+                    "geofabrik-extracts",
+                    &Requested { version: version.into(), params: params("a"), files: vec!["area.osm.pbf".into()] },
+                )
+                .unwrap();
+            hashes.push(sha256);
+        }
+        let inputs = Inputs {
+            osm: CapturedInput {
+                source: "geofabrik-extracts".into(),
+                version: "1".into(),
+                params: params("a"),
+                files: vec!["area.osm.pbf".into()],
+            },
+            osm_sha256: hashes[0].clone(),
+            content: BTreeMap::new(),
+            terrain: None,
+            historical: BTreeMap::new(),
+            empty: BTreeMap::new(),
+        };
+        let mut env = Env {
+            live: [(("geofabrik-extracts".into(), params("a")), ["1".into()].into())].into(),
+            ..Default::default()
+        };
+        assert_eq!(selected_inputs(&store, &env, &inputs, &env.moves).unwrap(), inputs);
+        env.moves.insert("geofabrik-extracts".into(), Some("2".into()));
+        let next = selected_inputs(&store, &env, &inputs, &env.moves).unwrap();
+        assert_eq!(next.osm.version, "2");
+        assert_eq!(next.osm.params, inputs.osm.params);
+        assert_eq!(next.osm_sha256, hashes[1]);
+        let mut captured = inputs.clone();
+        captured.terrain = Some(inputs.osm.clone());
+        let terrain_move = [("copernicus-glo-30".into(), Some("2026-01-01".into()))].into();
+        assert!(
+            selected_inputs(&store, &env, &captured, &terrain_move).unwrap().terrain.is_none(),
+            "an explicit GLO30 refresh cannot keep old captured TIFFs"
+        );
+        fn changed_request(env: &Env, _: &Regions, store: &Store, _: &Inputs) -> Result<Steps, Unplanned> {
+            crate::product::read(env, store, "geofabrik-extracts", &[("area".into(), "b".into())])
+                .map_err(Unplanned::Failed)?
+                .map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
+            Ok(Steps::default())
+        }
+        store
+            .put_requested(
+                "geofabrik-extracts",
+                &Requested { version: "2".into(), params: params("b"), files: vec!["area.osm.pbf".into()] },
+            )
+            .unwrap();
+        let collection = FixtureCollection { maps: &Maps, recipes: changed_request, assemble: |_, _, _| Ok(()) };
+        let regions = Regions::new(Vec::new()).unwrap();
+        env.moves.clear();
+        assert!(
+            matches!(recipes(&collection, &env, &regions, &store, &inputs), Err(Unplanned::Invalid(reason)) if reason.contains("no exact request"))
+        );
+        env.moves.insert("geofabrik-extracts".into(), Some("2".into()));
+        recipes(&collection, &env, &regions, &store, &inputs).unwrap();
+    }
 }

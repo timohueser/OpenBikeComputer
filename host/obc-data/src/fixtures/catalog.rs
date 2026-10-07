@@ -11,6 +11,30 @@ pub(crate) struct Catalog {
 }
 
 impl Catalog {
+    pub fn selection(&self, id: &str) -> Result<Option<LayerFile>, String> {
+        let Some(package) = self.document["packages"].get(id) else { return Ok(None) };
+        match package.get("selection") {
+            None | Some(toml::Value::Boolean(false)) => Ok(None),
+            Some(toml::Value::Boolean(true)) => {
+                let hash = package["sha256"].as_str().ok_or("fixture archive lacks its hash")?;
+                digest(hash)?;
+                let path = package["archive"].as_str().ok_or("fixture archive lacks its path")?;
+                if path != format!("packages/{hash}.tar.gz") {
+                    return Err("fixture selection archive is not content addressed".into());
+                }
+                Ok(Some(LayerFile {
+                    path: path.into(),
+                    sha256: hash.into(),
+                    size: package["bytes"]
+                        .as_integer()
+                        .and_then(|n| n.try_into().ok())
+                        .ok_or("fixture archive lacks its size")?,
+                }))
+            }
+            Some(_) => Err("fixture selection marker must be boolean".into()),
+        }
+    }
+
     pub fn assets(&self, root: &Path, id: &str, map: &str) -> Result<BTreeMap<String, LayerFile>, String> {
         let mut assets = BTreeMap::new();
         let tracked = self.document["packages"].get(id).and_then(|p| p.get("tracked_sources"));
@@ -91,6 +115,16 @@ impl Catalog {
             let trimmed = line.trim();
             if trimmed.starts_with('[') {
                 package = trimmed.strip_prefix("[packages.").and_then(|id| id.strip_suffix(']'));
+                if package.is_some_and(|id| selected.contains_key(id)) {
+                    updated.push_str(line);
+                    updated.push_str("selection = true\n");
+                    continue;
+                }
+            }
+            if package.is_some_and(|id| selected.contains_key(id))
+                && line.split_once('=').is_some_and(|(field, _)| field.trim() == "selection")
+            {
+                continue;
             }
             let replacement = package.and_then(|id| {
                 let (archive, _, licence) = selected.get(id)?;
@@ -114,7 +148,7 @@ impl Catalog {
         for (id, (archive, summary, licence)) in selected {
             if self.document["packages"].get(id).is_none() {
                 updated.push_str(&format!(
-                    "\n[packages.{id}]\nsummary = {}\narchive = {}\nsha256 = {}\nbytes = {}\nprovenance = {}\nlicense = {}\n",
+                    "\n[packages.{id}]\nselection = true\nsummary = {}\narchive = {}\nsha256 = {}\nbytes = {}\nprovenance = {}\nlicense = {}\n",
                     serde_json::to_string(summary).map_err(|e| e.to_string())?,
                     serde_json::to_string(&archive.path).map_err(|e| e.to_string())?,
                     serde_json::to_string(&archive.sha256).map_err(|e| e.to_string())?,
