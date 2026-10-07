@@ -23,8 +23,8 @@ use crate::store::{import, Store};
 
 #[derive(Args)]
 pub struct StatusArgs {
-    /// Also check owned R2 prefixes and installed VPS runtime/data. Exit status 1 when
-    /// it finds either.
+    /// Also check owned R2 prefixes and installed VPS runtime/data. Exit status 1 for
+    /// R2 drift or leftovers.
     #[arg(long)]
     pub check: bool,
 }

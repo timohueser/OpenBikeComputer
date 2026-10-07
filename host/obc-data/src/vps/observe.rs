@@ -151,8 +151,11 @@ pub fn main() -> Result<(), String> {
         return Err("installed VPS observation requires Linux".into());
     }
     let mut input = Vec::new();
-    std::io::stdin().take(128 * 1024 + 1).read_to_end(&mut input).map_err(|e| e.to_string())?;
-    if input.len() > 128 * 1024 {
+    std::io::stdin()
+        .take(crate::operation::launch::READ_INPUT_LIMIT as u64 + 1)
+        .read_to_end(&mut input)
+        .map_err(|e| e.to_string())?;
+    if input.len() > crate::operation::launch::READ_INPUT_LIMIT {
         return Err("host observation request is too large".into());
     }
     let request: Request = serde_json::from_slice(&input).map_err(|e| e.to_string())?;

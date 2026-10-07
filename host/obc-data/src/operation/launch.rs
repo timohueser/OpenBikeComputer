@@ -139,8 +139,11 @@ pub(crate) fn bounded_status(
     bounded_read(command, limit, Stdio::null())
 }
 
+/// Two bounded metadata documents plus the fixed candidate and slot envelope.
+pub(crate) const READ_INPUT_LIMIT: usize = 2 * 1024 * 1024 + 64 * 1024;
+
 pub(crate) fn bounded_input(command: &mut Command, input: &[u8], limit: Duration) -> Result<Vec<u8>, String> {
-    if input.len() > 128 * 1024 {
+    if input.len() > READ_INPUT_LIMIT {
         return Err("host observation request is too large".into());
     }
     let scratch = crate::r2::Scratch::new()?;
@@ -276,7 +279,7 @@ mod tests {
         let mut blocked = Command::new("/bin/sh");
         blocked.args(["-c", "sleep 10"]);
         assert!(bounded_input(&mut blocked, b"request", Duration::from_millis(20)).unwrap_err().contains("deadline"));
-        assert!(bounded_input(&mut command, &vec![0; 128 * 1024 + 1], Duration::from_secs(2))
+        assert!(bounded_input(&mut command, &vec![0; READ_INPUT_LIMIT + 1], Duration::from_secs(2))
             .unwrap_err()
             .contains("too large"));
     }
