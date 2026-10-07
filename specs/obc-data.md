@@ -158,8 +158,8 @@ The options of the [planner layers](#planner) that are the same for each region.
 ## Configuration commit
 
 `config review` binds changed working bake configuration to HEAD, exact file bytes and Git modes.
-The scope is `data/sources.toml`, `data/env/live.toml`, `data/planner.toml`,
-`data/planner-runtime.toml` and `data/regions/`. Ignored Local state is outside this scope.
+The scope is `data/sources.toml`, `data/env/live.toml`, `data/env/fixtures.toml`,
+`data/planner.toml`, `data/planner-runtime.toml` and `data/regions/`. Ignored Local state is outside this scope.
 New files and tracked deletions are included. A changed HEAD, path, mode or byte requires a new review.
 
 `config commit` uses an ordinary Git partial commit. Unrelated staged files stay staged.

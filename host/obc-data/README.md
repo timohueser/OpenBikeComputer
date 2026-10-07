@@ -30,6 +30,7 @@ the downloads state directories. Set limits through the Linux setup before autom
 | Configuration or credential | Purpose |
 | --- | --- |
 | `data/env/live.toml` | Published region and optional layers |
+| `data/env/fixtures.toml` | Exact fixture package selection and source versions |
 | `data/env/local.toml` | Local region and layers; ignored by Git |
 | `data/regions/` | Saved Box or area selections |
 | `data/sources.toml` | Source declarations and refresh policy |
@@ -37,6 +38,7 @@ the downloads state directories. Set limits through the Linux setup before autom
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key |
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
+| `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `OBC_COMMIT_HOST` | Fixed publication owner: configured SSH host, or `local` on that owner |
 | `OBC_DATA_STORE` | Initiating build cache; not the fixed owner state |
 | `OBC_RUN_ENV_FILE` | Absolute private Linux worker environment file |
@@ -47,6 +49,7 @@ the downloads state directories. Set limits through the Linux setup before autom
 Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
 Missing source credentials block only a selected new fetch; verified retained inputs remain usable.
 Publication also requires its own bucket credentials and owner admission.
+Follow the [fixture setup](../../fixtures/README.md) for its isolated bucket and exact source packages.
 
 ## Daily commands
 
