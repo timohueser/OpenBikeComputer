@@ -176,12 +176,12 @@ targets:
   #
   # A development tool, not a product: the shared firmware runs over a card in Application
   # Support, the phone's GPS/compass/barometer are the sensors, and four touch pads are the
-  # buttons. It links OBCHost (apps/obc-ios-host) and nothing from OBCKit.
+  # buttons. It links OBCHost (sim/phone/host) and nothing from OBCKit.
   OBCDevice:
     type: application
     platform: iOS
     sources:
-      - path: OBCDevice
+      - path: ../sim/phone/app
         # The README documents the target; it is not part of the app bundle.
         excludes:
           - README.md
@@ -207,7 +207,7 @@ targets:
             "$SRCROOT/../tools/build-ios-host.sh"
           fi
     info:
-      path: OBCDevice/Info.plist
+      path: ../sim/phone/app/Info.plist
       properties:
         CFBundleDisplayName: OBC Device
         NSLocationWhenInUseUsageDescription: "OBC Device puts your position, speed and heading on the device screens, exactly as the bike computer does."

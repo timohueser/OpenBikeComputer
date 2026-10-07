@@ -77,7 +77,7 @@ on:
       - "apps/obc-web-assemble/**"
       - "apps/obc-web-convert/**"
       - "apps/obc-skin-preview/**"
-      - "apps/obc-web-demo/**"
+      - "sim/web-demo/**"
       - "host/obcm-assemble/**"
       - "Cargo.toml"
       - "Cargo.lock"

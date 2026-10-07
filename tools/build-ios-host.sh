@@ -27,7 +27,7 @@ for target in aarch64-apple-ios aarch64-apple-ios-sim "$mac_target"; do
   elif [[ ! -f "$library" ]]; then
     continue
   fi
-  slices+=(-library "$library" -headers apps/obc-ios-host/include)
+  slices+=(-library "$library" -headers sim/phone/host/include)
 done
 build_dir="$(cd "$build_dir" && pwd -P)"
 framework="$build_dir/OBCHost.xcframework"

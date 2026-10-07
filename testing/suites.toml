@@ -66,7 +66,7 @@ triggers = ["fixtures/catalog.toml"]
 name = "obc-inspect"
 triggers = [
   "specs/vectors/**",
-  "apps/obc-sim/assets/grimsel-demo.obcm",
+  "sim/desktop/assets/grimsel-demo.obcm",
   "fixtures/sources/sim-grimsel/routes/**",
 ]
 
@@ -112,7 +112,7 @@ triggers = [
 
 [[package]]
 name = "obc-bench"
-triggers = ["host/obc-bench/golden.txt"]
+triggers = ["sim/bench/golden.txt"]
 
 # Both write credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
@@ -152,7 +152,7 @@ triggers = ["specs/vectors/route-answer.json"]
 [[package]]
 name = "obc-ios-host"
 triggers = [
-  "apps/obc-sim/assets/grimsel-demo.obcm",
+  "sim/desktop/assets/grimsel-demo.obcm",
   "fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr",
   "fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx",
 ]
@@ -185,11 +185,11 @@ triggers = ["builder/app/**"]
 [[suite]]
 id = "web.demo-browser"
 route = "ordinary"
-command = "npm test --prefix apps/obc-web-demo/tests/browser"
+command = "npm test --prefix sim/web-demo/tests/browser"
 jobs = ["wasm"]
 fixtures = ["embedded-demo-assets"]
 platforms = ["linux", "macos"]
-triggers = ["apps/obc-web-demo/**", "apps/obc-sim/assets/**", "docs/index.html", "docs/Trunk.toml", "docs/assets/**", "docs/templates/**", "docs/build_docs.py"]
+triggers = ["sim/web-demo/**", "sim/desktop/assets/**", "docs/index.html", "docs/Trunk.toml", "docs/assets/**", "docs/templates/**", "docs/build_docs.py"]
 
 [[suite]]
 id = "web.builder-vitest"
@@ -208,7 +208,7 @@ triggers = [
   "builder/app/vite.config.ts",
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",
-  "host/obc-flat-device/**",
+  "sim/flat-device/**",
   "planner/search/query/contract.json",
   # The web build embeds credits from it.
   "data/sources.toml",
@@ -462,10 +462,10 @@ triggers = [
   "firmware/tools/ui_frames/**",
   "firmware/obc-app/src/**",
   "firmware/obc-render/src/**",
-  "apps/obc-sim/src/**",
+  "sim/desktop/src/**",
   "firmware/obc-app/i18n/*.toml",
   "firmware/obc-render/fonts/**",
-  "apps/obc-sim/assets/**",
+  "sim/desktop/assets/**",
   "fixtures/catalog.toml",
   "fixtures/sources/sim-*/**",
 ]
@@ -480,7 +480,7 @@ triggers = [
   "builder/app/package-lock.json",
   "builder/build-wasm-bridges.sh",
   "builder/wasm/wasm_size_guard.py",
-  "host/obc-flat-device/**",
+  "sim/flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",
 ]
@@ -635,7 +635,7 @@ triggers = [
 
 # The shell links the Rust host through an XCFramework and no Swift dependency graph
 # carries that edge: a change in the host crate, in the shared host modules under it, or
-# in the script that packs the slices breaks this build without touching OBCDevice/.
+# in the script that packs the slices breaks this build without touching sim/phone/app/.
 [[suite]]
 id = "ci.ios-device-build"
 scoped = true
@@ -646,7 +646,7 @@ command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -schem
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
-  "companion-ios/OBCDevice/**",
+  "sim/phone/app/**",
   "companion-ios/OBCCompanion/Assets.xcassets/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
@@ -750,7 +750,7 @@ platforms = ["linux", "macos"]
 triggers = [
   "builder/app/tests/device-smoke/**",
   "builder/app/test-support/device-smoke/**",
-  "apps/obc-sim/assets/grimsel-demo.obcm",
+  "sim/desktop/assets/grimsel-demo.obcm",
   "tools/board.py",
 ]
 

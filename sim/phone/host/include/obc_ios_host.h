@@ -1,5 +1,5 @@
 /* The iPhone host's C surface: the real firmware over one persistent card, behind an opaque
- * device. `apps/obc-ios-host/src/ffi.rs` implements exactly these declarations.
+ * device. `sim/phone/host/src/ffi.rs` implements exactly these declarations.
  *
  * Every call on a host is main thread only: the display link, the touch areas and the
  * CoreLocation and CoreMotion delegates all run there, and the host does not synchronise. A NULL
