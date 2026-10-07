@@ -372,9 +372,8 @@ pub(super) fn complete(saved: Option<&EnvPlan>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Live, and live after an apply of the plan of a build.
+/// The complete desired publication after the build.
 pub(super) struct Applying {
-    pub(super) live: Live,
     pub(super) next: Live,
 }
 
@@ -475,7 +474,7 @@ pub(super) fn build_env(
             built.releases.push(BuiltRelease { product: release.product.clone(), id: id.clone() });
         }
     }
-    Ok((built, Some(Applying { live, next })))
+    Ok((built, Some(Applying { next })))
 }
 
 /// Fail with `blocked` when no product suits the environment of `plan`.

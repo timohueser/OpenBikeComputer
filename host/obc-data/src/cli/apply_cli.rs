@@ -294,7 +294,7 @@ fn stage(
 ) -> Result<(Built, Live), Error> {
     let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
     let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan), run)?;
-    let Applying { next, .. } = applying.expect("a build of live gives what an apply changes");
+    let Applying { next } = applying.expect("a build of live gives what an apply changes");
     run.record(&Event::Phase { phase: Phase::Verify })?;
     verify_products(root, products, store, &next)?;
     Ok((built, next))
