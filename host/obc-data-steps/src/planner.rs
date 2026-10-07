@@ -110,6 +110,10 @@ impl Product for Planner {
         }))
     }
 
+    fn portable(&self, step: &Step) -> bool {
+        step.name.starts_with("planner/") && !step.name.starts_with("planner/runtime/") && !step.client.is_none()
+    }
+
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
         Some(catalog::pointer)
     }

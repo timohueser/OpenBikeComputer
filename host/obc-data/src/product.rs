@@ -45,6 +45,12 @@ pub trait Product: Sync {
         Ok(Vec::new())
     }
 
+    /// This owner permits consuming these stored bytes across producer hosts.
+    /// Native service executables are never portable data.
+    fn portable(&self, _step: &Step) -> bool {
+        false
+    }
+
     /// Prepare the three planner service views in caller-owned storage, before handoff.
     fn services(
         &self,

@@ -57,7 +57,7 @@ pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environme
     let mut layers = Vec::new();
     for step in order(steps)? {
         let (code_hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-        let (state, reason) = judge(store, step, code_hash, files, environment, &states)?;
+        let (state, reason) = judge(store, step, code_hash, &files.files, environment, &states)?;
         states.insert(&step.name, state);
         let reads = step.inputs.iter().map(|input| match input {
             Input::Snapshot { source, version, .. } => {

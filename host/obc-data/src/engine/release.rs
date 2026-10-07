@@ -24,6 +24,37 @@ pub struct Release {
     pub layers: Vec<Layer>,
     /// Exact files under `releases/<id>/`, sorted by path. Their identity is part of the release id.
     pub named: Vec<LayerFile>,
+    /// Producer witnesses, deduplicated by their original full code digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub producers: BTreeMap<String, Producer>,
+}
+
+/// The original execution identity and its portable source/config projection.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Producer {
+    pub files: BTreeMap<String, String>,
+    pub source_config: BTreeMap<String, String>,
+    pub rust: Option<super::ResolvedRust>,
+}
+
+impl From<&super::CodeIdentity> for Producer {
+    fn from(identity: &super::CodeIdentity) -> Self {
+        Self {
+            files: identity.files.clone(),
+            source_config: identity.source_config.clone(),
+            rust: identity.rust.clone(),
+        }
+    }
+}
+
+impl Producer {
+    pub fn check(&self, code: &str) -> Result<(), String> {
+        if super::code::hash(&self.files) != code {
+            return Err(format!("producer witness differs from full code digest {code}"));
+        }
+        Ok(())
+    }
 }
 
 /// A layer of a release: its receipt without the cost fields, and what it read of each source.
@@ -101,7 +132,24 @@ impl Release {
         layers.sort_by(|a, b| a.step.cmp(&b.step));
         let mut optional = optional.to_vec();
         optional.sort();
-        Release { product: product.into(), region: region.into(), optional, layers, named: Vec::new() }
+        let producers = live
+            .into_iter()
+            .flat_map(|release| &release.producers)
+            .filter(|(code, _)| layers.iter().any(|layer| &layer.code == *code))
+            .map(|(code, producer)| (code.clone(), producer.clone()))
+            .collect();
+        Release { product: product.into(), region: region.into(), optional, layers, named: Vec::new(), producers }
+    }
+
+    /// Add only witnesses whose full identity matches the unchanged recorded code digest.
+    pub fn bind_producers(&mut self, store: &Store) -> Result<(), String> {
+        for layer in &self.layers {
+            if let Some(producer) = store.producer(&layer.code)? {
+                producer.check(&layer.code)?;
+                self.producers.insert(layer.code.clone(), producer);
+            }
+        }
+        Ok(())
     }
 
     /// Finalize the named publication files from receipt metadata before calculating the id.
@@ -112,6 +160,12 @@ impl Release {
     }
 
     pub fn check_named(&self) -> Result<(), String> {
+        for (code, producer) in &self.producers {
+            producer.check(code)?;
+            if !self.layers.iter().any(|layer| &layer.code == code) {
+                return Err(format!("producer {code} has no layer"));
+            }
+        }
         for (at, file) in self.named.iter().enumerate() {
             if file.path.contains('\\') || file.path.split('/').any(|part| matches!(part, "" | "." | "..")) {
                 return Err(format!("named file `{}` is not a normalized relative path", file.path));
@@ -200,7 +254,10 @@ pub fn release(
     if layers.len() < names.len() {
         return Ok(None);
     }
-    Ok(Some(Release::compose(product, region, optional, None, layers.into_values().collect(), &BTreeSet::new())))
+    let mut release =
+        Release::compose(product, region, optional, None, layers.into_values().collect(), &BTreeSet::new());
+    release.bind_producers(store)?;
+    Ok(Some(release))
 }
 
 #[cfg(test)]
@@ -215,7 +272,14 @@ mod tests {
         fixture.build(&pipeline()).unwrap();
         let mut release =
             release(&fixture.store, &fixture.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
+        assert_eq!(release.producers.len(), 2, "three layers share two producer witnesses");
+        for layer in &release.layers {
+            release.producers[&layer.code].check(&layer.code).unwrap();
+        }
         let original = release.id();
+        let mut forged = release.clone();
+        forged.producers.values_mut().next().unwrap().files.insert("changed.py".into(), "a".repeat(64));
+        assert!(forged.check_named().unwrap_err().contains("full code digest"));
         let mut file = release.layers[0].files[0].clone();
         file.path = "regions/monaco.json".into();
         release.name_files(vec![file.clone()]).unwrap();

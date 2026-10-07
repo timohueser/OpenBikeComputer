@@ -57,6 +57,10 @@ impl Product for Maps {
         }))
     }
 
+    fn portable(&self, step: &Step) -> bool {
+        step.name.starts_with("maps/") && !step.client.is_none()
+    }
+
     fn prefix(&self) -> &'static str {
         "cell-catalog"
     }

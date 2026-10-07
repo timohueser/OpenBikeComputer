@@ -134,14 +134,14 @@ pub struct Library {
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Rust {
     Native { profile: Profile },
     Prepared { profile: Profile },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     Dev,
@@ -207,7 +207,8 @@ pub struct SourceIdentity {
     pub git_inputs: std::collections::BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedRust {
     pub target: String,
     pub build: Rust,
@@ -461,15 +462,15 @@ impl Step {
 /// The code hash and the code files of each `Code`, computed once per value.
 #[derive(Default)]
 struct Codes<'a> {
-    cached: HashMap<&'a Code, (String, BTreeMap<String, String>)>,
+    cached: HashMap<&'a Code, (String, CodeIdentity)>,
     context: code::Context,
 }
 
 impl<'a> Codes<'a> {
-    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, BTreeMap<String, String>), String> {
+    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, CodeIdentity), String> {
         if !self.cached.contains_key(code) {
-            let files = self.context.files(root, code)?;
-            self.cached.insert(code, (code::hash(&files), files));
+            let identity = self.context.identity(root, code)?;
+            self.cached.insert(code, (code::hash(&identity.files), identity));
         }
         Ok(&self.cached[code])
     }
