@@ -44,11 +44,14 @@ def executable(name):
 def python_files(readelf):
     result = {"python/executable": file(sys.executable)}
     stdlib = Path(sysconfig.get_path("stdlib")).resolve(strict=True)
+    origin = getattr(zlib, "__file__", None)
+    if origin:
+        result["python/zlib-extension"] = file(origin)
     # Standard CPython caches must match their source files; this is not loaded-code attestation.
     for module in tuple(sys.modules.values()):
         origin = getattr(module, "__file__", None)
         frozen = getattr(getattr(module, "__spec__", None), "origin", None) in {"frozen", "built-in"}
-        if origin and not frozen:
+        if origin and not frozen and origin != getattr(zlib, "__file__", None):
             path = Path(origin).resolve(strict=True)
             if path.is_relative_to(stdlib):
                 result[f"python/module/{path.relative_to(stdlib)}"] = file(path)

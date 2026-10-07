@@ -318,8 +318,20 @@ class RuntimeBuild(unittest.TestCase):
                  patch.object(tools.sysconfig, "get_config_var", return_value=1), patch.object(tools.zlib, "__file__", str(extension), create=True), \
                  patch.object(Path, "read_text", read), patch.object(tools.subprocess, "run", return_value=SimpleNamespace(stdout="(NEEDED) [libz.so.1]")) as run:
                 selected = tools.python_files("/selected/readelf")
-                self.assertEqual(set(selected), {"python/executable", "python/module/json.py", "python/module/lib-dynload/zlib.so", "python/libpython", "python/libz"})
+                self.assertEqual(set(selected), {"python/executable", "python/module/json.py", "python/zlib-extension", "python/libpython", "python/libz"})
                 self.assertEqual(run.call_args.args[0], ["/selected/readelf", "-d", str(extension)])
+                external = root / "external-zlib.so"
+                external.write_bytes(extension.read_bytes())
+                extension.unlink()
+                extension.symlink_to(external)
+                redirected = tools.python_files("/selected/readelf")
+                self.assertEqual(redirected["python/zlib-extension"], tools.file(external))
+                old_digest = runtime.execution_digest({"kind":"native", "providers":{"files":redirected}})
+                external.write_bytes(b"replacement of only the external zlib extension")
+                changed = tools.python_files("/selected/readelf")
+                self.assertNotEqual(runtime.execution_digest({"kind":"native", "providers":{"files":changed}}), old_digest)
+                with self.assertRaisesRegex(ValueError, "provider changed"):
+                    tools.check({"files":redirected})
                 maps = maps.splitlines()[0] + "\n"
                 with self.assertRaisesRegex(ValueError, "loaded libz"):
                     tools.python_files("/selected/readelf")
