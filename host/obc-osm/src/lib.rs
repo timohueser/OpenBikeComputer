@@ -130,7 +130,12 @@ impl OsmiumRunner {
         if !output.status.success() {
             return Err("prepared Osmium --version failed".into());
         }
-        Ok(obc_data::engine::Library { name: "osmium".into(), path: binary, sha256 })
+        Ok(obc_data::engine::Library {
+            version: Some(String::from_utf8(output.stdout).map_err(|e| e.to_string())?),
+            name: "osmium".into(),
+            path: binary,
+            sha256,
+        })
     }
 
     /// Use the exact canonical executable selected by the checked request.
@@ -179,6 +184,7 @@ mod tests {
         let binary = dir.join("selected-osmium");
         std::fs::write(&binary, "original executable bytes").unwrap();
         let provider = obc_data::engine::Library {
+            version: None,
             name: "osmium".into(),
             path: binary.clone(),
             sha256: obc_data::store::hash_file(&binary).unwrap().0,

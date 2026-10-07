@@ -441,7 +441,7 @@ A step declares:
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
 | `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
 | `options` | A JSON object |
-| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `rust`: native or prepared compiler binding and dev/release profile, or `null` for native dev. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. `libraries`: named native files with absolute paths and expected SHA-256 digests. A Rust step declares the crate of its function |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `rust`: native or prepared compiler binding and dev/release profile, or `null` for native release. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. `libraries`: named native files with absolute paths, expected SHA-256 digests and optional tool versions. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
@@ -449,7 +449,7 @@ A step declares:
 One binary links the Rust steps of every product, so Cargo unifies their features. A step crate
 enables every feature its bytes depend on itself, or makes its bytes independent of it (structs,
 or sorted keys for JSON objects).
-A Rust function uses the native dev worker. Prepared and release declarations require a command.
+A Rust function uses the native release worker. Prepared and dev declarations require a command.
 
 ### Keys
 
@@ -475,18 +475,17 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   `obc-data`: its selected inputs enter the input digests.
   A prepared compiler binding requires an explicit `target` and a checked builder in the step
   options. It does not use the host compiler as the identity of a target executable.
-- Native Rust adds the selected compiler and Cargo executable digests, their verbose versions,
-  its compiler and selected-host sysroot libraries, native link driver and linker digests,
-  and ordered compiler flags.
+- Native Rust adds the selected compiler, Cargo and native link driver versions,
+  and ordered compiler flags. Tool and sysroot library bytes do not enter the code hash.
   The C compiler enters the identity when the selected closure uses `cc`. Rustup proxies
   resolve to the actual selected executables in the checkout. A native target must match the
   selected compiler host. Both compiler bindings add the selected dev/release profile settings,
   its build override and applicable package overrides. Named package overrides use the selected
   closure; `*` applies only when that closure contains a non-workspace package. Unselected
   profiles and package overrides add no records. Profile inheritance and package-ID overrides
-  are refused. Tool discovery and bytes are cached within a checking context. Each execution
+  are refused. Tool discovery is cached within a checking context. Each execution
   boundary checks tool, library, environment and selection/config witnesses. A change runs
-  discovery again and invalidates changed file digests.
+  discovery again.
 - Acquisition and planning declare an owner crate and its source paths. The same resolver
   selects its normal and build dependencies, profiles and execution tools. Owner source uses the
   declared paths. Engine backend source is included, apart from its TUI module.
@@ -499,13 +498,14 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   host. Full execution identity includes a reserved `identity/source-config` digest of this
   projection and the recorded Rust target/profile. A published witness must match that digest.
   Real execution still requires its complete native identity.
-- A declared native library or executable enters code identity by its name and complete file digest. Its
+- A declared native tool enters code identity by its name and version. A built artifact without
+  a tool version uses its complete file digest. Its
   installation path does not enter that identity. Each execution boundary checks the current
   file against the declared digest. Osmium extraction and merge bind the exact canonical executable
   in this identity, outside semantic options. Their requests carry the binding; both callbacks
   check it before and after work. Missing bindings refuse execution. GEOS producers bind the loaded shared C and C++ libraries
   at worker startup. A missing or changed file blocks these producers until a fresh worker
-  starts. New captures bind the same two digests. Selector children check the requested capture
+  starts. Capture keys bind selection source code, without GEOS versions or bytes. Selector children check the requested capture
   code before selection and check the provider again before success. Held captures retain their
   original inputs and must pass their content checks before reconstruction writes output.
 - Native discovery checks Cargo config in the checkout, its ancestors and Cargo home. It
@@ -755,8 +755,7 @@ with "the plan is outdated; plan again".
 
 - A step starts when the layers that it reads are built.
 - At most one step per core runs at a time.
-- At most one Rust step runs at a time: its CPU time and peak are those of the whole process.
-  Command steps run in parallel.
+- Independent Rust and command steps run in parallel within the same job and memory limits.
 - The sum of the estimated peaks (`peak_rss_bytes` of the estimate) of the steps that run at the
   same time is not more than the physical memory of the machine. A step without an estimated
   peak counts as the whole memory. A step whose estimate is more than the memory runs alone.
@@ -1899,7 +1898,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               "type": "null"
             }
           ],
-          "description": "None binds the native dev build. Prepared builds bind their toolchain in step options."
+          "description": "None binds the native release build. Prepared builds bind their toolchain in step options."
         },
         "sources": {
           "description": "The content settings of these sources. Freshness and access controls are excluded.",
@@ -3087,6 +3086,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "sha256": {
           "type": "string"
+        },
+        "version": {
+          "description": "Tool version for code identity; absent for content-addressed artifacts.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

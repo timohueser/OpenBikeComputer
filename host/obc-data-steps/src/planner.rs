@@ -840,6 +840,7 @@ mod tests {
                 &Regions::new(vec![region]).unwrap(),
                 &store,
                 Ok(obc_data::engine::Library {
+                    version: None,
                     name: "osmium".into(),
                     path: std::path::PathBuf::from("/authored-copy-osmium"),
                     sha256: "0".repeat(64),

@@ -111,7 +111,7 @@ pub struct Code {
     /// Resolve Rust dependencies for this target; None selects the producer host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// None binds the native dev build. Prepared builds bind their toolchain in step options.
+    /// None binds the native release build. Prepared builds bind their toolchain in step options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust: Option<Rust>,
     /// The content settings of these sources. Freshness and access controls are excluded.
@@ -134,6 +134,9 @@ pub struct Library {
     pub name: String,
     pub path: PathBuf,
     pub sha256: String,
+    /// Tool version for code identity; absent for content-addressed artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -682,10 +685,10 @@ fn prepare(
             return Err("a Rust step must declare the crate of its function in its code".into());
         }
         Run::Rust(_)
-            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Release })) =>
+            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Dev })) =>
         {
             return Err(
-                "a Rust function runs in the native dev worker; use a command for prepared or release code".into()
+                "a Rust function runs in the native release worker; use a command for prepared or dev code".into()
             );
         }
         Run::Command(argv) => {
@@ -1273,8 +1276,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
             (
                 Run::Rust(upper),
-                Code { rust: Some(Rust::Native { profile: Profile::Release }), ..steps_crate() },
-                "native dev worker",
+                Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..steps_crate() },
+                "native release worker",
             ),
             (
                 Run::Rust(upper),
@@ -1283,7 +1286,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
                     target: Some("x86_64-unknown-linux-gnu".into()),
                     ..steps_crate()
                 },
-                "native dev worker",
+                "native release worker",
             ),
             (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "argument /usr/bin/true names a path"),
             (Run::Command(vec!["x".into(), "--in=/tmp".into()]), Code::default(), "argument --in=/tmp names a path"),

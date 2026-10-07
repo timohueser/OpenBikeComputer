@@ -562,14 +562,17 @@ mod tests {
         let code = Code {
             crates: vec!["steps".into()],
             libraries: vec![Library {
+                version: None,
                 name: "original-provider".into(),
                 path: root.join("absent-original-provider"),
                 sha256: "a".repeat(64),
             }],
             ..Default::default()
         };
-        let recorded =
-            ResolvedRust { target: "x86_64-unknown-linux-gnu".into(), build: Rust::Native { profile: Profile::Dev } };
+        let recorded = ResolvedRust {
+            target: "x86_64-unknown-linux-gnu".into(),
+            build: Rust::Native { profile: Profile::Release },
+        };
         let witness = code.source_config(root, Some(&recorded)).unwrap();
         assert!(witness.files.contains_key("linux/src/lib.rs"), "the original Linux dependency is selected");
         let mut full = witness.files.clone();
