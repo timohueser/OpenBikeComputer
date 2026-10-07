@@ -30,6 +30,16 @@ pub trait Product: Sync {
         Ok(None)
     }
 
+    /// Publication settings beyond the region and selected layers. Source versions are not settings.
+    fn approval_config(&self, _root: &Path) -> Result<serde_json::Value, String> {
+        Ok(serde_json::Value::Null)
+    }
+
+    /// Prepared execution is declared by its actual runtime owner, separately from source code.
+    fn runtime_binding(&self, _step: &Step) -> Result<Option<crate::approval::RuntimeBinding>, String> {
+        Ok(None)
+    }
+
     /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
     fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;

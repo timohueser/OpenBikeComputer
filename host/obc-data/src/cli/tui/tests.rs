@@ -309,6 +309,42 @@ fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
 }
 
 #[test]
+fn no_change_confirmation_displays_the_exact_approval_and_run_keeps_its_separate_outcome() {
+    let shown_run = app().runs[0].clone();
+    let mut app = planned(0, false, &[]);
+    let taken = &mut app.plan.as_mut().unwrap().taken;
+    taken.groups.clear();
+    taken.remove.clear();
+    taken.approval = Some(crate::approval::Review::Unavailable {
+        owner: Some("a".repeat(64)),
+        reason: "native routing execution is not bound".into(),
+    });
+    let reviewed = taken.clone();
+    app.key(KeyCode::Char('a'));
+    let drawn = screen(&mut app, 80, 24).join("\n");
+    let text: String = drawn.replace('│', " ").split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(text.contains("Apply 0 changes to live?"), "{drawn}");
+    assert!(text.contains(&reviewed.approval.as_ref().unwrap().summary()), "{drawn}");
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::Start(crate::operation::Kind::Apply, Box::new(reviewed)));
+    for outcome in [
+        crate::approval::Outcome::Recorded { sha256: "b".repeat(64), unavailable: None },
+        crate::approval::Outcome::Unavailable { reason: "native routing execution is not bound".into() },
+        crate::approval::Outcome::Unresolved { reason: "approval write was not acknowledged".into() },
+    ] {
+        app.execution.selected = Some(shown_run.summary.id.clone());
+        app.execution.view = Some(std::sync::Arc::new(crate::cli::operation_cli::View {
+            run: shown_run.clone(),
+            operation: Some(crate::operation::Status::Finished { ok: true }),
+            observation_error: None,
+            logs: Vec::new(),
+            result: Some(json!({"status":"done","result":{"approval":outcome}})),
+        }));
+        let lines = app.run_lines().iter().map(Line::to_string).collect::<Vec<_>>().join("\n");
+        assert!(lines.contains(&outcome.summary()), "{lines}");
+    }
+}
+
+#[test]
 fn an_incomplete_preview_can_only_start_explicit_preparation() {
     use crate::operation::Kind;
     let mut app = planned(0, false, &[]);

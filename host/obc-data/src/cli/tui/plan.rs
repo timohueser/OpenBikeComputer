@@ -82,6 +82,9 @@ impl App {
         let (all, taken) = (&view.all, &view.taken);
         let estimate = |value: Option<u64>, text: fn(u64) -> String| value.map_or("—".into(), text);
         let mut lines = Vec::new();
+        if let Some(approval) = &taken.approval {
+            lines.push(Line::from(approval.summary()));
+        }
         let mut focus = None;
         if all.groups.is_empty() {
             lines.push(Line::from("Live has every change."));
@@ -111,7 +114,7 @@ impl App {
                 let line = Line::from(row_text(cells, &widths));
                 lines.push(if i == view.group { line.reversed() } else { line });
             }
-            focus = Some(view.group + 1);
+            focus = Some(lines.len() - table.len() + view.group + 1);
         } else {
             let plan = Plan { groups: taken.groups.clone() };
             let fetches: Vec<Vec<String>> = plan

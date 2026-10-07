@@ -31,6 +31,7 @@ pub(super) struct Bundle {
     sources: Vec<Source>,
     services: Vec<crate::vps::Candidate>,
     previous_services: Vec<crate::vps::Candidate>,
+    approval: crate::approval::Review,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -39,6 +40,7 @@ pub(super) struct Committed {
     uploaded: Vec<String>,
     switched: Vec<BuiltRelease>,
     removed: Vec<crate::r2::Object>,
+    approval: crate::approval::Outcome,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -53,6 +55,7 @@ impl Committed {
         applied.uploaded = self.uploaded;
         applied.switched = self.switched;
         applied.removed = self.removed;
+        applied.approval = self.approval;
     }
 }
 
@@ -85,6 +88,7 @@ pub(super) fn pack(
     sources: Vec<Source>,
     remote: &Remote,
     services: (Vec<crate::vps::Candidate>, Vec<crate::vps::Candidate>),
+    approval: crate::approval::Review,
 ) -> Result<String, Error> {
     next.products.retain(|product| expected.contains_key(&format!("{}/catalog.json", product.prefix)));
     let (mut services, mut previous_services) = services;
@@ -103,6 +107,7 @@ pub(super) fn pack(
         sources,
         services,
         previous_services,
+        approval,
     };
     let scratch = Scratch::new()?;
     let files = apply_cli::files(store, &scratch, &bundle.next)?;
@@ -139,8 +144,27 @@ fn sha(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+pub(super) fn approval_observation(store: &Store) -> Result<crate::approval::Observation, String> {
+    #[cfg(test)]
+    {
+        crate::approval::read(store)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = store;
+        let host = std::env::var("OBC_COMMIT_HOST")
+            .map_err(|_| "configure OBC_COMMIT_HOST to observe current automatic approval")?;
+        lifetime::approval(&host)
+    }
+}
+
 fn validate(bundle: &Bundle) -> Result<(), Error> {
     crate::engine::runs::check_id(&bundle.run)?;
+    if matches!(bundle.approval, crate::approval::Review::Ready { .. })
+        && (bundle.next.products.is_empty() || bundle.next.products.iter().any(|product| product.release.is_none()))
+    {
+        return Err(Code::VerifyFailed.error("automatic approval needs a complete desired publication"));
+    }
     let segment = |value: &str| {
         !value.is_empty()
             && !matches!(value, "." | "..")
@@ -247,18 +271,29 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
     if bundle.bucket != remote.describe() {
         return Err(Code::Blocked.error("commit owner names another bucket"));
     }
+    crate::approval::check_owner(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
     let Remote::Bucket(bucket) = remote else {
         return Err(Code::Blocked.error("commit needs R2 credentials on its owner"));
     };
     let mut owner = Owner::open(&store.root().join("commits"), &bundle.run, &bytes)?;
     let result_path = store.root().join("commits").join(format!("{}.result", bundle.run));
     if owner.finished() || result_path.exists() {
-        let result = serde_json::from_slice(&std::fs::read(result_path).map_err(|e| e.to_string())?)
-            .map_err(|e| Code::Failed.error(e.to_string()))?;
+        let publication = std::fs::read(result_path).map_err(|e| e.to_string())?;
+        let mut result: Committed =
+            serde_json::from_slice(&publication).map_err(|e| Code::Failed.error(e.to_string()))?;
         owner.finish()?;
+        result.approval = crate::approval::record(
+            store,
+            &bundle.approval,
+            &bundle.bucket,
+            &bundle.run,
+            digest,
+            &sha256_hex(&publication),
+        );
         return Ok(result);
     }
     let mut observed = BTreeMap::new();
+    crate::approval::recheck(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
     for (key, expected) in &bundle.expected {
         let body = remote.get(key)?;
         if body.as_deref().map(sha256_hex) != *expected {
@@ -421,16 +456,25 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
             }
             crate::vps::commit::Guarded { backend, owner: &mut owner, run: &mut run }.retire(&current, &approved)?;
         }
-        Ok(Committed { uploaded, switched, removed })
+        Ok(Committed { uploaded, switched, removed, approval: crate::approval::Outcome::NotRequested })
     })();
-    let result = super::api::finish_run(run, result, None).map_err(|mut error| {
+    let mut result = super::api::finish_run(run, result, None).map_err(|mut error| {
         if owner.unknown() {
             error.fix = format!("Commit {} has an unknown remote outcome. Inspect its durable intent; do not retry or clear it from a later read alone.", bundle.run);
         }
         error
     })?;
-    durable(&result_path, &serde_json::to_vec(&result).map_err(|e| e.to_string())?)?;
+    let publication = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
+    durable(&result_path, &publication)?;
     owner.finish()?;
+    result.approval = crate::approval::record(
+        store,
+        &bundle.approval,
+        &bundle.bucket,
+        &bundle.run,
+        digest,
+        &sha256_hex(&publication),
+    );
     for name in ["objects", "releases"] {
         let path = directory.join(name);
         if path.exists() {
@@ -551,6 +595,10 @@ fn terminal(reply: Reply, store: &Store, run: &str, host: &str, digest: &str) ->
 pub fn main(args: &[String]) -> Result<u8, String> {
     let store = Store::at("/var/lib/obc-data/store");
     match args {
+        [command] if command == "commit-approval" => {
+            println!("{}", serde_json::to_string(&crate::approval::read(&store)?).map_err(|error| error.to_string())?);
+            Ok(0)
+        }
         [command, run, digest] if command == "commit-status" => {
             println!("{}", serde_json::to_string(&lifetime::observe(&store, run, digest)?).map_err(|e| e.to_string())?);
             Ok(0)

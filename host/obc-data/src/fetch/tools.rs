@@ -151,6 +151,7 @@ mod tests {
         for path in super::super::owner_code(&source).code.paths {
             write(&root.join(path), "// fixture acquisition owner\n");
         }
+        fixture.with_sources(std::slice::from_ref(&source));
         write(&root.join(".python-version"), "3.12\n");
         write(&root.join("pyproject.toml"), "[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[tool.uv]\npackage = false\ndefault-groups = []\n");
         write(&root.join("uv.lock"), "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n[[package]]\nname = \"capture-fixture\"\nversion = \"0\"\nsource = { virtual = \".\" }\n");

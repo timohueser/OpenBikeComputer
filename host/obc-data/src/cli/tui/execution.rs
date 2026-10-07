@@ -148,6 +148,14 @@ impl App {
         if let Some(error) = &view.observation_error {
             lines.push(Line::from(format!("Observation failed: {error}")));
         }
+        if let Some(approval) = view.result.as_ref().and_then(|result| {
+            result.get("approval").or_else(|| result.get("result").and_then(|result| result.get("approval")))
+        }) {
+            match serde_json::from_value::<crate::approval::Outcome>(approval.clone()) {
+                Ok(approval) => lines.push(Line::from(approval.summary())),
+                Err(_) => lines.push(Line::from("Automatic approval outcome could not be read.")),
+            }
+        }
         if let Some(error) = view.result.as_ref().and_then(|result| result.get("error")) {
             if let Ok(error) = serde_json::from_value::<Error>(error.clone()) {
                 lines.push(Line::from(format!("Error: {}", error.message)));

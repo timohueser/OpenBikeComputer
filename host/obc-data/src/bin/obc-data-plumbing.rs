@@ -5,7 +5,9 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|command| matches!(command.as_str(), "commit" | "commit-start" | "commit-status")) {
+    if args.first().is_some_and(|command| {
+        matches!(command.as_str(), "commit" | "commit-start" | "commit-status" | "commit-approval")
+    }) {
         return match obc_data::cli::commit_cli::main(&args) {
             Ok(code) => ExitCode::from(code),
             Err(message) => {

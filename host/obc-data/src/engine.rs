@@ -221,6 +221,12 @@ impl CodeIdentity {
     }
 }
 
+impl SourceIdentity {
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
+}
+
 pub enum Run {
     /// A function in this process. Its code must declare the crate of the function. One binary
     /// links every product, so Cargo unifies their features: a step crate enables every feature
@@ -904,6 +910,26 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             let lock =
                 Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&root).output().unwrap();
             assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
+        }
+
+        pub(crate) fn with_sources(&self, sources: &[crate::sources::Source]) {
+            let root = self.root();
+            for source in sources {
+                for path in crate::fetch::owner_code(source).code.paths {
+                    write(&root.join(path), "// fixture acquisition backend\n");
+                }
+            }
+            let mut registry = sources.to_vec();
+            for source in &mut registry {
+                // Registry URLs stay HTTPS; requests use the existing loopback transport seam.
+                if let Some(url) = &mut source.fetch.url {
+                    *url = url.replacen("http://", "https://", 1);
+                }
+            }
+            write(
+                &root.join("data/sources.toml"),
+                &toml::to_string(&std::collections::BTreeMap::from([("source", registry)])).unwrap(),
+            );
         }
 
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
