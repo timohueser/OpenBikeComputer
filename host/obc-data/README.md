@@ -95,6 +95,9 @@ Existing Run observation, stop and reconciliation stay available.
 
 Live apply reviews automatic approval, including a no-change apply. Inspect `plan.approval` before
 confirmation. `applied.approval` reports the separate owner result. Native planner runtime builders
-need exact execution binding before automatic approval is available; manual publication still works.
+need prepared Linux executables, self-contained npm and the selected CPython standard libraries.
+Select Python with `UV_PYTHON`; run through the checked worker. External npm implementation files,
+script tool wrappers and ambiguous loaded Python libraries block native approval. Container builders
+use their exact local image. Manual publication remains available when automatic approval is unavailable.
 The configured Linux owner needs a valid `/etc/machine-id` and the fixed `/var/lib/obc-data/store`.
 Its current approval is owner-local. `commit-approval` reads it without changing any state.

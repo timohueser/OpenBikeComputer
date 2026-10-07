@@ -1337,8 +1337,20 @@ comparison selects no foreign execution tools. It retains the original checked e
 it does not approve recomputation by another host. Changed acquisition or planning code can remove
 an old entry without rebuilding a layer.
 
-Prepared runtime execution binds its actual target and exact container image. Version-only native
-runtime builders cannot establish automatic approval. Missing unused acquisition tools can also
+Runtime execution retains the common prepared target/profile declaration. Containers bind the
+exact local image. Native builders bind selected executable bytes and fixed execution settings.
+Routing uses the existing native release resolver, with source/work remaps and the selected C
+link driver. Search also binds Node and the self-contained npm implementation. npm has empty
+user/global config and no global module paths. uv ignores external config and uses the committed
+project, group and lock. All native builders bind readelf and the selected CPython executable,
+already loaded standard modules, and unambiguous loaded libpython/libz when required.
+
+The adapter uses isolated, no-site CPython with UTF-8. Standard bytecode caches must match source;
+this binding does not attest every loaded instruction or system dependency. Script tool wrappers,
+external npm implementation files and ambiguous Python libraries are unsupported. Provider paths
+stay local. Public native builder options contain only the execution digest. The checked worker
+resolves routing providers without another build. Execution recomputes the complete binding before
+work and after packaging; changed providers refuse acceptance. Missing unused acquisition tools can
 leave current execution unavailable. Retained-input manual publication remains supported; the
 approval outcome states what is unavailable. Only comparable prior entries can survive.
 
