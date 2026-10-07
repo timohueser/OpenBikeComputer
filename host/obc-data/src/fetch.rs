@@ -1120,32 +1120,41 @@ pub(crate) mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_manual_capture_never_resumes_a_failed_run() {
+    fn a_manual_capture_never_resumes_a_failed_run_and_joins_only_a_started_version() {
         let scratch = Scratch::new("manual-capture");
         let store = Store::at(&scratch.0);
         let model = located(FetchKind::Dtm, "https://example.org/model");
         let tooling = capture_fixture("capture-manual-owner", std::slice::from_ref(&model));
-        let request = Request { source: &model, version: None, params: vec![] };
-        let run = |script: &'static str| {
+        let run = |query: &str, version: Option<&str>, script: &'static str| {
+            let request = Request { source: &model, version: version.map(Into::into), params: vec![] };
             capture::capture(
                 &tooling.root(),
                 &store,
                 &request,
                 None,
-                "q=1",
+                query,
                 &[&model],
                 |_| &[0],
                 true,
-                move |work, out| {
+                |work, out| {
                     let mut command = std::process::Command::new("sh");
                     command.args(["-c", script, "sh"]).arg(work).arg(out);
                     Ok(command)
                 },
             )
         };
-        assert!(run("echo half > \"$2/a.tif\"; exit 1").is_err());
-        let names: Vec<_> = run("echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
+        assert!(run("q=1", None, "echo raw > \"$1/raw.xyz\"; echo half > \"$2/a.tif\"; exit 1").is_err());
+        let partial = std::fs::read_dir(scratch.0.join("partial")).map_or(0, Iterator::count);
+        assert_eq!(partial, 0, "a failed manual run keeps no raw download");
+        let names: Vec<_> =
+            run("q=1", None, "echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
         assert_eq!(names, ["#q=1/b.tif"], "the half of the failed run is no data");
+
+        let started = Snapshot { source: model.id.clone(), version: "2026-01-01".into(), files: Vec::new() };
+        store.put_snapshot(&started).unwrap();
+        assert_eq!(run("q=2", Some("2026-01-01"), "echo tile > \"$2/c.tif\"").unwrap().files.len(), 1);
+        let err = run("q=2", Some("2019-01-01"), "echo tile > \"$2/c.tif\"").unwrap_err();
+        assert!(err.contains("today's data"), "{err}");
     }
 
     #[test]

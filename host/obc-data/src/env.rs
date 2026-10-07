@@ -159,6 +159,27 @@ impl Env {
         !self.stale.contains(source) && self.moves.get(source).is_some_and(Option::is_none)
     }
 
+    /// The fetch to run for `wanted`. A `manual` source moves as a whole: a request without a
+    /// version takes the version that the first fetch of the source in this run gave, so a model
+    /// fetched tile by tile over midnight keeps one version.
+    pub fn pinned(&self, wanted: &crate::product::Wanted) -> crate::product::Wanted {
+        let version =
+            wanted.version.clone().or_else(|| self.resolved.get(&(wanted.source.clone(), Vec::new())).cloned());
+        crate::product::Wanted { version, ..wanted.clone() }
+    }
+
+    /// Record the `version` that a fetch of `wanted` gave. The first of a `manual` source is the
+    /// version of the source too.
+    pub fn resolve(&mut self, wanted: &crate::product::Wanted, version: String) {
+        let manual = crate::sources::all()
+            .iter()
+            .any(|source| source.id == wanted.source && source.refresh == crate::sources::Refresh::Manual);
+        if manual {
+            self.resolved.entry((wanted.source.clone(), Vec::new())).or_insert_with(|| version.clone());
+        }
+        self.resolved.insert((wanted.source.clone(), sorted(&wanted.params)), version);
+    }
+
     /// `text`, the file of this environment, with its `region` and `layers`. Comments and the other
     /// lines stay.
     pub fn edit(&self, text: &str) -> String {

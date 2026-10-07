@@ -1333,7 +1333,7 @@ fn listed_steps(
         }
     };
     let name = product.name();
-    let mut failure = None;
+    let (mut failure, earlier) = (None, env.fetch_failures.len());
     // A refusal belongs to the product that is listed now.
     env.refused.borrow_mut().clear();
     crate::worker::check(root)?;
@@ -1346,6 +1346,7 @@ fn listed_steps(
             break;
         }
         for wanted in fetches {
+            let wanted = &env.pinned(wanted);
             let version = match fetch(wanted) {
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
@@ -1355,7 +1356,7 @@ fn listed_steps(
                 }
                 Err(error) => return Err(error),
             };
-            env.resolved.insert((wanted.source.clone(), crate::store::sorted(&wanted.params)), version);
+            env.resolve(wanted, version);
         }
         fetched.extend(fetches.iter().cloned());
         crate::worker::check(root)?;
@@ -1364,7 +1365,18 @@ fn listed_steps(
     let steps = match listed {
         Ok(steps) => steps,
         Err(Unplanned::NeedsFetch(fetches)) => {
-            if let Some(error) = failure {
+            if let Some(mut error) = failure {
+                // A national terrain model is a fetch per tile: the count of each source, not a line each.
+                let failures = &env.fetch_failures[earlier..];
+                if failures.len() > 1 {
+                    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+                    for (wanted, _) in failures {
+                        *counts.entry(&wanted.source).or_default() += 1;
+                    }
+                    let counts: Vec<_> = counts.iter().map(|(source, n)| format!("{source} {n}")).collect();
+                    let failed = failures.len();
+                    error.message = format!("{}; {failed} fetches failed: {}", error.message, counts.join(", "));
+                }
                 return Err(error);
             }
             let wanted = fetches

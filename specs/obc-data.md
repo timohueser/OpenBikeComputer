@@ -27,6 +27,7 @@ One `[[source]]` table per source.
 | `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
+| `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
 
 `fetch.kind` is one of:
 
@@ -369,17 +370,24 @@ no fetcher yet; the fetch fails.
 
 | Source | `NAME=VALUE` | Program | Packages | Query |
 | --- | --- | --- | --- | --- |
-| `dtm-*` | `bbox` | `host/obc-dem/reference/ingest.py fetch` | group `terrain-reference` | `bbox=W,S,E,N` |
+| `dtm-*` | `tile=<ti:04>-<tj:04>` | `host/obc-dem/reference/ingest.py fetch` | group `terrain-reference` | `tile=<ti:04>-<tj:04>` |
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
 | `wikidata`, `wikipedia`, `commons` | `collection`, `area`, `osm`, `poly` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `<collection>=` and 16 hex digits of the SHA-256 of `<collection> <area> <osm> <poly> ` and the joined hex SHA-256 of `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json`, `tools/landmark_capture.py` and `tools/peak_capture.py` |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
-- A `dtm-*` file is a raster of the model that covers `bbox`, with its `.prj` when it has one. A
-  service is asked only for the part of `bbox` inside the `extent`, and a raster without a height
-  is no file. A box where the model has no data gives a fetch without files: its record of the
-  request names no file. A `by-hand` model takes the rasters of its delivery:
+- A `dtm-*` fetch is one archive tile `(ti, tj)` of the reference archive
+  (`host/obc-dem/reference/README.md`). Its one file is `<ti:04>-<tj:04>.tif`: the rasters of the
+  model in the tile, pooled onto the lattice as an archive tile. Where the model has no height in
+  the tile, the file is the empty `<ti:04>-<tj:04>.none`. The raw rasters stay in the work
+  directory, which the program removes; the store never holds them. A service is asked only for
+  the part of the tile inside the `extent`. A request that a version of a `manual` source in the
+  store lacks joins that version, so a model fetched tile by tile over days has one version; a
+  version that the store does not have is refused, as for any capture. In one run, a request of
+  a `manual` source without a version takes the version of the first fetch of that source. So one
+  version can hold tiles of several upstream releases: its label is the day of the first tile,
+  and the credits and `fetched` of the model name that day. A `by-hand` model takes the rasters of its delivery:
   `OBC_REFERENCE_<KEY>_INPUT` names the directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states. The two
   are the `credential` of the source.
@@ -951,11 +959,15 @@ The steps read `copernicus-glo-30` and the national terrain models (`dtm-*`), an
 reads files such as a `.poly` and the GLO-30 tile list, each at its version (see
 [Versions](#versions)). `copernicus-glo-30`, its tile list and the `dtm-*` sources are `manual`.
 
-A leaf reads each `dtm-*` source whose `extent` meets the box of its terrain cells: the windows
-that the crest rule of `OBCT_Spec.md` §9 reads, which have a halo of two postings. The fetch of a
-model is `bbox=<that box>`. A fetch without files adds nothing, and a leaf where no model has
-data has no `maps/reference` layer. While the store lacks the fetch of a model whose `credential`
-is not on this machine, its reference and terrain layers are blocked. Bands that read that
+A leaf reads the archive tiles of its terrain cells: those of the windows that the crest rule of
+`OBCT_Spec.md` §9 reads, which have a halo of two postings. A `dtm-*` source reads a tile when
+the tile meets its `extent` and the `geofabrik-poly` polygon of one of its `areas`: the boundary
+of the polygon crosses the tile, or the polygon holds the centre of the tile. Each such tile is
+one fetch `tile=<ti:04>-<tj:04>` at the version of the source, so leaves and regions share
+tiles and a stopped fetch resumes at the next tile. A source with only `.none` files in the leaf
+adds nothing, and a leaf where no source has a height has no `maps/reference` layer. While the
+store lacks a tile of a source whose `credential` is not on this machine, its reference and
+terrain layers are blocked. Bands that read that
 terrain are blocked too. Other leaves and bands keep their steps.
 
 | Layer | Reads | Options | Files |
@@ -963,7 +975,7 @@ terrain are blocked too. Other leaves and bands keep their steps.
 | `maps/region-osm` | The selected PBF of each `maps/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
 | `maps/osm` | The PBF of one `maps/source/<area>`, or `maps/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The metrics name the version (`osmium`) |
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
-| `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
+| `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with a height, without params, the files of its tiles | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of the pooled tiles of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
 | `maps/landmark-content[/<area>]`, `maps/peak-content[/<area>]` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<source path>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
 | `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | Every area's landmark content and `maps/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
@@ -5028,6 +5040,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Source": {
       "additionalProperties": false,
       "properties": {
+        "areas": {
+          "description": "The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None\nmeans all of `extent`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "attribution": {
           "type": [
             "string",
@@ -5134,6 +5153,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "integer",
             "null"
           ]
+        },
+        "areas": {
+          "description": "The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None\nmeans all of `extent`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "attribution": {
           "type": [
