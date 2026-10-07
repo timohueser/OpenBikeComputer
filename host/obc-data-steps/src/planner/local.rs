@@ -326,7 +326,7 @@ fn providers(root: &Path) -> Result<(BTreeMap<String, Binding>, std::path::PathB
     let executable =
         obc_data::engine::Library { name: "local-node".into(), path: node.clone(), sha256: hash_file(&node)?.0 };
     let mut children = BTreeMap::new();
-    for (name, app) in [("search", "planner/search"), ("tiles", "planner/tiles"), ("frontend", "builder/app")] {
+    for (name, app) in [("search", "planner/search"), ("tiles", "planner/tiles"), ("frontend", "builder/web")] {
         let mut code = Code {
             paths: vec![app.into()],
             libraries: vec![executable.clone()],
@@ -336,7 +336,7 @@ fn providers(root: &Path) -> Result<(BTreeMap<String, Binding>, std::path::PathB
         if name == "frontend" {
             for (role, file) in [("bridge", "obc_builder_bridge.js"), ("wasm", "obc_builder_bridge_bg.wasm")] {
                 let path = root
-                    .join("builder/app/src/lib/core/pkg")
+                    .join("builder/web/src/lib/core/pkg")
                     .join(file)
                     .canonicalize()
                     .map_err(|e| format!("Prepare the builder bridge/Wasm with the builder README first: {e}"))?;

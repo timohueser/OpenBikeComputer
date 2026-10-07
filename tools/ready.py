@@ -48,7 +48,7 @@ STANDALONE_CLIPPY: dict[str, tuple[str, ...]] = {
         "cargo clippy --locked --lib --tests -- -D warnings",
         "cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings",
     ),
-    "apps/obc-desktop": ("cargo clippy --release --all-targets --locked -- -D warnings",),
+    "builder/desktop": ("cargo clippy --release --all-targets --locked -- -D warnings",),
 }
 
 #: Paths that make `obc suites check` necessary, beside the test policy `test_plan` already names.

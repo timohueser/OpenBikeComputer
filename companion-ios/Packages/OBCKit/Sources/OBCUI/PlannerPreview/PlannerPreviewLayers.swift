@@ -1,7 +1,7 @@
 #if os(iOS)
 import SwiftUI
 
-// Keep these tokens aligned with builder/app/src/lib/planner/route-overlays.ts.
+// Keep these tokens aligned with builder/web/src/lib/planner/route-overlays.ts.
 enum PlannerPreviewNetworkStyle {
     private static let light: [UInt32] = [0x626a70, 0x4f8b24, 0x2368b5, 0x7c519c]
     private static let dark: [UInt32] = [0xb0b8be, 0xa4cf67, 0x79b7f1, 0xc49de0]

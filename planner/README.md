@@ -7,7 +7,7 @@ obc planner setup
 obc planner
 ```
 
-Use the [web planner instructions](../builder/app/src/components/planner/README.md)
+Use the [web planner instructions](../builder/web/src/components/planner/README.md)
 for setup and deployment. The Companion app uses the
 [native planner providers](../companion-ios/PlannerNative/README.md).
 

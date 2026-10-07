@@ -66,27 +66,27 @@ user_config.json
 !fixtures/sources/route-import/*.gpx
 !fixtures/sources/kandel-ride/*.gpx
 # Generated builder core and test-device bindings.
-builder/app/src/lib/core/pkg/
-builder/app/test-support/flat-device/pkg/
+builder/web/src/lib/core/pkg/
+builder/web/test-support/flat-device/pkg/
 # `obc` dev-task tooling (in tools/): personal defaults + the web builder's
 # virtualenv + the optional local maps drop. The tooling itself (everything in
 # tools/ except obc.local) is committed.
 tools/obc.local
-# Planner tile settings for a local desktop build (see apps/obc-desktop/README.md).
-builder/app/.env.local
+# Planner tile settings for a local desktop build (see builder/desktop/README.md).
+builder/web/.env.local
 .venv/
 /maps/
 # Web builder frontend: dependencies + the Vite build output (CI builds it).
 # The dev host builds into builder/server/static/dist/ (what the FastAPI server
-# mounts); the static-web and desktop hosts into builder/app/dist/<host>/ — see
+# mounts); the static-web and desktop hosts into builder/web/dist/<host>/ — see
 # #895. Both entries must keep matching vite.config.ts's outDirs: when they
 # drifted apart, `npm run build` wrote to an unignored path and 640 KB of bundle
 # got committed by accident (and the server mounted nothing).
-builder/app/node_modules/
-builder/app/tests/browser/node_modules/
-builder/app/tests/device-smoke/node_modules/
+builder/web/node_modules/
+builder/web/tests/browser/node_modules/
+builder/web/tests/device-smoke/node_modules/
 sim/web-demo/tests/browser/node_modules/
-builder/app/dist/
+builder/web/dist/
 planner/tiles/dist/
 planner/tiles/node_modules/
 planner/tiles/.wrangler/
@@ -94,7 +94,7 @@ builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
 # generated JSON that goes stale weekly, and the catalog manifest belongs to the
 # bakery — both are produced at deploy time, never committed.
-builder/app/public/data/
+builder/web/public/data/
 
 # XcodeBuildMCP session defaults (local tool state)
 .xcodebuildmcp/

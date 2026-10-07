@@ -3,7 +3,7 @@
   "standalone_manifests": [
     "firmware/obc-fw-nrf54l/Cargo.toml",
     "firmware/obc-boot/Cargo.toml",
-    "apps/obc-desktop/Cargo.toml"
+    "builder/desktop/Cargo.toml"
   ],
   "forbidden_features": [
     {

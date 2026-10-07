@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 RIDER_KINDS = {kind for category in json.loads((Path(__file__).resolve().parents[2] /
-    'builder/app/src/lib/planner/poi-kinds.json').read_text()).values() for kind in category['kinds']}
+    'builder/web/src/lib/planner/poi-kinds.json').read_text()).values() for kind in category['kinds']}
 
 def values(d, keys):
     out = []

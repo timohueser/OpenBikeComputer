@@ -64,4 +64,4 @@ address. The rate limit rule, the cache rule and the budget alert are in the
 [Cloudflare runbook](../../ops/cloudflare.md).
 
 Offline payload downloads use the bucket's public domain. See the
-[planner instructions](../../builder/app/src/components/planner/README.md).
+[planner instructions](../../builder/web/src/components/planner/README.md).

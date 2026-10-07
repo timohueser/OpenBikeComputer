@@ -57,7 +57,7 @@ class SelectionTests(unittest.TestCase):
             plan.Unit(id="rust.consumer", jobs=["clippy", "test"], package="consumer"),
             plan.Unit(id="rust.board", jobs=["embedded"], package="board"),
             plan.Unit(id="rust.bridge", jobs=["clippy", "test", "wasm-bridges"], package="bridge"),
-            unit("web.browser", ["web"], triggers=("builder/app/**", "specs/vectors/**")),
+            unit("web.browser", ["web"], triggers=("builder/web/**", "specs/vectors/**")),
             unit("swift.kit", ["ios-unit"], triggers=("ios/**", "specs/vectors/**")),
             unit("ci.builds", ["embedded"], foundation=True),
             unit("ci.docs", ["docs"], route="required", triggers=("docs/**",)),
@@ -78,7 +78,7 @@ class SelectionTests(unittest.TestCase):
             "crates/core/tests/common/mod.rs": {"rust.core", "rust.leaf", "rust.consumer"},
             "crates/core/Cargo.toml": {"rust.core", "rust.leaf"},
             "specs/vectors/format.json": {"web.browser", "swift.kit"},
-            "builder/app/src/panel.ts": {"web.browser"},
+            "builder/web/src/panel.ts": {"web.browser"},
             "docs/guide.md": {"ci.docs"},
             "fixtures/sources/tile.bin": {"rust.core"},
             "firmware/board/src/main.rs": {"rust.board"},
@@ -176,7 +176,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_the_json_plan_reports_jobs_platforms_and_unselected_reasons(self) -> None:
         self.units[5].platforms = ("linux", "macos")
-        data = plan.plan_data(self.plan_for("builder/app/src/panel.ts"))
+        data = plan.plan_data(self.plan_for("builder/web/src/panel.ts"))
         browser = next(item for item in data["suites"] if item["id"] == "web.browser")
         self.assertEqual(browser["platforms"], ["linux", "macos"])
         self.assertEqual(browser["jobs"], ["web"])
@@ -450,13 +450,13 @@ class ShippedPlanTests(unittest.TestCase):
             ),
             (
                 "desktop launch harness",
-                ["apps/obc-desktop/e2e/launch.py"],
+                ["builder/desktop/e2e/launch.py"],
                 ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges"],
             ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app", "ios-release"]),
             (
                 "web only",
-                ["builder/app/src/lib/panel.ts"],
+                ["builder/web/src/lib/panel.ts"],
                 ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web", "web-browser"],
             ),
             (

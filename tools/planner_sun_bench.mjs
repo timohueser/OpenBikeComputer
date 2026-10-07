@@ -2,7 +2,7 @@
 import { readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-const require = createRequire(new URL('../builder/app/tests/browser/package.json', import.meta.url));
+const require = createRequire(new URL('../builder/web/tests/browser/package.json', import.meta.url));
 const { chromium } = require('playwright');
 const base = process.argv[2] ?? 'http://127.0.0.1:4190';
 const browser = await chromium.launch({ headless: true });
@@ -10,7 +10,7 @@ try {
     const page = await browser.newPage();
     await page.goto(`${base}/planner.html`);
     await page.waitForLoadState('networkidle');
-    const assets = fileURLToPath(new URL('../builder/app/dist/planner/assets/', import.meta.url));
+    const assets = fileURLToPath(new URL('../builder/web/dist/planner/assets/', import.meta.url));
     const bundle = (await readdir(assets)).find(name => /^sun-worker-.*\.js$/.test(name));
     if (!bundle) throw new Error('Build the planner before benchmarking');
     const result = await page.evaluate(async workerUrl => {

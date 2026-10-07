@@ -27,7 +27,7 @@ const SEARCH: &str = "planner/search";
 /// `planner/search/records.py` and the files that it reads: the data kinds of the query
 /// contract, and the POI kinds of the web planner, which the places also read.
 const RECORDS: [&str; 3] = ["planner/search/records.py", "planner/search/query/contract.json", POI_KINDS];
-const POI_KINDS: &str = "builder/app/src/lib/planner/poi-kinds.json";
+const POI_KINDS: &str = "builder/web/src/lib/planner/poi-kinds.json";
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
     "natural-earth",
