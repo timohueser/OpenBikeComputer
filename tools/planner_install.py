@@ -279,7 +279,7 @@ def running(value, candidate, directory, execute, proc):
     return environment, pid
 
 
-def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
+def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc"), wait=True):
     value = installed(request["installed"])
     candidate = request["candidate"]
     if (value["service"], value["id"]) != (candidate["service"], candidate["id"]) or value["binding"] != binding(candidate):
@@ -296,8 +296,8 @@ def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
         raise ValueError("Candidate target differs from the running runtime")
     prerequisites(descriptor)
     name, port = value["service"], SERVICES[value["service"]][value["slot"]]
-    waiting = read is None
-    if waiting:
+    waiting = read is None and wait
+    if read is None:
         def read(path):
             origin = candidate["site_origin"] if name != "downloads" else None
             request = Request(f"http://127.0.0.1:{port}{path}", headers={"Origin": origin} if origin else {})
@@ -322,6 +322,28 @@ def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
             if not waiting or time.monotonic() >= deadline: raise
             time.sleep(1)
 
+
+
+def observe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
+    """Read exact published slots once. No preparation, restart or traffic change."""
+    state = inspect(base, execute)
+    services = []
+    for value in request["installed"]:
+        service = value["service"]
+        try:
+            if value not in state["installed"]:
+                raise ValueError("Published slot is not installed with its binding")
+            candidate = next(item for item in request["candidates"] if item["service"] == service)
+            directory = destination(value, base)
+            for name, item in [("release.json", candidate["release"]), ("runtime.json", candidate["runtime"])]:
+                checked(directory, {**item, "path": name})
+            actual = probe({"installed": value, "candidate": candidate}, base, execute, read, proc, wait=False)
+            if actual != candidate["expected"]:
+                raise ValueError("Opened service data differs from publication")
+            services.append({"service": service, "ready": True, "reason": None})
+        except (OSError, ValueError, KeyError, StopIteration) as error:
+            services.append({"service": service, "ready": False, "reason": str(error) or "Missing service metadata"})
+    return {"host": state, "services": services, "unavailable": None}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

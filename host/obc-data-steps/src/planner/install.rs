@@ -25,28 +25,6 @@ fn named(release: &Release, name: &str) -> Result<LayerFile, String> {
         .ok_or_else(|| format!("missing installer input `{name}`"))
 }
 
-fn ready(service: Service, document: &Value) -> Result<Ready, String> {
-    let text =
-        |value: &Value| value.as_str().map(str::to_string).ok_or_else(|| "missing service data identity".to_string());
-    Ok(match service {
-        Service::Routing => Ready::Routing { package: text(&document["routing_package"])? },
-        Service::Search => {
-            let region = text(&document["region"])?;
-            let files = &document["files"];
-            Ready::Search {
-                grid: text(&files[format!("search/{region}.grid.json")]["sha256"])?,
-                model: ["labels.json", "tokenizer.json", "model.int8.onnx"]
-                    .into_iter()
-                    .map(|name| {
-                        text(&files[format!("search/model/{name}")]["sha256"]).map(|digest| (name.into(), digest))
-                    })
-                    .collect::<Result<_, _>>()?,
-            }
-        }
-        Service::Downloads => Ready::Downloads { catalog: text(&document["files"]["offline/catalog.json"]["sha256"])? },
-    })
-}
-
 /// The caller owns the view. Only metadata is copied; staging resolves its selected objects.
 pub fn prepare_into(
     release: &Release,
@@ -70,7 +48,7 @@ pub fn prepare_into(
         let (body, _) = super::runtime::description(name, release, store)?;
         let target: Host =
             serde_json::from_value(body["target"].clone()).map_err(|e| format!("runtime target: {e}"))?;
-        let expected = ready(service, &document)?;
+        let expected = Ready::from_document(service, &document)?;
         let source = view.join(name);
         std::fs::create_dir_all(source.join("objects")).map_err(|e| e.to_string())?;
         for file in [&manifest, &descriptor] {

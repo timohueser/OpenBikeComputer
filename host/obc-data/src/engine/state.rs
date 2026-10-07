@@ -46,18 +46,83 @@ pub struct Read {
 /// The state of each layer of `steps`, in dependency order. When more than one state applies, the
 /// first in the order of `State` is the state.
 pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environment) -> Result<Vec<LayerState>, String> {
+    let mut codes = Codes::default();
+    resolved(
+        store,
+        steps,
+        environment,
+        |step| {
+            let (hash, identity) = codes.get(root, &step.code)?;
+            Ok((hash.clone(), identity.files.clone(), false))
+        },
+        false,
+    )
+}
+
+/// Compare published source/config at its recorded target. Execution providers are not admitted.
+pub fn published(
+    store: &Store,
+    root: &Path,
+    steps: &[Step],
+    environment: &Environment,
+    producers: &BTreeMap<String, super::release::Producer>,
+) -> Result<Vec<LayerState>, String> {
+    let mut witnesses = crate::local::Witnesses::default();
+    resolved(
+        store,
+        steps,
+        environment,
+        |step| {
+            let Some(layer) = environment.live.get(&step.name) else {
+                return Ok((String::new(), BTreeMap::new(), false));
+            };
+            let producer = producers.get(&layer.code).ok_or("published producer witness is unavailable")?;
+            let same = witnesses.matches(root, &step.code, &layer.code, producer)?;
+            Ok((layer.code.clone(), producer.files.clone(), !same))
+        },
+        true,
+    )
+}
+
+fn resolved(
+    store: &Store,
+    steps: &[Step],
+    environment: &Environment,
+    mut code: impl FnMut(&Step) -> Result<(String, BTreeMap<String, String>, bool), String>,
+    observation: bool,
+) -> Result<Vec<LayerState>, String> {
     let mut users: HashMap<&str, Vec<String>> = HashMap::new();
     for step in steps {
         for name in step.layers() {
             users.entry(name).or_default().push(step.name.clone());
         }
     }
-    let mut codes = Codes::default();
     let mut states: HashMap<&str, State> = HashMap::new();
     let mut layers = Vec::new();
     for step in order(steps)? {
-        let (code_hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-        let (state, reason) = judge(store, step, code_hash, &files.files, environment, &states)?;
+        let (code_hash, files, changed, unavailable) = match code(step) {
+            Ok((hash, files, changed)) => (hash, files, changed, None),
+            Err(error) if observation => (
+                environment.live.get(&step.name).map(|layer| layer.code.clone()).unwrap_or_default(),
+                BTreeMap::new(),
+                false,
+                Some(error),
+            ),
+            Err(error) => return Err(format!("step `{}`: {error}", step.name)),
+        };
+        let (mut state, mut reason) = judge(store, step, &code_hash, &files, environment, &states, changed)?;
+        if state == State::CodeChanged
+            && changed
+            && code_differs(step, &code_hash, &environment.live[&step.name]).is_none()
+        {
+            reason = Some("source/config differs at the published target and profile".into());
+        }
+        if let Some(error) = unavailable {
+            if !matches!(state, State::NotApplied | State::CodeChanged | State::InputChanged) {
+                state = State::Blocked;
+                reason = Some(error);
+            }
+        }
         states.insert(&step.name, state);
         let reads = step.inputs.iter().map(|input| match input {
             Input::Snapshot { source, version, .. } => {
@@ -86,6 +151,7 @@ fn judge(
     files: &BTreeMap<String, String>,
     environment: &Environment,
     states: &HashMap<&str, State>,
+    source_changed: bool,
 ) -> Result<(State, Option<String>), String> {
     let found = |state, reason: String| Ok((state, Some(reason)));
     let Some(live) = environment.live.get(&step.name) else {
@@ -104,7 +170,7 @@ fn judge(
             return found(State::NotApplied, format!("{source}@{version} not in live{fetched}"));
         }
     }
-    match code_differs(step, code_hash, live) {
+    match code_differs(step, code_hash, live).or(source_changed.then_some("code")) {
         Some("code") => return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?),
         Some(what) => return found(State::CodeChanged, what.into()),
         None => {}

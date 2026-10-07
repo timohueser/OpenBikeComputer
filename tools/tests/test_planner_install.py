@@ -100,6 +100,24 @@ class PlannerInstall(unittest.TestCase):
         with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "checksum"):
             install.probe(self.request, self.base, self.execute, lambda _: self.fail("corrupt data must not be accepted"), self.proc)
 
+    def test_read_only_observation_checks_opened_data_once_and_never_mutates_services(self):
+        self.stage()
+        request = {"installed": [self.value], "candidates": [self.candidate]}
+        self.commands.clear()
+        with patch.object(install, "host", return_value=HOST):
+            observed = install.observe(request, self.base, self.execute,
+                lambda _: {"sha256": self.candidate["expected"]["catalog"]}, self.proc)
+            self.assertTrue(observed["services"][0]["ready"])
+            calls = []
+            def unavailable(path):
+                calls.append(path)
+                raise ValueError("offline")
+            failed = install.observe(request, self.base, self.execute, unavailable, self.proc)
+            self.assertFalse(failed["services"][0]["ready"])
+            self.assertEqual(failed["services"][0]["reason"], "offline")
+            self.assertEqual(len(calls), 1)
+        self.assertTrue(all(command[:2] == ["systemctl", "show"] for command in self.commands))
+
     def test_reuse_checks_desired_object_pool_and_origin_against_the_running_process(self):
         self.stage()
         self.candidate['objects_url'] = 'https://other.example/planner/objects'

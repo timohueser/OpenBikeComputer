@@ -30,6 +30,19 @@ class RuntimeBuild(unittest.TestCase):
                 runtime.native("routing", route)
             run.assert_not_called()
 
+    def test_source_declarations_need_no_original_execution_providers(self):
+        command = [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(Path(runtime.__file__)),
+                   "--declarations", "routing"]
+        result = subprocess.run(command, input=json.dumps(TARGET), text=True, capture_output=True,
+                                env={**os.environ, "PATH": ""}, check=True)
+        declaration = json.loads(result.stdout)
+        self.assertIsNone(declaration["builder"])
+        self.assertEqual(declaration["paths"], runtime.code_paths("routing"))
+        self.assertEqual(declaration["files"], [])
+        invalid = subprocess.run(command, input='{}', text=True, capture_output=True,
+                                 env={**os.environ, "PATH": ""})
+        self.assertNotEqual(invalid.returncode, 0)
+
     def test_archive_preserves_licenses_and_executable_modes_without_host_paths_or_times(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

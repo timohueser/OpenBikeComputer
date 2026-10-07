@@ -355,8 +355,13 @@ def main():
     parser.add_argument("--step", action="store_true")
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--probe", choices=("routing", "search", "downloads"))
+    parser.add_argument("--declarations", choices=("routing", "search", "downloads"))
     args = parser.parse_args()
-    if args.probe:
+    if args.declarations:
+        target(json.load(sys.stdin), args.declarations)
+        print(json.dumps({"builder": None, "paths": code_paths(args.declarations),
+                          "files": service_files() if args.declarations == "search" else []}, sort_keys=True))
+    elif args.probe:
         wanted = target(json.load(sys.stdin), args.probe)
         print(json.dumps({"builder": builder(args.probe, wanted, os.environ.get("OBC_PLANNER_RUNTIME_BUILDER", "native")),
                           "paths": code_paths(args.probe), "files": service_files() if args.probe == "search" else []}, sort_keys=True))
