@@ -25,7 +25,7 @@ use crate::archive;
 use crate::geom::{box_polygon, collect_polygons, from_geos, geom_from_geos, try_polygon_to_geos, Geom};
 use crate::ingest::{IngestFeature, Ingested};
 use obc_map_core::config::Config;
-use obc_map_core::progress::Progress;
+use obc_map_core::progress::{Phase, Progress};
 
 /// EPSG:3857 auxiliary-sphere radius = WGS84 semi-major axis (see the `.prj`).
 const R: f64 = 6_378_137.0;
@@ -730,7 +730,7 @@ pub fn add_land(
     let land_polys = get_land_polygons(bbox_deg, land_zip, progress)?;
     progress.check()?;
     let sea_polys =
-        if implicit_land && sea_style.is_some() { land::sea_complement(bbox_deg, &land_polys)? } else { Vec::new() };
+        if implicit_land && sea_style.is_some() { sea_complement(bbox_deg, &land_polys)? } else { Vec::new() };
     let land_count = land_polys.len();
     let sea_count = sea_polys.len();
     for geom in land_polys {

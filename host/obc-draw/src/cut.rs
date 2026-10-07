@@ -262,8 +262,6 @@ fn flatten_culled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cut::{cut_ingested, CutOptions};
-    use obc_map_core::grid::BandTable;
     use rayon::prelude::*;
 
     const LOG2: u32 = 18;
@@ -378,29 +376,5 @@ mod tests {
                 assert_eq!(crate::serialize::serialize_tree(&tree, 4096), expected);
             }
         }
-
-        let bands = BandTable::parse(
-            r#"{"bands":[
-            {"id":"coarse","cell_log2":20,"lods":[0],"role":"coarse"},
-            {"id":"fine","cell_log2":18,"lods":[1,2],"role":"geometry"},
-            {"id":"network","cell_log2":18,"lods":[],"sections":["nav","poi"],"role":"core"}
-        ]}"#,
-        )
-        .unwrap();
-        let merges = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let count = Arc::clone(&merges);
-        let progress = Progress::new(obc_map_core::progress::CancelToken::new(), move |_, line| {
-            if line.contains("line fragment(s)") {
-                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-        });
-        let out = obcm_testkit::scratch::scratch_dir("obc-cut", "merge-memo");
-        cut_ingested(&ing, &[], &config, &out, &CutOptions { bands, ..Default::default() }, &progress).unwrap();
-        std::fs::remove_dir_all(out).unwrap();
-        assert_eq!(
-            merges.load(std::sync::atomic::Ordering::Relaxed),
-            2,
-            "the two input sets merge once each across both geometry bands"
-        );
     }
 }

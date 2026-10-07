@@ -766,4 +766,56 @@ mod tests {
         // The two `2^18` bands must not collide — which `cells/<log2>/…` would.
         assert_ne!(cell_path(fine, &c), cell_path(network, &c));
     }
+    #[test]
+    fn geometry_bands_share_source_merges() {
+        use obc_draw::{geom::Geom, ingest::IngestFeature};
+        use std::sync::Arc;
+        let config = Config::parse(
+            r#"{
+            "lods":[{"simplify":10}, {"max_mpp":4,"simplify":1}, {"max_mpp":2,"simplify":0.5}],
+            "merge_lines":true,
+            "features":{"highway":{"residential":{"color":"0xffff"}}}
+        }"#,
+        )
+        .unwrap();
+        let line = |min_lod, lat| IngestFeature {
+            style_id: 1,
+            min_lod,
+            geom: Geom::Line(vec![(7.59, lat), (7.602, lat + 0.00004), (7.62, lat)]),
+        };
+        let ing = Ingested {
+            features: vec![
+                line(0, 47.3),
+                line(0, 47.31),
+                IngestFeature { style_id: 1, min_lod: 2, geom: Geom::Line(vec![(7.63, 47.4), (7.64, 47.4)]) },
+                IngestFeature { style_id: 1, min_lod: 2, geom: Geom::Line(vec![(7.59, 47.33), (7.602176, 47.33)]) },
+            ],
+            landmark_links: Vec::new(),
+            coastlines: Vec::new(),
+            pois: Vec::new(),
+        };
+        let bands = BandTable::parse(
+            r#"{"bands":[
+            {"id":"coarse","cell_log2":20,"lods":[0],"role":"coarse"},
+            {"id":"fine","cell_log2":18,"lods":[1,2],"role":"geometry"},
+            {"id":"network","cell_log2":18,"lods":[],"sections":["nav","poi"],"role":"core"}
+        ]}"#,
+        )
+        .unwrap();
+        let merges = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&merges);
+        let progress = Progress::new(obc_map_core::progress::CancelToken::new(), move |_, line| {
+            if line.contains("line fragment(s)") {
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        let out = obcm_testkit::scratch::scratch_dir("obc-cut", "merge-memo");
+        cut_ingested(&ing, &[], &config, &out, &CutOptions { bands, ..Default::default() }, &progress).unwrap();
+        std::fs::remove_dir_all(out).unwrap();
+        assert_eq!(
+            merges.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "the two input sets merge once each across both geometry bands"
+        );
+    }
 }
