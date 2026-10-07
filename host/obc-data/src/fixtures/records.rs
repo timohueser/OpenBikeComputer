@@ -195,14 +195,31 @@ impl Selection {
         moves: &BTreeMap<String, Option<String>>,
     ) -> Result<(), String> {
         self.check()?;
+        let mut requests: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
         for copy in &self.copies {
             if moves.contains_key(&copy.key.source)
                 && !self.inputs.historical.values().any(|input| input.source == copy.key.source)
             {
                 continue;
             }
-            let selected = copy.record.files.iter().map(|file| file.name.clone()).collect::<Vec<_>>();
-            copy.record.materialize(&copy.key, store, http, remote, &copy.params, &selected)?;
+            let files = requests.entry((&copy.key.source, &copy.key.version, &copy.params)).or_default();
+            files.extend(copy.record.files.iter().map(|file| (file.name.clone(), file.clone())));
+        }
+        for ((source, version, params), files) in requests {
+            let record = crate::input_copy::Record {
+                source: source.clone(),
+                version: version.clone(),
+                files: files.into_values().collect(),
+            };
+            let key = crate::input_copy::Key {
+                source: source.clone(),
+                version: version.clone(),
+                digest: crate::engine::digest(
+                    record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())),
+                ),
+            };
+            let selected = record.files.iter().map(|file| file.name.clone()).collect::<Vec<_>>();
+            record.materialize(&key, store, http, remote, params, &selected)?;
         }
         Ok(())
     }
@@ -411,10 +428,18 @@ mod tests {
         let mut subsets = selection.clone();
         let mut extra = subsets.copies[0].clone();
         extra.record.files[0].name = "another-leaf.tif".into();
+        extra.record.files[0].url.push_str("/another-leaf");
         extra.key.digest =
             crate::engine::digest(extra.record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())));
         subsets.copies.push(extra);
         subsets.check().unwrap();
+        let mut requested = subsets.clone();
+        let params = vec![("tile".into(), "both-leaves".into())];
+        for copy in &mut requested.copies {
+            copy.params = params.clone();
+        }
+        requested.copies.push(subsets.copies[0].clone());
+        requested.check().unwrap();
         let mut conflicting = subsets.copies[0].clone();
         conflicting.record.files[0].sha256 = "f".repeat(64);
         conflicting.key.digest = crate::engine::digest(
@@ -449,6 +474,20 @@ mod tests {
         recovered.selection.restore(&cold, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new()).unwrap();
         assert_eq!(std::fs::read(cold.object(&files[0].sha256)).unwrap(), b"old");
         assert!(cold.snapshot("fixture-osm", "2").unwrap().is_none());
+        let cold_leaves = Store::at(scratch.0.join("cold-leaves"));
+        requested.restore(&cold_leaves, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            cold_leaves.requested("fixture-osm", "1", &params).unwrap().unwrap(),
+            ["another-leaf.tif", "crop.osm.pbf"]
+        );
+        let restored_files =
+            crate::engine::snapshot_files(&cold_leaves, "fixture-osm", "1", &params, &[]).unwrap().unwrap();
+        assert_eq!(restored_files.keys().map(String::as_str).collect::<Vec<_>>(), ["another-leaf.tif", "crop.osm.pbf"]);
+        let read_env = requested.environment("ride");
+        assert_eq!(
+            crate::product::read(&read_env, &cold_leaves, "fixture-osm", &params).unwrap().unwrap(),
+            restored_files
+        );
         let missing = Store::at(scratch.0.join("missing"));
         std::fs::remove_file(copy).unwrap();
         assert!(recovered
