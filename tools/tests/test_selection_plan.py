@@ -432,7 +432,7 @@ class ShippedPlanTests(unittest.TestCase):
         whose only build is a non-Cargo command, which a subset assertion let regress once."""
 
         cases = [
-            ("planner search", ["apps/planner-search/server.mjs"], ["planner-search"]),
+            ("planner search", ["planner/search/server.mjs"], ["planner-search"]),
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.
@@ -515,8 +515,8 @@ class ShippedPlanTests(unittest.TestCase):
             ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
             "planner/router-build/src/lib.rs", "planner/service/src/main.rs", "planner/service/src/http.rs",
             "planner/service/tests/http.rs", "planner/router/README.md",
-            "apps/planner-search/server.mjs", "apps/planner-search/tests/native.test.mjs",
-            "apps/planner-search/query/train.py", "firmware/obc-crc/tests/crc.rs",
+            "planner/search/server.mjs", "planner/search/tests/native.test.mjs",
+            "planner/search/query/train.py", "firmware/obc-crc/tests/crc.rs",
             "apps/obc-ios-host/src/tests.rs", "host/obc-host-core/src/flat_routes/tests.rs",
             "firmware/obc-app/src/harness/route_import.rs",
         ]
@@ -532,8 +532,8 @@ class ShippedPlanTests(unittest.TestCase):
               for path in ("firmware/obc-crc/src/lib.rs", "firmware/obc-app/i18n/en.toml")],
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
               for path in ("apps/obc-ios-host/src/client.rs", "firmware/obc-link/src/flat/client.rs")],
-            ("apps/planner-search/runtime.mjs", {"ci.ios-app-build", "ci.ios-release-build"}),
-            ("apps/planner-search/query/lexicon/kinds.json", {"ci.ios-app-build", "ci.ios-release-build"}),
+            ("planner/search/runtime.mjs", {"ci.ios-app-build", "ci.ios-release-build"}),
+            ("planner/search/query/lexicon/kinds.json", {"ci.ios-app-build", "ci.ios-release-build"}),
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
               for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", ".cargo/config", "rust-toolchain.toml")],
         ]:
@@ -542,7 +542,7 @@ class ShippedPlanTests(unittest.TestCase):
                 self.assertEqual({u.id for u in selected if u.scoped}, expected)
 
     def test_native_search_bundle_inputs_reach_the_app_builds(self) -> None:
-        pending = [self.root / "apps/planner-search/native.mjs", self.root / "apps/planner-search/native-build.mjs"]
+        pending = [self.root / "planner/search/native.mjs", self.root / "planner/search/native-build.mjs"]
         visited = set()
         while pending:
             source = pending.pop().resolve()
@@ -618,8 +618,8 @@ class ShippedPlanTests(unittest.TestCase):
         cases = [
             ("companion-ios/OBCDevice/App.swift", device),
             ("host/obc-host-core/src/lib.rs", app | device),
-            ("apps/planner-search/server.mjs", set()),
-            ("apps/planner-search/native.mjs", app | pack),
+            ("planner/search/server.mjs", set()),
+            ("planner/search/native.mjs", app | pack),
             ("companion-ios/scripts/generate-website-fixture.py", app | pack | capture),
             ("companion-ios/scripts/capture-website-screenshots.sh", app | pack | capture),
             ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | pack | capture),

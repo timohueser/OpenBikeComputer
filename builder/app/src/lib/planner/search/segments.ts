@@ -2,7 +2,7 @@ import { cumulative } from '../geo';
 import { gradeThresholds, profileGrades } from '../grade-data';
 import type { RoutingLine, Surface } from '../routing';
 
-/** A run of the route with one fact, which search stretch questions read (`apps/planner-search/README.md`). `from` and
+/** A run of the route with one fact, which search stretch questions read (`planner/search/README.md`). `from` and
  * `to` are kilometres on the line. A height run also has its height change in metres and its mean grade in percent, both
  * positive for a descent too. */
 export interface RouteSegment { kind: string; from: number; to: number; ascent?: number; gradient?: number }

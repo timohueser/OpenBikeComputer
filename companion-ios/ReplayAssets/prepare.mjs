@@ -29,7 +29,7 @@ const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
 const maps = new URL('../Packages/OBCKit/Sources/OBCUI/Resources/Map/', import.meta.url);
 await mkdir(maps, { recursive: true });
 await writeFile(new URL('poi-kinds.json', maps), JSON.stringify(poiKinds));
-await cp(new URL('../../apps/planner-search/query/contract.json', import.meta.url), new URL('contract.json', maps));
+await cp(new URL('../../planner/search/query/contract.json', import.meta.url), new URL('contract.json', maps));
 for (const theme of ['light', 'dark']) {
   const style = mapStyle(theme, config, '__TERRAIN__', '__CONTOURS__');
   // The web renderer generates contours from DEM tiles; native uses the DEM hillshade.
