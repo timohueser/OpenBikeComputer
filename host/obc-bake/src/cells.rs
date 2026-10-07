@@ -81,7 +81,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use obc_bake::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
+use crate::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
 use obc_map_core::grid::{BandTable, CellId};
 use obc_map_core::progress::Progress;
 use obc_pack::catalog::CellSource;
@@ -139,7 +139,7 @@ pub trait CellCutter: Sync {
     ) -> Result<CutSummary, String>;
 }
 
-/// The real thing: `obc_bake::cut::cut`, linked in rather than spawned, for the same reason the
+/// The real thing: `crate::cut::cut`, linked in rather than spawned, for the same reason the
 /// bakery links the pipeline directly.
 pub struct ObcCutter {
     /// Skip land generation, a ~950 MB dataset a real bake wants and no test does.
@@ -174,7 +174,7 @@ impl CellCutter for ObcCutter {
             opts.land = Some(self.land.get_or_init(land_polygons).clone()?);
         }
         opts.chunk_size = self.chunk_size;
-        match obc_bake::cut::cut(pbfs, config, out_dir, &opts, progress) {
+        match crate::cut::cut(pbfs, config, out_dir, &opts, progress) {
             Ok(s) => Ok(s),
             Err(obc_map_core::progress::PackError::Failed(e)) => Err(e),
             Err(obc_map_core::progress::PackError::Cancelled) => Err("cancelled".into()),
@@ -880,7 +880,7 @@ impl CellBakery<'_> {
         pack_key: &str,
         progress: &Progress,
     ) -> Result<CellOutcome, String> {
-        let src = obc_bake::cut::artifact_path(tmp, artifact);
+        let src = crate::cut::artifact_path(tmp, artifact);
         let verified = crate::verify::verify_cell(&src, artifact.id.square())?;
         let (dest, sidecar_path, state_path) = cell_paths(&self.opts.out, &artifact.band, artifact.id);
 

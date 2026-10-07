@@ -17,14 +17,13 @@ use obc_draw::geom::{footprint_below, strip_small_holes, topology_preserve_simpl
 use obc_draw::ingest::compute_bbox;
 use obc_draw::land::add_land;
 use obc_draw::merge::report_merge;
-use obc_draw::merge::{
-    merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with, MergeStats,
-};
+use obc_draw::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with};
 use obc_draw::quadtree::build_lod_with;
-use obc_draw::semantic::{build_semantic_levels, SemanticClass};
+use obc_draw::semantic::build_semantic_levels;
 use obc_elevation::{ElevationSource, NullElevation};
 use obc_map_core::config::Config;
 use obc_map_core::progress::{PackError, Phase, Progress};
+use obc_map_core::semantic::SemanticClass;
 use obc_map_core::terrain::TerrainSet;
 use obc_pbf::bbox::Bbox;
 

@@ -61,7 +61,7 @@ type LevelTrace = (u8, usize, Vec<Vec<(i32, i32)>>);
 /// A no-op — not merely a cheap one, but never entered — when the config does not ask for contours,
 /// when the run was given no terrain, or when neither contour class carries a style rule.
 /// `bbox` is the packer's global box, µdeg `(min_lon, min_lat, max_lon, max_lat)`.
-pub(crate) fn add_contours(
+pub fn add_contours(
     ingested: &mut Ingested,
     config: &Config,
     bbox: (i64, i64, i64, i64),

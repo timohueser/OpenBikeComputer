@@ -41,9 +41,7 @@ use obc_draw::semantic::build_semantic_levels;
 use obc_draw::serialize::Node;
 use obc_elevation::{ElevationSource, NullElevation};
 use obc_map_core::config::Config;
-use obc_map_core::grid::{
-    cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
-};
+use obc_map_core::grid::{cells_intersecting, Band, BandTable, CellId, UBox, GRID_ORIGIN};
 use obc_map_core::progress::{PackError, Phase, Progress};
 use obc_map_core::serialize::validate_chunk_size;
 use obc_map_core::terrain::TerrainSet;
