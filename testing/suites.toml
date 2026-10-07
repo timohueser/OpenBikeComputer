@@ -220,10 +220,10 @@ triggers = [
 [[suite]]
 id = "web.verification"
 route = "ordinary"
-command = "npm run verify --prefix apps/obc-verification"
+command = "npm run verify --prefix tools/verification"
 jobs = ["verification"]
 platforms = ["linux", "macos"]
-triggers = ["apps/obc-verification/**"]
+triggers = ["tools/verification/**"]
 
 [[suite]]
 id = "web.builder-browser"

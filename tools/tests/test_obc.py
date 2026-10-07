@@ -94,7 +94,8 @@ class ObcTests(unittest.TestCase):
             shutil.copyfile(source / "justfile", root / "justfile")
             for name in ("justfile", "obc", "obc-dev.sh"):
                 shutil.copyfile(source / "tools" / name, root / "tools" / name)
-            (root / "tools/req.py").write_text(
+            (root / "tools/verification").mkdir()
+            (root / "tools/verification/req.py").write_text(
                 "import json,os,sys\nfrom pathlib import Path\n"
                 "print(json.dumps([os.environ['OBC_ROOT'],os.environ['OBC_TOOLS'],str(Path.cwd()),sys.argv[1:]]))\n"
             )
