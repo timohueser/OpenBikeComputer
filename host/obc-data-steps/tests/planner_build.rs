@@ -149,7 +149,7 @@ time_zone = "Europe/Berlin"
         .collect();
     let dir = temp.0.join("routing");
     obc_data::engine::view(&package, &dir).unwrap();
-    route_engine::open(&dir).unwrap().verify().unwrap();
+    planner_router::open(&dir).unwrap().verify().unwrap();
     let paths: Vec<&str> = routing.files.iter().map(|file| file.path.as_str()).collect();
     for path in ["blocks/blocks.json", "blocks/catalog.json", "routes/9-267-177.json", "routing/route-catalog.json"] {
         assert!(paths.contains(&path), "{path} is not in the layer");

@@ -1,13 +1,13 @@
 # Verification console — server runbook
 
-The console is `apps/obc-verification`. It runs at `https://releases.openbikecomputer.com` on
+The console is `tools/verification`. It runs at `https://releases.openbikecomputer.com` on
 Debian with Node 24, Caddy and systemd. Builds live in `/opt/obc-verification/releases/`, with
 `current` pointing at the active one. Data lives in `/var/lib/obc-verification/` and a deployment
-never replaces it. The scripts named below are in `apps/obc-verification/ops/`.
+never replaces it. The scripts named below are in `tools/verification/ops/`.
 
 ## Install the service
 
-1. Copy `apps/obc-verification/ops/` to the server.
+1. Copy `tools/verification/ops/` to the server.
 2. Run `sudo bash ops/install.sh`. It creates the users, the directories and the backup timer. It
    does not start the application and it writes no credentials.
 3. Create `/etc/obc-verification/service.env`, mode 0600, owned by root, with these values:

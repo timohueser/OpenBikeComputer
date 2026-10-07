@@ -53,7 +53,7 @@ targets:
       - path: ../target/PlannerSearch
         type: folder
         buildPhase: resources
-      # Carries the licence texts of the linked route-server crates.
+      # Carries the licence texts of the linked planner-service crates.
       - path: ../THIRD-PARTY.md
         buildPhase: resources
     preBuildScripts:
@@ -168,7 +168,7 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         LIBRARY_SEARCH_PATHS[sdk=iphoneos*]: ["$(inherited)", "$(SRCROOT)/../target/aarch64-apple-ios/release"]
         LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]: ["$(inherited)", "$(SRCROOT)/../target/aarch64-apple-ios-sim/release"]
-        OTHER_LDFLAGS: ["$(inherited)", "-lroute_server", "-lresolv", "-liconv"]
+        OTHER_LDFLAGS: ["$(inherited)", "-lplanner_service", "-lresolv", "-liconv"]
         # The native planner build provides the Apple Silicon simulator slice.
         EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
 

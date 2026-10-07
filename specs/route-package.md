@@ -8,7 +8,7 @@ is the digest of its complete stored bytes. The package ID is the digest of the
 exact UTF-8 manifest bytes. Reformatting a manifest changes its ID.
 
 The manifest format is `8`. Its JSON fields are defined by `Manifest` and
-`Metric` in `host/route-engine/src/package.rs`. Bounds are
+`Metric` in `planner/router/src/package.rs`. Bounds are
 `[west, south, east, north]` in degrees. Metric IDs equal their profile names.
 Source digests identify the input data. Attribution and warnings travel with
 the package.
@@ -83,7 +83,7 @@ Metric `allowed` holds one snap bit per directed road: road `i` uses bit `i % 64
 of word `i / 64`. Its table length is `ceil(roads / 64)`. A set bit means that
 the metric has a finite cost for the road, and that the road lies in the
 metric's largest strongly connected component of road states or in one of at
-least `connectivity::MINIMUM_COMPONENT` states (`host/route-build`). Turn rules
+least `connectivity::MINIMUM_COMPONENT` states (`planner/router-build`). Turn rules
 and node access shape these components. Queries snap only to roads with a set
 bit, so a leg without a path joins points that no legal route connects.
 

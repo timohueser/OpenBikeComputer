@@ -179,7 +179,7 @@ def configuration(value, directory, release, objects_url, site_origin, api_origi
     data, code = directory / "data", directory / "code"
     environment = {"OBC_PLANNER_SERVICE_ID": value["id"], "OBC_PLANNER_BINDING": value["binding"]}
     if name == "routing":
-        command = [str(code / "bin/route-server"), str(data / "routing")]
+        command = [str(code / "bin/planner-service"), str(data / "routing")]
         environment.update(ROUTE_LISTEN=f"127.0.0.1:{port}", ROUTE_WORKERS="2", ROUTE_ORIGIN=site_origin)
     else:
         python = str(Path(sys.executable).resolve())
@@ -262,7 +262,7 @@ def running(value, candidate, directory, execute, proc):
     environment = dict(item.decode(errors="replace").split("=", 1) for item in (process / "environ").read_bytes().split(b"\0") if b"=" in item)
     args = [os.fsdecode(item) for item in (process / "cmdline").read_bytes().split(b"\0") if item]
     code, data = directory / "code", directory / "data"
-    executable = code / "bin/route-server" if value["service"] == "routing" else Path(shutil.which("node")) if value["service"] == "search" else Path(sys.executable)
+    executable = code / "bin/planner-service" if value["service"] == "routing" else Path(shutil.which("node")) if value["service"] == "search" else Path(sys.executable)
     if (process / "cwd").resolve() != code.resolve() or (process / "exe").resolve() != executable.resolve() or environment.get("OBC_PLANNER_SERVICE_ID") != value["id"] or environment.get("OBC_PLANNER_BINDING") != value["binding"]:
         raise ValueError("Running process belongs to another runtime identity")
     name = value["service"]

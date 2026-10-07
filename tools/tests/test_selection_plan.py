@@ -513,8 +513,8 @@ class ShippedPlanTests(unittest.TestCase):
             "docs/testing.md", "CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", "rustfmt.toml",
             ".config/nextest.toml", "testing/suites.toml", "testing/coverage-policy.toml",
             ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
-            "host/route-build/src/lib.rs", "apps/route-server/src/main.rs", "apps/route-server/src/http.rs",
-            "apps/route-server/tests/http.rs", "host/route-engine/README.md",
+            "planner/router-build/src/lib.rs", "planner/service/src/main.rs", "planner/service/src/http.rs",
+            "planner/service/tests/http.rs", "planner/router/README.md",
             "apps/planner-search/server.mjs", "apps/planner-search/tests/native.test.mjs",
             "apps/planner-search/query/train.py", "firmware/obc-crc/tests/crc.rs",
             "apps/obc-ios-host/src/tests.rs", "host/obc-host-core/src/flat_routes/tests.rs",
@@ -526,8 +526,8 @@ class ShippedPlanTests(unittest.TestCase):
         deletion = plan.select(self.units, self.graph, ["retired/tool.rs"], deleted={"retired/tool.rs"})
         self.assertFalse(set(plan.required_jobs(deletion)) & {"ios-unit", "ios-app", "ios-release"})
         for path, expected in [
-            ("host/route-engine/src/lib.rs", {"ci.ios-app-build", "ci.ios-release-build"}),
-            ("apps/route-server/Cargo.toml", {"ci.ios-app-build", "ci.ios-release-build"}),
+            ("planner/router/src/lib.rs", {"ci.ios-app-build", "ci.ios-release-build"}),
+            ("planner/service/Cargo.toml", {"ci.ios-app-build", "ci.ios-release-build"}),
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
               for path in ("firmware/obc-crc/src/lib.rs", "firmware/obc-app/i18n/en.toml")],
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})

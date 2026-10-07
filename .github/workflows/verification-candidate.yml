@@ -34,7 +34,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
           OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
           OBC_VERIFICATION_CI_TOKEN: ${{ secrets.OBC_VERIFICATION_CI_TOKEN }}
-        run: python3 apps/obc-verification/ops/candidate_identity.py
+        run: python3 tools/verification/ops/candidate_identity.py
   checks:
     needs: validate
     uses: ./.github/workflows/ci.yml
@@ -78,7 +78,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: python3 apps/obc-verification/ops/download_reports.py reports
+        run: python3 tools/verification/ops/download_reports.py reports
       - name: Download candidate firmware if built
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,6 +101,6 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           CONCLUSION: ${{ needs.verify.result == 'success' && 'success' || 'failure' }}
         run: |
-          python3 apps/obc-verification/ops/import_results.py --reports reports --assets firmware-assets \
+          python3 tools/verification/ops/import_results.py --reports reports --assets firmware-assets \
             --source-sha "$SOURCE_SHA" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
             --candidate "$CANDIDATE_ID" --conclusion "$CONCLUSION"

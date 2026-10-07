@@ -3597,8 +3597,8 @@ dependencies = [
  "obc-pack",
  "obc-search-bake",
  "obcm-assemble",
- "route-build",
- "route-engine",
+ "planner-router-build",
+ "planner-router",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5242,7 +5242,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 
 [[package]]
-name = "route-build"
+name = "planner-router-build"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -5250,14 +5250,14 @@ dependencies = [
  "obc-dem",
  "osmpbfreader",
  "postcard",
- "route-engine",
+ "planner-router",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",
 ]
 
 [[package]]
-name = "route-engine"
+name = "planner-router"
 version = "0.1.0"
 dependencies = [
  "flate2",
@@ -5270,12 +5270,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "route-server"
+name = "planner-service"
 version = "0.1.0"
 dependencies = [
  "axum",
- "route-build",
- "route-engine",
+ "planner-router-build",
+ "planner-router",
  "serde_json",
  "tokio",
  "tower",

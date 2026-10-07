@@ -53,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError): release.release(root)
 
     def test_seal_accepts_the_routing_format_that_the_engine_writes(self):
-        source = (release.maps.ROOT / "host/route-engine/src/package.rs").read_text()
+        source = (release.maps.ROOT / "planner/router/src/package.rs").read_text()
         engine_format = int(re.search(r"pub const FORMAT: u32 = (\d+);", source)[1])
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)

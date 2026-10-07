@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import req  # noqa: E402
+from verification import req  # noqa: E402
 
 REVISION = {"id": 58}
 NORTH = {"id": "t1", "kind": "automated", "title": "North-up projection", "caseId": "map::north_up"}

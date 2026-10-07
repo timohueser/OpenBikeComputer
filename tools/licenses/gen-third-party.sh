@@ -42,9 +42,9 @@ ARTIFACTS=(
     "Device firmware (\`UPDATE.BIN\`)|firmware/obc-fw-nrf54l/Cargo.toml|the image the device runs, and the one served from updates.openbikecomputer.com"
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
     "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
-    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
-    "Linux routing service (\`route-server\`, \`x86_64-unknown-linux-gnu\`)|apps/route-server/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
-    "Linux routing service (\`route-server\`, \`aarch64-unknown-linux-gnu\`)|apps/route-server/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
+    "iOS route library (\`planner-service\`)|planner/service/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
+    "Linux routing service (\`planner-service\`, \`x86_64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
+    "Linux routing service (\`planner-service\`, \`aarch64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
 )
 
 # Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence

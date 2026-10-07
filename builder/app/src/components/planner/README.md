@@ -42,7 +42,7 @@ The VPS needs Caddy, Python 3.12+, `uv` 0.8.17+, `/root/.cargo/bin/cargo`, and
 Node 24+ at `/usr/local/bin/node`. Services bind to loopback under
 `releases.openbikecomputer.com`.
 
-Deploy the [tile Worker](../../../../../apps/planner-tiles/README.md) first.
+Deploy the [tile Worker](../../../../../planner/tiles/README.md) first.
 
 `/plan/` and `/builder/` read `planner/catalog.json` at page load, so a release
 needs no site build. Then finish the rollout:
