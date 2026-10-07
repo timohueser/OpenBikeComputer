@@ -4,8 +4,10 @@ use obcm_testkit::scratch::scratch_dir;
 use std::path::PathBuf;
 
 const MAP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../desktop/assets/grimsel-demo.obcm");
-const OBCR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
-const GPX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx");
+const OBCR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
+const GPX: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../fixtures/sources/sim-grimsel/tracks/grimsel-climb.gpx");
 
 /// A fresh scratch card with the demo map imported into it, and the directory it lives in.
 fn card(tag: &str) -> (PathBuf, PathBuf) {
