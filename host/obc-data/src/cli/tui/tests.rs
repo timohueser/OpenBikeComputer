@@ -817,6 +817,7 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
 #[test]
 fn configuration_review_keeps_message_keys_in_the_field_and_commits_only_after_consent() {
     let mut app = app();
+    app.host = "runnervmmprz5 (linux)".into();
     assert_eq!(app.key(KeyCode::Char('C')), Effect::ConfigRead);
     app.config.review = Some(
         serde_json::from_value(json!({
@@ -837,12 +838,20 @@ fn configuration_review_keeps_message_keys_in_the_field_and_commits_only_after_c
     assert_eq!(app.config.message, "q message");
     assert!(app.config.editing && !app.asking);
     app.key(KeyCode::Enter);
-    let drawn = screen(&mut app, 80, 24).join(" ");
+    let frame = screen(&mut app, 80, 24);
+    let drawn = frame.join(" ");
+    let content = frame
+        .iter()
+        .filter_map(|line| line.split('│').nth(1))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
         app.asking
             && drawn.contains("CONFIGURATION REVIEW")
-            && drawn.contains("Git hooks and signing")
-            && drawn.contains("no push"),
+            && content.contains("This machine: runnervmmprz5 (linux)")
+            && content.contains("Git hooks and signing")
+            && content.contains("Git commit only · no push"),
         "{drawn}"
     );
     app.busy = true;
