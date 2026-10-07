@@ -34,6 +34,14 @@ pub const TILE_LIST: &str = "copernicus-glo-30-tiles";
 
 pub struct Maps;
 
+struct RecipeInputs {
+    selection: crate::region_sources::Selection,
+    tile_list: String,
+    land_polygons: Option<String>,
+    glo30: String,
+    catalog_index: Option<(String, String)>,
+}
+
 impl Product for Maps {
     fn name(&self) -> &'static str {
         "maps"
@@ -124,6 +132,27 @@ impl Maps {
         else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
+        self.recipes(
+            env,
+            regions,
+            store,
+            tool,
+            libraries,
+            RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index },
+        )
+    }
+
+    fn recipes(
+        &self,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<obc_data::engine::Library, String>,
+        libraries: Result<Vec<obc_data::engine::Library>, String>,
+        inputs: RecipeInputs,
+    ) -> Result<Steps, Unplanned> {
+        let RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index } = inputs;
+        let mut wanted = Vec::new();
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let mut steps = Vec::new();
