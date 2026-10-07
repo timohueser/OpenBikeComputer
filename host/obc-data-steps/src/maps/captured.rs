@@ -13,15 +13,15 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     };
     let poly = box_poly(bbox);
     let coverage = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
-    let obc_data::fixtures::CapturedInput { source, version, files } = &inputs.osm;
-    let paths = snapshot_files(store, source, version, &[], files)
+    let obc_data::fixtures::CapturedInput { source, version, params, files } = &inputs.osm;
+    let paths = snapshot_files(store, source, version, params, files)
         .map_err(Unplanned::Failed)?
         .ok_or_else(|| invalid(format!("import the exact fixture PBF {} before building", inputs.osm_sha256)))?;
     let [path] = paths.values().collect::<Vec<_>>()[..] else {
         return Err(invalid("fixture PBF input must select exactly one file".into()));
     };
     if hash_file(path).map_err(Unplanned::Failed)?.0 != inputs.osm_sha256 {
-        return Err(invalid("fixture PBF differs from the bootstrap's stored bytes".into()));
+        return Err(invalid("fixture PBF differs from its recorded stored bytes".into()));
     }
     let prepared = copy_step(
         "maps/source/captured",
@@ -90,7 +90,12 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
                 .ok_or_else(|| invalid("restore the exact captured terrain files before building".into()))?;
             terrain.clone()
         }
-        None => obc_data::fixtures::CapturedInput { source: GLO30.into(), version: glo30.clone(), files: Vec::new() },
+        None => obc_data::fixtures::CapturedInput {
+            source: GLO30.into(),
+            version: glo30.clone(),
+            params: Vec::new(),
+            files: Vec::new(),
+        },
     };
     let land_polygons = snapshot_version(env, store, LAND, &[], &mut wanted)?;
     if !wanted.is_empty() {
@@ -371,6 +376,7 @@ mod tests {
         let mut input = obc_data::fixtures::CapturedInput {
             source: "fixture-assistant-terrain".into(),
             version: "a".repeat(64),
+            params: Vec::new(),
             files: files.clone(),
         };
         let mut step = terrain(LeafId { i: 0, j: 0 }, &[cell], &HashSet::new(), "unused", None);

@@ -143,6 +143,7 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             captured = Some(CapturedInput {
                 source: source.clone(),
                 version: version.clone(),
+                params: Vec::new(),
                 files: vec![package.osm.clone()],
             });
         }
@@ -151,7 +152,12 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
                 && content
                     .insert(
                         collection.into(),
-                        CapturedInput { source: source.clone(), version: version.clone(), files: Vec::new() },
+                        CapturedInput {
+                            source: source.clone(),
+                            version: version.clone(),
+                            params: Vec::new(),
+                            files: Vec::new(),
+                        },
                     )
                     .is_some()
             {
@@ -165,7 +171,12 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             if content
                 .insert(
                     "landmarks".into(),
-                    CapturedInput { source: source.clone(), version: version.clone(), files: Vec::new() },
+                    CapturedInput {
+                        source: source.clone(),
+                        version: version.clone(),
+                        params: Vec::new(),
+                        files: Vec::new(),
+                    },
                 )
                 .is_some()
             {
@@ -179,6 +190,14 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
                 captured = Some(CapturedInput {
                     source: snapshot.source.clone(),
                     version: snapshot.version.clone(),
+                    params: vec![(
+                        "area".into(),
+                        package
+                            .osm
+                            .strip_suffix("-latest.osm.pbf")
+                            .ok_or("fixture area source has no recorded extract path")?
+                            .into(),
+                    )],
                     files: vec![file.name.clone()],
                 });
                 break;
@@ -217,7 +236,12 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
         }
         historical.insert(
             name.into(),
-            CapturedInput { source: source.into(), version: version.into(), files: vec![name.into()] },
+            CapturedInput {
+                source: source.into(),
+                version: version.into(),
+                params: Vec::new(),
+                files: vec![name.into()],
+            },
         );
     }
     let mut empty: BTreeMap<_, _> = [
@@ -261,7 +285,7 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             if files.is_empty() {
                 return Err("captured terrain archive has no raw TIFFs".into());
             }
-            Ok(Some(CapturedInput { source: source.into(), version: version.clone(), files }))
+            Ok(Some(CapturedInput { source: source.into(), version: version.clone(), params: Vec::new(), files }))
         })
         .transpose()?
         .flatten();

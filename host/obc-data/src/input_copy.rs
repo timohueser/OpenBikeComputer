@@ -36,7 +36,8 @@ pub struct Read {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Retained {
     pub step: String,
     pub key: Key,
@@ -248,8 +249,16 @@ fn sha256(value: &str) -> bool {
 
 /// The reads named by the manifests. No input object or copy record is fetched here.
 pub fn reads(live: &Live) -> Result<Vec<Read>, String> {
+    live.releases().try_fold(Vec::new(), |mut reads, (_, _, release)| {
+        reads.extend(reads_release(release)?);
+        Ok(reads)
+    })
+}
+
+/// Exact reads from one product release, without a publication pointer or remote lookup.
+pub fn reads_release(release: &crate::engine::Release) -> Result<Vec<Read>, String> {
     let mut reads = Vec::new();
-    for layer in live.releases().flat_map(|(_, _, r)| &r.layers) {
+    for layer in &release.layers {
         for input in layer.inputs.iter().filter(|i| i.kind == InputKind::Snapshot) {
             let snapshot = layer
                 .snapshots

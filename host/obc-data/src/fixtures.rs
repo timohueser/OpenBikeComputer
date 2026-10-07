@@ -55,6 +55,7 @@ pub enum Empty {
 pub struct CapturedInput {
     pub source: String,
     pub version: String,
+    pub params: Vec<(String, String)>,
     pub files: Vec<String>,
 }
 
@@ -159,6 +160,9 @@ impl CapturedInput {
         {
             return Err("fixture captured input has no normalized source and version".into());
         }
+        if crate::store::sorted(&self.params) != self.params {
+            return Err("fixture source request parameters are not canonical".into());
+        }
         let mut selected = std::collections::BTreeSet::new();
         for file in &self.files {
             relative(file)?;
@@ -173,7 +177,7 @@ impl CapturedInput {
         Input::Snapshot {
             source: self.source.clone(),
             version: self.version.clone(),
-            params: Vec::new(),
+            params: self.params.clone(),
             files: self.files.clone(),
         }
     }
