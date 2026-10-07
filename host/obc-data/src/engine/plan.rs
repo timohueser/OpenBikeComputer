@@ -1,6 +1,6 @@
 //! The plan: what a run would fetch and build, in groups that do not depend on each other.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use schemars::JsonSchema;
@@ -102,17 +102,33 @@ pub(super) struct Walked<'a> {
     /// `None` until the store has every snapshot and layer that the step reads.
     pub key: Option<String>,
     /// The layer of `key` in the store, with all of its objects.
-    pub stored: Option<Receipt>,
+    pub stored: Option<super::release::Layer>,
 }
 
 /// Each step in dependency order, with its key and its stored layer. `plan` and
 /// `release::release` reuse the same layers.
-pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<Vec<Walked<'a>>, String> {
+pub(super) fn walk_reusing<'a>(
+    store: &Store,
+    root: &Path,
+    steps: &'a [Step],
+    originals: &BTreeMap<String, super::release::Layer>,
+) -> Result<Vec<Walked<'a>>, String> {
     let mut codes = Codes::default();
-    let mut reused: HashMap<&str, Receipt> = HashMap::new();
+    let mut reused: HashMap<&str, super::release::Layer> = HashMap::new();
     let mut walked = Vec::new();
     for step in order(steps)? {
         let named = |e: String| format!("step `{}`: {e}", step.name);
+        if let Some(original) = originals.get(&step.name) {
+            reused.insert(&step.name, original.clone());
+            walked.push(Walked {
+                step,
+                code: original.code.clone(),
+                fetches: Vec::new(),
+                key: Some(original.key.clone()),
+                stored: Some(original.clone()),
+            });
+            continue;
+        }
         let code = codes.get(root, &step.code).map_err(named)?.0.clone();
         let fetches = missing(store, step)?;
         let (mut key, mut stored) = (None, None);
@@ -120,7 +136,7 @@ pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<
             let (receipt, _) = prepare(store, step, &reused, &code).map_err(named)?;
             stored = reusable(store, &receipt.key)?.map(|mut stored| {
                 stored.inputs = receipt.inputs;
-                stored
+                super::release::Layer::new(&stored, step)
             });
             if let Some(stored) = &stored {
                 reused.insert(&step.name, stored.clone());
@@ -136,8 +152,18 @@ pub(super) fn walk<'a>(store: &Store, root: &Path, steps: &'a [Step]) -> Result<
 /// build for each layer whose key has no layer in the store, or whose key waits for a fetch or
 /// another build.
 pub fn plan(store: &Store, root: &Path, steps: &[Step]) -> Result<Plan, String> {
+    plan_reusing(store, root, steps, &BTreeMap::new())
+}
+
+/// Plan current work with original layers returned by checked portable reuse.
+pub fn plan_reusing(
+    store: &Store,
+    root: &Path,
+    steps: &[Step],
+    originals: &BTreeMap<String, super::release::Layer>,
+) -> Result<Plan, String> {
     let receipts = store.layers()?;
-    let walked = walk(store, root, steps)?;
+    let walked = walk_reusing(store, root, steps, originals)?;
     let builds: Vec<(&Step, Build, &Vec<Fetch>)> =
         walked.iter().filter_map(|walked| Some((walked.step, build(walked, &receipts)?, &walked.fetches))).collect();
 

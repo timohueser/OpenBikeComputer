@@ -148,6 +148,7 @@ pub struct Run {
     _using: Lock,
     codes: super::code::Context,
     committed_code: bool,
+    pub(crate) originals: BTreeMap<String, super::release::Layer>,
 }
 
 impl Run {
@@ -174,6 +175,7 @@ impl Run {
                 _using: using,
                 codes: Default::default(),
                 committed_code: false,
+                originals: BTreeMap::new(),
             };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
@@ -239,6 +241,7 @@ impl Run {
             _using: using,
             codes: Default::default(),
             committed_code: false,
+            originals: BTreeMap::new(),
         };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
@@ -283,6 +286,11 @@ impl Run {
         Ok(())
     }
 
+    /// Use only original layers returned by checked portable reuse for this operation.
+    pub fn reuse_layers(&mut self, layers: &BTreeMap<String, super::release::Layer>) {
+        self.originals = layers.clone();
+    }
+
     /// Fetch the fetches of `plan` one after another, then build its builds and reuse the layers
     /// that they read. After a fetch or a step fails, no other step starts; the steps that run
     /// finish. A later run reuses every layer that this one built.
@@ -296,7 +304,7 @@ impl Run {
         }
         let ordered = order(steps)?;
         if self.committed_code {
-            for step in &ordered {
+            for step in ordered.iter().filter(|step| !self.originals.contains_key(&step.name)) {
                 self.codes.identity(root, &step.code)?.committed(root)?;
             }
         }
@@ -319,14 +327,16 @@ impl Run {
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
         for step in ordered.iter().rev() {
             if needed.contains(step.name.as_str()) {
-                needed.extend(step.layers());
+                if !self.originals.contains_key(&step.name) {
+                    needed.extend(step.layers());
+                }
             }
         }
         let position: HashMap<&str, usize> =
             ordered.iter().enumerate().map(|(i, step)| (step.name.as_str(), i)).collect();
         let mut pending: Vec<&Step> = ordered.into_iter().filter(|step| needed.contains(step.name.as_str())).collect();
         let mut codes = Codes { context: std::mem::take(&mut self.codes), ..Default::default() };
-        for step in &pending {
+        for step in pending.iter().filter(|step| !self.originals.contains_key(&step.name)) {
             let (hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
             store.put_code(hash, &files.files)?;
             store.put_producer(hash, &super::release::Producer::from(files))?;
@@ -335,7 +345,7 @@ impl Run {
         let checks = std::sync::Mutex::new(std::mem::take(&mut codes.context));
 
         let outdated = "the plan is outdated; plan again";
-        let mut done: HashMap<&str, Receipt> = HashMap::new();
+        let mut done: HashMap<&str, super::release::Layer> = HashMap::new();
         let mut built = Vec::new();
         let mut failure: Option<String> = None;
         let (mut running, mut reserved, mut rust_running) = (0, 0, false);
@@ -351,6 +361,11 @@ impl Run {
                     break;
                 }
                 let step = pending[i];
+                if let Some(original) = self.originals.get(&step.name) {
+                    pending.remove(i);
+                    done.insert(&step.name, original.clone());
+                    continue;
+                }
                 if !step.layers().all(|name| done.contains_key(name)) {
                     i += 1;
                     continue;
@@ -371,7 +386,7 @@ impl Run {
                         .and_then(|stored| stored.ok_or(outdated.into()));
                     match reused {
                         Ok(receipt) => {
-                            done.insert(&step.name, receipt);
+                            done.insert(&step.name, super::release::Layer::new(&receipt, step));
                         }
                         Err(e) => failure = Some(format!("step `{}`: {e}", step.name)),
                     }
@@ -422,7 +437,7 @@ impl Run {
                     if let Err(e) = self.record(&event) {
                         failure.get_or_insert(e);
                     }
-                    done.insert(&step.name, result.receipt.clone());
+                    done.insert(&step.name, super::release::Layer::new(&result.receipt, step));
                     built.push(result);
                 }
                 Err(e) => self.failed(step, e, &mut failure),

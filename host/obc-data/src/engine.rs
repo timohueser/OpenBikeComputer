@@ -611,7 +611,7 @@ fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
 fn prepare(
     store: &Store,
     step: &Step,
-    layers: &HashMap<&str, Receipt>,
+    layers: &HashMap<&str, release::Layer>,
     code: &str,
 ) -> Result<(Receipt, Request), String> {
     if !step.options.is_object() {

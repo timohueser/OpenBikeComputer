@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-use super::plan::{add_fetch, build, sized, walk, Build, Cause, Group, Plan, Walked};
+use super::plan::{add_fetch, build, sized, walk_reusing, Build, Cause, Group, Plan, Walked};
 use super::release::Layer;
 use super::state::{code_differs, other_read};
 use super::{recipe, Input, Receipt, Step};
@@ -28,9 +28,23 @@ pub struct Against<'a> {
 /// One group per cause: the layers that differ from live because of it, the changed layers that
 /// they read, the live layers that go, and what the store lacks to make them.
 pub fn changes(store: &Store, root: &Path, steps: &[Step], against: &Against) -> Result<Plan, String> {
-    let walked = walk(store, root, steps)?;
+    changes_reusing(store, root, steps, against, &BTreeMap::new())
+}
+
+pub(crate) fn changes_reusing(
+    store: &Store,
+    root: &Path,
+    steps: &[Step],
+    against: &Against,
+    originals: &BTreeMap<String, Layer>,
+) -> Result<Plan, String> {
+    let walked = walk_reusing(store, root, steps, originals)?;
     let mut causes: HashMap<&str, BTreeSet<Cause>> = HashMap::new();
     for Walked { step, code, .. } in &walked {
+        if originals.contains_key(&step.name) {
+            causes.insert(&step.name, BTreeSet::new());
+            continue;
+        }
         let product = product(&step.name);
         let region = against.region.contains(product);
         let own = Cause::Code { paths: step.code.paths.clone(), crates: step.code.crates.clone() };

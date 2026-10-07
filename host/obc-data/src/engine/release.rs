@@ -8,7 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::plan::walk;
+use super::plan::walk_reusing;
 use super::{sorted, Client, Input, InputRecord, LayerFile, Receipt, Step};
 use crate::store::{self, sha256_hex, write_atomic, Store};
 
@@ -236,9 +236,19 @@ pub fn stored(
     steps: &[Step],
     names: &BTreeSet<&str>,
 ) -> Result<BTreeMap<String, Layer>, String> {
-    let walked = walk(store, root, steps)?;
+    stored_reusing(store, root, steps, names, &BTreeMap::new())
+}
+
+pub fn stored_reusing(
+    store: &Store,
+    root: &Path,
+    steps: &[Step],
+    names: &BTreeSet<&str>,
+    originals: &BTreeMap<String, Layer>,
+) -> Result<BTreeMap<String, Layer>, String> {
+    let walked = walk_reusing(store, root, steps, originals)?;
     let named = walked.iter().filter(|walked| names.contains(walked.step.name.as_str()));
-    let layers = named.filter_map(|walked| walked.stored.as_ref().map(|receipt| Layer::new(receipt, walked.step)));
+    let layers = named.filter_map(|walked| walked.stored.clone());
     Ok(layers.map(|layer| (layer.step.clone(), layer)).collect())
 }
 
@@ -261,6 +271,35 @@ pub fn release(
     }
     let mut release =
         Release::compose(product, region, optional, None, layers.into_values().collect(), &BTreeSet::new());
+    release.bind_producers(store)?;
+    Ok(Some(release))
+}
+
+/// Assemble current outputs and original portable provenance without foreign build receipts.
+pub fn release_reusing(
+    store: &Store,
+    root: &Path,
+    region: &str,
+    optional: &[String],
+    steps: &[Step],
+    original: &Release,
+    originals: &BTreeMap<String, Layer>,
+) -> Result<Option<Release>, String> {
+    let prefix = format!("{}/", original.product);
+    let names: BTreeSet<&str> =
+        steps.iter().map(|step| step.name.as_str()).filter(|name| name.starts_with(&prefix)).collect();
+    let layers = stored_reusing(store, root, steps, &names, originals)?;
+    if layers.len() < names.len() {
+        return Ok(None);
+    }
+    let dropped = original
+        .layers
+        .iter()
+        .filter(|layer| !names.contains(layer.step.as_str()))
+        .map(|layer| layer.step.clone())
+        .collect();
+    let mut release =
+        Release::compose(&original.product, region, optional, Some(original), layers.into_values().collect(), &dropped);
     release.bind_producers(store)?;
     Ok(Some(release))
 }
