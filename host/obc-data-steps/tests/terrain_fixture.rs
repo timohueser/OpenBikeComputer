@@ -9,7 +9,7 @@ use obc_data::engine::runs::{Context, Limits, Run};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
 use obc_data::product::Unplanned;
-use obc_data::regions::{parse_region, Area, Regions};
+use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::maps::{box_poly, Maps, TILE_LIST};
 use obc_dem::bake::{V1_CELL_LOG2, V1_POSTING_LOG2};
@@ -62,7 +62,14 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
             "urls":{"pbf":format!("https://download.geofabrik.de/{AREA}-latest.osm.pbf")}},
         "geometry":{"type":"Polygon","coordinates":[[[bbox.west,bbox.south],[bbox.east,bbox.south],
             [bbox.east,bbox.north],[bbox.west,bbox.north],[bbox.west,bbox.south]]]}}]});
-    for (source, name, params, bytes) in [
+    // The store has no national data of the Grimsel: the polygon of each area of a national model
+    // is a speck at 0° 0°, so the terrain reads GLO-30 alone.
+    let speck = box_poly(&Bbox { west: 0.0, south: 0.0, east: 0.001, north: 0.001 });
+    let models = obc_data::sources::all()
+        .iter()
+        .flat_map(|source| &source.areas)
+        .map(|area| ("geofabrik-poly", format!("{area}.poly"), vec![("area".into(), area.clone())], speck.clone()));
+    let inputs = [
         ("geofabrik-index", "index.json".into(), Vec::new(), index.to_string()),
         ("geofabrik-poly", format!("{AREA}.poly"), vec![("area".into(), AREA.into())], box_poly(&bbox)),
         (
@@ -72,7 +79,8 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
             "unused OSM input".into(),
         ),
         ("land-polygons", "land.zip".into(), Vec::new(), "unused land input".into()),
-    ] {
+    ];
+    for (source, name, params, bytes) in inputs.into_iter().chain(models) {
         let file = store.partial(source);
         write_atomic(&file, bytes.as_bytes()).unwrap();
         let (sha256, size) = hash_file(&file).unwrap();
@@ -84,7 +92,10 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
             sha256,
             retrieved: String::new(),
         };
-        store.put_snapshot(&Snapshot { source: source.into(), version: VERSION.into(), files: vec![record] }).unwrap();
+        let snapshot = store.snapshot(source, VERSION).unwrap();
+        let mut files = snapshot.map_or_else(Vec::new, |snapshot| snapshot.files);
+        files.push(record);
+        store.put_snapshot(&Snapshot { source: source.into(), version: VERSION.into(), files }).unwrap();
         store.put_requested(source, &Requested { version: VERSION.into(), params, files: vec![name] }).unwrap();
     }
     store
@@ -100,21 +111,8 @@ fn steps(store: &Store, env: &Env, regions: &Regions) -> Result<obc_data::produc
     )
 }
 
-/// Record a fetch without files of each national model that the step list asks for: the store has
-/// no national data of the Grimsel, so the terrain reads GLO-30 alone.
-fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) = steps(store, env, regions) else {
-        return;
-    };
-    for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
-        let requested = Requested { version: VERSION.into(), params: fetch.params.clone(), files: Vec::new() };
-        store.put_requested(&fetch.source, &requested).unwrap();
-    }
-}
-
 /// The path in the layer, or in the tree of `obc-bake terrain` below `cells/terrain/`, to its bytes.
 fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<String, Vec<u8>> {
-    without_models(store, env, regions);
     let listed = steps(store, env, regions).unwrap();
     assert!(listed.blocked.iter().any(|blocked| blocked.layer == "maps/catalog"), "terrain alone cannot publish");
     let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("maps/terrain/")).collect();

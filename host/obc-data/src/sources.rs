@@ -182,6 +182,10 @@ pub struct Source {
     /// The box outside which the source has no data: west, south, east and north in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<[f64; 4]>,
+    /// The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None
+    /// means all of `extent`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<String>,
     /// Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
@@ -244,6 +248,9 @@ impl Source {
         }
         if let Some(start) = &self.start {
             crate::fetch::check_version(self, start)?;
+        }
+        if !self.areas.is_empty() && self.extent.is_none() {
+            return fail("`areas` narrow an `extent`");
         }
         if self.r2_copy && !self.redistribute {
             return fail("`r2_copy` needs `redistribute`: R2 is public");
