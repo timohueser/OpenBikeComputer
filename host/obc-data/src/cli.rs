@@ -18,6 +18,7 @@ mod regions_cli;
 mod runs_cli;
 mod status_cli;
 mod tui;
+mod versions;
 
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
@@ -69,6 +70,8 @@ enum Command {
         #[arg(long)]
         check_now: bool,
     },
+    /// Versions known for every active request of a source, with each request's availability.
+    Versions { source: String },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
         /// SOURCE or SOURCE@VERSION. Without a version: upstream's newest file.
@@ -176,7 +179,7 @@ fn run(
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let command = match cli.command {
-        None if terminal && !json => return tui::run(&root()?, products).map(|()| ExitCode::SUCCESS),
+        None if terminal && !json => return tui::run(&root()?, products),
         None => return status_cli::status(&root()?, products, false, json),
         Some(command) => command,
     };
@@ -189,6 +192,20 @@ fn run(
         }
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
+        Command::Versions { source } => {
+            let (rows, _) = source_listing(&root()?, products, false)?;
+            let row = rows
+                .iter()
+                .find(|row| row.source.id == source)
+                .ok_or_else(|| Code::Usage.error(format!("no source `{source}`")))?;
+            let versions = versions::read(&Store::open()?, row)?;
+            if json {
+                print_json(&versions)
+            } else {
+                versions.lines().iter().for_each(|line| println!("{line}"));
+                Ok(())
+            }
+        }
         Command::Fetch { target, params } => {
             let root = root()?;
             let registry = registry(&root)?;

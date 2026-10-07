@@ -5,6 +5,14 @@ use std::sync::OnceLock;
 
 use crate::engine::code;
 
+/// Private launcher return codes preserve one of the five terminal screens.
+pub const RELOAD_EXIT: u8 = 75;
+pub const SCREEN: &str = "OBC_DATA_TUI_SCREEN";
+
+pub fn can_reload() -> bool {
+    BINDING.get().is_some()
+}
+
 pub const ROOT: &str = "OBC_DATA_WORKER_ROOT";
 pub const CODE: &str = "OBC_DATA_WORKER_CODE";
 pub const EXE: &str = "OBC_DATA_WORKER_EXE";

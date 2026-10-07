@@ -515,7 +515,21 @@ pub(super) fn plan_live(
     only: &[String],
     prepare: bool,
 ) -> Result<EnvPlan, Error> {
-    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(&[]), prepare)?.plan)
+    plan_live_moves(root, store, http, remote, products, only, &[], prepare)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn plan_live_moves(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: &Remote,
+    products: &[&dyn Product],
+    only: &[String],
+    moves: &[String],
+    prepare: bool,
+) -> Result<EnvPlan, Error> {
+    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(moves), prepare)?.plan)
 }
 
 /// The output of `plan ENV --json` in `file`.

@@ -352,7 +352,9 @@ fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_s
     let updated = app.clone();
     app.complete(Effect::LocalReview(request.clone()), updated);
     assert!(app.asking);
+    app.host = "fixture-laptop (macos)".into();
     let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(drawn.contains("fixture-laptop"), "{drawn}");
     assert!(drawn.contains("Simulator") && drawn.contains("CONFIRM LOCAL PREPARATION"), "{drawn}");
     assert!(drawn.contains("2026-10-01") && drawn.contains("area=europe/test"), "{drawn}");
     let mut reviewed = request;
@@ -369,6 +371,7 @@ fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_s
 fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
     use crate::operation::Kind;
     let mut app = planned(0, false, &["move:land", "move:osm"]);
+    app.host = "fixture-vps (linux)".into();
     let taken = &mut app.plan.as_mut().unwrap().taken;
     taken.only = vec!["none".into()];
     taken.groups.retain(|group| !plan::is_move(group));
@@ -378,7 +381,10 @@ fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
     assert_eq!(app.key(KeyCode::Char('a')), Effect::None);
     assert!(app.asking);
     let drawn = screen(&mut app, 80, 24).join("\n");
-    assert!(drawn.contains("CONFIRM APPLY") && drawn.contains("environment: live"), "{drawn}");
+    assert!(
+        drawn.contains("CONFIRM APPLY") && drawn.contains("environment: live") && drawn.contains("fixture-vps (linux)"),
+        "{drawn}"
+    );
     assert!(drawn.contains(&super::super::apply_cli::question(&reviewed)), "{drawn}");
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "confirmation cannot change consent");
     app.key(KeyCode::Esc);
@@ -644,7 +650,7 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
         "stale        osm                   120 d > 90 d",
         "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
         "unreachable  maps                  a fetch that the step list needs failed",
-        "r region   R check R2   p plan   u undo environment   ? help",
+        "r region   R check R2   s schedule   p plan   u undo environment   ? help",
     ];
     assert_eq!(drawn, live, "{drawn:#?}");
     assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
@@ -659,6 +665,154 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
     (app.row, app.source) = (5, 1);
     app.key(KeyCode::Enter);
     assert_eq!((app.screen, app.source), (Screen::Sources, 0), "the stale source");
+}
+
+#[test]
+fn version_review_retains_pending_intent_and_exposes_each_request_before_the_plan() {
+    let mut app = app();
+    app.screen = Screen::Sources;
+    assert_eq!(app.key(KeyCode::Char('v')), Effect::Versions("osm".into()));
+    let mut updated = app.clone();
+    updated.versions = Some(crate::cli::versions::Versions {
+        source: "osm".into(),
+        common: vec!["2024-01-09".into()],
+        newest: false,
+        requests: vec![crate::cli::versions::Request {
+            params: vec![("area".into(), "europe/east".into())],
+            live: Some("2024-01-02".into()),
+            stored: vec!["2024-01-09".into()],
+            upstream: None,
+            unavailable: Some("The west area upstream check failed".into()),
+        }],
+    });
+    app.complete(Effect::Versions("osm".into()), updated);
+    app.choice = 1;
+    assert_eq!(app.key(KeyCode::Enter), Effect::None);
+    assert!(app.moves.is_empty(), "newest cannot hide an unresolved request");
+    let text = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        text.contains("ALL active requests") && text.contains("area=europe/east") && text.contains("west area"),
+        "{text}"
+    );
+    app.choice = 2;
+    assert_eq!(app.key(KeyCode::Enter), Effect::None);
+    assert_eq!(app.move_args(), ["osm@2024-01-09"]);
+    assert_eq!(app.key(KeyCode::Char('p')), Effect::Plan);
+    assert_eq!(app.move_args(), ["osm@2024-01-09"], "opening Plan retains intent");
+    app.plan = Some(PlanView::new(plan()));
+    app.key(KeyCode::Esc);
+    app.key(KeyCode::Char('p'));
+    assert_eq!(app.move_args(), ["osm@2024-01-09"], "reopening does not clear intent");
+}
+
+#[test]
+fn schedule_has_explicit_host_scope_confirmation_and_never_intercepts_form_text() {
+    let mut app = app();
+    app.host = "fixture-vps (linux)".into();
+    assert_eq!(app.key(KeyCode::Char('s')), Effect::ScheduleRead);
+    app.schedule.state = Some(Err("live schedules need the configured Linux systemd host".into()));
+    let text = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        text.contains("fixture-vps (linux)") && text.contains("environment: live") && text.contains("systemd host"),
+        "{text}"
+    );
+    if !cfg!(target_os = "linux") {
+        assert!(text.contains("unsupported"), "{text}");
+        assert_eq!(app.key(KeyCode::Char('d')), Effect::None);
+    }
+    app.schedule.editing = true;
+    app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Custom, time: "00:00".into(), day: 1 });
+    app.schedule.field = 1;
+    app.schedule.calendar = "daily".into();
+    app.schedule.zone = "UTC".into();
+    app.key(KeyCode::Char('q'));
+    assert_eq!(app.schedule.calendar, "dailyq", "typing never quits or invokes commands");
+    app.key(KeyCode::Backspace);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Enter);
+    assert!(app.asking);
+    let text = screen(&mut app, 80, 24).join(" ");
+    assert!(text.contains("daily UTC") && text.contains("publish to Live") && text.contains("This machine:"), "{text}");
+    app.busy = true;
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::None);
+    app.busy = false;
+    assert_eq!(
+        app.key(KeyCode::Char('y')),
+        Effect::ScheduleChange(schedule::Change::Install { calendar: "daily".into(), zone: "UTC".into() })
+    );
+    app.key(KeyCode::Esc);
+    assert!(!app.asking && app.schedule.pending.is_none());
+    assert!(app.moves.is_empty() && app.plan.is_none(), "schedule has no manual plan side effects");
+}
+
+#[test]
+fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() {
+    let mut app = app();
+    app.host = "fixture-vps (linux)".into();
+    app.overlay = Some(Overlay::Schedule);
+    app.schedule.editing = true;
+    app.schedule.zone = "UTC".into();
+    app.schedule.calendar = "daily".into();
+    app.key(KeyCode::Down);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Delete);
+    for c in "07:30".chars() {
+        app.key(KeyCode::Char(c));
+    }
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Down);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Enter);
+    let calendar = "Tue *-*-* 07:30:00";
+    assert_eq!(
+        app.key(KeyCode::Char('y')),
+        Effect::ScheduleChange(schedule::Change::Install { calendar: calendar.into(), zone: "UTC".into() })
+    );
+    app.key(KeyCode::Esc);
+    let run = crate::cli::operation_cli::View {
+        run: app.runs[0].clone(),
+        operation: Some(crate::operation::Status::Finished { ok: true }),
+        observation_error: None,
+        result: Some(json!({"built":{},"applied":{}})),
+        logs: Vec::new(),
+    };
+    let state = crate::schedule::State {
+        enabled: true,
+        active: false,
+        runnable: false,
+        blocked: Some("Host setup needs repair".into()),
+        calendar: Some(calendar.into()),
+        time_zone: Some("UTC".into()),
+        next: Some("Thu 2026-10-08 07:30:00 UTC".into()),
+        last_trigger: None,
+        last_run: Some(Box::new(run)),
+    };
+    app.schedule.state = Some(Ok(std::sync::Arc::new(state)));
+    assert_eq!(app.schedule.summary(), "weekly Tue 07:30 · next 2026-10-08 07:30 · last applied");
+    app.overlay = None;
+    let live = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        live.contains("weekly Tue 07:30") && live.contains("next 2026-10-08 07:30") && live.contains("last applied"),
+        "{live}"
+    );
+    app.overlay = Some(Overlay::Schedule);
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        drawn.contains("Enabled true")
+            && drawn.contains("active false")
+            && drawn.contains("runnable false")
+            && drawn.contains("needs repair"),
+        "{drawn}"
+    );
+    let state = std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap();
+    state.enabled = false;
+    state.last_run.as_mut().unwrap().result = Some(json!({"built":{},"applied":null}));
+    assert_eq!(app.schedule.summary(), "off · last verified");
+    app.schedule.editing = true;
+    app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Daily, time: "25:99".into(), day: 1 });
+    app.key(KeyCode::Enter);
+    assert!(!app.asking && app.schedule.pending.is_none());
+    assert!(app.notice.unwrap().message.contains("00:00 to 23:59"));
 }
 
 #[test]
