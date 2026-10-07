@@ -1201,18 +1201,22 @@ Local rebuilds keep their full execution identity. These APIs do not start apps 
 
 ### Local app services
 
-`dev` prepares the current requested region and opens its Web planner. The default is the
-saved Local region, then the live environment. The first source is Live unless selected
-explicitly. Subsequent preparation pins the saved source versions. Declarations derive current
-region geometry and options; recorded options are not substitute declarations.
-
-Live adoption retains original provenance. A blocked comparison requires an explicit Local
-build. Matching-host native route execution keeps its full compiler/profile identity and
-compiled root/code stamp. Startup rejects a changed stamp or prepared descriptor. It requires
-prepared Python, Node dependency trees and builder bridge/Wasm; it installs nothing.
+`dev` prepares current working-tree data. `data/env/local.toml` holds its region and
+optional layers. The first preparation copies Live settings. An explicit region changes
+Local. The saved Local release pins source versions. Only `--refresh-live` replaces those
+pins with the current published versions. A failed pointer observation is not absence.
+Current declarations derive region geometry, source requests, inputs and semantic options.
+Compatible portable layers retain original provenance through the shared verified reuse
+path. Only missing or changed layers execute with their full current native identity.
+Unused original execution tools are not required for reuse.
+Matching-host native route execution keeps its full compiler/profile identity and compiled
+root/code stamp. Startup rejects a changed stamp or prepared descriptor. It requires prepared
+Python, Node dependency trees and builder bridge/Wasm; it installs nothing.
 
 Preparation is a retained finite `dev_prepare` operation in environment `local`. It shares
-normal Run fetch/build/verify events. `dev --prepare` returns its handle. Serving owns a distinct
+normal Run fetch/build/verify events. `dev --prepare` returns its handle. Preparation never
+starts a stopped app owner. It replaces only affected children of an already running owner.
+Serving owns a distinct
 stable store lock; it does not retain the environment operation lock. The known supervisor
 starts routing, search, grid tiles and Vite. It compares child-specific code/config/data
 fingerprints before replacement. A token-bound stop drains owned process groups. It does not
@@ -1222,7 +1226,9 @@ Views are immutable and contain verified objects, native execution and service m
 Readiness binds the opened routing package, search region/grid and query model to that view.
 Frontend asset checks and HTTP availability are separate from browser workflow verification.
 `dev --status` and `dev --logs` are observations. Start, stop and open are explicit actions.
-Saved portable-data roots survive app shutdown.
+After proven drain, stop removes obsolete known views and completed preparation scratch
+views. It retains the current prepared view and saved portable-data roots. Active or
+uncertain app and preparation ownership prevent cleanup.
 
 ### State of a layer
 
@@ -1581,9 +1587,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan` | `EnvPlan` |
 | `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
-| `dev`, `dev --start`, `dev --stop`, `dev --status` | `Observed` |
+| `dev --start`, `dev --stop`, `dev --status` | `Observed` |
 | `dev --logs` | `Logs` |
-| Completed dev preparation | `Prepared` |
+| `dev`, completed dev preparation | `Prepared` |
 | Completed prepare output | `Prepared2` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |

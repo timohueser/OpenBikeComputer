@@ -17,16 +17,19 @@ as in the [data setup](../../../obc-data/README.md#operation).
 
 ```sh
 obc data dev
-obc data dev REGION --source live
-obc data dev REGION --source local
+obc data dev REGION
+obc data dev --refresh-live
+obc data dev --start
 ```
 
-The default region is the saved Local region, then `data/env/live.toml`.
-The first source defaults to Live. Later preparation keeps the saved source and
-versions. A changed region definition must pass the current declaration comparison.
-Incompatible Live data requires an explicit Local build.
-Local builds need the tools and source credentials of their selected producers.
+`data/env/local.toml` holds the region and optional layers. The first preparation
+copies the Live settings. An explicit region updates Local. Preparation keeps the
+saved Local versions. `--refresh-live` takes the current published versions.
+The working tree supplies current producer code, region geometry and options.
+Compatible portable layers keep their original provenance. Only changed layers build.
+New builds need the tools and source credentials of their selected producers.
 The route executable always builds for the current host.
+Preparation leaves stopped apps stopped. It updates an already running owner.
 
 | Command | Action |
 | --- | --- |
@@ -39,8 +42,8 @@ The route executable always builds for the current host.
 
 Inspect or stop preparation with `obc data runs RUN`. Serving uses a separate
 store lock. Preparation can run while the prior view serves. Startup replaces
-only affected running children. A stopped view keeps its selected data as a
-collection root. Opening a terminal view starts no download or build.
+only affected running children. Stop also removes obsolete known views after
+drain. It retains the current prepared view and saved data collection root. Opening a terminal view starts no download or build.
 
 Ports `5173`, `8780`, `8788` and `8789` must be free before the first start.
 Readiness checks the opened routing package, search grid and query model.
