@@ -97,6 +97,26 @@ impl Selection {
         Ok(selected)
     }
 
+    pub fn public_copies(&mut self, sources: &[crate::sources::Source], previous: Option<&Self>) {
+        self.copied_sources = self
+            .copies
+            .iter()
+            .filter_map(|copy| {
+                let source = &copy.key.source;
+                let allowed = sources.iter().any(|known| &known.id == source && known.redistribute);
+                let retained = previous.is_some_and(|prior| {
+                    prior.copied_sources.contains(source)
+                        && self.copies.iter().filter(|read| &read.key.source == source).all(|read| {
+                            prior.copies.iter().any(|old| {
+                                old.key == read.key && old.params == read.params && old.record == read.record
+                            })
+                        })
+                });
+                (allowed || retained).then(|| source.clone())
+            })
+            .collect();
+    }
+
     pub fn local(store: &Store, package: &str) -> Result<Option<Saved>, String> {
         relative(package)?;
         match std::fs::read(store.root().join("fixtures").join(format!("{package}.json"))) {
@@ -232,7 +252,7 @@ impl Selection {
             let selected = record.files.iter().map(|file| file.name.clone()).collect::<Vec<_>>();
             let source =
                 sources.iter().find(|known| &known.id == source).ok_or("retained fixture source is unregistered")?;
-            if !self.copied_sources.contains(&source.id) || !source.redistribute {
+            if !self.copied_sources.contains(&source.id) {
                 record.seed(&key, store)?;
                 if record.files.iter().any(|file| !store.object(&file.sha256).is_file()) {
                     original(&crate::product::Wanted {
@@ -242,7 +262,10 @@ impl Selection {
                     })?;
                 }
                 if record.files.iter().any(|file| !store.object(&file.sha256).is_file()) {
-                    return Err(format!("{}@{version}: original input bytes are missing; restore this exact version or select an explicit move", source.id));
+                    return Err(format!(
+                        "{}@{version}: original input bytes are missing; restore this exact version or select an explicit move",
+                        source.id
+                    ));
                 }
             }
             record.materialize(&key, store, http, remote, params, &selected)?;
@@ -540,7 +563,7 @@ redistribute = true
             restored_files
         );
         let missing = Store::at(scratch.0.join("missing"));
-        std::fs::remove_file(copy).unwrap();
+        std::fs::remove_file(&copy).unwrap();
         assert!(recovered
             .selection
             .restore(&missing, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| Err(
@@ -583,14 +606,23 @@ redistribute = true
         assert_eq!(fetched, 1, "false to true cannot invent a public copy in the original archive");
         sources[0].redistribute = false;
         let restricted = Store::at(scratch.0.join("restricted"));
-        assert!(recovered
-            .selection
-            .restore(&restricted, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| Err(
-                "historical input unavailable".into()
-            ))
-            .unwrap_err()
-            .contains("historical input unavailable"));
-        assert!(crate::engine::snapshot_files(&restricted, "fixture-osm", "1", &[], &[]).unwrap().is_none());
+        std::fs::copy(store.object(&files[0].sha256), &copy).unwrap();
+        let mut republished = recovered.selection.clone();
+        republished.public_copies(&sources, Some(&recovered.selection));
+        assert_eq!(republished.copied_sources, recovered.selection.copied_sources);
+        republished
+            .restore(&restricted, &crate::fetch::http::Http::new(), &remote, &BTreeMap::new(), &sources, |_| {
+                Err("a policy flip must preserve the recorded historical transport".into())
+            })
+            .unwrap();
+        assert_eq!(std::fs::read(restricted.object(&files[0].sha256)).unwrap(), b"old");
+        let mut moved = republished.clone();
+        moved.copies[0].record.files[0].sha256 = "f".repeat(64);
+        moved.copies[0].key.digest = crate::engine::digest(
+            moved.copies[0].record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())),
+        );
+        moved.public_copies(&sources, Some(&recovered.selection));
+        assert!(moved.copied_sources.is_empty(), "a moved raw input cannot inherit an old public copy");
         assert!(originally_private
             .restore(
                 &Store::at(scratch.0.join("empty-original")),

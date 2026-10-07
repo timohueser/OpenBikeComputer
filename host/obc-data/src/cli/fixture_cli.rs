@@ -58,7 +58,7 @@ pub(super) fn dispatch(
         ),
         Command::Build(args) if args.env == "fixtures" => {
             return Err(Code::Usage
-                .error("fixture preparation imports inputs; reviewed `apply fixtures` builds and seals packages"))
+                .error("fixture preparation imports inputs; reviewed `apply fixtures` builds and seals packages"));
         }
         _ => return Ok(Some(command)),
     };
@@ -117,7 +117,9 @@ fn environment(id: &str, package: &fixtures::Package, saved: Option<&Saved>) -> 
     }
     for source in ["copernicus-glo-30", "land-polygons"] {
         if !package.sources.contains_key(source) {
-            return Err(format!("{id}: declare the exact historical `{source}` version in data/env/fixtures.toml; a baked terrain sidecar or newest source is not a raw input"));
+            return Err(format!(
+                "{id}: declare the exact historical `{source}` version in data/env/fixtures.toml; a baked terrain sidecar or newest source is not a raw input"
+            ));
         }
     }
     Ok(Env {
@@ -138,7 +140,9 @@ fn recipes(
     let steps = (collection.recipes)(env, regions, store, inputs)?;
     for (source, params) in env.requests.borrow().iter() {
         if !env.moves.contains_key(source) && !env.live.contains_key(&(source.clone(), params.clone())) {
-            return Err(Unplanned::Invalid(format!("fixture selection has no exact request for `{source}` {params:?}; explicitly prepare with --move {source}@VERSION")));
+            return Err(Unplanned::Invalid(format!(
+                "fixture selection has no exact request for `{source}` {params:?}; explicitly prepare with --move {source}@VERSION"
+            )));
         }
     }
     Ok(steps)
@@ -591,17 +595,7 @@ pub(super) fn perform(
                 &env,
                 package.assets.clone(),
             )?;
-            selection.copied_sources = selection
-                .copies
-                .iter()
-                .filter_map(|copy| {
-                    sources
-                        .iter()
-                        .find(|source| source.id == copy.key.source)
-                        .filter(|source| source.redistribute)
-                        .map(|source| source.id.clone())
-                })
-                .collect();
+            selection.public_copies(&sources, saved.as_ref().map(|saved| &saved.selection));
             selection.check()?;
             std::fs::write(tree.join(".obc-data.json"), serde_json::to_vec(&selection).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
@@ -655,7 +649,11 @@ pub(super) fn perform(
                 return Err(Code::PlanOutdated.error("fixture configuration or destination changed before upload"));
             }
             run.record(&Event::Phase { phase: Phase::Upload })?;
-            for copy in selection.copies.iter().filter(|copy| selection.copied_sources.contains(&copy.key.source)) {
+            for copy in selection
+                .copies
+                .iter()
+                .filter(|copy| sources.iter().any(|source| source.id == copy.key.source && source.redistribute))
+            {
                 for input in &copy.record.files {
                     let object = store.object(&input.sha256);
                     if hash_file(&object)? != (input.sha256.clone(), input.size) {
