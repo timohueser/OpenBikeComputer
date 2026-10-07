@@ -760,3 +760,24 @@ fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/pack
 version = "digest"
 refresh = "manual"
 redistribute = true
+
+[[source]]
+id = "fixture-kandel-ride"
+kind = "data"
+attribution = "User-provided Komoot GPX export"
+obligations = "Confirm the GPX export licence before redistribution"
+fetch = { kind = "by-hand", url = "https://github.com/timohueser/OpenBikeComputer/blob/develop/fixtures/sources/kandel-ride/kandel.gpx" }
+version = "digest"
+refresh = "manual"
+redistribute = false
+
+[[source]]
+id = "fixture-peak-view-photos"
+kind = "data"
+licence = "CC-BY-4.0 AND GPL-3.0-only AND LicenseRef-Copernicus-DEM AND LicenseRef-swisstopo-open-data"
+attribution = "Photographs © Timo Hüser; Copernicus DEM and swissALTI3D terrain; project-authored skylines"
+obligations = "Keep photo attribution, source DEM credits and skyline GPL notices"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = false
