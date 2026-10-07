@@ -1654,6 +1654,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `region create` | `Region` |
 | `region delete` | `Deletion` |
 | `region ENV ID`, `layer`, `undo` | `Edited` |
+| `config review` | `ConfigReview` |
+| `config commit` | `ConfigCommit` |
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan`, `dev --check` | `EnvPlan` |
@@ -2190,6 +2192,63 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "ConfigCommit": {
+      "properties": {
+        "commit": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commit"
+      ],
+      "type": "object"
+    },
+    "ConfigFile": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ConfigReview": {
+      "additionalProperties": false,
+      "properties": {
+        "diff": {
+          "type": "string"
+        },
+        "files": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConfigFile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        "head": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "head",
+        "files",
+        "diff"
+      ],
+      "type": "object"
     },
     "Credential": {
       "additionalProperties": false,
