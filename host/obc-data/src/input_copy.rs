@@ -121,6 +121,13 @@ impl Record {
     }
 
     pub fn validate(&self, key: &Key) -> Result<(), String> {
+        if !crate::is_kebab(&self.source)
+            || self.version.is_empty()
+            || self.version.contains(['/', '\\'])
+            || matches!(self.version.as_str(), "." | "..")
+        {
+            return Err("input copy source or version is not normalized".into());
+        }
         let mut names = BTreeSet::new();
         let mut urls = BTreeSet::new();
         for file in &self.files {
@@ -140,6 +147,74 @@ impl Record {
     pub(crate) fn check_local(&self, store: &Store) -> Result<(), String> {
         let _lock = store.lock(&fetch::snapshot_lock(&self.source, &self.version))?;
         fetch::merge(store, &self.source, &self.version, &self.snapshot().files).map(drop)
+    }
+
+    /// Restore only the named exact objects of a validated immutable input record.
+    pub fn materialize(
+        &self,
+        key: &Key,
+        store: &Store,
+        http: &Http,
+        remote: &Remote,
+        params: &[(String, String)],
+        selected: &[String],
+    ) -> Result<Snapshot, String> {
+        self.validate(key)?;
+        if selected.iter().any(|name| !self.files.iter().any(|file| &file.name == name)) {
+            return Err(format!("{}: the input copy lacks a selected file", key.path()));
+        }
+        let all = self.snapshot().files;
+        let _using = store.using()?;
+        let _lock = store.lock(&fetch::snapshot_lock(&self.source, &self.version))?;
+        let merged = fetch::merge(store, &self.source, &self.version, &all)?;
+        for file in all.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)) {
+            let object = store.object(&file.sha256);
+            if !object.is_file() {
+                let key = format!("{INPUTS}/objects/{}", file.sha256);
+                let _object = store.lock(&format!("copy-object-{}", file.sha256))?;
+                match remote {
+                    Remote::Bucket(bucket) => {
+                        let part = store.partial(&format!("copy-{}.part", file.sha256));
+                        std::fs::create_dir_all(part.parent().expect("a partial has a parent"))
+                            .map_err(|e| e.to_string())?;
+                        bucket.get(&key, &part)?;
+                        let (hash, size) = hash_file(&part)?;
+                        if hash != file.sha256 || size != file.size {
+                            let _ = std::fs::remove_file(&part);
+                            return Err(format!("{key}: the retained bytes have another SHA-256 or size"));
+                        }
+                        store.insert(&part, &file.sha256)?;
+                    }
+                    Remote::Public(url) => {
+                        let url = format!("{url}/{key}");
+                        let _lock = Http::lock(store, &url)?;
+                        http.download(store, &url, &Expect { sha256: Some(&file.sha256), ..Expect::default() })?;
+                    }
+                }
+            }
+            let (hash, size) = hash_file(&object)?;
+            if hash != file.sha256 || size != file.size {
+                return Err(format!("{}: the retained object has another SHA-256 or size", object.display()));
+            }
+        }
+        if let Some(snapshot) = merged {
+            store.put_snapshot(&snapshot)?;
+        }
+        if !params.is_empty() {
+            store.put_requested(
+                &self.source,
+                &Requested {
+                    version: self.version.clone(),
+                    params: sorted(params),
+                    files: all.iter().map(|f| f.name.clone()).collect(),
+                },
+            )?;
+        }
+        Ok(Snapshot {
+            source: self.source.clone(),
+            version: self.version.clone(),
+            files: all.into_iter().filter(|f| selected.is_empty() || selected.contains(&f.name)).collect(),
+        })
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -329,72 +404,30 @@ impl Restore<'_> {
                 return Err(format!("{}: the copy file names differ from the live read", key.path()));
             }
             for file in record.files {
-                let record = FileRecord {
-                    name: file.name.clone(),
-                    url: file.url,
-                    size: file.size,
-                    sha256: file.sha256,
-                    retrieved: crate::date::timestamp(crate::date::now()),
-                };
-                if files.get(&file.name).is_some_and(|old: &FileRecord| {
-                    old.url != record.url || old.sha256 != record.sha256 || old.size != record.size
-                }) {
+                if files
+                    .get(&file.name)
+                    .is_some_and(|old: &File| old.url != file.url || old.sha256 != file.sha256 || old.size != file.size)
+                {
                     return Err(format!("{}@{version}: conflicting retained file {}", request.source.id, file.name));
                 }
-                files.insert(file.name, record);
+                files.insert(file.name.clone(), file);
             }
         }
         if selected.iter().any(|name| !files.contains_key(name)) {
             return Ok(None);
         }
-        let all: Vec<_> = files.into_values().collect();
-        let _using = store.using()?;
-        let _lock = store.lock(&fetch::snapshot_lock(&request.source.id, version))?;
-        let merged = fetch::merge(store, &request.source.id, version, &all)?;
-        for file in all.iter().filter(|file| selected.is_empty() || selected.contains(&file.name)) {
-            let object = store.object(&file.sha256);
-            if !object.is_file() {
-                let key = format!("{INPUTS}/objects/{}", file.sha256);
-                let _object = store.lock(&format!("copy-object-{}", file.sha256))?;
-                match self.remote {
-                    Remote::Bucket(bucket) => {
-                        let part = store.partial(&format!("copy-{}.part", file.sha256));
-                        std::fs::create_dir_all(part.parent().expect("a partial has a parent"))
-                            .map_err(|e| e.to_string())?;
-                        bucket.get(&key, &part)?;
-                        let (hash, size) = hash_file(&part)?;
-                        if hash != file.sha256 || size != file.size {
-                            let _ = std::fs::remove_file(&part);
-                            return Err(format!("{key}: the retained bytes have another SHA-256 or size"));
-                        }
-                        store.insert(&part, &file.sha256)?;
-                    }
-                    Remote::Public(url) => {
-                        let url = format!("{url}/{key}");
-                        let _lock = Http::lock(store, &url)?;
-                        http.download(store, &url, &Expect { sha256: Some(&file.sha256), ..Expect::default() })?;
-                    }
-                }
-            }
-            let (hash, size) = hash_file(&object)?;
-            if hash != file.sha256 || size != file.size {
-                return Err(format!("{}: the retained object has another SHA-256 or size", object.display()));
-            }
-        }
-        if let Some(snapshot) = merged {
-            store.put_snapshot(&snapshot)?;
-        }
-        if !params.is_empty() {
-            store.put_requested(
-                &request.source.id,
-                &Requested { version: version.clone(), params, files: all.iter().map(|f| f.name.clone()).collect() },
-            )?;
-        }
-        Ok(Some(Snapshot {
+        let record = Record {
             source: request.source.id.clone(),
             version: version.clone(),
-            files: all.into_iter().filter(|f| selected.is_empty() || selected.contains(&f.name)).collect(),
-        }))
+            files: files.into_values().collect(),
+        };
+        let key = Key {
+            source: record.source.clone(),
+            version: record.version.clone(),
+            digest: digest(record.files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()))),
+        };
+        let snapshot = record.materialize(&key, store, http, self.remote, &params, selected)?;
+        Ok(Some(snapshot))
     }
 }
 
