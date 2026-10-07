@@ -97,12 +97,10 @@ impl Product for Planner {
                 paths: [
                     "host/obc-data-steps/src/planner.rs",
                     "host/obc-data-steps/src/planner",
+                    "host/obc-data-steps/src/maps.rs",
+                    "host/obc-data-steps/src/maps",
                     "host/obc-data-steps/src/region_sources.rs",
                     "host/obc-data-steps/src/lib.rs",
-                    "host/obc-data/src/env.rs",
-                    "host/obc-data/src/regions.rs",
-                    "host/obc-data/src/product.rs",
-                    "host/obc-data/src/sources.rs",
                 ]
                 .map(String::from)
                 .into(),

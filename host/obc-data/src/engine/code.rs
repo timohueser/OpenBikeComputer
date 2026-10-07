@@ -142,6 +142,15 @@ impl Context {
             }
         }
         let mut files = listed(&root, &pathspecs)?;
+        let mut backend = BTreeSet::new();
+        if owner.is_some() {
+            if let Some(dir) = self.rust[&target].directory(env!("CARGO_PKG_NAME")) {
+                backend = listed_paths(&root, &[dir.join("src")])?;
+                backend
+                    .retain(|path| path != &dir.join("src/cli/tui.rs") && !path.starts_with(dir.join("src/cli/tui")));
+                files.extend(backend.iter().filter(|path| path.is_file()).cloned());
+            }
+        }
         if let Some(path) = code.paths.iter().find(|path| !files.iter().any(|file| file.starts_with(root.join(path)))) {
             return Err(format!("{path} is ignored by git"));
         }
@@ -158,6 +167,7 @@ impl Context {
             }
         }
         let mut git_inputs: BTreeSet<_> = files.iter().map(|file| relative(&root, file)).collect::<Result<_, _>>()?;
+        git_inputs.extend(backend.iter().map(|path| relative(&root, path)).collect::<Result<BTreeSet<_>, _>>()?);
         git_inputs.extend(pathspecs.iter().map(|path| path.to_string_lossy().replace('\\', "/")));
         let mut hashes = BTreeMap::new();
         for file in files {
@@ -344,6 +354,10 @@ fn is_rust(file: &Path) -> bool {
 
 /// The files at or below `pathspecs` that git tracks or does not ignore.
 fn listed(root: &Path, pathspecs: &[PathBuf]) -> Result<BTreeSet<PathBuf>, String> {
+    Ok(listed_paths(root, pathspecs)?.into_iter().filter(|path| path.is_file()).collect())
+}
+
+fn listed_paths(root: &Path, pathspecs: &[PathBuf]) -> Result<BTreeSet<PathBuf>, String> {
     if pathspecs.is_empty() {
         return Ok(BTreeSet::new());
     }
@@ -361,13 +375,7 @@ fn listed(root: &Path, pathspecs: &[PathBuf]) -> Result<BTreeSet<PathBuf>, Strin
         return Err(format!("git ls-files: {}", stderr.trim()));
     }
     let paths = String::from_utf8(output.stdout).map_err(|_| "git ls-files: a path is not UTF-8")?;
-    // A tracked file that the worktree deleted is listed too.
-    Ok(paths
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(|path| root.join(path))
-        .filter(|path| path.is_file())
-        .collect())
+    Ok(paths.split('\0').filter(|path| !path.is_empty()).map(|path| root.join(path)).collect())
 }
 
 /// The files that the Rust file `source` names: the argument of `include_str!`, `include_bytes!`
@@ -456,7 +464,9 @@ mod tests {
         write(&root.join("steps/src/lib.rs"), "mod plan; mod ui;\n");
         write(&root.join("steps/src/plan.rs"), "pub fn requests() {}\n");
         write(&root.join("steps/src/ui.rs"), "pub fn draw() {}\n");
-        write(&root.join("obc-data/src/cli.rs"), "pub fn screen() {}\n");
+        write(&root.join("obc-data/src/cli/tui.rs"), "pub fn screen() {}\n");
+        write(&root.join("obc-data/src/regions/geofabrik.rs"), "pub fn parse() {}\n");
+        write(&root.join("obc-data/src/store.rs"), "pub fn snapshot() {}\n");
         let owner = OwnerCode {
             crate_name: "steps".into(),
             code: Code { paths: vec!["steps/src/lib.rs".into(), "steps/src/plan.rs".into()], ..Default::default() },
@@ -465,7 +475,9 @@ mod tests {
         let before = context.owner_identity(&root, &owner).unwrap();
         assert!(before.files.contains_key("rust/compiler"));
         assert!(!before.files.contains_key("steps/src/ui.rs"));
-        assert!(!before.files.contains_key("obc-data/src/cli.rs"));
+        assert!(!before.files.contains_key("obc-data/src/cli/tui.rs"));
+        assert!(before.files.contains_key("obc-data/src/regions/geofabrik.rs"));
+        assert!(before.files.contains_key("obc-data/src/store.rs"));
         assert!(before.git_inputs.contains("Cargo.lock"));
         assert!(before.git_inputs.contains("steps/Cargo.toml"));
         let git = |args: &[&str]| {
@@ -475,9 +487,19 @@ mod tests {
         git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture"]);
         before.committed(&root).unwrap();
         write(&root.join("steps/src/ui.rs"), "pub fn new_screen() {}\n");
-        write(&root.join("obc-data/src/cli.rs"), "pub fn new_controls() {}\n");
+        write(&root.join("obc-data/src/cli/tui.rs"), "pub fn new_controls() {}\n");
         assert_eq!(context.owner_identity(&root, &owner).unwrap(), before);
         before.committed(&root).unwrap();
+        for (path, original) in [
+            ("obc-data/src/regions/geofabrik.rs", "pub fn parse() {}\n"),
+            ("obc-data/src/store.rs", "pub fn snapshot() {}\n"),
+        ] {
+            write(&root.join(path), "pub fn different_selection() {}\n");
+            let changed = context.owner_identity(&root, &owner).unwrap();
+            assert_ne!(changed.source_config, before.source_config, "{path}");
+            assert!(changed.committed(&root).unwrap_err().contains("not committed"));
+            write(&root.join(path), original);
+        }
         write(&root.join("steps/src/plan.rs"), "pub fn other_requests() {}\n");
         assert_ne!(context.owner_identity(&root, &owner).unwrap().files, before.files);
         assert!(before.committed(&root).unwrap_err().contains("not committed"));
