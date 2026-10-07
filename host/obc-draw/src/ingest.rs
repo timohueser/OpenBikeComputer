@@ -684,3 +684,27 @@ pub fn compute_bbox(ing: &Ingested) -> (i64, i64, i64, i64) {
     }
     bounds
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn tags(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
+        pairs.iter().copied().collect()
+    }
+
+    /// The closed-way polygon/line gate: `area=yes` forces an area even with no AREA_TAGS key,
+    /// `area=no` forces a line even with one present, and an absent `area` falls back to the keys.
+    #[test]
+    fn is_area_overrides_and_tag_fallback() {
+        assert!(is_area(&tags(&[("area", "yes")])), "area=yes ⇒ area regardless of other tags");
+        assert!(!is_area(&tags(&[("area", "no"), ("natural", "water")])), "area=no ⇒ never an area");
+        assert!(!is_area(&tags(&[("natural", "cliff")])), "a closed cliff remains a line");
+        for key in AREA_TAGS {
+            assert!(is_area(&tags(&[(key, "whatever")])), "AREA_TAGS key {key} ⇒ area");
+        }
+        assert!(!is_area(&tags(&[("highway", "residential")])), "no area tag, no AREA_TAGS key ⇒ line");
+        // An unrecognized `area` value falls through to the tag fallback (not yes/no).
+        assert!(!is_area(&tags(&[("area", "maybe")])), "unknown area value, no AREA_TAGS key ⇒ line");
+        assert!(is_area(&tags(&[("area", "maybe"), ("building", "yes")])), "unknown area value falls back to tags");
+    }
+}
