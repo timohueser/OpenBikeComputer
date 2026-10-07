@@ -175,7 +175,7 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
                 paths.extend(probe.paths);
                 let code = Code {
                     paths,
-                    crates: if service == "routing" { vec!["route-server".into()] } else { Vec::new() },
+                    crates: if service == "routing" { vec!["planner-service".into()] } else { Vec::new() },
                     target: (service == "routing").then(|| target["triple"].as_str().unwrap().into()),
                     rust: (service == "routing")
                         .then_some(obc_data::engine::Rust::Prepared { profile: obc_data::engine::Profile::Release }),
@@ -241,7 +241,7 @@ pub(super) fn native_routing(args: &[String]) -> Option<Result<Value, String>> {
             .map_err(|e| e.to_string())?;
         let target = config.target.ok_or("configure the native routing target")?;
         let code = Code {
-            crates: vec!["route-server".into()],
+            crates: vec!["planner-service".into()],
             target: Some(target["triple"].as_str().ok_or("configure the native routing triple")?.into()),
             rust: Some(obc_data::engine::Rust::Prepared { profile: obc_data::engine::Profile::Release }),
             ..Default::default()

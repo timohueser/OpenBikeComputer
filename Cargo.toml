@@ -22,8 +22,8 @@ members = [
     "firmware/obc-crc",
     "firmware/obc-link",
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
-    "host/route-engine",
-    "host/route-build",
+    "planner/router",
+    "planner/router-build",
     "host/obc-host-core",
     "host/obc-file-source",
     "host/obc-inspect",
@@ -51,7 +51,7 @@ members = [
     "host/obc-data",
     "host/obc-data-steps",
     # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
-    "apps/route-server",
+    "planner/service",
     "apps/obc-ios-host",
     "apps/obc-sim",
     "apps/obc-web-demo",
@@ -98,8 +98,8 @@ obc-platform = { path = "firmware/obc-platform" }
 obc-replay = { path = "host/obc-replay" }
 obc-tree-walk = { path = "host/obc-tree-walk" }
 obcm-assemble = { path = "host/obcm-assemble", default-features = false }
-route-build = { path = "host/route-build" }
-route-engine = { path = "host/route-engine" }
+planner-router-build = { path = "planner/router-build" }
+planner-router = { path = "planner/router" }
 
 embedded-graphics = "0.8"
 heapless = "0.8"

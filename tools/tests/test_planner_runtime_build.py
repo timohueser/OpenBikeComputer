@@ -35,7 +35,7 @@ class RuntimeBuild(unittest.TestCase):
             root = Path(temporary)
             payload = root / "payload"
             (payload / "bin").mkdir(parents=True)
-            executable = payload / "bin/route-server"
+            executable = payload / "bin/planner-service"
             executable.write_bytes(b"authored executable fixture")
             executable.chmod(0o755)
             license = payload / "python/example.dist-info/licenses/LICENSE"
@@ -46,9 +46,9 @@ class RuntimeBuild(unittest.TestCase):
             second = runtime.archive(payload, root / "second.tar.gz")
             self.assertEqual(first, second)
             with tarfile.open(root / "first.tar.gz") as archive:
-                self.assertEqual(archive.getnames(), ["bin/route-server", "python/example.dist-info/licenses/LICENSE"])
-                self.assertEqual(archive.getmember("bin/route-server").mode, 0o755)
-                self.assertEqual(archive.getmember("bin/route-server").mtime, 0)
+                self.assertEqual(archive.getnames(), ["bin/planner-service", "python/example.dist-info/licenses/LICENSE"])
+                self.assertEqual(archive.getmember("bin/planner-service").mode, 0o755)
+                self.assertEqual(archive.getmember("bin/planner-service").mtime, 0)
                 self.assertEqual(archive.extractfile("python/example.dist-info/licenses/LICENSE").read(), b"A package license.\n")
             (payload / "outside").symlink_to(root / "first.tar.gz")
             with self.assertRaisesRegex(ValueError, "regular files"):
@@ -88,7 +88,7 @@ class RuntimeBuild(unittest.TestCase):
             root = Path(temporary)
             manifest = root / "Cargo.toml"
             manifest.write_text('[profile.release]\nopt-level = 3\n')
-            heading = "## Linux routing service (`route-server`, `x86_64-unknown-linux-gnu`)\n"
+            heading = "## Linux routing service (`planner-service`, `x86_64-unknown-linux-gnu`)\n"
             notices = root / "THIRD-PARTY.md"
             notices.write_text(heading + "\nHTTP library licence.\n\n## Other artifact\n\nOther licence.\n")
             with patch.object(runtime, "ROOT", root):
@@ -191,7 +191,7 @@ class RuntimeBuild(unittest.TestCase):
                 self.assertEqual(argv[0], "cargo")
                 self.assertEqual(argv[1:5], ["build", "--release", "--locked", "--offline"])
                 self.assertNotIn("RUSTC", kwargs["env"])
-                executable = Path(kwargs["env"]["CARGO_TARGET_DIR"]) / TARGET["triple"] / "release/route-server"
+                executable = Path(kwargs["env"]["CARGO_TARGET_DIR"]) / TARGET["triple"] / "release/planner-service"
                 executable.parent.mkdir(parents=True)
                 executable.write_bytes(b"authored image-built fixture")
                 return ""

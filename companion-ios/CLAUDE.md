@@ -33,7 +33,7 @@ pbxproj.**
 
 Needs Xcode 26.x, an iOS simulator runtime, XcodeGen, Node.js 22 or later, and the Rust toolchain.
 XcodeGen installs the pinned replay renderer and builds native map styles and search with npm.
-App builds link `OBCHost` and compile `route-server` for the selected Rust iOS target.
+App builds link `OBCHost` and compile `planner-service` for the selected Rust iOS target.
 Map styles and POI kinds come from the web planner sources. Before package tests without XcodeGen, run
 `npm ci --prefix companion-ios/ReplayAssets` from the repository root.
 The existing host build script also connects the package to the Rust framework.

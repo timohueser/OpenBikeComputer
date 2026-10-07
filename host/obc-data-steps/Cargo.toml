@@ -36,8 +36,8 @@ obc-pack = { path = "../obc-pack" }
 # The terrain steps.
 obc-dem = { path = "../obc-dem", features = ["terrarium"] }
 # The planner routing step and stored graph verification.
-route-engine = { path = "../route-engine" }
-route-build = { path = "../route-build" }
+planner-router = { path = "../../planner/router" }
+planner-router-build = { path = "../../planner/router-build" }
 # The planner search dump step.
 obc-search-bake = { path = "../obc-search-bake" }
 serde = { version = "1", features = ["derive"] }

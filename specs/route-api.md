@@ -1,6 +1,6 @@
 # Route API
 
-`POST /v1/route` on the [route service](../apps/route-server/README.md) calculates
+`POST /v1/route` on the [route service](../planner/service/README.md) calculates
 routes. `POST /v1/shape` finds the plan points of a route that follows a line. The
 native provider answers both with the same code (`planner_router_call` with the call
 `route` or `shape`). `GET /v1/region` describes the routing package. Request and

@@ -87,7 +87,7 @@ def deploy(args):
     if not args.apply: return
     install(host, args.data_dir, document, base)
     units = {
-        "routing": service(f"{base}/bin/route-server {base}/routing",
+        "routing": service(f"{base}/bin/planner-service {base}/routing",
                            {"ROUTE_LISTEN": f"127.0.0.1:{route_port}", "ROUTE_WORKERS": "2", "ROUTE_ORIGIN": args.site_origin}, "2048M"),
         "search": service(f"/usr/local/bin/node {base}/search/server.mjs",
                           {"OBC_SEARCH_PORT": str(search_port), "OBC_SEARCH_DATA": base + "/search/data",
@@ -146,11 +146,11 @@ def install(host, data, document, base):
              f"{host}:{base}/search/", input=search_files)
     maps.run("rsync", "-az", str(maps.ROOT / "apps/planner-search/node_modules") + "/", f"{host}:{base}/search/node_modules/")
     ssh(host, f"""cd {SOURCE}
-/root/.cargo/bin/cargo build --locked --release -p route-server -j 2
+/root/.cargo/bin/cargo build --locked --release -p planner-service -j 2
 mkdir -p {base}/bin
-cp target/release/route-server {base}/bin/.route-server.next
-mv {base}/bin/.route-server.next {base}/bin/route-server
-{base}/bin/route-server {base}/routing --verify
+cp target/release/planner-service {base}/bin/.planner-service.next
+mv {base}/bin/.planner-service.next {base}/bin/planner-service
+{base}/bin/planner-service {base}/routing --verify
 UV_PROJECT_ENVIRONMENT={base}/search/.venv uv sync --locked --group search-runtime --project {SOURCE}
 id obc-planner-downloads >/dev/null 2>&1 || useradd --system --home-dir {DOWNLOAD_CACHE} --shell /usr/sbin/nologin obc-planner-downloads
 install -d -o obc-planner-downloads -g obc-planner-downloads {DOWNLOAD_CACHE} /var/cache/obc-planner-downloads
