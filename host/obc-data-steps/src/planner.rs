@@ -448,7 +448,7 @@ impl Planner {
         if on("sun") {
             steps.push(python(
                 "planner/sun",
-                vec![Input::layer("planner/terrain")],
+                vec![Input::layer("planner/terrain/grid")],
                 json!({
                     "bounds": bounds,
                     "time_zone": region.time_zone,
@@ -460,6 +460,8 @@ impl Planner {
                 &[
                     "tools/planner_sun.py",
                     "tools/planner_sun_horizons.py",
+                    "tools/planner_offline.py",
+                    "tools/planner_runtime.py",
                     "tools/planner_map_archive.py",
                     "tools/planner_geo.py",
                 ],
@@ -1160,6 +1162,12 @@ mod tests {
         let temp = temp("planner-python");
         let store = store(&temp, &["2026-10-01"]);
         let steps = Planner.steps(&root(), &env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap().steps;
+        let sun = steps.iter().find(|step| step.name == "planner/sun").unwrap();
+        assert!(
+            matches!(sun.inputs.as_slice(), [Input::Layer { name, files }]
+            if name == "planner/terrain/grid" && files.is_empty()),
+            "sun consumes portable terrain without its private bake input"
+        );
         let mut python = 0;
         for step in &steps {
             let Run::Command(argv) = &step.run else { continue };

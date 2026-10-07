@@ -18,8 +18,8 @@ from pmtiles.reader import Reader
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
-from . import step_request
-from .planner_map_archive import empty_mbtiles, tile_window
+from . import planner_offline as offline, planner_runtime as runtime, step_request
+from .planner_map_archive import tile_window
 
 SIZE, DEM_ZOOM, INDEX_ZOOM, UNKNOWN = 512, 12, 10, 32767
 BOUND_STEP = 16
@@ -63,7 +63,7 @@ def terrain_coverage(header, bounds, distance_m):
     return coverage
 
 
-def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, horizon_directions=72):
+def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, horizon_directions=72, *, terrain_grid_sha256=None):
     if output.exists():
         raise ValueError("Output exists; choose a fresh path")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -116,9 +116,11 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
                             writer.write_tile(zxy_to_tileid(z, x, y), data)
                             count, payload = count + 1, payload + len(data)
                     print(f"Sun index zoom {z}: {count} tiles, {payload / 1e6:.2f} MB", flush=True)
+                binding = ({"terrain_grid_sha256": terrain_grid_sha256} if terrain_grid_sha256 is not None
+                           else {"terrain_sha256": hashlib.file_digest(stream, "sha256").hexdigest()})
                 metadata = {"sun_format": 1, "dem_zoom": DEM_ZOOM, "index_zoom": INDEX_ZOOM,
                             "distance_m": distance_m, "timezone": timezone, "bound_step": BOUND_STEP,
-                            "terrain_sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
+                            **binding,
                             "attribution": reader.metadata().get("attribution", ""),
                             "bounds": bounds, "coverage": coverage}
                 header.update(min_zoom=0, max_zoom=INDEX_ZOOM, tile_type=TileType.WEBP, tile_compression=Compression.NONE)
@@ -131,39 +133,84 @@ def bake(terrain, output, bounds, timezone, distance_m, horizon_samples=32, hori
     print(json.dumps({"index_tiles": count, "index_payload_bytes": payload, "archive_bytes": output.stat().st_size}))
 
 
-def step(request=None):
-    """Bake the sunlight archive, or metadata-only unknown coverage for empty terrain."""
-    from pmtiles.convert import mbtiles_to_pmtiles
+def terrain_grid(request, directory):
+    """Reconstruct only verified terrain payloads; the grid manifest is their identity."""
+    from pmtiles.reader import MmapSource, all_tiles
 
+    source = step_request.view(request["layers"]["planner/terrain/grid"], directory / "source")
+    index = json.loads((source / "index.json").read_bytes())
+    if index["format"] != 1 or index["kind"] != "terrain" or index["map_zoom"] != 11:
+        raise ValueError("Use a terrain grid index")
+    for name in index["files"]:
+        runtime.relative_path(name)
+        if name != "maps/terrain.json" and not (Path(name).parent.as_posix() == "maps/tiles/terrain" and name.endswith(".pmtiles")):
+            raise ValueError("Terrain grid selects an unrelated file")
+    offline.materialize(source, directory, index, ("maps/terrain.json", "maps/tiles/terrain/"))
+    metadata = json.loads((directory / "maps/terrain.json").read_bytes())
+    if metadata != index["metadata"]:
+        raise ValueError("Terrain grid metadata differs")
+    digest = hashlib.sha256(runtime.encoded(index)).hexdigest()
+    parts = [directory / name for name in sorted(index["files"]) if name.endswith(".pmtiles")]
+    if not parts:
+        from .planner_geo import bounds as parse_bounds
+        bounds = parse_bounds(metadata["bounds"] if isinstance(metadata["bounds"], str)
+                              else ",".join(map(str, metadata["bounds"])))
+        if metadata.get("format") != "webp":
+            raise ValueError("Use WebP terrain")
+        header = {"tile_type": TileType.WEBP, "max_zoom": metadata["maxzoom"],
+                  **dict(zip(("min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7"),
+                             (round(value * 1e7) for value in bounds)))}
+        return None, header, metadata, digest
+    archive = directory / "terrain.pmtiles"
+    header = None
+    with archive.open("wb") as stream:
+        writer = Writer(stream)
+        try:
+            for part in parts:
+                with part.open("rb") as selected:
+                    read = MmapSource(selected)
+                    actual = Reader(read).header()
+                    if actual["tile_type"] != TileType.WEBP or actual["tile_compression"] != Compression.NONE:
+                        raise ValueError("Use uncompressed WebP terrain")
+                    keys = ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7")
+                    if header is not None and any(actual[key] != header[key] for key in keys):
+                        raise ValueError("Terrain grid archive headers differ")
+                    header = actual
+                    for tile, data in all_tiles(read):
+                        z, x, y = tile
+                        level = min(z, index["map_zoom"])
+                        if part.name != f"{level}-{x >> (z-level)}-{y >> (z-level)}.pmtiles":
+                            raise ValueError("Terrain tile belongs to another grid archive")
+                        writer.write_tile(zxy_to_tileid(*tile), data)
+            writer.finalize(dict(header), metadata)
+        finally:
+            writer.tile_f.close()
+    with archive.open("rb") as stream:
+        header = Reader(lambda offset, length: os.pread(stream.fileno(), length, offset)).header()
+    return archive, header, metadata, digest
+
+
+def step(request=None):
+    """Bake sunlight from the portable terrain grid, including empty unknown coverage."""
     request = request if request is not None else step_request.read()
     options = request["options"]
     output = Path(request["output"]) / "sun"
     output.mkdir()
-    source = Path(request["layers"]["planner/terrain"]["terrain.mbtiles"])
-    empty = empty_mbtiles(source)
-    if empty is not None:
-        from .planner_sun_horizons import ANGLE_STEP
-        from .planner_geo import bounds as parse_bounds
-        header, metadata = empty
-        try:
-            parse_bounds(metadata.get("bounds", ""))
-        except argparse.ArgumentTypeError as error:
-            raise ValueError("Empty terrain has invalid bounds") from error
+    with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+        terrain, header, metadata, digest = terrain_grid(request, Path(temporary))
         coverage = terrain_coverage(header, options["bounds"], options["distance_m"])
-        with source.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        metadata = {"sun_format": 3, "dem_zoom": DEM_ZOOM, "index_zoom": INDEX_ZOOM,
-                    "bound_step": BOUND_STEP, "horizon_min_zoom": 8, "horizon_zoom": DEM_ZOOM,
-                    "horizon_samples": options["horizon_samples"], "horizon_directions": options["horizon_directions"],
-                    "horizon_step": ANGLE_STEP, "distance_m": options["distance_m"], "timezone": options["time_zone"],
-                    "terrain_sha256": digest, "attribution": metadata.get("attribution", ""),
-                    "bounds": options["bounds"], "coverage": coverage}
-        (output / "empty.json").write_text(json.dumps(metadata, sort_keys=True, separators=(",", ":")))
-        return
-    terrain = Path(request["output"]).with_name("terrain.pmtiles")
-    mbtiles_to_pmtiles(source, terrain, None)
-    bake(terrain, output / "sun.pmtiles", options["bounds"], options["time_zone"], options["distance_m"],
-         options["horizon_samples"], options["horizon_directions"])
+        if terrain is None:
+            from .planner_sun_horizons import ANGLE_STEP
+            metadata = {"sun_format": 3, "dem_zoom": DEM_ZOOM, "index_zoom": INDEX_ZOOM,
+                        "bound_step": BOUND_STEP, "horizon_min_zoom": 8, "horizon_zoom": DEM_ZOOM,
+                        "horizon_samples": options["horizon_samples"], "horizon_directions": options["horizon_directions"],
+                        "horizon_step": ANGLE_STEP, "distance_m": options["distance_m"], "timezone": options["time_zone"],
+                        "terrain_grid_sha256": digest, "attribution": metadata.get("attribution", ""),
+                        "bounds": options["bounds"], "coverage": coverage}
+            (output / "empty.json").write_bytes(runtime.encoded(metadata))
+            return
+        bake(terrain, output / "sun.pmtiles", options["bounds"], options["time_zone"], options["distance_m"],
+             options["horizon_samples"], options["horizon_directions"], terrain_grid_sha256=digest)
 
 
 def main():
