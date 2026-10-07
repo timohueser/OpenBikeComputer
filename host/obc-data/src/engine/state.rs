@@ -84,11 +84,11 @@ pub fn published(
     )
 }
 
-fn resolved(
+fn resolved<'a>(
     store: &Store,
-    steps: &[Step],
+    steps: &'a [Step],
     environment: &Environment,
-    mut code: impl FnMut(&Step) -> Result<(String, BTreeMap<String, String>, bool), String>,
+    mut code: impl FnMut(&'a Step) -> Result<(String, BTreeMap<String, String>, bool), String>,
     observation: bool,
 ) -> Result<Vec<LayerState>, String> {
     let mut users: HashMap<&str, Vec<String>> = HashMap::new();
