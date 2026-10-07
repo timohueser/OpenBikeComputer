@@ -527,12 +527,6 @@ fn node_has_features(node: &Node) -> bool {
     }
 }
 
-/// A cell artifact's path inside the run's output directory.
-///
-/// Keyed by band, not by `log2`: two bands may legitimately share a cell size (`fine` and `network`
-/// are both `2^18` in the recommended table). Every cell's path is stated explicitly in the
-/// manifest, so a publisher never has to infer it.
-
 fn sha256_file(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let mut h = Sha256::new();
@@ -709,6 +703,11 @@ fn write_manifest(
 }
 
 /// The output path of a cell artifact, for a caller that has a [`CutSummary`] and wants the file.
+/// A cell artifact's path inside the run's output directory.
+///
+/// Keyed by band, not by `log2`: two bands may legitimately share a cell size (`fine` and `network`
+/// are both `2^18` in the recommended table). Every cell's path is stated explicitly in the
+/// manifest, so a publisher never has to infer it.
 pub fn artifact_path(out_dir: &Path, artifact: &CellArtifact) -> PathBuf {
     out_dir.join(&artifact.path)
 }
