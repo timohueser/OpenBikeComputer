@@ -603,7 +603,7 @@ fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
     view.taken.only = vec!["none".into()];
     let resolved = view.taken.clone();
     view.restore_selection();
-    assert_eq!(view.skipped, ["move:land".into(), "move:osm".into()].into());
+    assert_eq!(view.skipped, std::collections::BTreeSet::from(["move:land".to_string(), "move:osm".to_string()]));
     view.group = 1;
     assert_eq!(view.toggle(), ["move:land"]);
     view.restore_selection();
