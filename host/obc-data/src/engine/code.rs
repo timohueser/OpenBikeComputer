@@ -107,6 +107,11 @@ impl Context {
         mode: Mode<'_>,
         owner: Option<&str>,
     ) -> Result<CodeIdentity, String> {
+        let mut code = code.clone();
+        if !self.include_engine && owner.is_none() {
+            code.crates.retain(|name| name != env!("CARGO_PKG_NAME"));
+        }
+        let code = &code;
         let root = root.canonicalize().map_err(|e| format!("{}: {e}", root.display()))?;
         let native = match mode {
             Mode::Execution => self.build.preflight(&root, code)?,
@@ -444,6 +449,17 @@ fn manifest_hash(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::engine::tests::{fixture, write};
+
+    #[test]
+    fn engine_only_layers_replay_without_a_rust_target() {
+        let fixture = fixture("engine-only-producer");
+        let code = Code { crates: vec!["obc-data".into()], ..Default::default() };
+        let identity = Context::default().identity(&fixture.root(), &code).unwrap();
+        assert_eq!(identity.rust, None);
+        let replay = code.source_config(&fixture.root(), identity.rust.as_ref()).unwrap();
+        assert_eq!(replay.files, identity.source_config);
+        assert_eq!(replay.rust, identity.rust);
+    }
 
     #[test]
     fn owner_projection_excludes_ui_and_resolves_recorded_targets_without_execution_tools() {
