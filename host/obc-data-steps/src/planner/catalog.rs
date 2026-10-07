@@ -32,7 +32,7 @@ pub fn named(release: &Release) -> Result<Vec<LayerFile>, String> {
 }
 
 pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Result<Pointer, String> {
-    let origins = super::runtime::publication(root)?;
+    let origins = super::publish::publication(root)?;
     let public = format!("{}/planner", origins.objects_origin);
     let document: Value = serde_json::from_slice(&descriptor(release, store)?).map_err(|e| e.to_string())?;
     let id = release.id();
@@ -43,7 +43,11 @@ pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Resu
         .filter(|kind| files.contains_key(&format!("maps/{kind}.json")))
         .map(|kind| (kind, format!("{tiles}/{kind}.json")))
         .collect();
-    let mut active = json!({
+    let active = json!({
+        "device_catalog": format!("{}/cell-catalog/catalog.json", origins.objects_origin),
+        "routing": format!("{}/planner-api/releases/{id}/routing", origins.api_origin),
+        "search": format!("{}/planner-api/releases/{id}/search", origins.api_origin),
+        "downloads": format!("{}/planner-api/releases/{id}/downloads", origins.api_origin),
         "id": id, "manifest": format!("{public}/releases/{id}/release.json"),
         "region": document["region"], "name": document["name"], "bounds": document["bounds"],
         "basemap": format!("{tiles}/basemap.json"), "places": format!("{tiles}/places.json"),
@@ -53,10 +57,6 @@ pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Resu
         "attribution": document["attribution"], "landcover_attribution": document["landcover_attribution"],
         "terrain_attribution": document["terrain_attribution"], "layers": layers,
     });
-    let services = super::runtime::identities(release)?;
-    if services.as_object().is_some_and(|services| !services.is_empty()) {
-        active["services"] = services;
-    }
     Ok(Pointer { document: json!({"format": 1, "origins": origins, "active": active}).as_object().unwrap().clone() })
 }
 
@@ -68,7 +68,7 @@ fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String
     Ok(path)
 }
 
-fn descriptor(release: &Release, store: &Store) -> Result<Vec<u8>, String> {
+pub(super) fn descriptor(release: &Release, store: &Store) -> Result<Vec<u8>, String> {
     let file =
         release.named.iter().find(|file| file.path == "release.json").ok_or("planner has no named release.json")?;
     std::fs::read(checked(store, file)?).map_err(|e| e.to_string())
@@ -87,7 +87,6 @@ struct File {
 
 pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
     release.check_named()?;
-    super::runtime::verify(previous, release, store)?;
     let body = descriptor(release, store)?;
     let document: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
     if release.product != "planner"

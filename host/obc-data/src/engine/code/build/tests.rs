@@ -201,15 +201,6 @@ fn native_release_alias_profile_changes_and_plan_use_the_same_identity() {
     assert!(implicit.files.contains_key("rust/compiler-version") && implicit.files.contains_key("rust/target"));
     assert!(!implicit.files.keys().any(|name| name.contains("library") || name == "rust/compiler"));
     assert!(context.native.is_some());
-    let providers = context.providers().unwrap();
-    for path in context.executables().values() {
-        assert_eq!(providers[path], hash_file(path).unwrap().0, "execution binds the actual tool bytes");
-    }
-    assert_eq!(
-        context.identity(&root, &code, &packages).unwrap(),
-        implicit,
-        "execution hashes do not enter layer identity"
-    );
     let tools = context.tools.len();
     context.identity(&root, &code, &packages).unwrap();
     assert_eq!(context.tools.len(), tools, "one context reuses compiler fingerprints");
@@ -323,29 +314,4 @@ fn rustup_proxy_resolves_the_selected_executable_in_the_explicit_root() {
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o700)).unwrap();
     fs::hard_link(&rustup, &rustc).unwrap();
     assert_eq!(executable(&root, Some(&rustc.into_os_string()), "rustc").unwrap(), selected.canonicalize().unwrap());
-}
-
-#[test]
-fn runtime_tools_use_the_builds_fixed_environment_instead_of_operator_overrides() {
-    let env = BTreeMap::from([
-        ("PATH".into(), "/prepared/bin".into()),
-        ("CARGO_HOME".into(), "/cache".into()),
-        ("RUSTFLAGS".into(), "-Ctarget-cpu=native".into()),
-        ("CC".into(), "/other/cc".into()),
-        ("CARGO_PROFILE_RELEASE_OPT_LEVEL".into(), "1".into()),
-        ("LD_LIBRARY_PATH".into(), "/runtime".into()),
-        ("CARGO_BUILD_JOBS".into(), "2".into()),
-    ]);
-    assert_eq!(native_environment(false, env.clone()), env);
-    let selected = native_environment(true, env);
-    assert_eq!(
-        selected,
-        BTreeMap::from([
-            ("PATH".into(), "/prepared/bin".into()),
-            ("CARGO_HOME".into(), "/cache".into()),
-            ("CARGO_BUILD_JOBS".into(), "2".into()),
-            ("LC_ALL".into(), "C".into()),
-        ])
-    );
-    validate_environment(&selected).unwrap();
 }

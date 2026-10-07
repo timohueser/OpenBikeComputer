@@ -88,6 +88,11 @@ pub trait Product: Sync {
         Err("this product has no Local app".into())
     }
 
+    /// Install and probe services before any product pointer switches.
+    fn activate(&self, _root: &Path, _release: &Release, _store: &Store, _commit: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Check stored artifacts before publication. `root` locates the offline verification tools.
     fn verify(
         &self,
