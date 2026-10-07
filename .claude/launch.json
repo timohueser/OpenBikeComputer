@@ -44,7 +44,7 @@
       "name": "verification-demo",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "demo:coverage"],
-      "cwd": "apps/obc-verification",
+      "cwd": "tools/verification",
       "port": 4180
     }
   ]

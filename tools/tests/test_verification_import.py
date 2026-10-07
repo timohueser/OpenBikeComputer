@@ -5,10 +5,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-spec = importlib.util.spec_from_file_location("verification_import", Path(__file__).resolve().parents[2] / "apps/obc-verification/ops/import_results.py")
+spec = importlib.util.spec_from_file_location("verification_import", Path(__file__).resolve().parents[2] / "tools/verification/ops/import_results.py")
 report = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(report)
-publish_spec = importlib.util.spec_from_file_location("verification_publish", Path(__file__).resolve().parents[2] / "apps/obc-verification/ops/publish.py")
+publish_spec = importlib.util.spec_from_file_location("verification_publish", Path(__file__).resolve().parents[2] / "tools/verification/ops/publish.py")
 publish = importlib.util.module_from_spec(publish_spec)
 publish_spec.loader.exec_module(publish)
 

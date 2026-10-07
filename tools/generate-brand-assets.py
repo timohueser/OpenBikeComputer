@@ -76,7 +76,7 @@ def main():
         write(paper, svg(shapes, tile=True))
         write(ink, svg(shapes, tile=True, dark=True))
         for folder in [ROOT / "docs/assets/brand", ROOT / "builder/app/public/brand",
-                       ROOT / "apps/obc-verification/static/brand"]:
+                       ROOT / "tools/verification/static/brand"]:
             write(folder / "signpost.svg", svg(shapes, adaptive=True))
             write(folder / "app-icon.svg", svg(shapes, tile=True))
             png(paper, folder / "apple-touch-icon.png", 180)
