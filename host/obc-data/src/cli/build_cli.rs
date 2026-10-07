@@ -580,12 +580,18 @@ pub(super) fn load(root: &Path, name: &str, store: &Store) -> Result<Loaded, Err
     let mut registry = crate::sources::Registry::load(root).map_err(|e| Code::InvalidData.error(e))?;
     let settings = crate::settings::current(store)?;
     settings.policies(&mut registry.sources)?;
-    let (env, regions) = if name == "live" {
+    let (mut env, regions) = if name == "live" {
         (settings.env()?, settings.regions()?)
     } else {
         let regions = crate::settings::regions(root, store)?;
         (Env::load(root, name, &regions)?, regions)
     };
+    env.manual = registry
+        .sources
+        .iter()
+        .filter(|source| source.refresh == Refresh::Manual)
+        .map(|source| source.id.clone())
+        .collect();
     Ok(Loaded { env, sources: registry.sources, regions })
 }
 

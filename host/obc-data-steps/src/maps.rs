@@ -1748,6 +1748,7 @@ pub(crate) mod tests {
                 let version = wanted.version.clone().unwrap_or_else(|| if first { day } else { "2099-01-01" }.into());
                 let tile = &wanted.params[0].1;
                 fetched(store, &wanted.source, &version, &[], &[(format!("#tile={tile}/{tile}.tif"), tile.clone())]);
+                env.manual.insert(wanted.source.clone());
                 env.resolve(&wanted, version);
             }
         }

@@ -166,12 +166,14 @@ impl Settings {
 pub fn regions(root: &Path, store: &Store) -> Result<Regions, String> {
     let presets = if root.join("data/regions").is_dir() { Regions::load(root)? } else { Regions::new(Vec::new())? };
     let mut found: BTreeMap<_, _> = presets.iter().map(|region| (region.id.clone(), region.clone())).collect();
-    for region in current(store)?.regions()?.iter() {
-        found.entry(region.id.clone()).or_insert_with(|| region.clone());
+    for settings in [read(store, "applied")?, read(store, "pending")?].into_iter().flatten() {
+        for region in settings.regions()?.iter() {
+            found.entry(region.id.clone()).or_insert_with(|| region.clone());
+        }
     }
     let saved = store.root().join("regions");
     if saved.is_dir() {
-        found.extend(Regions::load_dir(&saved)?.iter().map(|region| (region.id.clone(), region.clone())));
+        found.extend(Regions::definitions(&saved)?.into_iter().map(|region| (region.id.clone(), region)));
     }
     Regions::new(found.into_values().collect())
 }
@@ -180,6 +182,56 @@ pub fn regions(root: &Path, store: &Store) -> Result<Regions, String> {
 mod tests {
     use super::*;
     use crate::store::tests::Scratch;
+
+    #[test]
+    fn stored_unions_resolve_presets_and_applied_regions_survive_pending_edits() {
+        let scratch = Scratch::new("settings-regions");
+        let root = scratch.0.join("repository");
+        let store = Store::at(scratch.0.join("store"));
+        let boxed = "name = \"Box\"\nkind = \"box\"\nbox = [7.0, 48.0, 8.0, 49.0]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
+        for id in ["a", "b"] {
+            crate::engine::tests::write(&root.join(format!("data/regions/{id}.toml")), boxed);
+        }
+        crate::engine::tests::write(&store.root().join("regions/both.toml"),
+            "name = \"Both\"\nkind = \"union\"\nunion = [\"a\", \"b\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n");
+        assert_eq!(regions(&root, &store).unwrap().leaves("both").unwrap().len(), 2);
+        let custom = Regions::new(vec![crate::regions::parse_region("custom", boxed).unwrap()]).unwrap();
+        let mut selected = Settings::default();
+        selected.select(&custom, "custom").unwrap();
+        applied(&store, &selected).unwrap();
+        selected.select(&regions(&root, &store).unwrap(), "a").unwrap();
+        save(&store, &selected).unwrap();
+        assert!(regions(&root, &store).unwrap().get("custom").is_some());
+        crate::engine::tests::write(&root.join("data/sources.toml"), include_str!("../../../data/sources.toml"));
+        let registry = crate::sources::Registry::effective(&root, &store).unwrap();
+        assert_eq!(registry.sources.iter().find(|source| source.id == "wikidata").unwrap().refresh, Refresh::Days(90));
+        let request = crate::product::Wanted {
+            source: "wikidata".into(),
+            version: None,
+            params: vec![("area".into(), "a".into())],
+        };
+        let mut env = Env::default();
+        env.manual = registry
+            .sources
+            .iter()
+            .filter(|source| source.refresh == Refresh::Manual)
+            .map(|source| source.id.clone())
+            .collect();
+        env.resolve(&request, "2026-01-01".into());
+        assert_eq!(
+            env.pinned(&crate::product::Wanted { params: vec![("area".into(), "b".into())], ..request.clone() })
+                .version,
+            None
+        );
+        env.manual.insert("wikidata".into());
+        env.resolve(&request, "2026-01-01".into());
+        assert_eq!(
+            env.pinned(&crate::product::Wanted { params: vec![("area".into(), "b".into())], ..request })
+                .version
+                .as_deref(),
+            Some("2026-01-01")
+        );
+    }
 
     #[test]
     fn a_selection_captures_union_members_and_applying_keeps_newer_edits() {

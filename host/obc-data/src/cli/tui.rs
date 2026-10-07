@@ -389,6 +389,7 @@ impl App {
     /// Read the sources again; with `check_now`, after a check of upstream now.
     fn reload(&mut self, root: &Path, products: &[&dyn Product], check_now: bool) -> Result<(), Error> {
         (self.sources, self.live) = source_listing(root, products, check_now)?;
+        self.regions = crate::settings::regions(root, &Store::open()?).map(|regions| regions.iter().cloned().collect());
         Ok(())
     }
 

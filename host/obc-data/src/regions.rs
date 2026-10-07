@@ -181,6 +181,11 @@ impl Regions {
 
     /// Read a directory laid out like `data/regions/`.
     pub fn load_dir(dir: &Path) -> Result<Self, String> {
+        Self::new(Self::definitions(dir)?)
+    }
+
+    /// Parse definitions before resolving references across multiple directories.
+    pub(crate) fn definitions(dir: &Path) -> Result<Vec<Region>, String> {
         let mut files = Vec::new();
         collect(dir, &mut files)?;
         let mut list = Vec::new();
@@ -191,7 +196,7 @@ impl Regions {
             let region = parse_region(&id, &text)?;
             list.push(region);
         }
-        Self::new(list)
+        Ok(list)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Region> {

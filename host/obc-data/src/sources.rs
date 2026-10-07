@@ -347,6 +347,13 @@ impl Registry {
         Ok(Self { sources: parse_sources(&read(&root.join("data/sources.toml"))?)? })
     }
 
+    /// Source declarations with this store's effective refresh policies.
+    pub fn effective(root: &Path, store: &crate::store::Store) -> Result<Self, String> {
+        let mut registry = Self::load(root)?;
+        crate::settings::current(store)?.policies(&mut registry.sources)?;
+        Ok(registry)
+    }
+
     /// The registry of the repository above the current directory, or else above the running
     /// program.
     pub fn live() -> Result<Self, String> {

@@ -203,6 +203,7 @@ impl App {
         self.saved = updated.saved.clone();
         match effect {
             Effect::Initial => {
+                self.regions = updated.regions;
                 self.sources = updated.sources;
                 self.live = updated.live;
                 self.status = updated.status;
@@ -210,6 +211,7 @@ impl App {
                 self.edited = updated.edited;
             }
             Effect::Policy(_, _) | Effect::CheckNow => {
+                self.regions = updated.regions;
                 self.sources = updated.sources;
                 self.live = updated.live;
                 self.edited = updated.edited;

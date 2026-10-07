@@ -362,9 +362,7 @@ fn root() -> Result<std::path::PathBuf, Error> {
 }
 
 fn registry(root: &Path) -> Result<Registry, Error> {
-    let mut registry = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?;
-    crate::settings::current(&Store::open()?)?.policies(&mut registry.sources)?;
-    Ok(registry)
+    Registry::effective(root, &Store::open()?).map_err(|e| Code::InvalidData.error(e))
 }
 
 fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Error> {
