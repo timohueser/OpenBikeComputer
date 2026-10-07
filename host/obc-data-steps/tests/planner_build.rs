@@ -249,7 +249,7 @@ time_zone = "Europe/Berlin"
             "python",
             "-c",
             r#"
-import copy, json, pathlib, sqlite3, sys
+import copy, hashlib, json, pathlib, sqlite3, sys
 from tools import planner_runtime as runtime, planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
 source = pathlib.Path(sys.argv[1])
 _, document = runtime.release(source, include_sources=False)
@@ -257,11 +257,11 @@ assert document['osm_sha256'] == sys.argv[2]
 indexes = {index['kind']: index for path in (source / 'indexes').rglob('index.json')
     for index in [json.loads(path.read_bytes())]}
 assert indexes['sun']['metadata']['sun_format'] == 3
-assert indexes['sun']['metadata']['terrain_sha256'] == indexes['terrain']['source']['sha256']
+assert indexes['sun']['metadata']['terrain_grid_sha256'] == hashlib.sha256(runtime.encoded(indexes['terrain'])).hexdigest()
 assert set(indexes['sun']['files']) == {'maps/sun.json'}
 options = {key: document[key] for key in ('region', 'bounds', 'attribution', 'landcover_attribution')}
 for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1]),
-                          ('sun', 'terrain_sha256', '0' * 64)]:
+                          ('sun', 'terrain_grid_sha256', '0' * 64)]:
     wrong = copy.deepcopy(indexes)
     wrong[kind]['metadata'][field] = value
     try:
