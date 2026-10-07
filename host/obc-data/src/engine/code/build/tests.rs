@@ -318,3 +318,28 @@ fn rustup_proxy_resolves_the_selected_executable_in_the_explicit_root() {
     fs::hard_link(&rustup, &rustc).unwrap();
     assert_eq!(executable(&root, Some(&rustc.into_os_string()), "rustc").unwrap(), selected.canonicalize().unwrap());
 }
+
+#[test]
+fn runtime_tools_use_the_builds_fixed_environment_instead_of_operator_overrides() {
+    let env = BTreeMap::from([
+        ("PATH".into(), "/prepared/bin".into()),
+        ("CARGO_HOME".into(), "/cache".into()),
+        ("RUSTFLAGS".into(), "-Ctarget-cpu=native".into()),
+        ("CC".into(), "/other/cc".into()),
+        ("CARGO_PROFILE_RELEASE_OPT_LEVEL".into(), "1".into()),
+        ("LD_LIBRARY_PATH".into(), "/runtime".into()),
+        ("CARGO_BUILD_JOBS".into(), "2".into()),
+    ]);
+    assert_eq!(native_environment(false, env.clone()), env);
+    let selected = native_environment(true, env);
+    assert_eq!(
+        selected,
+        BTreeMap::from([
+            ("PATH".into(), "/prepared/bin".into()),
+            ("CARGO_HOME".into(), "/cache".into()),
+            ("CARGO_BUILD_JOBS".into(), "2".into()),
+            ("LC_ALL".into(), "C".into()),
+        ])
+    );
+    validate_environment(&selected).unwrap();
+}

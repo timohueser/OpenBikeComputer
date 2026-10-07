@@ -99,7 +99,10 @@ impl Metadata {
             }
         };
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let mut command = Command::new(cargo);
+        Self::load_with(root, &target, Command::new(cargo))
+    }
+
+    pub fn load_with(root: &Path, target: &str, mut command: Command) -> Result<Self, String> {
         let output = crate::worker::compiler_command(&mut command)
             .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", &target])
             .current_dir(root)

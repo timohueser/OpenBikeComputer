@@ -10,7 +10,7 @@ mod build;
 mod python;
 mod rust;
 
-pub(crate) use python::executable as python_executable;
+pub use python::executable as python_executable;
 
 use super::{Code, CodeIdentity, OwnerCode, Profile, ResolvedRust, Rust, SourceIdentity};
 use crate::store::hash_file;
@@ -22,6 +22,34 @@ pub fn files(root: &Path, code: &Code) -> Result<BTreeMap<String, String>, Strin
 
 pub fn identity(root: &Path, code: &Code) -> Result<CodeIdentity, String> {
     Context::default().identity(root, code)
+}
+
+/// Exact native routing tools; this does not change the prepared layer declaration.
+#[derive(serde::Serialize)]
+pub struct RuntimeRust {
+    pub identity: String,
+    pub executables: BTreeMap<String, PathBuf>,
+    pub files: BTreeMap<PathBuf, String>,
+    pub configuration: BTreeMap<PathBuf, Option<String>>,
+}
+
+pub fn runtime_rust(root: &Path, prepared: &Code) -> Result<RuntimeRust, String> {
+    if prepared.rust != Some(Rust::Prepared { profile: Profile::Release }) || prepared.target.is_none() {
+        return Err("native routing requires the prepared release target declaration".into());
+    }
+    let mut context = Context::default();
+    context.build.runtime();
+    let mut code = prepared.clone();
+    code.rust = Some(Rust::Native { profile: Profile::Release });
+    code.python = None;
+    code.python_packages = None;
+    let identity = context.identity(root, &code)?;
+    Ok(RuntimeRust {
+        identity: hash(&identity.files),
+        executables: context.build.executables(),
+        files: context.build.providers(),
+        configuration: context.build.configuration(root)?,
+    })
 }
 
 pub fn source_config(root: &Path, code: &Code, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
@@ -143,7 +171,15 @@ impl Context {
         } else {
             if self.rust.get(&target).map(|metadata| metadata.unchanged(&root)).transpose()? != Some(true) {
                 let selected_target = target.as_deref().or_else(|| native.as_ref().map(|(target, _)| target.as_str()));
-                self.rust.insert(target.clone(), Arc::new(rust::Metadata::load(&root, selected_target)?));
+                let metadata = match self.build.cargo(&root)? {
+                    Some(command) => rust::Metadata::load_with(
+                        &root,
+                        selected_target.ok_or("native runtime target is missing")?,
+                        command,
+                    )?,
+                    None => rust::Metadata::load(&root, selected_target)?,
+                };
+                self.rust.insert(target.clone(), Arc::new(metadata));
             }
             self.rust[&target].selected(&root, &code.crates, self.include_engine || owner.is_some())?
         };

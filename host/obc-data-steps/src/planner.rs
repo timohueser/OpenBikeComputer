@@ -1047,3 +1047,8 @@ mod tests {
         assert_eq!(python, 26, "twelve producers, thirteen grid steps and the final index");
     }
 }
+
+/// Resolve only the native routing providers for the checked runtime adapter.
+pub fn native_routing(args: &[String]) -> Option<Result<serde_json::Value, String>> {
+    runtime::native_routing(args)
+}

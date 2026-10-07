@@ -27,17 +27,24 @@ pub(super) fn binding(step: &Step) -> Result<Option<obc_data::approval::RuntimeB
     };
     let target = step.options.get("target").cloned().ok_or("runtime has no selected target")?;
     let builder = step.options.get("builder").cloned().ok_or("runtime has no selected builder")?;
-    if builder["kind"] != "container"
-        || !builder["image"].as_str().is_some_and(|image| {
-            image
-                .strip_prefix("sha256:")
-                .is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
-        })
-    {
-        return Err(format!(
-            "automatic approval for native {service} runtime needs an exact prepared execution binding"
-        ));
-    }
+    let digest = |value: &Value| {
+        value.as_str().is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    };
+    let builder = match builder["kind"].as_str() {
+        Some("container")
+            if builder["image"]
+                .as_str()
+                .is_some_and(|image| image.strip_prefix("sha256:").is_some_and(|value| digest(&json!(value)))) =>
+        {
+            builder
+        }
+        Some("native")
+            if digest(&builder["execution"]) && builder.as_object().is_some_and(|value| value.len() == 2) =>
+        {
+            builder
+        }
+        _ => return Err(format!("automatic approval for {service} needs an exact runtime execution binding")),
+    };
     Ok(Some(obc_data::approval::RuntimeBinding { target, builder }))
 }
 
@@ -68,14 +75,18 @@ struct Probe {
 fn argv() -> Vec<String> {
     [
         "uv",
+        "--no-config",
         "run",
         "--no-project",
         "--no-sync",
         "--offline",
         "--no-python-downloads",
         "python",
-        "-m",
-        "tools.planner_runtime_build",
+        "-I",
+        "-S",
+        "-X",
+        "utf8",
+        "tools/planner_runtime_build.py",
     ]
     .map(str::to_string)
     .into()
@@ -83,10 +94,12 @@ fn argv() -> Vec<String> {
 
 fn probe(root: &Path, service: &str, target: &Value) -> Result<Probe, String> {
     let args = argv();
+    let python = obc_data::engine::code::python_executable(root)?;
     let mut child = Command::new(&args[0])
         .args(&args[1..])
         .args(["--probe", service])
         .current_dir(root)
+        .env("UV_PYTHON", &python)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -102,7 +115,14 @@ fn probe(root: &Path, service: &str, target: &Value) -> Result<Probe, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("runtime probe: {e}"))
+    let probe: Probe = serde_json::from_slice(&output.stdout).map_err(|e| format!("runtime probe: {e}"))?;
+    if probe.builder["kind"] == "native"
+        && probe.builder["providers"]["commands"]["python"].as_str().map(Path::new)
+            != Some(python.canonicalize().map_err(|e| e.to_string())?.as_path())
+    {
+        return Err("native runtime adapter differs from the selected Python interpreter".into());
+    }
+    Ok(probe)
 }
 
 fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Probe, String>) -> Steps {
@@ -129,28 +149,68 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
         });
         let prepared = wanted.and_then(|target| inspect(root, service, &target).map(|probe| (target, probe)));
         match prepared {
-            Ok((target, probe)) => {
+            Ok((target, mut probe)) => {
                 let name = format!("planner/runtime/{service}");
                 let artifact = format!("{service}.tar.gz");
                 let mut run = argv();
                 run.push("--step".into());
-                let mut paths = vec![BUILD.into(), "tools/step_request.py".into()];
+                let mut paths = vec![
+                    BUILD.into(),
+                    "tools/planner_runtime_tools.py".into(),
+                    "tools/step_request.py".into(),
+                    "tools/__init__.py".into(),
+                    "host/obc-data-steps/src/planner/runtime.rs".into(),
+                    "host/obc-data-steps/src/bin/obc-data-worker.rs".into(),
+                ];
+                if service == "routing" {
+                    paths.extend(
+                        [
+                            "host/obc-data/src/engine/code.rs",
+                            "host/obc-data/src/engine/code/build.rs",
+                            "host/obc-data/src/engine/code/rust.rs",
+                        ]
+                        .map(str::to_string),
+                    );
+                }
                 paths.extend(probe.paths);
+                let code = Code {
+                    paths,
+                    crates: if service == "routing" { vec!["route-server".into()] } else { Vec::new() },
+                    target: (service == "routing").then(|| target["triple"].as_str().unwrap().into()),
+                    rust: (service == "routing")
+                        .then_some(obc_data::engine::Rust::Prepared { profile: obc_data::engine::Profile::Release }),
+                    python: Some(Python::default()),
+                    python_packages: (service == "search").then(|| "search-runtime".into()),
+                    ..Default::default()
+                };
+                if probe.builder["kind"] == "native" {
+                    let bind = || -> Result<Value, String> {
+                        let mut providers = probe.builder["providers"].clone();
+                        if service == "routing" {
+                            providers["rust"] = serde_json::to_value(obc_data::engine::code::runtime_rust(
+                                root,
+                                &Code { paths: Vec::new(), python: None, python_packages: None, ..code.clone() },
+                            )?)
+                            .map_err(|e| e.to_string())?;
+                        }
+                        Ok(providers)
+                    };
+                    match bind() {
+                        Ok(providers) => {
+                            probe.builder["providers"] = providers;
+                            probe.builder = json!({"kind":"native", "execution":native_digest(&probe.builder)});
+                        }
+                        Err(reason) => {
+                            result.blocked.push(BlockedLayer { layer: name, reason });
+                            continue;
+                        }
+                    }
+                }
                 result.steps.push(Step {
                     name,
                     inputs: Vec::new(),
                     options: json!({"service": service, "target": target, "builder": probe.builder, "files": probe.files}),
-                    code: Code {
-                        paths,
-                        crates: if service == "routing" { vec!["route-server".into()] } else { Vec::new() },
-                        target: (service == "routing").then(|| target["triple"].as_str().unwrap().into()),
-                        rust: (service == "routing").then_some(obc_data::engine::Rust::Prepared {
-                            profile: obc_data::engine::Profile::Release,
-                        }),
-                        python: Some(Python::default()),
-                        python_packages: (service == "search").then(|| "search-runtime".into()),
-                        ..Default::default()
-                    },
+                    code,
                     outputs: vec![artifact.clone(), "runtime.json".into()],
                     run: Run::Command(run),
                     client: Client::Paths(vec![artifact]),
@@ -163,6 +223,47 @@ fn listed(root: &Path, mut inspect: impl FnMut(&Path, &str, &Value) -> Result<Pr
         result.blocked.push(BlockedLayer { layer: "planner/runtime".into(), reason });
     }
     result
+}
+
+/// A checked worker callback for the native routing builder's existing resolver.
+pub(super) fn native_routing(args: &[String]) -> Option<Result<Value, String>> {
+    if args.first().map(String::as_str) != Some("--planner-runtime-routing") {
+        return None;
+    }
+    Some((|| {
+        if args.len() != 1 {
+            return Err("native routing takes no additional arguments".into());
+        }
+        let root = std::env::var_os(obc_data::worker::ROOT).ok_or("start native routing through obc data")?;
+        let root = Path::new(&root);
+        obc_data::worker::check(root)?;
+        let config: Config = toml::from_str(&std::fs::read_to_string(root.join(RECIPE)).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let target = config.target.ok_or("configure the native routing target")?;
+        let code = Code {
+            crates: vec!["route-server".into()],
+            target: Some(target["triple"].as_str().ok_or("configure the native routing triple")?.into()),
+            rust: Some(obc_data::engine::Rust::Prepared { profile: obc_data::engine::Profile::Release }),
+            ..Default::default()
+        };
+        serde_json::to_value(obc_data::engine::code::runtime_rust(root, &code)?).map_err(|e| e.to_string())
+    })())
+}
+
+fn native_digest(builder: &Value) -> String {
+    let mut values = builder.clone();
+    let providers = &builder["providers"];
+    let files: std::collections::BTreeMap<_, _> =
+        providers["files"].as_object().into_iter().flatten().map(|(name, file)| (name, &file["sha256"])).collect();
+    values.as_object_mut().unwrap().remove("providers");
+    values.as_object_mut().unwrap().remove("execution");
+    sha256_hex(
+        &serde_json::to_vec(&obc_data::engine::sorted(json!({
+            "tools": files, "rust": providers["rust"]["identity"], "settings": values,
+            "policy": "isolated-no-site-utf8-empty-npm-config-no-global-paths-no-uv-config"
+        })))
+        .expect("native builder identity serializes"),
+    )
 }
 
 pub fn steps(root: &Path) -> Steps {
@@ -282,7 +383,11 @@ mod tests {
             assert_eq!(root, fixture.0);
             assert_eq!(target["triple"], "x86_64-unknown-linux-gnu");
             assert_eq!(target.get("node").is_some(), service == "search");
-            Ok(Probe { builder: json!({"kind": "native"}), paths: Vec::new(), files: Vec::new() })
+            Ok(Probe {
+                builder: json!({"kind": "container", "image": format!("sha256:{}", "a".repeat(64))}),
+                paths: Vec::new(),
+                files: Vec::new(),
+            })
         });
         assert_eq!(found.steps.len(), 3);
         assert_eq!(found.blocked.len(), 1);
@@ -297,7 +402,11 @@ mod tests {
         let target_only = std::fs::read_to_string(&recipe).unwrap();
         std::fs::write(&recipe, format!("{target_only}\n[publication]\nsite_origin='https://site.example'\napi_origin='https://api.example'\nobjects_origin='https://objects.example'\n")).unwrap();
         let configured = listed(&fixture.0, |_, _, _| {
-            Ok(Probe { builder: json!({"kind":"native"}), paths: Vec::new(), files: Vec::new() })
+            Ok(Probe {
+                builder: json!({"kind": "container", "image": format!("sha256:{}", "a".repeat(64))}),
+                paths: Vec::new(),
+                files: Vec::new(),
+            })
         });
         assert!(configured.blocked.is_empty());
         assert_eq!(
@@ -308,6 +417,36 @@ mod tests {
             configured.steps.iter().map(|step| &step.code).collect::<Vec<_>>(),
             found.steps.iter().map(|step| &step.code).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn native_approval_binds_tool_bytes_without_publishing_host_locations() {
+        let provider = |path: &str| json!({"path":path, "sha256":"a".repeat(64)});
+        let mut builder = json!({"kind":"native", "glibc":"2.31", "providers":{
+            "commands":{"python":"/tools/python"},
+            "files":{"python/executable":provider("/tools/python"), "python/libz":provider("/tools/libz.so")}
+        }});
+        let digest = native_digest(&builder);
+        builder["providers"]["commands"]["python"] = json!("/other/python");
+        builder["providers"]["files"]["python/executable"]["path"] = json!("/other/python");
+        assert_eq!(native_digest(&builder), digest);
+        builder["providers"]["files"]["python/libz"]["sha256"] = json!("b".repeat(64));
+        assert_ne!(native_digest(&builder), digest);
+        let mut step = Step {
+            name: "planner/runtime/downloads".into(),
+            inputs: Vec::new(),
+            options: json!({"target":{"triple":"x86_64-unknown-linux-gnu"},
+                "builder":{"kind":"native", "execution":native_digest(&builder)}}),
+            code: Code::default(),
+            outputs: Vec::new(),
+            run: Run::Command(Vec::new()),
+            client: Client::None,
+        };
+        assert_eq!(binding(&step).unwrap().unwrap().builder, step.options["builder"]);
+        step.options["builder"]["providers"] = builder["providers"].clone();
+        assert!(binding(&step).is_err(), "public native bindings contain no private execution paths");
+        step.options["builder"] = json!({"kind":"container", "image":format!("sha256:{}", "c".repeat(64))});
+        assert_eq!(binding(&step).unwrap().unwrap().builder, step.options["builder"]);
     }
 
     fn layer(step: &str) -> Layer {
