@@ -398,8 +398,11 @@ fn placeholders(template: &str) -> Vec<&str> {
     names
 }
 
-/// The names of the `NAME=VALUE`s that a fetch of `source` needs.
+/// The URL arguments of a source. Capture programs validate their own arguments.
 pub(crate) fn params(source: &Source) -> Vec<&str> {
+    if source.fetch.kind == FetchKind::Capture {
+        return Vec::new();
+    }
     let names = placeholders(source.fetch.url.as_deref().unwrap_or_default());
     names.into_iter().filter(|name| !fixed(name)).collect()
 }

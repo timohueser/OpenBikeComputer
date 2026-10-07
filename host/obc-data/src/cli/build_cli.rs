@@ -1681,6 +1681,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn capture_arguments_are_independent_of_the_source_url() {
+        use crate::fetch::tests::{quick, source};
+        let fixture = fixture("cli-capture-arguments");
+        let mut wikipedia = source("https://{language}.wikipedia.org/w/api.php", "date");
+        wikipedia.id = "wikipedia".into();
+        wikipedia.fetch.kind = crate::sources::FetchKind::Capture;
+        let sources = [wikipedia];
+        let (root, http, env) = (fixture.root(), quick(), env(&[]));
+        let mut fetch = fetcher(&root, &fixture.store, &http, &sources, &env, None);
+        let error = fetch(&Wanted {
+            source: "wikipedia".into(),
+            version: None,
+            params: [
+                ("collection", "landmarks"),
+                ("area", "europe/test"),
+                ("osm", "invalid-digest"),
+                ("poly", "invalid-digest"),
+                ("code", "capture-code"),
+            ]
+            .map(|(name, value)| (name.into(), value.into()))
+            .into(),
+        })
+        .unwrap_err();
+        assert_eq!(error.code, Code::FetchFailed);
+        assert!(error.message.contains("is not sha256:"), "the capture validates its own arguments: {error:?}");
+    }
+
+    #[test]
     fn a_source_that_nothing_names_is_fetched_at_the_newest_version() {
         use crate::fetch::tests::{quick, serve, source, whole};
         let (url, log) = serve(|_, _| whole(b"outline"));
