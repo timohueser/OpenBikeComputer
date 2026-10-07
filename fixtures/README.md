@@ -48,9 +48,22 @@ obc data runs RUN --result > fixture.plan.json
 obc data apply fixtures --plan fixture.plan.json
 ```
 
-`data/env/fixtures.toml` names packages, canonical regions and exact source versions. Preparation
-imports archives and missing raw tiles. Incomplete coverage blocks. Apply builds, verifies, seals,
-uploads and updates the Git catalog. Review and commit that update yourself.
+`data/env/fixtures.toml` names packages and canonical regions. Its input versions and build records
+serve the first import only. Each published package then carries its own exact selection and release
+in `.obc-data.json`. Later preparation keeps those source versions, request parameters and hashes.
+
+Refresh selected sources explicitly, then review the returned plan:
+
+```sh
+obc data prepare fixtures --only sim-freiburg --move geofabrik-extracts@VERSION
+obc data prepare fixtures --only sim-grimsel --move land-polygons@VERSION
+obc data prepare fixtures --only sim-grimsel --move copernicus-glo-30@VERSION
+```
+
+Plan does not download packages. Cold preparation verifies the exact catalog archive and restores
+selected raw objects from the Fixture bucket. Missing copies block; explicit moves permit acquisition.
+New requests need a move. Region expansion beyond the captured PBF blocks.
+Apply builds, verifies, seals, uploads and updates the Git catalog. Review and commit that update.
 
 Configure separate `OBC_FIXTURE_R2_*` and production target identities before planning. Preparation
 needs no production credentials. Main and Fixture buckets or local roots must not overlap.
@@ -79,8 +92,8 @@ belong in a pull request, not in a runtime asset folder.
 ## Package provenance
 
 Every registered map is an OBCM v19 file with Light and Dark styles. The geographic payload comes
-from a canonical bbox that is never self-sourced from a header. Each one has a build record in
-`sources/ride-assistant/` that pins its source and output digests.
+from a canonical bbox. The first import uses these records. After publication through `obc data`,
+the package selection and producer receipts replace them as the input authority.
 
 | Package | Build record |
 | --- | --- |

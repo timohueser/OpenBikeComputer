@@ -4,6 +4,28 @@
 the environments. It fetches sources into the store. The crate is `host/obc-data`.
 All files under `data/` are TOML. A file with an unknown key is refused.
 
+## Fixture collection
+
+`data/env/fixtures.toml` selects packages and canonical box regions. It is a collection, not an
+ordinary environment. First-import fields select exact recorded inputs only while no saved or
+published package selection exists.
+
+Each rebuilt archive contains `.obc-data.json`: the package id, original PBF coverage, selected
+source versions, request parameters, file hashes, immutable input-copy records, asset identities
+and the Maps release with its producer receipts. The local saved envelope adds the archive hash
+and size. The payload does not contain its own archive hash. The Git catalog marks these archives
+with `selection = true`; it remains the consumer authority.
+
+Read-only planning does not download archives. Explicit preparation can recover the exact catalog
+archive and restore its input objects. Missing copies refuse without upstream substitution.
+`--move SOURCE[@VERSION]` permits acquisition for that source. Saved requests keep their own exact
+versions; a new request needs an explicit move. Coverage outside the saved PBF is refused.
+
+Apply binds the prior selection, catalog bytes, current recipe and packaging identities. It verifies
+all outputs, uploads immutable archives and raw input objects to the isolated Fixture bucket, then
+replaces only the reviewed Git catalog entries. It does not commit or push. Saved selections and
+their exact objects remain store collection roots.
+
 ## Files
 
 ### `data/sources.toml`
