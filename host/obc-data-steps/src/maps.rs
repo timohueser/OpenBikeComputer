@@ -39,6 +39,24 @@ impl Product for Maps {
         "maps"
     }
 
+    fn planning_code(&self, _env: &Env) -> Result<Option<obc_data::engine::OwnerCode>, String> {
+        Ok(Some(obc_data::engine::OwnerCode {
+            crate_name: "obc-data-steps".into(),
+            code: Code {
+                paths: [
+                    "host/obc-data-steps/src/maps.rs",
+                    "host/obc-data-steps/src/maps",
+                    "host/obc-data-steps/src/region_sources.rs",
+                    "host/obc-data-steps/src/lib.rs",
+                ]
+                .map(String::from)
+                .into(),
+                libraries: obc_pack::step::geos_libraries()?,
+                ..Default::default()
+            },
+        }))
+    }
+
     fn prefix(&self) -> &'static str {
         "cell-catalog"
     }

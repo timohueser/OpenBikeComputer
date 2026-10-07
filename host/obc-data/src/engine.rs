@@ -160,6 +160,64 @@ impl Code {
     pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
         code::files(root, self)
     }
+
+    /// Resolve source/config at a recorded target without selecting its execution tools.
+    pub fn source_config(&self, root: &Path, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
+        code::source_config(root, self, rust)
+    }
+
+    /// Resolve content, execution and commitment inputs in one traversal.
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::identity(root, self)
+    }
+}
+
+/// Native acquisition or planning code, with scoped owner source and its actual dependencies.
+#[derive(Debug, Clone)]
+pub struct OwnerCode {
+    pub crate_name: String,
+    pub code: Code,
+}
+
+impl OwnerCode {
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::owner_identity(root, self)
+    }
+
+    pub fn source_config(&self, root: &Path, rust: &ResolvedRust) -> Result<SourceIdentity, String> {
+        code::owner_source_config(root, self, rust)
+    }
+}
+
+/// Source compatibility is resolved at the recorded producer target and profile.
+/// It permits consuming existing bytes; it does not prove that another host emits them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeIdentity {
+    pub files: BTreeMap<String, String>,
+    pub source_config: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+    /// Repository-relative physical inputs, before manifest or source projection.
+    pub git_inputs: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceIdentity {
+    pub files: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+    pub git_inputs: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedRust {
+    pub target: String,
+    pub build: Rust,
+}
+
+impl CodeIdentity {
+    /// Commitment checks the selected physical inputs, including projected build metadata.
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
 }
 
 pub enum Run {
@@ -822,6 +880,26 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     impl Fixture {
         pub(crate) fn root(&self) -> PathBuf {
             self.scratch.0.join("repository")
+        }
+
+        pub(crate) fn with_acquisition(&self) {
+            let root = self.root();
+            let source = crate::fetch::tests::source("https://example.org/file.bin", "date");
+            for path in crate::fetch::owner_code(&source).code.paths {
+                write(&root.join(path), "// fixture acquisition backend\n");
+            }
+            write(&root.join("host/obc-data/src/lib.rs"), "");
+            write(
+                &root.join("host/obc-data/Cargo.toml"),
+                "[package]\nname = \"obc-data\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            );
+            let manifest = root.join("Cargo.toml");
+            let mut workspace: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+            workspace["workspace"]["members"].as_array_mut().unwrap().push("host/obc-data".into());
+            write(&manifest, &toml::to_string(&workspace).unwrap());
+            let lock =
+                Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&root).output().unwrap();
+            assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
         }
 
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {

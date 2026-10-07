@@ -194,8 +194,8 @@ fn native_dev_alias_profile_changes_and_plan_use_the_same_identity() {
     let implicit = context.identity(&root, &code, &packages).unwrap();
     let explicit = Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..code.clone() };
     assert_eq!(context.identity(&root, &explicit, &packages).unwrap(), implicit);
-    assert!(implicit.contains_key("rust/compiler") && implicit.contains_key("rust/target"));
-    assert!(implicit.keys().any(|name| name.starts_with("rust/sysroot-library/libstd")));
+    assert!(implicit.files.contains_key("rust/compiler") && implicit.files.contains_key("rust/target"));
+    assert!(implicit.files.keys().any(|name| name.starts_with("rust/sysroot-library/libstd")));
     assert!(context.native.is_some());
     let tools = context.tools.len();
     context.identity(&root, &code, &packages).unwrap();
