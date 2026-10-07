@@ -6,7 +6,7 @@ mod api;
 mod apply_cli;
 mod auto_cli;
 mod build_cli;
-pub use build_cli::EnvPlan;
+pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
 pub mod commit_cli;
 mod dev_cli;
 mod edit_cli;
@@ -280,7 +280,8 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 Ok(())
             }
         }
-        Command::Dev(args) => dev_cli::run(&root()?, args, json),
+        Command::Dev(args) => dev_cli::run(&root()?, products, args, json),
+
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

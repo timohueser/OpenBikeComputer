@@ -184,9 +184,25 @@ pub fn verify(previous: Option<&Release>, release: &Release, store: &Store) -> R
         {
             continue;
         }
-        assemble_pick(&current, pick, store, &schema, &styles).map_err(|e| format!("selection `{id}`: {e}"))?;
+        let dir =
+            tempfile::Builder::new().prefix("obc-maps-verify-").tempdir_in(store.root()).map_err(|e| e.to_string())?;
+        assemble_pick(&current, pick, store, &schema, &styles, &dir.path().join("map.obcm"))
+            .map_err(|e| format!("selection `{id}`: {e}"))?;
     }
     Ok(())
+}
+
+/// Materialize the saved region with the same pinned assembly used by verification.
+pub(crate) fn assemble(release: &Release, store: &Store, destination: &std::path::Path) -> Result<(), String> {
+    let catalog = CatalogInputs::read(release, store)?;
+    let pick = catalog.picks.get(&release.region).ok_or("Local catalog has no complete saved region")?;
+    let schema = Schema::parse(&serde_json::to_string(&catalog.root.schema).map_err(|e| e.to_string())?)?;
+    let skin = |id: &str| -> Result<String, String> {
+        serde_json::to_string(catalog.root.skins.iter().find(|skin| skin.id == id).ok_or("catalog lacks a skin")?)
+            .map_err(|e| e.to_string())
+    };
+    let styles = MapStyles::parse(&skin("default")?, &skin("dusk")?)?;
+    assemble_pick(&catalog, pick, store, &schema, &styles, destination)
 }
 
 fn assemble_pick(
@@ -195,6 +211,7 @@ fn assemble_pick(
     store: &Store,
     schema: &Schema,
     styles: &MapStyles,
+    destination: &std::path::Path,
 ) -> Result<(), String> {
     let mut selected = Vec::new();
     let mut empty = Vec::new();
@@ -269,9 +286,7 @@ fn assemble_pick(
         landmarks: landmarks.iter().map(|source| source as &dyn ByteSource).collect(),
         peaks: peaks.iter().map(|source| source as &dyn ByteSource).collect(),
     };
-    let dir =
-        tempfile::Builder::new().prefix("obc-maps-verify-").tempdir_in(store.root()).map_err(|e| e.to_string())?;
-    let mut sink = obcm_assemble::native::FileStore::new(&dir.path().join("map.obcm")).map_err(|e| e.to_string())?;
+    let mut sink = obcm_assemble::native::FileStore::new(destination).map_err(|e| e.to_string())?;
     let scratch = obcm_assemble::native::FileScratch::new().map_err(|e| e.to_string())?;
     // The pinned selection declares polygon and partial coverage. Every named input is required
     // above; these flags permit the region's shape, never an absent artifact.

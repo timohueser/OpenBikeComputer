@@ -25,13 +25,23 @@ type ViewContext = (
     Result<crate::cli::edit_cli::Edited, String>,
     Result<Vec<crate::sources::Source>, String>,
     Result<Vec<crate::regions::Region>, String>,
+    Result<Option<String>, String>,
+    Result<Vec<(String, String)>, String>,
 );
 
-fn context(root: &Path) -> ViewContext {
+fn context(root: &Path, store: &Store) -> ViewContext {
     (
         crate::cli::edit_cli::current(root, super::LIVE).map_err(|error| error.message),
         crate::cli::registry(root).map(|registry| registry.sources).map_err(|error| error.message),
         crate::regions::Regions::load(root).map(|regions| regions.iter().cloned().collect()),
+        match std::fs::read_to_string(crate::env::Env::path(root, "local")) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        },
+        crate::local::saved(store).map(|saved| {
+            saved.into_iter().map(|saved| (saved.original.product.clone(), saved.original.id())).collect()
+        }),
     )
 }
 
@@ -80,6 +90,9 @@ pub(super) fn run_loop(
                     app.busy = true;
                     let mut updated = app.clone();
                     updated.notice = None;
+                    if matches!(next, Effect::LocalCheck(_) | Effect::LocalReview(_)) {
+                        updated.local.checked = Some(Instant::now());
+                    }
                     task = Some(scope.spawn(move || {
                         let observes = matches!(
                             next,
@@ -92,10 +105,12 @@ pub(super) fn run_loop(
                                 | Effect::Plan
                                 | Effect::Select(_)
                                 | Effect::PlanClean
+                                | Effect::LocalCheck(_)
+                                | Effect::LocalReview(_)
                         );
-                        let before = observes.then(|| context(root));
+                        let before = observes.then(|| context(root, store));
                         let result = perform(root, products, store, &mut updated, next.clone());
-                        if before.is_some_and(|before| before != context(root)) {
+                        if before.is_some_and(|before| before != context(root, store)) {
                             return (
                                 next,
                                 None,
@@ -150,11 +165,21 @@ pub(super) fn run_loop(
                     .unwrap_or(0)
                     .min(app.runs.len().saturating_sub(1));
                 if !app.busy && effect == Effect::None {
-                    if let Some(id) = app.observed_run() {
+                    if app.screen == Screen::Local && app.overlay.is_none() {
+                        effect = Effect::LocalState;
+                    } else if let Some(id) = app.observed_run() {
                         effect = Effect::ObserveRun(id);
                     }
                 }
                 read = Instant::now();
+            }
+            if app.screen == Screen::Local
+                && app.overlay.is_none()
+                && app.local.checked.is_none()
+                && !app.busy
+                && effect == Effect::None
+            {
+                effect = Effect::LocalCheck(app.local.request(false));
             }
             if app.screen == Screen::Store && app.store.is_none() && !app.busy && effect == Effect::None {
                 effect = Effect::PlanClean;
@@ -248,6 +273,7 @@ impl App {
             Effect::ObserveRun(id) | Effect::StopRun(id) | Effect::ReconcileRun(id) => {
                 if let Some(view) = updated.execution.view.filter(|view| view.run.summary.id == id) {
                     if self.execution.selected.as_ref() == Some(&id) {
+                        self.execution.dev_request = updated.execution.dev_request.clone();
                         self.execution.view = Some(view.clone());
                     }
                     if self.execution.handle.as_ref().is_some_and(|handle| handle.run == id) {
@@ -265,6 +291,57 @@ impl App {
                     }
                 }
             }
+            next @ (Effect::LocalCheck(_) | Effect::LocalReview(_)) => {
+                let review = matches!(next, Effect::LocalReview(_));
+                let request = match next {
+                    Effect::LocalCheck(request) | Effect::LocalReview(request) => request,
+                    _ => unreachable!(),
+                };
+                if self.local.request(false).app == request.app {
+                    let selected = self.local.rows().get(self.local.row).cloned();
+                    self.local.env = updated.local.env;
+                    self.local.optional = updated.local.optional;
+                    self.local.plan = updated.local.plan;
+                    self.local.request = updated.local.request;
+                    self.local.checked = updated.local.checked;
+                    self.local.state = updated.local.state;
+                    self.local.row = selected
+                        .and_then(|selected| self.local.rows().iter().position(|row| row == &selected))
+                        .unwrap_or(self.local.row.min(self.local.rows().len().saturating_sub(1)));
+                    if self.screen == Screen::Local && self.overlay == Some(super::Overlay::Plan) {
+                        self.asking = review
+                            && self
+                                .local
+                                .plan
+                                .as_ref()
+                                .is_some_and(|plan| !plan.needs_prepare && plan.blocked.is_empty());
+                        self.plan = self.local.plan.clone().map(|plan| PlanView::local(plan, request));
+                    }
+                }
+            }
+            Effect::LocalRegion(_) | Effect::LocalLayer(_, _) => {
+                self.local.env = updated.local.env;
+                self.local.plan = updated.local.plan;
+                self.local.request = updated.local.request;
+                self.local.checked = updated.local.checked;
+                self.local.state = updated.local.state;
+            }
+            Effect::LocalStart(request) => {
+                if let Some(handle) = updated.execution.handle {
+                    let id = handle.run.clone();
+                    self.execution.dev_request = Some((id.clone(), request));
+                    self.execution.handle = Some(handle);
+                    self.execution.active = None;
+                    if self.screen == Screen::Local && matches!(self.overlay, None | Some(super::Overlay::Plan)) {
+                        self.execution.selected = Some(id);
+                        self.execution.view = None;
+                        self.overlay = Some(super::Overlay::Run);
+                        self.scroll = 0;
+                    }
+                }
+            }
+            Effect::LocalControl(super::local::Control::Logs, _) => self.local.logs = updated.local.logs,
+            Effect::LocalControl(_, _) | Effect::LocalState => self.local.state = updated.local.state,
             Effect::None | Effect::Quit => {}
         }
     }
@@ -278,10 +355,20 @@ pub(super) fn perform(
     app: &mut App,
     effect: Effect,
 ) -> Result<(), Error> {
-    if matches!(effect, Effect::Start(_, _)) {
+    if matches!(effect, Effect::Start(_, _) | Effect::LocalStart(_)) {
         app.execution.handle = None;
     }
-    if !matches!(effect, Effect::ObserveRun(_) | Effect::StopRun(_) | Effect::ReconcileRun(_)) {
+    if !matches!(
+        effect,
+        Effect::ObserveRun(_)
+            | Effect::StopRun(_)
+            | Effect::ReconcileRun(_)
+            | Effect::LocalState
+            | Effect::LocalControl(
+                super::local::Control::Stop | super::local::Control::Open | super::local::Control::Logs,
+                _
+            )
+    ) {
         crate::worker::check(root).map_err(|message| {
             Code::Blocked.error(message).fix(
                 "Leave any input with Esc, press q to quit, then run obc data again to load the current Rust code.",
@@ -355,6 +442,40 @@ pub(super) fn perform(
             app.plan = Some(PlanView::new(plan));
             Ok(())
         }
+        Effect::LocalCheck(request) | Effect::LocalReview(request) => app.read_local(root, products, store, &request),
+        Effect::LocalRegion(region) => {
+            super::local::ensure_environment(root)?;
+            edit_cli::region(root, products, "local", &region)?;
+            app.local.request = None;
+            app.read_local(root, products, store, &app.local.request(false))
+        }
+        Effect::LocalLayer(layer, switch) => {
+            super::local::ensure_environment(root)?;
+            edit_cli::layer(root, products, "local", &layer, switch)?;
+            app.local.request = None;
+            app.read_local(root, products, store, &app.local.request(false))
+        }
+        Effect::LocalStart(request) => {
+            let handle = super::local::start(root, store, request)?;
+            app.saved = Some(format!("Started Local run {} · no app starts automatically", handle.run));
+            app.execution.handle = Some(handle);
+            Ok(())
+        }
+        Effect::LocalState => {
+            app.local.state = crate::dev::state(store)?;
+            Ok(())
+        }
+        Effect::LocalControl(control, selected) => {
+            match control {
+                super::local::Control::Start => {
+                    app.local.state = Some(crate::dev::start(root, store, &crate::dev::prepared(store)?, selected)?);
+                }
+                super::local::Control::Stop => app.local.state = crate::dev::stop_app(store, selected)?,
+                super::local::Control::Open => crate::dev::open(store, selected)?,
+                super::local::Control::Logs => app.local.logs = crate::dev::logs(store, selected)?,
+            }
+            Ok(())
+        }
         Effect::Select(only) => {
             let Some(view) = app.plan.as_mut() else { return Ok(()) };
             let taken = match only.is_empty() {
@@ -383,6 +504,9 @@ pub(super) fn perform(
                 }
                 _ => crate::cli::operation_cli::view(store, id)?,
             };
+            app.execution.dev_request = crate::operation::read(store, id)?
+                .and_then(|control| control.request.dev)
+                .map(|request| (id.clone(), request));
             app.execution.view = Some(std::sync::Arc::new(view));
             Ok(())
         }

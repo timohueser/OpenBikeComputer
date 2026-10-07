@@ -71,6 +71,9 @@ an admitted check or edit finishes before the terminal closes.
 
 | View | Keys |
 | --- | --- |
+| Local | `2` opens it; `r` selects its region; Space changes optional layers |
+| Local inputs | `R` checks saved data; `f` checks Live inputs over the network; `b` reviews work |
+| Local apps | arrows select an app; `s` starts or stops; `o` opens a browser; `l` reads logs |
 | Live region | `r` opens saved regions; `/` filters; Enter selects |
 | Region editor | `n` creates an area selection; `b` creates a Box; `d` reviews deletion |
 | Area selection | F5 loads the public area list; arrows and Space select; F3 shows selected areas |
@@ -84,7 +87,7 @@ an admitted check or edit finishes before the terminal closes.
 | Error | `!` opens the full message and fix; `x` dismisses it outside an input or Run |
 
 Region and policy writes save files for review and commit. `u` resets only the live environment;
-it does not reset region files or source policies. Opening a region view does not fetch inputs.
+it does not reset region files or source policies. Opening Regions or Local does not fetch or build data.
 Required Plan rows always apply. Only source moves have checkboxes; all can stay out.
 An incomplete preview requires preparation and a new review. Apply does not commit saved files.
 Esc hides a Run; `q` quits the viewing process. Neither stops the retained operation.
@@ -106,4 +109,4 @@ Compare current declarations and an exact release through `local::plan`.
 Name original client layers and extra paths. Review blockers before `local::adopt`.
 `local::saved` reads collection roots. Adoption preserves provenance and creates no build receipt.
 See the [Local contract](../../specs/obc-data.md#local-portable-data) and
-[Local Web commands](../obc-data-steps/src/planner/README.md).
+[Local app commands](../obc-data-steps/src/planner/README.md).

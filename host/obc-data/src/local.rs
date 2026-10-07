@@ -97,6 +97,53 @@ pub fn reuse(
     release: &Release,
     steps: &[Step],
 ) -> Result<BTreeMap<String, Layer>, String> {
+    let (checked, closed) = reuse_selection(root, store, product, release, steps)?;
+    if closed.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let required = checked
+        .layers
+        .iter()
+        .map(|layer| (layer.step.clone(), layer.files.iter().map(|file| file.path.clone()).collect()))
+        .collect();
+    let adopted = transfer(root, store, remote, product, release, steps, &required, &checked)?;
+    Ok(adopted
+        .original
+        .layers
+        .into_iter()
+        .filter(|layer| closed.contains(&layer.step))
+        .map(|layer| (layer.step.clone(), layer))
+        .collect())
+}
+
+/// Compare retained portable layers without network reads or provider admission.
+/// Missing selected bytes require explicit preparation before this overlay can build.
+pub fn reusable(
+    root: &Path,
+    store: &Store,
+    product: &dyn Product,
+    release: &Release,
+    steps: &[Step],
+) -> Result<BTreeMap<String, Layer>, String> {
+    let (checked, closed) = reuse_selection(root, store, product, release, steps)?;
+    for file in checked.layers.iter().flat_map(|layer| &layer.files) {
+        verify(store, file).map_err(|reason| format!("Prepare retained Local data: {reason}"))?;
+    }
+    Ok(release
+        .layers
+        .iter()
+        .filter(|layer| closed.contains(&layer.step))
+        .map(|layer| (layer.step.clone(), layer.clone()))
+        .collect())
+}
+
+fn reuse_selection(
+    root: &Path,
+    store: &Store,
+    product: &dyn Product,
+    release: &Release,
+    steps: &[Step],
+) -> Result<(Plan, BTreeSet<String>), String> {
     let required: BTreeMap<_, _> =
         steps.iter().filter(|step| product.portable(step)).map(|step| (step.name.clone(), Vec::new())).collect();
     let first = plan(root, store, product, release, steps, &required)?;
@@ -150,16 +197,12 @@ pub fn reuse(
             }
             continue;
         }
-        let adopted = transfer(root, store, remote, product, release, steps, &required, &checked)?;
-        return Ok(adopted
-            .original
-            .layers
-            .into_iter()
-            .filter(|layer| closed.contains(&layer.step))
-            .map(|layer| (layer.step.clone(), layer))
-            .collect());
+        return Ok((checked, closed));
     }
-    Ok(BTreeMap::new())
+    Ok((
+        Plan { product: product.name().into(), release: release.id(), layers: Vec::new(), blocked: Vec::new() },
+        BTreeSet::new(),
+    ))
 }
 
 struct Compatibility<'a> {

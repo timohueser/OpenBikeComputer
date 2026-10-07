@@ -74,6 +74,27 @@ pub trait Product: Sync {
         Err(Unplanned::Invalid("this product has no Local declarations".into()))
     }
 
+    /// Read pending Local work without acquiring data or admitting app processes.
+    fn dev_check(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+    ) -> Result<crate::cli::EnvPlan, String> {
+        Err("this product has no Local app plan".into())
+    }
+
+    /// Resolve only missing metadata for a later complete Local review.
+    fn dev_inputs(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+        _run: &mut crate::engine::runs::Run,
+    ) -> Result<crate::cli::EnvPlan, String> {
+        Err("this product has no Local app metadata".into())
+    }
+
     /// Resolve and verify a Local view under the caller's finite preparation run.
     fn dev_prepare(
         &self,

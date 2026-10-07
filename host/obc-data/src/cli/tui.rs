@@ -4,6 +4,7 @@
 mod background;
 mod execution;
 mod live;
+mod local;
 mod plan;
 mod regions;
 mod sources;
@@ -41,14 +42,16 @@ const LIVE: &str = "live";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     Live,
+    Local,
     Sources,
     Store,
     Runs,
 }
 
-/// The key of a screen is its number among the five screens of the TUI; 2 Local is not built.
-const SCREENS: [(char, &str, Screen); 4] = [
+/// Each screen has a stable keyboard number.
+const SCREENS: [(char, &str, Screen); 5] = [
     ('1', "Live", Screen::Live),
+    ('2', "Local", Screen::Local),
     ('3', "Sources", Screen::Sources),
     ('4', "Store", Screen::Store),
     ('5', "Runs", Screen::Runs),
@@ -65,6 +68,7 @@ enum Overlay {
     Region,
     Plan,
     Run,
+    AppLogs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +81,10 @@ enum Action {
     /// `enter` on a policy of Policy, or on a region of Region.
     Choose,
     CheckNow,
+    LocalRefresh,
+    LocalApp,
+    LocalOpen,
+    LocalLogs,
     /// The question before a clean.
     Ask,
     Clean,
@@ -146,6 +154,13 @@ enum Effect {
     /// `obc data plan live --only MOVES`: the moves that Plan takes; every move when empty.
     Select(Vec<String>),
     Start(crate::operation::Kind, Box<super::build_cli::EnvPlan>),
+    LocalCheck(crate::dev::Request),
+    LocalReview(crate::dev::Request),
+    LocalRegion(String),
+    LocalLayer(String, Switch),
+    LocalStart(crate::dev::Request),
+    LocalControl(local::Control, crate::dev::App),
+    LocalState,
     ObserveRun(String),
     StopRun(String),
     ReconcileRun(String),
@@ -165,6 +180,16 @@ fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'st
             (KeyCode::Char('r'), Action::Open(Overlay::Region), "r", "region"),
             (KeyCode::Char(' '), Action::Toggle, "space", "toggle"),
             (KeyCode::Char('R'), Action::CheckNow, "R", "check R2"),
+        ],
+        Screen::Local => &[
+            (KeyCode::Char('r'), Action::Open(Overlay::Region), "r", "region"),
+            (KeyCode::Char(' '), Action::Toggle, "space", "toggle"),
+            (KeyCode::Char('R'), Action::CheckNow, "R", "check Local"),
+            (KeyCode::Char('f'), Action::LocalRefresh, "f", "check Live inputs"),
+            (KeyCode::Char('b'), Action::Open(Overlay::Plan), "b", "review build"),
+            (KeyCode::Char('s'), Action::LocalApp, "s", "start / stop"),
+            (KeyCode::Char('o'), Action::LocalOpen, "o", "open"),
+            (KeyCode::Char('l'), Action::LocalLogs, "l", "logs"),
         ],
         Screen::Sources => &[
             (KeyCode::Enter, Action::Open(Overlay::Source), "enter", "details"),
@@ -217,6 +242,7 @@ struct App {
     /// The plan of Plan, once it is made.
     plan: Option<PlanView>,
     execution: execution::Execution,
+    local: local::View,
     row: usize,
     source: usize,
     kept: usize,
@@ -323,6 +349,7 @@ impl App {
             policy_days: None,
             plan: None,
             execution: execution::Execution::default(),
+            local: local::View::default(),
             row: 0,
             source: 0,
             kept: 0,
@@ -356,6 +383,7 @@ impl App {
     fn rows(&self) -> usize {
         match self.screen {
             Screen::Live => self.live_rows().len(),
+            Screen::Local => self.local.rows().len(),
             Screen::Sources => self.source_view.rows(&self.sources).len(),
             Screen::Store => self
                 .store
@@ -385,6 +413,7 @@ impl App {
             (Some(Overlay::Policy | Overlay::Region), _) => &mut self.choice,
             (Some(_), _) => &mut self.scroll,
             (None, Screen::Live) => &mut self.row,
+            (None, Screen::Local) => &mut self.local.row,
             (None, Screen::Sources) => &mut self.source,
             (None, Screen::Store) => &mut self.kept,
             (None, Screen::Runs) => &mut self.run,
@@ -417,7 +446,7 @@ impl App {
             }
             Some(Overlay::Region) => {
                 let region = self.shown_regions().get(self.choice).map(|id| id.to_string());
-                region.is_some() && region != self.env.as_ref().map(|env| env.region.clone())
+                region.is_some() && region != self.current_env().map(|env| env.region.clone())
             }
             _ => false,
         }
@@ -443,6 +472,10 @@ impl App {
                     | Action::StopRun
                     | Action::ReconcileRun
                     | Action::ReviewPrepared
+                    | Action::LocalRefresh
+                    | Action::LocalApp
+                    | Action::LocalOpen
+                    | Action::LocalLogs
                     | Action::Open(Overlay::Clean | Overlay::Plan)
             )
         {
@@ -460,13 +493,26 @@ impl App {
             Action::Toggle if self.overlay == Some(Overlay::Plan) => {
                 !self.asking && self.plan.as_ref().is_some_and(PlanView::toggles)
             }
+            Action::Toggle if self.screen == Screen::Local => {
+                matches!(self.local.rows().get(self.local.row), Some(local::Row::Layer(_)))
+            }
+            Action::LocalApp | Action::LocalLogs => self.local.selected_app().is_some(),
+            Action::LocalOpen => {
+                self.local.selected_app().is_some_and(|app| app.url().is_some() && self.local.running(app))
+            }
             Action::Toggle => matches!(self.live_rows().get(self.row), Some(LiveRow::Layer(_))),
             Action::Fix => {
                 self.fix().is_some_and(|fix| !matches!(fix, Fix::Plan) || self.works(Action::Open(Overlay::Plan)))
             }
-            Action::Steps => self.plan.as_ref().is_some_and(|view| !view.all.groups.is_empty()),
+            Action::Steps => self.plan.as_ref().is_some_and(|view| {
+                !view.all.groups.is_empty() || (view.dev.is_some() && !view.taken.versions.is_empty())
+            }),
             Action::Prepare => self.plan.is_some() && !self.asking,
-            Action::Build => self.plan.as_ref().is_some_and(|view| !view.taken.needs_prepare) && !self.asking,
+            Action::Build => {
+                self.plan.as_ref().is_some_and(|view| {
+                    !view.taken.needs_prepare && (view.dev.is_none() || view.taken.blocked.is_empty())
+                }) && !self.asking
+            }
             Action::ReviewApply => {
                 self.plan.as_ref().is_some_and(|view| {
                     view.taken.env == LIVE
@@ -555,13 +601,31 @@ impl App {
                     },
                     Overlay::Plan => {
                         if self.asking {
-                            offer(KeyCode::Char('y'), Action::Apply, "y", "apply to live");
+                            offer(
+                                KeyCode::Char('y'),
+                                Action::Apply,
+                                "y",
+                                if self.plan.as_ref().is_some_and(|view| view.dev.is_some()) {
+                                    "prepare Local"
+                                } else {
+                                    "apply to live"
+                                },
+                            );
                         } else {
                             offer(KeyCode::Char(' '), Action::Toggle, "space", "source move");
                             let steps = self.plan.as_ref().is_some_and(|view| view.steps);
                             offer(KeyCode::Char('d'), Action::Steps, "d", if steps { "changes" } else { "steps" });
                             offer(KeyCode::Char('f'), Action::Prepare, "f", "prepare inputs");
-                            offer(KeyCode::Char('b'), Action::Build, "b", "build only");
+                            offer(
+                                KeyCode::Char('b'),
+                                Action::Build,
+                                "b",
+                                if self.plan.as_ref().is_some_and(|view| view.dev.is_some()) {
+                                    "review Local build"
+                                } else {
+                                    "build only"
+                                },
+                            );
                             offer(KeyCode::Char('a'), Action::ReviewApply, "a", "review apply");
                         }
                     }
@@ -601,10 +665,10 @@ impl App {
                         _ => {}
                     }
                 }
-                if self.works(Action::Open(Overlay::Plan)) {
+                if self.screen != Screen::Local && self.works(Action::Open(Overlay::Plan)) {
                     keys.push(bar(KeyCode::Char('p'), Action::Open(Overlay::Plan), "p", "plan"));
                 }
-                if self.works(Action::Undo) {
+                if self.screen != Screen::Local && self.works(Action::Undo) {
                     keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo environment"));
                 }
                 keys.push(bar(KeyCode::Char('?'), Action::Open(Overlay::Help), "?", "help"));
@@ -699,6 +763,10 @@ impl App {
                 | Action::StopRun
                 | Action::ReconcileRun
                 | Action::ReviewPrepared
+                | Action::LocalRefresh
+                | Action::LocalApp
+                | Action::LocalOpen
+                | Action::LocalLogs
         ) && !self.works(action)
         {
             return Effect::None;
@@ -708,16 +776,35 @@ impl App {
             None => self.rows().saturating_sub(1),
         };
         match action {
-            Action::Show(screen) => self.screen = screen,
+            Action::Show(screen) => {
+                self.screen = screen;
+                if screen == Screen::Local {
+                    self.local.checked = None;
+                }
+            }
             Action::NextScreen => {
                 let at = SCREENS.iter().position(|&(_, _, screen)| screen == self.screen).unwrap_or(0);
                 self.screen = SCREENS[(at + 1) % SCREENS.len()].2;
+                if self.screen == Screen::Local {
+                    self.local.checked = None;
+                }
             }
             // The drawing stops the scroll of an overlay at its end.
             Action::Up if self.overlay.is_none() && self.screen == Screen::Sources => self.source_move(false),
             Action::Down if self.overlay.is_none() && self.screen == Screen::Sources => self.source_move(true),
-            Action::Up => *self.selected() = self.selected().saturating_sub(1),
-            Action::Down => *self.selected() = (*self.selected() + 1).min(last),
+            Action::Up | Action::Down => {
+                let at = *self.selected();
+                *self.selected() = if action == Action::Up { at.saturating_sub(1) } else { (at + 1).min(last) };
+                if self.screen == Screen::Local && self.overlay.is_none() {
+                    if let Some(app) = self.local.selected_app() {
+                        if self.local.app != Some(app) {
+                            self.local.app = Some(app);
+                            self.local.checked = None;
+                            self.local.plan = None;
+                        }
+                    }
+                }
+            }
             Action::Open(overlay) => {
                 (self.overlay, self.scroll, self.asking) = (Some(overlay), 0, false);
                 match overlay {
@@ -728,15 +815,24 @@ impl App {
                     }
                     Overlay::Region => {
                         (self.filter, self.filtering) = (String::new(), false);
-                        let current = self.env.as_ref().map(|env| env.region.as_str());
+                        let current = self.current_env().map(|env| env.region.as_str());
                         self.choice = self.shown_regions().iter().position(|&id| Some(id) == current).unwrap_or(0);
                     }
                     Overlay::Clean => return Effect::PlanClean,
+                    Overlay::Plan if self.screen == Screen::Local => {
+                        let request = self.local.request(false);
+                        return Effect::LocalCheck(request);
+                    }
                     Overlay::Plan => {
                         self.plan = None;
                         return Effect::Plan;
                     }
-                    Overlay::Help | Overlay::Attribution | Overlay::Source | Overlay::Error | Overlay::Run => {}
+                    Overlay::Help
+                    | Overlay::Attribution
+                    | Overlay::Source
+                    | Overlay::Error
+                    | Overlay::Run
+                    | Overlay::AppLogs => {}
                 }
             }
             Action::Choose if self.overlay == Some(Overlay::Policy) => {
@@ -746,7 +842,27 @@ impl App {
             Action::Choose => {
                 let id = self.shown_regions()[self.choice].to_string();
                 (self.overlay, self.filter, self.filtering) = (None, String::new(), false);
-                return Effect::Region(id);
+                return if self.screen == Screen::Local { Effect::LocalRegion(id) } else { Effect::Region(id) };
+            }
+            Action::CheckNow if self.screen == Screen::Local => return Effect::LocalCheck(self.local.request(false)),
+            Action::LocalRefresh => {
+                let mut request = self.local.request(true);
+                request.inputs_only = true;
+                return Effect::LocalStart(request);
+            }
+            Action::LocalApp | Action::LocalOpen | Action::LocalLogs => {
+                if let Some(app) = self.local.selected_app() {
+                    let control = match action {
+                        Action::LocalOpen => local::Control::Open,
+                        Action::LocalLogs => {
+                            self.overlay = Some(Overlay::AppLogs);
+                            local::Control::Logs
+                        }
+                        _ if self.local.running(app) => local::Control::Stop,
+                        _ => local::Control::Start,
+                    };
+                    return Effect::LocalControl(control, app);
+                }
             }
             Action::CheckNow if self.screen == Screen::Runs => return self.act(Action::OpenRun),
             Action::CheckNow if self.screen == Screen::Live => return Effect::Status { check: true },
@@ -755,6 +871,12 @@ impl App {
             Action::Clean => {
                 (self.overlay, self.asking) = (None, false);
                 return Effect::Clean;
+            }
+            Action::Toggle if self.screen == Screen::Local && self.overlay.is_none() => {
+                if let Some(local::Row::Layer(layer)) = self.local.rows().get(self.local.row) {
+                    let on = self.local.env.as_ref().is_some_and(|env| env.layers.contains(layer));
+                    return Effect::LocalLayer(layer.clone(), if on { Switch::Off } else { Switch::On });
+                }
             }
             Action::Toggle => return self.toggle(),
             Action::Fix => match self.fix() {
@@ -771,6 +893,21 @@ impl App {
                 }
             }
             Action::Prepare | Action::Build | Action::Apply => {
+                if let Some(request) = self.plan.as_ref().and_then(|view| view.dev.clone()) {
+                    if action == Action::Build {
+                        self.asking = false;
+                        return Effect::LocalReview(request);
+                    }
+                    let mut request = request;
+                    request.inputs_only = action == Action::Prepare;
+                    request.reviewed = if request.inputs_only {
+                        None
+                    } else {
+                        Some(Box::new(self.plan.as_ref().unwrap().taken.clone()))
+                    };
+                    self.asking = false;
+                    return Effect::LocalStart(request);
+                }
                 let kind = match action {
                     Action::Prepare => crate::operation::Kind::Prepare,
                     Action::Build => crate::operation::Kind::Build,
@@ -799,7 +936,24 @@ impl App {
             }
             Action::ReviewPrepared => {
                 if let Some(plan) = self.execution.prepared() {
-                    self.plan = Some(PlanView::new(plan));
+                    self.plan = Some(
+                        match self
+                            .execution
+                            .dev_request
+                            .clone()
+                            .filter(|(id, _)| Some(id) == self.execution.selected.as_ref())
+                        {
+                            Some((_, mut request)) if plan.env == "local" => {
+                                request.reviewed = Some(Box::new(plan.clone()));
+                                self.local.plan = Some(plan.clone());
+                                self.local.request = Some(request.clone());
+                                self.local.app = Some(request.app);
+                                self.local.checked = None;
+                                PlanView::local(plan, request)
+                            }
+                            _ => PlanView::new(plan),
+                        },
+                    );
                     (self.overlay, self.scroll, self.asking) = (Some(Overlay::Plan), 0, false);
                 }
             }
@@ -852,6 +1006,9 @@ impl App {
             Some(Hit::Screen(screen)) => {
                 self.overlay = None;
                 self.screen = screen;
+                if screen == Screen::Local {
+                    self.local.checked = None;
+                }
             }
             Some(Hit::Row(row)) if self.overlay.is_none() && self.screen == Screen::Sources => {
                 if let Some((index, _)) = self.source_view.rows(&self.sources).get(row) {
@@ -864,7 +1021,18 @@ impl App {
                 }
                 self.run = row;
             }
-            Some(Hit::Row(row)) if self.overlay.is_none() => *self.selected() = row,
+            Some(Hit::Row(row)) if self.overlay.is_none() => {
+                *self.selected() = row;
+                if self.screen == Screen::Local {
+                    if let Some(app) = self.local.selected_app() {
+                        if self.local.app != Some(app) {
+                            self.local.app = Some(app);
+                            self.local.checked = None;
+                            self.local.plan = None;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Effect::None
@@ -907,6 +1075,7 @@ impl App {
         let body = Rect { y: body.y + 1, height: body.height.saturating_sub(1), ..body };
         match self.screen {
             Screen::Live => self.draw_live(frame, body),
+            Screen::Local => self.draw_local(frame, body),
             Screen::Sources => self.draw_sources(frame, body),
             Screen::Store => self.draw_store(frame, body),
             Screen::Runs => self.draw_runs(frame, body),
@@ -1054,13 +1223,31 @@ impl App {
             Overlay::Policy => (format!(" POLICY · {id} "), self.policy_lines(), Vec::new(), Some(self.choice)),
             Overlay::Clean => (" CLEAN ".into(), self.clean_lines(), Vec::new(), None),
             Overlay::Region => (
-                format!(" REGION · {LIVE} "),
+                format!(" REGION · {} ", if self.screen == Screen::Local { "local" } else { LIVE }),
                 self.region_lines(),
                 Vec::new(),
                 if self.region_editor.mode.is_some() { self.region_editor.focus() } else { Some(self.choice + 3) },
             ),
             Overlay::Plan => {
-                if self.asking {
+                if self.asking && self.plan.as_ref().is_some_and(|view| view.dev.is_some()) {
+                    let view = self.plan.as_ref().unwrap();
+                    let request = view.dev.as_ref().unwrap();
+                    let mut lines = vec![
+                        Line::from(format!(
+                            "Prepare {} for {} on this machine?",
+                            request.app.name(),
+                            view.taken.region
+                        ))
+                        .bold(),
+                        Line::from("The exact source versions and pending work stay pinned."),
+                        Line::from("Only already running apps update. Stopped apps remain stopped."),
+                    ];
+                    if !view.taken.versions.is_empty() {
+                        lines.extend([Line::default(), Line::from("INPUT VERSIONS").dim()]);
+                        lines.extend(view.versions());
+                    }
+                    (" CONFIRM LOCAL PREPARATION ".into(), lines, Vec::new(), None)
+                } else if self.asking {
                     let plan = &self.plan.as_ref().expect("confirmation has a plan").taken;
                     let owner = std::env::var("OBC_COMMIT_HOST").unwrap_or_else(|_| "not configured".into());
                     let mut lines = vec![
@@ -1079,10 +1266,18 @@ impl App {
                     (" CONFIRM APPLY ".into(), lines, Vec::new(), None)
                 } else {
                     let (lines, footer, focus) = self.plan_lines();
-                    (format!(" PLAN · {LIVE} "), lines, footer, focus)
+                    (
+                        format!(" PLAN · {} ", self.plan.as_ref().map_or(LIVE, |view| view.taken.env.as_str())),
+                        lines,
+                        footer,
+                        focus,
+                    )
                 }
             }
             Overlay::Run => (" RUN ".into(), self.run_lines(), Vec::new(), None),
+            Overlay::AppLogs => {
+                (" LOCAL APP LOGS ".into(), self.local.logs.iter().cloned().map(Line::from).collect(), Vec::new(), None)
+            }
         };
         let width = if matches!(overlay, Overlay::Plan | Overlay::Run) { body.width } else { body.width * 4 / 5 };
         let wrapped = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
