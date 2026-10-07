@@ -147,7 +147,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         })
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
-    let fetch = discovery_fetch(fetcher(&store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
+    let fetch = discovery_fetch(fetcher(root, &store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
     let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     // `Live::read` gives one live product per product, in their order.

@@ -143,6 +143,15 @@ impl Metadata {
         Ok(true)
     }
 
+    pub fn directory(&self, name: &str) -> Option<PathBuf> {
+        self.packages
+            .iter()
+            .find(|package| package.name == name && package.source.is_none())?
+            .manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+    }
+
     pub fn selected(&self, root: &Path, crates: &[String], include_engine: bool) -> Result<Selected, String> {
         let packages: HashMap<_, _> = self.packages.iter().map(|package| (package.id.as_str(), package)).collect();
         let nodes: HashMap<_, _> = self.resolve.nodes.iter().map(|node| (node.id.as_str(), node)).collect();

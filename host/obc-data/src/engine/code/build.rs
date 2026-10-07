@@ -7,7 +7,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::engine::{Code, Profile, Rust};
+use crate::engine::{Code, Profile, ResolvedRust, Rust};
 use crate::store::{hash_file, sha256_hex};
 
 #[derive(Default)]
@@ -17,6 +17,13 @@ pub(super) struct Context {
     used: BTreeMap<PathBuf, Option<String>>,
     #[cfg(test)]
     probes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Identity {
+    pub files: BTreeMap<String, String>,
+    pub source_config: BTreeMap<String, String>,
+    pub rust: ResolvedRust,
 }
 
 struct Native {
@@ -36,12 +43,7 @@ impl Context {
         Ok(None)
     }
 
-    pub fn identity(
-        &mut self,
-        root: &Path,
-        code: &Code,
-        packages: &super::rust::Packages,
-    ) -> Result<BTreeMap<String, String>, String> {
+    pub fn identity(&mut self, root: &Path, code: &Code, packages: &super::rust::Packages) -> Result<Identity, String> {
         let profile = match code.rust {
             None | Some(Rust::Native { profile: Profile::Dev }) => Profile::Dev,
             Some(Rust::Native { profile }) | Some(Rust::Prepared { profile }) => profile,
@@ -67,9 +69,10 @@ impl Context {
             &native.target
         };
         hashes.insert("rust/target".into(), sha256_hex(target.as_bytes()));
-        let text = fs::read_to_string(root.join("Cargo.toml")).map_err(|e| format!("Cargo.toml: {e}"))?;
-        hashes.insert("rust/profile".into(), digest(&profile_projection(&text, profile, packages)?));
-        Ok(hashes)
+        let source_config = source_config(root, profile, packages)?;
+        hashes.insert("rust/profile".into(), source_config["rust/profile"].clone());
+        let build = code.rust.clone().unwrap_or(Rust::Native { profile });
+        Ok(Identity { files: hashes, source_config, rust: ResolvedRust { target: target.into(), build } })
     }
 
     fn native(&mut self, root: &Path) -> Result<&Native, String> {
@@ -474,6 +477,25 @@ fn flags(env: &BTreeMap<OsString, OsString>) -> Result<Vec<String>, String> {
         }
     }
     Ok(flags)
+}
+
+pub(super) fn source_config(
+    root: &Path,
+    profile: Profile,
+    packages: &super::rust::Packages,
+) -> Result<BTreeMap<String, String>, String> {
+    for path in configs(root, &BTreeMap::new()).into_iter().filter(|path| path.starts_with(root)) {
+        if path.is_file() {
+            let text = fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            validate_config(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+    }
+    let text = fs::read_to_string(root.join("Cargo.toml")).map_err(|error| format!("Cargo.toml: {error}"))?;
+    let mut hashes = BTreeMap::from([("rust/profile".into(), digest(&profile_projection(&text, profile, packages)?))]);
+    if root.join("rust-toolchain.toml").is_file() {
+        hashes.insert("rust/toolchain-config".into(), hash_file(&root.join("rust-toolchain.toml"))?.0);
+    }
+    Ok(hashes)
 }
 
 fn configs(root: &Path, env: &BTreeMap<OsString, OsString>) -> Vec<PathBuf> {

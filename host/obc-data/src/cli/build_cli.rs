@@ -609,6 +609,13 @@ fn planned_run(
     mut run: Option<&mut Run>,
 ) -> Result<Planned, Error> {
     let mut loaded = load(root, name)?;
+    if let Some(run) = run.as_deref_mut().filter(|run| run.requires_committed_code()) {
+        for product in products {
+            if let Some(owner) = product.planning_code(&loaded.env).map_err(|error| Code::Blocked.error(error))? {
+                run.check_owner(root, &owner).map_err(|error| Code::Usage.error(error))?;
+            }
+        }
+    }
     let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
     if let (Some(live), Some(remote)) = (&live, remote) {
@@ -669,7 +676,7 @@ fn planned_run(
         }
     }
     let fetch = super::status_cli::discovery_fetch(
-        fetcher_recorded(store, http, &loaded.sources, env, copies.as_ref(), run),
+        fetcher_recorded(root, store, http, &loaded.sources, env, copies.as_ref(), run),
         prepare,
     );
     let (steps, blocked) = match basis {
@@ -1008,16 +1015,18 @@ fn moves(sources: &[Source], moves: &[String]) -> Result<BTreeMap<String, Option
 /// `fetch_failed` or `blocked`. A `manual` source is fetched at the newest version upstream only
 /// when `env` moves it there.
 pub(super) fn fetcher<'a>(
+    root: &'a Path,
     store: &'a Store,
     http: &'a Http,
     sources: &'a [Source],
     env: &Env,
     copies: Option<&'a crate::input_copy::Restore<'a>>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
-    fetcher_recorded(store, http, sources, env, copies, None)
+    fetcher_recorded(root, store, http, sources, env, copies, None)
 }
 
 pub(super) fn fetcher_recorded<'a>(
+    root: &'a Path,
     store: &'a Store,
     http: &'a Http,
     sources: &'a [Source],
@@ -1049,8 +1058,8 @@ pub(super) fn fetcher_recorded<'a>(
         let of_live =
             |version: &String| !moved.contains(&source.id) && live.contains(&(source.id.clone(), version.clone()));
         let snapshot = match run.as_deref_mut() {
-            Some(run) => run.fetch_request(store, http, copies, &request, &[]),
-            None => crate::input_copy::fetch(store, http, copies, &request, &[]),
+            Some(run) => run.fetch_request(root, store, http, copies, &request, &[]),
+            None => crate::input_copy::fetch(root, store, http, copies, &request, &[]),
         };
         fetched(source, snapshot).map(|snapshot| snapshot.version).map_err(|e| {
             match e.code == Code::FetchFailed && wanted.version.as_ref().is_some_and(of_live) {
@@ -1345,6 +1354,7 @@ pub(crate) mod tests {
         let actual = actual.replacen("/data/", "/data/1/", 1);
         let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("cli-preview-prepare");
+        fixture.with_acquisition();
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
@@ -1424,6 +1434,7 @@ pub(crate) mod tests {
         let actual = actual.replacen("/data/", "/data/1/", 1);
         let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("prepare-softened-fetch");
+        fixture.with_acquisition();
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
@@ -1574,10 +1585,11 @@ pub(crate) mod tests {
         use crate::fetch::tests::{quick, serve, source, whole};
         let (url, log) = serve(|_, _| whole(b"outline"));
         let fixture = fixture("cli-newest");
+        let root = fixture.root();
         let manual = source(&url.replace("data/file.bin", "{area}.poly"), "date");
         let (regions, http) = (Regions::new(Vec::new()).unwrap(), quick());
         let mut live = env(&[]);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
+        let fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&manual), &live, None);
         let err =
             steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
@@ -1589,7 +1601,7 @@ pub(crate) mod tests {
         assert!(log.lock().unwrap().is_empty(), "a manual source does not move by itself");
 
         live.moves.insert("land".into(), None);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&manual), &live, None);
+        let fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&manual), &live, None);
         steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(
             live.resolved[&("land".into(), vec![("area".into(), "europe/monaco".into())])].as_str(),
@@ -1600,19 +1612,19 @@ pub(crate) mod tests {
 
         let land = Source { refresh: Refresh::Days(30), ..manual };
         let mut live = env(&[]);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
+        let fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&land), &live, None);
         steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).unwrap();
         assert_eq!(log.lock().unwrap().len(), requests, "without a move or live, the store serves");
 
         live.moves.insert("qrank".into(), None);
-        let fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
+        let fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&land), &live, None);
         let err =
             steps(&fixture.root(), &[&Outlined], &mut live, &regions, &fixture.store, false, fetch).err().unwrap();
         assert_eq!(
             (err.code, err.message.as_str()),
             (Code::Usage, "--move qrank: no step list of `live` reads `qrank`")
         );
-        let mut fetch = fetcher(&fixture.store, &http, std::slice::from_ref(&land), &live, None);
+        let mut fetch = fetcher(&root, &fixture.store, &http, std::slice::from_ref(&land), &live, None);
         let err = fetch(&Wanted { source: "land".into(), version: None, params: Vec::new() }).unwrap_err();
         assert!(err.message.contains("fetched per `area=`"), "{}", err.message);
     }

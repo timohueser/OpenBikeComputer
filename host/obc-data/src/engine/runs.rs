@@ -146,6 +146,8 @@ pub struct Run {
     start: Instant,
     _lock: Lock,
     _using: Lock,
+    codes: super::code::Context,
+    committed_code: bool,
 }
 
 impl Run {
@@ -164,7 +166,15 @@ impl Run {
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             };
-            let mut run = Run { id, file, start: Instant::now(), _lock: lock, _using: using };
+            let mut run = Run {
+                id,
+                file,
+                start: Instant::now(),
+                _lock: lock,
+                _using: using,
+                codes: Default::default(),
+                committed_code: false,
+            };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
             File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
@@ -221,7 +231,15 @@ impl Run {
             _ => None,
         };
         let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
-        let mut run = Self { id: id.into(), file, start, _lock: lock, _using: using };
+        let mut run = Self {
+            id: id.into(),
+            file,
+            start,
+            _lock: lock,
+            _using: using,
+            codes: Default::default(),
+            committed_code: false,
+        };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
                 run.record(event)?;
@@ -248,6 +266,23 @@ impl Run {
         file.sync_all().map_err(|e| e.to_string())
     }
 
+    pub(crate) fn requires_committed_code(&self) -> bool {
+        self.committed_code
+    }
+
+    pub(crate) fn require_committed_code(&mut self) {
+        self.committed_code = true;
+    }
+
+    pub(crate) fn check_owner(&mut self, root: &Path, owner: &super::OwnerCode) -> Result<(), String> {
+        self.codes.refresh_python();
+        let identity = self.codes.owner_identity(root, owner)?;
+        if self.committed_code {
+            identity.committed(root)?;
+        }
+        Ok(())
+    }
+
     /// Fetch the fetches of `plan` one after another, then build its builds and reuse the layers
     /// that they read. After a fetch or a step fails, no other step starts; the steps that run
     /// finish. A later run reuses every layer that this one built.
@@ -260,6 +295,11 @@ impl Run {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
         }
         let ordered = order(steps)?;
+        if self.committed_code {
+            for step in &ordered {
+                self.codes.identity(root, &step.code)?.committed(root)?;
+            }
+        }
         if let Some(build) = plan.builds().find(|build| !ordered.iter().any(|step| step.name == build.step)) {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
@@ -285,7 +325,7 @@ impl Run {
         let position: HashMap<&str, usize> =
             ordered.iter().enumerate().map(|(i, step)| (step.name.as_str(), i)).collect();
         let mut pending: Vec<&Step> = ordered.into_iter().filter(|step| needed.contains(step.name.as_str())).collect();
-        let mut codes = Codes::default();
+        let mut codes = Codes { context: std::mem::take(&mut self.codes), ..Default::default() };
         for step in &pending {
             let (hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
             store.put_code(hash, files)?;
@@ -387,6 +427,7 @@ impl Run {
                 Err(e) => self.failed(step, e, &mut failure),
             }
         });
+        self.codes = checks.into_inner().unwrap_or_default();
         if let Some(failure) = failure {
             return Err(failure);
         }
@@ -409,7 +450,7 @@ impl Run {
             })?;
             let request =
                 fetch::Request { source, version: Some(planned.version.clone()), params: planned.params.clone() };
-            self.fetch_request(context.store, context.http, context.copies, &request, &planned.files)?;
+            self.fetch_request(context.root, context.store, context.http, context.copies, &request, &planned.files)?;
         }
         Ok(())
     }
@@ -417,6 +458,7 @@ impl Run {
     /// Record preparation and execution fetches through the same journal boundary.
     pub fn fetch_request(
         &mut self,
+        root: &Path,
         store: &Store,
         http: &Http,
         copies: Option<&crate::input_copy::Restore<'_>>,
@@ -431,7 +473,15 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
-        match crate::input_copy::fetch(store, http, copies, request, files) {
+        match crate::input_copy::fetch_checked(
+            root,
+            store,
+            http,
+            copies,
+            request,
+            files,
+            Some((&mut self.codes, self.committed_code)),
+        ) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
@@ -1029,6 +1079,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let (url, log) = crate::fetch::tests::serve(|_, _| crate::fetch::tests::whole(b"tile a"));
         let land = crate::fetch::tests::source(&url.replace("file.bin", "{tile}-{version}.bin"), "release");
         let fixture = fixture("runs-fetch");
+        fixture.with_acquisition();
         let tile = Input::Snapshot {
             source: "land".into(),
             version: "v1".into(),

@@ -156,7 +156,8 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
         Command::Fetch { target, params } => {
-            let registry = registry(&root()?)?;
+            let root = root()?;
+            let registry = registry(&root)?;
             let (id, version) = match target.split_once('@') {
                 Some((id, version)) => (id, Some(version.to_string())),
                 None => (target.as_str(), None),
@@ -180,7 +181,10 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 remote.as_ref().zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
             print_snapshot(
                 &store,
-                &fetched(source, crate::input_copy::fetch(&store, &Http::new(), copies.as_ref(), &request, &[]))?,
+                &fetched(
+                    source,
+                    crate::input_copy::fetch(&root, &store, &Http::new(), copies.as_ref(), &request, &[]),
+                )?,
                 json,
             )
         }
