@@ -15,7 +15,6 @@ use crate::sources::State;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LiveRow {
     Region,
-    Schedule,
     Product(usize),
     /// An optional layer, by name.
     Layer(String),
@@ -34,9 +33,6 @@ impl App {
     pub(super) fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = vec![LiveRow::Region];
         let Some(status) = &self.status else { return rows };
-        if self.schedule.state.is_some() {
-            rows.push(LiveRow::Schedule);
-        }
         rows.extend((0..status.products.len()).map(LiveRow::Product));
         rows.extend(self.optional().into_iter().map(LiveRow::Layer));
         rows.extend((0..status.attention.len()).map(LiveRow::Attention));
@@ -122,7 +118,6 @@ impl App {
                     let region = self.env.as_ref().map_or("—".into(), |env| env.region.clone());
                     Line::from(vec![Span::from("region  ").dim(), Span::from(region)])
                 }
-                LiveRow::Schedule => Line::from(format!("automation  {}", self.schedule.summary())),
                 LiveRow::Product(p) => {
                     let cells = row_text(&[&table[p + 1][..], &[String::new()]].concat(), &product_widths);
                     Line::from(vec![Span::from(cells), product_state(&products[*p])])

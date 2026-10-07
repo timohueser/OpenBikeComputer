@@ -154,7 +154,7 @@ pub(super) fn prepare(
         }
         let prepared = product.dev_prepare(root, store, request, &mut run)?;
         run.check_stop(store)?;
-        crate::commit::durable(
+        crate::store::durable(
             &store.root().join("dev/local/prepared.json"),
             &serde_json::to_vec(&prepared).map_err(|e| e.to_string())?,
         )?;

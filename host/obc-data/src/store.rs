@@ -392,6 +392,24 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     })
 }
 
+/// [`write_atomic`], and the directory entries too: the file survives a power loss.
+pub fn durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("durable file has no directory")?;
+    durable_directory(parent)?;
+    write_atomic(path, bytes)?;
+    File::open(parent).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())
+}
+
+/// Create `path` and persist its entry and the entries of its ancestors.
+pub fn durable_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    for directory in path.ancestors() {
+        File::open(directory).and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// The SHA-256 of a file, in lowercase hex, and its size.
 pub fn hash_file(path: &Path) -> Result<(String, u64), String> {
     let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;

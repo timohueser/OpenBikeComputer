@@ -17,12 +17,9 @@ pub struct Runs {
     /// Write the events of RUN as they come, until it ends. The exit status is 1 when it failed.
     #[arg(long, requires = "run")]
     follow: bool,
-    /// Stop admitting work, drain current work, and refuse publication handoff.
-    #[arg(long, requires = "run", conflicts_with_all = ["follow", "reconcile", "result"])]
-    stop: bool,
-    /// Explicitly copy a checked final owner journal and resolve local handoff state.
+    /// Stop admitting work and drain current work. An apply stops before its next phase.
     #[arg(long, requires = "run", conflicts_with_all = ["follow", "result"])]
-    reconcile: bool,
+    stop: bool,
     /// Show the completed operation output. An unresolved run has no result.
     #[arg(long, requires = "run", conflicts_with = "follow")]
     result: bool,
@@ -39,21 +36,12 @@ pub fn run(args: Runs, json: bool) -> Result<(), Error> {
     }
     if crate::operation::read(&store, &id)?.is_some() {
         if args.stop {
-            crate::operation::stop(&store, &id).map_err(|message| {
-                Code::Blocked
-                    .error(message)
-                    .fix("Inspect or reconcile the bound owner result; do not stop its system service.")
-                    .with_run(&id)
-            })?;
+            crate::operation::stop(&store, &id).map_err(|message| Code::Blocked.error(message).with_run(&id))?;
         }
         if args.follow {
             return watch(&store, &id, json);
         }
-        let view = if args.reconcile {
-            super::operation_cli::reconcile(&store, &id)?
-        } else {
-            super::operation_cli::view(&store, &id)?
-        };
+        let view = super::operation_cli::view(&store, &id)?;
         if args.result {
             if !matches!(view.operation, Some(crate::operation::Status::Finished { .. })) {
                 return Err(Code::Blocked.error("the operation has no final result yet").with_run(&id));
@@ -66,7 +54,7 @@ pub fn run(args: Runs, json: bool) -> Result<(), Error> {
         }
         return show_view(&view, json);
     }
-    if args.stop || args.reconcile || args.result {
+    if args.stop || args.result {
         return Err(Code::Usage.error("this run has no detached operation"));
     }
     if args.follow {
@@ -222,8 +210,6 @@ fn state(status: &crate::operation::Status) -> String {
         Status::Stopping => "stopping after current work",
         Status::Stopped => "stopped",
         Status::Interrupted => "interrupted",
-        Status::AwaitingOwner { .. } => "awaiting owner result; cannot stop safely",
-        Status::UnknownOwner { .. } => "unknown mutation outcome; cannot stop safely",
         Status::Finished { ok: true } => "complete",
         Status::Finished { ok: false } => "failed",
     }
@@ -238,7 +224,7 @@ fn show_view(view: &super::operation_cli::View, json: bool) -> Result<(), Error>
         println!("{}: {}", view.run.summary.id, state(status));
     }
     if let Some(error) = &view.observation_error {
-        println!("Owner observation: {error}");
+        println!("{error}");
     }
     show(&view.run, false)
 }
@@ -259,17 +245,7 @@ fn watch(store: &Store, run: &str, json: bool) -> Result<(), Error> {
                 | crate::operation::Status::Stopped
                 | crate::operation::Status::Interrupted,
             ) => return Err(Code::RunFailed.error("operation did not complete").with_run(run)),
-            Some(crate::operation::Status::UnknownOwner { .. }) => {
-                return Err(Code::Blocked
-                    .error("publication outcome is unknown; inspect its durable owner intent")
-                    .with_run(run))
-            }
             _ => {}
-        }
-        if view.observation_error.is_some() {
-            return Err(Code::Blocked
-                .error("owner transport is unavailable; the handoff stays unresolved")
-                .with_run(run));
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }

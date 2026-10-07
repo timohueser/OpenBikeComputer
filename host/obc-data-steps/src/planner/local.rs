@@ -482,9 +482,9 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
         if let Some(map) = &simulator_map {
             std::fs::copy(map.path().join("map.obcm"), partial.join("map.obcm")).map_err(|e| e.to_string())?;
         }
-        obc_data::commit::durable(&partial.join("service.json"), &descriptor)?;
+        obc_data::store::durable(&partial.join("service.json"), &descriptor)?;
         std::fs::rename(&partial, &view).map_err(|e| e.to_string())?;
-        obc_data::commit::durable_directory(view.parent().expect("view directory"))?;
+        obc_data::store::durable_directory(view.parent().expect("view directory"))?;
     }
     let prepared = Prepared { descriptor: hash_file(&view.join("service.json"))?.0, view, supervisor, children, apps };
     prepared.check(&root)?;

@@ -153,14 +153,7 @@ pub(super) fn run_loop(
                 let selected = app.runs.get(app.run).map(|run| run.summary.id.clone());
                 app.runs = list_runs(store)?;
                 for view in app.execution.active.iter().chain(app.execution.view.iter()) {
-                    if !matches!(
-                        view.operation,
-                        Some(
-                            crate::operation::Status::AwaitingOwner { .. }
-                                | crate::operation::Status::UnknownOwner { .. }
-                                | crate::operation::Status::Finished { .. }
-                        )
-                    ) {
+                    if !matches!(view.operation, Some(crate::operation::Status::Finished { .. })) {
                         continue;
                     }
                     if let Some(run) = app.runs.iter_mut().find(|run| run.summary.id == view.run.summary.id) {
@@ -179,14 +172,6 @@ pub(super) fn run_loop(
                     }
                 }
                 read = Instant::now();
-            }
-            if app.screen == Screen::Live
-                && app.overlay.is_none()
-                && app.schedule.state.is_none()
-                && !app.busy
-                && effect == Effect::None
-            {
-                effect = Effect::ScheduleRead;
             }
             if app.screen == Screen::Local
                 && app.overlay.is_none()
@@ -217,8 +202,6 @@ impl App {
     /// Completion changes data, never the user's focus, filters or draft inputs.
     pub(super) fn complete(&mut self, effect: Effect, updated: App) {
         let selected = self.sources.get(self.source).map(|row| row.source.id.clone());
-        let live_row = self.live_rows().get(self.row).cloned();
-        let schedule_result = matches!(effect, Effect::ScheduleRead | Effect::ScheduleChange(_));
         self.saved = updated.saved.clone();
         match effect {
             Effect::Initial => {
@@ -296,7 +279,7 @@ impl App {
                     }
                 }
             }
-            Effect::ObserveRun(id) | Effect::StopRun(id) | Effect::ReconcileRun(id) => {
+            Effect::ObserveRun(id) | Effect::StopRun(id) => {
                 if let Some(view) = updated.execution.view.filter(|view| view.run.summary.id == id) {
                     if self.execution.selected.as_ref() == Some(&id) {
                         self.execution.dev_request = updated.execution.dev_request.clone();
@@ -384,28 +367,7 @@ impl App {
                     }
                 }
             }
-            Effect::ScheduleRead => {
-                self.schedule.state = updated.schedule.state;
-                if self.schedule.calendar.is_empty() {
-                    self.schedule.calendar = updated.schedule.calendar;
-                }
-                if self.schedule.zone.is_empty() {
-                    self.schedule.zone = updated.schedule.zone;
-                }
-            }
-            Effect::ScheduleChange(_) => {
-                self.schedule.state = updated.schedule.state;
-                if updated.schedule.pending.is_none() {
-                    self.schedule.pending = None;
-                    self.asking = false;
-                }
-            }
             Effect::None | Effect::Quit | Effect::Reload => {}
-        }
-        if schedule_result {
-            if let Some(at) = live_row.and_then(|row| self.live_rows().iter().position(|shown| *shown == row)) {
-                self.row = at;
-            }
         }
     }
 }
@@ -423,11 +385,8 @@ pub(super) fn perform(
     }
     if !matches!(
         effect,
-        Effect::ScheduleRead
-            | Effect::ScheduleChange(super::schedule::Change::Disable)
-            | Effect::ObserveRun(_)
+        Effect::ObserveRun(_)
             | Effect::StopRun(_)
-            | Effect::ReconcileRun(_)
             | Effect::LocalState
             | Effect::LocalControl(
                 super::local::Control::Stop | super::local::Control::Open | super::local::Control::Logs,
@@ -449,33 +408,6 @@ pub(super) fn perform(
                 .find(|row| row.source.id == id)
                 .ok_or_else(|| Code::Usage.error("The selected source no longer exists."))?;
             app.versions = Some(super::super::versions::read(store, row)?);
-            Ok(())
-        }
-        Effect::ScheduleRead => {
-            app.schedule.state = Some(crate::schedule::state(root, store, LIVE).map(std::sync::Arc::new));
-            if app.schedule.calendar.is_empty() {
-                if let Some(Ok(state)) = &app.schedule.state {
-                    app.schedule.calendar = state.calendar.clone().unwrap_or_else(|| "daily".into());
-                    app.schedule.zone = state.time_zone.clone().unwrap_or_else(|| "UTC".into());
-                }
-            }
-            Ok(())
-        }
-        Effect::ScheduleChange(change) => {
-            match change {
-                super::schedule::Change::Install { calendar, zone } => {
-                    app.schedule.state =
-                        Some(Ok(std::sync::Arc::new(crate::schedule::install(root, store, LIVE, &calendar, &zone)?)));
-                }
-                super::schedule::Change::Disable => {
-                    app.schedule.state = Some(Ok(std::sync::Arc::new(crate::schedule::disable(root, store, LIVE)?)));
-                }
-                super::schedule::Change::Budget => {
-                    crate::schedule::setup_budget(root, store, LIVE)?;
-                    app.schedule.state = Some(crate::schedule::state(root, store, LIVE).map(std::sync::Arc::new));
-                }
-            }
-            app.schedule.pending = None;
             Ok(())
         }
         Effect::Initial => app.reload(root, products, false).and(app.read_live(root, products, false)),
@@ -617,13 +549,12 @@ pub(super) fn perform(
             app.execution.handle = Some(handle);
             Ok(())
         }
-        next @ (Effect::ObserveRun(_) | Effect::ReconcileRun(_) | Effect::StopRun(_)) => {
+        next @ (Effect::ObserveRun(_) | Effect::StopRun(_)) => {
             let id = match &next {
-                Effect::ObserveRun(id) | Effect::ReconcileRun(id) | Effect::StopRun(id) => id,
+                Effect::ObserveRun(id) | Effect::StopRun(id) => id,
                 _ => unreachable!(),
             };
             let view = match &next {
-                Effect::ReconcileRun(_) => crate::cli::operation_cli::reconcile(store, id)?,
                 Effect::StopRun(_) => {
                     crate::operation::stop(store, id).map_err(|message| crate::cli::Code::Blocked.error(message))?;
                     crate::cli::operation_cli::view(store, id)?

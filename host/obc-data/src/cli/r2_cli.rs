@@ -23,8 +23,6 @@ pub struct R2 {
 
 #[derive(Subcommand)]
 enum Action {
-    #[command(hide = true)]
-    CheckOwned { key: String },
     /// Every object under a prefix.
     List { prefix: String },
     /// The objects of these keys that the bucket holds.
@@ -88,7 +86,6 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
     let bucket = Bucket::from_env(if r2.fixtures { Credentials::Fixtures } else { Credentials::Main })
         .map_err(|e| Code::Blocked.error(e))?;
     match r2.action {
-        Action::CheckOwned { key } => refuse_owned(&bucket, &[key]).map_err(owned),
         Action::List { prefix } => print_objects(&bucket, &bucket.list(&prefix).map_err(failed)?, json),
         Action::Stat { keys } => {
             print_objects(&bucket, &bucket.stat(&keys).map_err(failed)?.into_values().collect::<Vec<_>>(), json)

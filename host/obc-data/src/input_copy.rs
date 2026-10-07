@@ -248,8 +248,16 @@ fn sha256(value: &str) -> bool {
 
 /// The reads named by the manifests. No input object or copy record is fetched here.
 pub fn reads(live: &Live) -> Result<Vec<Read>, String> {
+    live.releases().try_fold(Vec::new(), |mut reads, (_, _, release)| {
+        reads.extend(reads_release(release)?);
+        Ok(reads)
+    })
+}
+
+/// The exact snapshot reads of one release.
+pub fn reads_release(release: &crate::engine::release::Release) -> Result<Vec<Read>, String> {
     let mut reads = Vec::new();
-    for layer in live.releases().flat_map(|(_, _, r)| &r.layers) {
+    for layer in &release.layers {
         for input in layer.inputs.iter().filter(|i| i.kind == InputKind::Snapshot) {
             let snapshot = layer
                 .snapshots

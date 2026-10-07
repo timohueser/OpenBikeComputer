@@ -44,13 +44,6 @@ def run_rclone(argv: list[str], env: dict[str, str], capture: bool = False) -> s
         raise Refuse(str(exc)) from exc
 
 
-def refuse_owned() -> None:
-    try:
-        r2.r2_client(["check-owned", f"{ARCHIVE_PREFIX}/index.json"])
-    except r2.Refuse as exc:
-        raise Refuse(str(exc)) from exc
-
-
 def publish_plan(root: Path, remote: Remote, staging: Path) -> list[list[str]]:
     """The four rclone calls of a publish, in order: upload, ask, fetch, publish.
 

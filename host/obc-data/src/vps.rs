@@ -1,9 +1,5 @@
 //! The three planner services staged before a publication commit.
 
-pub(crate) mod commit;
-pub(crate) mod local;
-pub mod observe;
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

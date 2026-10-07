@@ -20,7 +20,7 @@ use crate::engine::Input;
 use crate::engine::Step;
 use crate::env::Env;
 use crate::fetch::{self, http::Http, Request};
-use crate::live::{Check, Live, LiveProduct, Remote, Removal};
+use crate::live::{Drift, Live, LiveProduct, Remote, Removal};
 use crate::product::{Product, Unplanned, Wanted};
 use crate::regions::Regions;
 use crate::sources::{Refresh, Source};
@@ -77,16 +77,14 @@ pub struct EnvPlan {
     pub groups: Vec<Group>,
     /// Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.
     pub blocked: Vec<BlockedProduct>,
-    /// For `live`: the keys that an apply of the plan removes from R2.
+    /// For `live`: the keys of earlier releases that an apply of the plan removes from R2. An
+    /// apply removes no other key.
     pub remove: Vec<Removal>,
     /// For `live`: whether the plan listed R2, which needs the bucket. Without a listing, the plan
-    /// has no `repair` group, and `remove` lacks the leftovers and the files that a client finds
-    /// by name.
+    /// has no `repair` group and removes nothing.
     pub listed: bool,
     /// Discovery could not resolve the step graph. Prepare and review a new plan before replay.
     pub needs_prepare: bool,
-    /// Complete manual publication reviews this owner record separately from source refreshes.
-    pub approval: Option<crate::approval::Review>,
 }
 
 /// Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.
@@ -261,13 +259,21 @@ pub(super) fn print_plan(plan: &EnvPlan) {
         print_table(&table);
     }
     if !plan.live.is_empty() {
-        let size = plan.remove.iter().map(|removal| removal.bytes).sum::<Option<u64>>().map_or("—".into(), bytes);
-        let unlisted = if plan.listed { "" } else { "; R2 was not listed, so leftovers are unknown" };
-        println!("REMOVE FROM R2 {} keys, {size}{unlisted}", plan.remove.len());
+        removals(plan).iter().for_each(|line| println!("{line}"));
     }
-    if let Some(review) = &plan.approval {
-        println!("{}", review.summary());
+}
+
+/// What an apply of `plan` removes from R2, one line per prefix.
+pub(super) fn removals(plan: &EnvPlan) -> Vec<String> {
+    if !plan.listed {
+        return vec!["REMOVE FROM R2 nothing: R2 was not listed".into()];
     }
+    let total = bytes(plan.remove.iter().map(|removal| removal.bytes).sum());
+    let mut lines = vec![format!("REMOVE FROM R2 {} keys, {total}", plan.remove.len())];
+    for (prefix, (count, size)) in crate::live::by_prefix(&plan.remove) {
+        lines.push(format!("  {prefix:<24} {count:>7} keys  {}", bytes(size)));
+    }
+    lines
 }
 
 /// What groups cost: the download, the build time and the output; `None` when the store does not
@@ -382,42 +388,7 @@ pub(super) fn complete(saved: Option<&EnvPlan>) -> Result<(), Error> {
     Ok(())
 }
 
-/// The complete desired publication after the build.
-pub(super) struct Applying {
-    pub(super) next: Live,
-    pub(super) plan: EnvPlan,
-}
-
-/// Recheck the approval after verification, including code for reused layers and unused acquisition.
-pub(super) fn recheck_approval(
-    root: &Path,
-    store: &Store,
-    http: &Http,
-    remote: &Remote,
-    products: &[&dyn Product],
-    saved: &EnvPlan,
-    run: &mut Run,
-) -> Result<(), Error> {
-    let current = planned_run(
-        root,
-        store,
-        http,
-        Some(remote),
-        products,
-        &saved.env,
-        &saved.only,
-        Basis::Saved(saved),
-        false,
-        Some(run),
-    )?
-    .plan;
-    if saved.approval != current.approval || saved.live != current.live {
-        return Err(outdated());
-    }
-    Ok(())
-}
-
-/// Build `args.env`, or the plan `saved`. A build of live also gives what an apply of it changes.
+/// Build `args.env`, or the plan `saved`. A build of live also gives live after an apply of it.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_env(
     root: &Path,
@@ -428,7 +399,7 @@ pub(super) fn build_env(
     args: &BuildArgs,
     saved: Option<&EnvPlan>,
     run: &mut Run,
-) -> Result<(Built, Option<Applying>), Error> {
+) -> Result<(Built, Option<Live>), Error> {
     complete(saved)?;
     run.record(&Event::Phase { phase: Phase::Prepare })?;
     let (basis, only) = match saved {
@@ -438,9 +409,8 @@ pub(super) fn build_env(
     let Planned { loaded, steps, plan, live } =
         planned_run(root, store, http, remote, products, &args.env, only, basis, true, Some(run))?;
     if let Some(saved) = saved {
-        let unchanged =
-            (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits, &saved.approval)
-                == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits, &plan.approval);
+        let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
+            == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
         if !unchanged || !(Plan { groups: plan.groups.clone() }).same_work(&Plan { groups: saved.groups.clone() }) {
             return Err(outdated());
         }
@@ -486,7 +456,7 @@ pub(super) fn build_env(
             built.releases.push(BuiltRelease { product: release.product.clone(), id: id.clone() });
         }
     }
-    Ok((built, Some(Applying { next, plan })))
+    Ok((built, Some(next)))
 }
 
 /// Fail with `blocked` when no product suits the environment of `plan`.
@@ -654,34 +624,6 @@ fn planned_run(
     let env = &mut loaded.env;
     let copies = remote.zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
     env.retained = live.as_ref().map(|live| crate::input_copy::retained(live, store)).transpose()?.unwrap_or_default();
-    if let (Some(approved), Some(remote), Some(live)) =
-        (run.as_deref().and_then(|run| run.automatic.as_ref()), remote, live.as_ref())
-    {
-        let mut original = env.clone();
-        original.live = live.versions();
-        original.moves.clear();
-        let fetch = |wanted: &Wanted| {
-            Err(Code::Blocked
-                .error(format!("automatic admission lacks retained planning inputs for `{}`", wanted.source,)))
-        };
-        let (current, blocked) = list_steps(root, products, &mut original, &loaded.regions, store, true, fetch, true)?;
-        if !blocked.is_empty() {
-            return Err(Code::Blocked
-                .error("automatic admission needs the complete retained product declarations")
-                .fix("Restore the retained planning inputs with a manual prepare, then retry."));
-        }
-        let review = crate::approval::review(
-            root,
-            &original,
-            &loaded.regions,
-            &current,
-            products,
-            &loaded.sources,
-            remote.describe(),
-            Ok(approved.observation.clone()),
-        );
-        approved.check(&review).map_err(|reason| Code::Blocked.error(reason))?;
-    }
     match basis {
         Basis::Saved(saved) => {
             let versions = saved.versions.iter().map(|v| ((v.source.clone(), v.params.clone()), v.version.clone()));
@@ -708,15 +650,6 @@ fn planned_run(
                         continue;
                     }
                     for request in super::freshness::requests(store, http, source, &inventory, false) {
-                        if run.as_deref().is_some_and(|run| run.automatic.is_some())
-                            && request.state == crate::sources::State::Blocked
-                        {
-                            return Err(Code::Blocked.error(format!(
-                                "required refresh `{}`: {}",
-                                source.id,
-                                request.reason.as_deref().unwrap_or("upstream check failed")
-                            )));
-                        }
                         if request.state == crate::sources::State::Stale {
                             env.stale_requests.insert((source.id.clone(), request.params.clone()));
                             env.moves.insert(source.id.clone(), None);
@@ -743,7 +676,7 @@ fn planned_run(
         }
     }
     let fetch = super::status_cli::discovery_fetch(
-        fetcher_recorded(root, store, http, &loaded.sources, env, copies.as_ref(), run.as_deref_mut()),
+        fetcher_recorded(root, store, http, &loaded.sources, env, copies.as_ref(), run),
         prepare,
     );
     let (steps, blocked) = match basis {
@@ -776,44 +709,14 @@ fn planned_run(
         let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
-    let mut originals = BTreeMap::new();
-    if let Some(run) = run.filter(|run| run.automatic.is_some()) {
-        let approved = run.automatic.as_ref().expect("filtered above");
-        if !blocked.is_empty() {
-            return Err(Code::Blocked.error("automatic product declarations are incomplete"));
-        }
-        let review = crate::approval::review(
-            root,
-            env,
-            &loaded.regions,
-            &steps,
-            products,
-            &loaded.sources,
-            remote.expect("Live has a remote").describe(),
-            Ok(approved.observation.clone()),
-        );
-        approved.check(&review).map_err(|reason| Code::Blocked.error(reason))?;
-        for (product, published) in products.iter().zip(&live.products) {
-            if let Some((_, release)) = &published.release {
-                originals.extend(crate::local::reuse(
-                    root,
-                    store,
-                    remote.expect("Live has a remote"),
-                    *product,
-                    release,
-                    &steps,
-                )?);
-            }
-        }
-        run.originals = originals.clone();
-    }
+    let originals = BTreeMap::new();
     let edits = edits(products, env, &live, &blocked);
-    let mut listed = match remote {
+    let listed = match remote {
         Some(remote @ Remote::Bucket(_)) => Some(live.list(remote).map_err(|e| Code::R2Failed.error(e))?),
         _ => None,
     };
-    let check = listed.as_deref().map(|listed| live.check(listed));
-    let against = against(&live, env, &edits, &blocked, check.as_ref(), store);
+    let drift = listed.as_deref().map(|listed| live.drift(listed));
+    let against = against(&live, env, &edits, &blocked, drift.as_deref(), store);
     let all = changes::changes_reusing(store, root, &steps, &against, &originals)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &originals)?;
@@ -843,32 +746,11 @@ fn planned_run(
             });
         }
     }
-    // An apply also removes what it finds under the prefixes that it makes live, and the retired ones.
-    if let (Some(listed), Some(remote)) = (listed.as_mut(), remote) {
-        let owned = live.prefixes();
-        for prefix in next.swept().into_iter().filter(|prefix| !owned.contains(prefix)) {
-            listed.extend(remote.list(&prefix).map_err(|e| Code::R2Failed.error(e))?);
-        }
+    if let (Some(listed), Some(remote)) = (&listed, remote) {
+        let removable = next.removable(remote, store, listed).map_err(|e| Code::R2Failed.error(e))?;
+        plan.remove = removable.into_iter().map(|object| Removal { key: object.key, bytes: object.bytes }).collect();
+        plan.listed = true;
     }
-    (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
-    let prior = super::commit_cli::approval_observation(store);
-    plan.approval = Some(if plan.needs_prepare || !plan.blocked.is_empty() {
-        crate::approval::Review::Unavailable {
-            owner: prior.ok().map(|prior| prior.owner),
-            reason: "the complete product graph is not available for automatic approval".into(),
-        }
-    } else {
-        crate::approval::review(
-            root,
-            &loaded.env,
-            &loaded.regions,
-            &steps,
-            products,
-            &loaded.sources,
-            remote.expect("Live has a remote").describe(),
-            prior,
-        )
-    });
     crate::worker::check(root)?;
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
@@ -913,7 +795,6 @@ fn env_plan(
         remove: Vec::new(),
         listed: false,
         needs_prepare: !env.fetch_failures.is_empty(),
-        approval: None,
     }
 }
 
@@ -957,7 +838,7 @@ fn against<'a>(
     env: &Env,
     edits: &[Edit],
     blocked: &[BlockedProduct],
-    check: Option<&Check>,
+    drift: Option<&[Drift]>,
     store: &Store,
 ) -> Against<'a> {
     let planned = live.products.iter().filter(|product| !blocked.iter().any(|b| b.product == product.product));
@@ -973,8 +854,8 @@ fn against<'a>(
         })?;
         Some((source.clone(), (from, to)))
     });
-    let drift = check.map(|check| {
-        let keys: Vec<String> = check.drift.iter().map(|drift| drift.key.clone()).collect();
+    let drift = drift.map(|drift| {
+        let keys: Vec<String> = drift.iter().map(|drift| drift.key.clone()).collect();
         let local_named: BTreeSet<String> = live
             .releases()
             .flat_map(|(prefix, id, release)| {
@@ -2177,17 +2058,17 @@ pub(crate) mod tests {
             records,
             join,
             upper,
-            "test/objects/old".into(),
             manifest,
             format!("test/releases/{}/COUNT.txt", release.id()),
             format!("inputs/objects/{}", crate::store::sha256_hex(b"head\n")),
         ];
         every.sort();
-        let removed = |plan: &EnvPlan| plan.remove.iter().map(|removal| removal.key.clone()).collect::<Vec<_>>();
+        let mut removed: Vec<_> = plan.remove.iter().map(|removal| removal.key.clone()).collect();
+        removed.sort();
         assert_eq!(
-            removed(&plan),
-            every,
-            "count is absent; an unread file of the new snapshot does not keep the old input object"
+            removed, every,
+            "count is absent; an unread file of the new snapshot does not keep the old input object; no manifest \
+             names test/objects/old"
         );
 
         let err = live_plan(&fixture, &remote, &["code:test/join"]).unwrap_err();

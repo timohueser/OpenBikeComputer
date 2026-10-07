@@ -243,9 +243,6 @@ def archive(directory, output):
 
 
 def container(request):
-    if os.environ.get("OBC_BAKE_BUDGETED") == "1":
-        raise ValueError("Budgeted Linux bakes need OBC_PLANNER_RUNTIME_BUILDER=native for new runtimes; "
-                         "reuse a verified artifact or prepare the native builder")
     output = Path(request["output"])
     child = {**request, "output": "/work/output", "metrics": "/work/metrics.json"}
     argv = ["docker", "run", "--interactive", "--rm", "--pull=never", "--network=none", "--read-only", "--tmpfs", "/tmp",

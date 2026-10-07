@@ -92,14 +92,6 @@ impl Product for Planner {
         "planner"
     }
 
-    fn approval_config(&self, root: &std::path::Path) -> Result<serde_json::Value, String> {
-        runtime::approval_config(root)
-    }
-
-    fn runtime_binding(&self, step: &Step) -> Result<Option<obc_data::approval::RuntimeBinding>, String> {
-        runtime::binding(step)
-    }
-
     fn planning_code(&self, _env: &Env) -> Result<Option<obc_data::engine::OwnerCode>, String> {
         Ok(Some(obc_data::engine::OwnerCode {
             crate_name: "obc-data-steps".into(),

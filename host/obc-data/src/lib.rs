@@ -3,9 +3,7 @@
 //! and the `obc data` commands. `specs/obc-data.md` is the contract for the files this crate reads
 //! and writes.
 
-pub mod approval;
 pub mod cli;
-pub mod commit;
 pub mod date;
 pub mod dev;
 pub mod engine;
@@ -18,7 +16,6 @@ pub mod operation;
 pub mod product;
 pub mod r2;
 pub mod regions;
-pub mod schedule;
 pub mod sources;
 pub mod store;
 pub mod vps;

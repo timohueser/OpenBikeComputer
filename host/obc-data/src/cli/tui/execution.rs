@@ -1,4 +1,4 @@
-//! Detached operations use the shared start, observation, stop and reconciliation APIs.
+//! Detached operations use the shared start, observation and stop APIs.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -36,21 +36,6 @@ impl Execution {
     pub fn can_stop(&self) -> bool {
         self.current().is_some_and(|view| matches!(view.operation, Some(Status::Starting | Status::Running)))
     }
-
-    pub fn can_reconcile(&self) -> bool {
-        self.current().is_some_and(|view| {
-            matches!(
-                view.operation,
-                Some(
-                    Status::AwaitingOwner { .. }
-                        | Status::UnknownOwner { .. }
-                        | Status::Interrupted
-                        | Status::Stopped
-                        | Status::Finished { .. }
-                )
-            )
-        })
-    }
 }
 
 pub(super) fn start(root: &Path, store: &Store, kind: Kind, plan: &EnvPlan) -> Result<operation_cli::Handle, Error> {
@@ -85,8 +70,6 @@ pub(super) fn state(view: &operation_cli::View) -> &'static str {
         Some(Status::Stopping) => "stopping · admitted work drains",
         Some(Status::Stopped) => "stopped",
         Some(Status::Interrupted) => "interrupted",
-        Some(Status::AwaitingOwner { .. }) => "awaiting publication owner",
-        Some(Status::UnknownOwner { .. }) => "publication outcome unknown",
         Some(Status::Finished { ok: true }) => "finished",
         Some(Status::Finished { ok: false }) => "failed",
         None => match view.run.summary.outcome {
@@ -115,19 +98,11 @@ impl App {
                 _ => None,
             })
             .collect();
-        let activated = run.published.iter().any(|mutation| matches!(mutation, Publication::ServicesActivated { .. }));
-        if !switched.is_empty() || activated {
+        if !switched.is_empty() {
             if run.summary.outcome == Outcome::Failed {
-                lines.push(Line::from("Apply did not finish. Acknowledged publication changes remain live."));
+                lines.push(Line::from("Apply did not finish. The switched pointers stay live."));
             }
-            if !switched.is_empty() {
-                lines.push(Line::from(format!("Pointer switches acknowledged: {}", switched.join(", "))));
-            }
-            if activated {
-                lines.push(Line::from("Service activation acknowledged."));
-            }
-        } else if matches!(view.operation, Some(Status::UnknownOwner { .. } | Status::AwaitingOwner { .. })) {
-            lines.push(Line::from("Live outcome is not yet known. Observe or reconcile the owner result."));
+            lines.push(Line::from(format!("Pointers switched: {}", switched.join(", "))));
         } else if matches!(view.operation, Some(Status::Finished { ok: true })) {
             lines.push(Line::from(if run.summary.command == "dev local" {
                 "Local preparation completed. Stopped apps remain stopped."
@@ -136,29 +111,18 @@ impl App {
             } else if run.summary.command.starts_with("build ") {
                 "Build completed. No publication was requested."
             } else {
-                "Apply completed without a pointer switch or service activation."
+                "Apply completed without a pointer switch."
             }));
         } else {
-            lines.push(Line::from("No Live pointer switch is acknowledged."));
-        }
-        if let Some(Status::UnknownOwner { reason, .. }) = &view.operation {
-            lines.push(Line::from(format!("Owner: {reason}")));
+            lines.push(Line::from("No Live pointer switched."));
         }
         let uploaded = run.published.iter().filter(|mutation| matches!(mutation, Publication::Uploaded { .. })).count();
         let removed = run.published.iter().filter(|mutation| matches!(mutation, Publication::Removed { .. })).count();
         if uploaded + removed > 0 {
-            lines.push(Line::from(format!("Acknowledged writes: {uploaded} uploaded · {removed} removed")));
+            lines.push(Line::from(format!("R2 writes: {uploaded} uploaded · {removed} removed")));
         }
         if let Some(error) = &view.observation_error {
-            lines.push(Line::from(format!("Observation failed: {error}")));
-        }
-        if let Some(approval) = view.result.as_ref().and_then(|result| {
-            result.get("approval").or_else(|| result.get("result").and_then(|result| result.get("approval")))
-        }) {
-            match serde_json::from_value::<crate::approval::Outcome>(approval.clone()) {
-                Ok(approval) => lines.push(Line::from(approval.summary())),
-                Err(_) => lines.push(Line::from("Automatic approval outcome could not be read.")),
-            }
+            lines.push(Line::from(error.clone()));
         }
         if let Some(error) = view.result.as_ref().and_then(|result| result.get("error")) {
             if let Ok(error) = serde_json::from_value::<Error>(error.clone()) {

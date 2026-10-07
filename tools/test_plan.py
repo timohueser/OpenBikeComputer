@@ -140,7 +140,6 @@ TEST_POLICY_PATTERNS = (
 # stay on the full policy route.
 PUBLICATION_WORKFLOWS = {
     ".github/workflows/bake.yml",
-    ".github/workflows/data-status.yml",
     ".github/workflows/deploy-site.yml",
     ".github/workflows/deploy-verification.yml",
 }
@@ -951,7 +950,6 @@ AUDITED_PATHS = (
     "builder/server/nested/handler.py",
     "fixtures/catalog.toml",
     ".github/workflows/bake.yml",
-    ".github/workflows/data-status.yml",
     "testing/suites.toml",
     "builder/web/src/lib/example.ts",
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",

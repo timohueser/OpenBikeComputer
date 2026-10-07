@@ -3597,8 +3597,8 @@ dependencies = [
  "obc-pack",
  "obc-search-bake",
  "obcm-assemble",
- "planner-router-build",
  "planner-router",
+ "planner-router-build",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4758,6 +4758,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "planner-router"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "memmap2 0.9.11",
+ "postcard",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "planner-router-build"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "obc-data",
+ "obc-dem",
+ "osmpbfreader",
+ "planner-router",
+ "postcard",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "planner-service"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "planner-router",
+ "planner-router-build",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5240,47 +5281,6 @@ name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
-
-[[package]]
-name = "planner-router-build"
-version = "0.1.0"
-dependencies = [
- "clap",
- "obc-data",
- "obc-dem",
- "osmpbfreader",
- "postcard",
- "planner-router",
- "rusqlite",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "planner-router"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "memmap2 0.9.11",
- "postcard",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "planner-service"
-version = "0.1.0"
-dependencies = [
- "axum",
- "planner-router-build",
- "planner-router",
- "serde_json",
- "tokio",
- "tower",
- "tower-http",
-]
 
 [[package]]
 name = "rsqlite-vfs"
