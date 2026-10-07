@@ -1223,9 +1223,10 @@ pub(crate) mod tests {
             "no client reads an intermediate"
         );
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
-        for band in ["mid", "fine", "network"] {
+        for band in ["mid", "fine"] {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
         }
+        assert_eq!(reads("maps/network/0037-0032"), [osm, "maps/terrain/0037-0032 []"]);
         assert!(steps.iter().all(|step| !step.code.paths.iter().any(|path| path == "Cargo.lock")));
     }
 

@@ -16,7 +16,7 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 fn recipe_root(target: &Path, steps: &[Step]) {
-    let repository = root();
+    let repository = root().canonicalize().unwrap();
     let output = std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args(["metadata", "--offline", "--locked", "--no-deps", "--format-version", "1"])
         .current_dir(&repository)
