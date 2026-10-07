@@ -13,10 +13,8 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     };
     let poly = box_poly(bbox);
     let coverage = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
-    let Input::Snapshot { source, version, params, files } = &inputs.osm else {
-        return Err(invalid("fixture PBF must name its original captured snapshot".into()));
-    };
-    let paths = snapshot_files(store, source, version, params, files)
+    let obc_data::fixtures::CapturedInput { source, version, files } = &inputs.osm;
+    let paths = snapshot_files(store, source, version, &[], files)
         .map_err(Unplanned::Failed)?
         .ok_or_else(|| invalid(format!("import the exact fixture PBF {} before building", inputs.osm_sha256)))?;
     let [path] = paths.values().collect::<Vec<_>>()[..] else {
@@ -27,7 +25,7 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
     }
     let prepared = copy_step(
         "maps/source/captured",
-        inputs.osm.clone(),
+        inputs.osm.input(),
         serde_json::json!({"poly":poly,"sha256":inputs.osm_sha256}),
         &["source.osm.pbf", "source.poly"],
         copy_osm,
@@ -50,13 +48,10 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
         let input = inputs.content.get(collection).ok_or_else(|| {
             invalid(format!("fixture {collection} needs an exact raw capture or an explicitly pinned compiled input"))
         })?;
-        if !matches!(input, Input::Snapshot { .. }) {
-            return Err(invalid(format!("historical fixture {collection} must name its captured snapshot")));
-        }
         content.push(copy_step(
             &content_layer(collection),
-            input.clone(),
-            serde_json::json!({"collection":collection}),
+            input.input(),
+            serde_json::json!({"kind":"historical-compiled","collection":collection}),
             &[collection],
             copy_content,
         ));

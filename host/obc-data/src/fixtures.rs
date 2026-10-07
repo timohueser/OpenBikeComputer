@@ -12,6 +12,9 @@ use crate::product::{Product, Steps, Unplanned};
 use crate::regions::{Area, Regions};
 use crate::store::{hash_file, sha256_hex, Store};
 
+mod records;
+pub use records::{saved, Saved};
+
 pub type Assemble = fn(&Release, &Store, &Path) -> Result<(), String>;
 pub type Recipes = fn(&Env, &Regions, &Store, &Inputs) -> Result<Steps, Unplanned>;
 
@@ -23,10 +26,31 @@ pub struct FixtureCollection {
 }
 
 /// Exact imported inputs of one package, separate from producer receipts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Inputs {
-    pub osm: Input,
+    pub osm: CapturedInput,
     pub osm_sha256: String,
-    pub content: BTreeMap<String, Input>,
+    pub content: BTreeMap<String, CapturedInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CapturedInput {
+    pub source: String,
+    pub version: String,
+    pub files: Vec<String>,
+}
+
+impl CapturedInput {
+    pub fn input(&self) -> Input {
+        Input::Snapshot {
+            source: self.source.clone(),
+            version: self.version.clone(),
+            params: Vec::new(),
+            files: self.files.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
