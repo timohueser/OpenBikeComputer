@@ -221,6 +221,26 @@ impl Store {
         write_record(&path, files)
     }
 
+    pub fn producer(&self, code: &str) -> Result<Option<crate::engine::release::Producer>, String> {
+        if code.len() != 64 || !code.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Ok(None);
+        }
+        read_record(&self.root.join("producers").join(format!("{code}.json")))
+    }
+
+    pub fn put_producer(&self, code: &str, producer: &crate::engine::release::Producer) -> Result<(), String> {
+        producer.check(code)?;
+        write_record(&self.root.join("producers").join(format!("{code}.json")), producer)
+    }
+
+    pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
+        read_records(&self.root.join("local"))
+    }
+
+    pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
+        write_record(&self.root.join("local").join(format!("{}.json", adoption.plan.product)), adoption)
+    }
+
     /// The manifest of a release.
     pub fn release(&self, product: &str, id: &str) -> PathBuf {
         self.root.join("releases").join(product).join(format!("{id}.json"))

@@ -210,6 +210,7 @@ mod tests {
             region: "test".into(),
             optional: Vec::new(),
             named: Vec::new(),
+            producers: Default::default(),
             layers: [
                 "planner/routing/grid",
                 "planner/search/pois/grid",

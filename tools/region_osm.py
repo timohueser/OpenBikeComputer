@@ -11,15 +11,21 @@ import tempfile
 from tools import step_request
 
 
-def probe():
-    binary = shutil.which(os.environ.get("OBC_OSMIUM", "osmium"))
+def digest(binary):
+    with Path(binary).open("rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def probe(binary=None, expected=None):
+    binary = binary or shutil.which(os.environ.get("OBC_OSMIUM", "osmium"))
     if binary is None:
         raise ValueError("Prepare Osmium, or set OBC_OSMIUM to its executable")
     binary = Path(binary).resolve()
-    with binary.open("rb") as file:
-        digest = hashlib.file_digest(file, "sha256").hexdigest()
+    sha256 = digest(binary)
+    if expected is not None and sha256 != expected:
+        raise ValueError("Prepared Osmium changed; prepare a new plan")
     result = subprocess.run([binary, "--version"], capture_output=True, check=True)
-    return binary, {"sha256": digest, "version": result.stdout.decode().strip()}
+    return binary, {"sha256": sha256, "version": result.stdout.decode().strip()}
 
 
 def run(binary, *args):
@@ -42,9 +48,14 @@ def union(binary, inputs, output):
 
 
 def step(request):
-    binary, identity = probe()
-    if identity != request["options"]["osmium"]:
-        raise ValueError("Prepared Osmium changed; prepare a new plan")
+    providers = [item for item in request.get("libraries", []) if item["name"] == "osmium"]
+    if len(providers) != 1:
+        raise ValueError("The request needs one named Osmium binding")
+    provider = providers[0]
+    path = Path(provider["path"])
+    if not path.is_absolute() or path.resolve() != path:
+        raise ValueError("Prepared Osmium path is not canonical; prepare a new plan")
+    binary, identity = probe(path, provider["sha256"])
     inputs = []
     for files in request["layers"].values():
         selected = [Path(path) for name, path in files.items() if name.endswith(".osm.pbf")]
@@ -52,7 +63,7 @@ def step(request):
             raise ValueError("Each area input must contain one .osm.pbf")
         inputs.extend(selected)
     union(binary, inputs, Path(request["output"]) / "osm.pbf")
-    if probe()[1] != identity:
+    if path.resolve() != path or digest(path) != provider["sha256"]:
         raise ValueError("Prepared Osmium changed during the union")
     step_request.metrics(request, {"areas": len(inputs), "osmium": identity["version"]})
 

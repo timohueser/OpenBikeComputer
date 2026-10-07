@@ -114,7 +114,7 @@ fn map_recipes(store: &Store) -> Vec<Step> {
     with_osm(store);
     with_captures(store, "1");
     without_models(store, &env, &regions);
-    map_steps(&root(), &env, &regions, store).unwrap().steps
+    Maps.steps_with_tool(&root(), &env, &regions, store, Ok(authored_tool(store.root()))).unwrap().steps
 }
 
 #[test]
@@ -212,8 +212,9 @@ fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
         assert_eq!([identity(source), identity(osm), identity(draw), identity(network)], before);
         let after = identity(catalog);
         assert_ne!(after, catalog_before);
-        let changed: Vec<_> = after.keys().filter(|key| after.get(*key) != catalog_before.get(*key)).collect();
-        assert_eq!(changed, [&format!("data/sources.toml#{id}")]);
+        let changed: Vec<_> =
+            after.keys().filter(|key| after.get(*key) != catalog_before.get(*key)).map(String::as_str).collect();
+        assert_eq!(changed, [format!("data/sources.toml#{id}").as_str(), "identity/source-config"]);
     }
     let mut registry: toml::Value = toml::from_str(&original).unwrap();
     for source in registry["source"]

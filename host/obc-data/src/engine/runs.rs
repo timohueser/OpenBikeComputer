@@ -328,7 +328,8 @@ impl Run {
         let mut codes = Codes { context: std::mem::take(&mut self.codes), ..Default::default() };
         for step in &pending {
             let (hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-            store.put_code(hash, files)?;
+            store.put_code(hash, &files.files)?;
+            store.put_producer(hash, &super::release::Producer::from(files))?;
         }
         crate::worker::check(root)?;
         let checks = std::sync::Mutex::new(std::mem::take(&mut codes.context));

@@ -191,6 +191,8 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `releases/<product>/<id>.json` | The manifest of a release, see [Releases](#releases) |
 | `code/<hash>.json` | The code files of a code hash: `{path: sha256}`. A run writes it for each step that it reads or builds |
+| `producers/<hash>.json` | The full code fingerprints, source/config fingerprints and resolved Rust target/profile from the same traversal. The full fingerprints must hash to `<hash>` |
+| `local/<product>.json` | One saved portable adoption: its original release and exact selected files. It remains a collection root while apps are stopped |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
@@ -263,7 +265,7 @@ The import moves the cache directories of the older bake tools into the store:
 The import record has one JSON object per line: `dir` (without symbolic links), `path` (below
 `dir`, with `/`), `size` and `sha256`.
 
-The collection deletes what no live release or fixture reaches. Its roots are the live
+The collection deletes what no live release, saved Local adoption or fixture reaches. Its roots are the live
 releases (see [Live](#live)), the files of the checkout that it runs in, and the store:
 
 - A snapshot record is reached when a layer of a live release read its source and version. The
@@ -275,6 +277,8 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
   SHA-256 is a file of a live layer, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/`, a
   planner region recipe in `tools/planner-regions/`, or an import record. Deleting an import
   record releases its objects.
+- A saved Local adoption roots its selected file SHA-256 values and every source version in
+  their transitive original layer provenance. A malformed saved anchor stops collection.
 - A layer is reached when each of its inputs is reached: a snapshot input whose digest is the
   digest of all the files, or of one file, of a reached record of its source, and a layer input
   whose digest is the digest of the files that it selects of a reached layer of its step: the
@@ -282,9 +286,9 @@ releases (see [Live](#live)), the files of the checkout that it runs in, and the
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the source`,
-`newest of a request`. Then one entry for the reached layers of each step (`inputs kept`). Then
+`newest of a request` and `local PRODUCT, …`. Then one entry for the reached layers of each step (`inputs kept`). Then
 one entry for each kind of root that names objects that no reached record or layer has:
-`live release`, `fixture`, `planner recipe` or `import record`. The size of
+`live release`, `local release`, `fixture`, `planner recipe` or `import record`. The size of
 an entry is the size of its files. The collection takes the store lock alone, or refuses to start
 while a mutating run, fetch or import holds it. A writer run holds it through verification and
 publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
@@ -500,10 +504,14 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   selected source and package projections, repository profile and toolchain configuration.
   It resolves at the recorded producer target and profile without selecting native tools,
   libraries or a Python interpreter. This evidence does not prove equal recomputation on another
-  host. Real execution still requires its complete native identity.
-- A declared native library enters code identity by its name and complete file digest. Its
+  host. Full execution identity includes a reserved `identity/source-config` digest of this
+  projection and the recorded Rust target/profile. A published witness must match that digest.
+  Real execution still requires its complete native identity.
+- A declared native library or executable enters code identity by its name and complete file digest. Its
   installation path does not enter that identity. Each execution boundary checks the current
-  file against the declared digest. GEOS producers bind the loaded shared C and C++ libraries
+  file against the declared digest. Osmium extraction and merge bind the exact canonical executable
+  in this identity, outside semantic options. Their requests carry the binding; both callbacks
+  check it before and after work. Missing bindings refuse execution. GEOS producers bind the loaded shared C and C++ libraries
   at worker startup. A missing or changed file blocks these producers until a fresh worker
   starts. New captures bind the same two digests. Selector children check the requested capture
   code before selection and check the provider again before success. Held captures retain their
@@ -557,7 +565,7 @@ of each object in byte order:
 | `step` | The layer name |
 | `command` | The program and its arguments, or `null` for a Rust step |
 | `inputs` | One `{"kind", "name", "digest"}` per input, sorted by `kind`, then `name`. `kind` is `snapshot` or `layer`; `name` is the source id or the layer name |
-| `options` | The options |
+| `options` | The semantic options |
 | `code` | The code hash |
 | `outputs` | The declared outputs, sorted |
 
@@ -604,7 +612,8 @@ same fields.
 | `snapshots` | `{source: {file name: object path}}` |
 | `layers` | `{layer name: {path in the layer: object path}}`, with the files that the input selects |
 | `layer_files` | `{layer name: [{path, size, sha256}, …]}`, from receipts for exactly the same selected files |
-| `options` | The options |
+| `options` | The semantic options |
+| `libraries` | Named native library or executable bindings: `{name, path, sha256}`. They come from the checked Code declaration |
 | `output` | An empty directory. The layer is the files that the step writes in it |
 | `metrics` | A path. The step can write a JSON object there, for example the size of each section |
 
@@ -616,7 +625,7 @@ A declared output that does not exist is an error.
 
 ### Offline
 
-A step reads only its inputs: the snapshots, the layers and the options in its request. A step
+A step reads its data inputs and the checked native providers in its request. A step
 does not use the network; fetchers are the only network users. A step must not write to its
 inputs: their paths, and the links of a view, are objects of the store, and a step that runs as
 root can write to a read-only object. The engine does not enforce this.
@@ -948,8 +957,8 @@ wins. Unique supplied objects remain. An extract cannot reveal a deletion absent
 this is a union of available snapshots, not a snapshot at one common date. Conflicting payloads
 at the same object type, id and version are malformed OSM inputs.
 
-The merge and map crop recipes hold the prepared Osmium executable SHA-256 and version. They
-check that identity before and after execution, before accepting output. A persistent tool
+The merge and map crop code binds the prepared Osmium executable SHA-256. Their requests name
+its canonical path. They check the binding before and after execution, before accepting output. A persistent tool
 replacement refuses the step. A missing tool asks to prepare Osmium or set `OBC_OSMIUM`.
 Plans probe local tooling only; they do not download or install it.
 
@@ -966,8 +975,8 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `maps/region-osm` | The selected PBF of each `maps/source/<area>`; only for multiple areas | `osmium`: executable SHA-256 and version | `osm.pbf`: the available-snapshot union |
-| `maps/osm` | The PBF of one `maps/source/<area>`, or `maps/region-osm` | `leaves`: `[i, j]` of each leaf; `osmium`: executable SHA-256 and version | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The metrics name the version (`osmium`) |
+| `maps/region-osm` | The selected PBF of each `maps/source/<area>`; only for multiple areas | None | `osm.pbf`: the available-snapshot union |
+| `maps/osm` | The PBF of one `maps/source/<area>`, or `maps/region-osm` | `leaves`: `[i, j]` of each leaf | `osm/<i>-<j>.osm.pbf`: the `osmium extract --strategy smart --set-bounds` of the square of the leaf and one µdeg around it. The metrics name the version (`osmium`) |
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with data, `bbox=<box>` | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
@@ -1008,7 +1017,7 @@ reads no snapshot. No layer reads a national terrain model yet.
 
 | Layer | Reads | Options | Files |
 | --- | --- | --- | --- |
-| `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; `osmium`: executable SHA-256 and version for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
+| `planner/osm` | The selected PBF of each `planner/source/<area>` | `path`: `osm.pbf` for one area; none for multiple areas | `osm.pbf`: one extract as it is, or the available-snapshot union |
 | `planner/basemap` | `planner/osm`; The selected jar of `protomaps-basemaps`; `natural-earth`, `water-polygons`, `land-polygons`, `daylight-landcover`, `qrank`, `pgf-encoding` | `bounds` of the region; `attribution` of `osm-planet`, `natural-earth` and `daylight-landcover` | `basemap.pmtiles`: the Protomaps map at zooms 0 to 14 |
 | `planner/terrain` | The GLO-30 tiles of `bounds` | `bounds`: west, south, east and north of the zoom 10 tiles that the bounds of the region touch and of their neighbours, widened to `terrain.margin_m` around the bounds | `terrain.mbtiles`: lossless Terrarium WebP tiles of zooms 0 to 12, the bytes that `planner-dem` writes from the same tiles |
 | `planner/routing` | `planner/osm`, and the GLO-30 tiles of the bounds of the region | `region` (the last part of the region id), `bounds`, `profiles` and `countries`. The import applies the German access defaults | `routing/`: the package of [the route package contract](route-package.md) with `overlays.sqlite` and `route-catalog.json`; `blocks/`: the routing blocks of the grid cells, as `route-blocks` writes them; `routes/<cell>.json`: the records of `route-catalog.json` that name the cell, with a final newline |
@@ -1135,7 +1144,7 @@ byte order.
 ### Releases
 
 `releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
-"layers", "named"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+"layers", "named", "producers"}`, as the compact output of `serde_json` with the keys of each object in byte order.
 `region` is the region of the environment that it was built for, and `optional` the optional layers
 of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
 the same layers make the same release. `layers` is sorted by `step`, and each layer has:
@@ -1162,6 +1171,33 @@ product's verification.
 The objects of a release are the selected client files, with one object per distinct SHA-256.
 The manifest records every file of every layer, so a plan compares it with live and live names
 the versions that it read. Uploads, live ownership and cleanup use the same selection.
+
+`producers` deduplicates witnesses by the original full `code` digest. Each witness has `files`,
+`source_config` and resolved `rust` target/build profile (`null` without Rust). The full fingerprints must
+produce that digest and bind the exact source/config projection and recorded Rust metadata.
+The projection comes from the same resolver traversal.
+A missing witness does not permit portable adoption. Witness metadata changes the release id;
+it does not change an existing layer key or receipt.
+
+### Local portable data
+
+`local::plan` compares supplied producer declarations at the original Rust target/profile.
+It selects no original native compiler, library or Python interpreter. The owner must declare
+the layer portable. Native service archives are excluded. Options, commands, declared outputs,
+exact snapshot versions/parameters and selected dependency file digests must match. Dependency
+comparison uses original byte provenance, not the Local host's native producer key.
+
+A selection includes the original release's client files and the extra exact paths the caller
+needs. Current visibility does not infer new application file requirements. A file can come
+from its immutable client object key, an exact named release key, or verified local bytes.
+An unpublished missing intermediate blocks adoption; it needs a Local build or materializer.
+Planning performs no transfer. It reports each blocked selection with its reason.
+
+`local::adopt` requires the exact reviewed complete selection. It checks source/config before
+and after transfer, and checks every selected file's SHA-256 and size. It saves the original
+release and selection in a separate adoption record. It creates no Local receipt or replacement
+producer identity. A failure leaves verified cache bytes and keeps the previous anchor.
+Local rebuilds keep their full execution identity. These APIs do not start apps or services.
 
 ### State of a layer
 

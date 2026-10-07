@@ -57,7 +57,7 @@ pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environme
     let mut layers = Vec::new();
     for step in order(steps)? {
         let (code_hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-        let (state, reason) = judge(store, step, code_hash, files, environment, &states)?;
+        let (state, reason) = judge(store, step, code_hash, &files.files, environment, &states)?;
         states.insert(&step.name, state);
         let reads = step.inputs.iter().map(|input| match input {
             Input::Snapshot { source, version, .. } => {
@@ -185,8 +185,11 @@ fn changed_code(store: &Store, before: &str, now: &BTreeMap<String, String>, cod
         return Ok(code.paths.iter().chain(&code.crates).cloned().collect::<Vec<_>>().join(", "));
     };
     let paths: BTreeSet<&String> = before.keys().chain(now.keys()).collect();
-    let changed: Vec<&String> = paths.into_iter().filter(|path| before.get(*path) != now.get(*path)).collect();
+    let binding = super::code::SOURCE_BINDING;
+    let changed: Vec<&String> =
+        paths.into_iter().filter(|path| path.as_str() != binding && before.get(*path) != now.get(*path)).collect();
     Ok(match changed.as_slice() {
+        [] if before.get(binding) != now.get(binding) => "source/config".into(),
         [] => "the code hash".into(),
         [one] => one.to_string(),
         [first, rest @ ..] => format!("{first} and {} more", rest.len()),
@@ -224,6 +227,12 @@ mod tests {
         let environment = live(&fixture);
         let ok = [("test/upper", State::Ok, None), ("test/join", State::Ok, None), ("test/count", State::Ok, None)];
         assert_eq!(states(&fixture, &pipeline(), &environment), expect(&ok));
+
+        let binding = super::super::code::SOURCE_BINDING;
+        let before = BTreeMap::from([(binding.into(), "old witness".into())]);
+        fixture.store.put_code("binding-only", &before).unwrap();
+        let now = BTreeMap::from([(binding.into(), "new witness".into())]);
+        assert_eq!(changed_code(&fixture.store, "binding-only", &now, &Code::default()).unwrap(), "source/config");
 
         write(&fixture.root().join("join.py"), &format!("# A comment.\n{JOIN}"));
         assert_eq!(

@@ -121,7 +121,10 @@ mod tests {
         let before = identity(root, &runtime).unwrap().hashes;
         let packaged = super::super::Code { python_packages: Some("selected".into()), ..Default::default() };
         let selected = super::super::files(root, &packaged).unwrap();
-        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected.keys().map(String::as_str).collect::<Vec<_>>(),
+            [super::super::SOURCE_BINDING, "python/packages/selected"]
+        );
         assert_eq!(selected["python/packages/selected"], before["python/packages/selected"]);
         assert!(!selected.contains_key("python/runtime"), "packaged dependencies select no host interpreter");
         project("1.0.0", "2.0.0", "1.0.0");
