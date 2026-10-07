@@ -6,17 +6,27 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::engine::release::Release;
-use crate::engine::LayerFile;
-use crate::product::Product;
+use crate::engine::{Input, LayerFile};
+use crate::env::Env;
+use crate::product::{Product, Steps, Unplanned};
 use crate::regions::{Area, Regions};
 use crate::store::{hash_file, sha256_hex, Store};
 
 pub type Assemble = fn(&Release, &Store, &Path) -> Result<(), String>;
+pub type Recipes = fn(&Env, &Regions, &Store, &Inputs) -> Result<Steps, Unplanned>;
 
 /// The producer worker supplies its existing map product and checked device assembler.
 pub struct FixtureCollection {
     pub maps: &'static dyn Product,
+    pub recipes: Recipes,
     pub assemble: Assemble,
+}
+
+/// Exact imported inputs of one package, separate from producer receipts.
+pub struct Inputs {
+    pub osm: Input,
+    pub osm_sha256: String,
+    pub content: BTreeMap<String, Input>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -33,6 +43,9 @@ pub struct Package {
     pub osm: String,
     /// The original build record supplies bootstrap inputs, never producer receipts.
     pub bootstrap: String,
+    /// Explicit raw source selections; historical baked terrain is not a raw DEM version.
+    #[serde(default)]
+    pub sources: BTreeMap<String, String>,
     /// Archive destination to a registered captured source.
     #[serde(default)]
     pub assets: BTreeMap<String, String>,
@@ -57,6 +70,11 @@ impl Collection {
             relative(&package.map)?;
             relative(&package.osm)?;
             relative(&package.bootstrap)?;
+            for (source, version) in &package.sources {
+                if !crate::is_kebab(source) || version.is_empty() {
+                    return Err(format!("fixture {id} has an invalid raw source selection"));
+                }
+            }
             for (destination, source) in &package.assets {
                 relative(destination)?;
                 if destination == &package.map || !crate::is_kebab(source) {
@@ -124,7 +142,7 @@ impl Captured {
     }
 }
 
-pub(crate) fn relative(path: &str) -> Result<(), String> {
+pub fn relative(path: &str) -> Result<(), String> {
     if path.is_empty()
         || path.contains('\\')
         || path.chars().any(char::is_control)

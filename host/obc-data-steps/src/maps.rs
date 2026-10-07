@@ -23,7 +23,9 @@ use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
 
+mod captured;
 pub(crate) mod catalog;
+pub(crate) use captured::recipes as fixture_recipes;
 
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_osm::SOURCE_LEAF_LOG2;
@@ -40,6 +42,7 @@ struct RecipeInputs {
     land_polygons: Option<String>,
     glo30: String,
     catalog_index: Option<(String, String)>,
+    content: Option<Vec<Step>>,
 }
 
 impl Product for Maps {
@@ -138,7 +141,7 @@ impl Maps {
             store,
             tool,
             libraries,
-            RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index },
+            RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index, content: None },
         )
     }
 
@@ -151,7 +154,7 @@ impl Maps {
         libraries: Result<Vec<obc_data::engine::Library>, String>,
         inputs: RecipeInputs,
     ) -> Result<Steps, Unplanned> {
-        let RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index } = inputs;
+        let RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index, content } = inputs;
         let mut wanted = Vec::new();
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
@@ -179,9 +182,15 @@ impl Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let mut content_steps = Vec::new();
+        let captured_content = content.is_some();
+        let mut content_steps = content.unwrap_or_default();
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        for source in &selection.sources {
+        if captured_content {
+            for collection in ["landmarks", "peaks"] {
+                content_names.insert(collection, vec![content_layer(collection)]);
+            }
+        }
+        for source in selection.sources.iter().filter(|_| !captured_content) {
             let area = vec![("area".to_string(), source.id.clone())];
             for collection in ["landmarks", "peaks"] {
                 let name = if selection.direct {
@@ -278,8 +287,9 @@ impl Maps {
             Err(reason) => blocked.push(BlockedLayer { layer: "maps/osm".into(), reason }),
         }
         if blocked.is_empty() {
-            let (body, version) =
-                catalog_index.ok_or_else(|| Unplanned::Failed("catalog index was not fetched".into()))?;
+            if catalog_index.is_none() && selection.sources.iter().any(|source| source.prepared.is_none()) {
+                return Err(Unplanned::Failed("catalog index was not fetched".into()));
+            }
             match catalog::step(
                 env,
                 regions.get(&env.region).expect("the environment names a region"),
@@ -287,8 +297,7 @@ impl Maps {
                 &selection,
                 &steps,
                 &glo30,
-                version,
-                &body,
+                catalog_index.as_ref().map(|(body, version)| (version.clone(), body.as_str())),
             ) {
                 Ok(step) => steps.push(step),
                 Err(Unplanned::Invalid(reason)) => blocked.push(BlockedLayer { layer: catalog::LAYER.into(), reason }),
@@ -501,7 +510,7 @@ fn file(
                 return Err(Unplanned::Failed(format!(
                     "a fetch of {source} with {params:?} gives {} files",
                     names.len()
-                )))
+                )));
             }
         };
         return Ok((file.name, file.sha256));
@@ -886,7 +895,9 @@ pub(crate) fn invalid(message: String) -> Unplanned {
 /// A box as an Osmosis `.poly`, the outline that `obc-bake` reads.
 pub fn box_poly(bbox: &Bbox) -> String {
     let Bbox { west, south, east, north } = *bbox;
-    format!("box\n1\n   {west} {south}\n   {east} {south}\n   {east} {north}\n   {west} {north}\n   {west} {south}\nEND\nEND\n")
+    format!(
+        "box\n1\n   {west} {south}\n   {east} {south}\n   {east} {north}\n   {west} {north}\n   {west} {south}\nEND\nEND\n"
+    )
 }
 
 #[cfg(test)]
