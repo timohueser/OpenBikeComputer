@@ -171,7 +171,7 @@ impl Maps {
             land_polygons,
             glo30,
             catalog_index,
-            content,
+            content: supplied_content,
             terrain: captured_terrain,
         } = inputs;
         let mut wanted = Vec::new();
@@ -208,8 +208,8 @@ impl Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let captured_content = content.is_some();
-        let mut content_steps = content.unwrap_or_default();
+        let captured_content = supplied_content.is_some();
+        let mut content_steps = supplied_content.unwrap_or_default();
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         if captured_content {
             for collection in ["landmarks", "peaks"] {
