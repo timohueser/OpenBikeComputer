@@ -156,6 +156,14 @@ impl Product for Planner {
         publish::activate(root, release, store, commit)
     }
 
+    fn credential_sources(&self, env: &Env) -> Vec<&'static str> {
+        [("climate", "era5-land"), ("snow", "hr-wsi")]
+            .into_iter()
+            .filter(|(layer, _)| env.layers.iter().any(|selected| selected == layer))
+            .map(|(_, source)| source)
+            .collect()
+    }
+
     fn optional(&self) -> &'static [&'static str] {
         &["climate", "snow", "sun"]
     }

@@ -25,6 +25,11 @@ pub trait Product: Sync {
         &[]
     }
 
+    /// Sources whose credentials a selected layer may need for new acquisition.
+    fn credential_sources(&self, _env: &Env) -> Vec<&'static str> {
+        Vec::new()
+    }
+
     /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
     fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
@@ -189,7 +194,12 @@ pub fn version(
     let named = named.map(str::to_string);
     let version = match &named {
         Some(version) => Some(version.clone()),
-        None if env.planned.is_some() || env.moves_to_newest(source) => None,
+        None if env.planned.is_some()
+            || env.moves_to_newest(source)
+            || (env.moves.contains_key(source) && env.stale_requests.contains(&(source.into(), sorted(params)))) =>
+        {
+            None
+        }
         None if params.is_empty() => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).max(),
         None => store.requests(source, params)?.into_iter().map(|request| request.version).max(),
     };

@@ -169,6 +169,7 @@ impl App {
         }
 
         let mut footer = vec![Line::default()];
+        footer.extend(taken.missing_credentials.iter().map(|notice| Line::styled(notice.clone(), Color::Yellow)));
         if taken.env == "live" {
             let removals = crate::cli::build_cli::removals(taken);
             footer.extend(removals.into_iter().enumerate().map(|(at, line)| {
