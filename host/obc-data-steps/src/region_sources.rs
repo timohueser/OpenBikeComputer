@@ -182,9 +182,22 @@ fn select_box(
     for area in index.values().filter(|area| area.parent.is_none()) {
         descend(&area.id, index, shapes, requested, &mut selected)?;
     }
-    let coverage = Coverage::union(&selected.iter().map(|id| &shapes[id]).collect::<Vec<_>>());
-    if !coverage.map(|coverage| coverage.covers_coverage(requested)).transpose()?.unwrap_or(false) {
+    let covers = |ids: &BTreeSet<String>| -> Result<bool, String> {
+        let union = Coverage::union(&ids.iter().map(|id| &shapes[id]).collect::<Vec<_>>());
+        Ok(union.map(|union| union.covers_coverage(requested)).transpose()?.unwrap_or(false))
+    };
+    if !covers(&selected)? {
         return Err("Geofabrik index does not cover the complete box; change its bounds".into());
+    }
+    // Aggregates such as `europe/dach` overlap their sibling countries: drop each area that the
+    // others already cover, largest first.
+    let mut largest = selected.iter().cloned().collect::<Vec<_>>();
+    largest.sort_by(|a, b| shapes[b].area_km2().total_cmp(&shapes[a].area_km2()));
+    for id in largest {
+        selected.remove(&id);
+        if !covers(&selected)? {
+            selected.insert(id);
+        }
     }
     Ok(selected)
 }
