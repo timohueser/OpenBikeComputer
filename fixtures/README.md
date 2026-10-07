@@ -55,11 +55,11 @@ uploads and updates the Git catalog. Review and commit that update yourself.
 Configure separate `OBC_FIXTURE_R2_*` and production target identities before planning. Preparation
 needs no production credentials. Main and Fixture buckets or local roots must not overlap.
 
-Historical compiled inputs keep original provenance. Confirm article and media terms before
-preparation. Restore missing history with `obc data fetch SOURCE@VERSION PARAM=VALUE`; never
-substitute latest or Live. Freiburg needs its recorded extract; Swiss packages need extra raw
-tiles; West Cork needs converted or compiled articles. Demo asset cutover follows publication.
-Legacy terrain commands remain for other consumers.
+Historical compiled inputs keep original provenance. Selected articles and photos use the normal
+credit checks. West Cork raw articles use the shared compiler; its omitted peaks are an explicit
+fixture selection. Restore missing history with `obc data fetch SOURCE@VERSION PARAM=VALUE`;
+never substitute latest or Live. Freiburg needs its recorded extract; Swiss packages need extra
+raw tiles. Demo asset cutover follows publication. Legacy terrain commands remain for other consumers.
 
 ## What belongs where
 
