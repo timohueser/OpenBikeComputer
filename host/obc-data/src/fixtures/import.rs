@@ -99,7 +99,7 @@ pub(crate) fn archive(
             "import".into(),
             id.into(),
             archive.object.to_string_lossy().into(),
-            hash.clone(),
+            hash.into(),
             directory.to_string_lossy().into(),
         ],
         None,
