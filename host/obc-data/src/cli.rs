@@ -4,6 +4,7 @@
 
 mod api;
 mod apply_cli;
+mod auto_cli;
 mod build_cli;
 pub use build_cli::EnvPlan;
 pub mod commit_cli;
@@ -100,6 +101,8 @@ enum Command {
     /// Review live, start its durable build/publication, and return a run handle.
     /// Asks once; without a terminal, `--yes` or `--plan` is required.
     Apply(apply_cli::ApplyArgs),
+    /// Start a durable refresh of used stale sources, then build and verify.
+    Auto { env: String },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
     /// Clean the local store: delete what no live release or fixture reaches, and move the
@@ -208,6 +211,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
         Command::Build(args) => operation_cli::build(&root()?, args, json),
         Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
+        Command::Auto { env } => auto_cli::start(&root()?, env, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

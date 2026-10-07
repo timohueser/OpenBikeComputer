@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::engine::{Profile, ResolvedRust};
 use crate::store::{sha256_hex, Store};
 
+mod auto;
 mod resolve;
+pub(crate) use auto::{admit, Admission};
 pub(crate) use resolve::review;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

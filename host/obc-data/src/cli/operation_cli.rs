@@ -76,6 +76,7 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
             Kind::Prepare => "prepare",
             Kind::Build => "build",
             Kind::Apply => "apply",
+            Kind::Auto => "auto",
         },
         request.env
     );
@@ -251,6 +252,7 @@ pub(super) fn resume(store: &Store, command: &str) -> Result<Option<Run>, String
                     Kind::Prepare => "prepare",
                     Kind::Build => "build",
                     Kind::Apply => "apply",
+                    Kind::Auto => "auto",
                 },
                 session.control.request.env
             )
@@ -324,6 +326,7 @@ pub(super) fn perform(
     let request = request()?;
     let root = super::root()?;
     let result = match request.kind {
+        Kind::Auto => super::auto_cli::perform(&root, products, &request.env),
         Kind::Prepare => super::build_cli::prepare(
             &root,
             products,
@@ -374,7 +377,7 @@ fn remove_worker(store: &Store, run: &str) {
     }
 }
 
-fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
+pub(super) fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
     if json {
         return super::print_json(handle);
     }

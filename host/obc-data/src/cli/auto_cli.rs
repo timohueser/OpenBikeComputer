@@ -1,0 +1,226 @@
+//! Automatic refresh uses the existing detached operation and verified build.
+
+use std::path::Path;
+
+use schemars::JsonSchema;
+use serde::Serialize;
+
+use super::{api, apply_cli, build_cli, commit_cli, operation_cli, Code, Error};
+use crate::fetch::http::Http;
+use crate::live::Remote;
+use crate::product::Product;
+use crate::store::Store;
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Result {
+    pub built: build_cli::Built,
+    pub approval: Option<String>,
+    /// Publication requires checked enabled-timer admission.
+    pub publication: String,
+}
+
+pub(super) fn check_env(name: &str) -> std::result::Result<(), Error> {
+    if name == "fixture" || name == "fixtures" || name.starts_with("fixture-") {
+        return Err(Code::Usage.error("fixture environments do not support automation"));
+    }
+    Ok(())
+}
+
+pub(super) fn start(root: &Path, env: String, json: bool) -> std::result::Result<(), Error> {
+    check_env(&env)?;
+    let store = Store::open()?;
+    let request = crate::operation::Request {
+        kind: crate::operation::Kind::Auto,
+        env,
+        only: Vec::new(),
+        moves: Vec::new(),
+        plan: None,
+    };
+    match operation_cli::start(root, &store, request, None) {
+        Ok(handle) => operation_cli::print_handle(&handle, json),
+        Err(error)
+            if (error.message.starts_with("operation ") && error.message.contains("already owns"))
+                || error.message == "the environment worker has not drained yet" =>
+        {
+            Err(error.fix("This automatic run is skipped; retry at the next scheduled time."))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn perform(root: &Path, products: &[&dyn Product], env: &str) -> std::result::Result<(), Error> {
+    let store = Store::open()?;
+    let http = Http::new();
+    let remote = (env == "live").then(super::remote).transpose()?;
+    let mut run = api::start_run(&store, &format!("auto {env}"))?;
+    let result = execute(root, &store, &http, remote.as_ref(), products, env, &mut run);
+    let result = api::finish_run(run, result, None)?;
+    api::print_json(&result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: Option<&Remote>,
+    products: &[&dyn Product],
+    env: &str,
+    run: &mut crate::engine::runs::Run,
+) -> std::result::Result<Result, Error> {
+    check_env(env)?;
+    if let Some(remote) = remote {
+        apply_cli::committed(root)?;
+        let loaded = build_cli::load(root, env)?;
+        let observed = commit_cli::approval_observation(store).map_err(|reason| Code::Blocked.error(reason))?;
+        run.automatic = Some(
+            crate::approval::admit(
+                root,
+                &loaded.env,
+                &loaded.regions,
+                products,
+                &loaded.sources,
+                remote.describe(),
+                observed,
+            )
+            .map_err(|reason| Code::Blocked.error(reason))?,
+        );
+        run.require_committed_code();
+    }
+    let args = build_cli::BuildArgs { env: env.into(), only: Vec::new(), moves: Vec::new(), plan: None };
+    let (built, applying) = build_cli::build_env(root, store, http, remote, products, &args, None, run)?;
+    if !built.blocked.is_empty() {
+        return Err(Code::Blocked.error("automatic build is incomplete; no publication starts"));
+    }
+    if let Some(applying) = applying {
+        apply_cli::verify_products(root, products, store, &applying.next)?;
+        build_cli::recheck_approval(
+            root,
+            store,
+            http,
+            remote.expect("Live build has a remote"),
+            products,
+            &applying.plan,
+            run,
+        )?;
+        let observed = commit_cli::approval_observation(store).map_err(|reason| Code::Blocked.error(reason))?;
+        if run.automatic.as_ref().is_none_or(|approved| approved.observation != observed) {
+            return Err(Code::PlanOutdated.error("automatic approval changed during the build; retry"));
+        }
+    } else {
+        for published in &built.releases {
+            let product = products
+                .iter()
+                .find(|product| product.name() == published.product)
+                .ok_or_else(|| Code::VerifyFailed.error("built product has no verifier"))?;
+            let release = crate::engine::release::Release::read(store, &published.product, &published.id)?;
+            product.verify(root, None, &release, store).map_err(|reason| Code::VerifyFailed.error(reason))?;
+        }
+    }
+    run.check_stop(store)?;
+    crate::worker::check(root)?;
+    Ok(Result {
+        built,
+        approval: run.automatic.as_ref().map(|approved| approved.digest().into()),
+        publication: "disabled: checked enabled-timer admission is unavailable".into(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::{fixture, write};
+    use crate::engine::{Client, Code as RecipeCode, Input, Run as StepRun};
+    use crate::product::{Steps, Unplanned};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct Data {
+        calls: AtomicUsize,
+        verifies: AtomicUsize,
+        fail: AtomicBool,
+    }
+    impl Product for Data {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn steps(
+            &self,
+            _: &Path,
+            _: &crate::env::Env,
+            _: &crate::regions::Regions,
+            _: &Store,
+        ) -> std::result::Result<Steps, Unplanned> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut step = crate::engine::tests::step(
+                "test/data",
+                vec![Input::Snapshot {
+                    source: "head".into(),
+                    version: "1".into(),
+                    params: Vec::new(),
+                    files: vec!["head.txt".into()],
+                }],
+                RecipeCode { crates: vec!["steps".into()], ..Default::default() },
+                "data.bin",
+                StepRun::Rust(crate::engine::pass),
+            );
+            step.options = serde_json::json!({"path":"data.bin"});
+            step.client = Client::All;
+            Ok(vec![step].into())
+        }
+        fn verify(
+            &self,
+            _: &Path,
+            _: Option<&crate::engine::release::Release>,
+            release: &crate::engine::release::Release,
+            store: &Store,
+        ) -> std::result::Result<(), String> {
+            self.verifies.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(std::fs::read(store.object(&release.layers[0].files[0].sha256)).unwrap(), b"head\n");
+            if self.fail.load(Ordering::SeqCst) {
+                Err("authored verifier refusal".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn local_auto_keeps_dirty_code_and_real_verification_while_live_requires_original_approval_before_work() {
+        let fixture = fixture("auto-local-and-live");
+        let root = fixture.root();
+        write(&root.join("data/regions/test.toml"), "name=\"Test\"\nkind=\"box\"\nbox=[7.0,46.0,8.0,47.0]\n");
+        write(&root.join("data/env/local.toml"), "region=\"test\"\n");
+        write(&root.join("data/env/live.toml"), "region=\"test\"\n");
+        write(&root.join("data/sources.toml"), "source=[]\n");
+        write(&root.join("steps/src/lib.rs"), "pub fn dirty_local_code() {}\n");
+        let data = Data { calls: AtomicUsize::new(0), verifies: AtomicUsize::new(0), fail: AtomicBool::new(false) };
+        let http = Http::new();
+        let mut run = crate::engine::runs::Run::create(&fixture.store, "auto local").unwrap();
+        let local = execute(&root, &fixture.store, &http, None, &[&data], "local", &mut run).unwrap();
+        assert!(local.approval.is_none());
+        assert_eq!(local.built.layers.len(), 1);
+        assert!(local.publication.starts_with("disabled"));
+        assert_eq!(data.verifies.load(Ordering::SeqCst), 1);
+        data.fail.store(true, Ordering::SeqCst);
+        let error = execute(&root, &fixture.store, &http, None, &[&data], "local", &mut run).unwrap_err();
+        assert_eq!(error.code, Code::VerifyFailed);
+        assert_eq!(data.verifies.load(Ordering::SeqCst), 2, "an unchanged build still has real verification");
+        run.finish(None).unwrap();
+        for args in [
+            vec!["add", "."],
+            vec!["-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture"],
+        ] {
+            assert!(std::process::Command::new("git").args(args).current_dir(&root).status().unwrap().success());
+        }
+        let bucket = fixture.scratch.0.join("bucket");
+        std::fs::create_dir(&bucket).unwrap();
+        let remote = Remote::Bucket(crate::r2::Bucket::local(&bucket));
+        let before = data.calls.load(Ordering::SeqCst);
+        let mut run = crate::engine::runs::Run::create(&fixture.store, "auto live").unwrap();
+        let error = execute(&root, &fixture.store, &http, Some(&remote), &[&data], "live", &mut run).unwrap_err();
+        assert!(error.message.contains("reviewed manual apply"), "{error:?}");
+        assert_eq!(data.calls.load(Ordering::SeqCst), before, "no product planning or acquisition precedes approval");
+        assert!(!fixture.store.root().join("commits/current.approval").exists());
+        assert!(check_env("fixture-cells").is_err());
+    }
+}

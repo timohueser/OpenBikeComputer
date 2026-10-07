@@ -17,6 +17,7 @@ pub enum Kind {
     Prepare,
     Build,
     Apply,
+    Auto,
 }
 
 /// The saved plan and worker live in the operation's private directory.
@@ -39,6 +40,14 @@ impl Request {
             && (self.env != "live" || self.plan.is_none() || !self.only.is_empty() || !self.moves.is_empty())
         {
             return Err("apply takes only the reviewed plan of live".into());
+        }
+        if self.kind == Kind::Auto
+            && (self.env == "fixture" || self.env == "fixtures" || self.env.starts_with("fixture-"))
+        {
+            return Err("fixture environments do not support automation".into());
+        }
+        if self.kind == Kind::Auto && (self.plan.is_some() || !self.only.is_empty() || !self.moves.is_empty()) {
+            return Err("auto owns its used stale requests and takes no saved plan or selections".into());
         }
         if self.kind == Kind::Prepare && self.plan.is_some() {
             return Err("prepare resolves inputs before a saved plan exists".into());
@@ -304,7 +313,7 @@ pub fn handoff(store: &Store, run: &str, host: &str, bundle: &str) -> Result<(),
         if control.state != State::Running {
             return Err("operation stopped before publication handoff".into());
         }
-        if control.request.kind != Kind::Apply {
+        if !matches!(control.request.kind, Kind::Apply | Kind::Auto) {
             return Err("only an apply hands off publication".into());
         }
         control.state = State::Owner { host: host.into(), bundle: bundle.into() };

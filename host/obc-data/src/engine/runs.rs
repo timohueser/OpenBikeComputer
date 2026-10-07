@@ -149,6 +149,7 @@ pub struct Run {
     codes: super::code::Context,
     committed_code: bool,
     pub(crate) originals: BTreeMap<String, super::release::Layer>,
+    pub(crate) automatic: Option<crate::approval::Admission>,
 }
 
 impl Run {
@@ -176,6 +177,7 @@ impl Run {
                 codes: Default::default(),
                 committed_code: false,
                 originals: BTreeMap::new(),
+                automatic: None,
             };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
@@ -242,6 +244,7 @@ impl Run {
             codes: Default::default(),
             committed_code: false,
             originals: BTreeMap::new(),
+            automatic: None,
         };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
@@ -482,6 +485,14 @@ impl Run {
         files: &[String],
     ) -> Result<crate::store::Snapshot, String> {
         self.check_stop(store)?;
+        if let Some(approved) = &self.automatic {
+            approved.check_owner(
+                root,
+                &mut self.codes,
+                &format!("acquisition/{}", request.source.id),
+                &crate::fetch::owner_code(request.source),
+            )?;
+        }
         let (source, version, params) = (
             request.source.id.clone(),
             request.version.clone().unwrap_or_else(|| "newest".into()),

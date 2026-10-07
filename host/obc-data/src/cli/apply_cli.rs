@@ -294,7 +294,7 @@ fn stage(
 ) -> Result<(Built, Live), Error> {
     let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
     let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan), run)?;
-    let Applying { next } = applying.expect("a build of live gives what an apply changes");
+    let Applying { next, .. } = applying.expect("a build of live gives what an apply changes");
     run.record(&Event::Phase { phase: Phase::Verify })?;
     verify_products(root, products, store, &next)?;
     Ok((built, next))
@@ -313,7 +313,7 @@ pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBu
 
 /// Refuse an apply while `data/` has changes that git does not have: live builds from a committed
 /// `data/`. `data/env/local.toml` is never in git.
-fn committed(root: &Path) -> Result<(), Error> {
+pub(super) fn committed(root: &Path) -> Result<(), Error> {
     let args = ["status", "--porcelain", "--untracked-files=all", "--", "data", ":(exclude)data/env/local.toml"];
     let out = std::process::Command::new("git")
         .args(args)
@@ -334,7 +334,7 @@ fn committed(root: &Path) -> Result<(), Error> {
 }
 
 /// Verify each complete product before publication, including unchanged releases.
-fn verify_products(root: &Path, products: &[&dyn Product], store: &Store, next: &Live) -> Result<(), Error> {
+pub(super) fn verify_products(root: &Path, products: &[&dyn Product], store: &Store, next: &Live) -> Result<(), Error> {
     for (product, next) in products.iter().zip(&next.products) {
         let Some((id, release)) = next.release.as_ref() else {
             continue;

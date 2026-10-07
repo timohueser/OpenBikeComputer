@@ -32,6 +32,7 @@ pub(super) struct Bundle {
     services: Vec<crate::vps::Candidate>,
     previous_services: Vec<crate::vps::Candidate>,
     approval: crate::approval::Review,
+    automatic: Option<crate::approval::Admission>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -108,6 +109,7 @@ pub(super) fn pack(
         services,
         previous_services,
         approval,
+        automatic: run.automatic.clone(),
     };
     let scratch = Scratch::new()?;
     let files = apply_cli::files(store, &scratch, &bundle.next)?;
@@ -282,18 +284,16 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         let mut result: Committed =
             serde_json::from_slice(&publication).map_err(|e| Code::Failed.error(e.to_string()))?;
         owner.finish()?;
-        result.approval = crate::approval::record(
-            store,
-            &bundle.approval,
-            &bundle.bucket,
-            &bundle.run,
-            digest,
-            &sha256_hex(&publication),
-        );
+        result.approval =
+            approval_result(&bundle, store, &bundle.bucket, &bundle.run, digest, &sha256_hex(&publication));
         return Ok(result);
     }
     let mut observed = BTreeMap::new();
-    crate::approval::recheck(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
+    if let Some(automatic) = &bundle.automatic {
+        automatic.recheck(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
+    } else {
+        crate::approval::recheck(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
+    }
     for (key, expected) in &bundle.expected {
         let body = remote.get(key)?;
         if body.as_deref().map(sha256_hex) != *expected {
@@ -467,14 +467,7 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
     let publication = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
     durable(&result_path, &publication)?;
     owner.finish()?;
-    result.approval = crate::approval::record(
-        store,
-        &bundle.approval,
-        &bundle.bucket,
-        &bundle.run,
-        digest,
-        &sha256_hex(&publication),
-    );
+    result.approval = approval_result(&bundle, store, &bundle.bucket, &bundle.run, digest, &sha256_hex(&publication));
     for name in ["objects", "releases"] {
         let path = directory.join(name);
         if path.exists() {
@@ -484,6 +477,21 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         }
     }
     Ok(result)
+}
+
+fn approval_result(
+    bundle: &Bundle,
+    store: &Store,
+    bucket: &str,
+    run: &str,
+    digest: &str,
+    publication: &str,
+) -> crate::approval::Outcome {
+    if bundle.automatic.is_some() {
+        crate::approval::Outcome::NotRequested
+    } else {
+        crate::approval::record(store, &bundle.approval, bucket, run, digest, publication)
+    }
 }
 
 fn same_pointer(remote: &Remote, product: &crate::live::LiveProduct) -> Result<bool, Error> {
