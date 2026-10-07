@@ -407,7 +407,7 @@ jobs:
       - name: Prepare web-builder packer tests
         run: |
           uv sync --locked --group builder-test
-          cargo build -p obc-pack --release --locked
+          cargo build -p obc-bake --bin obc-pack --release --locked
       - name: Packer binary and corpus are present
         run: |
           test -x target/release/obc-pack

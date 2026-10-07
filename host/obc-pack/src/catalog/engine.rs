@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::coverage::IndexedCoverage;
 use super::schema::{parse_schema_doc, skin_styles};
 use super::*;
-use crate::grid::{BandTable, CellId};
+use obc_map_core::grid::{BandTable, CellId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pick {
@@ -35,7 +35,8 @@ pub struct Options {
 
 pub fn build(request: &Request) -> Result<(), String> {
     let options: Options = serde_json::from_value(request.options.clone()).map_err(|e| e.to_string())?;
-    let mut schema: serde_json::Value = serde_json::from_str(crate::step::SCHEMA).map_err(|e| e.to_string())?;
+    let mut schema: serde_json::Value =
+        serde_json::from_str(obc_map_core::config::CELL_SCHEMA).map_err(|e| e.to_string())?;
     schema["_meta"]["bands"] = serde_json::to_value(BandTable::recommended().bands).map_err(|e| e.to_string())?;
     let schema_body = document_json(&schema);
     let schema = parse_schema_doc(&schema_body, Path::new(SCHEMA_DOC))?;

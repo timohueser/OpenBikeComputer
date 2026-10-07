@@ -13,7 +13,7 @@
 //! content-derived key rather than by GEOS output order and every coordinate is the same
 //! `(deg * 1e6).round()` the packer uses everywhere else.
 
-use crate::geom::{assemble_multipolygon, collect_polygons, topology_preserve_simplify, Geom};
+use obc_pbf::area::{assemble_multipolygon, topology_preserve_simplify, Polygon};
 
 /// One closed ring of `[lat, lon]` integer microdegree pairs.
 pub type Ring = Vec<[i32; 2]>;
@@ -142,23 +142,16 @@ pub fn geojson(poly_text: &str) -> Result<String, String> {
 /// each exterior ring turns counterclockwise and each hole clockwise, each ring starts at its
 /// smallest point, and the holes and the polygons are sorted. Another GEOS build, which can order
 /// and start the rings otherwise, gives the same text.
-pub fn polygons_geojson(polys: &[Geom]) -> String {
+pub fn polygons_geojson(polys: &[Polygon]) -> String {
     use std::fmt::Write;
-    fn collect(geom: &Geom, out: &mut Vec<Vec<Ring>>) {
-        match geom {
-            Geom::Polygon { exterior, interiors } => {
-                let Some(exterior) = to_udeg_ring(exterior) else { return };
-                let mut holes: Vec<Ring> =
-                    interiors.iter().filter_map(|ring| to_udeg_ring(ring)).map(|ring| canonical(ring, false)).collect();
-                holes.sort();
-                out.push(std::iter::once(canonical(exterior, true)).chain(holes).collect());
-            }
-            Geom::Multi(parts) => parts.iter().for_each(|part| collect(part, out)),
-            Geom::Line(_) | Geom::Empty => {}
-        }
-    }
     let mut polygons = Vec::new();
-    polys.iter().for_each(|poly| collect(poly, &mut polygons));
+    for Polygon { exterior, interiors } in polys {
+        let Some(exterior) = to_udeg_ring(exterior) else { continue };
+        let mut holes: Vec<Ring> =
+            interiors.iter().filter_map(|ring| to_udeg_ring(ring)).map(|ring| canonical(ring, false)).collect();
+        holes.sort();
+        polygons.push(std::iter::once(canonical(exterior, true)).chain(holes).collect::<Vec<_>>());
+    }
     polygons.sort();
     let mut s = String::from("{\n  \"type\": \"MultiPolygon\",\n  \"coordinates\": [");
     for (p, polygon) in polygons.iter().enumerate() {
@@ -207,11 +200,7 @@ pub fn simplified_rings(poly_text: &str, tolerance_udeg: i32) -> Result<Vec<Ring
     let tol_deg = f64::from(tolerance_udeg) / 1e6;
     let mut polygons: Vec<Vec<Ring>> = Vec::new();
     for polygon in &assembled {
-        let simplified = topology_preserve_simplify(polygon, tol_deg);
-        let mut parts = Vec::new();
-        collect_polygons(simplified, &mut parts);
-        for part in parts {
-            let Geom::Polygon { exterior, interiors } = part else { continue };
+        for Polygon { exterior, interiors } in topology_preserve_simplify(polygon, tol_deg) {
             let mut rings = Vec::new();
             if let Some(ring) = to_udeg_ring(&exterior) {
                 rings.push(ring);
@@ -293,7 +282,7 @@ mod tests {
     fn the_geojson_is_the_same_for_any_order_start_and_turn_of_the_rings() {
         let square =
             |w: f64, s: f64, size: f64| vec![(w, s), (w + size, s), (w + size, s + size), (w, s + size), (w, s)];
-        let polygon = |exterior, interiors| Geom::Polygon { exterior, interiors };
+        let polygon = |exterior, interiors| Polygon { exterior, interiors };
         let turned = |ring: Vec<(f64, f64)>| {
             let mut ring = ring[1..].to_vec();
             ring.reverse();

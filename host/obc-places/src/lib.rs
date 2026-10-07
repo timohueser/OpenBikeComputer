@@ -3,6 +3,7 @@
 pub mod hours;
 pub mod metadata;
 pub mod name;
+pub mod osm;
 pub mod routing;
 
 use obc_formats::obcm::{

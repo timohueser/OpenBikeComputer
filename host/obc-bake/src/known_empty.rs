@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use obc_map_core::grid::{BandTable, CellId};
 use obc_pack::catalog::CellSource;
-use obc_pack::grid::{BandTable, CellId};
 use serde::{Deserialize, Serialize};
 
 use crate::util::write_json;

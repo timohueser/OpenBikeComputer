@@ -51,8 +51,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use obc_map_core::grid::{id_width, CellId};
 use obc_map_core::progress::Progress;
-use obc_pack::grid::{id_width, CellId};
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::Coverage;

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use obc_formats::obct;
 
-use crate::grid::CellId;
+use obc_map_core::grid::CellId;
 
 use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
 use super::model::{ReferenceEntry, TerrainCellEntry, TerrainEmptyRun};
@@ -465,7 +465,7 @@ pub(super) struct ObctHeader {
 }
 
 pub(super) fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
-    let source = crate::terrain::open_obct(path)?;
+    let source = obc_map_core::terrain::open_obct(path)?;
     let reader = obc_elevation::TerrainReader::parse(&source)
         .map_err(|e| format!("{}: not a usable OBCT artifact ({e:?})", path.display()))?;
     let header = reader.header();

@@ -30,6 +30,8 @@ members = [
     "host/obc-flat-device",
     "host/obc-fixtures",
     "host/obc-pack",
+    "host/obc-draw",
+    "host/obc-network",
     "host/obc-pbf",
     "host/obc-map-core",
     "host/obc-places",
@@ -73,6 +75,9 @@ obc-formats = { path = "firmware/obc-formats" }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }
+obc-bake = { path = "host/obc-bake" }
+obc-draw = { path = "host/obc-draw" }
+obc-network = { path = "host/obc-network" }
 obc-pbf = { path = "host/obc-pbf" }
 obc-map-core = { path = "host/obc-map-core" }
 obc-osm = { path = "host/obc-osm" }

@@ -282,8 +282,8 @@ fn run_cell_bake(
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
 
     let bands = match flags.get("bands") {
-        Some(path) => obc_pack::grid::BandTable::load(path)?,
-        None => obc_pack::grid::BandTable::recommended(),
+        Some(path) => obc_map_core::grid::BandTable::load(path)?,
+        None => obc_map_core::grid::BandTable::recommended(),
     };
     let revision: u32 = match flags.get("schema-revision") {
         Some(v) => v.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
@@ -401,8 +401,8 @@ fn run_planet_bake(
     let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
     let bands = match flags.get("bands") {
-        Some(path) => obc_pack::grid::BandTable::load(path)?,
-        None => obc_pack::grid::BandTable::recommended(),
+        Some(path) => obc_map_core::grid::BandTable::load(path)?,
+        None => obc_map_core::grid::BandTable::recommended(),
     };
     let revision: u32 = match flags.get("schema-revision") {
         Some(value) => value.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
@@ -501,7 +501,7 @@ fn ensure_dem_sources(
 /// The source box of the terrain cells the coverages select.
 fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8) -> Result<obc_dem::BboxUdeg, String> {
     let log2 = u32::from(cell_log2);
-    obc_pack::grid::CellId::new(log2, 0, 0)?;
+    obc_map_core::grid::CellId::new(log2, 0, 0)?;
     obc_bake::terrain::source_bbox(coverages.iter().flat_map(|coverage| coverage.cells(log2)))
         .ok_or_else(|| "no region resolved to a terrain cell".into())
 }

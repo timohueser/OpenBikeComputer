@@ -1258,7 +1258,7 @@ mod tests {
     #[test]
     fn an_imported_route_is_offered_for_resume_after_a_restart() {
         use obc_app::navigator::ReviewStatus;
-        use obc_pack::nav::{Edge, NavGraph, Node};
+        use obc_network::nav::{Edge, NavGraph, Node};
         let bbox = (0, 0, 1_000_000, 1_000_000);
         let points = [(500_000, 500_000), (500_000, 520_000), (520_000, 520_000)];
         let graph = NavGraph {
@@ -1269,15 +1269,28 @@ mod tests {
                 .map(|(id, p)| Edge { a: id as u32, b: id as u32 + 1, polyline: p.to_vec(), length_m: 2222, kind: 0 })
                 .collect(),
         };
-        let lods = [obc_pack::LodLayer {
+        let lods = [obc_draw::serialize::LodLayer {
             max_mpp: None,
             chunk_size: 2048,
-            root: obc_pack::Node::Leaf { bbox, features: vec![] },
+            root: obc_draw::serialize::Node::Leaf { bbox, features: vec![] },
         }];
-        let profiles =
-            [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
-        let map_bytes =
-            obc_pack::serialize_lods(&lods, &[], 0, bbox, &[], &graph, &profiles, &mut obc_elevation::NullElevation).0;
+        let profiles = [obc_map_core::serialize::NavProfile {
+            name: "Neutral".into(),
+            highway: [16; 32],
+            surface: [16; 8],
+            climb_weight: 0,
+        }];
+        let map_bytes = obc_bake::serialize::serialize_lods(
+            &lods,
+            &[],
+            0,
+            bbox,
+            &[],
+            &graph,
+            &profiles,
+            &mut obc_elevation::NullElevation,
+        )
+        .0;
         let owner = crate::flat_store::HostStore::memory().unwrap();
         let map = crate::flat_map::FlatMap::from_bytes_in(&owner, &map_bytes).unwrap();
         let mut sink = crate::VecSink::default();
@@ -1362,7 +1375,7 @@ mod tests {
     }
     fn immutable_assistant_replay(visit: bool) {
         use obc_app::navigator::{ReviewContext, ReviewOrigin, ReviewPurpose, ReviewStatus, REVIEW_FACTS_POLICY};
-        use obc_pack::nav::{Edge, NavGraph, Node};
+        use obc_network::nav::{Edge, NavGraph, Node};
         let bbox = (0, 0, 1_000_000, 1_000_000);
         let points = [(500_000, 500_000), (502_000, 500_000), (504_000, 500_000)];
         let graph = NavGraph {
@@ -1373,15 +1386,28 @@ mod tests {
                 .map(|(id, p)| Edge { a: id as u32, b: id as u32 + 1, polyline: p.to_vec(), length_m: 222, kind: 0 })
                 .collect(),
         };
-        let lods = [obc_pack::LodLayer {
+        let lods = [obc_draw::serialize::LodLayer {
             max_mpp: None,
             chunk_size: 2048,
-            root: obc_pack::Node::Leaf { bbox, features: vec![] },
+            root: obc_draw::serialize::Node::Leaf { bbox, features: vec![] },
         }];
-        let profiles =
-            [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
-        let map_bytes =
-            obc_pack::serialize_lods(&lods, &[], 0, bbox, &[], &graph, &profiles, &mut obc_elevation::NullElevation).0;
+        let profiles = [obc_map_core::serialize::NavProfile {
+            name: "Neutral".into(),
+            highway: [16; 32],
+            surface: [16; 8],
+            climb_weight: 0,
+        }];
+        let map_bytes = obc_bake::serialize::serialize_lods(
+            &lods,
+            &[],
+            0,
+            bbox,
+            &[],
+            &graph,
+            &profiles,
+            &mut obc_elevation::NullElevation,
+        )
+        .0;
         let owner = crate::flat_store::HostStore::memory().unwrap();
         let map = crate::flat_map::FlatMap::from_bytes_in(&owner, &map_bytes).unwrap();
         let mut sink = crate::VecSink::default();

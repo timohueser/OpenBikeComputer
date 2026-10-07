@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use obc_map_core::grid::CellId;
 use obc_pack::catalog::CellSource;
-use obc_pack::grid::CellId;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const ARTIFACT_EXT: &str = ".obcm";
@@ -28,7 +28,7 @@ pub(crate) struct CellState {
 }
 
 pub(crate) fn paths(out: &Path, band: &str, id: CellId) -> (PathBuf, PathBuf, PathBuf) {
-    let width = obc_pack::grid::id_width(id.log2);
+    let width = obc_map_core::grid::id_width(id.log2);
     let dir = out.join("cells").join(band).join(format!("{:0width$}", id.i));
     let stem = format!("{:0width$}", id.j);
     (

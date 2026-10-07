@@ -27,7 +27,7 @@ REPO_ROOT = os.path.dirname(BUILDER_ROOT)
 TINY_PBF = os.path.join(HERE, "corpus", "data", "tiny.osm.pbf")
 SCHEMA_PRESET = os.path.join(BUILDER_ROOT, "presets", "schema.json")
 
-# Canonical class order; must match obc-pack/src/nav.rs and the OBCM spec.
+# Canonical class order; must match obc-map-core/src/nav.rs and the OBCM spec.
 HIGHWAY_CLASSES = [
     "cycleway", "path", "track", "footway", "steps", "bridleway", "living_street",
     "residential", "service", "unclassified", "tertiary", "secondary", "primary", "trunk_cycl",
