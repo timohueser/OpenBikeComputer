@@ -26,7 +26,7 @@ is no default password and no anonymous editing mode.
 A disposable demo with seeded plans, proposals and suggestions:
 
 ```sh
-npm run demo:coverage --prefix apps/obc-verification
+npm run demo:coverage --prefix tools/verification
 ```
 
 Open `http://127.0.0.1:4180` and sign in as `demo` with password `local-coverage-demo`. It uses a

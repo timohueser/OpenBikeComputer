@@ -155,7 +155,7 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `docs/` | Public documentation, website, and project blog |
 | `hardware/` | KiCad schematics, PCB layouts, footprints, and component models |
 | `ops/` | Service configuration, probes, and runbooks |
-| `tools/` | The `obc` development command and repository tooling |
+| `tools/` | The `obc` command, repository tools, and verification console |
 
 The root Cargo workspace holds the `firmware/`, `host/`, and `apps/` crates. The nRF54L board image,
 bootloader, Tauri desktop app, and sensor simulator are standalone Cargo roots. The
