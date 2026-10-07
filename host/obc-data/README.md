@@ -45,7 +45,8 @@ the downloads state directories. Set limits through the Linux setup before autom
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
 Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
-Credentials block only a selected new fetch; verified retained inputs remain usable.
+Missing source credentials block only a selected new fetch; verified retained inputs remain usable.
+Publication also requires its own bucket credentials and owner admission.
 
 ## Daily commands
 

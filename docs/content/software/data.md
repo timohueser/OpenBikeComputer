@@ -42,8 +42,15 @@ This keeps publication separate from the lifetime of a laptop connection.
 
 Publication and automatic approval have separate outcomes. A result can publish data while
 approval remains unavailable. An enabled schedule can also be blocked by its host setup or
-approval. Disabling future handoff does not discard work already building.
-The [automatic-work contract](src:specs/obc-data.md) defines admission.
+approval.
+
+The schedule sets when to check. Each source's freshness policy decides whether its selected
+inputs are stale. Automatic work refreshes only stale sources used by the approved products;
+unchanged layers reuse their verified bytes. Changes to approved producer code or Live build
+configuration need a reviewed manual apply before automatic publication resumes.
+
+Disable leaves an active build and verification running. It prevents publication before handoff.
+After handoff, the publication owner finishes. The [automatic-work contract](src:specs/obc-data.md) defines admission.
 
 ## Local keeps original provenance
 
