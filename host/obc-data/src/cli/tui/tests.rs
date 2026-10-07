@@ -340,6 +340,8 @@ fn run_observations_cannot_replace_another_run_or_source_draft() {
     assert_eq!(app.key(KeyCode::Char('q')), Effect::Quit, "quitting does not stop");
     app.run = 1;
     assert_eq!(app.key(KeyCode::Enter), Effect::ObserveRun(second.clone()));
+    app.execution.handle = Some(crate::cli::operation_cli::Handle { run: first.clone(), request: "a".repeat(64) });
+    assert_eq!(app.observed_run(), Some(second.clone()), "the displayed run takes priority over other active work");
     let mut updated = app.clone();
     updated.execution.view = Some(std::sync::Arc::new(View {
         run: app.runs[0].clone(),
@@ -352,12 +354,16 @@ fn run_observations_cannot_replace_another_run_or_source_draft() {
     app.overlay = None;
     app.source_view.typing = true;
     app.source_view.filter = "qrf".into();
-    app.complete(Effect::ObserveRun(first), updated);
+    app.complete(Effect::ObserveRun(first.clone()), updated);
     assert_eq!(app.execution.selected.as_ref(), Some(&second));
     assert!(app.execution.current().is_none());
     assert_eq!(app.screen, Screen::Sources);
     assert_eq!(app.source_view.filter, "qrf");
     assert!(app.source_view.typing);
+    assert_eq!(app.observed_run(), Some(first.clone()), "hidden progress returns to the active operation");
+    app.execution.handle = None;
+    app.runs[0].summary.outcome = Outcome::Running;
+    assert_eq!(app.observed_run(), Some(first), "local run discovery also works without an admitted handle");
 }
 
 #[test]

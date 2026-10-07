@@ -131,6 +131,16 @@ pub(super) fn run_loop(
                 let selected = app.runs.get(app.run).map(|run| run.summary.id.clone());
                 app.runs = list_runs(store)?;
                 for view in app.execution.active.iter().chain(app.execution.view.iter()) {
+                    if !matches!(
+                        view.operation,
+                        Some(
+                            crate::operation::Status::AwaitingOwner { .. }
+                                | crate::operation::Status::UnknownOwner { .. }
+                                | crate::operation::Status::Finished { .. }
+                        )
+                    ) {
+                        continue;
+                    }
                     if let Some(run) = app.runs.iter_mut().find(|run| run.summary.id == view.run.summary.id) {
                         *run = view.run.clone();
                     }
@@ -140,15 +150,7 @@ pub(super) fn run_loop(
                     .unwrap_or(0)
                     .min(app.runs.len().saturating_sub(1));
                 if !app.busy && effect == Effect::None {
-                    let active = app.execution.handle.as_ref().map(|handle| handle.run.clone()).or_else(|| {
-                        app.runs
-                            .iter()
-                            .find(|run| run.summary.outcome == crate::engine::runs::Outcome::Running)
-                            .map(|run| run.summary.id.clone())
-                    });
-                    let shown =
-                        (app.overlay == Some(super::Overlay::Run)).then(|| app.execution.selected.clone()).flatten();
-                    if let Some(id) = active.or(shown) {
+                    if let Some(id) = app.observed_run() {
                         effect = Effect::ObserveRun(id);
                     }
                 }
@@ -162,6 +164,16 @@ pub(super) fn run_loop(
 }
 
 impl App {
+    pub(super) fn observed_run(&self) -> Option<String> {
+        let shown = (self.overlay == Some(super::Overlay::Run)).then(|| self.execution.selected.clone()).flatten();
+        shown.or_else(|| self.execution.handle.as_ref().map(|handle| handle.run.clone())).or_else(|| {
+            self.runs
+                .iter()
+                .find(|run| run.summary.outcome == crate::engine::runs::Outcome::Running)
+                .map(|run| run.summary.id.clone())
+        })
+    }
+
     /// Completion changes data, never the user's focus, filters or draft inputs.
     pub(super) fn complete(&mut self, effect: Effect, updated: App) {
         let selected = self.sources.get(self.source).map(|row| row.source.id.clone());
