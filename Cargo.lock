@@ -3822,10 +3822,12 @@ dependencies = [
 name = "obc-pbf"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "geos",
  "obc-map-core",
  "osmpbf",
  "rayon",
+ "sha2",
 ]
 
 [[package]]

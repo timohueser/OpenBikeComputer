@@ -2,5 +2,6 @@
 
 pub mod area;
 pub mod bbox;
+pub mod geos_identity;
 pub mod scan;
 pub mod selection;

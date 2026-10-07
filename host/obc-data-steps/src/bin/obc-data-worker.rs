@@ -8,6 +8,7 @@ fn main() -> ExitCode {
     {
         return obc_data::cli::failed(error);
     }
+    obc_pack::step::geos_startup();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(result) = obc_pack::landmarks::select::run(&args) {
         return match result {

@@ -76,6 +76,17 @@ impl Maps {
         store: &Store,
         tool: Result<serde_json::Value, String>,
     ) -> Result<Steps, Unplanned> {
+        self.steps_with_bindings(env, regions, store, tool, obc_pack::step::geos_libraries())
+    }
+
+    fn steps_with_bindings(
+        &self,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<serde_json::Value, String>,
+        libraries: Result<Vec<obc_data::engine::Library>, String>,
+    ) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
         let selection = crate::region_sources::resolve(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
@@ -126,6 +137,11 @@ impl Maps {
                 } else {
                     format!("{}/{}", content_layer(collection), source.id)
                 };
+                content_names.entry(collection).or_default().push(name.clone());
+                if let Err(reason) = &libraries {
+                    blocked.push(BlockedLayer { layer: name, reason: reason.clone() });
+                    continue;
+                }
                 let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
                     Ok(capture) => capture,
                     Err(Unplanned::NeedsFetch(fetches)) => {
@@ -134,11 +150,10 @@ impl Maps {
                     }
                     Err(error) => return Err(error),
                 };
-                content_names.entry(collection).or_default().push(name.clone());
                 for (_, inputs) in capture {
                     let mut step = content(collection, inputs);
                     step.name = name.clone();
-                    content_steps.push(step);
+                    add_geos(step, &libraries, &mut content_steps, &mut blocked);
                 }
             }
         }
@@ -158,7 +173,12 @@ impl Maps {
                     .filter(|cell| !source_coverage.covers(**cell, &boundary))
                     .map(ToString::to_string)
                     .collect::<Vec<_>>();
-                steps.push(map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain));
+                add_geos(
+                    map_cells(&band, leaf, &cells, partial, &land_polygons, reads_terrain),
+                    &libraries,
+                    &mut steps,
+                    &mut blocked,
+                );
                 if band.has_nav() {
                     network.insert(leaf, cells);
                 }
@@ -174,7 +194,11 @@ impl Maps {
                     );
                     step.inputs.extend(content_names[collection].iter().map(Input::layer));
                 }
-                steps.push(step);
+                if collection == "landmarks" {
+                    add_geos(step, &libraries, &mut steps, &mut blocked);
+                } else {
+                    steps.push(step);
+                }
             }
         }
         let inputs = crate::region_sources::inputs("maps", &selection);
@@ -228,6 +252,21 @@ impl Maps {
         let mut listed = Steps { steps, blocked };
         listed.block_dependents();
         Ok(listed)
+    }
+}
+
+fn add_geos(
+    mut step: Step,
+    libraries: &Result<Vec<obc_data::engine::Library>, String>,
+    steps: &mut Vec<Step>,
+    blocked: &mut Vec<BlockedLayer>,
+) {
+    match libraries {
+        Ok(libraries) => {
+            step.code.libraries = libraries.clone();
+            steps.push(step);
+        }
+        Err(reason) => blocked.push(BlockedLayer { layer: step.name, reason: reason.clone() }),
     }
 }
 
@@ -385,7 +424,7 @@ fn capture_params_at(
     }
     let read = reads(now.0, now.1, false)?
         .ok_or(Unplanned::Failed(format!("the store has no extract or `.poly` of {area:?}")))?;
-    let code = obc_pack::step::capture_code();
+    let code = obc_pack::step::capture_code().map_err(Unplanned::Invalid)?;
     let pairs = [("collection", collection), ("area", &area[0].1), ("osm", now.0), ("poly", now.1), ("code", &code)];
     Ok((pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec(), read))
 }
@@ -896,7 +935,7 @@ pub(crate) mod tests {
             ("area".into(), area.into()),
             ("osm".into(), format!("sha256:{}", sha256_hex(osm.as_bytes()))),
             ("poly".into(), format!("sha256:{}", sha256_hex(poly.as_bytes()))),
-            ("code".into(), obc_pack::step::capture_code()),
+            ("code".into(), obc_pack::step::capture_code().unwrap()),
         ]
     }
 
@@ -1178,6 +1217,43 @@ pub(crate) mod tests {
             assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
         }
         assert!(steps.iter().all(|step| !step.code.paths.iter().any(|path| path == "Cargo.lock")));
+    }
+
+    #[test]
+    fn unavailable_geos_blocks_its_producers_and_keeps_independent_terrain() {
+        for held in [false, true] {
+            let temp = temp("geos-blocked");
+            let store = Store::at(temp.0.join("store"));
+            let (env, regions) = freiburg(&store);
+            with_osm(&store);
+            without_models(&store, &env, &regions);
+            if held {
+                with_captures(&store, "1");
+            }
+            let listed = Maps
+                .steps_with_bindings(
+                    &env,
+                    &regions,
+                    &store,
+                    Ok(serde_json::json!({"sha256": "0".repeat(64), "version": "authored copy fixture"})),
+                    Err("GEOS library missing; start a fresh worker".into()),
+                )
+                .unwrap();
+            for name in ["maps/network/0037-0032", "maps/landmark-content", "maps/peak-content", "maps/catalog"] {
+                assert!(
+                    listed.blocked.iter().any(|layer| layer.layer == name && layer.reason.contains("GEOS")),
+                    "{name}"
+                );
+                assert!(!listed.steps.iter().any(|step| step.name == name), "{name}");
+            }
+            let terrain = listed.steps.iter().find(|step| step.name == "maps/terrain/0037-0032").unwrap();
+            assert!(terrain.code.libraries.is_empty());
+            assert!(listed.steps.iter().any(|step| step.name == "maps/osm"));
+            assert!(
+                !env.requests.borrow().iter().any(|(source, _)| CAPTURES.contains(&source.as_str())),
+                "unavailable GEOS starts no capture discovery"
+            );
+        }
     }
 
     #[test]
