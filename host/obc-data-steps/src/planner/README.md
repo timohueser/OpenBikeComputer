@@ -13,8 +13,6 @@ uv sync --locked --group search-runtime
 
 Simulator needs Rust, Python and its native system libraries. It does not need the browser
 or search tools. The commands do not install dependencies. Start from a current checkout.
-On Linux, prepare the systemd user manager, linger and private `OBC_RUN_ENV_FILE`
-as in the [data setup](../../../obc-data/README.md#operation).
 
 ```sh
 obc data dev REGION

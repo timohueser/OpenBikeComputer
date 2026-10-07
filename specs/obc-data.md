@@ -788,8 +788,8 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 A discovery fetch without a pin uses `newest` as its request version. Its finished event
 records the acquired version separately. `runs RUN` gives the last phase and acknowledged
 remote writes, also after a later phase fails. An acknowledged write is not proof that later
-verification passes. An interrupted write can have an unknown remote outcome. The ordinary
-run journal does not make publication atomic or recover an interrupted commit.
+verification passes. An interrupted write can have an unknown remote outcome; the next apply
+uploads what R2 still lacks.
 
 ### Versions
 
@@ -832,7 +832,7 @@ version that live reads fails, the fix names `--move SOURCE`.
 A product is a set of steps that makes one release, such as `planner` or `maps`. The
 `obc data` binary (`host/obc-data-steps`, GPL-3.0-only) gives the list of products to the
 commands of `host/obc-data`. The `obc-data-plumbing` binary of `host/obc-data` has the same
-commands without products, for scripts that fetch or use R2. Each layer name of a product starts
+commands without products, for scripts that use R2. Each layer name of a product starts
 with `<product>/`.
 
 A product gives its steps for an environment, its regions and the store. When the step list
@@ -895,15 +895,12 @@ of `live` also has:
 - `edits`: per product, `region` with `from` (the region of the live release, or `null` when
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
   `on` and `off`.
-- `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: each key of the
-  listing, or without a listing each key that live uses, that the releases after the plan do not
-  use. The listing has the prefixes that live owns after the apply, and `reference/v1` once live
-  reads a `dtm-*` source. Those are the keys of their layers and input copies, the pointers and
-  the files under `<prefix>/releases/<id>/`. A layer that the store lacks counts with all the
-  objects of its live layer, because its new objects are not known yet; an apply keeps an object
-  that a new release uses.
+- `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: the
+  [leftovers](#live) once the releases after the plan are live, files first and manifests last.
+  A layer that the store lacks counts without its objects, because its new objects are not known
+  yet; an apply keeps an object that a new release uses.
 - `listed`: whether the plan listed R2. A listing needs the bucket. Without it, the plan has no
-  `repair` group, `remove` lacks the leftovers, and `bytes` is `null` for a record.
+  `repair` group and `remove` is empty.
 
 Another environment has `[]` for `live`, `edits` and `remove`, and `false` for `listed`.
 
@@ -1099,40 +1096,13 @@ and require no newer glibc than the baseline.
 
 The pointer's `services` identities bind runtime content to routing grid content, search
 grid and model content, or the offline index for downloads. They do not bind receipt keys
-or unrelated optional layers. The owner verifies installation and actual service readiness before
-publishing the planner pointer. Data producers can build independently.
-
-Staging uses two slots per service. The current publication identifies the active slot;
-running units do not establish traffic ownership. Unknown or conflicting ownership blocks
-staging. A healthy slot with the same content and endpoint binding is reused. A changed service
-or approved origin configuration uses the other slot. The full desired pointer holds those
-choices; preview and the owner derive them without unit discovery during preview.
-
-Installation verifies the runtime archive and every materialized service file against their
-immutable identities. Archives contain only unique regular files with normalized relative
-paths. Host architecture, glibc, shared libraries and interpreter versions must satisfy the
-runtime descriptor. Search uses packaged Python dependencies with site packages disabled.
-Readiness reports the opened routing package, search grid and model file hashes, or downloads
-catalogue hash. An expected identity in an environment variable is not readiness evidence.
-Probes bind these results to the running process, its runtime files, and the requested site
-origin or shared object pool. Reloaded unit configuration alone cannot prove runtime readiness.
-
-The owner uploads artifacts, stages and probes slots, then reloads routes for old and new
-bindings. Public endpoint probes must pass before its planner pointer switches. Each unit and
-route mutation uses the same durable intent as R2 writes. Immutable release metadata contains
-no mutable slot choice. Old slots and pinned routes stay for the reader window, even when
-object cleanup has no leftovers. Retirement checks exact slot ownership again.
-
-An acknowledged partial activation can occupy the next inactive slot. Before replacing it,
-the owner restores entry routes to the exact current published bindings and probes them.
-It keeps the conflicting pinned binding through a full reader window, then retires and stages.
-An unknown mutation outcome remains blocked; this wait never clears that barrier.
+or unrelated optional layers. An apply does not install services yet, so it refuses to switch
+the planner pointer. Data producers can build independently.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
-The private selection key binds the object pool as well as the catalog and bounds. Old quotes
-remain available while their service slot is retained. After retirement, a missing bundle
-requires a new quote. Job creation completes synchronously; there is no mutable polling path.
+The private selection key binds the object pool as well as the catalog and bounds. A quote
+stays valid while its bundle exists; a missing bundle requires a new quote. Job creation completes synchronously; there is no mutable polling path.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
@@ -1157,8 +1127,8 @@ the same layers make the same release. `layers` is sorted by `step`, and each la
 no empty, `.` or `..` segment. Duplicate paths are refused. Named file identity is part of the
 release id. The root document is generated after these entries finalize the release.
 
-Live ownership, drift checks, uploads and cleanup use these exact paths. An undeclared file in
-the active release folder is a leftover. A missing named file with local receipt bytes needs no
+Drift checks, uploads and removals use these exact paths. A file in a release folder that the
+manifest does not declare is not a key of the release, and an apply never removes it. A missing named file with local receipt bytes needs no
 build or pointer switch. Missing local named objects are restored from their immutable remote
 keys with size and SHA-256 checks. If both copies are absent, the repair builds the owning layer
 and the inputs that it lacks. Existing named metadata with another digest is refused before any
@@ -1167,7 +1137,7 @@ product's verification.
 
 The objects of a release are the selected client files, with one object per distinct SHA-256.
 The manifest records every file of every layer, so a plan compares it with live and live names
-the versions that it read. Uploads, live ownership and cleanup use the same selection.
+the versions that it read. Uploads and removals use the same selection.
 
 `producers` deduplicates witnesses by the original full `code` digest. Each witness has `files`,
 `source_config` and resolved `rust` target/build profile (`null` without Rust). The full fingerprints must
@@ -1175,52 +1145,6 @@ produce that digest and bind the exact source/config projection and recorded Rus
 The projection comes from the same resolver traversal.
 A missing witness does not permit portable adoption. Witness metadata changes the release id;
 it does not change an existing layer key or receipt.
-
-### Automatic work
-
-`auto ENV` starts the existing detached operation. Fixture environments refuse it. Non-live
-environments build and verify with normal working-tree rules. They do not publish or create an
-approval record. A known busy reservation returns a successful structured skip; it has no waiting queue. Other admission failures remain errors.
-
-Live admission observes the configured owner's original approval before acquisition or build.
-The current native target/profile needs an exact checked execution entry. Planning, acquisition,
-producer and runtime declarations must match that entry and the current publication configuration.
-A prospective manual review cannot approve replacement tools. Missing retained planning inputs
-require explicit preparation. Changed code or settings require reviewed manual apply.
-
-Freshness discovery checks only requests used by the complete selected product declarations.
-Stale automatic requests refresh; manual sources retain their selected versions. A failed required
-upstream check blocks the run. Compatible portable layers keep the original full identity and
-producer provenance. Their verified files can feed a new native consumer. Private metadata does
-not imply that unpublished intermediates or native executables are portable. Reuse does not change
-a saved Local adoption or create a foreign build receipt.
-
-The run verifies complete desired products, then rechecks the reviewed declarations, pointers and
-original approval. Any final automatic publication reuses the existing owner mutation barrier and
-original approval CAS; it does not establish or replace manual approval. Publication requires the
-checked enabled live timer at the first owner handoff. A disabled timer leaves the active run
-building and verifying; its result is verified, not applied. Disable and the first handoff share
-one short admission lock. An admitted irreversible owner completes normally. `auto` installs no timer.
-
-`schedule live` reads actual operator systemd unit state, calendar, time zone, next trigger and
-last run. `--setup-budget` configures only the bake slice before manual approval; it leaves the timer unchanged. Installed enablement and activity are separate from runnable setup. Missing or changed
-setup reports a blocked reason without hiding enablement. `--calendar` and `--time-zone` validate
-calendar and host setup before replacing the known units. `--disable` stops only the timer;
-it never stops retained work, serving or final publication. Non-live schedules are unsupported.
-
-The timer is persistent. One missed occurrence causes one catch-up admission, without a missed-run
-backlog. Its locked offline Cargo entry uses the existing fresh producer launcher. Entry compilation
-and retained bake workers share the operator's CPU and memory slice. Serving and installed commit
-owners stay outside that slice. Effective cgroup-v2 limits are checked before bake admission. Step scheduling clamps its existing
-memory ceiling to the configured host budget, preserving any lower caller limit.
-An actual Docker runtime build is refused on a budgeted Linux worker because the daemon does not
-inherit those limits. Verified stored runtimes and laptop container publication remain supported.
-
-Host setup supplies CPU, memory, minimum free disk and an alert service. The installed MIT plumbing
-binary checks disk reserve before entry compilation. Retained workers check reserve before work,
-and known output/fetch estimates before a build. These checks are disk preflights, not a filesystem
-quota. Failure notification attaches to actual retained workers as well as the timer entry.
-The next calendar occurrence retries failed or busy work; there is no restart or waiting queue.
 
 ### Local portable data
 
@@ -1302,15 +1226,13 @@ When more than one row applies, the first row gives the state. In JSON, a state 
 ## Live
 
 Live is the release that the pointer of each product names on R2. Each product has one prefix:
-`cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`. Live
-owns the prefix of each product that has a live release, and `inputs` once any release is live;
-a product with nothing live owns no prefix, so nothing under it is ever a leftover. The shared
-`inputs` is owned once any release is live, so an input copy that only a product with nothing live
-would use is a leftover.
+`cell-catalog` for `maps`, `planner` for `planner`. The input copies are under `inputs`. Older
+publishers wrote other keys under these prefixes and under `reference/v1`. Only the keys that a
+manifest of `obc data` names belong to `obc data`.
 
 | Key | Holds |
 | --- | --- |
-| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"` and `"applied"`, the time of the switch. A pointer without `release` names no release: nothing is live |
+| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"`, `"applied"`, the time of the switch, and `"commit"`, the pushed commit that the apply ran. A pointer without `release` names no release: nothing is live |
 | `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
 | `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
 | `<prefix>/objects/<sha256>` | A file of a client layer of a release. Immutable |
@@ -1330,12 +1252,14 @@ snapshot or a request. A complete verified local selection serves even if R2 lac
 A missing or corrupt named retained copy never starts an upstream capture. Status keeps its
 small-source discovery allowlist: it does not download input objects for other sources.
 
-`status --check` lists the owned prefixes, and compares them with live:
+`status --check` lists the prefix of each product and `inputs`, and compares them with live:
 
 - drift: a key of a live release or of its input copies that R2 does not have, or has with
   another size. Pointers have no expected size. An available input record gives its canonical size.
-- leftovers: a key under the owned prefixes that no live release uses. The files of
-  `<prefix>/releases/<id>/` of a live release are never leftovers.
+- leftovers: a key that a manifest under `<prefix>/releases/` names, of a release that is not
+  live, and that no live release or input copy uses: the manifest, its named files, its objects,
+  and the records and objects of its input copies. A key that no manifest of `obc data` names is
+  never a leftover.
 
 Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
 first writes the status, and the second writes an error.
@@ -1346,159 +1270,77 @@ runtime owner excludes builder execution bindings only from this read comparison
 target, files, command, outputs and configuration remain exact. Missing witness evidence is
 blocked. Known option, producer and input changes retain their existing state causes.
 
-With `--check`, `vps` is the independent installed runtime/data observation. An unavailable
-observer has `host: null`, no service results and an explicit `unavailable` reason. A complete
-observation has host inventory and one readiness result for each of routing, search and downloads.
-Each result compares the published slot and binding, actual process, verified installed files
-and opened data. The fixed `live-status` plumbing command admits only these reads. The
-`OBC_STATUS_HOST` credential is a separate forced read-only SSH authorization.
-
-The weekly report keeps one marked issue. A successful command exit alone cannot close it.
-Every current layer must be `ok`, R2 must have no drift or leftovers, attention must be empty,
-and all three service results must be ready. Missing setup or incomplete evidence keeps the
-issue open. An unchanged body emits no comment.
-
 ### Apply
 
-`apply live` makes the plan of live live. It needs the bucket, and it changes R2 in this order:
+`apply live` makes the plan of live live. It needs the bucket. One machine applies at a time:
+two machines must not apply at once. The machine that runs it writes R2 in this order:
 
-1. It refuses when `data/` has edits that git does not have, apart from
-   `data/env/local.toml`: live builds from a committed `data/`. The refusal names the files and
-   says `git add data && git commit`; `status` lists them as `uncommitted`. The steps run the code of the
-   working tree. Used acquisition, planning and producer code must also be committed.
-   Commitment checks the physical inputs of the same code resolver. Selected manifests and
-   lockfiles must be clean even when their content projection excludes an edit. UI source files
-   outside an owner's declaration do not block apply. Preparation and Local builds may use
-   working-tree code. Apply does not commit or push. Build preparation
-   can run on the laptop or VPS. All final R2 writes run in one VPS owner under an exclusive OS lock.
-2. It asks once in a terminal: "Apply M changes to live? removes X GB from R2", with the groups
-   and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan; the plan must
-   be the plan of now, as for `build --plan`. Without a terminal, `--yes` or `--plan` is the
-   consent. When live has every change and nothing is to be removed, it applies nothing.
-   An unresolved preview is refused before preparation. Use `prepare live`, review the
-   resulting plan and save it before applying. A no-op still returns a finished run.
+1. Live publishes from a pushed commit. It refuses unless the checkout has no change that git
+   lacks, apart from the Live settings in `data/env/` and `data/regions/`, and a branch on
+   `origin` holds `HEAD`. `status` lists a refusal as `not pushed`. Preparation and Local builds
+   accept working-tree code. Apply does not commit or push.
+2. It asks once in a terminal: "Apply M changes to live and remove N keys, X GB, from R2?", with
+   the groups of the plan and its `remove` keys by prefix. `--yes` does not ask. `--plan FILE`
+   applies that plan; the plan must be the plan of now, as for `build --plan`. Without a terminal,
+   `--yes` or `--plan` is the consent. An unresolved preview is refused before preparation. Use
+   `prepare live`, review the resulting plan and save it before applying. A no-op still returns a
+   finished run.
 3. It builds the plan, as `build live --plan` does.
-4. It checks each release that changes: the check of its product, and its pointer. Each file
-   that it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
-5. It transfers a bundle of existing release manifests, input-copy records, desired pointers and
-   the original run journal to the owner. Only missing payload bytes move. Under the lock, the
-   owner checks each exact `observed` pointer again before it uploads each key of the releases after the apply and of their input copies that R2 lacks,
-   or holds with another size; a key with another size goes first. Then it checks each key.
-6. For planner changes, it activates and publicly probes the approved service endpoints first.
-   It writes the pointer of each product whose full desired document changes: the document with
+4. It verifies each complete release: the check of its product, and its pointer. Each file that
+   it uploads must have its SHA-256 in the store. A failed check changes nothing on R2.
+5. It uploads each key of the releases after the apply and of their input copies that R2 lacks, or
+   holds with another size, in one transfer per set of headers; a key with another size goes
+   first. Then it checks the size of each key.
+6. It reads the pointer of each product that changes again. When its SHA-256 is not the
+   `observed` of the plan, it switches nothing. A planner switch is refused before the upload,
+   because an apply does not install the planner services yet.
+7. It writes the pointer of each product whose full desired document changes: the document with
    `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
-   `Cache-Control: public, max-age=60, must-revalidate`.
-7. It reads live again and lists its prefixes, and `reference/v1` once live reads a `dtm-*`
-   source. With drift, it removes nothing. The leftovers are the keys that no live release uses
-   and that R2 had 5 minutes before final publication started. The owner keeps its lock through cleanup.
-8. A client that read an old pointer finishes its downloads first. So while there are leftovers,
-   the apply waits until 12 minutes after the time of the newest pointer on R2 (10 minutes, and 2
-   for a clock that differs), and 10 minutes after its own switch. When no pointer time reads, it
-   waits 10 minutes. Then it reads and lists again, as in step 7, and removes the leftovers of
-   that read only, with a line in `removed.jsonl`. An apply that stopped in the wait waits again.
+   `Cache-Control: public, max-age=60, must-revalidate`. Then it checks the pointer. Before
+   each write, it keeps the old pointer bytes at `runs/<run>/previous/<key>` in the store: a
+   rollback copies that file back to the key. The plan lists each pointer of an older publisher
+   that the apply replaces.
+8. A client that read an old pointer finishes its downloads first. So the apply waits 10 minutes
+   after its own switch, and 12 minutes after the newest `applied` of the pointers before it
+   (10 minutes, and 2 for a clock that differs).
+9. It reads live again. When a pointer is not the one that this apply wrote or reviewed, it removes
+   nothing. Otherwise it removes the [leftovers](#live) that the `remove` list of the plan holds,
+   in three passes: the files and objects, then the input-copy records, then the release
+   manifests. A pass starts only after the pass before it succeeded. Each pass deletes 1000 keys
+   per call, with one write of `removed.jsonl` per call.
 
-An apply removes the leftovers of step 7, not the `remove` list of the plan, which is an estimate.
-A record on R2 of a version that live reads stays, also when `r2_copy` of its source is off now.
+An apply never removes a key that its reviewed plan did not list. A record on R2 of a version that
+live reads stays, also when `r2_copy` of its source is off now.
 
-An acknowledged failure before step 6 leaves live as it was. A new plan uploads only what R2
-still lacks. An unknown mutation outcome blocks all later commits. The objects, manifests and named files are immutable, with
-`Cache-Control: public, max-age=31536000, immutable`.
-
-The commit owner binds the original run id to the bundle SHA-256. Reusing that id with another
-bundle is refused. Before each remote mutation, it fsyncs one intent and its directory. After
-an acknowledgement, it fsyncs the run event before it clears the intent. A pending intent survives
-owner or machine failure. A later read that looks correct does not clear it. There is no timeout
-or lock takeover. Mutating children inherit the lock; a surviving child still excludes a new owner.
-The owner runs as an admitted system service outside the initiating SSH session. Its durable state
-and original run remain on the VPS. Successful replies copy the owner journal to the laptop.
-Planner service activation and retirement run under this same owner and mutation barrier.
-
+A failure before step 7 leaves live as it was. A new plan uploads only what R2 still lacks.
+A stop takes effect before the upload, before the switch and during the wait. A removal that
+stops or fails keeps every manifest and record that names a remaining key, so the next apply
+finds and removes the rest. The objects, manifests and named files are immutable,
+with `Cache-Control: public, max-age=31536000, immutable`.
 
 ### Detached operations
 
 Manual `prepare`, `build` and `apply` return `{run, request}`. `request` is the SHA-256 of the
 immutable request. A retained fresh worker owns the run after the caller leaves. One environment
-on one host/store admits one operation, with no waiting queue. Separate machines can prepare;
-only the fixed VPS owner publishes. macOS uses a separate session and private logs. Linux uses
-a transient user service, an active user manager, enabled linger and the operator's private
-`OBC_RUN_ENV_FILE`. Credential values are not copied into arguments, events or control records.
+on one host/store admits one operation, with no waiting queue. The worker runs in its own session
+with private logs. Credential values are not copied into arguments, events or control records.
 
 `operations/<run>/control.json` binds kind, environment, selection, moves, any saved plan's exact
-bytes, root and retained worker identity. State is reserved, running, stopping, stopped, owner,
-finished or resolved. Stop invalidates a reserved child. During preparation, it drains admitted
-work, starts no next fetch or step, and prevents publication handoff. Owner handoff records the
-fixed host and bundle SHA before admission; stop is then refused. Terminal resolution retains
-that binding and pins `owner-result.json` by size and SHA. Local completion durably pins
-`result.json` by size and SHA before recording finished. Finished, drained workers release
-their private executable. An unresolved owner retains it.
+bytes, root and retained worker identity. State is reserved, running, stopping, stopped or
+finished. Stop invalidates a reserved child. It drains admitted work and starts no next fetch,
+step or apply phase. Completion durably pins `result.json` by size and SHA before recording
+finished. Finished, drained workers release their private executable.
 
-`runs` reads computed observations. A lost local transport does not prove failure or no writes.
-Owner evidence binds run and bundle to both its inherited per-run lock and the fixed writer lock.
-A held mutation awaits acknowledgement; abandoned pending intent stays unknown. Owner observations
-are noninteractive and bound command execution and output collection to 30 seconds. Neither reads
-nor missing remote state clear a barrier. `runs RUN --reconcile` is an explicit mutation: it checks
-a final bound reply and journal prefix, copies acknowledged events, and resolves local control.
-It refuses while the local worker drains. Result reads verify their sealed bytes.
-The shared run view includes `logs`, the bounded tail of its worker stderr. A missing log yields
-an empty list. A read failure appears in `observation_error` and preserves the run state.
-
-## Manual automatic approval
-
-A manual Live apply reviews automatic approval even when no layer changes. It requires committed
-data and used code. It verifies every available complete product without unchanged-byte shortcuts.
-The parent confirmation retains the exact plan, including the approval review. Preparation and
-Local builds do not establish approval.
-
-The configured publication owner has one `commits/current.approval`. Its observation distinguishes
-absence from failed reads. The plan pins the owner's fingerprint and the exact prior record SHA.
-The fingerprint uses the Linux machine identity and canonical fixed owner root. It contains no
-raw machine identity or credential. The owner checks it, the prior record and original pointers
-under its existing writer lock before mutation. An SSH alias is not an owner identity.
-
-The record binds the effective region, layers, publication target, selected-source settings and
-producer declarations. Actual source versions and freshness cadence are excluded. Selected-source
-access and publication settings remain included. Manual data commitment still includes them all.
-The same code resolver supplies acquisition, planning and producer source/config witnesses.
-Implicit embedded registry bytes use declared source projections; explicit raw registry inputs
-remain raw. Operator UI source stays outside scoped owner code.
-
-Each native target/profile has its latest checked execution entry. A same-context apply replaces
-its old tools. A different context survives only when current declarations reproduce each source
-witness at its recorded Rust target/profile and the common configuration is unchanged. This
-comparison selects no foreign execution tools. It retains the original checked execution identity;
-it does not approve recomputation by another host. Changed acquisition or planning code can remove
-an old entry without rebuilding a layer.
-
-Runtime execution retains the common prepared target/profile declaration. Containers bind the
-exact local image. Native builders bind selected executable bytes and fixed execution settings.
-Routing uses the existing native release resolver, with source/work remaps and the selected C
-link driver. Search also binds Node and the self-contained npm implementation. npm has empty
-user/global config and no global module paths. uv ignores external config and uses the committed
-project, group and lock. All native builders bind readelf and the selected CPython executable,
-already loaded standard modules, and unambiguous loaded libpython/libz when required.
-
-The adapter uses isolated, no-site CPython with UTF-8. Standard bytecode caches must match source;
-this binding does not attest every loaded instruction or system dependency. Script tool wrappers,
-external npm implementation files and ambiguous Python libraries are unsupported. Provider paths
-stay local. Public native builder options contain only the execution digest. The checked worker
-resolves routing providers without another build. Execution recomputes the complete binding before
-work and after packaging; changed providers refuse acceptance. Missing unused acquisition tools can
-leave current execution unavailable. Retained-input manual publication remains supported; the
-approval outcome states what is unavailable. Only comparable prior entries can survive.
-
-Complete publication seals its result and finishes owner state before writing approval. The
-approval record binds that publication SHA, run and bundle. The sealed publication does not
-contain an approval digest. Owner results report publication and approval separately: recorded,
-unavailable or unresolved. A partial or unknown publication writes no approval. An approval write
-failure does not change a checked publication into a failed publication. Observation and explicit
-reconciliation preserve this distinction. No automatic schedule is enabled by this record alone.
+`runs` reads computed observations. Result reads verify their sealed bytes. The shared run view
+includes `logs`, the bounded tail of its worker stderr. A missing log yields an empty list. A read
+failure appears in `observation_error` and preserves the run state.
 
 ## Commands
 
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and the installed VPS runtime/data observation and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE DAYS\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
@@ -1514,13 +1356,12 @@ reconciliation preserve this distinction. No automatic schedule is enabled by th
 | `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
 | `obc data prepare ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | Starts durable input preparation. Returns `{run, request}`. Its completed result holds `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
 | `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Starts a durable build of the groups into the store. Returns `{run, request}`. Complete products get release manifests; incomplete products stay blocked. It uploads nothing |
-| `obc data apply live [--plan FILE] [--yes] [--json]` | Reviews and starts durable publication, as [Apply](#apply) says. Returns `{run, request}`. The completed owner result lists uploaded, switched and removed keys |
+| `obc data apply live [--plan FILE] [--yes] [--json]` | Reviews and starts durable publication, as [Apply](#apply) says. Returns `{run, request}`. The completed result lists uploaded, switched and removed keys |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
-| `obc data runs RUN [--json]` | One run and its computed operation state, observed owner error and result; fetches and steps retain time, peak RAM, outputs, input and code identities. Reads change no local history |
-| `obc data runs RUN --follow [--json]` | For detached operations, changed observations until a final result or actionable unresolved outcome. Other journals stream their events |
-| `obc data runs RUN --stop [--json]` | Stops after current preparation; refuses after owner handoff |
-| `obc data runs RUN --reconcile [--json]` | Explicitly accepts a verified final bound owner result and mirrors its journal |
-| `obc data runs RUN --result` | One completed preparation/build output, or sealed owner result. Unresolved runs have no result |
+| `obc data runs RUN [--json]` | One run and its computed operation state and result; fetches and steps retain time, peak RAM, outputs, input and code identities. Reads change no local history |
+| `obc data runs RUN --follow [--json]` | For detached operations, changed observations until a final result. Other journals stream their events |
+| `obc data runs RUN --stop [--json]` | Drains current work; an apply stops before its next phase |
+| `obc data runs RUN --result` | One completed output. A running run has no result |
 
 `--json` writes one JSON document to standard output. [JSON schemas](#json-schemas) has the
 schema of each output, and [Errors](#errors) has the error codes and the exit statuses. In
@@ -1547,9 +1388,8 @@ bake clean-r2` and the planner publish, deploy and finalize refuse to run when t
 their prefix has `release`, or is not JSON: after an apply, only an apply changes live. The
 planner deploy reads the pointer from the bucket again just before it writes it. `obc data r2
 put` and `delete` refuse a key under `cell-catalog/` or `planner/` once the pointer of that
-prefix has `release`, and under `inputs/` once any pointer has. They and the reference archive
-publisher refuse writes under `reference/v1/` once a verified current manifest reads `dtm-*`.
-Missing or malformed current metadata refuses those reference writes.
+prefix has `release`, and under `inputs/` once any pointer has. `obc data` never writes under
+`reference/v1/`.
 
 ### Credentials
 
@@ -1662,10 +1502,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Completed prepare output, `dev --inputs` | `Prepared2` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |
-| `auto` admission | `Started` |
-| Completed auto output | `Result` |
-| Live timer state | `State4` |
-| `schedule live --setup-budget` | `Budget` |
 | `runs` | `RunList` |
 | `runs RUN` for a detached operation | `View` |
 | `runs RUN` for other journals | `Details` |
@@ -1708,9 +1544,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Applied": {
       "description": "What an apply did.",
       "properties": {
-        "approval": {
-          "$ref": "#/$defs/Outcome"
-        },
         "built": {
           "anyOf": [
             {
@@ -1723,7 +1556,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "The build of the plan; `null` when live had every change."
         },
         "removed": {
-          "description": "The keys that it removed: no live release used them.",
+          "description": "The keys of earlier releases that it removed.",
           "items": {
             "$ref": "#/$defs/Object"
           },
@@ -1752,8 +1585,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "built",
         "uploaded",
         "switched",
-        "removed",
-        "approval"
+        "removed"
       ],
       "type": "object"
     },
@@ -1791,8 +1623,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         {
-          "const": "uncommitted",
-          "description": "Edits in `data/` that git does not have; an apply refuses them.",
+          "const": "unpushed",
+          "description": "The checkout is not a pushed commit; an apply refuses it.",
           "type": "string"
         },
         {
@@ -1802,7 +1634,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "leftovers",
-          "description": "Keys under the owned prefixes that no live release uses.",
+          "description": "Keys of earlier releases that no live release uses.",
           "type": "string"
         },
         {
@@ -1898,35 +1730,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Budget": {
-      "properties": {
-        "alert": {
-          "type": "string"
-        },
-        "cpu_percent": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "memory_bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "minimum_free": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "cpu_percent",
-        "memory_bytes",
-        "minimum_free",
-        "alert"
-      ],
-      "type": "object"
-    },
     "Built": {
       "description": "What a build did.",
       "properties": {
@@ -2000,7 +1803,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Check": {
-      "description": "The owned prefixes of R2 against live.",
+      "description": "R2 against live.",
       "properties": {
         "drift": {
           "description": "The keys that live uses and that R2 lacks, or holds with another size.",
@@ -2010,7 +1813,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "leftovers": {
-          "description": "The keys under the prefixes that no live release uses.",
+          "description": "The keys of earlier releases that no live release uses: what the next apply removes.",
           "items": {
             "$ref": "#/$defs/Object"
           },
@@ -2260,7 +2063,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "outcome": {
-          "$ref": "#/$defs/Outcome2"
+          "$ref": "#/$defs/Outcome"
         },
         "phase": {
           "anyOf": [
@@ -2454,17 +2257,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "description": "What a build of an environment would fetch and build.",
       "properties": {
-        "approval": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Review"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Complete manual publication reviews this owner record separately from source refreshes."
-        },
         "blocked": {
           "description": "Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.",
           "items": {
@@ -2495,7 +2287,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "listed": {
-          "description": "For `live`: whether the plan listed R2, which needs the bucket. Without a listing, the plan\nhas no `repair` group, and `remove` lacks the leftovers and the files that a client finds\nby name.",
+          "description": "For `live`: whether the plan listed R2, which needs the bucket. Without a listing, the plan\nhas no `repair` group and removes nothing.",
           "type": "boolean"
         },
         "live": {
@@ -2530,7 +2322,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "remove": {
-          "description": "For `live`: the keys that an apply of the plan removes from R2.",
+          "description": "For `live`: the keys of earlier releases that an apply of the plan removes from R2. An\napply removes no other key.",
           "items": {
             "$ref": "#/$defs/Removal"
           },
@@ -2557,8 +2349,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "blocked",
         "remove",
         "listed",
-        "needs_prepare",
-        "approval"
+        "needs_prepare"
       ],
       "type": "object"
     },
@@ -2906,29 +2697,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
-    "Execution": {
-      "additionalProperties": false,
-      "properties": {
-        "profile": {
-          "$ref": "#/$defs/Profile"
-        },
-        "roles": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Role"
-          },
-          "type": "object"
-        },
-        "target": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "target",
-        "profile",
-        "roles"
-      ],
-      "type": "object"
-    },
     "Failure": {
       "description": "What `--json` writes when a command fails.",
       "properties": {
@@ -3179,37 +2947,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Host": {
-      "additionalProperties": false,
-      "description": "Actual host prerequisites. Absent interpreters cannot satisfy a runtime target.",
-      "properties": {
-        "glibc": {
-          "type": "string"
-        },
-        "node": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "python": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "triple": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "triple",
-        "glibc",
-        "node",
-        "python"
-      ],
-      "type": "object"
-    },
     "InputKind": {
       "enum": [
         "layer",
@@ -3244,33 +2981,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "name",
         "digest",
         "files"
-      ],
-      "type": "object"
-    },
-    "Installed": {
-      "additionalProperties": false,
-      "properties": {
-        "binding": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
-        },
-        "service": {
-          "$ref": "#/$defs/Service"
-        },
-        "slot": {
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "service",
-        "id",
-        "slot",
-        "binding"
       ],
       "type": "object"
     },
@@ -3389,6 +3099,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
+        "key": {
+          "description": "The key of the pointer on R2.",
+          "type": "string"
+        },
         "observed": {
           "description": "SHA-256 of the exact pointer bytes that consent observed; None means absent.",
           "type": [
@@ -3418,7 +3132,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "product",
         "release",
         "pointer",
-        "observed"
+        "observed",
+        "key"
       ],
       "type": "object"
     },
@@ -3511,45 +3226,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Observation2": {
-      "additionalProperties": false,
-      "properties": {
-        "host": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/State2"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "services": {
-          "items": {
-            "$ref": "#/$defs/ServiceStatus"
-          },
-          "type": "array"
-        },
-        "unavailable": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "host",
-        "services",
-        "unavailable"
-      ],
-      "type": "object"
-    },
     "Observed": {
       "properties": {
         "state": {
           "anyOf": [
             {
-              "$ref": "#/$defs/State3"
+              "$ref": "#/$defs/State2"
             },
             {
               "type": "null"
@@ -3563,82 +3245,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Outcome": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "status": {
-              "const": "not_requested",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "sha256": {
-              "type": "string"
-            },
-            "status": {
-              "const": "recorded",
-              "type": "string"
-            },
-            "unavailable": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "status",
-            "sha256",
-            "unavailable"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "reason": {
-              "type": "string"
-            },
-            "status": {
-              "const": "unavailable",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "reason"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Publication succeeds independently of this owner-local durable write.",
-          "properties": {
-            "reason": {
-              "type": "string"
-            },
-            "status": {
-              "const": "unresolved",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "reason"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "Outcome2": {
       "oneOf": [
         {
           "enum": [
@@ -4016,6 +3622,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "commit": {
+          "description": "The commit that the apply of the release ran; `None` when nothing is live.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "layers": {
           "description": "Each layer of the environment `live`, in dependency order; `None` when a fetch that its\nstep list needs failed, and `attention` says why.",
           "items": {
@@ -4048,6 +3661,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "product",
         "release",
         "applied",
+        "commit",
         "bytes",
         "optional",
         "layers"
@@ -4122,74 +3736,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "kind",
             "key",
             "bytes"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "binding": {
-              "type": "string"
-            },
-            "kind": {
-              "const": "service_staged",
-              "type": "string"
-            },
-            "service": {
-              "type": "string"
-            },
-            "slot": {
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "service",
-            "slot",
-            "binding"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "bindings": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "kind": {
-              "const": "services_activated",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "bindings"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "bindings": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "kind": {
-              "const": "services_retired",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "bindings"
           ],
           "type": "object"
         }
@@ -4544,13 +4090,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "properties": {
         "bytes": {
-          "description": "`None` for the record of an input copy, whose size is not known before a listing.",
           "format": "uint64",
           "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "key": {
           "type": "string"
@@ -4669,154 +4211,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "state",
         "reason",
         "age_days"
-      ],
-      "type": "object"
-    },
-    "ResolvedRust": {
-      "additionalProperties": false,
-      "properties": {
-        "build": {
-          "$ref": "#/$defs/Rust"
-        },
-        "target": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "target",
-        "build"
-      ],
-      "type": "object"
-    },
-    "Result": {
-      "properties": {
-        "applied": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Applied"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "approval": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "built": {
-          "$ref": "#/$defs/Built"
-        },
-        "publication": {
-          "description": "Publication requires checked enabled-timer admission.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "built",
-        "approval",
-        "publication",
-        "applied"
-      ],
-      "type": "object"
-    },
-    "Review": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "config": {
-              "type": "string"
-            },
-            "executions": {
-              "items": {
-                "$ref": "#/$defs/Execution"
-              },
-              "type": "array"
-            },
-            "expected": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "owner": {
-              "type": "string"
-            },
-            "status": {
-              "const": "ready",
-              "type": "string"
-            },
-            "unavailable": {
-              "description": "Retained inputs can be applied when unused acquisition tools are absent.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "status",
-            "owner",
-            "expected",
-            "config",
-            "executions",
-            "unavailable"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "owner": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "reason": {
-              "type": "string"
-            },
-            "status": {
-              "const": "unavailable",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "reason",
-            "owner"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "Role": {
-      "additionalProperties": false,
-      "properties": {
-        "execution": {
-          "type": "string"
-        },
-        "rust": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ResolvedRust"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "source_config": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "rust",
-        "source_config",
-        "execution"
       ],
       "type": "object"
     },
@@ -5005,37 +4399,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         }
       ]
-    },
-    "Service": {
-      "enum": [
-        "routing",
-        "search",
-        "downloads"
-      ],
-      "type": "string"
-    },
-    "ServiceStatus": {
-      "additionalProperties": false,
-      "properties": {
-        "ready": {
-          "type": "boolean"
-        },
-        "reason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "service": {
-          "$ref": "#/$defs/Service"
-        }
-      },
-      "required": [
-        "service",
-        "ready",
-        "reason"
-      ],
-      "type": "object"
     },
     "Source": {
       "additionalProperties": false,
@@ -5327,39 +4690,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Started": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Handle"
-        },
-        {
-          "properties": {
-            "env": {
-              "type": "string"
-            },
-            "reason": {
-              "type": "string"
-            },
-            "run": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "skipped": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "skipped",
-            "env",
-            "reason",
-            "run"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "State": {
       "description": "The state of a source or a layer. A source is only ok, stale or blocked. When more than one\nstate applies to a layer, the first in this order is its state, so the least of several states\nis the one to show for all of them.",
       "oneOf": [
@@ -5382,25 +4712,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ]
     },
     "State2": {
-      "additionalProperties": false,
-      "properties": {
-        "host": {
-          "$ref": "#/$defs/Host"
-        },
-        "installed": {
-          "items": {
-            "$ref": "#/$defs/Installed"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "host",
-        "installed"
-      ],
-      "type": "object"
-    },
-    "State3": {
       "additionalProperties": false,
       "properties": {
         "apps": {
@@ -5470,71 +4781,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "State4": {
-      "properties": {
-        "active": {
-          "type": "boolean"
-        },
-        "blocked": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "calendar": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "last_run": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/View"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "last_trigger": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "next": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "runnable": {
-          "type": "boolean"
-        },
-        "time_zone": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "enabled",
-        "active",
-        "runnable",
-        "blocked",
-        "calendar",
-        "time_zone",
-        "next",
-        "last_trigger",
-        "last_run"
-      ],
-      "type": "object"
-    },
     "Status": {
       "description": "What `status` writes.",
       "properties": {
@@ -5564,25 +4810,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "$ref": "#/$defs/ProductStatus"
           },
           "type": "array"
-        },
-        "vps": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Observation2"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Installed runtime and opened data, independently from recorded-target source comparison."
         }
       },
       "required": [
         "from",
         "products",
         "attention",
-        "check",
-        "vps"
+        "check"
       ],
       "type": "object"
     },
@@ -5649,27 +4883,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         },
         {
-          "description": "Remote absence or a transport error does not resolve a dispatched operation.",
-          "properties": {
-            "bundle": {
-              "type": "string"
-            },
-            "host": {
-              "type": "string"
-            },
-            "status": {
-              "const": "awaiting_owner",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "host",
-            "bundle"
-          ],
-          "type": "object"
-        },
-        {
           "properties": {
             "ok": {
               "type": "boolean"
@@ -5682,30 +4895,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "required": [
             "status",
             "ok"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "bundle": {
-              "type": "string"
-            },
-            "host": {
-              "type": "string"
-            },
-            "reason": {
-              "type": "string"
-            },
-            "status": {
-              "const": "unknown_owner",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "host",
-            "bundle",
-            "reason"
           ],
           "type": "object"
         }
@@ -5821,7 +5010,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "outcome": {
-          "$ref": "#/$defs/Outcome2"
+          "$ref": "#/$defs/Outcome"
         },
         "started": {
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
@@ -5981,7 +5170,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "View": {
       "properties": {
         "logs": {
-          "description": "Recent worker stderr. Reading it does not change the run or owner state.",
+          "description": "Recent worker stderr. Reading it does not change the run.",
           "items": {
             "type": "string"
           },

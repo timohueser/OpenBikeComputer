@@ -204,15 +204,12 @@ pub struct CodeIdentity {
     pub files: BTreeMap<String, String>,
     pub source_config: BTreeMap<String, String>,
     pub rust: Option<ResolvedRust>,
-    /// Repository-relative physical inputs, before manifest or source projection.
-    pub git_inputs: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceIdentity {
     pub files: BTreeMap<String, String>,
     pub rust: Option<ResolvedRust>,
-    pub git_inputs: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -220,19 +217,6 @@ pub struct SourceIdentity {
 pub struct ResolvedRust {
     pub target: String,
     pub build: Rust,
-}
-
-impl CodeIdentity {
-    /// Commitment checks the selected physical inputs, including projected build metadata.
-    pub fn committed(&self, root: &Path) -> Result<(), String> {
-        code::committed(root, &self.git_inputs)
-    }
-}
-
-impl SourceIdentity {
-    pub fn committed(&self, root: &Path) -> Result<(), String> {
-        code::committed(root, &self.git_inputs)
-    }
 }
 
 pub enum Run {

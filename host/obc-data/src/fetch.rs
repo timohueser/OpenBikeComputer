@@ -10,7 +10,7 @@ pub mod upstream;
 
 pub use tools::basemap_jar;
 
-pub(crate) type Checks<'a> = (&'a mut crate::engine::code::Context, bool);
+pub(crate) type Checks<'a> = &'a mut crate::engine::code::Context;
 
 pub fn owner_code(source: &Source) -> crate::engine::OwnerCode {
     code::owner(source)
@@ -45,12 +45,9 @@ pub(crate) fn check_owner(
     source: &Source,
     checks: Option<crate::fetch::Checks<'_>>,
 ) -> Result<(), String> {
-    if let Some((checks, committed)) = checks {
+    if let Some(checks) = checks {
         checks.refresh_python();
-        let identity = checks.owner_identity(root, &owner_code(source))?;
-        if committed {
-            identity.committed(root)?;
-        }
+        checks.owner_identity(root, &owner_code(source))?;
     }
     Ok(())
 }

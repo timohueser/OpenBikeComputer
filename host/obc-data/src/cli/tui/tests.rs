@@ -44,6 +44,7 @@ fn status() -> Status {
             product: product.into(),
             release: Some(release.repeat(8)),
             applied: applied.map(str::to_string),
+            commit: None,
             bytes: Some(bytes),
             optional: optional.iter().map(|layer| layer.to_string()).collect(),
             layers,
@@ -56,7 +57,6 @@ fn status() -> Status {
     ];
     let attention = |kind, about: &str, reason: &str| Attention { kind, about: about.into(), reason: reason.into() };
     Status {
-        vps: None,
         from: "https://maps.openbikecomputer.com".into(),
         products: vec![
             product("maps", "3f9a2c1e", None, 980_000_000, &[], None),
@@ -113,13 +113,13 @@ fn plan() -> EnvPlan {
         "layers": ["sun"],
         "moves": {"land": "2024-01-03", "osm": "2024-01-09"},
         "versions": [],
-        "live": [{"product": "planner", "release": "8b0d47a5".repeat(8)}],
+        "live": [{"product": "planner", "release": "8b0d47a5".repeat(8), "key": "planner/catalog.json"}],
         "edits": [{"kind": "layers", "product": "planner", "on": ["sun"], "off": []}],
         "only": [],
         "groups": groups,
         "blocked": [{"product": "maps", "reason": "source `wikidata` is blocked", "layers": []}],
         "remove": [{"key": "planner/objects/aa", "bytes": 1_100_000_000}, {"key": "planner/objects/bb", "bytes": 5_000_000}],
-        "listed": false,
+        "listed": true,
         "needs_prepare": false,
     }))
     .unwrap()
@@ -259,11 +259,7 @@ fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
     for status in [
         crate::operation::Status::Running,
         crate::operation::Status::Stopping,
-        crate::operation::Status::UnknownOwner {
-            host: "vps".into(),
-            bundle: "a".repeat(64),
-            reason: "pending write".into(),
-        },
+        crate::operation::Status::Interrupted,
         crate::operation::Status::Finished { ok: true },
     ] {
         let mut shown = app();
@@ -276,6 +272,7 @@ fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
             result: Some(json!({"plan": plan()})),
             logs: Vec::new(),
         }));
+        states.push(App { asking: true, ..shown.clone() });
         states.push(shown);
     }
     for app in states {
@@ -395,39 +392,25 @@ fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
 }
 
 #[test]
-fn no_change_confirmation_displays_the_exact_approval_and_run_keeps_its_separate_outcome() {
-    let shown_run = app().runs[0].clone();
+fn apply_confirmation_lists_each_removal_prefix_before_y() {
     let mut app = planned(0, false, &[]);
     let taken = &mut app.plan.as_mut().unwrap().taken;
     taken.groups.clear();
-    taken.remove.clear();
-    taken.approval = Some(crate::approval::Review::Unavailable {
-        owner: Some("a".repeat(64)),
-        reason: "native routing execution is not bound".into(),
-    });
+    taken.listed = true;
+    let removal = |key: &str, bytes| crate::live::Removal { key: key.into(), bytes };
+    taken.remove = vec![
+        removal("cell-catalog/objects/a", 1_000_000),
+        removal("cell-catalog/objects/b", 2_000_000),
+        removal("inputs/records/osm/1/a.json", 100),
+    ];
     let reviewed = taken.clone();
     app.key(KeyCode::Char('a'));
     let drawn = screen(&mut app, 80, 24).join("\n");
     let text: String = drawn.replace('│', " ").split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(text.contains("Apply 0 changes to live?"), "{drawn}");
-    assert!(text.contains(&reviewed.approval.as_ref().unwrap().summary()), "{drawn}");
+    assert!(text.contains("Apply 0 changes to live and remove 3 keys"), "{drawn}");
+    assert!(text.contains("cell-catalog/objects/ 2 keys 3.0 MB"), "{drawn}");
+    assert!(text.contains("inputs/records/ 1 keys"), "{drawn}");
     assert_eq!(app.key(KeyCode::Char('y')), Effect::Start(crate::operation::Kind::Apply, Box::new(reviewed)));
-    for outcome in [
-        crate::approval::Outcome::Recorded { sha256: "b".repeat(64), unavailable: None },
-        crate::approval::Outcome::Unavailable { reason: "native routing execution is not bound".into() },
-        crate::approval::Outcome::Unresolved { reason: "approval write was not acknowledged".into() },
-    ] {
-        app.execution.selected = Some(shown_run.summary.id.clone());
-        app.execution.view = Some(std::sync::Arc::new(crate::cli::operation_cli::View {
-            run: shown_run.clone(),
-            operation: Some(crate::operation::Status::Finished { ok: true }),
-            observation_error: None,
-            logs: Vec::new(),
-            result: Some(json!({"status":"done","result":{"approval":outcome}})),
-        }));
-        let lines = app.run_lines().iter().map(Line::to_string).collect::<Vec<_>>().join("\n");
-        assert!(lines.contains(&outcome.summary()), "{lines}");
-    }
 }
 
 #[test]
@@ -543,7 +526,13 @@ fn the_run_stop_action_uses_the_shared_draining_boundary_without_a_checkout() {
     app.execution.selected = Some(id.clone());
     background::perform(Path::new("/absent-checkout"), &[], &store, &mut app, Effect::ObserveRun(id.clone())).unwrap();
     app.overlay = Some(Overlay::Run);
-    assert_eq!(app.key(KeyCode::Char('x')), Effect::StopRun(id.clone()));
+    assert_eq!(app.key(KeyCode::Char('x')), Effect::None, "stop asks first");
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(drawn.contains(&format!("Stop run {id}?")), "{drawn}");
+    app.key(KeyCode::Esc);
+    assert!(!app.asking && app.overlay == Some(Overlay::Run), "esc keeps the run");
+    app.key(KeyCode::Char('x'));
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::StopRun(id.clone()));
     background::perform(Path::new("/absent-checkout"), &[], &store, &mut app, Effect::StopRun(id.clone())).unwrap();
     assert!(matches!(app.execution.current().unwrap().operation, Some(Status::Stopping)));
     assert_eq!(app.key(KeyCode::Char('x')), Effect::None, "draining is not a second stop");
@@ -555,7 +544,7 @@ fn the_run_stop_action_uses_the_shared_draining_boundary_without_a_checkout() {
 }
 
 #[test]
-fn run_outcomes_distinguish_unpublished_builds_unknown_owners_and_partial_activation() {
+fn run_outcomes_distinguish_unpublished_builds_and_a_partial_apply() {
     use crate::engine::runs::Publication;
     use crate::operation::Status;
     let mut app = app();
@@ -578,7 +567,7 @@ fn run_outcomes_distinguish_unpublished_builds_unknown_owners_and_partial_activa
     let mut shown = app.execution.current().unwrap().run.clone();
     shown.summary.command = "apply live".into();
     shown.summary.outcome = Outcome::Failed;
-    shown.published.push(Publication::ServicesActivated { bindings: vec!["b".repeat(64)] });
+    shown.published.push(Publication::Switched { product: "maps".into(), release: "b".repeat(64) });
     shown.published.push(Publication::Uploaded { key: "maps/release.json".into() });
     let text = show(
         &mut app,
@@ -590,35 +579,8 @@ fn run_outcomes_distinguish_unpublished_builds_unknown_owners_and_partial_activa
             logs: Vec::new(),
         },
     );
-    assert!(
-        text.contains("Acknowledged publication changes remain live.")
-            && text.contains("Service activation acknowledged."),
-        "{text}"
-    );
+    assert!(text.contains("The switched pointers stay live.") && text.contains("maps release bbbbbbbb"), "{text}");
     assert!(text.contains("1 uploaded · 0 removed") && text.contains("pointer upload failed"), "{text}");
-    shown.published.clear();
-    let text = show(
-        &mut app,
-        crate::cli::operation_cli::View {
-            run: shown,
-            operation: Some(Status::UnknownOwner {
-                host: "vps".into(),
-                bundle: "a".repeat(64),
-                reason: "pending pointer upload".into(),
-            }),
-            observation_error: Some("SSH unavailable".into()),
-            result: None,
-            logs: Vec::new(),
-        },
-    );
-    assert!(
-        text.contains("Live outcome is not yet known.")
-            && text.contains("pending pointer upload")
-            && text.contains("SSH unavailable"),
-        "{text}"
-    );
-    assert_eq!(app.key(KeyCode::Char('x')), Effect::None, "owner handoff cannot be stopped");
-    assert!(matches!(app.key(KeyCode::Char('c')), Effect::ReconcileRun(_)));
 }
 
 #[test]
@@ -643,7 +605,7 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
         "stale        osm   120 d > 90 d",
         "unreachable  maps  a fetch that the step list needs failed",
         "",
-        "r region   R check R2   s schedule   p plan   u undo environment   ? help",
+        "r region   R check R2   p plan   u undo environment   ? help",
     ];
     assert_eq!(drawn, live, "{drawn:#?}");
     assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
@@ -699,122 +661,6 @@ fn version_review_retains_pending_intent_and_exposes_each_request_before_the_pla
 }
 
 #[test]
-fn schedule_has_explicit_host_scope_confirmation_and_never_intercepts_form_text() {
-    let mut app = app();
-    app.host = "fixture-vps (linux)".into();
-    assert_eq!(app.key(KeyCode::Char('s')), Effect::ScheduleRead);
-    app.schedule.state = Some(Err("live schedules need the configured Linux systemd host".into()));
-    let text = screen(&mut app, 80, 24).join(" ");
-    assert!(
-        text.contains("fixture-vps (linux)") && text.contains("environment: live") && text.contains("systemd host"),
-        "{text}"
-    );
-    if !cfg!(target_os = "linux") {
-        assert!(text.contains("unsupported"), "{text}");
-        assert_eq!(app.key(KeyCode::Char('d')), Effect::None);
-    }
-    app.schedule.editing = true;
-    app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Custom, time: "00:00".into(), day: 1 });
-    app.schedule.field = 1;
-    app.schedule.calendar = "daily".into();
-    app.schedule.zone = "UTC".into();
-    app.key(KeyCode::Char('q'));
-    assert_eq!(app.schedule.calendar, "dailyq", "typing never quits or invokes commands");
-    app.key(KeyCode::Backspace);
-    app.key(KeyCode::Tab);
-    app.key(KeyCode::Enter);
-    assert!(app.asking);
-    let text = screen(&mut app, 80, 24).join(" ");
-    assert!(text.contains("daily UTC") && text.contains("publish to Live") && text.contains("This machine:"), "{text}");
-    app.busy = true;
-    assert_eq!(app.key(KeyCode::Char('y')), Effect::None);
-    app.busy = false;
-    assert_eq!(
-        app.key(KeyCode::Char('y')),
-        Effect::ScheduleChange(schedule::Change::Install { calendar: "daily".into(), zone: "UTC".into() })
-    );
-    app.key(KeyCode::Esc);
-    assert!(!app.asking && app.schedule.pending.is_none());
-    assert!(app.moves.is_empty() && app.plan.is_none(), "schedule has no manual plan side effects");
-}
-
-#[test]
-fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() {
-    let mut app = app();
-    app.host = "fixture-vps (linux)".into();
-    app.overlay = Some(Overlay::Schedule);
-    app.schedule.editing = true;
-    app.schedule.zone = "UTC".into();
-    app.schedule.calendar = "daily".into();
-    app.key(KeyCode::Down);
-    app.key(KeyCode::Tab);
-    app.key(KeyCode::Delete);
-    for c in "07:30".chars() {
-        app.key(KeyCode::Char(c));
-    }
-    app.key(KeyCode::Tab);
-    app.key(KeyCode::Down);
-    app.key(KeyCode::Tab);
-    app.key(KeyCode::Enter);
-    let calendar = "Tue *-*-* 07:30:00";
-    assert_eq!(
-        app.key(KeyCode::Char('y')),
-        Effect::ScheduleChange(schedule::Change::Install { calendar: calendar.into(), zone: "UTC".into() })
-    );
-    app.key(KeyCode::Esc);
-    let run = crate::cli::operation_cli::View {
-        run: app.runs[0].clone(),
-        operation: Some(crate::operation::Status::Finished { ok: true }),
-        observation_error: None,
-        result: Some(json!({"built":{},"applied":{}})),
-        logs: Vec::new(),
-    };
-    let state = crate::schedule::State {
-        enabled: true,
-        active: false,
-        runnable: false,
-        blocked: Some("Host setup needs repair".into()),
-        calendar: Some(calendar.into()),
-        time_zone: Some("UTC".into()),
-        next: Some("Thu 2026-10-08 07:30:00 UTC".into()),
-        last_trigger: None,
-        last_run: Some(Box::new(run)),
-    };
-    app.schedule.state = Some(Ok(std::sync::Arc::new(state)));
-    assert_eq!(app.schedule.summary(), "weekly Tue 07:30 · next 2026-10-08 07:30 · last applied");
-    app.overlay = None;
-    let live = screen(&mut app, 80, 24).join(" ");
-    assert!(
-        live.contains("weekly Tue 07:30") && live.contains("next 2026-10-08 07:30") && live.contains("last applied"),
-        "{live}"
-    );
-    app.overlay = Some(Overlay::Schedule);
-    let drawn = screen(&mut app, 80, 24).join(" ");
-    assert!(
-        drawn.contains("Enabled true")
-            && drawn.contains("active false")
-            && drawn.contains("runnable false")
-            && drawn.contains("needs repair"),
-        "{drawn}"
-    );
-    let state = std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap();
-    state.enabled = false;
-    state.last_run.as_mut().unwrap().result = Some(json!({"built":{},"applied":null}));
-    assert_eq!(app.schedule.summary(), "off · last verified");
-    std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap().blocked =
-        Some("Long host repair details. ".repeat(100));
-    app.scroll = 80;
-    app.schedule.editing = true;
-    app.schedule.field = 1;
-    app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Daily, time: "25:99".into(), day: 1 });
-    let drawn = screen(&mut app, 80, 24).join(" ");
-    assert!(drawn.contains("Time (HH:MM): 25:99") && drawn.contains("Time zone: UTC"), "{drawn}");
-    app.key(KeyCode::Enter);
-    assert!(!app.asking && app.schedule.pending.is_none());
-    assert!(app.notice.unwrap().message.contains("00:00 to 23:59"));
-}
-
-#[test]
 fn the_region_picker_filters_and_sets_the_region_of_live() {
     let mut app = app();
     app.key(KeyCode::Char('r'));
@@ -848,8 +694,8 @@ fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
         "code of planner/router-build",
         "REMOVE FROM R2",
         "2 keys, 1.10 GB",
+        "planner/objects/",
         "blocked maps",
-        "leftovers are unknown",
         "TOTAL",
         "fetch 1.66 GB",
         "build 4 layers",

@@ -15,47 +15,35 @@ const BUILD: &str = "tools/planner_runtime_build.py";
 const RECIPE: &str = "data/planner-runtime.toml";
 const SERVICES: [&str; 3] = ["routing", "search", "downloads"];
 
-pub(super) fn approval_config(root: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(root.join(RECIPE)).map_err(|error| format!("{RECIPE}: {error}"))?;
-    let config: toml::Value = toml::from_str(&text).map_err(|error| format!("{RECIPE}: {error}"))?;
-    serde_json::to_value(config).map_err(|error| error.to_string())
-}
-
-pub(super) fn binding(step: &Step) -> Result<Option<obc_data::approval::RuntimeBinding>, String> {
-    let Some(service) = SERVICES.iter().find(|service| step.name == format!("planner/runtime/{service}")) else {
-        return Ok(None);
-    };
-    let target = step.options.get("target").cloned().ok_or("runtime has no selected target")?;
-    let builder = step.options.get("builder").cloned().ok_or("runtime has no selected builder")?;
-    let digest = |value: &Value| {
-        value.as_str().is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    };
-    let builder = match builder["kind"].as_str() {
-        Some("container")
-            if builder["image"]
-                .as_str()
-                .is_some_and(|image| image.strip_prefix("sha256:").is_some_and(|value| digest(&json!(value)))) =>
-        {
-            builder
-        }
-        Some("native")
-            if digest(&builder["execution"]) && builder.as_object().is_some_and(|value| value.len() == 2) =>
-        {
-            builder
-        }
-        _ => return Err(format!("automatic approval for {service} needs an exact runtime execution binding")),
-    };
-    Ok(Some(obc_data::approval::RuntimeBinding { target, builder }))
-}
-
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     target: Option<Value>,
-    publication: Option<obc_data::vps::Origins>,
+    publication: Option<Origins>,
 }
 
-pub(super) fn publication(root: &Path) -> Result<obc_data::vps::Origins, String> {
+/// The HTTPS origins that the planner pointer names.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Origins {
+    pub site_origin: String,
+    pub api_origin: String,
+    pub objects_origin: String,
+}
+
+impl Origins {
+    fn check(&self) -> Result<(), String> {
+        for origin in [&self.site_origin, &self.api_origin, &self.objects_origin] {
+            let host = origin.strip_prefix("https://").ok_or("publication needs HTTPS origins")?;
+            if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-:".contains(&byte)) {
+                return Err(format!("publication origin `{origin}` has a path, credentials or unsafe characters"));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn publication(root: &Path) -> Result<Origins, String> {
     let config: Config =
         toml::from_str(&std::fs::read_to_string(root.join(RECIPE)).map_err(|e| format!("{RECIPE}: {e}"))?)
             .map_err(|e| format!("{RECIPE}: {e}"))?;
@@ -456,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn native_approval_binds_tool_bytes_without_publishing_host_locations() {
+    fn the_native_digest_binds_tool_bytes_without_host_locations() {
         let provider = |path: &str| json!({"path":path, "sha256":"a".repeat(64)});
         let mut builder = json!({"kind":"native", "glibc":"2.31", "providers":{
             "commands":{"python":"/tools/python"},
@@ -468,21 +456,6 @@ mod tests {
         assert_eq!(native_digest(&builder), digest);
         builder["providers"]["files"]["python/libz"]["sha256"] = json!("b".repeat(64));
         assert_ne!(native_digest(&builder), digest);
-        let mut step = Step {
-            name: "planner/runtime/downloads".into(),
-            inputs: Vec::new(),
-            options: json!({"target":{"triple":"x86_64-unknown-linux-gnu"},
-                "builder":{"kind":"native", "execution":native_digest(&builder)}}),
-            code: Code::default(),
-            outputs: Vec::new(),
-            run: Run::Command(Vec::new()),
-            client: Client::None,
-        };
-        assert_eq!(binding(&step).unwrap().unwrap().builder, step.options["builder"]);
-        step.options["builder"]["providers"] = builder["providers"].clone();
-        assert!(binding(&step).is_err(), "public native bindings contain no private execution paths");
-        step.options["builder"] = json!({"kind":"container", "image":format!("sha256:{}", "c".repeat(64))});
-        assert_eq!(binding(&step).unwrap().unwrap().builder, step.options["builder"]);
     }
 
     fn layer(step: &str) -> Layer {

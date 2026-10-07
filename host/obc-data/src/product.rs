@@ -25,21 +25,6 @@ pub trait Product: Sync {
         &[]
     }
 
-    /// The native owner that selects requests and constructs this product's recipes.
-    fn planning_code(&self, _env: &Env) -> Result<Option<crate::engine::OwnerCode>, String> {
-        Ok(None)
-    }
-
-    /// Publication settings beyond the region and selected layers. Source versions are not settings.
-    fn approval_config(&self, _root: &Path) -> Result<serde_json::Value, String> {
-        Ok(serde_json::Value::Null)
-    }
-
-    /// Prepared execution is declared by its actual runtime owner, separately from source code.
-    fn runtime_binding(&self, _step: &Step) -> Result<Option<crate::approval::RuntimeBinding>, String> {
-        Ok(None)
-    }
-
     /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
     fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
@@ -101,17 +86,6 @@ pub trait Product: Sync {
         _run: &mut crate::engine::runs::Run,
     ) -> Result<crate::dev::Prepared, String> {
         Err("this product has no Local app".into())
-    }
-
-    /// Prepare the three planner service views in caller-owned storage, before handoff.
-    fn services(
-        &self,
-        _root: &Path,
-        _release: &Release,
-        _store: &Store,
-        _destination: &Path,
-    ) -> Result<Vec<crate::vps::Candidate>, String> {
-        Ok(Vec::new())
     }
 
     /// Check stored artifacts before publication. `root` locates the offline verification tools.

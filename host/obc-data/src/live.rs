@@ -29,9 +29,6 @@ pub const INPUTS: &str = "inputs";
 /// The prefix of each product, for the plumbing that runs without the products. A test of
 /// `obc-data-steps` holds it equal to the prefixes of its products.
 pub const PRODUCT_PREFIXES: &[&str] = &["cell-catalog", "planner"];
-/// The terrain reference archive of older publishes. An apply removes it once live reads the
-/// national terrain models (`dtm-*`) from their input copies instead.
-pub const REFERENCE: &str = "reference/v1";
 
 /// Where live is read: the bucket of `OBC_R2_*` when `OBC_R2_BUCKET` or `OBC_R2_LOCAL_DIR` is
 /// set, or else its public URL.
@@ -119,6 +116,8 @@ pub struct LiveProduct {
     pub release: Option<(String, Release)>,
     /// `applied` of the pointer: the time of the switch to its release, which an apply writes.
     pub applied: Option<String>,
+    /// `commit` of the pointer: the pushed commit that the apply ran.
+    pub commit: Option<String>,
     /// SHA-256 of the exact observed pointer bytes, or None for a successful absent read.
     pub observed: Option<String>,
     /// The actual client document, without the publication id and time.
@@ -144,17 +143,19 @@ impl Live {
         for &(name, prefix) in products {
             let bytes = remote.get(&format!("{prefix}/catalog.json"))?;
             let observed = bytes.as_deref().map(sha256_hex);
-            let (release, applied, document) = match pointer(bytes.as_deref(), prefix)? {
-                Some((id, applied, document)) => {
-                    (Some((id.clone(), manifest(remote, store, name, prefix, &id)?)), applied, Some(document))
+            let (release, applied, commit, document) = match pointer(bytes.as_deref(), prefix)? {
+                Some(Pointer { id, applied, commit, document }) => {
+                    let release = manifest(remote, store, name, prefix, &id)?;
+                    (Some((id, release)), applied, commit, Some(document))
                 }
-                None => (None, None, None),
+                None => (None, None, None, None),
             };
             live.products.push(LiveProduct {
                 product: name.into(),
                 prefix: prefix.into(),
                 release,
                 applied,
+                commit,
                 observed,
                 document,
             });
@@ -243,37 +244,10 @@ impl Live {
         keys
     }
 
-    /// The prefixes that live owns: that of each product with a live release, and that of the
-    /// input copies once a release is live. A product with nothing live owns nothing, so what an
-    /// older publish left there is never a leftover.
+    /// The prefixes that an apply lists: that of each product, and that of the input copies.
     pub fn prefixes(&self) -> Vec<String> {
-        let mut prefixes: Vec<String> = self.releases().map(|(prefix, _, _)| prefix.to_string()).collect();
-        if !prefixes.is_empty() {
-            prefixes.push(INPUTS.into());
-        }
-        prefixes
-    }
-
-    /// The prefixes that an apply which makes this live lists for its removals: those that it
-    /// owns, and [`REFERENCE`] once live reads a `dtm-*` source.
-    pub fn swept(&self) -> Vec<String> {
-        let mut prefixes = self.prefixes();
-        if self.snapshots().iter().any(|(source, _)| source.starts_with("dtm-")) {
-            prefixes.push(REFERENCE.into());
-        }
-        prefixes
-    }
-
-    /// The keys that an apply which makes `next` live removes: those of `listed`, the objects of
-    /// a listing, or else those that live uses, that `next` does not use.
-    pub fn removed(&self, next: &Live, listed: Option<&[Object]>) -> Vec<Removal> {
-        let kept = next.expected();
-        let stays = |key: &str| kept.contains_key(key);
-        let keys: BTreeMap<String, Option<u64>> = match listed {
-            Some(listed) => listed.iter().map(|object| (object.key.clone(), Some(object.bytes))).collect(),
-            None => self.expected().into_iter().collect(),
-        };
-        keys.into_iter().filter(|(key, _)| !stays(key)).map(|(key, bytes)| Removal { key, bytes }).collect()
+        let prefixes = self.products.iter().map(|product| product.prefix.clone());
+        prefixes.chain([INPUTS.to_string()]).collect()
     }
 
     /// The layers of the live releases whose files `keys` hold.
@@ -323,39 +297,113 @@ impl Live {
         Ok(())
     }
 
-    /// Every object under the prefixes that live owns.
+    /// Every object under [`Self::prefixes`].
     pub fn list(&self, remote: &Remote) -> Result<Vec<Object>, String> {
         let listed = self.prefixes().iter().map(|prefix| remote.list(prefix)).collect::<Result<Vec<_>, _>>()?;
         Ok(listed.into_iter().flatten().collect())
     }
 
-    /// What `listed`, a listing of the owned prefixes, shows against live.
-    pub fn check(&self, listed: &[Object]) -> Check {
-        let listed: BTreeMap<&str, &Object> = listed.iter().map(|object| (object.key.as_str(), object)).collect();
-        let expected = self.expected();
-        let drift = expected.iter().filter_map(|(key, &size)| {
-            let found = listed.get(key.as_str()).map(|object| object.bytes);
-            (found.is_none() || size.is_some_and(|size| Some(size) != found)).then(|| Drift {
-                key: key.clone(),
+    /// The keys that live uses and that `listed` lacks, or holds with another size.
+    pub fn drift(&self, listed: &[Object]) -> Vec<Drift> {
+        let listed: BTreeMap<&str, u64> = listed.iter().map(|object| (object.key.as_str(), object.bytes)).collect();
+        let drift = self.expected().into_iter().filter_map(|(key, size)| {
+            let found = listed.get(key.as_str()).copied();
+            (found.is_none() || size.is_some_and(|size| Some(size) != found)).then_some(Drift {
+                key,
                 expected: size,
                 found,
             })
         });
-        let drift = drift.collect();
-        let used = |key: &str| expected.contains_key(key);
-        let leftovers = listed.into_values().filter(|object| !used(&object.key)).cloned();
-        Check { prefixes: self.prefixes(), drift, leftovers: leftovers.collect() }
+        drift.collect()
+    }
+
+    /// The objects of `listed` that an earlier release of `obc data` used and that live does not
+    /// use: the manifest of each release that is not live, its files and its input copies. A key
+    /// that no manifest of `obc data` names, such as one of an older publisher, is never in it.
+    /// They are in [`removal_pass`] order.
+    pub fn removable(&self, remote: &Remote, store: &Store, listed: &[Object]) -> Result<Vec<Object>, String> {
+        let used = self.expected();
+        let live: BTreeSet<&str> = self.releases().map(|(_, id, _)| id).collect();
+        let mut keys = BTreeSet::new();
+        let mut reads = BTreeSet::new();
+        for product in &self.products {
+            let releases = format!("{}/releases/", product.prefix);
+            let ids = listed.iter().filter_map(|object| object.key.strip_prefix(&releases)?.strip_suffix(".json"));
+            for id in ids.filter(|id| !live.contains(id) && is_sha256(id)) {
+                // Bytes that are not a manifest of this product belong to another publisher.
+                let Ok(release) = manifest(remote, store, &product.product, &product.prefix, id) else { continue };
+                keys.insert(format!("{releases}{id}.json"));
+                keys.extend(release.named.iter().map(|file| format!("{releases}{id}/{}", file.path)));
+                let objects = release.objects().into_keys().map(|sha256| sha256.to_string());
+                keys.extend(objects.map(|sha256| format!("{}/objects/{sha256}", product.prefix)));
+                reads.extend(input_copy::reads_release(&release)?.into_iter().map(|read| read.key));
+            }
+        }
+        for key in reads {
+            keys.insert(key.path());
+            let record = input_copy::read(remote, &key)?;
+            keys.extend(
+                record.iter().flat_map(|record| &record.files).map(|file| format!("{INPUTS}/objects/{}", file.sha256)),
+            );
+        }
+        let listed: BTreeMap<&str, &Object> = listed.iter().map(|object| (object.key.as_str(), object)).collect();
+        let keys = keys.into_iter().filter(|key| !used.contains_key(key));
+        let mut removable: Vec<Object> =
+            keys.filter_map(|key| listed.get(key.as_str()).map(|object| (*object).clone())).collect();
+        removable.sort_by_key(|object| removal_pass(&object.key));
+        Ok(removable)
+    }
+
+    /// R2 against live: what live lacks and what an apply removes.
+    pub fn check(&self, remote: &Remote, store: &Store) -> Result<Check, String> {
+        let listed = self.list(remote)?;
+        Ok(Check {
+            prefixes: self.prefixes(),
+            drift: self.drift(&listed),
+            leftovers: self.removable(remote, store, &listed)?,
+        })
     }
 }
 
-/// The owned prefixes of R2 against live.
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The order in which an apply removes a key: 0 for a file or an object, 1 for the record of an
+/// input copy, 2 for a release manifest. A record and a manifest name the keys before them.
+pub fn removal_pass(key: &str) -> u8 {
+    if key.starts_with(&format!("{INPUTS}/records/")) {
+        1
+    } else if key.split_once("/releases/").is_some_and(|(_, name)| !name.contains('/')) {
+        2
+    } else {
+        0
+    }
+}
+
+/// The prefix of a key that a removal lists it under: its first two segments.
+pub fn group(key: &str) -> &str {
+    key.match_indices('/').nth(1).map_or(key, |(at, _)| &key[..=at])
+}
+
+/// The count and the bytes of `removals` by [`group`].
+pub fn by_prefix(removals: &[Removal]) -> BTreeMap<&str, (usize, u64)> {
+    let mut groups = BTreeMap::<&str, (usize, u64)>::new();
+    for removal in removals {
+        let (count, bytes) = groups.entry(group(&removal.key)).or_default();
+        (*count, *bytes) = (*count + 1, *bytes + removal.bytes);
+    }
+    groups
+}
+
+/// R2 against live.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct Check {
     /// The prefixes that were listed.
     pub prefixes: Vec<String>,
     /// The keys that live uses and that R2 lacks, or holds with another size.
     pub drift: Vec<Drift>,
-    /// The keys under the prefixes that no live release uses.
+    /// The keys of earlier releases that no live release uses: what the next apply removes.
     pub leftovers: Vec<Object>,
 }
 
@@ -372,8 +420,7 @@ pub struct Drift {
 #[serde(deny_unknown_fields)]
 pub struct Removal {
     pub key: String,
-    /// `None` for the record of an input copy, whose size is not known before a listing.
-    pub bytes: Option<u64>,
+    pub bytes: u64,
 }
 
 /// Refuse an older publish to `prefix` once an apply made a release live there: it would replace
@@ -391,50 +438,35 @@ pub fn refuse_older_publish(bucket: &Bucket, prefix: &str) -> Result<(), String>
 }
 
 /// Refuse a write to `keys` that only an apply makes: a key under the prefix of a product whose
-/// pointer has `release`, under `inputs` once any pointer has, or under the reference
-/// archive once a verified current manifest reads a national terrain model.
+/// pointer has `release`, or under `inputs` once any pointer has.
 pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
     let under = |prefix: &str| keys.iter().any(|key| key.starts_with(&format!("{prefix}/")));
     for prefix in PRODUCT_PREFIXES.iter().filter(|prefix| under(prefix) || under(INPUTS)) {
         refuse_older_publish(bucket, prefix)?;
     }
-    if under(REFERENCE) {
-        for prefix in PRODUCT_PREFIXES {
-            let bytes = bucket.read(&format!("{prefix}/catalog.json"))?;
-            let Some((id, _, _)) = pointer(bytes.as_deref(), prefix)? else { continue };
-            let key = format!("{prefix}/releases/{id}.json");
-            let bytes = bucket.read(&key)?.ok_or_else(|| format!("{key}: current manifest is missing"))?;
-            let product = match *prefix {
-                "cell-catalog" => "maps",
-                "planner" => "planner",
-                _ => return Err(format!("{prefix}: unknown product prefix")),
-            };
-            let release = verified(&bytes, product, &id, &key)?;
-            if release.layers.iter().flat_map(|layer| layer.snapshots.keys()).any(|source| source.starts_with("dtm-")) {
-                return Err(format!("{REFERENCE} belongs to `obc data apply live`; apply live instead"));
-            }
-        }
-    }
     Ok(())
 }
 
-/// The release that the pointer of `prefix` names, and its `applied`.
-type ReadPointer = (String, Option<String>, serde_json::Map<String, serde_json::Value>);
+/// The release that a pointer names, its publication fields, and the client document.
+struct Pointer {
+    id: String,
+    applied: Option<String>,
+    commit: Option<String>,
+    document: serde_json::Map<String, serde_json::Value>,
+}
 
-fn pointer(bytes: Option<&[u8]>, prefix: &str) -> Result<Option<ReadPointer>, String> {
+fn pointer(bytes: Option<&[u8]>, prefix: &str) -> Result<Option<Pointer>, String> {
     let key = format!("{prefix}/catalog.json");
     let Some(bytes) = bytes else { return Ok(None) };
     let pointer: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("{key}: {e}"))?;
     match pointer.get("release") {
         None => Ok(None),
-        Some(serde_json::Value::String(id))
-            if id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
-        {
-            let applied = pointer.get("applied").and_then(|applied| applied.as_str()).map(str::to_string);
+        Some(serde_json::Value::String(id)) if is_sha256(id) => {
             let mut document = pointer.as_object().expect("a release field belongs to an object").clone();
             document.remove("release");
-            document.remove("applied");
-            Ok(Some((id.clone(), applied, document)))
+            let mut text = |key: &str| document.remove(key).and_then(|value| value.as_str().map(str::to_string));
+            let (applied, commit) = (text("applied"), text("commit"));
+            Ok(Some(Pointer { id: id.clone(), applied, commit, document }))
         }
         Some(other) => Err(format!("{key}: `release` is {other}, not the SHA-256 of a manifest")),
     }
@@ -586,30 +618,35 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_check_finds_drift_and_leftovers_against_the_live_release() {
+    fn a_check_finds_drift_and_the_keys_of_earlier_releases_only() {
         let scratch = Scratch::new("live-check");
         let (dir, store) = (scratch.0.join("bucket"), Store::at(scratch.0.join("store")));
         let remote = Remote::Bucket(Bucket::local(&dir));
         let sources = parse_sources(LAND).unwrap();
+        let earlier = release(b"earlier");
+        publish(&dir, &earlier);
+        write(&dir.join(format!("test-catalog/objects/{}", sha256_hex(b"earlier"))), "earlier");
         let release = release(b"layer");
         publish(&dir, &release);
+        write(&dir.join("test-catalog/objects/old"), "an older publisher");
+        write(&dir.join("test-catalog/releases/old.json"), "an older publisher");
         let read = || Live::read(&remote, &[&Test], &sources, &store).unwrap();
 
         let live = read();
         assert_eq!(live.products[0].release, Some((release.id(), release.clone())));
         assert!(store.release("test", &release.id()).is_file(), "the store keeps the manifest");
-        let check = live.check(&live.list(&remote).unwrap());
+        let check = live.check(&remote, &store).unwrap();
         assert_eq!(check.prefixes, ["test-catalog", "inputs"]);
-        assert_eq!((check.drift.len(), check.leftovers.len()), (0, 0), "{check:?}");
+        assert!(check.drift.is_empty(), "{check:?}");
+        let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
+        let earlier_object = format!("test-catalog/objects/{}", sha256_hex(b"earlier"));
+        let earlier_manifest = format!("test-catalog/releases/{}.json", earlier.id());
+        assert_eq!(leftovers, [earlier_object.as_str(), earlier_manifest.as_str()], "the input copy is still read");
 
         let object = format!("inputs/objects/{}", sha256_hex(b"land"));
         std::fs::remove_file(dir.join(&object)).unwrap();
-        write(&dir.join("test-catalog/objects/old"), "old");
-        let live = read();
-        let check = live.check(&live.list(&remote).unwrap());
+        let check = read().check(&remote, &store).unwrap();
         assert_eq!(check.drift, [Drift { key: object, expected: Some(4), found: None }]);
-        let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
-        assert_eq!(leftovers, ["test-catalog/objects/old"]);
     }
 
     #[test]
@@ -627,6 +664,7 @@ pub(crate) mod tests {
                 prefix: "test-catalog".into(),
                 release: Some((release.id(), release)),
                 applied: None,
+                commit: None,
                 observed: None,
                 document: None,
             });
@@ -665,52 +703,18 @@ pub(crate) mod tests {
         assert!(refuse_owned(&bucket, &keys(&["planner/objects/a", "firmware/v1/app.bin"])).is_ok());
 
         let reference = keys(&["reference/v1/index.json", "reference/v1/16/1.tif"]);
-        assert!(refuse_owned(&bucket, &reference).is_err(), "a missing current manifest refuses");
-        write(&dir.join("cell-catalog/catalog.json"), "{\"schema_version\": 3}");
         assert!(refuse_owned(&bucket, &reference).is_ok(), "the older reference publisher remains available");
-        let mut current = release(b"layer");
-        current.product = "maps".into();
-        current.layers[0].step = "maps/one".into();
-        let publish_current = |release: &Release| {
-            write(&dir.join("cell-catalog/catalog.json"), &format!("{{\"release\":\"{}\"}}", release.id()));
-            write(
-                &dir.join(format!("cell-catalog/releases/{}.json", release.id())),
-                &String::from_utf8(release.canonical()).unwrap(),
-            );
-        };
-        publish_current(&current);
-        assert!(refuse_owned(&bucket, &reference).is_ok(), "a release without national terrain does not own reference");
-        let read = current.layers[0].snapshots.remove("land").unwrap();
-        current.layers[0].snapshots.insert("dtm-ch".into(), read);
-        current.layers[0].inputs[0].name = "dtm-ch".into();
-        publish_current(&current);
-        assert!(refuse_owned(&bucket, &reference).unwrap_err().contains("apply live"));
-        write(&dir.join(format!("cell-catalog/releases/{}.json", current.id())), "{}");
-        assert!(refuse_owned(&bucket, &reference).is_err(), "changed authoritative bytes refuse");
-        write(&dir.join("cell-catalog/catalog.json"), "{\"release\":");
-        assert!(refuse_owned(&bucket, &reference).is_err(), "malformed authoritative pointer refuses");
     }
-
     #[test]
-    fn a_record_on_r2_counts_without_r2_copy_and_the_reference_goes_once_live_reads_a_national_model() {
+    fn a_record_on_r2_counts_without_r2_copy() {
         let scratch = Scratch::new("live-record");
         let (dir, store) = (scratch.0.join("bucket"), Store::at(scratch.0.join("store")));
         let remote = Remote::Bucket(Bucket::local(&dir));
         publish(&dir, &release(b"layer"));
-        write(&dir.join("reference/v1/16/1.tif"), "reference");
         let live = Live::read(&remote, &[&Test], &[], &store).unwrap();
-        let listed: Vec<Object> = live.swept().iter().flat_map(|prefix| remote.list(prefix).unwrap()).collect();
-        let check = live.check(&listed);
-        assert!(check.leftovers.is_empty(), "the record and its object stay whatever `sources` says: {check:?}");
-        assert_eq!(live.swept(), ["test-catalog", "inputs"], "no live layer reads a `dtm-*` source");
-
-        let mut national = release(b"layer");
-        national.layers[0].inputs[0].name = "dtm-ch".into();
-        let read = national.layers[0].snapshots.remove("land").unwrap();
-        national.layers[0].snapshots.insert("dtm-ch".into(), read);
-        publish(&dir, &national);
-        let live = Live::read(&remote, &[&Test], &[], &store).unwrap();
-        assert_eq!(live.swept(), ["test-catalog", "inputs", REFERENCE]);
+        assert_eq!(live.inputs.len(), 1);
+        let check = live.check(&remote, &store).unwrap();
+        assert!(check.drift.is_empty() && check.leftovers.is_empty(), "{check:?}");
     }
 
     /// A product whose pointer an older publish wrote, without `release`.
@@ -733,7 +737,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_product_with_nothing_live_owns_no_prefix() {
+    fn a_product_with_nothing_live_has_no_leftovers() {
         let scratch = Scratch::new("live-old");
         let (dir, store) = (scratch.0.join("bucket"), Store::at(scratch.0.join("store")));
         let remote = Remote::Bucket(Bucket::local(&dir));
@@ -744,14 +748,32 @@ pub(crate) mod tests {
 
         let live = Live::read(&remote, &[&Test, &Old], &sources, &store).unwrap();
         assert!(live.products[1].release.is_none(), "a pointer without `release` names nothing");
-        let check = live.check(&live.list(&remote).unwrap());
-        assert_eq!(check.prefixes, ["test-catalog", "inputs"], "only a live product owns its prefix");
+        let check = live.check(&remote, &store).unwrap();
+        assert_eq!(check.prefixes, ["test-catalog", "old", "inputs"]);
         assert!(check.drift.is_empty() && check.leftovers.is_empty(), "{check:?}");
+    }
 
-        write(&dir.join("test-catalog/catalog.json"), "{\"schema_version\": 3}");
-        let live = Live::read(&remote, &[&Test, &Old], &sources, &store).unwrap();
-        assert!(live.inputs.is_empty());
-        let check = live.check(&live.list(&remote).unwrap());
-        assert!(check.prefixes.is_empty() && check.leftovers.is_empty(), "nothing live owns nothing: {check:?}");
+    #[test]
+    fn a_manifest_goes_after_its_records_and_a_record_after_its_files() {
+        let id = "a".repeat(64);
+        let keys = [
+            format!("cell-catalog/releases/{id}.json"),
+            "inputs/records/osm/1/b.json".into(),
+            format!("cell-catalog/releases/{id}/release.json"),
+            "cell-catalog/objects/c".into(),
+            "inputs/objects/d".into(),
+        ];
+        let passes: Vec<u8> = keys.iter().map(|key| removal_pass(key)).collect();
+        assert_eq!(passes, [2, 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn removals_group_by_the_first_two_segments_of_their_key() {
+        let removal = |key: &str, bytes| Removal { key: key.into(), bytes };
+        let removals = [removal("cell-catalog/objects/a", 2), removal("cell-catalog/objects/b", 3), removal("x", 1)];
+        assert_eq!(
+            by_prefix(&removals).into_iter().collect::<Vec<_>>(),
+            [("cell-catalog/objects/", (2, 5)), ("x", (1, 1))]
+        );
     }
 }

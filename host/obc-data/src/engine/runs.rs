@@ -32,11 +32,6 @@ impl Limits {
     pub fn machine() -> Self {
         Self { jobs: std::thread::available_parallelism().map_or(1, |n| n.get()), memory_bytes: memory() }
     }
-
-    fn within(mut self, host: u64) -> Self {
-        self.memory_bytes = Some(self.memory_bytes.map_or(host, |requested| requested.min(host)));
-        self
-    }
 }
 
 #[cfg(unix)]
@@ -137,14 +132,11 @@ pub enum Publication {
     Uploaded { key: String },
     Switched { product: String, release: String },
     Removed { key: String, bytes: u64 },
-    ServiceStaged { service: String, slot: u8, binding: String },
-    ServicesActivated { bindings: Vec<String> },
-    ServicesRetired { bindings: Vec<String> },
 }
 
 /// A run that this process writes. The process that holds the lock of a run is the process that
 /// runs it, so a reader knows that a run without `finished` still runs.
-/// Its store stays in use through verification and publication preparation, until finish or drop.
+/// Its store stays in use through verification and publication, until finish or drop.
 pub struct Run {
     id: String,
     file: File,
@@ -152,10 +144,7 @@ pub struct Run {
     _lock: Lock,
     _using: Lock,
     codes: super::code::Context,
-    committed_code: bool,
-    budget: Option<(std::path::PathBuf, crate::operation::budget::Budget)>,
     pub(crate) originals: BTreeMap<String, super::release::Layer>,
-    pub(crate) automatic: Option<crate::approval::Admission>,
 }
 
 impl Run {
@@ -168,7 +157,7 @@ impl Run {
             let id = if n == 1 { base.clone() } else { format!("{base}-{n}") };
             let Some(lock) = store.try_lock(&format!("run-{id}"))? else { continue };
             let path = store.run(&id);
-            crate::commit::durable_directory(path.parent().expect("a run file has a directory"))?;
+            crate::store::durable_directory(path.parent().expect("a run file has a directory"))?;
             let file = match OpenOptions::new().append(true).create_new(true).open(&path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
@@ -181,10 +170,7 @@ impl Run {
                 _lock: lock,
                 _using: using,
                 codes: Default::default(),
-                committed_code: false,
-                budget: None,
                 originals: BTreeMap::new(),
-                automatic: None,
             };
             run.record(&Event::Started { command: command.into(), at })?;
             run.sync()?;
@@ -204,49 +190,35 @@ impl Run {
         self.file.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.id))
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn host_budget(&mut self, root: &Path, budget: crate::operation::budget::Budget) {
-        self.budget = Some((root.into(), budget));
-    }
-
-    fn check_disk(&self, store: &Path, estimated: u64) -> Result<(), String> {
-        crate::store::check_free(store, estimated)?;
-        if let Some((root, budget)) = &self.budget {
-            budget.disk(root, estimated)?;
-            budget.disk(store, estimated)?;
-        }
-        Ok(())
-    }
-
     pub fn check_stop(&self, store: &Store) -> Result<(), String> {
-        self.check_disk(store.root(), 0)?;
+        crate::store::check_free(store.root(), 0)?;
         if crate::operation::stopped(store, self.id())? {
-            return Err("stopped after the current work; no publication handoff started".into());
+            return Err("stopped after the current work".into());
         }
         Ok(())
     }
 
-    /// Flush the acknowledgement that a commit intent depends on.
+    /// Flush the journal.
     pub fn sync(&self) -> Result<(), String> {
         self.file.sync_all().map_err(|e| format!("run {}: {e}", self.id))
     }
 
-    /// Transfer an unfinished operation to the final publication owner.
+    /// Continue the unfinished run `id` in this process: the detached worker of an operation.
     pub fn attach(store: &Store, id: &str, prefix: &[Event]) -> Result<Self, String> {
         check_id(id)?;
         if !matches!(prefix.first(), Some(Event::Started { .. }))
             || prefix.iter().any(|event| matches!(event, Event::Finished { .. } | Event::Published { .. }))
         {
-            return Err("commit journal is not an unfinished preparation".into());
+            return Err("the run is not unfinished".into());
         }
         let using = store.using()?;
         let lock = store.try_lock(&format!("run-{id}"))?.ok_or("the originating run still has an owner")?;
         let path = store.run(id);
-        crate::commit::durable_directory(path.parent().unwrap())?;
+        crate::store::durable_directory(path.parent().unwrap())?;
         if path.exists() {
             let existing = events(store, id)?;
             if !existing.starts_with(prefix) || existing.iter().any(|event| matches!(event, Event::Finished { .. })) {
-                return Err("commit journal differs from the originating run".into());
+                return Err("the run journal differs from its start".into());
             }
         }
         let file = OpenOptions::new().append(true).create(true).open(&path).map_err(|e| e.to_string())?;
@@ -264,10 +236,7 @@ impl Run {
             _lock: lock,
             _using: using,
             codes: Default::default(),
-            committed_code: false,
-            budget: None,
             originals: BTreeMap::new(),
-            automatic: None,
         };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
             for event in prefix {
@@ -277,39 +246,6 @@ impl Run {
         run.sync()?;
         File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
         Ok(run)
-    }
-
-    /// Copy acknowledged owner events back to the initiating machine.
-    pub fn mirror(store: &Store, id: &str, journal: &[Event]) -> Result<(), String> {
-        check_id(id)?;
-        let _lock = store.try_lock(&format!("run-{id}"))?.ok_or("the local run still has an owner")?;
-        let local = events(store, id)?;
-        if !journal.starts_with(&local) {
-            return Err("owner journal differs from the originating operation".into());
-        }
-        let mut file = OpenOptions::new().append(true).open(store.run(id)).map_err(|e| e.to_string())?;
-        for event in &journal[local.len()..] {
-            serde_json::to_writer(&mut file, event).map_err(|e| e.to_string())?;
-            file.write_all(b"\n").map_err(|e| e.to_string())?;
-        }
-        file.sync_all().map_err(|e| e.to_string())
-    }
-
-    pub(crate) fn requires_committed_code(&self) -> bool {
-        self.committed_code
-    }
-
-    pub(crate) fn require_committed_code(&mut self) {
-        self.committed_code = true;
-    }
-
-    pub(crate) fn check_owner(&mut self, root: &Path, owner: &super::OwnerCode) -> Result<(), String> {
-        self.codes.refresh_python();
-        let identity = self.codes.owner_identity(root, owner)?;
-        if self.committed_code {
-            identity.committed(root)?;
-        }
-        Ok(())
     }
 
     /// Use only original layers returned by checked portable reuse for this operation.
@@ -322,7 +258,6 @@ impl Run {
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
-        let limits = self.budget.as_ref().map_or(limits, |(_, budget)| limits.within(budget.memory_bytes));
         self.check_stop(store)?;
         crate::worker::check(root)?;
         let _using = store.using()?;
@@ -334,13 +269,8 @@ impl Run {
             .filter_map(|build| build.estimate)
             .fold(0u64, |total, estimate| total.saturating_add(estimate.bytes_out));
         let estimated = plan.fetches().iter().filter_map(|fetch| fetch.bytes).fold(estimated, u64::saturating_add);
-        self.check_disk(store.root(), estimated)?;
+        crate::store::check_free(store.root(), estimated)?;
         let ordered = order(steps)?;
-        if self.committed_code {
-            for step in ordered.iter().filter(|step| !self.originals.contains_key(&step.name)) {
-                self.codes.identity(root, &step.code)?.committed(root)?;
-            }
-        }
         if let Some(build) = plan.builds().find(|build| !ordered.iter().any(|step| step.name == build.step)) {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
@@ -513,14 +443,6 @@ impl Run {
         files: &[String],
     ) -> Result<crate::store::Snapshot, String> {
         self.check_stop(store)?;
-        if let Some(approved) = &self.automatic {
-            approved.check_owner(
-                root,
-                &mut self.codes,
-                &format!("acquisition/{}", request.source.id),
-                &crate::fetch::owner_code(request.source),
-            )?;
-        }
         let (source, version, params) = (
             request.source.id.clone(),
             request.version.clone().unwrap_or_else(|| "newest".into()),
@@ -528,15 +450,7 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
-        match crate::input_copy::fetch_checked(
-            root,
-            store,
-            http,
-            copies,
-            request,
-            files,
-            Some((&mut self.codes, self.committed_code)),
-        ) {
+        match crate::input_copy::fetch_checked(root, store, http, copies, request, files, Some(&mut self.codes)) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
@@ -695,18 +609,6 @@ pub fn list(store: &Store) -> Result<Vec<Summary>, String> {
 pub fn details(store: &Store, id: &str) -> Result<Details, String> {
     let runs = all(store)?;
     let at = runs.iter().position(|run| run.summary.id == id).ok_or_else(|| format!("no run `{id}`"))?;
-    Ok(with_history(&runs, at))
-}
-
-/// A checked remote journal changes this returned view only; the local files stay unchanged.
-pub fn observed(store: &Store, id: &str, journal: &[Event]) -> Result<Details, String> {
-    let local = events(store, id)?;
-    if !journal.starts_with(&local) {
-        return Err("owner journal differs from the originating operation".into());
-    }
-    let mut runs = all(store)?;
-    let at = runs.iter().position(|run| run.summary.id == id).ok_or_else(|| format!("no run `{id}`"))?;
-    runs[at] = from_events(id.into(), journal.to_vec(), false);
     Ok(with_history(&runs, at))
 }
 
@@ -976,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_keeps_old_inputs_and_outputs_through_verification_and_bundle_preparation() {
+    fn a_run_keeps_old_inputs_and_outputs_until_it_finishes() {
         use crate::store::gc;
 
         let fixture = fixture("run-gc-phases");
@@ -1015,23 +917,15 @@ mod tests {
         let object = fixture.store.object(&output.sha256);
         assert_eq!(std::fs::read(&object).unwrap(), b"HEAD\n");
         run.record(&Event::Phase { phase: Phase::Upload }).unwrap();
-        let bundle = fixture.scratch.0.join("bundle-payload");
-        std::fs::copy(&object, &bundle).unwrap();
         assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
-        assert_eq!(std::fs::read(&bundle).unwrap(), b"HEAD\n");
 
         let id = run.id().to_string();
-        let prefix = events(&fixture.store, &id).unwrap();
-        drop(run);
-        let attached = Run::attach(&fixture.store, &id, &prefix).unwrap();
-        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
-        attached.finish(None).unwrap();
+        run.finish(None).unwrap();
         let read = details(&fixture.store, &id).unwrap();
         assert_eq!(read.summary.outcome, Outcome::Ok);
         assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_some());
         assert!(fixture.store.snapshot("head", "1").unwrap().is_none());
         assert!(!object.exists());
-        assert_eq!(std::fs::read(&bundle).unwrap(), b"HEAD\n");
     }
 
     #[test]
@@ -1096,12 +990,8 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
 
     #[test]
     fn the_steps_that_run_together_fit_in_the_memory_budget() {
-        let clamped = Limits { jobs: 4, memory_bytes: Some(16000) }.within(1000);
-        assert_eq!((clamped.jobs, clamped.memory_bytes), (4, Some(1000)));
-        assert_eq!(Limits { jobs: 4, memory_bytes: Some(500) }.within(1000).memory_bytes, Some(500));
-        assert_eq!(Limits { jobs: 4, memory_bytes: None }.within(1000).memory_bytes, Some(1000));
         assert!(together("runs-memory-fits", [Some(600), Some(600)], 1200));
-        assert!(!together("runs-memory-over", [Some(600), Some(600)], clamped.memory_bytes.unwrap()));
+        assert!(!together("runs-memory-over", [Some(600), Some(600)], 1000));
         assert!(!together("runs-memory-alone", [Some(1500), Some(100)], 1000), "a step over the budget runs alone");
         assert!(!together("runs-memory-unknown", [None, Some(100)], 1000), "a step with no estimate runs alone");
     }

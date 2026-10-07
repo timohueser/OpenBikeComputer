@@ -572,6 +572,7 @@ mod tests {
             prefix: "test-catalog".into(),
             release,
             applied: None,
+            commit: None,
             observed: None,
             document: None,
         };

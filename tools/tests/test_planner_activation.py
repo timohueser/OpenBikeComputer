@@ -1,12 +1,6 @@
 """New endpoints serve checked candidates before their pointer can switch."""
 
 from pathlib import Path
-import hashlib
-import io
-import platform
-import subprocess
-import sys
-import tarfile
 import tempfile
 import unittest
 
@@ -93,27 +87,3 @@ class PlannerActivation(unittest.TestCase):
             activation.retire({"previous": [{**old, "slot": 1}], "current": current},
                               self.routes, self.base, self.units, self.config, execute)
         self.assertEqual(self.commands, [])
-
-    def test_bootstrap_checks_the_archive_before_loading_any_helper_code(self):
-        script = Path(__file__).resolve().parents[2] / "host/obc-data/src/vps/bootstrap.py"
-        archive = self.root / "helper.tar.gz"
-        for name, kind in [("tools/planner_activation.py", tarfile.REGTYPE), ("../outside", tarfile.REGTYPE),
-                           ("tools/planner_activation.py", tarfile.SYMTYPE)]:
-            with self.subTest(name=name, kind=kind):
-                with tarfile.open(archive, "w:gz") as bundle:
-                    for path, mode in [("tools/planner_install.py", tarfile.REGTYPE), (name, kind)]:
-                        entry = tarfile.TarInfo(path)
-                        entry.type, entry.linkname = mode, "/outside"
-                        body = b"raise AssertionError('bootstrap must not execute helper code')\n"
-                        entry.size = len(body) if mode == tarfile.REGTYPE else 0
-                        bundle.addfile(entry, io.BytesIO(body) if mode == tarfile.REGTYPE else None)
-                digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-                output = self.root / ("extracted-" + str(len(list(self.root.glob('extracted-*')))))
-                wrong = subprocess.run([sys.executable, "-S", str(script), str(archive), "0" * 64,
-                                        str(output), platform.python_version()], capture_output=True)
-                self.assertNotEqual(wrong.returncode, 0)
-                self.assertFalse(output.exists(), "bad digest cannot even extract the installer")
-                result = subprocess.run([sys.executable, "-S", str(script), str(archive), digest,
-                                         str(output), platform.python_version()], capture_output=True)
-                self.assertEqual(result.returncode == 0, kind == tarfile.REGTYPE and name == "tools/planner_activation.py")
-                self.assertFalse((self.root.parent / "outside").exists())

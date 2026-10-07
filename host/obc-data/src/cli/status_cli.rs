@@ -1,5 +1,5 @@
 //! `obc data status`: what is live, the state of its layers, and what needs attention. `--check`
-//! also lists the prefixes that live owns on R2 and observes installed VPS services.
+//! also compares R2 with live.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -23,8 +23,7 @@ use crate::store::Store;
 
 #[derive(Args)]
 pub struct StatusArgs {
-    /// Also check owned R2 prefixes and installed VPS runtime/data. Exit status 1 for
-    /// R2 drift or leftovers.
+    /// Also compare R2 with live. Exit status 1 for R2 drift or leftovers.
     #[arg(long)]
     pub check: bool,
 }
@@ -38,8 +37,6 @@ pub struct Status {
     pub attention: Vec<Attention>,
     /// Only with `--check`.
     pub check: Option<Check>,
-    /// Installed runtime and opened data, independently from recorded-target source comparison.
-    pub vps: Option<crate::vps::observe::Observation>,
 }
 
 #[derive(Clone, Serialize, JsonSchema)]
@@ -50,6 +47,8 @@ pub struct ProductStatus {
     /// When an apply made the release live, `YYYY-MM-DDTHH:MM:SSZ`; `None` when nothing is live or
     /// the pointer has no time.
     pub applied: Option<String>,
+    /// The commit that the apply of the release ran; `None` when nothing is live.
+    pub commit: Option<String>,
     /// The size of the objects of the live release.
     pub bytes: Option<u64>,
     /// The optional layers of the product, which `layer live NAME on|off` switches.
@@ -82,11 +81,11 @@ pub enum AttentionKind {
     Stale,
     /// A source that is blocked.
     Blocked,
-    /// Edits in `data/` that git does not have; an apply refuses them.
-    Uncommitted,
+    /// The checkout is not a pushed commit; an apply refuses it.
+    Unpushed,
     /// Keys that live uses and R2 lacks, or holds with another size.
     Drift,
-    /// Keys under the owned prefixes that no live release uses.
+    /// Keys of earlier releases that no live release uses.
     Leftovers,
     /// A fetch that the step list of a product needs failed, so its layer states are unknown.
     Unreachable,
@@ -97,7 +96,7 @@ impl AttentionKind {
         match self {
             AttentionKind::Stale => "stale",
             AttentionKind::Blocked => "blocked",
-            AttentionKind::Uncommitted => "uncommitted",
+            AttentionKind::Unpushed => "not pushed",
             AttentionKind::Drift => "drift",
             AttentionKind::Leftovers => "leftovers",
             AttentionKind::Unreachable => "unreachable",
@@ -167,11 +166,9 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         Some(&producers),
     )?;
     let mut attention = Vec::new();
-    if let Ok(paths) = super::edit_cli::uncommitted(root).map(|paths| paths.join(", ")) {
-        if !paths.is_empty() {
-            let reason = format!("{paths}. {}", super::edit_cli::COMMIT_DATA);
-            attention.push(Attention { kind: AttentionKind::Uncommitted, about: "data/".into(), reason });
-        }
+    if let Err(error) = super::apply_cli::pushed_commit(root) {
+        let reason = format!("{} {}", error.message, error.fix);
+        attention.push(Attention { kind: AttentionKind::Unpushed, about: "checkout".into(), reason });
     }
     // `Live::read` gives one live product per product, in their order.
     let products = live.products.iter().zip(products).map(|(product, offered)| {
@@ -186,8 +183,8 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
                 None
             }
         };
-        let applied = product.applied.clone();
-        ProductStatus { product: product.product.clone(), release, applied, bytes, optional, layers }
+        let (applied, commit) = (product.applied.clone(), product.commit.clone());
+        ProductStatus { product: product.product.clone(), release, applied, commit, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
     for layer in
@@ -214,10 +211,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         let reason = format!("live reads it at {}: plan with `--move {source}@VERSION`", versions.join(" and "));
         attention.push(Attention { kind: AttentionKind::Blocked, about: source.clone(), reason });
     }
-    let check = check
-        .then(|| live.list(&remote).map(|listed| live.check(&listed)))
-        .transpose()
-        .map_err(|e| Code::R2Failed.error(e))?;
+    let check = check.then(|| live.check(&remote, &store)).transpose().map_err(|e| Code::R2Failed.error(e))?;
     if let Some(check) = &check {
         let about = "R2".to_string();
         if !check.drift.is_empty() {
@@ -226,26 +220,12 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         }
         if !check.leftovers.is_empty() {
             let size = bytes(check.leftovers.iter().map(|object| object.bytes).sum());
-            let reason = format!("{}, {size}, that no live release uses", keys(check.leftovers.len()));
+            let reason =
+                format!("{}, {size}, of earlier releases that no live release uses", keys(check.leftovers.len()));
             attention.push(Attention { kind: AttentionKind::Leftovers, about, reason });
         }
     }
-    let vps = check
-        .as_ref()
-        .map(|_| crate::vps::observe::read(live.products.iter().find(|product| product.product == "planner"), &remote));
-    if let Some(observation) = &vps {
-        if let Some(reason) = &observation.unavailable {
-            attention.push(Attention { kind: AttentionKind::Unreachable, about: "VPS".into(), reason: reason.clone() });
-        }
-        for service in observation.services.iter().filter(|service| !service.ready) {
-            attention.push(Attention {
-                kind: AttentionKind::Blocked,
-                about: format!("VPS/{}", service.service.name()),
-                reason: service.reason.clone().unwrap_or_else(|| "service readiness is unavailable".into()),
-            });
-        }
-    }
-    Ok(Status { from: remote.describe().into(), products, attention, check, vps })
+    Ok(Status { from: remote.describe().into(), products, attention, check })
 }
 
 /// Status can prepare the small files that enumerate a region, but never bulk product inputs.
@@ -407,16 +387,6 @@ fn print_status(status: &Status) {
         println!("  nothing");
     }
     print_table(&rows);
-    if let Some(observation) = &status.vps {
-        println!("VPS {}", observation.unavailable.as_deref().unwrap_or("installed runtime and opened data"));
-        for service in &observation.services {
-            println!(
-                "  {}: {}",
-                service.service.name(),
-                if service.ready { "ready" } else { service.reason.as_deref().unwrap_or("unavailable") }
-            );
-        }
-    }
     let Some(check) = &status.check else { return };
     println!("CHECK {}", check.prefixes.iter().map(|prefix| format!("{prefix}/")).collect::<Vec<_>>().join(", "));
     let mut table = Vec::new();
@@ -425,14 +395,13 @@ fn print_status(status: &Status) {
         let what = if drift.found.is_none() { "missing" } else { "size" };
         table.push(vec![format!("  {what}"), drift.key.clone(), size(drift.found), size(drift.expected)]);
     }
-    let mut leftovers = BTreeMap::<&str, (usize, u64)>::new();
-    for object in &check.leftovers {
-        let prefix = object.key.split('/').next().unwrap_or_default();
-        let (count, size) = leftovers.entry(prefix).or_default();
-        (*count, *size) = (*count + 1, *size + object.bytes);
-    }
-    for (prefix, (count, size)) in leftovers {
-        table.push(vec!["  leftovers".into(), format!("{prefix}/"), keys(count), bytes(size)]);
+    let leftovers: Vec<_> = check
+        .leftovers
+        .iter()
+        .map(|object| crate::live::Removal { key: object.key.clone(), bytes: object.bytes })
+        .collect();
+    for (prefix, (count, size)) in crate::live::by_prefix(&leftovers) {
+        table.push(vec!["  leftovers".into(), prefix.into(), keys(count), bytes(size)]);
     }
     if table.is_empty() {
         println!("  live and R2 agree");

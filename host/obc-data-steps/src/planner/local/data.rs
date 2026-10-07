@@ -172,6 +172,7 @@ impl Inputs<'_> {
                     prefix: kind.product().prefix().into(),
                     release: Some((original.id(), original)),
                     applied: None,
+                    commit: None,
                     document: None,
                     observed: None,
                 }],

@@ -81,7 +81,6 @@ struct Routing {
 }
 
 mod catalog;
-pub mod install;
 mod local;
 mod runtime;
 
@@ -90,34 +89,6 @@ pub struct Planner;
 impl Product for Planner {
     fn name(&self) -> &'static str {
         "planner"
-    }
-
-    fn approval_config(&self, root: &std::path::Path) -> Result<serde_json::Value, String> {
-        runtime::approval_config(root)
-    }
-
-    fn runtime_binding(&self, step: &Step) -> Result<Option<obc_data::approval::RuntimeBinding>, String> {
-        runtime::binding(step)
-    }
-
-    fn planning_code(&self, _env: &Env) -> Result<Option<obc_data::engine::OwnerCode>, String> {
-        Ok(Some(obc_data::engine::OwnerCode {
-            crate_name: "obc-data-steps".into(),
-            code: Code {
-                paths: [
-                    "host/obc-data-steps/src/planner.rs",
-                    "host/obc-data-steps/src/planner",
-                    "host/obc-data-steps/src/maps.rs",
-                    "host/obc-data-steps/src/maps",
-                    "host/obc-data-steps/src/region_sources.rs",
-                    "host/obc-data-steps/src/lib.rs",
-                ]
-                .map(String::from)
-                .into(),
-                libraries: obc_pack::step::geos_libraries()?,
-                ..Default::default()
-            },
-        }))
     }
 
     fn portable(&self, step: &Step) -> bool {
@@ -167,17 +138,6 @@ impl Product for Planner {
 
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
         Some(catalog::pointer)
-    }
-
-    fn services(
-        &self,
-        root: &std::path::Path,
-        release: &obc_data::engine::release::Release,
-        store: &Store,
-        destination: &std::path::Path,
-    ) -> Result<Vec<obc_data::vps::Candidate>, String> {
-        let origins = runtime::publication(root)?;
-        install::prepare_into(release, store, &origins, destination)
     }
 
     fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
