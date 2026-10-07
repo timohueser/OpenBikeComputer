@@ -47,7 +47,7 @@ formats_default() {
 # or read counter drifts from the committed golden file, so a cache change that halves
 # the hit rate cannot pass on identical pixels. Timings print but are never gated.
 bench_golden() {
-  cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
+  cargo run -p obc-bench --release --locked -- --check sim/bench/golden.txt
 }
 
 [ "$#" -gt 0 ] || { echo "tools/ci/test.sh: name at least one section" >&2; exit 2; }

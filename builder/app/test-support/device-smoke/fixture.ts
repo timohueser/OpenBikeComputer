@@ -1,7 +1,7 @@
 /**
  * The map the device smoke sends, and what the device must say about it afterwards.
  *
- * The map is `apps/obc-sim/assets/grimsel-demo.obcm`, already in the tree: an OBCM v19 file with an
+ * The map is `sim/desktop/assets/grimsel-demo.obcm`, already in the tree: an OBCM v19 file with an
  * embedded OBCT v3 surface terrain region, whose source packages, producer commit, output digest and
  * terrain digest are pinned in `fixtures/sources/ride-assistant/grimsel-demo-v19.json`. Nothing is
  * assembled here and no byte is appended.
@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Where the map and its provenance record live, relative to the repository root. */
-export const FIXTURE_MAP = "apps/obc-sim/assets/grimsel-demo.obcm";
+export const FIXTURE_MAP = "sim/desktop/assets/grimsel-demo.obcm";
 export const FIXTURE_RECORD = "fixtures/sources/ride-assistant/grimsel-demo-v19.json";
 
 /** The flat store's block. A payload that is a whole number of these has no partial tail block. */

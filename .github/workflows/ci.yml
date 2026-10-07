@@ -660,7 +660,7 @@ jobs:
       - name: THIRD-PARTY.md is current
         run: tools/licenses/gen-third-party.sh --check
 
-  # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
+  # The web demo (sim/web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
   # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
   # (`ci.wasm-size` owns the Trunk build, so the plan starts this job for the demo's own inputs.)
@@ -689,13 +689,13 @@ jobs:
         with:
           node-version: "22"
       - name: Install web demo browser runner
-        working-directory: apps/obc-web-demo/tests/browser
+        working-directory: sim/web-demo/tests/browser
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
       - name: Shipping web demo browser journey
         id: browser-journey
-        run: npm test --prefix apps/obc-web-demo/tests/browser
+        run: npm test --prefix sim/web-demo/tests/browser
       - name: Require browser journey execution
         if: ${{ !cancelled() }}
         env:

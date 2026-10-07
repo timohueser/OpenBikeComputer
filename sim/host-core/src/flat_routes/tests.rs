@@ -7,7 +7,7 @@ use crate::{
 use obc_storage::flat::Revision;
 
 const ROUTE: &[u8] = include_bytes!("../../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
-const MAP: &[u8] = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+const MAP: &[u8] = include_bytes!("../../../desktop/assets/grimsel-demo.obcm");
 
 fn bytes(source: &dyn ByteSource) -> Vec<u8> {
     let mut bytes = vec![0; source.len() as usize];

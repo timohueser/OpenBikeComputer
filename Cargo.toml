@@ -24,10 +24,8 @@ members = [
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
     "planner/router",
     "planner/router-build",
-    "host/obc-host-core",
     "host/obc-file-source",
     "host/obc-inspect",
-    "host/obc-flat-device",
     "host/obc-fixtures",
     "host/obc-pack",
     "host/obc-draw",
@@ -40,21 +38,24 @@ members = [
     "host/obc-osm",
     "host/obc-dem",
     "host/obc-mkimage",
-    "host/obc-bench",
     "host/obc-vectors",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
-    "host/obc-replay",
-    "host/obc-usb-host",
     "host/obc-usb",
     "host/obc-data",
     "host/obc-data-steps",
-    # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
+    # sim/ — the shared host and development shells.
+    "sim/host-core",
+    "sim/replay",
+    "sim/flat-device",
+    "sim/feeder",
+    "sim/bench",
+    "sim/phone/host",
+    "sim/desktop",
+    "sim/web-demo",
+    # Product bridges. obc-desktop carries its own [workspace].
     "planner/service",
-    "apps/obc-ios-host",
-    "apps/obc-sim",
-    "apps/obc-web-demo",
     "builder/wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
@@ -70,7 +71,7 @@ obc-data = { path = "host/obc-data" }
 obc-display = { path = "firmware/obc-display" }
 obc-elevation = { path = "firmware/obc-elevation" }
 obc-fixtures = { path = "host/obc-fixtures" }
-obc-flat-device = { path = "host/obc-flat-device" }
+obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
@@ -92,10 +93,10 @@ obc-app = { path = "firmware/obc-app" }
 obc-dem = { path = "host/obc-dem", default-features = false }
 obc-dfu = { path = "firmware/obc-dfu" }
 obc-file-source = { path = "host/obc-file-source" }
-obc-host-core = { path = "host/obc-host-core" }
+obc-host-core = { path = "sim/host-core" }
 obc-places = { path = "host/obc-places" }
 obc-platform = { path = "firmware/obc-platform" }
-obc-replay = { path = "host/obc-replay" }
+obc-replay = { path = "sim/replay" }
 obc-tree-walk = { path = "host/obc-tree-walk" }
 obcm-assemble = { path = "host/obcm-assemble", default-features = false }
 planner-router-build = { path = "planner/router-build" }
