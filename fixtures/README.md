@@ -4,7 +4,7 @@
 runnable scenario, and how to get it. Consumers must not know bucket paths or reach into another
 crate's `assets/` directory.
 
-The catalog is tracked. Generated and captured bytes are external.
+The catalog is tracked. Large generated and captured bytes are not.
 
 ## Daily use
 
@@ -40,40 +40,9 @@ Python 3.11 or newer. No Python package dependencies.
    the catalog, uploads immutably to R2, and verifies the object through the public domain.
 5. Run the registry tests, and `obc fixtures sync` and `verify` from an empty cache.
 
-Build registered device maps through the shared producer:
-
-```sh
-obc data prepare fixtures --only sim-monaco
-obc data runs RUN --result > fixture.plan.json
-obc data apply fixtures --plan fixture.plan.json
-```
-
-`data/env/fixtures.toml` names packages and canonical regions. Its input versions and build records
-serve the first import only. Each published package then carries its own exact selection and release
-in `.obc-data.json`. Later preparation keeps those source versions, request parameters and hashes.
-
-Refresh selected sources explicitly, then review the returned plan:
-
-```sh
-obc data prepare fixtures --only sim-freiburg --move geofabrik-extracts@VERSION
-obc data prepare fixtures --only sim-grimsel --move land-polygons@VERSION
-obc data prepare fixtures --only sim-grimsel --move copernicus-glo-30@VERSION
-```
-
-Plan does not download packages. Cold preparation verifies the exact catalog archive and restores
-permitted raw copies from the Fixture bucket. Other inputs require exact original bytes.
-Missing history blocks; explicit moves permit acquisition.
-New requests need a move. Region expansion beyond the captured PBF blocks.
-Apply builds, verifies, seals, uploads and updates the Git catalog. Review and commit the update.
-
-Configure separate `OBC_FIXTURE_R2_*` and production target identities before planning. Preparation
-needs no production credentials. Main and Fixture buckets or local roots must not overlap.
-
-Historical compiled inputs keep original provenance. Selected articles and photos use the normal
-credit checks. West Cork raw articles use the shared compiler; its omitted peaks are an explicit
-fixture selection. Restore missing history with `obc data fetch SOURCE@VERSION PARAM=VALUE`;
-never substitute latest or Live. Freiburg needs its recorded extract; Swiss packages need extra
-raw tiles. Demo asset cutover follows publication. Legacy terrain commands remain for other consumers.
+`fixtures/build-map-package.sh` is the only supported way to build the registered map packages. It
+holds the canonical bboxes and source areas and writes under `fixtures/build/`. Build Grimsel
+terrain before its map, or use the `all` target.
 
 ## What belongs where
 
@@ -93,17 +62,19 @@ belong in a pull request, not in a runtime asset folder.
 ## Package provenance
 
 Every registered map is an OBCM v19 file with Light and Dark styles. The geographic payload comes
-from a canonical bbox. The first import uses these records. After publication through `obc data`,
-the package selection and producer receipts replace them as the input authority.
+from a canonical bbox that is never self-sourced from a header. Each one has a build record in
+`sources/ride-assistant/` that pins its source and output digests.
 
-| Package | Build record |
-| --- | --- |
-| `sim-grimsel` | [grimsel-v19.json](sources/ride-assistant/grimsel-v19.json) |
-| `grimsel-demo` | [grimsel-demo-v19.json](sources/ride-assistant/grimsel-demo-v19.json) |
-| `sim-monaco` | [monaco-v19.json](sources/ride-assistant/monaco-v19.json) |
-| `sim-freiburg` | [freiburg-v19.json](sources/ride-assistant/freiburg-v19.json) |
-| `sim-assistant-west-cork` | [west-cork-v19.json](sources/ride-assistant/west-cork-v19.json) |
-| `sim-assistant-meiringen` | [meiringen-v19.json](sources/ride-assistant/meiringen-v19.json) |
+| Package | Source | Build record |
+| --- | --- | --- |
+| `sim-grimsel` | Pinned `assistant-osm` Switzerland snapshot, on the canonical fixture bbox. OBCT terrain from Copernicus GLO-30 tile `N46_00_E008_00`. OBCR v5 route. Landmark text, photos and credits from the pinned `assistant-switzerland-content` package. | [grimsel-v19.json](sources/ride-assistant/grimsel-v19.json) |
+| `sim-monaco` | Pinned `assistant-osm` Monaco snapshot, plus the project-authored up-ahead GPX. | [monaco-v19.json](sources/ride-assistant/monaco-v19.json) |
+| `sim-freiburg` | Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`, box `7.77,47.97,7.93,48.14`. 12 by 19 km of the Rhine plain with one city, three towns, 26 villages and 14 hamlets. No terrain, no route, no track: it exists for the settlement labels. | [freiburg-v19.json](sources/ride-assistant/freiburg-v19.json) |
+| `sim-assistant-west-cork` | A complete-relation extract of the pinned Ireland snapshot, with compiled landmark content. | [west-cork-v19.json](sources/ride-assistant/west-cork-v19.json) |
+| `sim-assistant-meiringen` | A crop of the pinned Swiss national PBF, with compiled landmark and peak content. Not a full-country map. | [meiringen-v19.json](sources/ride-assistant/meiringen-v19.json) |
+
+When you run the fixture baker, set `OBC_GRIMSEL_LANDMARKS` to the content package's
+`content.json` and `OBC_GRIMSEL_PEAKS` to the pinned `peak-content/peaks.json`.
 
 ## Ride Assistant inputs
 

@@ -208,7 +208,7 @@ fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec
 
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
-pub fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
     for (path, object) in files {
         if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a relative path"));

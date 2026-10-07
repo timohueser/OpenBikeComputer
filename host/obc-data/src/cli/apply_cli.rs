@@ -331,26 +331,16 @@ pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-/// Refuse an apply while `data/` has changes that git does not have: live builds from a committed
-/// `data/`. `data/env/local.toml` is never in git.
+/// Refuse an apply while `data/` has edits that git does not have: live builds from a committed
+/// `data/`.
 pub(super) fn committed(root: &Path) -> Result<(), Error> {
-    let args = ["status", "--porcelain", "--untracked-files=all", "--", "data", ":(exclude)data/env/local.toml"];
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| Code::Failed.error(format!("git: {e}")))?;
-    if !out.status.success() {
-        return Err(Code::Failed.error(format!("git status: {}", String::from_utf8_lossy(&out.stderr).trim())));
-    }
-    let changed = String::from_utf8_lossy(&out.stdout);
-    if changed.trim().is_empty() {
+    let paths = super::edit_cli::uncommitted(root)?;
+    if paths.is_empty() {
         return Ok(());
     }
-    let paths: Vec<&str> = changed.lines().map(|line| line.get(3..).unwrap_or(line)).collect();
     Err(Code::Usage
-        .error(format!("data/ has changes that are not committed: {}", paths.join(", ")))
-        .fix("Commit data/ first: an apply builds live from the committed data/."))
+        .error(format!("data/ has uncommitted edits ({}).", paths.join(", ")))
+        .fix(super::edit_cli::COMMIT_DATA))
 }
 
 /// Verify each complete product before publication, including unchanged releases.
@@ -1315,7 +1305,7 @@ mod tests {
         write(&root.join("data/env/live.toml"), "region = \"andorra\"\n");
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
-        let message = "data/ has changes that are not committed: data/env/live.toml";
+        let message = "data/ has uncommitted edits (data/env/live.toml).";
         assert_eq!((err.code, err.message.as_str()), (Code::Usage, message));
         assert_eq!(keys(&fixture), before);
     }

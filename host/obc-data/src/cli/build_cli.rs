@@ -866,7 +866,7 @@ fn planned_run(
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
-pub(super) fn env_plan(
+fn env_plan(
     env: &Env,
     only: &[String],
     plan: Plan,
@@ -1110,7 +1110,7 @@ fn retain_input_copies(store: &Store, sources: &[Source], live: &Live, next: &mu
 }
 
 /// The `--move SOURCE[@VERSION]` of a plan or a build.
-pub(super) fn moves(sources: &[Source], moves: &[String]) -> Result<BTreeMap<String, Option<String>>, Error> {
+fn moves(sources: &[Source], moves: &[String]) -> Result<BTreeMap<String, Option<String>>, Error> {
     let mut parsed = BTreeMap::new();
     for arg in moves {
         let (id, version) = match arg.split_once('@') {

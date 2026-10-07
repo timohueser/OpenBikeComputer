@@ -30,7 +30,6 @@ the downloads state directories. Set limits through the Linux setup before autom
 | Configuration or credential | Purpose |
 | --- | --- |
 | `data/env/live.toml` | Published region and optional layers |
-| `data/env/fixtures.toml` | Exact fixture package selection and source versions |
 | `data/env/local.toml` | Local region and layers; ignored by Git |
 | `data/regions/` | Saved Box or area selections |
 | `data/sources.toml` | Source declarations and refresh policy |
@@ -49,7 +48,6 @@ the downloads state directories. Set limits through the Linux setup before autom
 Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
 Missing source credentials block only a selected new fetch; verified retained inputs remain usable.
 Publication also requires its own bucket credentials and owner admission.
-Follow the [fixture setup](../../fixtures/README.md) for its isolated bucket and exact source packages.
 
 ## Daily commands
 
@@ -116,8 +114,7 @@ the terminal. Run controls remain usable after checkout edits.
 | Automation | `s` details; `e` edits Daily/Weekly/Monthly/Custom; arrows select; Tab field; Enter reviews; `y` confirms |
 | Automation host | `d` disables future runs; `b` reviews limits; the Live row shows cadence, next run and last result |
 | Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
-| Configuration | `C` reviews Git changes; `e` edits the message; Enter reviews the commit; `y` commits; `R` refreshes |
-| Config CLI | `config review --json > REVIEW`; `config commit --review REVIEW -m MESSAGE --yes`; no push |
+| Configuration | Commit `data/` with `git add data && git commit`; Live lists uncommitted files; apply refuses them |
 | Apply | `a` reviews the machine, live changes and removals; `y` starts the exact reviewed plan |
 | Run | Enter opens progress; `R` observes; `x` stops admitted local work; `c` reconciles an owner result |
 | Prepared run | `p` reviews its returned plan before build or apply |
