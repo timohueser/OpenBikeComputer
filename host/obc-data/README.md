@@ -101,9 +101,7 @@ Its current approval is owner-local. `commit-approval` reads it without changing
 
 ## Portable-data API
 
-Pass the current producer declarations and an exact published release to `local::plan`.
-Request original client layers and any extra file paths needed by Local consumers. Inspect blocked
-selections before passing the unchanged plan to `local::adopt`. Use `local::saved` to read
-the saved anchors. These APIs preserve the original producer and create no build receipt.
-They do not start apps or services. The [Local contract](../../specs/obc-data.md#local-portable-data)
-defines comparison, transfer checks and collection roots.
+Compare current declarations and an exact release through `local::plan`.
+Name original client layers and extra paths. Review blockers before `local::adopt`.
+`local::saved` reads collection roots. Adoption keeps original provenance, creates no build
+receipt and starts no apps. See the [Local contract](../../specs/obc-data.md#local-portable-data).
