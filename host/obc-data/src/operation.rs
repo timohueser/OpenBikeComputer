@@ -407,7 +407,7 @@ mod tests {
             assert!(request.check().unwrap_err().contains("fixture"));
         }
         request.kind = Kind::Prepare;
-        request.moves.push(("land-polygons".into(), Some("2026-06-19".into())));
+        request.moves.push("land-polygons@2026-06-19".into());
         assert!(request.check().is_err(), "preparation cannot introduce an upstream move");
     }
 

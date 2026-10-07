@@ -39,7 +39,7 @@ mod tests {
 
 fn materializer() -> Code {
     Code {
-        files: vec!["tools/data_fixtures.py".into(), "tools/fixtures.py".into()],
+        paths: vec!["tools/data_fixtures.py".into(), "tools/fixtures.py".into()],
         python: Some(Python::default()),
         ..Default::default()
     }
