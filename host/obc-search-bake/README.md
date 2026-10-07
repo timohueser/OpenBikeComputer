@@ -33,7 +33,7 @@ The planner also searches categories that the device does not display.
 Compare addresses against an existing reference export and its `inputs.json`:
 
 ```sh
-uv run --locked --group planner-search python apps/planner-search/address-parity.py search.jsonl.zst REFERENCE.jsonl.zst --reference-inputs INPUTS.json --countries=de,ch --time-zone=Europe/Berlin --output /tmp/address-comparison
+uv run --locked --group planner-search python planner/search/address-parity.py search.jsonl.zst REFERENCE.jsonl.zst --reference-inputs INPUTS.json --countries=de,ch --time-zone=Europe/Berlin --output /tmp/address-comparison
 ```
 
 The comparison verifies source hashes and checks address fields, coordinates,
@@ -43,4 +43,4 @@ Entrance selection, geometry repair, and tokenization can differ from Nominatim.
 Run `obc test -p obc-search-bake` and
 `cargo clippy -p obc-search-bake --all-targets -- -D warnings`.
 The tests compare device and search POI identities, categories, and coordinates.
-Run `npm test --prefix apps/planner-search` for search tests.
+Run `npm test --prefix planner/search` for search tests.
