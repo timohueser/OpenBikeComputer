@@ -204,7 +204,7 @@ fn collect_obcd(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 ///
 /// The size refusal is OBCT's own wall, not the read seam's: the container's directory entries and
 /// cell offsets are `uint32`, so nothing past 4 GiB - 1 of an `.obcd` can be named from inside it.
-pub(crate) fn open_obct(path: &Path) -> Result<FileSource, String> {
+pub fn open_obct(path: &Path) -> Result<FileSource, String> {
     let src = FileSource::open(path).map_err(|e| format!("--terrain {}: {e}", path.display()))?;
     let len = src.len();
     if len > u32::MAX as u64 {
