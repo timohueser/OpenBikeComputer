@@ -8,6 +8,7 @@ mod auto_cli;
 mod build_cli;
 pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
 pub mod commit_cli;
+mod config_cli;
 mod dev_cli;
 mod edit_cli;
 mod freshness;
@@ -96,6 +97,11 @@ enum Command {
     Layer { env: String, layer: String, switch: edit_cli::Switch },
     /// Restore data/env/ENV.toml to its committed version: the edits that are not applied go.
     Undo { env: String },
+    /// Review and commit only working bake configuration. Nothing pushes.
+    Config {
+        #[command(subcommand)]
+        action: config_cli::Action,
+    },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
     /// Start durable input preparation and return its run handle. Nothing builds or uploads.
@@ -240,6 +246,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
         }
         Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
+        Command::Config { action } => config_cli::run(&root()?, action, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
         Command::Build(args) => operation_cli::build(&root()?, args, json),

@@ -809,6 +809,47 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
 }
 
 #[test]
+fn configuration_review_keeps_message_keys_in_the_field_and_commits_only_after_consent() {
+    let mut app = app();
+    assert_eq!(app.key(KeyCode::Char('C')), Effect::ConfigRead);
+    app.config.review = Some(
+        serde_json::from_value(json!({
+            "head": "a".repeat(40),
+            "files": { "data/regions/new.toml": { "sha256": "b".repeat(64), "mode": "100644" } },
+            "diff": "New file: data/regions/new.toml\nname = 'Region'\n"
+        }))
+        .unwrap(),
+    );
+    app.key(KeyCode::Char('e'));
+    app.key(KeyCode::Delete);
+    for c in "q message".chars() {
+        assert_eq!(app.key(KeyCode::Char(c)), Effect::None);
+    }
+    assert_eq!(app.config.message, "q message");
+    assert!(app.config.editing && !app.asking);
+    app.key(KeyCode::Enter);
+    let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        app.asking
+            && drawn.contains("CONFIGURATION REVIEW")
+            && drawn.contains("Git hooks and signing")
+            && drawn.contains("no push"),
+        "{drawn}"
+    );
+    app.busy = true;
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::None);
+    app.busy = false;
+    assert_eq!(
+        app.key(KeyCode::Char('y')),
+        Effect::ConfigCommit(Box::new(app.config.review.clone().unwrap()), "q message".into())
+    );
+    app.key(KeyCode::Esc);
+    assert!(!app.asking && app.config.message == "q message");
+    app.config.review = None;
+    assert_eq!(app.key(KeyCode::Enter), Effect::None);
+}
+
+#[test]
 fn the_region_picker_filters_and_sets_the_region_of_live() {
     let mut app = app();
     app.key(KeyCode::Char('r'));

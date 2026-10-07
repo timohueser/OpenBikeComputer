@@ -259,6 +259,12 @@ impl App {
                 self.edited = updated.edited;
                 self.row = self.row.min(self.live_rows().len().saturating_sub(1));
             }
+            Effect::ConfigRead => self.config.review = updated.config.review,
+            Effect::ConfigCommit(_, _) => {
+                self.config.review = updated.config.review;
+                self.edited = updated.edited;
+                self.asking = false;
+            }
             Effect::PlanClean | Effect::Clean => self.store = updated.store,
             Effect::Plan => self.plan = updated.plan,
             Effect::Areas | Effect::LoadAreas => self.region_editor.areas = updated.region_editor.areas,
@@ -384,6 +390,17 @@ impl App {
                     }
                 }
             }
+            Effect::ConfigRead => {
+                app.config.review = Some(super::super::config_cli::review(root)?);
+                Ok(())
+            }
+            Effect::ConfigCommit(review, message) => {
+                let committed = super::super::config_cli::commit(root, &review, &message)?;
+                app.saved = Some(format!("Committed bake configuration {} · nothing pushed", committed.commit));
+                app.config.review = None;
+                app.edited = edit_cli::edited(root, LIVE);
+                Ok(())
+            }
             Effect::ScheduleRead => {
                 self.schedule.state = updated.schedule.state;
                 if self.schedule.calendar.is_empty() {
@@ -423,7 +440,9 @@ pub(super) fn perform(
     }
     if !matches!(
         effect,
-        Effect::ScheduleRead
+        Effect::ConfigRead
+            | Effect::ConfigCommit(_, _)
+            | Effect::ScheduleRead
             | Effect::ScheduleChange(super::schedule::Change::Disable)
             | Effect::ObserveRun(_)
             | Effect::StopRun(_)
