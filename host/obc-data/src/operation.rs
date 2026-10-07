@@ -470,7 +470,12 @@ mod tests {
             read(&store, &first.run).unwrap().unwrap().state,
             State::Owner { host: "publisher".into(), bundle: "c".repeat(64) }
         );
-        assert!(reserve(&store, &first).is_err());
+        let owner = read(&store, &first.run).unwrap().unwrap();
+        assert!(matches!(
+            reserve(&store, &first).unwrap(),
+            Reservation::Busy(reason) if reason.contains("already owns live")
+        ));
+        assert_eq!(read(&store, &first.run).unwrap().unwrap(), owner);
         let mut local = control("2026-10-06-120001");
         local.request.kind = Kind::Auto;
         local.request_sha256 = local.request.digest().unwrap();
