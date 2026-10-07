@@ -762,7 +762,7 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
         Effect::ScheduleChange(schedule::Change::Install { calendar: calendar.into(), zone: "UTC".into() })
     );
     app.key(KeyCode::Esc);
-    let mut run = crate::cli::operation_cli::View {
+    let run = crate::cli::operation_cli::View {
         run: app.runs[0].clone(),
         operation: Some(crate::operation::Status::Finished { ok: true }),
         observation_error: None,
@@ -778,7 +778,7 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
         time_zone: Some("UTC".into()),
         next: Some("Thu 2026-10-08 07:30:00 UTC".into()),
         last_trigger: None,
-        last_run: Some(Box::new(run.clone())),
+        last_run: Some(Box::new(run)),
     };
     app.schedule.state = Some(Ok(std::sync::Arc::new(state)));
     assert_eq!(app.schedule.summary(), "weekly Tue 07:30 · next 2026-10-08 07:30 · last applied");
@@ -797,10 +797,9 @@ fn schedule_presets_use_keyboard_fields_and_show_cadence_next_and_last_result() 
             && drawn.contains("needs repair"),
         "{drawn}"
     );
-    run.result = Some(json!({"built":{},"applied":null}));
     let state = std::sync::Arc::get_mut(app.schedule.state.as_mut().unwrap().as_mut().unwrap()).unwrap();
     state.enabled = false;
-    state.last_run = Some(Box::new(run));
+    state.last_run.as_mut().unwrap().result = Some(json!({"built":{},"applied":null}));
     assert_eq!(app.schedule.summary(), "off · last verified");
     app.schedule.editing = true;
     app.schedule.form = Some(schedule::Form { preset: schedule::Preset::Daily, time: "25:99".into(), day: 1 });
