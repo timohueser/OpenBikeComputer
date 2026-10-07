@@ -1634,7 +1634,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "leftovers",
-          "description": "Keys under the owned prefixes that no live release uses.",
+          "description": "Keys of earlier releases that no live release uses.",
           "type": "string"
         },
         {
@@ -2944,37 +2944,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "run",
         "request"
-      ],
-      "type": "object"
-    },
-    "Host": {
-      "additionalProperties": false,
-      "description": "Actual host prerequisites. Absent interpreters cannot satisfy a runtime target.",
-      "properties": {
-        "glibc": {
-          "type": "string"
-        },
-        "node": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "python": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "triple": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "triple",
-        "glibc",
-        "node",
-        "python"
       ],
       "type": "object"
     },
