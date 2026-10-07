@@ -22,7 +22,7 @@ One `[[source]]` table per source.
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a plan reads while no live release reads the source. It has the form of `version` |
-| `refresh` | integer or string | yes | `1` through `65535` whole days, or `"manual"` |
+| `refresh` | integer or string | no, `"manual"` | Fallback policy; stored Live settings override it. `1` through `65535` whole days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
 | `r2_copy` | boolean | no, `false` | R2 keeps a copy of the version that live reads, because upstream cannot give it again |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
@@ -83,22 +83,35 @@ planner release `attribution`. Text that no step can generate keeps a copy, and 
 compares the copy with this file: the device About page, and the footers of the site, the
 docs and the map builder.
 
-### `data/env/<environment>.toml`
+### Live settings
 
-The environment name is lowercase kebab-case.
+`settings/pending.json` in the store holds pending Live edits. `settings/applied.json` caches
+settings from the latest observed applied release. Pending settings take precedence.
+Both documents have these fields:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `region` | string | The region of both products: a region id of `data/regions/`. `plan` and `build` refuse a file without it |
-| `layers` | array of strings | The optional layers that are on, each once. Each is an optional layer of a product |
+| `region` | string | The selected region id. A plan requires a selection |
+| `definitions` | object | Complete region TOML text by id, including all union members |
+| `layers` | array of strings | Enabled optional layers, sorted without duplicates |
+| `refresh` | object | Source id to `1` through `65535` whole days, or `"manual"`. Days require a date version |
 
-An environment names what it contains, not the versions of its sources: a file with `[pins]` is
-refused. The live release manifests record the version of each source that live reads, see
-[Versions](#versions). `data/env/live.toml` must exist.
+An explicit region selection copies its definition. A layer or policy edit preserves that copy.
+Undo removes pending settings. Apply records the reviewed settings in each release, updates the
+applied cache and clears pending settings only if they still equal the reviewed settings.
+A policy-only change changes the release identity without rebuilding layers.
+
+### `data/env/<environment>.toml`
+
+Non-Live environments use TOML with `region` and `layers`. Local uses the ignored
+`data/env/local.toml`. The environment name is lowercase kebab-case. A `[pins]` table is refused;
+source versions belong to release manifests. See [Versions](#versions).
 
 ### `data/regions/<id>.toml`
 
-One file per region. The region id is the file path below `data/regions/` without `.toml`.
+Shipped presets use `data/regions/`. Created definitions use `regions/` in the store.
+One file holds one region. Its id is the relative file path without `.toml`.
+Stored definitions override presets of the same id. Live plans use the captured definitions.
 Each part of the id is lowercase kebab-case.
 
 | Key | Type | Meaning |
@@ -120,7 +133,7 @@ through these ranges: a latitude-first box is refused only when one of its longi
 outside −90…90.
 
 A `geofabrik` region selects source paths such as `europe/germany/baden-wuerttemberg`.
-Its saved id is independent of those paths. Creation writes one definition and no child files.
+Its saved id is independent of those paths. Creation writes one store definition and no child files.
 Source paths use the same id syntax. An empty selection is refused. Polygon-file regions are refused.
 A union resolves to the regions in it that are not unions. A union that contains itself,
 or names a region that does not exist, is refused. Unions can be read but not created through the API.
@@ -131,7 +144,7 @@ it. The offline Python runtime validates the time zone with `ZoneInfo`. Listing 
 Area search reads the newest cached public index and verifies its object hash and size. It does
 not fetch the index. Suggestions expose names, paths, countries and bounds, without polygon data.
 
-Deletion previews the definition SHA-256 and its references. An environment, fixture, planner
+Deletion of a stored definition previews its SHA-256 and references. Shipped presets are read-only. An environment, fixture, planner
 recipe or another region that names it prevents deletion. `--apply --expected SHA` must match
 the preview. References and the definition are checked again after confirmation. Deletion removes
 only the definition; source snapshots, releases and baked files stay. Creation and deletion never commit.
@@ -200,6 +213,8 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 
 | Path | Holds |
 | --- | --- |
+| `settings/pending.json`, `settings/applied.json` | Pending and last observed applied Live settings |
+| `regions/<id>.toml` | Saved region definitions |
 | `objects/<ab>/<sha256>` | One file, named by the lowercase hex SHA-256 of its bytes; `<ab>` is its first two characters. Read-only |
 | `snapshots/<source>/<version>.json` | The snapshot record of one source version |
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
@@ -881,7 +896,7 @@ nothing. Its JSON is `{run, plan}`. Review and save the nested `plan` object for
 Missing credentials or an upstream failure keep their actionable error and the run id.
 
 `--json` writes the plan with `env`,
-`region` and `layers` of the environment, `moves`, the version of each source that the plan moves
+`region` and `layers` of the environment, `settings` (the complete Live settings, or `null`), `moves`, the version of each source that the plan moves
 (a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
 the step lists read, and `only`, the groups that `--only` selected, `[]` for every group or
 `["none"]` for no group. A plan
@@ -893,7 +908,7 @@ of `live` also has:
   including publication fields, or `null` after a successful absent read. Read failures give no plan.
 - `edits`: per product, `region` with `from` (the region of the live release, or `null` when
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
-  `on` and `off`.
+  `on` and `off`; `settings` marks a definition or policy change with no selection change.
 - `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: the
   [leftovers](#live) once the releases after the plan are live, files first and manifests last.
   A layer that the store lacks counts without its objects, because its new objects are not known
@@ -910,7 +925,7 @@ fetch fails, the command fails with its code, and a fix that says to plan again 
 gives none. It refuses the file, with exit status 3, before it builds:
 
 - when `needs_prepare` is true, before any preparation fetch; prepare and review a new plan;
-- when `env`, `region`, `layers`, `blocked`, `live` or `edits` differ from the environment, its
+- when `env`, `region`, `layers`, `settings`, `blocked`, `live` or `edits` differ from the environment, its
   products and live now;
 - when a step list reads a fetch that `versions` does not name;
 - when the groups that `only` selects in the plan of now differ from the groups of the file,
@@ -1104,7 +1119,8 @@ byte order.
 ### Releases
 
 `releases/<product>/<id>.json` is the manifest of a release: `{"product", "region", "optional",
-"layers", "named", "producers"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+"layers", "named", "producers", "settings"}`, as the compact output of `serde_json` with the keys of each object in byte order.
+`settings` holds the complete reviewed Live settings and is absent for a Local build.
 `region` is the region of the environment that it was built for, and `optional` the optional layers
 of the product that the environment switched on, sorted. The id is the SHA-256 of these bytes. A manifest holds no time or cost of a build, so two machines that build
 the same layers make the same release. `layers` is sorted by `step`, and each layer has:
@@ -1269,7 +1285,7 @@ blocked. Known option, producer and input changes retain their existing state ca
 two machines must not apply at once. The machine that runs it writes R2 in this order:
 
 1. Live publishes from a pushed commit. It refuses unless the checkout has no change that git
-   lacks, apart from the Live settings in `data/env/` and `data/regions/`, and a branch on
+   lacks, and a branch on
    `origin` holds `HEAD`. `status` lists a refusal as `not pushed`. Preparation and Local builds
    accept working-tree code. Apply does not commit or push.
 2. It asks once in a terminal: "Apply M changes to live and remove N keys, X GB, from R2?", with
@@ -1336,10 +1352,10 @@ failure appears in `observation_error` and preserves the run state.
 | `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
-| `obc data policy SOURCE DAYS\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
-| `obc data region ENV ID [--json]` | Writes `region` of `data/env/ENV.toml`. Writes the environment |
-| `obc data layer ENV NAME on\|off [--json]` | Adds the optional layer to `layers` of `data/env/ENV.toml`, or removes it. A layer that no product has is refused. Writes the environment |
-| `obc data undo ENV [--json]` | Writes `data/env/ENV.toml` as git has it in `HEAD`: the edits that are not applied go. Writes the environment |
+| `obc data policy SOURCE DAYS\|manual [--json]` | Writes the source policy in pending Live settings. A policy in days for a source without `version = "date"` is refused. Writes the source |
+| `obc data region ENV ID [--json]` | Selects the region in pending Live settings or the Local file. Writes the environment |
+| `obc data layer ENV NAME on\|off [--json]` | Enables or disables an optional layer in the environment settings. A layer that no product has is refused. Writes the environment |
+| `obc data undo ENV [--json]` | Restores applied Live settings, including policies; for another environment, restores its committed file. Writes the environment |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
 | `obc data region [list] [--json]` | Every region with its name and definition |
 | `obc data region show ID [--json]` | One region, the regions it resolves to, and its box when every part is a box |
@@ -1361,10 +1377,8 @@ schema of each output, and [Errors](#errors) has the error codes and the exit st
 addition:
 
 - `fetch` lists only the requested files.
-- `region ENV ID`, `layer` and `undo` write `data/env/ENV.toml` and nothing else, and they never
-  commit. `region` and `layer` keep its comments and its other lines, write `region` and `layers`
-  on one line each, and end each line with `\r\n` when the file has one, or else `\n`. A refused
-  edit changes nothing.
+- `region ENV ID`, `layer` and `undo` never commit. Live edits write the store. Other
+  environments keep comments and line endings in their TOML file. A refused edit changes nothing.
 - `runs` lists a run file that cannot be read as `failed`, or as `running` while its lock is
   held.
 - `runs RUN --follow` writes one event per line, as in `runs/<id>.jsonl`. When the run failed,
@@ -2158,7 +2172,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "Edit": {
-      "description": "What the environment file changes against the live release of a product.",
+      "description": "What the pending settings change against the live release of a product.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -2220,11 +2234,29 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "off"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Region definitions or refresh policy changed without a selection change.",
+          "properties": {
+            "kind": {
+              "const": "settings",
+              "type": "string"
+            },
+            "product": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "product"
+          ],
+          "type": "object"
         }
       ]
     },
     "Edited": {
-      "description": "An environment file after an edit.",
+      "description": "Environment settings after an edit.",
       "properties": {
         "env": {
           "type": "string"
@@ -2258,7 +2290,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "edits": {
-          "description": "For `live`: what the environment file changes against the live releases.",
+          "description": "For `live`: what the pending settings change against the live releases.",
           "items": {
             "$ref": "#/$defs/Edit"
           },
@@ -2321,6 +2353,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "settings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Settings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "versions": {
           "description": "The version of each fetch that the step lists read. `build --plan` reads exactly these.",
           "items": {
@@ -2333,6 +2375,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "env",
         "region",
         "layers",
+        "settings",
         "moves",
         "versions",
         "live",
@@ -4400,6 +4443,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Settings": {
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Full TOML definitions of the selection and its union members, keyed by region id.",
+          "type": "object"
+        },
+        "layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Refresh"
+          },
+          "type": "object"
+        },
+        "region": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "definitions",
+        "layers",
+        "refresh"
+      ],
+      "type": "object"
+    },
     "Source": {
       "additionalProperties": false,
       "properties": {
@@ -4483,7 +4560,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "boolean"
         },
         "refresh": {
-          "$ref": "#/$defs/Refresh"
+          "$ref": "#/$defs/Refresh",
+          "default": "manual"
         },
         "start": {
           "description": "The version that a plan reads while no live release reads the source. `--move` overrides\nit. Without it, the first fetch takes the newest version upstream.",
@@ -4616,7 +4694,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "boolean"
         },
         "refresh": {
-          "$ref": "#/$defs/Refresh"
+          "$ref": "#/$defs/Refresh",
+          "default": "manual"
         },
         "requests": {
           "items": {
