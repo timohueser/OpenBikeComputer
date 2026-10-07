@@ -217,7 +217,7 @@ fn wiki_owners(path: &str) -> &'static [usize] {
 /// they are older than the `refresh` of the source or the source is manual. With `empty`, a run
 /// that writes no file gives a fetch without files; else it fails.
 #[allow(clippy::too_many_arguments)]
-fn capture(
+pub(super) fn capture(
     root: &Path,
     store: &Store,
     request: &Request,

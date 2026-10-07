@@ -19,6 +19,7 @@ pub(super) struct Context {
     probes: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct Identity {
     pub files: BTreeMap<String, String>,
     pub source_config: BTreeMap<String, String>,

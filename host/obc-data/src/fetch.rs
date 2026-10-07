@@ -1016,8 +1016,10 @@ pub(crate) mod tests {
         store.put_snapshot(&held).unwrap();
         let today = Request { source: &land, version: None, params: vec![] };
         let err = capture::capture(
+            &tooling_root(),
             &store,
             &today,
+            None,
             "q=1",
             &[&land, &sea],
             |_| &[0, 1],
@@ -1025,7 +1027,7 @@ pub(crate) mod tests {
             |_, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", "echo r > \"$1/recipe.json\"", "sh"]).arg(out);
-                command
+                Ok(command)
             },
         )
         .unwrap_err();
@@ -1052,10 +1054,10 @@ pub(crate) mod tests {
         };
         let today = Request { source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
-            capture::capture(&store, request, "q=1", &sources, owner, false, move |work, out| {
+            capture::capture(&tooling_root(), &store, request, None, "q=1", &sources, owner, false, move |work, out| {
                 let mut command = std::process::Command::new("sh");
                 command.args(["-c", script, "sh"]).arg(work).arg(out);
-                command
+                Ok(command)
             })
         };
         let err = run(&today, "echo part > \"$1/a.zip\"; exit 3").unwrap_err();
@@ -1089,7 +1091,9 @@ pub(crate) mod tests {
         // record of the request that `fetch` writes serves it on another day.
         let boxed = Request { source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
         let nothing = |request: &Request, empty| {
-            capture::capture(&store, request, "q=2", &sources, owner, empty, |_, _| std::process::Command::new("true"))
+            capture::capture(&tooling_root(), &store, request, None, "q=2", &sources, owner, empty, |_, _| {
+                Ok(std::process::Command::new("true"))
+            })
         };
         assert!(nothing(&boxed, false).unwrap_err().contains("has no file"));
         assert_eq!(nothing(&boxed, true).unwrap().files, []);
@@ -1108,8 +1112,10 @@ pub(crate) mod tests {
         let request = Request { source: &model, version: None, params: vec![] };
         let run = |script: &'static str| {
             capture::capture(
+                &tooling_root(),
                 &store,
                 &request,
+                None,
                 "q=1",
                 &[&model],
                 |_| &[0],
@@ -1117,7 +1123,7 @@ pub(crate) mod tests {
                 move |work, out| {
                     let mut command = std::process::Command::new("sh");
                     command.args(["-c", script, "sh"]).arg(work).arg(out);
-                    command
+                    Ok(command)
                 },
             )
         };
