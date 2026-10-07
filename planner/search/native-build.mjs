@@ -2,7 +2,7 @@ import {build} from 'esbuild';
 import {mkdir, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {licenseNotices} from '../../builder/app/vite/third-party-licenses.ts';
+import {licenseNotices} from '../../builder/web/vite/third-party-licenses.ts';
 
 const output = process.argv[2] && path.resolve(process.argv[2]);
 if (!output) throw new Error('Usage: node planner/search/native-build.mjs OUTPUT');

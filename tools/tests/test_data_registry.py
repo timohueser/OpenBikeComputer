@@ -28,7 +28,7 @@ class DataRegistryTests(unittest.TestCase):
     def test_the_static_page_footers_show_the_registry_credits(self):
         # These pages are HTML that no step generates, so they keep the text and this compares it.
         footers = {"docs/index.html": ["osm-planet", "copernicus-glo-30"], "docs/templates/page.html": ["osm-planet"],
-                   "docs/templates/blog_post.html": ["osm-planet"], "builder/app/src/App.svelte": ["osm-planet"]}
+                   "docs/templates/blog_post.html": ["osm-planet"], "builder/web/src/App.svelte": ["osm-planet"]}
         for path, sources in footers.items():
             text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", (data_registry.ROOT / path).read_text()))
             for source in sources:

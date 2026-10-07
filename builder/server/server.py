@@ -227,7 +227,7 @@ async def build_schema_preview(request: Request):
         },
     )
 
-# The SPA (builder/app/, built by Vite into static/dist/ —
+# The SPA (builder/web/, built by Vite into static/dist/ —
 # gitignored, so a fresh checkout needs one `npm run build`). Mounted last:
 # every /api route above wins, everything else falls through to the app.
 # Without a build, "/" explains how to produce one.
@@ -244,9 +244,9 @@ else:
             "<body style='font-family: system-ui; max-width: 40rem; margin: 4rem auto;"
             " color: #24331c; background: #ece8cf; padding: 0 1rem;'>"
             "<h1>Frontend not built yet</h1>"
-            "<p>The web builder's UI is compiled from <code>builder/app/</code>. "
+            "<p>The web builder's UI is compiled from <code>builder/web/</code>. "
             "Build it once (requires Node):</p>"
-            "<pre>cd builder/app\nnpm ci\nnpm run build</pre>"
+            "<pre>cd builder/web\nnpm ci\nnpm run build</pre>"
             "<p>…then restart this server.</p>",
             status_code=503,
         )

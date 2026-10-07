@@ -185,7 +185,7 @@ def specifications(config, prepared=None):
         paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py", maps.ROOT / "uv.lock"], functions=[sources.search_dump, sources.download])
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
     add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
-        paths=[SEARCH / "split.py", SEARCH / "records.py", maps.ROOT / "uv.lock", maps.ROOT / "builder/app/src/lib/planner/poi-kinds.json"])
+        paths=[SEARCH / "split.py", SEARCH / "records.py", maps.ROOT / "uv.lock", maps.ROOT / "builder/web/src/lib/planner/poi-kinds.json"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json"]] + [maps.ROOT / "uv.lock"]
     for component in ["pois", "addresses"]:
         add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
@@ -194,7 +194,7 @@ def specifications(config, prepared=None):
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "uv.lock"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/web/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}

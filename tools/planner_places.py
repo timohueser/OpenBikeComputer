@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import planner_mvt as mvt, step_request
 
-KINDS = Path(__file__).resolve().parents[1] / "builder/app/src/lib/planner/poi-kinds.json"
+KINDS = Path(__file__).resolve().parents[1] / "builder/web/src/lib/planner/poi-kinds.json"
 # The only zoom: a route corridor reads few tiles, and rider places keep each tile small.
 ZOOM = 11
 
