@@ -33,8 +33,8 @@ class RuntimeBuild(unittest.TestCase):
     def test_source_declarations_need_no_original_execution_providers(self):
         command = [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(Path(runtime.__file__)),
                    "--declarations", "routing"]
-        result = subprocess.run(command, input=json.dumps(TARGET), text=True, capture_output=True,
-                                env={**os.environ, "PATH": ""}, check=True)
+        result = subprocess.run(command, input=json.dumps({key: TARGET[key] for key in ("triple", "glibc")}),
+                                text=True, capture_output=True, env={**os.environ, "PATH": ""}, check=True)
         declaration = json.loads(result.stdout)
         self.assertIsNone(declaration["builder"])
         self.assertEqual(declaration["paths"], runtime.code_paths("routing"))
