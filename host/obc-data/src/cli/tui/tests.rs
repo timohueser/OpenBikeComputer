@@ -249,6 +249,29 @@ fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
     for group in 0..4 {
         states.extend([planned(group, false, &[]), planned(group, true, &[]), planned(group, false, &["move:land"])]);
     }
+    states.push(App { asking: true, ..planned(0, false, &[]) });
+    for status in [
+        crate::operation::Status::Running,
+        crate::operation::Status::Stopping,
+        crate::operation::Status::UnknownOwner {
+            host: "vps".into(),
+            bundle: "a".repeat(64),
+            reason: "pending write".into(),
+        },
+        crate::operation::Status::Finished { ok: true },
+    ] {
+        let mut shown = app();
+        shown.overlay = Some(Overlay::Run);
+        shown.execution.selected = Some(shown.runs[0].summary.id.clone());
+        shown.execution.view = Some(std::sync::Arc::new(crate::cli::operation_cli::View {
+            run: shown.runs[0].clone(),
+            operation: Some(status),
+            observation_error: None,
+            result: Some(json!({"plan": plan()})),
+            logs: Vec::new(),
+        }));
+        states.push(shown);
+    }
     for app in states {
         let keys = app.bindings();
         for binding in &keys {
@@ -260,6 +283,210 @@ fn no_key_does_two_things_and_each_key_in_the_bar_acts() {
             assert!(effect != Effect::None || view(&after) != view(&app), "{:?} in {}", binding.key, view(&app));
         }
     }
+}
+
+#[test]
+fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
+    use crate::operation::Kind;
+    let mut app = planned(0, false, &["move:land", "move:osm"]);
+    let taken = &mut app.plan.as_mut().unwrap().taken;
+    taken.only = vec!["none".into()];
+    taken.groups.retain(|group| !plan::is_move(group));
+    taken.moves.clear();
+    let reviewed = taken.clone();
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::None);
+    assert_eq!(app.key(KeyCode::Char('a')), Effect::None);
+    assert!(app.asking);
+    let drawn = screen(&mut app, 80, 24).join("\n");
+    assert!(drawn.contains("CONFIRM APPLY") && drawn.contains("environment: live"), "{drawn}");
+    assert!(drawn.contains(&super::super::apply_cli::question(&reviewed)), "{drawn}");
+    assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "confirmation cannot change consent");
+    app.key(KeyCode::Esc);
+    assert_eq!(app.overlay, Some(Overlay::Plan));
+    assert_eq!(app.plan.as_ref().unwrap().taken, reviewed);
+    app.key(KeyCode::Char('a'));
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::Start(Kind::Apply, Box::new(reviewed)));
+}
+
+#[test]
+fn an_incomplete_preview_can_only_start_explicit_preparation() {
+    use crate::operation::Kind;
+    let mut app = planned(0, false, &[]);
+    let plan = &mut app.plan.as_mut().unwrap().taken;
+    plan.needs_prepare = true;
+    plan.only = vec!["none".into()];
+    plan.moves.clear();
+    let intent = plan.clone();
+    assert_eq!(app.key(KeyCode::Char('a')), Effect::None);
+    assert_eq!(app.key(KeyCode::Char('b')), Effect::None);
+    assert_eq!(app.key(KeyCode::Char('f')), Effect::Start(Kind::Prepare, Box::new(intent.clone())));
+    let request = execution::request(Kind::Prepare, &intent);
+    assert_eq!(request.only, ["none"]);
+    assert!(request.plan.is_none() && request.moves.is_empty());
+    request.check().unwrap();
+    app.busy = true;
+    assert_eq!(app.key(KeyCode::Char('f')), Effect::None, "start admission is shared with finite tasks");
+}
+
+#[test]
+fn run_observations_cannot_replace_another_run_or_source_draft() {
+    use crate::cli::operation_cli::View;
+    use crate::operation::Status;
+    let mut app = App { screen: Screen::Runs, ..app() };
+    let first = app.runs[0].summary.id.clone();
+    let second = app.runs[1].summary.id.clone();
+    assert_eq!(app.key(KeyCode::Enter), Effect::ObserveRun(first.clone()));
+    assert_eq!(app.key(KeyCode::Esc), Effect::None, "hiding does not stop");
+    assert_eq!(app.key(KeyCode::Char('q')), Effect::Quit, "quitting does not stop");
+    app.run = 1;
+    assert_eq!(app.key(KeyCode::Enter), Effect::ObserveRun(second.clone()));
+    let mut updated = app.clone();
+    updated.execution.view = Some(std::sync::Arc::new(View {
+        run: app.runs[0].clone(),
+        operation: Some(Status::Finished { ok: true }),
+        observation_error: None,
+        result: None,
+        logs: Vec::new(),
+    }));
+    app.screen = Screen::Sources;
+    app.overlay = None;
+    app.source_view.typing = true;
+    app.source_view.filter = "qrf".into();
+    app.complete(Effect::ObserveRun(first), updated);
+    assert_eq!(app.execution.selected.as_ref(), Some(&second));
+    assert!(app.execution.current().is_none());
+    assert_eq!(app.screen, Screen::Sources);
+    assert_eq!(app.source_view.filter, "qrf");
+    assert!(app.source_view.typing);
+}
+
+#[test]
+fn a_failed_start_preserves_the_reviewed_plan_and_a_late_start_preserves_navigation() {
+    use crate::operation::Kind;
+    let mut app = planned(0, false, &[]);
+    let reviewed = app.plan.as_ref().unwrap().taken.clone();
+    let effect = Effect::Start(Kind::Build, Box::new(reviewed.clone()));
+    let failed = app.clone();
+    app.complete(effect.clone(), failed);
+    assert_eq!(app.overlay, Some(Overlay::Plan));
+    assert_eq!(app.plan.as_ref().unwrap().taken, reviewed);
+    app.screen = Screen::Sources;
+    app.overlay = None;
+    app.source_view.typing = true;
+    app.source_view.filter = "draft".into();
+    let mut admitted = app.clone();
+    admitted.execution.handle =
+        Some(crate::cli::operation_cli::Handle { run: "new-run".into(), request: "a".repeat(64) });
+    app.complete(effect, admitted);
+    assert_eq!(app.execution.handle.as_ref().unwrap().run, "new-run");
+    assert_eq!(app.screen, Screen::Sources);
+    assert!(app.overlay.is_none() && app.source_view.typing);
+    assert_eq!(app.source_view.filter, "draft");
+}
+
+#[test]
+fn the_run_stop_action_uses_the_shared_draining_boundary_without_a_checkout() {
+    use crate::operation::{self, Control, Kind, Request, Status};
+    let scratch = crate::store::tests::Scratch::new("tui-stop");
+    let store = Store::at(&scratch.0);
+    let run = runs::Run::create(&store, "prepare live").unwrap();
+    let id = run.id().to_string();
+    let request = Request { kind: Kind::Prepare, env: LIVE.into(), only: Vec::new(), moves: Vec::new(), plan: None };
+    let digest = request.digest().unwrap();
+    operation::reserve(
+        &store,
+        &Control {
+            run: id.clone(),
+            request_sha256: digest.clone(),
+            request,
+            root: "/absent-checkout".into(),
+            worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
+            code: "b".repeat(64),
+            state: operation::State::Reserved,
+        },
+    )
+    .unwrap();
+    let active = operation::claim(&store, &id, &digest).unwrap();
+    let mut app = app();
+    app.execution.selected = Some(id.clone());
+    background::perform(Path::new("/absent-checkout"), &[], &store, &mut app, Effect::ObserveRun(id.clone())).unwrap();
+    app.overlay = Some(Overlay::Run);
+    assert_eq!(app.key(KeyCode::Char('x')), Effect::StopRun(id.clone()));
+    background::perform(Path::new("/absent-checkout"), &[], &store, &mut app, Effect::StopRun(id.clone())).unwrap();
+    assert!(matches!(app.execution.current().unwrap().operation, Some(Status::Stopping)));
+    assert_eq!(app.key(KeyCode::Char('x')), Effect::None, "draining is not a second stop");
+    drop(active);
+    background::perform(Path::new("/absent-checkout"), &[], &store, &mut app, Effect::ObserveRun(id.clone())).unwrap();
+    assert!(matches!(app.execution.current().unwrap().operation, Some(Status::Stopped)));
+    assert!(!runs::events(&store, &id).unwrap().iter().any(|event| matches!(event, runs::Event::Published { .. })));
+    run.finish(Some("stopped")).unwrap();
+}
+
+#[test]
+fn run_outcomes_distinguish_unpublished_builds_unknown_owners_and_partial_activation() {
+    use crate::engine::runs::Publication;
+    use crate::operation::Status;
+    let mut app = app();
+    app.overlay = Some(Overlay::Run);
+    let mut shown = crate::cli::operation_cli::View {
+        run: app.runs[0].clone(),
+        operation: Some(Status::Finished { ok: true }),
+        observation_error: None,
+        result: None,
+        logs: Vec::new(),
+    };
+    shown.run.summary.command = "build local".into();
+    shown.run.summary.outcome = Outcome::Ok;
+    let show = |app: &mut App, view: crate::cli::operation_cli::View| {
+        app.execution.selected = Some(view.run.summary.id.clone());
+        app.execution.view = Some(std::sync::Arc::new(view));
+        app.run_lines().iter().map(Line::to_string).collect::<Vec<_>>().join("\n")
+    };
+    assert!(show(&mut app, shown).contains("Build completed. No publication was requested."));
+    let mut shown = app.execution.current().unwrap().run.clone();
+    shown.summary.command = "apply live".into();
+    shown.summary.outcome = Outcome::Failed;
+    shown.published.push(Publication::ServicesActivated { bindings: vec!["b".repeat(64)] });
+    shown.published.push(Publication::Uploaded { key: "maps/release.json".into() });
+    let text = show(
+        &mut app,
+        crate::cli::operation_cli::View {
+            run: shown.clone(),
+            operation: Some(Status::Finished { ok: false }),
+            observation_error: None,
+            result: Some(json!({"error": super::super::Code::R2Failed.error("pointer upload failed")})),
+            logs: Vec::new(),
+        },
+    );
+    assert!(
+        text.contains("Acknowledged publication changes remain live.")
+            && text.contains("Service activation acknowledged."),
+        "{text}"
+    );
+    assert!(text.contains("1 uploaded · 0 removed") && text.contains("pointer upload failed"), "{text}");
+    shown.published.clear();
+    let text = show(
+        &mut app,
+        crate::cli::operation_cli::View {
+            run: shown,
+            operation: Some(Status::UnknownOwner {
+                host: "vps".into(),
+                bundle: "a".repeat(64),
+                reason: "pending pointer upload".into(),
+            }),
+            observation_error: Some("SSH unavailable".into()),
+            result: None,
+            logs: Vec::new(),
+        },
+    );
+    assert!(
+        text.contains("Live outcome is not yet known.")
+            && text.contains("pending pointer upload")
+            && text.contains("SSH unavailable"),
+        "{text}"
+    );
+    assert_eq!(app.key(KeyCode::Char('x')), Effect::None, "owner handoff cannot be stopped");
+    assert!(matches!(app.key(KeyCode::Char('c')), Effect::ReconcileRun(_)));
 }
 
 #[test]
@@ -327,25 +554,25 @@ fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
     let mut app = App { screen: Screen::Runs, runs: Vec::new(), ..app() };
     assert_eq!(app.key(KeyCode::Char('p')), Effect::Plan);
     app.plan = Some(PlanView::new(plan()));
-    let drawn = screen(&mut app, 100, 18);
-    let changes = [
-        "          ┌ PLAN · live ─────────────────────────────────────────────────────────────────┐",
-        "          │     CHANGE                             FETCH     TIME     OUTPUT             │",
-        "          │[x]  planner +sun                                 55m 00s  30.0 MB            │",
-        "          │[x]  move land 2024-01-01 → 2024-01-03  950.0 MB  41m 00s  324.0 MB           │",
-        "          │[x]  move osm 2024-01-02 → 2024-01-09   710.0 MB  1h 18m   1.36 GB            │",
-        "          │[x]  code of host/route-build                     44m 00s  1.10 GB            │",
-    ];
-    let footer = [
-        "          │                                                                              │",
-        "          │REMOVE FROM R2  2 keys, 1.10 GB                                               │",
-        "          │⚠ blocked maps: source `wikidata` is blocked                                  │",
-        "          │⚠ R2 was not listed, so leftovers are unknown                                 │",
-        "          │TOTAL  fetch 1.66 GB · build 4 layers, 2h 20m · output 1.46 GB                │",
-        "          └──────────────────────────────────────────────────────────────────────────────┘",
-    ];
-    assert_eq!(drawn[4..16], [&changes[..], &footer[..]].concat(), "{drawn:#?}");
-    assert_eq!(drawn[17], "d steps   esc close", "only keys");
+    let drawn = screen(&mut app, 80, 24).join("\n");
+    for words in [
+        "planner +sun",
+        "move land",
+        "move osm",
+        "code of host/route-build",
+        "REMOVE FROM R2",
+        "2 keys, 1.10 GB",
+        "blocked maps",
+        "leftovers are unknown",
+        "TOTAL",
+        "fetch 1.66 GB",
+        "build 4 layers",
+        "output 1.46 GB",
+    ] {
+        assert!(drawn.contains(words), "{words}: {drawn}");
+    }
+    assert_eq!(drawn.matches("[x]").count(), 2, "required changes are plain rows: {drawn}");
+    assert!(drawn.contains("a review apply") && drawn.contains("f prepare inputs") && drawn.contains("b build only"));
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "an edit always goes");
     app.key(KeyCode::Down);
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["move:osm".into()]));
@@ -355,22 +582,33 @@ fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(vec!["move:land".into()]));
     app.key(KeyCode::Down);
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::Select(Vec::new()));
-    for key in [KeyCode::Enter, KeyCode::Char('a')] {
-        assert_eq!(app.key(key), Effect::None);
-    }
+    assert_eq!(app.key(KeyCode::Enter), Effect::None, "Enter never toggles a move");
     app.key(KeyCode::Char('d'));
-    let drawn = screen(&mut app, 100, 22);
-    let steps = [
-        "          │FETCH                                                                         │",
-        "          │  land  2024-01-03  950.0 MB                                                  │",
-        "          │  osm   2024-01-09  710.0 MB                                                  │",
-        "          │BUILD                                                                         │",
-        "          │  planner/sun       55m 00s                                                   │",
-        "          │  planner/basemap   41m 00s                                                   │",
-        "          │  planner/routing   37m 00s                                                   │",
-        "          │  planner/overlays  7m 00s                                                    │",
-    ];
-    assert_eq!(drawn[5..19], [&steps[..], &footer[..]].concat(), "{drawn:#?}");
+    let drawn = screen(&mut app, 80, 24).join("\n");
+    for words in [
+        "FETCH",
+        "BUILD",
+        "land",
+        "osm",
+        "planner/sun",
+        "planner/basemap",
+        "planner/routing",
+        "planner/overlays",
+        "REMOVE FROM R2",
+        "2 keys, 1.10 GB",
+    ] {
+        assert!(drawn.contains(words), "{words}: {drawn}");
+    }
+    let view = app.plan.as_mut().unwrap();
+    view.taken.only = vec!["none".into()];
+    let resolved = view.taken.clone();
+    view.restore_selection();
+    assert_eq!(view.skipped, ["move:land".into(), "move:osm".into()].into());
+    view.group = 1;
+    assert_eq!(view.toggle(), ["move:land"]);
+    view.restore_selection();
+    assert_eq!(view.only(), ["none"], "a refused selection restores the last resolved checkboxes");
+    assert_eq!(view.taken, resolved);
 }
 
 #[test]

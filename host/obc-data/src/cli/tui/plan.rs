@@ -24,7 +24,7 @@ pub(super) struct PlanView {
     pub group: usize,
 }
 
-fn is_move(group: &Group) -> bool {
+pub(super) fn is_move(group: &Group) -> bool {
     matches!(group.cause, Some(Cause::Move { .. }))
 }
 
@@ -60,6 +60,18 @@ impl PlanView {
         }
         self.only()
     }
+
+    /// A refused selection keeps the last resolved plan and its checkboxes together.
+    pub fn restore_selection(&mut self) {
+        self.skipped = self
+            .all
+            .groups
+            .iter()
+            .filter(|group| is_move(group))
+            .filter(|group| !self.taken.only.is_empty() && !self.taken.only.contains(&group.id))
+            .map(|group| group.id.clone())
+            .collect();
+    }
 }
 
 impl App {
@@ -78,7 +90,13 @@ impl App {
             for group in &all.groups {
                 let cost = Cost::of(std::slice::from_ref(group));
                 let fetch = if group.fetches.is_empty() { String::new() } else { estimate(cost.fetch, bytes) };
-                let mark = if view.skipped.contains(&group.id) { "[ ]" } else { "[x]" };
+                let mark = if !is_move(group) {
+                    ""
+                } else if view.skipped.contains(&group.id) {
+                    "[ ]"
+                } else {
+                    "[x]"
+                };
                 table.push(vec![
                     mark.into(),
                     change(group, &all.edits),
@@ -120,6 +138,10 @@ impl App {
             Line::default(),
             Line::from(format!("REMOVE FROM R2  {}, {}", keys(taken.remove.len()), estimate(removed, bytes))).bold(),
         ];
+        if taken.needs_prepare {
+            footer
+                .push(Line::styled("Inputs are unresolved. Prepare inputs, then review the new plan.", Color::Yellow));
+        }
         let blocked = taken.blocked.iter().map(|blocked| format!("blocked {}: {}", blocked.product, blocked.reason));
         let unlisted = (!taken.listed).then(|| "R2 was not listed, so leftovers are unknown".to_string());
         footer.extend(blocked.chain(unlisted).map(|warning| Line::styled(format!("⚠ {warning}"), Color::Yellow)));
