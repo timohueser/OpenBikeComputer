@@ -84,6 +84,8 @@ an admitted check or edit finishes before the terminal closes.
 | Automation | `s` details; `e` edits Daily/Weekly/Monthly/Custom; arrows select; Tab field; Enter reviews; `y` confirms |
 | Automation host | `d` disables future runs; `b` reviews limits; the Live row shows cadence, next run and last result |
 | Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
+| Configuration | `C` reviews Git changes; `e` edits the message; Enter reviews the commit; `y` commits; `R` refreshes |
+| Config CLI | `config review --json > REVIEW`; `config commit --review REVIEW -m MESSAGE --yes`; no push |
 | Apply | `a` reviews the machine, live changes and removals; `y` starts the exact reviewed plan |
 | Run | Enter opens progress; `R` observes; `x` stops admitted local work; `c` reconciles an owner result |
 | Prepared run | `p` reviews its returned plan before build or apply |

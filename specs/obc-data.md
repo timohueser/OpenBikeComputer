@@ -155,6 +155,18 @@ The options of the [planner layers](#planner) that are the same for each region.
 | `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI and MODIS that the snow layer reads |
 | `sun.horizon_samples`, `sun.horizon_directions` | integer | The horizon profiles of the sun layer: [the sun archive](planner-sun-tiles.md) |
 
+## Configuration commit
+
+`config review` binds changed working bake configuration to HEAD, exact file bytes and Git modes.
+The scope is `data/sources.toml`, `data/env/live.toml`, `data/planner.toml`,
+`data/planner-runtime.toml` and `data/regions/`. Ignored Local state is outside this scope.
+New files and tracked deletions are included. A changed HEAD, path, mode or byte requires a new review.
+
+`config commit` uses an ordinary Git partial commit. Unrelated staged files stay staged.
+Git hooks and signing run with a finite deadline and no terminal input. Errors remain visible.
+If Git advances HEAD but changes the reviewed result, the command reports that actual HEAD and
+refuses exact-reviewed success. It does not push or replace the full index. Unsupported hosts refuse.
+
 ## State of a source
 
 `obc data sources` discovers the active acquisition requests from the current product step lists.
