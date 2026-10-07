@@ -1,5 +1,6 @@
 """Stored services stage without a source checkout or public traffic writes."""
 
+import hashlib
 import io
 import json
 import shlex
@@ -106,6 +107,10 @@ class PlannerInstall(unittest.TestCase):
                    "document": {**self.document, "files": {**self.document["files"],
                                 "routing/unrelated.bin": {"sha256": "c" * 64}}}}
         self.assertNotEqual(runtime.encoded(request["document"]), runtime.encoded(self.document))
+        request["candidates"] = [json.loads(json.dumps(self.candidate))]
+        desired = runtime.encoded(request["document"])
+        request["candidates"][0]["release"].update(size=len(desired), sha256=hashlib.sha256(desired).hexdigest())
+
         self.commands.clear()
         with patch.object(install, "host", return_value=HOST):
             observed = install.observe(request, self.base, self.execute,
