@@ -889,6 +889,17 @@ pub(crate) mod tests {
         )
     }
 
+    pub(crate) fn authored_tool(directory: &Path) -> obc_data::engine::Library {
+        std::fs::create_dir_all(directory).unwrap();
+        let path = directory.join("authored-osmium");
+        std::fs::write(&path, "authored fixture provider").unwrap();
+        obc_data::engine::Library {
+            name: "osmium".into(),
+            path: path.canonicalize().unwrap(),
+            sha256: obc_data::store::hash_file(&path).unwrap().0,
+        }
+    }
+
     pub(crate) struct Temp(pub(crate) PathBuf);
 
     impl Drop for Temp {

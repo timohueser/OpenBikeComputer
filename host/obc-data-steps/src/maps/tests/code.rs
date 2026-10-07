@@ -114,7 +114,7 @@ fn map_recipes(store: &Store) -> Vec<Step> {
     with_osm(store);
     with_captures(store, "1");
     without_models(store, &env, &regions);
-    map_steps(&root(), &env, &regions, store).unwrap().steps
+    Maps.steps_with_tool(&root(), &env, &regions, store, Ok(authored_tool(store.root()))).unwrap().steps
 }
 
 #[test]

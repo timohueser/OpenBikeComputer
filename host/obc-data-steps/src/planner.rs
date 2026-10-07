@@ -910,11 +910,7 @@ mod tests {
                 &env(AREA, &[]),
                 &regions(),
                 &store,
-                Ok(obc_data::engine::Library {
-                    name: "osmium".into(),
-                    path: std::path::PathBuf::from("/authored-copy-osmium"),
-                    sha256: "0".repeat(64),
-                }),
+                Ok(crate::maps::tests::authored_tool(store.root())),
             )
             .unwrap()
             .steps,
