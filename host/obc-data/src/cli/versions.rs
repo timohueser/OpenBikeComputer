@@ -21,7 +21,7 @@ pub(super) struct Request {
 pub(super) struct Versions {
     pub source: String,
     pub requests: Vec<Request>,
-    /// Exact versions known for every active request, newest first.
+    /// Exact versions known for every active request.
     pub common: Vec<String>,
     pub newest: bool,
 }

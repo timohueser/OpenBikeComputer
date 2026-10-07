@@ -5808,7 +5808,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Versions": {
       "properties": {
         "common": {
-          "description": "Exact versions known for every active request, newest first.",
+          "description": "Exact versions known for every active request.",
           "items": {
             "type": "string"
           },
