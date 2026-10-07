@@ -111,7 +111,7 @@ RUST_FOUNDATION_PATHS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     ".cargo/config",
 }
@@ -530,7 +530,7 @@ def select(
                     continue
                 claim_package(name, reason)
             for unit in units:
-                if unit.foundation or (unit.rust_packages and path != "rustfmt.toml"):
+                if unit.foundation or (unit.rust_packages and path != ".rustfmt.toml"):
                     claim(unit, reason)
 
         for name, package in sorted(graph.packages.items()):
@@ -943,7 +943,7 @@ AUDITED_PATHS = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     "specs/vectors/obcm-v2.json",
     "tools/test_plan.py",

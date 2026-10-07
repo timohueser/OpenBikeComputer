@@ -501,7 +501,7 @@ class ShippedPlanTests(unittest.TestCase):
             with self.subTest(path=path):
                 expected = whole if path in plan.SCOPED_POLICY_PATHS else [job for job in whole if not job.startswith("ios-")]
                 self.assertEqual(self.jobs_for(path), expected)
-        for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", ".cargo/config.toml"):
+        for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".rustfmt.toml", ".cargo/config.toml"):
             with self.subTest(path=path):
                 self.assertLessEqual(
                     {"boot", "clippy", "desktop", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
@@ -510,7 +510,7 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_ios_suites_require_their_own_inputs(self) -> None:
         unrelated = [
-            "docs/testing.md", "CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", "rustfmt.toml",
+            "docs/testing.md", "CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", ".rustfmt.toml",
             ".config/nextest.toml", "testing/suites.toml", "testing/coverage-policy.toml",
             ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
             "planner/router-build/src/lib.rs", "planner/service/src/main.rs", "planner/service/src/http.rs",

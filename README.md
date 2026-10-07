@@ -4,7 +4,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/timohueser/OpenBikeComputer/ci.yml?branch=develop&style=flat-square&label=CI)](https://github.com/timohueser/OpenBikeComputer/actions/workflows/ci.yml?query=branch%3Adevelop)
 [![Software: GPL-3.0-only](https://img.shields.io/badge/software-GPL--3.0--only-3c6e47?style=flat-square)](LICENSE)
-[![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/hardware-CERN--OHL--S--2.0-d46a28?style=flat-square)](LICENSE.hardware)
+[![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/hardware-CERN--OHL--S--2.0-d46a28?style=flat-square)](hardware/LICENSE)
 
 **An open-source GPS computer for bikepacking.**
 
@@ -184,5 +184,5 @@ Contributions are always welcome! This project is in the very early stages and m
 
 Software is available under [GPL-3.0-only](LICENSE), except `host/obc-data`, which is MIT OR
 Apache-2.0 and depends on no GPL crate. Hardware design sources are available under
-[CERN-OHL-S-2.0](LICENSE.hardware). Third-party notices are listed in
+[CERN-OHL-S-2.0](hardware/LICENSE). Third-party notices are listed in
 [`THIRD-PARTY.md`](THIRD-PARTY.md).

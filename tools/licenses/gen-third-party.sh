@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$ROOT/THIRD-PARTY.md"
 TPL="$ROOT/tools/licenses/third-party.hbs"
-CFG="$ROOT/about.toml"
+CFG="$ROOT/tools/licenses/about.toml"
 
 check=0
 [ "${1:-}" = "--check" ] && check=1
@@ -70,7 +70,7 @@ trap 'rm -f "$tmp"' EXIT
     echo
     echo "**Generated — do not edit.** \`obc licenses\` rewrites it from the dependency graph;"
     echo "the \`deny\` CI job fails if it is out of date. Which licences are *allowed* in the tree"
-    echo "is a separate question, answered by [\`deny.toml\`](deny.toml)."
+    echo "is a separate question, answered by [\`deny.toml\`](tools/licenses/deny.toml)."
     echo
     echo "Each text is reproduced as the crate ships it, with one normalisation: runs of blank"
     echo "lines are collapsed to one and trailing spaces are dropped. cargo-about enriches some"

@@ -400,7 +400,7 @@ route = "required"
 command = "obc check fmt"
 jobs = ["fmt"]
 foundation = true
-triggers = ["rustfmt.toml"]
+triggers = [".rustfmt.toml"]
 
 [[suite]]
 id = "ci.rust-clippy"
@@ -424,7 +424,7 @@ route = "ordinary"
 command = "obc check deny"
 jobs = ["deny"]
 foundation = true
-triggers = ["deny.toml"]
+triggers = ["tools/licenses/deny.toml"]
 
 # The other half of the dependency work, and a different job: the `test` job runs this script as
 # one step. It reads `cargo metadata` and compiles nothing, so a plan too large to run locally
@@ -507,7 +507,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/app/package-lock.json", "tools/licenses/about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "ci.obc-data-licence"
