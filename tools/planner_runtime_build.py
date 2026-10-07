@@ -15,9 +15,12 @@ import tarfile
 import tempfile
 import tomllib
 
-from tools import step_request
-
 ROOT = Path(__file__).resolve().parents[1]
+if sys.flags.isolated:
+    sys.path.insert(0, str(ROOT))
+from tools import planner_runtime_tools as runtime_tools, step_request
+if sys.flags.isolated:
+    sys.path.remove(str(ROOT))
 TRIPLES = {"x86_64-unknown-linux-gnu": ("x86_64", "amd64", "Advanced Micro Devices X86-64"),
            "aarch64-unknown-linux-gnu": ("aarch64", "arm64", "AArch64")}
 SERVICE_FILES = [
@@ -63,33 +66,49 @@ def run(argv, *, cwd=ROOT, env=None, input=None):
     return result.stdout.decode()
 
 
-def native(service, wanted):
+def native(service, wanted, bind=True):
     if platform.system() != "Linux" or platform.machine() != TRIPLES[wanted["triple"]][0]:
         raise ValueError("Native builder must run on the configured Linux target; select a prepared container")
     libc, release = platform.libc_ver()
     if libc != "glibc" or version(release) > version(wanted["glibc"]):
         raise ValueError("Builder glibc exceeds the configured runtime baseline")
     tools = {"kind": "native", "glibc": release}
+    providers = runtime_tools.providers(service) if bind else None
+    env = runtime_tools.environment()
     if service == "routing":
         tools["release_profile"] = release_profile()
-        tools["rustc"] = run(["rustc", "--version", "--verbose"], env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).strip()
-        tools["cargo"] = run(["cargo", "--version"], env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).strip()
-        tools["cc"] = run(["cc", "--version"]).splitlines()[0]
-        home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
-        tools["cargo_config"] = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                                 for path in (home / "config", home / "config.toml") if path.is_file()}
-        if f"host: {wanted['triple']}" not in tools["rustc"]:
-            raise ValueError("Rust compiler host differs from the configured runtime target")
     else:
-        python = os.environ.get("OBC_PLANNER_RUNTIME_PYTHON", "python3")
-        tools["python"] = json.loads(run([python, "-c", "import json,sys,sysconfig; print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'abi':sysconfig.get_config_var('SOABI'),'implementation':sys.implementation.name}))"]))
+        tools["python"] = {"version": ".".join(map(str, sys.version_info[:3])),
+                           "implementation": sys.implementation.name}
+        if tools["python"]["version"] != wanted["python"] or tools["python"]["implementation"] != "cpython":
+            raise ValueError("Prepared CPython differs from the configured runtime version")
         if service == "search":
-            tools["node"] = run(["node", "--version"]).strip().removeprefix("v")
-            tools["npm"] = run(["npm", "--version"]).strip()
-            tools["uv"] = run(["uv", "--version"]).strip()
-        if tools["python"]["version"] != wanted["python"] or tools["python"]["implementation"] != "cpython" or service == "search" and tools["node"] != wanted["node"]:
-            raise ValueError("Prepared Node or CPython differs from the configured runtime version")
+            node = providers["commands"]["node"] if providers else "node"
+            tools["node"] = run([node, "--version"], env=env).strip().removeprefix("v")
+            if tools["node"] != wanted["node"]:
+                raise ValueError("Prepared Node differs from the configured runtime version")
+    if providers:
+        tools["providers"] = providers
     return tools
+
+
+def execution_builder(service, wanted):
+    result = native(service, wanted)
+    if service == "routing":
+        worker = os.environ.get("OBC_PLANNER_RUNTIME_WORKER")
+        if not worker or not Path(worker).is_absolute():
+            raise ValueError("Start native routing through the checked obc data worker")
+        result["providers"]["rust"] = json.loads(run([worker, "--planner-runtime-routing"]))
+    return result
+
+
+def execution_digest(builder):
+    providers = builder["providers"]
+    document = {"tools": {name: value["sha256"] for name, value in providers["files"].items()},
+                "rust": providers.get("rust", {}).get("identity"),
+                "settings": {name: value for name, value in builder.items() if name not in {"providers", "execution"}},
+                "policy": "isolated-no-site-utf8-empty-npm-config-no-global-paths-no-uv-config"}
+    return hashlib.sha256(json.dumps(document, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def builder(service, wanted, choice):
@@ -184,7 +203,7 @@ def routing_notices(triple):
     return heading + document.split(heading, 1)[1].split("\n## ", 1)[0]
 
 
-def elf_requirements(directory, wanted):
+def elf_requirements(directory, wanted, readelf="readelf"):
     libraries, provided = set(), set()
     for path in sorted(directory.rglob("*")):
         if not path.is_file():
@@ -192,14 +211,14 @@ def elf_requirements(directory, wanted):
         with path.open("rb") as stream:
             if stream.read(4) != b"\x7fELF":
                 continue
-        env = {**os.environ, "LC_ALL": "C"}
-        header = run(["readelf", "-h", str(path)], env=env)
+        env = runtime_tools.environment()
+        header = run([readelf, "-h", str(path)], env=env)
         if TRIPLES[wanted["triple"]][2] not in header:
             raise ValueError(f"Runtime ELF architecture differs: {path.name}")
-        versions = run(["readelf", "--version-info", str(path)], env=env)
+        versions = run([readelf, "--version-info", str(path)], env=env)
         if any(version(item) > version(wanted["glibc"]) for item in re.findall(r"\bGLIBC_(\d+\.\d+)\b", versions)):
             raise ValueError(f"Runtime ELF exceeds the glibc baseline: {path.name}")
-        dynamic = run(["readelf", "-d", str(path)], env=env)
+        dynamic = run([readelf, "-d", str(path)], env=env)
         libraries.update(re.findall(r"\(NEEDED\).*?\[(.*?)\]", dynamic))
         provided.update(re.findall(r"\(SONAME\).*?\[(.*?)\]", dynamic))
         provided.add(path.name)
@@ -236,7 +255,7 @@ def container(request):
         if value:
             source = Path(value).resolve(strict=True)
             argv += ["--mount", f"type=bind,source={source},target={dest}", "--env", f"{name}={dest}"]
-    argv += [request["options"]["builder"]["image"], "python3", "-m", "tools.planner_runtime_build", "--step", "--inside"]
+    argv += [request["options"]["builder"]["image"], "python3", "-I", "-S", "-X", "utf8", "/src/tools/planner_runtime_build.py", "--step", "--inside"]
     run(argv, input=encoded(child))
 
 
@@ -252,22 +271,33 @@ def build(request, inside=False):
             raise ValueError("Prepared runtime builder changed; plan again")
         container(request)
         return
-    actual = native(service, wanted)
-    if not inside and actual != fingerprint or service == "routing" and actual.get("release_profile") != fingerprint.get("release_profile"):
+    actual = native(service, wanted, bind=False) if inside else execution_builder(service, wanted)
+    providers = actual.get("providers")
+    if not inside and fingerprint != {"kind":"native", "execution":execution_digest(actual)} or service == "routing" and inside and actual.get("release_profile") != fingerprint.get("release_profile"):
         raise ValueError("Prepared runtime tools changed; plan again")
+    if providers:
+        runtime_tools.check(providers)
+    commands = providers["commands"] if providers else {}
     output = Path(request["output"])
     with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
         work = Path(temporary)
         payload = work / "payload"
         payload.mkdir()
         shutil.copyfile(ROOT / "LICENSE", payload / "LICENSE")
-        env = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "TMPDIR", "CARGO_HOME", "CARGO_BUILD_JOBS", "RUSTUP_HOME", "UV_CACHE_DIR", "npm_config_cache"}}
-        env.update({"RUSTUP_AUTO_INSTALL": "0", "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "PYTHONDONTWRITEBYTECODE": "1", "LC_ALL": "C"})
+        env = runtime_tools.environment()
         packages = {}
         if service == "routing":
+            env.pop("LD_LIBRARY_PATH", None)
             env["CARGO_TARGET_DIR"] = str(work / "target")
-            env["RUSTFLAGS"] = f"--remap-path-prefix={ROOT}=/src --remap-path-prefix={work}=/build"
-            run(["cargo", "build", "--release", "--locked", "--offline", "-p", "route-server", "--bin", "route-server", "--target", wanted["triple"]], env=env)
+            flags = [f"--remap-path-prefix={ROOT}=/src", f"--remap-path-prefix={work}=/build"]
+            cargo = "cargo"
+            if providers:
+                rust = providers["rust"]["executables"]
+                cargo = rust["cargo"]
+                env["RUSTC"] = rust["rustc"]
+                flags.append(f"-Clinker={rust['cc']}")
+            env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
+            run([cargo, "build", "--release", "--locked", "--offline", "-p", "route-server", "--bin", "route-server", "--target", wanted["triple"]], env=env)
             (payload / "bin").mkdir()
             shutil.copyfile(work / "target" / wanted["triple"] / "release/route-server", payload / "bin/route-server")
             (payload / "bin/route-server").chmod(0o755)
@@ -278,28 +308,36 @@ def build(request, inside=False):
             app.mkdir()
             for name in ("package.json", "package-lock.json"):
                 shutil.copyfile(source / name, app / name)
-            run(["npm", "ci", "--offline", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--bin-links=false"], cwd=app, env=env)
-            packages = npm_packages(json.loads(run(["npm", "ls", "--all", "--omit=dev", "--json", "--long"], cwd=app, env=env)))
+            npm = lambda *args: runtime_tools.npm(providers, *args) if providers else ["npm", *args]
+            run(npm("ci", "--offline", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--bin-links=false"), cwd=app, env=env)
+            packages = npm_packages(json.loads(run(npm("ls", "--all", "--omit=dev", "--json", "--long"), cwd=app, env=env)))
             shutil.copytree(app / "node_modules", payload / "node_modules")
             copy_service(source, payload, options["files"])
             requirements = work / "requirements.txt"
-            run(["uv", "export", "--locked", "--offline", "--no-default-groups", "--group", "search-runtime", "--no-emit-project", "--no-header", "--no-annotate", "--output-file", str(requirements)], env=env)
-            python = os.environ.get("OBC_PLANNER_RUNTIME_PYTHON", "python3")
-            run(["uv", "pip", "install", "--offline", "--no-python-downloads", "--python", python, "--target", str(payload / "python"), "--no-deps", "--require-hashes", "--only-binary=:all:", "-r", str(requirements)], env=env)
+            uv = commands.get("uv", "uv")
+            run([uv, "--no-config", "export", "--locked", "--offline", "--no-default-groups", "--group", "search-runtime", "--no-emit-project", "--no-header", "--no-annotate", "--output-file", str(requirements)], env=env)
+            python = commands.get("python", sys.executable)
+            run([uv, "--no-config", "pip", "install", "--offline", "--no-python-downloads", "--python", python, "--target", str(payload / "python"), "--no-deps", "--require-hashes", "--only-binary=:all:", "-r", str(requirements)], env=env)
             if (payload / "python/bin").exists():
                 shutil.rmtree(payload / "python/bin")
             shutil.copyfile(requirements, payload / "requirements.txt")
-            run([python, "-S", "-c", "import numpy,onnxruntime,tokenizers,rapidfuzz,snowballstemmer,yaml"], env={**env, "PYTHONPATH": str(payload / "python")})
+            run([python, "-I", "-S", "-X", "utf8", "-c", f"import sys; sys.path.insert(0, {str(payload / 'python')!r}); import numpy,onnxruntime,tokenizers,rapidfuzz,snowballstemmer,yaml"], env=env)
         else:
             copy_downloads(ROOT / "tools", payload)
-            python = os.environ.get("OBC_PLANNER_RUNTIME_PYTHON", "python3")
+            python = commands.get("python", sys.executable)
             for module in ("planner_downloads", "planner_install"):
-                run([python, "-S", "-m", f"tools.{module}", "--help"], cwd=payload, env={**env, "PYTHONPATH": str(payload)})
-        if native(service, wanted) != actual:
+                run([python, "-I", "-S", "-X", "utf8", "-c", f"import sys,runpy; sys.path.insert(0, {str(payload)!r}); runpy.run_module('tools.{module}', run_name='__main__')", "--help"], cwd=payload, env=env)
+        if providers:
+            runtime_tools.check(providers)
+        if (native(service, wanted, bind=False) if inside else execution_builder(service, wanted)) != actual:
             raise ValueError("Prepared runtime tools changed during the build; plan again")
-        libraries = elf_requirements(payload, wanted)
+        libraries = elf_requirements(payload, wanted, commands.get("readelf", "readelf"))
         artifact = output / f"{service}.tar.gz"
         stored = archive(payload, artifact)
+        if providers:
+            runtime_tools.check(providers)
+            if execution_builder(service, wanted) != actual:
+                raise ValueError("Prepared runtime tools changed during packaging; plan again")
     document = {"format": 1, "service": service, "target": wanted,
                 "payload": {"path": artifact.name, **stored}, "libraries": libraries,
                 "entry": {"routing": "bin/route-server", "search": "server.mjs", "downloads": "tools.planner_downloads"}[service]}
@@ -308,6 +346,8 @@ def build(request, inside=False):
 
 
 def main():
+    if not sys.flags.isolated or not sys.flags.no_site or not sys.flags.utf8_mode:
+        raise ValueError("Run the runtime adapter with python -I -S -X utf8 tools/planner_runtime_build.py")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--step", action="store_true")
     parser.add_argument("--inside", action="store_true")
