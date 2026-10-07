@@ -11,21 +11,21 @@
       "name": "web-builder-frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "5173"],
-      "cwd": "builder/app",
+      "cwd": "builder/web",
       "port": 5173
     },
     {
       "name": "web-builder-static",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--mode", "web", "--port", "5173"],
-      "cwd": "builder/app",
+      "cwd": "builder/web",
       "port": 5173
     },
     {
       "name": "web-builder-desktop",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--mode", "desktop", "--port", "5173"],
-      "cwd": "builder/app",
+      "cwd": "builder/web",
       "port": 5173
     },
     {

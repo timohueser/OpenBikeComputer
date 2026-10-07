@@ -9,6 +9,7 @@ use crate::engine::runs::check_id;
 use crate::engine::LayerFile;
 use crate::store::{sha256_hex, Store};
 
+pub mod budget;
 pub mod launch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -17,6 +18,7 @@ pub enum Kind {
     Prepare,
     Build,
     Apply,
+    Auto,
     DevPrepare,
 }
 
@@ -48,6 +50,14 @@ impl Request {
             && (self.env != "live" || self.plan.is_none() || !self.only.is_empty() || !self.moves.is_empty())
         {
             return Err("apply takes only the reviewed plan of live".into());
+        }
+        if self.kind == Kind::Auto
+            && (self.env == "fixture" || self.env == "fixtures" || self.env.starts_with("fixture-"))
+        {
+            return Err("fixture environments do not support automation".into());
+        }
+        if self.kind == Kind::Auto && (self.plan.is_some() || !self.only.is_empty() || !self.moves.is_empty()) {
+            return Err("auto owns its used stale requests and takes no saved plan or selections".into());
         }
         if self.kind == Kind::Prepare && self.plan.is_some() {
             return Err("prepare resolves inputs before a saved plan exists".into());
@@ -186,8 +196,14 @@ pub(crate) fn active_path(store: &Store, env: &str) -> PathBuf {
     store.root().join("operations").join(format!("{env}.active"))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reservation {
+    Reserved,
+    Busy(String),
+}
+
 /// Reserve one environment without a waiting queue or an expiry that can admit an old child.
-pub fn reserve(store: &Store, control: &Control) -> Result<(), String> {
+pub fn reserve(store: &Store, control: &Control) -> Result<Reservation, String> {
     control.request.check()?;
     check_id(&control.run)?;
     if control.state != State::Reserved || control.request.digest()? != control.request_sha256 {
@@ -195,14 +211,17 @@ pub fn reserve(store: &Store, control: &Control) -> Result<(), String> {
     }
     let _lock = store.lock(&format!("operation-control-{}", control.request.env))?;
     if store.is_locked(&format!("operation-active-{}", control.request.env))? {
-        return Err("the environment worker has not drained yet".into());
+        return Ok(Reservation::Busy("the environment worker has not drained yet".into()));
     }
     let active = active_path(store, &control.request.env);
     match std::fs::read_to_string(&active) {
         Ok(id) => {
             let previous = read(store, &id)?.ok_or("active operation has no control")?;
             if !previous.state.terminal() {
-                return Err(format!("operation {} already owns {}; inspect or stop it", id, control.request.env));
+                return Ok(Reservation::Busy(format!(
+                    "operation {} already owns {}; inspect or stop it",
+                    id, control.request.env
+                )));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -212,7 +231,8 @@ pub fn reserve(store: &Store, control: &Control) -> Result<(), String> {
         return Err("an operation id cannot be rebound to another request".into());
     }
     save(store, control)?;
-    crate::commit::durable(&active, control.run.as_bytes())
+    crate::commit::durable(&active, control.run.as_bytes())?;
+    Ok(Reservation::Reserved)
 }
 
 fn change<T>(store: &Store, run: &str, update: impl FnOnce(&mut Control) -> Result<T, String>) -> Result<T, String> {
@@ -313,8 +333,8 @@ pub fn handoff(store: &Store, run: &str, host: &str, bundle: &str) -> Result<(),
         if control.state != State::Running {
             return Err("operation stopped before publication handoff".into());
         }
-        if control.request.kind != Kind::Apply {
-            return Err("only an apply hands off publication".into());
+        if !matches!(control.request.kind, Kind::Apply | Kind::Auto) || control.request.env != "live" {
+            return Err("only live apply or auto can hand off publication".into());
         }
         control.state = State::Owner { host: host.into(), bundle: bundle.into() };
         Ok(())
@@ -357,11 +377,17 @@ mod tests {
         let first = control("2026-10-06-120000");
         let next = control("2026-10-06-120001");
         reserve(&store, &first).unwrap();
-        assert!(reserve(&store, &next).unwrap_err().contains("already owns"));
+        assert!(
+            matches!(reserve(&store, &next).unwrap(), Reservation::Busy(reason) if reason.contains("already owns"))
+        );
+        assert!(read(&store, &next.run).unwrap().is_none(), "busy has no admitted control");
         assert_eq!(stop(&store, &first.run).unwrap(), State::Stopped);
         reserve(&store, &next).unwrap();
         assert!(claim(&store, &first.run, &first.request_sha256).is_err());
         let using = claim(&store, &next.run, &next.request_sha256).unwrap();
+        assert!(
+            matches!(reserve(&store, &first).unwrap(), Reservation::Busy(reason) if reason.contains("not drained"))
+        );
         assert_eq!(stop(&store, &next.run).unwrap(), State::Stopping);
         assert!(stopped(&store, &next.run).unwrap());
         finish(&store, &next.run, false, None).unwrap();
@@ -444,6 +470,22 @@ mod tests {
             read(&store, &first.run).unwrap().unwrap().state,
             State::Owner { host: "publisher".into(), bundle: "c".repeat(64) }
         );
-        assert!(reserve(&store, &first).is_err());
+        let owner = read(&store, &first.run).unwrap().unwrap();
+        assert!(matches!(
+            reserve(&store, &first).unwrap(),
+            Reservation::Busy(reason) if reason.contains("already owns live")
+        ));
+        assert_eq!(read(&store, &first.run).unwrap().unwrap(), owner);
+        let mut local = control("2026-10-06-120001");
+        local.request.kind = Kind::Auto;
+        local.request_sha256 = local.request.digest().unwrap();
+        reserve(&store, &local).unwrap();
+        let local_using = claim(&store, &local.run, &local.request_sha256).unwrap();
+        assert!(handoff(&store, &local.run, "publisher", &"e".repeat(64)).unwrap_err().contains("only live"));
+        assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Running);
+        assert_eq!(stop(&store, &local.run).unwrap(), State::Stopping);
+        finish(&store, &local.run, false, None).unwrap();
+        drop(local_using);
+        assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Stopped);
     }
 }

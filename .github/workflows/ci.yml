@@ -182,7 +182,7 @@ jobs:
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
           echo "::endgroup::"
           echo "::group::obc-desktop (workspace-excluded)"
-          cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml || rc=1
+          cargo fmt --check --manifest-path builder/desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -247,7 +247,7 @@ jobs:
         with:
           node-version: "22"
       - name: Prepare locked planner artifact readers
-        run: npm ci --omit=dev --ignore-scripts --prefix builder/app
+        run: npm ci --omit=dev --ignore-scripts --prefix builder/web
       # The planner Python steps run under uv: obc-data-steps runs one in its tests.
       - uses: actions/setup-java@v4
         with:
@@ -643,7 +643,7 @@ jobs:
       # The desktop shell is the one artifact a *user* installs, so its tree is the
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
-        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config tools/licenses/deny.toml check
+        run: cargo deny --manifest-path builder/desktop/Cargo.toml --all-features --config tools/licenses/deny.toml check
       # deny.toml skips the repository's own crates, so it cannot see obc-data reach one.
       - name: obc-data depends on no GPL crate
         run: python3 tools/check_obc_data_licence.py
@@ -743,13 +743,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
           retention-days: 1
       # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
       - uses: actions/upload-artifact@v4
         with:
           name: obc-flat-device-pkg
-          path: builder/app/test-support/flat-device/pkg
+          path: builder/web/test-support/flat-device/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
@@ -986,7 +986,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: builder/app
+        working-directory: builder/web
     steps:
       - uses: actions/checkout@v4
         with:
@@ -995,18 +995,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
       # The device the USB suites run against. The desktop-frontend job does not download it: that
       # job only builds the shipped bundle, which must not contain this package at all.
       - uses: actions/download-artifact@v4
         with:
           name: obc-flat-device-pkg
-          path: builder/app/test-support/flat-device/pkg
+          path: builder/web/test-support/flat-device/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
       - run: npm ci
       - name: svelte-check
         run: npm run check
@@ -1048,30 +1048,30 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
       - name: Install the builder's build dependencies
-        working-directory: builder/app
+        working-directory: builder/web
         run: npm ci
       - name: Install builder browser runner
-        working-directory: builder/app/tests/browser
+        working-directory: builder/web/tests/browser
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
       - name: Builder assemble and download journey
         id: browser-journey
-        run: npm test --prefix builder/app/tests/browser
+        run: npm test --prefix builder/web/tests/browser
       - name: Require browser journey execution
         if: ${{ !cancelled() }}
         env:
           JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
         run: test "$JOURNEY_OUTCOME" = success
       - name: Planner request budget
-        run: npm run test:planner --prefix builder/app/tests/browser
+        run: npm run test:planner --prefix builder/web/tests/browser
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1092,21 +1092,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
       - name: Build the desktop bundle
-        working-directory: builder/app
+        working-directory: builder/web
         run: |
           npm ci
           npm run build:desktop
       - uses: actions/upload-artifact@v4
         with:
           name: obc-desktop-frontend
-          path: builder/app/dist/desktop
+          path: builder/web/dist/desktop
           retention-days: 1
 
   desktop:
@@ -1146,7 +1146,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/obc-desktop
+          workspaces: builder/desktop
           key: desktop-${{ matrix.slug }}
       # wry's Linux backend. macOS and Windows need nothing extra — which is most of
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
@@ -1166,24 +1166,24 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-desktop-frontend
-          path: builder/app/dist/desktop
+          path: builder/web/dist/desktop
       # Order matters. `cargo test` never produces the plain binary — even with
       # --all-targets it builds bins as *test harnesses*, a different artifact — so the
       # `build` below is a full codegen + link either way. Running it first means the
       # normal lib it produces is already there for `test` to link against, instead of
       # `test` building one set of artifacts and `build` starting a second.
       - name: "obc-desktop: clippy"
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: cargo clippy --release --all-targets --locked -- -D warnings
       - name: "obc-desktop: build (release)"
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: cargo build --release --locked
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
       - name: "obc-desktop: test"
         id: desktop-tests
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         env:
           NEXTEST_PROFILE: ci
         run: |
@@ -1194,18 +1194,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-tests-${{ matrix.slug }}-${{ github.run_attempt }}
-          path: apps/obc-desktop/target/nextest/ci/junit.xml
+          path: builder/desktop/target/nextest/ci/junit.xml
           if-no-files-found: error
       # Recorded so an accidental native dependency or bundling regression is visible.
       - name: "obc-desktop: record the artifact size"
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: |
           bytes=$(wc -c < "target/release/${{ matrix.exe }}")
           echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: obc-desktop-${{ matrix.slug }}
-          path: apps/obc-desktop/target/release/${{ matrix.exe }}
+          path: builder/desktop/target/release/${{ matrix.exe }}
           retention-days: 7
       # macOS ships two architectures and this crate is built on the Apple-silicon
       # runner, so cross-build the Intel slice to keep a future universal bundle open.
@@ -1214,7 +1214,7 @@ jobs:
       # correctness gate on the app anyone runs.
       - name: "obc-desktop: the macOS Intel slice (build-only)"
         if: runner.os == 'macOS' && github.event_name == 'push'
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
@@ -1234,7 +1234,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-desktop-linux-x86_64
-          path: apps/obc-desktop/target/release
+          path: builder/desktop/target/release
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -1251,13 +1251,13 @@ jobs:
           sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
           uv sync --locked --group desktop-e2e
           cargo install tauri-driver --version 2.0.6 --locked
-          chmod +x apps/obc-desktop/target/release/obc-desktop
+          chmod +x builder/desktop/target/release/obc-desktop
           dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
       - name: Launch the release frontend and select a catalog region
         id: launch
         env:
           OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
-        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py
+        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py
       - name: Upload Linux launch evidence
         if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1336,7 +1336,14 @@ jobs:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Verify selected suites and required jobs
-        env:
-          OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
-          OBC_NEEDS_RESULTS: ${{ toJSON(needs) }}
-        run: python3 tools/ci_aggregate.py
+        # The runner writes this script to a file; JSON stays outside exec's environment.
+        run: |
+          cat > "$RUNNER_TEMP/ci-selection-plan.json" <<'OBC_SELECTION_PLAN_JSON'
+          ${{ needs.selection.outputs.plan }}
+          OBC_SELECTION_PLAN_JSON
+          cat > "$RUNNER_TEMP/ci-needs-results.json" <<'OBC_NEEDS_RESULTS_JSON'
+          ${{ toJSON(needs) }}
+          OBC_NEEDS_RESULTS_JSON
+          python3 tools/ci_aggregate.py \
+            --plan-file "$RUNNER_TEMP/ci-selection-plan.json" \
+            --needs-file "$RUNNER_TEMP/ci-needs-results.json"

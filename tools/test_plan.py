@@ -35,7 +35,7 @@ PRODUCT_ROOTS = (
     "firmware/obc-fw-nrf54l",
     "firmware/obc-boot",
     "firmware/obc-sensor-sim",
-    "apps/obc-desktop",
+    "builder/desktop",
 )
 
 @dataclass(frozen=True)
@@ -74,7 +74,7 @@ JOBS: dict[str, Job] = {
     "verification": Job(needs=("selection",)),
     "planner-search": Job(needs=("selection",)),
     "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
-    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("apps/obc-desktop",)),
+    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("builder/desktop",)),
     "desktop-launch": Job(needs=("selection", "desktop")),
 }
 
@@ -951,9 +951,9 @@ AUDITED_PATHS = (
     "fixtures/catalog.toml",
     ".github/workflows/bake.yml",
     "testing/suites.toml",
-    "builder/app/src/lib/example.ts",
+    "builder/web/src/lib/example.ts",
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
-    "apps/obc-desktop/src/main.rs",
+    "builder/desktop/src/main.rs",
     "docs/index.md",
 )
 

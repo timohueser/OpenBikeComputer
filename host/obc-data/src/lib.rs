@@ -18,6 +18,7 @@ pub mod operation;
 pub mod product;
 pub mod r2;
 pub mod regions;
+pub mod schedule;
 pub mod sources;
 pub mod store;
 pub mod vps;

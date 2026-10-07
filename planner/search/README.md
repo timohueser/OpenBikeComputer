@@ -8,7 +8,7 @@ need no external search service. Map tiles and routing are separate services.
 
 From the repository root, run `obc planner setup` and `obc planner` for maps,
 search and routing. See the
-[planner README](../../builder/app/src/components/planner/README.md).
+[planner README](../../builder/web/src/components/planner/README.md).
 Run search separately below.
 
 To prepare dependencies and the query model separately, install Node 24 or later,

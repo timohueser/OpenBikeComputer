@@ -134,5 +134,5 @@ during an install.
 - Bootloader: [`obc-boot`](src:firmware/obc-boot)
 - Package tool: [`obc-mkimage`](src:host/obc-mkimage)
 - Release workflow: [`release.yml`](src:.github/workflows/release.yml)
-- Web release client: [`release.ts`](src:builder/app/src/lib/firmware/release.ts)
+- Web release client: [`release.ts`](src:builder/web/src/lib/firmware/release.ts)
 - iOS release client: [`Firmware`](src:companion-ios/Packages/OBCKit/Sources/OBCTransport/Firmware)

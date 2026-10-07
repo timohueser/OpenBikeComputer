@@ -42,7 +42,7 @@ members = [
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
-    "host/obc-usb",
+    "builder/usb",
     "host/obc-data",
     "host/obc-data-steps",
     # sim/ — the shared host and development shells.

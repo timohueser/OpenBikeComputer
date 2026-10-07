@@ -107,7 +107,7 @@ triggers = [
   "planner/search/query/*.py",
   "planner/search/query/contract.json",
   "host/obc-search-bake/policy.py",
-  "builder/app/src/lib/planner/poi-kinds.json",
+  "builder/web/src/lib/planner/poi-kinds.json",
 ]
 
 [[package]]
@@ -177,8 +177,8 @@ platforms = ["linux"]
 
 [[package]]
 name = "obc-desktop"
-command = "cargo test --manifest-path apps/obc-desktop/Cargo.toml --release --locked"
-triggers = ["builder/app/**"]
+command = "cargo test --manifest-path builder/desktop/Cargo.toml --release --locked"
+triggers = ["builder/web/**"]
 
 # ── Suites no Cargo package owns ────────────────────────────────────────────
 
@@ -194,18 +194,18 @@ triggers = ["sim/web-demo/**", "sim/desktop/assets/**", "docs/index.html", "docs
 [[suite]]
 id = "web.builder-vitest"
 route = "ordinary"
-command = "cd builder/app && npm test"
+command = "cd builder/web && npm test"
 jobs = ["web"]
 fixtures = ["checked-in-web-fixtures"]
 triggers = [
   "docs/assets/theme.css", "docs/assets/fonts/**",
-  "builder/app/**/*.test.ts",
-  "builder/app/src/**",
-  "builder/app/test-support/**",
-  "builder/app/package.json",
-  "builder/app/package-lock.json",
+  "builder/web/**/*.test.ts",
+  "builder/web/src/**",
+  "builder/web/test-support/**",
+  "builder/web/package.json",
+  "builder/web/package-lock.json",
   "tools/planner_mvt_verify.mjs",
-  "builder/app/vite.config.ts",
+  "builder/web/vite.config.ts",
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",
   "sim/flat-device/**",
@@ -228,28 +228,28 @@ triggers = ["tools/verification/**"]
 [[suite]]
 id = "web.builder-browser"
 route = "ordinary"
-command = "npm test --prefix builder/app/tests/browser"
+command = "npm test --prefix builder/web/tests/browser"
 jobs = ["web-browser"]
 fixtures = ["checked-in-web-fixtures"]
 platforms = ["linux", "macos"]
-triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/**", "builder/wasm/**", "tools/fixture_catalog.py"]
+triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/**", "builder/wasm/**", "tools/fixture_catalog.py"]
 
 [[suite]]
 id = "web.planner-requests"
 route = "ordinary"
-command = "npm run test:planner --prefix builder/app/tests/browser"
+command = "npm run test:planner --prefix builder/web/tests/browser"
 jobs = ["web-browser"]
 platforms = ["linux", "macos"]
 triggers = [
-  "builder/app/src/components/planner/**",
-  "builder/app/src/lib/planner/**",
-  "builder/app/src/planner.ts",
-  "builder/app/planner.html",
-  "builder/app/tests/browser/planner/**",
-  "builder/app/tests/browser/playwright.planner.config.js",
-  "builder/app/tests/browser/package.json",
-  "builder/app/package.json",
-  "builder/app/vite.config.ts",
+  "builder/web/src/components/planner/**",
+  "builder/web/src/lib/planner/**",
+  "builder/web/src/planner.ts",
+  "builder/web/planner.html",
+  "builder/web/tests/browser/planner/**",
+  "builder/web/tests/browser/playwright.planner.config.js",
+  "builder/web/tests/browser/package.json",
+  "builder/web/package.json",
+  "builder/web/vite.config.ts",
   "planner/search/query/contract.json",
 ]
 
@@ -271,7 +271,7 @@ triggers = [
   "data/regions/**",
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
-  "builder/app/src/App.svelte",
+  "builder/web/src/App.svelte",
   "testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
@@ -332,7 +332,7 @@ jobs = ["ios-unit"]
 platforms = ["linux", "macos"]
 triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**",
   # The replay-assets prepare step transpiles the web map style.
-  "builder/app/src/lib/planner/map-style.ts", "data/sources.toml"]
+  "builder/web/src/lib/planner/map-style.ts", "data/sources.toml"]
 
 [[suite]]
 id = "swift.obckit-host"
@@ -351,7 +351,7 @@ triggers = [
   "companion-ios/Packages/OBCKit/Tests/**",
   "companion-ios/ReplayAssets/prepare.mjs",
   # The replay-assets prepare step transpiles the web map style.
-  "builder/app/src/lib/planner/map-style.ts",
+  "builder/web/src/lib/planner/map-style.ts",
   "data/sources.toml",
   "planner/search/query/contract.json",
   "specs/vectors/**",
@@ -477,7 +477,7 @@ command = "bash builder/build-wasm-bridges.sh"
 jobs = ["wasm", "wasm-bridges"]
 foundation = true
 triggers = [
-  "builder/app/package-lock.json",
+  "builder/web/package-lock.json",
   "builder/build-wasm-bridges.sh",
   "builder/wasm/wasm_size_guard.py",
   "sim/flat-device/**",
@@ -490,7 +490,7 @@ id = "ci.web-build"
 route = "ordinary"
 command = "obc check frontend"
 jobs = ["desktop-frontend", "web"]
-triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/src/**"]
+triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
 
 [[suite]]
 id = "ci.docs"
@@ -507,7 +507,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/app/package-lock.json", "tools/licenses/about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/web/package-lock.json", "tools/licenses/about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "ci.obc-data-licence"
@@ -584,7 +584,7 @@ triggers = [
   "planner/search/query/contract.json",
   "planner/search/query/lexicon/kinds.json",
   # The project step runs planner/search/native-build.mjs, which loads the notice module.
-  "builder/app/vite/third-party-licenses.ts",
+  "builder/web/vite/third-party-licenses.ts",
   "data/sources.toml",
   "rust-toolchain.toml",
 ]
@@ -628,7 +628,7 @@ triggers = [
   "planner/search/query/contract.json",
   "planner/search/query/lexicon/kinds.json",
   # The project step runs planner/search/native-build.mjs, which loads the notice module.
-  "builder/app/vite/third-party-licenses.ts",
+  "builder/web/vite/third-party-licenses.ts",
   "data/sources.toml",
   "rust-toolchain.toml",
 ]
@@ -657,13 +657,13 @@ triggers = [
 [[suite]]
 id = "e2e.desktop-linux-launch"
 route = "ordinary"
-command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py"
+command = "xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py"
 jobs = ["desktop-launch"]
 platforms = ["linux"]
 triggers = [
   "pyproject.toml", "uv.lock",
-  "apps/obc-desktop/**",
-  "builder/app/**",
+  "builder/desktop/**",
+  "builder/web/**",
   "host/obc-pack/schema/*.example.json",
   "tools/fixture_catalog.py",
 ]
@@ -745,11 +745,11 @@ targets = ["row_hash_timing"]
 [[suite]]
 id = "device.upload-smoke"
 route = "manual"
-command = "npm run smoke --prefix builder/app/tests/device-smoke -- --replace-map"
+command = "npm run smoke --prefix builder/web/tests/device-smoke -- --replace-map"
 platforms = ["linux", "macos"]
 triggers = [
-  "builder/app/tests/device-smoke/**",
-  "builder/app/test-support/device-smoke/**",
+  "builder/web/tests/device-smoke/**",
+  "builder/web/test-support/device-smoke/**",
   "sim/desktop/assets/grimsel-demo.obcm",
   "tools/board.py",
 ]
@@ -779,15 +779,15 @@ targets = ["decode", "real_tile"]
 [[suite]]
 id = "live.builder-memory"
 route = "live"
-command = "npm run test:live --prefix builder/app/tests/browser"
+command = "npm run test:live --prefix builder/web/tests/browser"
 platforms = ["linux", "macos"]
 triggers = [
-  "builder/app/tests/browser/live-memory.test.ts",
-  "builder/app/tests/browser/playwright.live.config.js",
-  "builder/app/tests/browser/package.json",
-  "builder/app/src/lib/assemble/**",
-  "builder/app/src/lib/cells/store.ts",
-  "builder/app/src/components/coverage/DownloadStep.svelte",
+  "builder/web/tests/browser/live-memory.test.ts",
+  "builder/web/tests/browser/playwright.live.config.js",
+  "builder/web/tests/browser/package.json",
+  "builder/web/src/lib/assemble/**",
+  "builder/web/src/lib/cells/store.ts",
+  "builder/web/src/components/coverage/DownloadStep.svelte",
   "builder/wasm/**",
 ]
 

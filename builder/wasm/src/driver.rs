@@ -291,7 +291,7 @@ pub enum Phase {
 
 impl Phase {
     /// The stable identifier the browser wrapper re-exports as its `AssemblePhase` union. Keep
-    /// these in sync with `builder/app/src/lib/assemble/bridge.ts`.
+    /// these in sync with `builder/web/src/lib/assemble/bridge.ts`.
     pub const fn as_str(self) -> &'static str {
         match self {
             Phase::Open => "open",
@@ -671,7 +671,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// The stable kebab-case identifier the browser wrapper re-exports as its `AssembleErrorCode`
-    /// union. Keep these in sync with `builder/app/src/lib/assemble/bridge.ts`.
+    /// union. Keep these in sync with `builder/web/src/lib/assemble/bridge.ts`.
     pub const fn as_str(self) -> &'static str {
         match self {
             ErrorCode::Input => "input",

@@ -65,7 +65,7 @@ KINDS: dict[str, str | None] = {
     "town": None,
 }
 
-# The map category (builder/app/src/lib/planner/poi-kinds.json) whose icon and layer show a
+# The map category (builder/web/src/lib/planner/poi-kinds.json) whose icon and layer show a
 # kind. A kind without an entry takes its parent's; a kind that gets none shows on no layer.
 CATEGORIES = {
     "water": "water", "sleep": "hotel", "campsite": "camp", "shelter": "shelter",

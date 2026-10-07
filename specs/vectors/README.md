@@ -14,8 +14,8 @@ object, and the OBCT terrain raster ([`OBCT_Spec.md`](../OBCT_Spec.md)), consume
 - **Browser**: two consumers.
   - The wasm conversion bridge (`builder/wasm`) must reproduce the route and
     finished-ride fixtures byte-for-byte from the same inputs —
-    `builder/app/src/lib/convert/bridge.test.ts`.
-  - The **USB protocol client** (`builder/app/src/lib/usb/`) pins the protocol-v4
+    `builder/web/src/lib/convert/bridge.test.ts`.
+  - The **USB protocol client** (`builder/web/src/lib/usb/`) pins the protocol-v4
     control and stream layouts under `flat-store-v4/` —
     `.../src/lib/usb/vectors.test.ts`.
 

@@ -1,5 +1,6 @@
 //! Admission uses one fixed worker and owner setup. Reads cannot resolve an uncertain dispatch.
 
+use crate::operation::launch::bounded_output;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -192,77 +193,6 @@ pub(super) fn approval(host: &str) -> Result<crate::approval::Observation, Strin
     let observed: crate::approval::Observation = serde_json::from_slice(&output).map_err(|error| error.to_string())?;
     observed.check()?;
     Ok(observed)
-}
-
-/// Only the local read transport is stopped. The remote publication owner keeps its locks.
-#[cfg(any(not(test), unix))]
-fn bounded_output(command: &mut Command, limit: Duration) -> Result<Vec<u8>, String> {
-    #[cfg(not(unix))]
-    {
-        let _ = (command, limit);
-        Err("owner observation needs a supported Unix host".into())
-    }
-    #[cfg(unix)]
-    {
-        use std::io::Read;
-        use std::os::fd::AsRawFd;
-        use std::os::unix::process::CommandExt;
-        use std::process::Stdio;
-        use std::time::Instant;
-        let mut child = command
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("owner observation could not start: {e}"))?;
-        let mut stdout = child.stdout.take().expect("piped status output");
-        let deadline = Instant::now() + limit;
-        let result = (|| -> Result<Vec<u8>, String> {
-            // SAFETY: stdout owns this pipe descriptor. Nonblocking reads keep collection within the same deadline.
-            unsafe {
-                let flags = libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL);
-                if flags < 0 || libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
-                    return Err(std::io::Error::last_os_error().to_string());
-                }
-            }
-            let mut bytes = Vec::new();
-            let mut buffer = [0; 16384];
-            let mut status = None;
-            let mut eof = false;
-            loop {
-                match stdout.read(&mut buffer) {
-                    Ok(0) => eof = true,
-                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(error) => return Err(error.to_string()),
-                }
-                if status.is_none() {
-                    status = child.try_wait().map_err(|e| e.to_string())?;
-                }
-                if let Some(status) = status {
-                    if eof {
-                        return if status.success() {
-                            Ok(bytes)
-                        } else {
-                            Err("owner status could not be read; publication stays unresolved".into())
-                        };
-                    }
-                }
-                if Instant::now() >= deadline {
-                    return Err("owner observation deadline expired; publication stays unresolved".into());
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        })();
-        // SAFETY: this child owns a fresh process group. No publication process runs in it.
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
-        }
-        let _ = child.kill();
-        let _ = child.wait();
-        result
-    }
 }
 
 #[cfg(test)]
