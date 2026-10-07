@@ -477,9 +477,9 @@ fn maximum_fitting_mpp(bbox: BBox, camera_bounds: BBox) -> f32 {
 mod tests {
     use super::*;
 
+    use obc_map_core::config::Config;
+    use obc_map_core::grid::BandTable;
     use obc_pack::catalog::feature_type_ids;
-    use obc_pack::config::Config;
-    use obc_pack::grid::BandTable;
 
     const MAP: &[u8] = include_bytes!("../../../host/obc-bake/assets/teningen-preview.obcm");
     const SCHEMA_CONFIG: &str = include_str!("../../../builder/presets/schema.json");

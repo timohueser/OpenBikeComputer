@@ -691,11 +691,11 @@ triggers = [
 id = "fixtures.assistant-places"
 route = "manual"
 command = "python3 fixtures/verify-assistant-places.py"
-package = "obc-pack"
+package = "obc-bake"
 targets = ["assistant_places"]
 triggers = [
   "fixtures/verify-assistant-places.py",
-  "host/obc-pack/tests/assistant_places.rs",
+  "host/obc-bake/tests/assistant_places.rs",
   "firmware/obc-reader/src/reader/places.rs",
 ]
 

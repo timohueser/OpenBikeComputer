@@ -275,7 +275,7 @@ pub fn artifacts(
         }
         let refs: Vec<u16> = refs.into_iter().map(|index| index.unwrap_or(POI_HOURS_REF_NONE)).collect();
         let mut bytes = serialize(&landmarks, &refs)?;
-        bytes.extend(crate::serialize::pack_hours_pool(&pool));
+        bytes.extend(obc_map_core::serialize::pack_hours_pool(&pool));
         Ok(bytes)
     };
     owned.into_iter().map(|(cell, landmarks)| Ok((cell, artifact(landmarks)?))).collect()

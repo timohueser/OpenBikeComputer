@@ -2090,3 +2090,6 @@ mod tests {
         assert!(Config::parse(&four_profiles(r#","climb_weight":256"#)).is_err(), "256 does not fit the u8 wire field");
     }
 }
+
+/// The skin used by published device cells.
+pub const CELL_SCHEMA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/presets/schema.json"));

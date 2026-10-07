@@ -7,6 +7,8 @@ license = "GPL-3.0-only"
 description = "Shared OSM place selection and coordinates for planner and device builders"
 
 [dependencies]
+obc-pbf = { workspace = true }
+osmpbf = "0.3.8"
 obc-formats = { workspace = true }
 obc-render = { workspace = true }
 unicode-normalization = { workspace = true }

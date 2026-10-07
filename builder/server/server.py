@@ -22,7 +22,7 @@ PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
-# Generated repo copy of obc-pack's config schema — the fallback for /api/schema
+# Generated repo copy of map-core's config schema — the fallback for /api/schema
 # when the binary isn't built yet. A Rust stale-generation test pins the file's
 # *contents*; test_schema_source.py pins this path, because a string-built path
 # that stops resolving degrades silently (the fallback just never fires).

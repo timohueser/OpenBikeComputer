@@ -53,7 +53,7 @@ JOBS: dict[str, Job] = {
     "clippy": Job(needs=("selection",), roots=(ROOT_WORKSPACE,)),
     "test": Job(needs=("selection",), roots=(ROOT_WORKSPACE,), script="tools/ci/test.sh"),
     "ui-snapshots": Job(needs=("selection",), packages=("obc-sim",)),
-    "builder-python": Job(needs=("selection",), packages=("obc-pack",)),
+    "builder-python": Job(needs=("selection",), packages=("obc-bake", "obc-pack")),
     "embedded": Job(needs=("selection",), roots=("firmware/obc-fw-nrf54l", "firmware/obc-sensor-sim")),
     "boot": Job(needs=("selection",), roots=("firmware/obc-boot",)),
     "device": Job(needs=("selection",), packages=("obc-app", "obc-link")),

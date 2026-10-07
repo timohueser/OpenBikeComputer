@@ -2,5 +2,6 @@
 
 pub mod area;
 pub mod bbox;
+pub mod coverage;
 pub mod scan;
 pub mod selection;

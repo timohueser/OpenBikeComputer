@@ -20,6 +20,8 @@ path = "src/bin/obc-data-worker.rs"
 external-fixtures = []
 
 [dependencies]
+obc-draw = { workspace = true }
+obc-network = { workspace = true }
 obc-osm = { workspace = true }
 # Real assembly and reader verification before publishing map picks.
 obcm-assemble = { workspace = true, features = ["cli"] }

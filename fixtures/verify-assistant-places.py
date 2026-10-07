@@ -5,6 +5,6 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parent.parent
 subprocess.run([
-    "cargo", "test", "--locked", "-p", "obc-pack", "--features", "external-fixtures",
+    "cargo", "test", "--locked", "-p", "obc-bake", "--features", "external-fixtures",
     "--test", "assistant_places", "--", "--ignored", "--nocapture",
 ], cwd=ROOT, check=True)

@@ -2,10 +2,8 @@ use obc_formats::{
     io::SliceSource,
     obcm::{landmarks::*, PoiApproach, PoiMetadata, SourceId, POI_HOURS_REF_NONE},
 };
-use obc_pack::{
-    landmark_map,
-    landmarks::{Attribution, Content, Photo, Record, TextVariant},
-};
+use obc_pack::landmark_map;
+use obc_pack::landmarks::{Attribution, Content, Photo, Record, TextVariant};
 use obc_places::metadata::LandmarkLink;
 use obc_reader::{
     landmarks::{page, LandmarkDirectory},

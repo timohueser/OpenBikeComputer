@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::coverage::IndexedCoverage;
 use super::schema::{parse_schema_doc, skin_styles};
 use super::*;
-use crate::grid::{BandTable, CellId};
+use obc_map_core::grid::{BandTable, CellId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pick {
