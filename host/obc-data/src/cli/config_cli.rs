@@ -9,8 +9,14 @@ use serde::{Deserialize, Serialize};
 use super::{confirm, print_json, Code, Error};
 use crate::store::sha256_hex;
 
-const PATHS: [&str; 5] =
-    ["data/sources.toml", "data/env/live.toml", "data/planner.toml", "data/planner-runtime.toml", "data/regions/"];
+const PATHS: [&str; 6] = [
+    "data/sources.toml",
+    "data/env/live.toml",
+    "data/env/fixtures.toml",
+    "data/planner.toml",
+    "data/planner-runtime.toml",
+    "data/regions/",
+];
 
 #[derive(Subcommand)]
 pub(super) enum Action {
@@ -240,6 +246,8 @@ mod tests {
             git(&scratch.0, &["config", key, value]).unwrap();
         }
         write(&scratch.0.join("data/sources.toml"), "original\n");
+        write(&scratch.0.join("data/env/fixtures.toml"), "original fixture\n");
+        write(&scratch.0.join("fixtures/catalog.toml"), "original catalog\n");
         write(&scratch.0.join("data/regions/delete.toml"), "delete\n");
         write(&scratch.0.join("unrelated.txt"), "original\n");
         write(&scratch.0.join(".gitignore"), "data/env/local.toml\n");
@@ -256,18 +264,22 @@ mod tests {
         write(&root.join("unrelated.txt"), "staged unrelated\n");
         git(root, &["add", "data/sources.toml", "unrelated.txt"]).unwrap();
         write(&root.join("data/sources.toml"), "reviewed source\n");
+        write(&root.join("data/env/fixtures.toml"), "reviewed fixture\n");
+        write(&root.join("fixtures/catalog.toml"), "generated catalog\n");
         write(&root.join("data/regions/new.toml"), "new\n");
         write(&root.join("data/env/local.toml"), "ignored selection\n");
         std::fs::remove_file(root.join("data/regions/delete.toml")).unwrap();
         let reviewed = review(root).unwrap();
         assert_eq!(
             reviewed.files.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["data/regions/delete.toml", "data/regions/new.toml", "data/sources.toml"]
+            ["data/env/fixtures.toml", "data/regions/delete.toml", "data/regions/new.toml", "data/sources.toml"]
         );
         assert!(reviewed.diff.contains("reviewed source") && reviewed.diff.contains("New file: data/regions/new.toml"));
         let committed = commit(root, &reviewed, "Reviewed bake configuration").unwrap();
         assert_ne!(committed.commit, reviewed.head);
         assert_eq!(git(root, &["show", "HEAD:data/sources.toml"]).unwrap(), "reviewed source\n");
+        assert_eq!(git(root, &["show", "HEAD:data/env/fixtures.toml"]).unwrap(), "reviewed fixture\n");
+        assert_eq!(git(root, &["show", "HEAD:fixtures/catalog.toml"]).unwrap(), "original catalog\n");
         assert_eq!(git(root, &["show", ":unrelated.txt"]).unwrap(), "staged unrelated\n");
         assert_eq!(git(root, &["show", "HEAD:unrelated.txt"]).unwrap(), "original\n");
         assert_eq!(git(root, &["diff", "--cached", "--name-only"]).unwrap(), "unrelated.txt\n");
