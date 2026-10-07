@@ -896,6 +896,9 @@ mod tests {
         let built = run.build(&context, &steps, &plan).unwrap();
         let output = &built[0].receipt.files[0];
         fixture.fetched_version("head", "2", "head.txt", b"newer head\n");
+        let mut newest = fixture.store.snapshot("head", "2").unwrap().unwrap();
+        newest.files.iter_mut().for_each(|file| file.retrieved = "2026-10-06T00:00:00Z".into());
+        fixture.store.put_snapshot(&newest).unwrap();
         let roots = gc::Roots::default();
         let cleanup = gc::plan(&fixture.store, &roots).unwrap();
         assert!(cleanup.snapshots.contains(&"head@1".into()));
