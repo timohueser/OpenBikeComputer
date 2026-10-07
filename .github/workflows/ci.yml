@@ -1336,7 +1336,14 @@ jobs:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Verify selected suites and required jobs
-        env:
-          OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
-          OBC_NEEDS_RESULTS: ${{ toJSON(needs) }}
-        run: python3 tools/ci_aggregate.py
+        # The runner writes this script to a file; JSON stays outside exec's environment.
+        run: |
+          cat > "$RUNNER_TEMP/ci-selection-plan.json" <<'OBC_SELECTION_PLAN_JSON'
+          ${{ needs.selection.outputs.plan }}
+          OBC_SELECTION_PLAN_JSON
+          cat > "$RUNNER_TEMP/ci-needs-results.json" <<'OBC_NEEDS_RESULTS_JSON'
+          ${{ toJSON(needs) }}
+          OBC_NEEDS_RESULTS_JSON
+          python3 tools/ci_aggregate.py \
+            --plan-file "$RUNNER_TEMP/ci-selection-plan.json" \
+            --needs-file "$RUNNER_TEMP/ci-needs-results.json"
