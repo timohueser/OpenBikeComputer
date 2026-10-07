@@ -396,6 +396,22 @@ mod tests {
     }
 
     #[test]
+    fn fixture_requests_accept_only_exact_preparation_or_reviewed_apply() {
+        let mut request = control("2026-10-07-120000").request;
+        request.env = "fixtures".into();
+        request.kind = Kind::Prepare;
+        request.only = vec!["sim-monaco".into()];
+        request.check().unwrap();
+        for kind in [Kind::Build, Kind::Auto, Kind::Apply, Kind::DevPrepare] {
+            request.kind = kind;
+            assert!(request.check().unwrap_err().contains("fixture"));
+        }
+        request.kind = Kind::Prepare;
+        request.moves.push(("land-polygons".into(), Some("2026-06-19".into())));
+        assert!(request.check().is_err(), "preparation cannot introduce an upstream move");
+    }
+
+    #[test]
     fn stop_invalidates_a_delayed_child_and_an_environment_has_no_waiting_queue() {
         let temporary = Scratch::new("operation-reservation");
         let store = Store::at(temporary.0.clone());
