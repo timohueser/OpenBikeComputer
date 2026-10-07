@@ -23,21 +23,21 @@ No GEOS, CMake, libusb or Python dependency. `nusb` talks to each platform's nat
 Build the two wasm bridges and the desktop frontend first, then run the standalone Rust crate:
 
 ```sh
-cd builder/app
+cd builder/web
 npm ci
 npm run build:wasm
 npm run build:desktop
 
-cd ../../apps/obc-desktop
+cd ../desktop
 cargo run --release
 ```
 
-`custom-protocol` is a default feature, so plain `cargo run` embeds `builder/app/dist/desktop`.
+`custom-protocol` is a default feature, so plain `cargo run` embeds `builder/web/dist/desktop`.
 For the Vite live-reload loop:
 
 ```sh
-# terminal 1, from apps/obc-desktop
-npm --prefix ../../builder/app run dev -- --mode desktop
+# terminal 1, from builder/desktop
+npm --prefix ../web run dev -- --mode desktop
 
 # terminal 2
 cargo run --no-default-features
@@ -80,7 +80,7 @@ cargo clippy --release --locked --all-targets -- -D warnings
 cargo test --release --locked -- --nocapture
 ```
 
-The shared Svelte checks run from `builder/app`: `npm run check`, `npm test`, `npm run build:all`.
+The shared Svelte checks run from `builder/web`: `npm run check`, `npm test`, `npm run build:all`.
 
 ## Linux release-launch test
 
@@ -92,7 +92,7 @@ root:
 ```sh
 sudo apt-get install webkit2gtk-driver xvfb imagemagick dbus-daemon
 cargo install tauri-driver --version 2.0.6 --locked
-xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py
+xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py
 ```
 
 **Use a WebKit driver with the same version as the installed WebKitGTK runtime.** CI installs an
@@ -151,7 +151,7 @@ sudo udevadm trigger
 # unplug and reconnect the device
 ```
 
-The device protocol stays the shared TypeScript implementation in `builder/app/src/lib/usb/`;
+The device protocol stays the shared TypeScript implementation in `builder/web/src/lib/usb/`;
 Rust supplies the native pipes only. Large app-owned files stream straight from the maps folder
 without entering the webview. A newly assembled volume set streams to the device with the manifest
 last, and the device page also accepts a standalone `.obcm` obtained elsewhere.

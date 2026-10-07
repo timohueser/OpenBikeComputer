@@ -5,7 +5,7 @@ drag markers, switch bikes, search, and show places along the route. Two stand-i
 for the tile Worker and the route service, so nothing leaves the machine.
 
 ```sh
-npm run test:planner --prefix builder/app/tests/browser
+npm run test:planner --prefix builder/web/tests/browser
 ```
 
 `request-budget.json` holds one limit per request kind. The test fails when a kind exceeds its

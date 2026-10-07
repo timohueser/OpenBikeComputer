@@ -169,7 +169,7 @@ Use `--no-recompress` to crop compressed terrain without encoding it again.
 
 ## Checks
 
-From `builder/app`:
+From `builder/web`:
 
 ```sh
 npx vitest run src/lib/planner/ src/components/planner/

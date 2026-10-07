@@ -6,7 +6,7 @@ the wrong revision or an unreadable map on the card.
 
 It needs hardware. There is no mock device behind it: the cable is `usb`'s WebUSB object under the
 shipping `openWebUsbLink`, and the reboot is `tools/board.py`. Without a board the command fails.
-The phases themselves are `builder/app/test-support/device-smoke/smoke.ts`, and
+The phases themselves are `builder/web/test-support/device-smoke/smoke.ts`, and
 `smoke.test.ts` drives them against the real flat engine in wasm, which is what CI runs.
 
 ## Prerequisites
