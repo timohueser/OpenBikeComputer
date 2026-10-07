@@ -51,7 +51,7 @@ name rather than on a timeout.
 
 ## The map
 
-`apps/obc-sim/assets/grimsel-demo.obcm`, whose sources, producer and digests are pinned in
+`sim/desktop/assets/grimsel-demo.obcm`, whose sources, producer and digests are pinned in
 `fixtures/sources/ride-assistant/grimsel-demo-v19.json`. Nothing is assembled at run time and the
 digest is checked before the first byte moves.
 

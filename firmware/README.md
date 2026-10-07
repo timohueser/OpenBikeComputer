@@ -66,14 +66,14 @@ enforced by [`tools/resource_guard.py`](tools/resource_guard.py). A build with
 `obc-bench` renders seven fixed scenes through the real reader and renderer over a deterministic
 fixture, and prints per-stage timings, a frame hash and the map read path's counters. `--check`
 also runs the nine route-corridor cases and fails if any frame hash or read counter drifts from
-`host/obc-bench/golden.txt`. Timings are printed but never gated.
+`sim/bench/golden.txt`. Timings are printed but never gated.
 
 ```sh
 cargo run -p obc-bench --release                                       # the table
-cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt  # what CI runs
+cargo run -p obc-bench --release -- --check sim/bench/golden.txt  # what CI runs
 cargo run -p obc-bench --release -- --repeat 9                         # stable timing sample
 cargo run -p obc-bench --release -- --corridor                         # the corridor matrix alone
-cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt
+cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt
 ```
 
 A pure refactor must leave the golden file untouched. An intentional rendering or cache change
@@ -108,7 +108,7 @@ obc sim                                                # the Grimsel demo
 ./target/release/obc-sim map.obcm --png out.png        # headless one-frame render
 ```
 
-See the [simulator guide](../apps/obc-sim/README.md) or `obc-sim --help` for the rest.
+See the [simulator guide](../sim/desktop/README.md) or `obc-sim --help` for the rest.
 
 ## Run the web demo (`obc-web-demo`)
 

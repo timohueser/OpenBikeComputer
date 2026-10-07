@@ -437,7 +437,7 @@ class ShippedPlanTests(unittest.TestCase):
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.
             ("agent prose only", ["AGENTS.md", "companion-ios/AGENTS.md"], ["docs"]),
-            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], ["clippy", "fmt", "test"]),
+            ("leaf Rust crate", ["sim/bench/src/main.rs"], ["clippy", "fmt", "test"]),
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
@@ -469,11 +469,11 @@ class ShippedPlanTests(unittest.TestCase):
                 [".config/nextest.toml"],
                 ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
-            ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
+            ("web demo crate", ["sim/web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
             (
                 "web demo browser harness",
-                ["apps/obc-web-demo/tests/browser/ride-log.test.js"],
+                ["sim/web-demo/tests/browser/ride-log.test.js"],
                 ["clippy", "fmt", "test", "wasm"],
             ),
             (
@@ -517,7 +517,7 @@ class ShippedPlanTests(unittest.TestCase):
             "planner/service/tests/http.rs", "planner/router/README.md",
             "planner/search/server.mjs", "planner/search/tests/native.test.mjs",
             "planner/search/query/train.py", "firmware/obc-crc/tests/crc.rs",
-            "apps/obc-ios-host/src/tests.rs", "host/obc-host-core/src/flat_routes/tests.rs",
+            "sim/phone/host/src/tests.rs", "sim/host-core/src/flat_routes/tests.rs",
             "firmware/obc-app/src/harness/route_import.rs",
         ]
         for path in unrelated:
@@ -531,7 +531,7 @@ class ShippedPlanTests(unittest.TestCase):
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
               for path in ("firmware/obc-crc/src/lib.rs", "firmware/obc-app/i18n/en.toml")],
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
-              for path in ("apps/obc-ios-host/src/client.rs", "firmware/obc-link/src/flat/client.rs")],
+              for path in ("sim/phone/host/src/client.rs", "firmware/obc-link/src/flat/client.rs")],
             ("planner/search/runtime.mjs", {"ci.ios-app-build", "ci.ios-release-build"}),
             ("planner/search/query/lexicon/kinds.json", {"ci.ios-app-build", "ci.ios-release-build"}),
             *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
@@ -616,8 +616,8 @@ class ShippedPlanTests(unittest.TestCase):
         capture = {"Install WebP tools", "Start the screenshot simulator", "Companion website screenshots are current"}
         routed = app | device | capture
         cases = [
-            ("companion-ios/OBCDevice/App.swift", device),
-            ("host/obc-host-core/src/lib.rs", app | device),
+            ("sim/phone/app/App.swift", device),
+            ("sim/host-core/src/lib.rs", app | device),
             ("planner/search/server.mjs", set()),
             ("planner/search/native.mjs", app | pack),
             ("companion-ios/scripts/generate-website-fixture.py", app | pack | capture),

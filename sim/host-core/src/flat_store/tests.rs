@@ -6,7 +6,7 @@ use crate::{
 use std::io::Write;
 
 const ROUTE: &[u8] = include_bytes!("../../../../fixtures/sources/sim-grimsel/routes/grimsel-climb.obcr");
-const MAP: &[u8] = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+const MAP: &[u8] = include_bytes!("../../../desktop/assets/grimsel-demo.obcm");
 
 fn input(bytes: &[u8]) -> std::fs::File {
     let mut file = tempfile::tempfile().unwrap();

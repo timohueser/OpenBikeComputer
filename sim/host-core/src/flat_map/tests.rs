@@ -197,7 +197,7 @@ fn import_is_bounded_and_refuses_short_or_growing_inputs() {
 
 #[test]
 fn browser_card_allocates_written_pages_only() {
-    let bytes = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+    let bytes = include_bytes!("../../../desktop/assets/grimsel-demo.obcm");
     let map = FlatMap::from_bytes(bytes).unwrap();
     let owner = map.source.0.owner.lock().unwrap();
     let store = &owner.card;
@@ -221,7 +221,7 @@ fn browser_card_allocates_written_pages_only() {
 #[cfg(not(target_arch = "wasm32"))]
 fn native_map_snapshot_is_independent_of_later_source_edits() {
     use std::io::{Seek, SeekFrom, Write};
-    let bytes = include_bytes!("../../../../apps/obc-sim/assets/grimsel-demo.obcm");
+    let bytes = include_bytes!("../../../desktop/assets/grimsel-demo.obcm");
     let mut original = tempfile::tempfile().unwrap();
     original.write_all(bytes).unwrap();
     let snapshot = super::snapshot(original.try_clone().unwrap()).unwrap();

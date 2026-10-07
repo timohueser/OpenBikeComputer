@@ -763,8 +763,8 @@ bench *args:
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
     case "${1:-}" in
-      check) _run cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt ;;
-      write) _run cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt ;;
+      check) _run cargo run -p obc-bench --release -- --check sim/bench/golden.txt ;;
+      write) _run cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt ;;
       *)     _run cargo run -p obc-bench --release ;;
     esac
 
