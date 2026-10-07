@@ -1232,7 +1232,7 @@ manifest of `obc data` names belong to `obc data`.
 
 | Key | Holds |
 | --- | --- |
-| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"` and `"applied"`, the time of the switch. A pointer without `release` names no release: nothing is live |
+| `<prefix>/catalog.json` | The pointer: the document that clients read, with `"release": "<id>"`, `"applied"`, the time of the switch, and `"commit"`, the pushed commit that the apply ran. A pointer without `release` names no release: nothing is live |
 | `<prefix>/releases/<id>.json` | The manifest of the release, as in the store. Immutable |
 | `<prefix>/releases/<id>/<path>` | A file of the release that a client finds by name. Immutable |
 | `<prefix>/objects/<sha256>` | A file of a client layer of a release. Immutable |
@@ -1275,14 +1275,10 @@ blocked. Known option, producer and input changes retain their existing state ca
 `apply live` makes the plan of live live. It needs the bucket. One machine applies at a time:
 two machines must not apply at once. The machine that runs it writes R2 in this order:
 
-1. It refuses when `data/` has edits that git does not have, apart from
-   `data/env/local.toml`: live builds from a committed `data/`. The refusal names the files and
-   says `git add data && git commit`; `status` lists them as `uncommitted`. The steps run the code of the
-   working tree. Used acquisition, planning and producer code must also be committed.
-   Commitment checks the physical inputs of the same code resolver. Selected manifests and
-   lockfiles must be clean even when their content projection excludes an edit. UI source files
-   outside an owner's declaration do not block apply. Preparation and Local builds may use
-   working-tree code. Apply does not commit or push.
+1. Live publishes from a pushed commit. It refuses unless the checkout has no change that git
+   lacks, apart from the Live settings in `data/env/` and `data/regions/`, and a branch on
+   `origin` holds `HEAD`. `status` lists a refusal as `not pushed`. Preparation and Local builds
+   accept working-tree code. Apply does not commit or push.
 2. It asks once in a terminal: "Apply M changes to live and remove N keys, X GB, from R2?", with
    the groups of the plan and its `remove` keys by prefix. `--yes` does not ask. `--plan FILE`
    applies that plan; the plan must be the plan of now, as for `build --plan`. Without a terminal,
@@ -1627,8 +1623,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         {
-          "const": "uncommitted",
-          "description": "Edits in `data/` that git does not have; an apply refuses them.",
+          "const": "unpushed",
+          "description": "The checkout is not a pushed commit; an apply refuses it.",
           "type": "string"
         },
         {
@@ -3019,33 +3015,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "Installed": {
-      "additionalProperties": false,
-      "properties": {
-        "binding": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
-        },
-        "service": {
-          "$ref": "#/$defs/Service"
-        },
-        "slot": {
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "service",
-        "id",
-        "slot",
-        "binding"
-      ],
-      "type": "object"
-    },
     "Kept": {
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
@@ -3685,6 +3654,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "commit": {
+          "description": "The commit that the apply of the release ran; `None` when nothing is live.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "layers": {
           "description": "Each layer of the environment `live`, in dependency order; `None` when a fetch that its\nstep list needs failed, and `attention` says why.",
           "items": {
@@ -3717,6 +3693,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "product",
         "release",
         "applied",
+        "commit",
         "bytes",
         "optional",
         "layers"

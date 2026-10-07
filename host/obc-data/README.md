@@ -13,7 +13,8 @@ new work. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) 
 assets, search dependencies and matching-host apps.
 
 Retained workers detach from the terminal. Publication runs on the machine that applies: it
-needs rclone and the bucket credentials below. One machine applies at a time. An apply refuses
+needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
+settings in `data/env/` and `data/regions/` need no commit. One machine applies at a time. An apply refuses
 to switch the planner, because it does not install the planner services yet. Before it replaces
 a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a rollback.
 
@@ -75,7 +76,6 @@ the terminal. Run controls remain usable after checkout edits.
 | Source versions | `v` lists requests; Enter selects a source-wide move |
 | Source policy | `e` opens presets; `c` enters 1..65535 whole days |
 | Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
-| Configuration | Commit `data/` with `git add data && git commit`; Live lists uncommitted files; apply refuses them |
 | Apply | `a` reviews the machine, live changes and removals by prefix; `y` starts the exact reviewed plan |
 | Run | Enter opens progress; `R` observes; `x` asks to stop admitted work; `y` stops |
 | Prepared run | `p` reviews its returned plan before build or apply |

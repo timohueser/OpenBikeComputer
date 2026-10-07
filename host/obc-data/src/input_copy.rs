@@ -512,6 +512,7 @@ mod tests {
                 prefix: "test".into(),
                 release: Some((release.id(), release)),
                 applied: None,
+                commit: None,
                 observed: None,
                 document: None,
             }],

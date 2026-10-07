@@ -101,7 +101,7 @@ impl Context {
         rust: Option<&ResolvedRust>,
     ) -> Result<SourceIdentity, String> {
         let identity = self.resolve(root, code, Mode::Source(rust), None)?;
-        Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+        Ok(SourceIdentity { files: identity.source_config, rust: identity.rust })
     }
 
     pub fn owner_source_config(
@@ -113,7 +113,7 @@ impl Context {
         let mut code = owner.code.clone();
         code.crates.push(owner.crate_name.clone());
         let identity = self.resolve(root, &code, Mode::Source(Some(rust)), Some(&owner.crate_name))?;
-        Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+        Ok(SourceIdentity { files: identity.source_config, rust: identity.rust })
     }
 
     pub fn owner_identity(&mut self, root: &Path, owner: &OwnerCode) -> Result<CodeIdentity, String> {
@@ -196,10 +196,9 @@ impl Context {
             }
         }
         let mut files = listed(&root, &pathspecs)?;
-        let mut backend = BTreeSet::new();
         if owner.is_some() {
             if let Some(dir) = self.rust[&target].directory(env!("CARGO_PKG_NAME")) {
-                backend = listed_paths(&root, &[dir.join("src")])?;
+                let mut backend = listed_paths(&root, &[dir.join("src")])?;
                 backend
                     .retain(|path| path != &dir.join("src/cli/tui.rs") && !path.starts_with(dir.join("src/cli/tui")));
                 files.extend(backend.iter().filter(|path| path.is_file()).cloned());
@@ -220,9 +219,6 @@ impl Context {
                 }
             }
         }
-        let mut git_inputs: BTreeSet<_> = files.iter().map(|file| relative(&root, file)).collect::<Result<_, _>>()?;
-        git_inputs.extend(backend.iter().map(|path| relative(&root, path)).collect::<Result<BTreeSet<_>, _>>()?);
-        git_inputs.extend(pathspecs.iter().map(|path| path.to_string_lossy().replace('\\', "/")));
         let mut hashes = BTreeMap::new();
         for file in files {
             let relative =
@@ -260,11 +256,6 @@ impl Context {
                 }
                 Mode::Source(None) => unreachable!("a Rust closure requires a recorded target/profile"),
             };
-            for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config", ".cargo/config.toml"] {
-                if root.join(path).is_file() {
-                    git_inputs.insert(path.into());
-                }
-            }
             Some(rust)
         } else {
             None
@@ -303,15 +294,7 @@ impl Context {
             source_config.extend(self.packages[group].clone());
             hashes.extend(self.packages[group].clone());
         }
-        if code.python.is_some() || code.python_packages.is_some() {
-            for path in ["pyproject.toml", "uv.lock", ".python-version"] {
-                if root.join(path).is_file() {
-                    git_inputs.insert(path.into());
-                }
-            }
-        }
         if !code.sources.is_empty() {
-            git_inputs.insert("data/sources.toml".into());
             let registry = crate::sources::Registry::load(&root)?;
             for id in &code.sources {
                 let source = registry
@@ -330,37 +313,8 @@ impl Context {
         {
             return Err("code uses the reserved source/config binding key".into());
         }
-        Ok(CodeIdentity { files: hashes, source_config, rust, git_inputs })
+        Ok(CodeIdentity { files: hashes, source_config, rust })
     }
-}
-
-fn relative(root: &Path, file: &Path) -> Result<String, String> {
-    file.strip_prefix(root)
-        .map_err(|_| format!("{} is outside {}", file.display(), root.display()))?
-        .to_str()
-        .map(|path| path.replace('\\', "/"))
-        .ok_or_else(|| format!("{} is not UTF-8", file.display()))
-}
-
-pub(super) fn committed(root: &Path, inputs: &BTreeSet<String>) -> Result<(), String> {
-    if inputs.is_empty() {
-        return Ok(());
-    }
-    let output = Command::new("git")
-        .args(["--literal-pathspecs", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--"])
-        .args(inputs)
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("git status: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("git status: {}", String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    if !output.stdout.is_empty() {
-        return Err(
-            "used producer code or build metadata is not committed; commit these inputs before applying Live".into()
-        );
-    }
-    Ok(())
 }
 
 /// Bind a declared Python command to the interpreter in its checked code identity.
@@ -549,18 +503,9 @@ mod tests {
         assert!(!before.files.contains_key("obc-data/src/cli/tui.rs"));
         assert!(before.files.contains_key("obc-data/src/regions/geofabrik.rs"));
         assert!(before.files.contains_key("obc-data/src/store.rs"));
-        assert!(before.git_inputs.contains("Cargo.lock"));
-        assert!(before.git_inputs.contains("steps/Cargo.toml"));
-        let git = |args: &[&str]| {
-            assert!(Command::new("git").args(args).current_dir(&root).status().unwrap().success());
-        };
-        git(&["add", "."]);
-        git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture"]);
-        before.committed(&root).unwrap();
         write(&root.join("steps/src/ui.rs"), "pub fn new_screen() {}\n");
         write(&root.join("obc-data/src/cli/tui.rs"), "pub fn new_controls() {}\n");
         assert_eq!(context.owner_identity(&root, &owner).unwrap(), before);
-        before.committed(&root).unwrap();
         for (path, original) in [
             ("obc-data/src/regions/geofabrik.rs", "pub fn parse() {}\n"),
             ("obc-data/src/store.rs", "pub fn snapshot() {}\n"),
@@ -568,12 +513,10 @@ mod tests {
             write(&root.join(path), "pub fn different_selection() {}\n");
             let changed = context.owner_identity(&root, &owner).unwrap();
             assert_ne!(changed.source_config, before.source_config, "{path}");
-            assert!(changed.committed(&root).unwrap_err().contains("not committed"));
             write(&root.join(path), original);
         }
         write(&root.join("steps/src/plan.rs"), "pub fn other_requests() {}\n");
         assert_ne!(context.owner_identity(&root, &owner).unwrap().files, before.files);
-        assert!(before.committed(&root).unwrap_err().contains("not committed"));
 
         let recorded =
             ResolvedRust { target: "x86_64-unknown-linux-gnu".into(), build: Rust::Native { profile: Profile::Dev } };
@@ -605,23 +548,6 @@ mod tests {
     }
 
     #[test]
-    fn local_preparation_accepts_working_tree_code_and_live_apply_refuses_it() {
-        let fixture = fixture("owner-commit-policy");
-        let root = fixture.root();
-        let owner = OwnerCode {
-            crate_name: "steps".into(),
-            code: Code { paths: vec!["steps/src/lib.rs".into()], ..Default::default() },
-        };
-        let mut run = crate::engine::runs::Run::create(&fixture.store, "prepare local").unwrap();
-        run.check_owner(&root, &owner).unwrap();
-        write(&root.join("steps/src/lib.rs"), "pub fn working_tree() {}\n");
-        run.check_owner(&root, &owner).unwrap();
-        run.require_committed_code();
-        assert!(run.check_owner(&root, &owner).unwrap_err().contains("not committed"));
-        run.finish(None).unwrap();
-    }
-
-    #[test]
     fn embedded_owner_registry_uses_selected_content_but_preserves_explicit_raw_inputs() {
         let fixture = fixture("owner-embedded-registry");
         let root = fixture.root();
@@ -643,7 +569,6 @@ mod tests {
         };
         let mut context = Context::default();
         let before = context.owner_identity(&root, &owner).unwrap();
-        assert!(before.git_inputs.contains("data/sources.toml"));
         assert!(!before.files.contains_key("data/sources.toml"));
         assert!(before.files.contains_key("data/sources.toml#land"));
         let settings = |root: &Path| {

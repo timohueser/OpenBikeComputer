@@ -620,13 +620,6 @@ fn planned_run(
     mut run: Option<&mut Run>,
 ) -> Result<Planned, Error> {
     let mut loaded = load(root, name)?;
-    if let Some(run) = run.as_deref_mut().filter(|run| run.requires_committed_code()) {
-        for product in products {
-            if let Some(owner) = product.planning_code(&loaded.env).map_err(|error| Code::Blocked.error(error))? {
-                run.check_owner(root, &owner).map_err(|error| Code::Usage.error(error))?;
-            }
-        }
-    }
     let live = remote.map(|remote| Live::read(remote, products, &loaded.sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
     if let (Some(live), Some(remote)) = (&live, remote) {
@@ -965,7 +958,7 @@ fn next_reusing(
             {
                 let pointer = product.pointer().expect("unblocked live product has a pointer");
                 let pointer = pointer(root, release, store).map_err(|e| Code::VerifyFailed.error(e))?;
-                if pointer.document.contains_key("release") || pointer.document.contains_key("applied") {
+                if ["release", "applied", "commit"].iter().any(|key| pointer.document.contains_key(*key)) {
                     return Err(product_bug(name, "pointer includes publication fields".into()));
                 }
                 Some(pointer.document)
@@ -978,6 +971,7 @@ fn next_reusing(
             prefix,
             release,
             applied: None,
+            commit: None,
             observed: None,
             document,
         });
@@ -1948,6 +1942,7 @@ pub(crate) mod tests {
                 prefix: "test".into(),
                 release: Some((id.clone(), release.clone())),
                 applied: None,
+                commit: None,
                 observed: None,
                 document: None,
             }],
@@ -2051,6 +2046,7 @@ pub(crate) mod tests {
                 prefix: "test".into(),
                 release: Some((release.id(), release.clone())),
                 applied: None,
+                commit: None,
                 observed: None,
                 document: None,
             }],

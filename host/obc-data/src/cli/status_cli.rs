@@ -47,6 +47,8 @@ pub struct ProductStatus {
     /// When an apply made the release live, `YYYY-MM-DDTHH:MM:SSZ`; `None` when nothing is live or
     /// the pointer has no time.
     pub applied: Option<String>,
+    /// The commit that the apply of the release ran; `None` when nothing is live.
+    pub commit: Option<String>,
     /// The size of the objects of the live release.
     pub bytes: Option<u64>,
     /// The optional layers of the product, which `layer live NAME on|off` switches.
@@ -79,11 +81,11 @@ pub enum AttentionKind {
     Stale,
     /// A source that is blocked.
     Blocked,
-    /// Edits in `data/` that git does not have; an apply refuses them.
-    Uncommitted,
+    /// The checkout is not a pushed commit; an apply refuses it.
+    Unpushed,
     /// Keys that live uses and R2 lacks, or holds with another size.
     Drift,
-    /// Keys under the owned prefixes that no live release uses.
+    /// Keys of earlier releases that no live release uses.
     Leftovers,
     /// A fetch that the step list of a product needs failed, so its layer states are unknown.
     Unreachable,
@@ -94,7 +96,7 @@ impl AttentionKind {
         match self {
             AttentionKind::Stale => "stale",
             AttentionKind::Blocked => "blocked",
-            AttentionKind::Uncommitted => "uncommitted",
+            AttentionKind::Unpushed => "not pushed",
             AttentionKind::Drift => "drift",
             AttentionKind::Leftovers => "leftovers",
             AttentionKind::Unreachable => "unreachable",
@@ -164,11 +166,9 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         Some(&producers),
     )?;
     let mut attention = Vec::new();
-    if let Ok(paths) = super::edit_cli::uncommitted(root).map(|paths| paths.join(", ")) {
-        if !paths.is_empty() {
-            let reason = format!("{paths}. {}", super::edit_cli::COMMIT_DATA);
-            attention.push(Attention { kind: AttentionKind::Uncommitted, about: "data/".into(), reason });
-        }
+    if let Err(error) = super::apply_cli::pushed_commit(root) {
+        let reason = format!("{} {}", error.message, error.fix);
+        attention.push(Attention { kind: AttentionKind::Unpushed, about: "checkout".into(), reason });
     }
     // `Live::read` gives one live product per product, in their order.
     let products = live.products.iter().zip(products).map(|(product, offered)| {
@@ -183,8 +183,8 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
                 None
             }
         };
-        let applied = product.applied.clone();
-        ProductStatus { product: product.product.clone(), release, applied, bytes, optional, layers }
+        let (applied, commit) = (product.applied.clone(), product.commit.clone());
+        ProductStatus { product: product.product.clone(), release, applied, commit, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
     for layer in

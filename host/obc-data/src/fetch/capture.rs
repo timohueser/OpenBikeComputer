@@ -441,7 +441,7 @@ mod tests {
             .unwrap();
         let mut context = crate::engine::code::Context::default();
         let request = Request { source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, Some((&mut context, true))).unwrap();
+        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, Some(&mut context)).unwrap();
         assert_eq!(snapshot.version, version);
         assert!(snapshot.files.is_empty());
         assert!(!scratch.0.join("absent-checkout").exists());

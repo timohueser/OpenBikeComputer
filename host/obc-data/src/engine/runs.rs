@@ -144,7 +144,6 @@ pub struct Run {
     _lock: Lock,
     _using: Lock,
     codes: super::code::Context,
-    committed_code: bool,
     pub(crate) originals: BTreeMap<String, super::release::Layer>,
 }
 
@@ -171,7 +170,6 @@ impl Run {
                 _lock: lock,
                 _using: using,
                 codes: Default::default(),
-                committed_code: false,
                 originals: BTreeMap::new(),
             };
             run.record(&Event::Started { command: command.into(), at })?;
@@ -238,7 +236,6 @@ impl Run {
             _lock: lock,
             _using: using,
             codes: Default::default(),
-            committed_code: false,
             originals: BTreeMap::new(),
         };
         if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
@@ -249,23 +246,6 @@ impl Run {
         run.sync()?;
         File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
         Ok(run)
-    }
-
-    pub(crate) fn requires_committed_code(&self) -> bool {
-        self.committed_code
-    }
-
-    pub(crate) fn require_committed_code(&mut self) {
-        self.committed_code = true;
-    }
-
-    pub(crate) fn check_owner(&mut self, root: &Path, owner: &super::OwnerCode) -> Result<(), String> {
-        self.codes.refresh_python();
-        let identity = self.codes.owner_identity(root, owner)?;
-        if self.committed_code {
-            identity.committed(root)?;
-        }
-        Ok(())
     }
 
     /// Use only original layers returned by checked portable reuse for this operation.
@@ -291,11 +271,6 @@ impl Run {
         let estimated = plan.fetches().iter().filter_map(|fetch| fetch.bytes).fold(estimated, u64::saturating_add);
         crate::store::check_free(store.root(), estimated)?;
         let ordered = order(steps)?;
-        if self.committed_code {
-            for step in ordered.iter().filter(|step| !self.originals.contains_key(&step.name)) {
-                self.codes.identity(root, &step.code)?.committed(root)?;
-            }
-        }
         if let Some(build) = plan.builds().find(|build| !ordered.iter().any(|step| step.name == build.step)) {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
@@ -475,15 +450,7 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
-        match crate::input_copy::fetch_checked(
-            root,
-            store,
-            http,
-            copies,
-            request,
-            files,
-            Some((&mut self.codes, self.committed_code)),
-        ) {
+        match crate::input_copy::fetch_checked(root, store, http, copies, request, files, Some(&mut self.codes)) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;

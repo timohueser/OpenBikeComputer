@@ -44,6 +44,9 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     if SESSION.get().is_some() {
         return Err(Code::Usage.error("an operation worker cannot start a second operation"));
     }
+    if request.kind == Kind::Apply {
+        super::apply_cli::pushed_commit(root)?;
+    }
     let code = crate::worker::bound_code(root).map_err(|e| Code::Blocked.error(e))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let plan_bytes = plan
@@ -368,6 +371,7 @@ pub(super) fn apply(
     if args.env != "live" {
         return Err(Code::Usage.error("only live applies"));
     }
+    super::apply_cli::pushed_commit(root)?;
     let store = Store::open()?;
     let plan = match args.plan.as_deref() {
         Some(path) => super::build_cli::read_plan(path)?,

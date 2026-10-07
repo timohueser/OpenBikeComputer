@@ -44,6 +44,7 @@ fn status() -> Status {
             product: product.into(),
             release: Some(release.repeat(8)),
             applied: applied.map(str::to_string),
+            commit: None,
             bytes: Some(bytes),
             optional: optional.iter().map(|layer| layer.to_string()).collect(),
             layers,

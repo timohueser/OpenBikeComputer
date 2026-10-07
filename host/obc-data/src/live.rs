@@ -116,6 +116,8 @@ pub struct LiveProduct {
     pub release: Option<(String, Release)>,
     /// `applied` of the pointer: the time of the switch to its release, which an apply writes.
     pub applied: Option<String>,
+    /// `commit` of the pointer: the pushed commit that the apply ran.
+    pub commit: Option<String>,
     /// SHA-256 of the exact observed pointer bytes, or None for a successful absent read.
     pub observed: Option<String>,
     /// The actual client document, without the publication id and time.
@@ -141,17 +143,19 @@ impl Live {
         for &(name, prefix) in products {
             let bytes = remote.get(&format!("{prefix}/catalog.json"))?;
             let observed = bytes.as_deref().map(sha256_hex);
-            let (release, applied, document) = match pointer(bytes.as_deref(), prefix)? {
-                Some((id, applied, document)) => {
-                    (Some((id.clone(), manifest(remote, store, name, prefix, &id)?)), applied, Some(document))
+            let (release, applied, commit, document) = match pointer(bytes.as_deref(), prefix)? {
+                Some(Pointer { id, applied, commit, document }) => {
+                    let release = manifest(remote, store, name, prefix, &id)?;
+                    (Some((id, release)), applied, commit, Some(document))
                 }
-                None => (None, None, None),
+                None => (None, None, None, None),
             };
             live.products.push(LiveProduct {
                 product: name.into(),
                 prefix: prefix.into(),
                 release,
                 applied,
+                commit,
                 observed,
                 document,
             });
@@ -443,21 +447,26 @@ pub fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The release that the pointer of `prefix` names, and its `applied`.
-type ReadPointer = (String, Option<String>, serde_json::Map<String, serde_json::Value>);
+/// The release that a pointer names, its publication fields, and the client document.
+struct Pointer {
+    id: String,
+    applied: Option<String>,
+    commit: Option<String>,
+    document: serde_json::Map<String, serde_json::Value>,
+}
 
-fn pointer(bytes: Option<&[u8]>, prefix: &str) -> Result<Option<ReadPointer>, String> {
+fn pointer(bytes: Option<&[u8]>, prefix: &str) -> Result<Option<Pointer>, String> {
     let key = format!("{prefix}/catalog.json");
     let Some(bytes) = bytes else { return Ok(None) };
     let pointer: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| format!("{key}: {e}"))?;
     match pointer.get("release") {
         None => Ok(None),
         Some(serde_json::Value::String(id)) if is_sha256(id) => {
-            let applied = pointer.get("applied").and_then(|applied| applied.as_str()).map(str::to_string);
             let mut document = pointer.as_object().expect("a release field belongs to an object").clone();
             document.remove("release");
-            document.remove("applied");
-            Ok(Some((id.clone(), applied, document)))
+            let mut text = |key: &str| document.remove(key).and_then(|value| value.as_str().map(str::to_string));
+            let (applied, commit) = (text("applied"), text("commit"));
+            Ok(Some(Pointer { id: id.clone(), applied, commit, document }))
         }
         Some(other) => Err(format!("{key}: `release` is {other}, not the SHA-256 of a manifest")),
     }
@@ -655,6 +664,7 @@ pub(crate) mod tests {
                 prefix: "test-catalog".into(),
                 release: Some((release.id(), release)),
                 applied: None,
+                commit: None,
                 observed: None,
                 document: None,
             });

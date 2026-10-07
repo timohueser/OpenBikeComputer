@@ -146,6 +146,7 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
             prefix: "cell-catalog".into(),
             release: Some((release.id(), release)),
             applied: None,
+            commit: None,
             document: None,
             observed: None,
         }],

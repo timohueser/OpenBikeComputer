@@ -63,7 +63,7 @@ impl App {
                 self.sources.iter().position(|row| row.source.id == attention.about).map(Fix::Source)
             }
             AttentionKind::Drift | AttentionKind::Leftovers => Some(Fix::Plan),
-            AttentionKind::Uncommitted | AttentionKind::Unreachable => None,
+            AttentionKind::Unpushed | AttentionKind::Unreachable => None,
         }
     }
 
@@ -89,7 +89,10 @@ impl App {
         let attention = self.status.as_ref().map_or(&[][..], |status| &status.attention[..]);
         let mut table = vec![["PRODUCT", "RELEASE", "APPLIED", "SIZE"].map(String::from).to_vec()];
         table.extend(products.iter().map(|product| {
-            let release = product.release.as_ref().map_or("nothing live".into(), |id| format!("release {}", &id[..8]));
+            let release = product.release.as_ref().map_or("nothing live".into(), |id| match &product.commit {
+                Some(commit) => format!("release {} built from {}", &id[..8], &commit[..commit.len().min(7)]),
+                None => format!("release {}", &id[..8]),
+            });
             let applied = product.applied.as_deref().and_then(|time| time.get(..10)).unwrap_or("—");
             vec![product.product.clone(), release, applied.into(), product.bytes.map_or("—".into(), bytes)]
         }));

@@ -59,19 +59,6 @@ pub fn edited(root: &Path, name: &str) -> bool {
     committed(root, name).is_ok_and(|committed| Some(committed) != now)
 }
 
-/// What to run for uncommitted edits in `data/`: the owner commits bake configuration with git.
-pub const COMMIT_DATA: &str = "Commit them with git: git add data && git commit";
-
-/// The files under `data/` that git does not have. `data/env/local.toml` is never in git.
-pub fn uncommitted(root: &Path) -> Result<Vec<String>, Error> {
-    let args = ["status", "--porcelain", "--untracked-files=all", "--", "data", ":(exclude)data/env/local.toml"];
-    let out = Command::new("git").args(args).current_dir(root).output().map_err(|e| format!("git: {e}"))?;
-    if !out.status.success() {
-        return Err(Code::Failed.error(format!("git status: {}", String::from_utf8_lossy(&out.stderr).trim())));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).lines().map(|line| line.get(3..).unwrap_or(line).to_string()).collect())
-}
-
 /// `data/env/<name>.toml` as git has it in `HEAD`.
 fn committed(root: &Path, name: &str) -> Result<Vec<u8>, Error> {
     if !crate::is_kebab(name) {

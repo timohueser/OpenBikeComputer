@@ -136,7 +136,7 @@ fn apply_live(
     let Remote::Bucket(bucket) = remote else {
         return Err(Code::Blocked.error("an apply writes R2: the OBC_R2_* variables are not set"));
     };
-    committed(root)?;
+    let commit = pushed_commit(root)?;
     let _lock = store.try_lock("apply-live")?.ok_or_else(|| {
         Code::Usage.error("another apply of live runs on this machine").fix("Wait for it to end, then plan again.")
     })?;
@@ -162,9 +162,8 @@ fn apply_live(
     let noop = plan.groups.is_empty() && plan.remove.is_empty();
     ask(plan)?;
     let mut run = super::api::start_run(store, "apply live")?;
-    run.require_committed_code();
     let mut applied = Applied { run: run.id().into(), ..Applied::default() };
-    let result = publish(root, store, http, (remote, bucket), products, plan, wait, &mut run, &mut applied);
+    let result = publish(root, store, http, (remote, bucket), products, (plan, &commit), wait, &mut run, &mut applied);
     super::api::finish_run(run, result, None)?;
     if noop {
         applied.built = None;
@@ -180,7 +179,7 @@ fn publish(
     http: &Http,
     (remote, bucket): (&Remote, &Bucket),
     products: &[&dyn Product],
-    plan: &EnvPlan,
+    (plan, commit): (&EnvPlan, &str),
     wait: Wait,
     run: &mut Run,
     applied: &mut Applied,
@@ -223,6 +222,7 @@ fn publish(
             product.document.clone().ok_or_else(|| Code::VerifyFailed.error("missing desired pointer"))?;
         document.insert("release".into(), id.clone().into());
         document.insert("applied".into(), date::timestamp(date::now()).into());
+        document.insert("commit".into(), commit.into());
         let key = format!("{}/catalog.json", product.prefix);
         if let Some(bytes) = remote.get(&key)? {
             // A rollback copies this file back to the key.
@@ -321,16 +321,43 @@ pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-/// Refuse an apply while `data/` has edits that git does not have: live builds from a committed
-/// `data/`.
-pub(super) fn committed(root: &Path) -> Result<(), Error> {
-    let paths = super::edit_cli::uncommitted(root)?;
-    if paths.is_empty() {
-        return Ok(());
+/// The commit that Live publishes from: the checkout has no change that git lacks, and a branch
+/// on `origin` holds `HEAD`. Live settings in `data/env/` and `data/regions/` need no commit.
+pub(crate) fn pushed_commit(root: &Path) -> Result<String, Error> {
+    let git = |args: &[&str]| -> Result<String, Error> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map_err(|e| Code::Failed.error(format!("git: {e}")))?;
+        if !out.status.success() {
+            return Err(Code::Failed.error(format!(
+                "git {}: {}",
+                args[0],
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let status = ["status", "--porcelain", "--untracked-files=all", "--", ".", ":!data/env/", ":!data/regions/"];
+    let changed: Vec<String> = git(&status)?.lines().map(|line| line.get(3..).unwrap_or(line).to_string()).collect();
+    if !changed.is_empty() {
+        let mut shown = changed.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        if changed.len() > 5 {
+            shown += ", …";
+        }
+        return Err(Code::Usage
+            .error(format!("Live publishes from a pushed commit: {} files are uncommitted ({shown})", changed.len()))
+            .fix("Commit and push them, then apply again."));
     }
-    Err(Code::Usage
-        .error(format!("data/ has uncommitted edits ({}).", paths.join(", ")))
-        .fix(super::edit_cli::COMMIT_DATA))
+    let commit = git(&["rev-parse", "HEAD"])?.trim().to_string();
+    let branches = git(&["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])?;
+    if !branches.lines().any(|branch| branch.starts_with("origin/")) {
+        return Err(Code::Usage
+            .error(format!("Live publishes from a pushed commit: commit {} is not on GitHub", &commit[..7]))
+            .fix("Push it first, then apply again."));
+    }
+    Ok(commit)
 }
 
 /// Verify each complete product before publication, including unchanged releases.
@@ -539,9 +566,17 @@ mod tests {
         apply_live(&root, &fixture.store, &http, remote, products, None, |_| Ok(()), NO_WAIT)
     }
 
+    /// Commit the checkout and push it to its `origin`.
     fn commit(fixture: &Fixture) {
+        let origin = fixture.scratch.0.join("origin.git");
+        if !origin.exists() {
+            assert!(Command::new("git").args(["init", "-q", "--bare"]).arg(&origin).status().unwrap().success());
+            let remote = ["remote", "add", "origin", origin.to_str().unwrap()];
+            assert!(Command::new("git").args(remote).current_dir(fixture.root()).status().unwrap().success());
+            write(&fixture.root().join(".gitignore"), "__pycache__/\n");
+        }
         let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
-        for args in [&["add", "."][..], &["commit", "-q", "-m", "fixture"]] {
+        for args in [&["add", "."][..], &["commit", "-q", "-m", "fixture"], &["push", "-q", "origin", "HEAD:main"]] {
             assert!(Command::new("git").args(git).args(args).current_dir(fixture.root()).status().unwrap().success());
         }
     }
@@ -605,6 +640,8 @@ mod tests {
         let mut pointer: serde_json::Value = serde_json::from_slice(&keys["test/catalog.json"]).unwrap();
         let applied = pointer.as_object_mut().unwrap().remove("applied").unwrap().as_str().unwrap().to_string();
         assert!(date::seconds(&applied).unwrap().abs_diff(date::now()) < 600, "the time of the switch: {applied}");
+        let commit = pointer.as_object_mut().unwrap().remove("commit").unwrap();
+        assert_eq!(commit.as_str().map(str::len), Some(40), "the pushed commit");
         assert_eq!(pointer, serde_json::json!({"schema": 1, "release": id}));
         let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
         assert_eq!(live.products[0].applied.as_ref(), Some(&applied), "status reads it");
@@ -1238,16 +1275,28 @@ mod tests {
     }
 
     #[test]
-    fn an_apply_refuses_data_that_git_does_not_have() {
-        let (fixture, remote) = repository("apply-uncommitted");
+    fn live_publishes_only_from_a_pushed_commit_and_records_it() {
+        let (fixture, remote) = repository("apply-pushed");
         let root = fixture.root();
-        write(&root.join("data/env/local.toml"), "region = \"monaco\"\n");
-        assert!(committed(&root).is_ok(), "local.toml is never in git");
-        write(&root.join("data/env/live.toml"), "region = \"andorra\"\n");
+        write(&root.join("data/env/live.toml"), "region = \"monaco\"\nlayers = []\n");
+        write(&root.join("data/regions/new.toml"), "name = \"New\"\nkind = \"geofabrik\"\nareas = [\"new\"]\n");
+        assert_eq!(pushed_commit(&root).unwrap().len(), 40, "Live settings need no commit");
+        write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
-        let message = "data/ has uncommitted edits (data/env/live.toml).";
+        let message = "Live publishes from a pushed commit: 1 files are uncommitted (join.py)";
         assert_eq!((err.code, err.message.as_str()), (Code::Usage, message));
+        let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
+        let committed = Command::new("git").args(git).args(["commit", "-qam", "local"]).current_dir(&root).status();
+        assert!(committed.unwrap().success());
+        let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
+        assert!(err.message.ends_with("is not on GitHub"), "{}", err.message);
         assert_eq!(keys(&fixture), before);
+
+        commit(&fixture);
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let pushed = pushed_commit(&root).unwrap();
+        let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        assert_eq!(live.products[0].commit.as_ref(), Some(&pushed), "the pointer records the commit");
     }
 }
