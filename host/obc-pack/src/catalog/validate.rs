@@ -3,7 +3,7 @@
 //! This module owns canonical cell/region identifiers and UTC date/timestamp
 //! parsing. Scanner-specific agreement checks remain with their scanners.
 
-use crate::grid::{axis_cells, id_width, CellId, MAX_CELL_LOG2, MIN_CELL_LOG2};
+use obc_map_core::grid::{axis_cells, id_width, CellId, MAX_CELL_LOG2, MIN_CELL_LOG2};
 
 /// Parse the canonical `<log2>/<i>/<j>` id, strictly.
 ///

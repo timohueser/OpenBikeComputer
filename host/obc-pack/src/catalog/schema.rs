@@ -11,8 +11,8 @@ use serde_json::{Map, Value};
 
 use obc_formats::obct;
 
-use crate::config::Config;
-use crate::grid::{MAX_CELL_LOG2, MIN_CELL_LOG2};
+use obc_map_core::config::Config;
+use obc_map_core::grid::{MAX_CELL_LOG2, MIN_CELL_LOG2};
 
 use super::model::{
     ArticleIndexDocument, BandEntry, BandRole, BandSection, Catalog, CellIndexDocument, LodEntry, RegionCellsDocument,

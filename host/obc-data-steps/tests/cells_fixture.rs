@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use obc_bake::cut::{cut, CutOptions};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run};
 use obc_data::env::Env;
@@ -21,11 +22,10 @@ use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
 use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
 use obc_formats::obcm::SourceId;
+use obc_map_core::config::Config;
+use obc_map_core::grid::{BandTable, CellId};
 use obc_map_core::progress::Progress;
 use obc_osm::LeafId;
-use obc_pack::config::Config;
-use obc_pack::cut::{cut, CutOptions};
-use obc_pack::grid::{BandTable, CellId};
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 const VERSION: &str = "2022-05-09";
@@ -396,7 +396,11 @@ fn peak_content(request: &Request) -> Result<(), String> {
 
 /// Authored coarse/mid geometry, serialized with the same style/profile tables as the real cuts.
 fn authored_geometry(request: &Request) -> Result<(), String> {
-    use obc_pack::serialize::{serialize_lods, Feature, Kind, LodLayer, Node};
+    use obc_bake::serialize::serialize_lods;
+    use obc_draw::serialize::Feature;
+    use obc_draw::serialize::Kind;
+    use obc_draw::serialize::LodLayer;
+    use obc_draw::serialize::Node;
     let config = Config::parse(include_str!("../../../builder/presets/schema.json"))?;
     let band = request.options["band"].as_str().ok_or("missing band")?;
     let table = BandTable::recommended();
@@ -448,8 +452,8 @@ fn authored_geometry(request: &Request) -> Result<(), String> {
 
 /// A structurally invalid payload whose valid header lets metadata generation complete.
 fn malformed_network(request: &Request) -> Result<(), String> {
-    obc_pack::step::cells(request)?;
-    let width = obc_pack::grid::id_width(18);
+    obc_network::step::cells(request)?;
+    let width = obc_map_core::grid::id_width(18);
     let pair = &request.options["cells"][0];
     let path = request.output.join(format!(
         "cells/network/{:0width$}/{:0width$}.obcm",

@@ -13,10 +13,10 @@ use std::process::Command;
 
 pub use obc_osm::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
 
+use crate::cut::{CellArtifact, CutOptions, SourceExtent};
+use obc_map_core::grid::{BandTable, CellId, UBox, GRID_ORIGIN};
 use obc_map_core::progress::Progress;
 use obc_pack::catalog::CellSource;
-use obc_pack::cut::{CellArtifact, CutOptions, SourceExtent};
-use obc_pack::grid::{BandTable, CellId, UBox, GRID_ORIGIN};
 use serde::{Deserialize, Serialize};
 
 use crate::cell_store::{paths as cell_paths, read_current as read_cell_state, CellSidecar, CellState};
@@ -841,7 +841,7 @@ impl PlanetBake<'_> {
             let fact = EmptyFact { built_at: built_at.clone(), sources: vec![source.clone()] };
             if artifact.empty {
                 remove_artifact(&self.opts.out, &artifact.band, artifact.id)?;
-                let _ = std::fs::remove_file(obc_pack::cut::artifact_path(&tmp, artifact));
+                let _ = std::fs::remove_file(crate::cut::artifact_path(&tmp, artifact));
                 changes
                     .entry(artifact.band.clone())
                     .or_default()
@@ -974,7 +974,7 @@ fn install_artifact(
     schema_revision: u32,
     terrain_revision: Option<u32>,
 ) -> Result<(), String> {
-    let src = obc_pack::cut::artifact_path(tmp, artifact);
+    let src = crate::cut::artifact_path(tmp, artifact);
     crate::verify::verify_cell(&src, artifact.id.square())?;
     let (dest, sidecar_path, state_path) = cell_paths(out, &artifact.band, artifact.id);
     if let Some(parent) = dest.parent() {
@@ -1151,7 +1151,7 @@ mod tests {
     }
 
     fn test_bands() -> BandTable {
-        use obc_pack::grid::{Band, BandRole};
+        use obc_map_core::grid::{Band, BandRole};
         BandTable {
             bands: vec![
                 Band {
@@ -1205,11 +1205,11 @@ mod tests {
         fn cut(
             &self,
             _pbfs: &[String],
-            _config: &obc_pack::config::Config,
+            _config: &obc_map_core::config::Config,
             _out_dir: &Path,
             opts: &CutOptions,
             _progress: &Progress,
-        ) -> Result<obc_pack::cut::CutSummary, String> {
+        ) -> Result<crate::cut::CutSummary, String> {
             let cells = opts
                 .bands
                 .bands
@@ -1230,7 +1230,7 @@ mod tests {
                     })
                 })
                 .collect();
-            Ok(obc_pack::cut::CutSummary { cells, bytes: 0, dropped: 0, partial: 0 })
+            Ok(crate::cut::CutSummary { cells, bytes: 0, dropped: 0, partial: 0 })
         }
     }
 

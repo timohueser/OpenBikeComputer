@@ -1,10 +1,8 @@
 //! Join compiled content to explicit OSM approaches and encode one map section.
 
-use crate::{
-    grid::CellId,
-    landmarks::{Content, Photo},
-};
+use crate::landmarks::{Content, Photo};
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
+use obc_map_core::grid::CellId;
 use obc_places::{hours::Schedule, metadata::LandmarkLink};
 use sha2::{Digest, Sha256};
 use std::{
@@ -275,7 +273,7 @@ pub fn artifacts(
         }
         let refs: Vec<u16> = refs.into_iter().map(|index| index.unwrap_or(POI_HOURS_REF_NONE)).collect();
         let mut bytes = serialize(&landmarks, &refs)?;
-        bytes.extend(crate::serialize::pack_hours_pool(&pool));
+        bytes.extend(obc_map_core::serialize::pack_hours_pool(&pool));
         Ok(bytes)
     };
     owned.into_iter().map(|(cell, landmarks)| Ok((cell, artifact(landmarks)?))).collect()

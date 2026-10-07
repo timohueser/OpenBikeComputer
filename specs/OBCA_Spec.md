@@ -741,9 +741,9 @@ degree-2 junction and the road is continuous. A junction 3.9 m away on either si
   [`firmware/obc-formats/src/obcm.rs`](../firmware/obc-formats/src/obcm.rs).
 - The catalog that publishes cells, bands, schemas, skins, and region cell-sets:
   [`OBCC_Spec.md`](OBCC_Spec.md).
-- The packer whose quadtree, anchor, and nav conventions this specification constrains:
-  [`host/obc-pack`](../host/obc-pack) — the quadtree in `quadtree.rs`, the byte layout in
-  `serialize.rs`, the routable graph and its class tables in `nav.rs`.
+- The drawing quadtree and feature encoding: [`host/obc-draw`](../host/obc-draw).
+- The navigation graph and its encoding: [`host/obc-network`](../host/obc-network).
+- Shared grid and byte framing: [`host/obc-map-core`](../host/obc-map-core).
 - The reader every verify pass (§4.8) and the device itself run:
   [`firmware/obc-reader`](../firmware/obc-reader).
 - The bakery that cuts and publishes cells, and the curated region list that names the

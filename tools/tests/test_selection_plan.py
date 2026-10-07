@@ -419,6 +419,7 @@ class ShippedPlanTests(unittest.TestCase):
             "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
             "obc-pack": ["builder-python", "clippy", "fmt", "test"],
+            "obc-bake": ["builder-python", "clippy", "fmt", "test"],
             "obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "obc-app": ["clippy", "device", "fmt", "test"],
         }

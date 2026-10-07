@@ -86,7 +86,7 @@ fn map_bytes() -> Vec<u8> {
     map_with_hours(None)
 }
 fn map_with_hours(hours: Option<obc_places::hours::Schedule>) -> Vec<u8> {
-    use obc_pack::nav::{Edge, NavGraph, Node};
+    use obc_network::nav::{Edge, NavGraph, Node};
     let coords = [
         (500_000, 500_000),
         (500_000, 510_000),
@@ -102,11 +102,18 @@ fn map_with_hours(hours: Option<obc_places::hours::Schedule>) -> Vec<u8> {
         .map(|(i, p)| Edge { a: i as u32, b: i as u32 + 1, polyline: p.to_vec(), length_m: 1600, kind: 0 })
         .collect();
     let bbox = (0, 0, 1_000_000, 1_000_000);
-    let lods =
-        [obc_pack::LodLayer { max_mpp: None, chunk_size: 2048, root: obc_pack::Node::Leaf { bbox, features: vec![] } }];
-    let profiles =
-        [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
-    obc_pack::serialize_lods(
+    let lods = [obc_draw::serialize::LodLayer {
+        max_mpp: None,
+        chunk_size: 2048,
+        root: obc_draw::serialize::Node::Leaf { bbox, features: vec![] },
+    }];
+    let profiles = [obc_map_core::serialize::NavProfile {
+        name: "Neutral".into(),
+        highway: [16; 32],
+        surface: [16; 8],
+        climb_weight: 0,
+    }];
+    obc_bake::serialize::serialize_lods(
         &lods,
         &[],
         0,

@@ -10,15 +10,18 @@
 //! back out of a file the packer produced, so neither side gets to state what the answer is.
 //! `obc-pack` is a dev-dependency, so none of this enters the engine's build graph.
 
+use obc_bake::serialize::serialize_lods;
+use obc_draw::geom::Geom;
+use obc_draw::quadtree::build_lod_with;
+use obc_draw::serialize::LodLayer;
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, POI_CHUNK_SIZE, STYLE_RECORD_LEN};
+use obc_map_core::config::LineStyle as PackLineStyle;
 use obc_map_core::progress::Progress;
-use obc_pack::config::LineStyle as PackLineStyle;
-use obc_pack::geom::Geom;
-use obc_pack::nav::NavGraph;
-use obc_pack::quadtree::build_lod_with;
-use obc_pack::serialize::{pack_style_dict, NavProfile, Style};
-use obc_pack::{serialize_lods, LodLayer};
+use obc_map_core::serialize::pack_style_dict;
+use obc_map_core::serialize::NavProfile;
+use obc_map_core::serialize::Style;
+use obc_network::nav::NavGraph;
 use obcm_assemble::emit;
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::schema::{LineStyle, StyleRecord};

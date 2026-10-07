@@ -6,7 +6,7 @@
 //! cell, a co-baked border cell with two sources, a nested region, a skin with a
 //! preview, and a terrain artifact class on its own revision track.
 
-use crate::config::LineStyle;
+use obc_map_core::config::LineStyle;
 use std::collections::BTreeSet;
 use std::fs;
 
@@ -22,7 +22,7 @@ use obc_formats::io::put_i32;
 use obc_formats::obcm::{HEADER_LEN, MAGIC, VERSION as OBCM_VERSION};
 use obc_formats::obct;
 
-use crate::grid::{id_width, CellId};
+use obc_map_core::grid::{id_width, CellId};
 
 /// A scratch directory that removes itself: the packer builds its own temp paths rather than adding
 /// a dependency for one.
@@ -511,7 +511,7 @@ fn cell_index_doc(g: &GeneratedCatalog, band: &str) -> CellIndexDocument {
 }
 
 // The grid itself — the worked example's squares, the nesting, the padding widths — is pinned once
-// in `crate::grid`'s own tests. What is the catalog's is the strict reading of an id.
+// in `obc_map_core::grid`'s own tests. What is the catalog's is the strict reading of an id.
 
 #[test]
 fn non_canonical_cell_ids_are_refused() {

@@ -32,6 +32,9 @@ js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
 
 [dev-dependencies]
+obc-draw = { workspace = true }
+obc-network = { workspace = true }
+obc-bake = { workspace = true }
 obc-places = { workspace = true }
 obc-map-core = { workspace = true }
 obc-ports = { workspace = true }

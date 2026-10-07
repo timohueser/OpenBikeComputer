@@ -6,10 +6,12 @@
 //! road (the route), a parallel street ~400 m north, and connector edges at both ends.
 
 use crate::common::{convert, route_points, VecSink};
+use obc_bake::serialize::serialize_lods;
+use obc_draw::serialize::{LodLayer, Node as GeomNode};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
-use obc_pack::nav::{Edge, NavGraph, Node};
-use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
+use obc_map_core::serialize::NavProfile;
+use obc_network::nav::{Edge, NavGraph, Node};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::corridor::{Corridor, CORRIDOR_MAX_PTS, MIN_DETOUR_SPAN_M};
 use obc_route::nav::{plan_detour, plan_route, NavError, NavScratch};
@@ -1027,7 +1029,7 @@ fn a_detour_weighs_climb_the_same_way_a_plan_does() {
     let obcr = road_route_obcr();
 
     // Non-vacuity: the north connector bakes the climb this test spends, and only uphill.
-    let (up, down) = obc_pack::nav::integrate_edge_ascent(&[road_at(0), street_at(0)], &mut Hillside);
+    let (up, down) = obc_network::nav::integrate_edge_ascent(&[road_at(0), street_at(0)], &mut Hillside);
     assert!(
         (up as i64 - NORTH_CLIMB_M as i64).abs() <= 4,
         "the north connector should bake ≈ {NORTH_CLIMB_M} m, got {up}"

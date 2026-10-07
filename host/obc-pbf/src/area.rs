@@ -8,6 +8,27 @@ pub struct Polygon {
     pub interiors: Vec<Vec<(f64, f64)>>,
 }
 
+impl Polygon {
+    pub(crate) fn geometry(&self) -> Result<Geometry, geos::Error> {
+        let exterior = Geometry::create_linear_ring(ring_to_coordseq(&self.exterior))?;
+        let interiors = self
+            .interiors
+            .iter()
+            .map(|ring| Geometry::create_linear_ring(ring_to_coordseq(ring)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Geometry::create_polygon(exterior, interiors)
+    }
+}
+
+/// Simplify a source polygon without changing its topology. A failed result has no polygons.
+pub fn topology_preserve_simplify(polygon: &Polygon, tolerance: f64) -> Vec<Polygon> {
+    let mut out = Vec::new();
+    if let Ok(geometry) = polygon.geometry().and_then(|g| g.topology_preserve_simplify(tolerance)) {
+        collect_polygons(&geometry, &mut out);
+    }
+    out
+}
+
 pub fn ring_to_coordseq(coords: &[(f64, f64)]) -> CoordSeq {
     let buf: Vec<[f64; 2]> = coords.iter().map(|&(x, y)| [x, y]).collect();
     CoordSeq::new_from_vec(&buf).expect("coordseq")
@@ -92,7 +113,7 @@ fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec
     polys
 }
 
-fn collect_polygons<G: geos::Geom>(g: &G, out: &mut Vec<Polygon>) {
+pub(crate) fn collect_polygons<G: geos::Geom>(g: &G, out: &mut Vec<Polygon>) {
     if g.is_empty().unwrap_or(true) {
         return;
     }

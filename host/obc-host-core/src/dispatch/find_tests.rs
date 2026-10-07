@@ -1,7 +1,7 @@
 use super::*;
 use obc_app::{find_place::State, AppState};
 use obc_formats::obcm::{PoiApproach, PoiMetadata, SourceId};
-use obc_pack::nav::{Edge, NavGraph, Node};
+use obc_network::nav::{Edge, NavGraph, Node};
 use obc_ports::{Fix, InputClock, LocationSource, RideClock};
 
 /// No Assistant review is in progress. A selected ordinary route's own checkpoint still stands.
@@ -105,12 +105,28 @@ fn run_find(scenario: Scenario) {
     closed.hours = obc_places::hours::parse("off");
     pois.push(closed);
     let bbox = (490_000, 490_000, 590_000, 510_000);
-    let lods =
-        [obc_pack::LodLayer { max_mpp: None, chunk_size: 2048, root: obc_pack::Node::Leaf { bbox, features: vec![] } }];
-    let profiles =
-        [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
-    let bytes =
-        obc_pack::serialize_lods(&lods, &[], 0, bbox, &pois, &graph, &profiles, &mut obc_elevation::NullElevation).0;
+    let lods = [obc_draw::serialize::LodLayer {
+        max_mpp: None,
+        chunk_size: 2048,
+        root: obc_draw::serialize::Node::Leaf { bbox, features: vec![] },
+    }];
+    let profiles = [obc_map_core::serialize::NavProfile {
+        name: "Neutral".into(),
+        highway: [16; 32],
+        surface: [16; 8],
+        climb_weight: 0,
+    }];
+    let bytes = obc_bake::serialize::serialize_lods(
+        &lods,
+        &[],
+        0,
+        bbox,
+        &pois,
+        &graph,
+        &profiles,
+        &mut obc_elevation::NullElevation,
+    )
+    .0;
     let owner = crate::flat_store::HostStore::memory().unwrap();
     let map = crate::flat_map::FlatMap::from_bytes_in(&owner, &bytes).unwrap();
     let mut output = crate::VecSink::default();

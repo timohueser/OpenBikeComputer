@@ -8,7 +8,7 @@ pub(super) fn map_bytes() -> Vec<u8> {
     map_bytes_with(&mut obc_route::NullElevation)
 }
 fn map_bytes_with(elevation: &mut dyn obc_route::ElevationSource) -> Vec<u8> {
-    use obc_pack::nav::{Edge, NavGraph, Node};
+    use obc_network::nav::{Edge, NavGraph, Node};
     let coords = [(500_000, 500_000), (520_000, 500_000), (510_000, 510_000)];
     let nodes = coords.iter().enumerate().map(|(id, &coord)| Node { id: id as u32, coord }).collect();
     let edges = [(0, 1, 2400), (0, 2, 1700), (2, 1, 1700)]
@@ -22,11 +22,18 @@ fn map_bytes_with(elevation: &mut dyn obc_route::ElevationSource) -> Vec<u8> {
         })
         .collect();
     let bbox = (490_000, 490_000, 530_000, 520_000);
-    let lods =
-        [obc_pack::LodLayer { max_mpp: None, chunk_size: 2048, root: obc_pack::Node::Leaf { bbox, features: vec![] } }];
-    let profiles =
-        [obc_pack::NavProfile { name: "Neutral".into(), highway: [16; 32], surface: [16; 8], climb_weight: 0 }];
-    obc_pack::serialize_lods(&lods, &[], 0, bbox, &[], &NavGraph { nodes, edges }, &profiles, elevation).0
+    let lods = [obc_draw::serialize::LodLayer {
+        max_mpp: None,
+        chunk_size: 2048,
+        root: obc_draw::serialize::Node::Leaf { bbox, features: vec![] },
+    }];
+    let profiles = [obc_map_core::serialize::NavProfile {
+        name: "Neutral".into(),
+        highway: [16; 32],
+        surface: [16; 8],
+        climb_weight: 0,
+    }];
+    obc_bake::serialize::serialize_lods(&lods, &[], 0, bbox, &[], &NavGraph { nodes, edges }, &profiles, elevation).0
 }
 
 struct Planner {

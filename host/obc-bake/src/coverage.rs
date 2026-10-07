@@ -26,9 +26,10 @@
 
 use std::collections::BTreeSet;
 
+use obc_map_core::grid::{axis_cells, segment_crossing, Axis, CellId, UBox, GRID_ORIGIN};
 use obc_pack::catalog::boundary::poly_rings;
-use obc_pack::geom::{assemble_multipolygon, union_all, Geom};
-use obc_pack::grid::{axis_cells, segment_crossing, Axis, CellId, UBox, GRID_ORIGIN};
+use obc_pbf::area::{assemble_multipolygon, Polygon};
+use obc_pbf::coverage::{covers_polygon, intersect_polygons, union_all};
 
 /// A closed ring in microdegrees, `(lat, lon)`.
 type URing = Vec<(i64, i64)>;
@@ -38,7 +39,7 @@ type URing = Vec<(i64, i64)>;
 pub struct Coverage {
     /// Degrees, `(lon, lat)` — the packer's own order, kept so [`Coverage::union`] can hand them
     /// straight to GEOS.
-    polys: Vec<Geom>,
+    polys: Vec<Polygon>,
     /// The same rings in integer microdegrees, `(lat, lon)`, closed. Every decision below is taken
     /// on these.
     rings: Vec<URing>,
@@ -66,7 +67,7 @@ impl Coverage {
     /// strip of ground co-baking exists to complete as uncovered. Returns `None` if GEOS cannot
     /// union them, which the caller must treat as "nothing is canonical".
     pub fn union(parts: &[&Coverage]) -> Option<Self> {
-        let polys: Vec<&Geom> = parts.iter().flat_map(|c| c.polys.iter()).collect();
+        let polys: Vec<&Polygon> = parts.iter().flat_map(|c| c.polys.iter()).collect();
         match polys.len() {
             0 => None,
             1 => Some(parts[0].clone()),
@@ -78,7 +79,7 @@ impl Coverage {
     pub fn covers_coverage(&self, requested: &Self) -> Result<bool, String> {
         let polys = self.polys.iter().collect::<Vec<_>>();
         for polygon in &requested.polys {
-            if !obc_pack::coverage::covers_polygon(&polys, polygon)? {
+            if !covers_polygon(&polys, polygon)? {
                 return Ok(false);
             }
         }
@@ -87,14 +88,12 @@ impl Coverage {
 
     /// The common ground. A boundary touch has no ground area.
     pub fn intersection(&self, other: &Self) -> Result<Option<Self>, String> {
-        let polys = obc_pack::coverage::intersect_polygons(
-            &self.polys.iter().collect::<Vec<_>>(),
-            &other.polys.iter().collect::<Vec<_>>(),
-        )?;
+        let polys =
+            intersect_polygons(&self.polys.iter().collect::<Vec<_>>(), &other.polys.iter().collect::<Vec<_>>())?;
         Ok((!polys.is_empty()).then(|| Self::from_polys(polys)))
     }
 
-    fn from_polys(polys: Vec<Geom>) -> Self {
+    fn from_polys(polys: Vec<Polygon>) -> Self {
         let mut rings: Vec<URing> = Vec::new();
         for poly in &polys {
             collect_rings(poly, &mut rings);
@@ -125,14 +124,9 @@ impl Coverage {
     /// area rather than a shoelace scaled by one cosine: Switzerland spans two degrees of latitude
     /// and a single-cosine approximation is already 4 % out over that. Holes subtract.
     pub fn area_km2(&self) -> f64 {
-        fn area_of(geom: &Geom) -> f64 {
-            match geom {
-                Geom::Polygon { exterior, interiors } => {
-                    ring_area_km2(exterior).abs() - interiors.iter().map(|r| ring_area_km2(r).abs()).sum::<f64>()
-                }
-                Geom::Multi(parts) => parts.iter().map(area_of).sum(),
-                Geom::Line(_) | Geom::Empty => 0.0,
-            }
+        fn area_of(polygon: &Polygon) -> f64 {
+            ring_area_km2(&polygon.exterior).abs()
+                - polygon.interiors.iter().map(|r| ring_area_km2(r).abs()).sum::<f64>()
         }
         self.polys.iter().map(area_of).sum::<f64>().max(0.0)
     }
@@ -233,22 +227,11 @@ impl Coverage {
 ///
 /// A hole is a ring like any other here: even-odd ray casting counts it, so the inside of a hole
 /// comes out outside the coverage, which is what a hole means.
-fn collect_rings(geom: &Geom, out: &mut Vec<URing>) {
-    match geom {
-        Geom::Polygon { exterior, interiors } => {
-            for ring in std::iter::once(exterior).chain(interiors) {
-                if let Some(closed) = to_udeg_ring(ring) {
-                    out.push(closed);
-                }
-            }
+fn collect_rings(polygon: &Polygon, out: &mut Vec<URing>) {
+    for ring in std::iter::once(&polygon.exterior).chain(&polygon.interiors) {
+        if let Some(closed) = to_udeg_ring(ring) {
+            out.push(closed);
         }
-        Geom::Multi(parts) => {
-            for p in parts {
-                collect_rings(p, out);
-            }
-        }
-        // A coverage polygon that GEOS handed back as a line has no inside.
-        Geom::Line(_) | Geom::Empty => {}
     }
 }
 

@@ -254,6 +254,6 @@ verifies the result with the production readers. See [`OBCA_Spec.md`](src:specs/
 - OBCM reader: [`obc-reader`](src:firmware/obc-reader)
 - OBCR reader, converter, and router: [`obc-route`](src:firmware/obc-route)
 - OBCT reader and sampler: [`obc-elevation`](src:firmware/obc-elevation)
-- OBCM packer: [`obc-pack`](src:host/obc-pack)
+- OBCM packer: [`obc-pack`](src:host/obc-bake)
 - Terrain baker: [`obc-dem`](src:host/obc-dem)
 - Map assembler: [`obcm-assemble`](src:host/obcm-assemble)

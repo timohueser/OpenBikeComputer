@@ -21,21 +21,22 @@ use std::path::{Path, PathBuf};
 use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
 use obc_app::{App, AppState};
+use obc_bake::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
+use obc_bake::serialize::serialize_lods;
 use obc_display::Framebuffer565;
+use obc_draw::geom::Geom;
+use obc_draw::ingest::{IngestFeature, Ingested};
+use obc_draw::quadtree::build_lod_with;
+use obc_draw::serialize::LodLayer;
 use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 use obc_host_core::flat_map::FlatMap;
 use obc_host_core::flat_store::HostStore;
 use obc_host_core::frame::{self, Scene};
 use obc_host_core::test_support::CountedSource;
 use obc_host_core::RgbaFrame;
+use obc_map_core::config::{Config, LineStyle as PackLineStyle};
+use obc_map_core::grid::BandTable;
 use obc_map_core::progress::Progress;
-use obc_pack::config::{Config, LineStyle as PackLineStyle};
-use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
-use obc_pack::geom::Geom;
-use obc_pack::grid::BandTable;
-use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::quadtree::build_lod_with;
-use obc_pack::{serialize_lods, LodLayer};
 use obc_places::metadata::Poi;
 use obc_places::routing::RoutableWay;
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
@@ -275,10 +276,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         Poi { elevation_m: Some(-25), ..poi(19, LAT + 22_345, SEAM + 23_456, "Below sea level") },
         poi(19, LAT + 23_456, SEAM_E + 12_345, "Unknown summit"),
     ];
-    (
-        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
-        ways,
-    )
+    (Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois }, ways)
 }
 
 /// The uncut fixture: the same kinds of feature, placed so that nothing crosses a cell edge and no
@@ -299,10 +297,7 @@ fn uncut_fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     ];
     let ways = vec![way(7, &[(1, (LAT, SEAM + 70_000)), (2, (LAT + 20_000, SEAM + 120_000))])];
     let pois = vec![poi(1, LAT, SEAM - 160_000, "West water"), poi(5, LAT, SEAM + 100_000, "East camp")];
-    (
-        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
-        ways,
-    )
+    (Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois }, ways)
 }
 
 /// Viewports over the uncut fixture: both cells, north-up and rotated, at every ladder level.
@@ -338,10 +333,10 @@ fn cut_with(dir: &Path, cfg: &Config, ing: &Ingested, ways: &[RoutableWay], band
 }
 
 /// `pack(X)`: the monolithic path over an explicit global bbox — the same stages
-/// [`obc_pack::pipeline`] runs, minus the `.pbf` ingest and minus land, neither of which this
+/// [`obc_bake::pipeline`] runs, minus the `.pbf` ingest and minus land, neither of which this
 /// fixture has.
 fn monolithic(cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bbox: (i64, i64, i64, i64)) -> Vec<u8> {
-    let (graph, _) = obc_pack::nav::build_graph_with(ways, cfg.routing.min_component_edges);
+    let (graph, _) = obc_network::nav::build_graph_with(ways, cfg.routing.min_component_edges);
     let lods: Vec<LodLayer> = cfg
         .lods
         .iter()
@@ -479,7 +474,7 @@ fn assemble_bands(
 
 /// The packer's `CellId` and the engine's are two spellings of one normative id. Converting through
 /// the canonical text is also the cheapest proof they agree.
-fn to_engine_cell(id: obc_pack::grid::CellId) -> CellId {
+fn to_engine_cell(id: obc_map_core::grid::CellId) -> CellId {
     CellId::parse(&id.to_string()).expect("the two CellId spellings round-trip through the canonical id")
 }
 
@@ -1022,8 +1017,8 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
 
     // Every permitted cell size, not the three the fixture happens to use: the drift this guards
     // against is a rounding step, which is most likely to show up at the ends of the range.
-    assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_pack::grid::MIN_CELL_LOG2, obc_pack::grid::MAX_CELL_LOG2));
-    assert_eq!(GRID_ORIGIN, obc_pack::grid::GRID_ORIGIN);
+    assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_map_core::grid::MIN_CELL_LOG2, obc_map_core::grid::MAX_CELL_LOG2));
+    assert_eq!(GRID_ORIGIN, obc_map_core::grid::GRID_ORIGIN);
     // …and the third copy: the OBCT terrain raster sits on this same grid but is read by a no_std
     // crate that cannot depend on either host copy, so `obc-formats` restates the origin and the
     // cell-size range.
@@ -1034,14 +1029,14 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
         (obc_formats::obct::MIN_CELL_LOG2 as u32, obc_formats::obct::MAX_CELL_LOG2 as u32)
     );
     for log2 in MIN_CELL_LOG2..=MAX_CELL_LOG2 {
-        let last = obc_pack::grid::axis_cells(log2) - 1;
-        assert_eq!(obc_pack::grid::axis_cells(log2), obcm_assemble::grid::axis_cells(log2));
-        assert_eq!(obc_pack::grid::id_width(log2), obcm_assemble::grid::id_width(log2), "zero padding at 2^{log2}");
+        let last = obc_map_core::grid::axis_cells(log2) - 1;
+        assert_eq!(obc_map_core::grid::axis_cells(log2), obcm_assemble::grid::axis_cells(log2));
+        assert_eq!(obc_map_core::grid::id_width(log2), obcm_assemble::grid::id_width(log2), "zero padding at 2^{log2}");
         // The corners, the neighbours of the corners, and the middle of the axis — the indices where
         // a `div_euclid` and a truncating `/` disagree, and the ones either side of them.
         for i in [0i64, 1, last / 2, last / 2 + 1, last - 1, last] {
             for j in [0i64, 1, last / 2, last / 2 + 1, last - 1, last] {
-                let p = obc_pack::grid::CellId::new(log2, i, j).expect("valid");
+                let p = obc_map_core::grid::CellId::new(log2, i, j).expect("valid");
                 let e = CellId::new(log2, i, j).expect("valid");
                 assert_eq!(p.square(), e.square(), "cell {p} squares differ");
                 assert_eq!(p.to_string(), e.to_string(), "canonical ids differ");
@@ -1049,14 +1044,14 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
                 let (min_lon, min_lat, max_lon, max_lat) = e.square();
                 for (lat, lon) in [(min_lat, min_lon), (max_lat - 1, max_lon - 1), (min_lat, max_lon - 1)] {
                     let (pc, ec) =
-                        (obc_pack::grid::CellId::containing(log2, lat, lon), CellId::containing(log2, lat, lon));
+                        (obc_map_core::grid::CellId::containing(log2, lat, lon), CellId::containing(log2, lat, lon));
                     assert_eq!((pc.i, pc.j), (ec.i, ec.j), "containing({lat}, {lon}) at 2^{log2} differs");
                     assert_eq!((ec.i, ec.j), (i, j), "…and must be the cell the square came from");
                 }
                 // The boundary predicate, on and just off every edge of this square.
                 for v in [min_lat, min_lat + 1, min_lat - 1, max_lat, min_lon, max_lon, max_lon - 1] {
                     assert_eq!(
-                        obc_pack::grid::on_grid_line(v, log2),
+                        obc_map_core::grid::on_grid_line(v, log2),
                         obcm_assemble::grid::on_grid_line(v, log2),
                         "the boundary predicate differs at {v} (2^{log2})"
                     );
@@ -1078,7 +1073,7 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
         (SEAM - 1, SEAM_N),
         (-7, -2),
     ] {
-        assert_eq!(obc_pack::grid::quad_mid(min, max), quad_mid(min, max), "quad_mid({min}, {max}) differs");
+        assert_eq!(obc_map_core::grid::quad_mid(min, max), quad_mid(min, max), "quad_mid({min}, {max}) differs");
     }
     // …and the four child boxes the midpoint produces, in the format's NW/NE/SW/SE order, for a box
     // at the origin and one at the negative corner.
@@ -1089,7 +1084,7 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
     ] {
         let (min_lon, min_lat, max_lon, max_lat) = b;
         let (mid_lon, mid_lat) =
-            (obc_pack::grid::quad_mid(min_lon, max_lon), obc_pack::grid::quad_mid(min_lat, max_lat));
+            (obc_map_core::grid::quad_mid(min_lon, max_lon), obc_map_core::grid::quad_mid(min_lat, max_lat));
         let want = [
             (min_lon, mid_lat, mid_lon, max_lat),
             (mid_lon, mid_lat, max_lon, max_lat),
@@ -1767,7 +1762,7 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
     summary.cells.reverse();
     assert_eq!(assembled(&dir.join("cells"), &cfg, &summary).0, bytes);
     // Clipping out the west summit retains the shared article for each remaining linked summit.
-    opts.select = vec![obc_pack::grid::CellId::new(18, 1204, 1053).unwrap()];
+    opts.select = vec![obc_map_core::grid::CellId::new(18, 1204, 1053).unwrap()];
     opts.only_bands = vec!["network".into()];
     let clipped = cut_ingested(&ing, &ways, &cfg, &dir.join("clipped"), &opts, &Progress::silent()).unwrap();
     let bytes = std::fs::read(dir.join("clipped").join(&clipped.cells[0].path)).unwrap();

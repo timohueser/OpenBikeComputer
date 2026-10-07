@@ -469,7 +469,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                     // `obc-elevation` parse the packer and the device run, so a container that
                     // reads here reads everywhere.
                     Ok(_) => {
-                        if let Err(e) = obc_pack::terrain::TerrainSet::open(&path) {
+                        if let Err(e) = obc_map_core::terrain::TerrainSet::open(&path) {
                             problem(e, &mut report.problems);
                         }
                     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use obc_formats::obcm::VERSION as OBCM_VERSION;
 
-use crate::grid::CellId;
+use obc_map_core::grid::CellId;
 
 use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
 use super::model::{BandEntry, CellEntry, CellSource, KnownEmptyRun};

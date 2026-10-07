@@ -1,19 +1,24 @@
 [package]
 name = "obc-bake"
+default-run = "obc-bake"
 version = "0.1.0"
 edition = "2021"
 publish = false  # internal host tool — not published to crates.io
 description = "The bakery: bake the curated region list into a catalog tree and publish it"
 
+[features]
+external-fixtures = []
+
 [dependencies]
+obc-draw = { workspace = true }
+obc-network = { workspace = true }
+obc-places = { workspace = true }
+obc-elevation = { workspace = true }
+rayon = "1"
 obc-pbf = { workspace = true }
 obc-map-core = { workspace = true }
 obc-osm = { workspace = true }
-# The packer, linked rather than spawned: `pipeline::pack` is the one code path
-# both hosts already share (#906), and it hands back the byte count and a cancel
-# token instead of a subprocess whose stdout would have to be scraped. It also
-# brings the catalog generator (`obc_pack::catalog`), so the bakery adds no second
-# manifest writer to the tree.
+# Device content and the one catalog generator.
 obc-pack = { workspace = true }
 # The shared file adapter the verifier reads an artifact through, never resident.
 obc-file-source = { workspace = true }
@@ -55,6 +60,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = { workspace = true, default-features = true }
 
 [dev-dependencies]
-obc-places = { workspace = true }
+obc-fixtures = { workspace = true }
+obc-vectors = { workspace = true }
 # The shared scratch-path helper the CLI tests build their throwaway paths with.
 obcm-testkit = { workspace = true }
