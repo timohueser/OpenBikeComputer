@@ -1569,7 +1569,9 @@ bake clean-r2` and the planner publish, deploy and finalize refuse to run when t
 their prefix has `release`, or is not JSON: after an apply, only an apply changes live. The
 planner deploy reads the pointer from the bucket again just before it writes it. `obc data r2
 put` and `delete` refuse a key under `cell-catalog/` or `planner/` once the pointer of that
-prefix has `release`, and under `inputs/` once any pointer has.
+prefix has `release`, and under `inputs/` once any pointer has. They and the reference archive
+publisher refuse writes under `reference/v1/` once a verified current manifest reads `dtm-*`.
+Missing or malformed current metadata refuses those reference writes.
 
 ### Credentials
 

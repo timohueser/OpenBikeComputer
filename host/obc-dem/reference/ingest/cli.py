@@ -265,6 +265,7 @@ def command_publish(args) -> int:
     root = Path(args.archive)
     local = read_index(root)
     remote = publish.r2_remote()
+    publish.refuse_owned()
     with tempfile.TemporaryDirectory() as directory:
         staging = Path(directory)
         upload, listing, fetch, send = publish.publish_plan(root, remote, staging)
