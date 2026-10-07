@@ -116,7 +116,9 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     };
     let mut reserved = false;
     let initialized = (|| -> Result<(), Error> {
-        operation::reserve(store, &control)?;
+        if let operation::Reservation::Busy(reason) = operation::reserve(store, &control)? {
+            return Err(Code::Busy.error(reason));
+        }
         reserved = true;
         #[cfg(unix)]
         {
@@ -147,6 +149,10 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         }
         if let Err(message) = run.finish(Some(&error.message)) {
             error.message += &format!("; run journal could not finish: {message}");
+            if error.code == Code::Busy {
+                error.code = Code::Failed;
+                error.fix = Code::Failed.fix().into();
+            }
         }
         return Err(error.with_run(&id));
     }

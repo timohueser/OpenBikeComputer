@@ -20,6 +20,26 @@ pub struct Result {
     pub applied: Option<apply_cli::Applied>,
 }
 
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Started {
+    Admitted(operation_cli::Handle),
+    Skipped { skipped: bool, env: String, reason: String, run: Option<String> },
+}
+
+fn started(
+    result: std::result::Result<operation_cli::Handle, Error>,
+    env: String,
+) -> std::result::Result<Started, Error> {
+    match result {
+        Ok(handle) => Ok(Started::Admitted(handle)),
+        Err(error) if error.code == Code::Busy => {
+            Ok(Started::Skipped { skipped: true, env, reason: error.message, run: error.run })
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) fn check_env(name: &str) -> std::result::Result<(), Error> {
     if name == "fixture" || name == "fixtures" || name.starts_with("fixture-") {
         return Err(Code::Usage.error("fixture environments do not support automation"));
@@ -32,21 +52,22 @@ pub(super) fn start(root: &Path, env: String, json: bool) -> std::result::Result
     let store = Store::open()?;
     let request = crate::operation::Request {
         kind: crate::operation::Kind::Auto,
-        env,
+        env: env.clone(),
         only: Vec::new(),
         moves: Vec::new(),
         plan: None,
         dev: None,
     };
-    match operation_cli::start(root, &store, request, None) {
-        Ok(handle) => operation_cli::print_handle(&handle, json),
-        Err(error)
-            if (error.message.starts_with("operation ") && error.message.contains("already owns"))
-                || error.message == "the environment worker has not drained yet" =>
-        {
-            Err(error.fix("This automatic run is skipped; retry at the next scheduled time."))
+    match started(operation_cli::start(root, &store, request, None), env)? {
+        Started::Admitted(handle) => operation_cli::print_handle(&handle, json),
+        skipped @ Started::Skipped { .. } => {
+            if json {
+                api::print_json(&skipped)
+            } else {
+                println!("automatic run skipped: the environment is busy; retry at the next scheduled time");
+                Ok(())
+            }
         }
-        Err(error) => Err(error),
     }
 }
 
@@ -198,6 +219,28 @@ mod tests {
     use crate::engine::{Client, Code as RecipeCode, Input, Run as StepRun};
     use crate::product::{Steps, Unplanned};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn busy_admission_is_a_successful_skip_but_real_failures_keep_their_error() {
+        let skipped =
+            started(Err(Code::Busy.error("known reservation busy").with_run("2026-10-07-120000")), "live".into())
+                .unwrap();
+        let value = serde_json::to_value(skipped).unwrap();
+        assert_eq!(value["skipped"], true);
+        assert_eq!(value["env"], "live");
+        assert_eq!(value["run"], "2026-10-07-120000");
+        for code in [Code::Blocked, Code::Failed, Code::PlanOutdated] {
+            let error = started(Err(code.error("operation X already owns live; real setup failure")), "live".into())
+                .unwrap_err();
+            assert_eq!(error.code, code);
+            assert_ne!(error.code.exit(), 0);
+        }
+        let handle = operation_cli::Handle { run: "run".into(), request: "request".into() };
+        assert_eq!(
+            serde_json::to_value(started(Ok(handle), "live".into()).unwrap()).unwrap(),
+            serde_json::json!({"run":"run", "request":"request"})
+        );
+    }
 
     struct Data {
         calls: AtomicUsize,

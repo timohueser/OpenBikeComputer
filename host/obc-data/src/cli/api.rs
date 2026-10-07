@@ -27,6 +27,8 @@ pub struct Failure<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
+    /// Another admitted operation owns the environment. No work waits for it.
+    Busy,
     /// An argument is not valid, an id names nothing, the command runs outside the repository, or
     /// another command must run first.
     Usage,
@@ -57,7 +59,7 @@ pub enum Code {
 impl Code {
     pub fn exit(self) -> u8 {
         match self {
-            Code::Usage | Code::NoTerminal => 2,
+            Code::Busy | Code::Usage | Code::NoTerminal => 2,
             Code::PlanOutdated => 3,
             Code::Blocked => 4,
             Code::VerifyFailed => 5,
@@ -73,6 +75,7 @@ impl Code {
     /// The fix of an error that gives no other.
     pub(super) fn fix(self) -> &'static str {
         match self {
+            Code::Busy => "Observe the current run or retry after it drains. No work is queued.",
             Code::Usage => "Correct the command. `obc data --help` lists the commands and their arguments.",
             Code::NoTerminal => "Show the plan to a person. When they agree, run the command again with `--yes`.",
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
@@ -218,7 +221,7 @@ mod tests {
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
             schema(
-                "`prepare`, `build`, `apply`, `auto`, `dev --prepare`",
+                "`prepare`, `build`, `apply`, `dev --prepare`",
                 generator.subschema_for::<crate::cli::operation_cli::Handle>(),
             ),
             schema("`dev --start`, `dev --stop`, `dev --status`", generator.subschema_for::<crate::dev::Observed>()),
@@ -227,6 +230,7 @@ mod tests {
             schema("Completed prepare output", generator.subschema_for::<build_cli::Prepared>()),
             schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
             schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
+            schema("`auto` admission", generator.subschema_for::<crate::cli::auto_cli::Started>()),
             schema("Completed auto output", generator.subschema_for::<crate::cli::auto_cli::Result>()),
             schema("Live timer state", generator.subschema_for::<crate::schedule::State>()),
             schema("`schedule live --setup-budget`", generator.subschema_for::<crate::operation::budget::Budget>()),

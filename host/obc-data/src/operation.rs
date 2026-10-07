@@ -196,8 +196,14 @@ pub(crate) fn active_path(store: &Store, env: &str) -> PathBuf {
     store.root().join("operations").join(format!("{env}.active"))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reservation {
+    Reserved,
+    Busy(String),
+}
+
 /// Reserve one environment without a waiting queue or an expiry that can admit an old child.
-pub fn reserve(store: &Store, control: &Control) -> Result<(), String> {
+pub fn reserve(store: &Store, control: &Control) -> Result<Reservation, String> {
     control.request.check()?;
     check_id(&control.run)?;
     if control.state != State::Reserved || control.request.digest()? != control.request_sha256 {
@@ -205,14 +211,17 @@ pub fn reserve(store: &Store, control: &Control) -> Result<(), String> {
     }
     let _lock = store.lock(&format!("operation-control-{}", control.request.env))?;
     if store.is_locked(&format!("operation-active-{}", control.request.env))? {
-        return Err("the environment worker has not drained yet".into());
+        return Ok(Reservation::Busy("the environment worker has not drained yet".into()));
     }
     let active = active_path(store, &control.request.env);
     match std::fs::read_to_string(&active) {
         Ok(id) => {
             let previous = read(store, &id)?.ok_or("active operation has no control")?;
             if !previous.state.terminal() {
-                return Err(format!("operation {} already owns {}; inspect or stop it", id, control.request.env));
+                return Ok(Reservation::Busy(format!(
+                    "operation {} already owns {}; inspect or stop it",
+                    id, control.request.env
+                )));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -222,7 +231,8 @@ pub fn reserve(store: &Store, control: &Control) -> Result<(), String> {
         return Err("an operation id cannot be rebound to another request".into());
     }
     save(store, control)?;
-    crate::commit::durable(&active, control.run.as_bytes())
+    crate::commit::durable(&active, control.run.as_bytes())?;
+    Ok(Reservation::Reserved)
 }
 
 fn change<T>(store: &Store, run: &str, update: impl FnOnce(&mut Control) -> Result<T, String>) -> Result<T, String> {
@@ -367,11 +377,17 @@ mod tests {
         let first = control("2026-10-06-120000");
         let next = control("2026-10-06-120001");
         reserve(&store, &first).unwrap();
-        assert!(reserve(&store, &next).unwrap_err().contains("already owns"));
+        assert!(
+            matches!(reserve(&store, &next).unwrap(), Reservation::Busy(reason) if reason.contains("already owns"))
+        );
+        assert!(read(&store, &next.run).unwrap().is_none(), "busy has no admitted control");
         assert_eq!(stop(&store, &first.run).unwrap(), State::Stopped);
         reserve(&store, &next).unwrap();
         assert!(claim(&store, &first.run, &first.request_sha256).is_err());
         let using = claim(&store, &next.run, &next.request_sha256).unwrap();
+        assert!(
+            matches!(reserve(&store, &first).unwrap(), Reservation::Busy(reason) if reason.contains("not drained"))
+        );
         assert_eq!(stop(&store, &next.run).unwrap(), State::Stopping);
         assert!(stopped(&store, &next.run).unwrap());
         finish(&store, &next.run, false, None).unwrap();
