@@ -178,6 +178,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             &regions,
             &store,
             Ok(obc_data::engine::Library {
+                version: None,
                 name: "osmium".into(),
                 path: std::path::PathBuf::from("/authored-copy-osmium"),
                 sha256: "0".repeat(64),

@@ -120,8 +120,8 @@ impl Context {
         if owner.code.paths.is_empty() {
             return Err("a native owner must declare its source paths".into());
         }
-        if !matches!(owner.code.rust, None | Some(Rust::Native { profile: Profile::Dev })) {
-            return Err("native owner callbacks require the retained worker's native dev build".into());
+        if !matches!(owner.code.rust, None | Some(Rust::Native { profile: Profile::Release })) {
+            return Err("native owner callbacks require the retained worker's native release build".into());
         }
         let mut code = owner.code.clone();
         code.crates.push(owner.crate_name.clone());
@@ -144,7 +144,7 @@ impl Context {
             Mode::Execution => code.target.clone(),
             Mode::Source(rust) if !code.crates.is_empty() => {
                 let rust = rust.ok_or("source/config resolution requires the recorded Rust target and profile")?;
-                let declared = code.rust.clone().unwrap_or(Rust::Native { profile: Profile::Dev });
+                let declared = code.rust.clone().unwrap_or(Rust::Native { profile: Profile::Release });
                 if declared != rust.build || code.target.as_ref().is_some_and(|target| target != &rust.target) {
                     return Err("recorded Rust target/profile does not match the producer declaration".into());
                 }
@@ -272,7 +272,10 @@ impl Context {
             if hash != library.sha256 {
                 return Err(format!("native library {} changed; start a fresh worker", library.name));
             }
-            hashes.insert(name, hash);
+            hashes.insert(
+                name,
+                library.version.as_ref().map_or(hash, |version| crate::store::sha256_hex(version.as_bytes())),
+            );
         }
 
         if let Some(runtime) = &code.python {
@@ -498,7 +501,7 @@ mod tests {
         };
         let mut context = Context::default();
         let before = context.owner_identity(&root, &owner).unwrap();
-        assert!(before.files.contains_key("rust/compiler"));
+        assert!(before.files.contains_key("rust/compiler-version"));
         assert!(!before.files.contains_key("steps/src/ui.rs"));
         assert!(!before.files.contains_key("obc-data/src/cli/tui.rs"));
         assert!(before.files.contains_key("obc-data/src/regions/geofabrik.rs"));
@@ -518,15 +521,18 @@ mod tests {
         write(&root.join("steps/src/plan.rs"), "pub fn other_requests() {}\n");
         assert_ne!(context.owner_identity(&root, &owner).unwrap().files, before.files);
 
-        let recorded =
-            ResolvedRust { target: "x86_64-unknown-linux-gnu".into(), build: Rust::Native { profile: Profile::Dev } };
+        let recorded = ResolvedRust {
+            target: "x86_64-unknown-linux-gnu".into(),
+            build: Rust::Native { profile: Profile::Release },
+        };
         let witness = owner.source_config(&root, &recorded).unwrap();
         assert_eq!(witness.rust.as_ref(), Some(&recorded));
         assert!(witness.files.contains_key("linux/src/lib.rs"));
-        assert!(!witness.files.contains_key("rust/compiler"));
+        assert!(!witness.files.contains_key("rust/compiler-version"));
         assert!(witness.files.contains_key("rust/profile"));
         let mut unavailable = owner.clone();
         unavailable.code.libraries.push(super::super::Library {
+            version: None,
             name: "provider".into(),
             path: root.join("absent-provider"),
             sha256: "a".repeat(64),

@@ -47,7 +47,7 @@ impl Context {
 
     pub fn identity(&mut self, root: &Path, code: &Code, packages: &super::rust::Packages) -> Result<Identity, String> {
         let profile = match code.rust {
-            None | Some(Rust::Native { profile: Profile::Dev }) => Profile::Dev,
+            None => Profile::Release,
             Some(Rust::Native { profile }) | Some(Rust::Prepared { profile }) => profile,
         };
         let mut hashes = BTreeMap::new();
@@ -206,46 +206,21 @@ impl Context {
             if rustc != installed {
                 return Err("RUSTC must select the actual sysroot compiler; remove the compiler wrapper".into());
             }
-            // The rustc executable loads its compiler driver and LLVM from the selected toolchain.
-            self.watch(&sysroot.join("lib"))?;
-            let libraries = fs::read_dir(sysroot.join("lib")).map_err(|e| format!("compiler libraries: {e}"))?;
-            for entry in libraries {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with("librustc_driver") || name.starts_with("libLLVM") {
-                    hashes.insert(format!("rust/compiler-library/{name}"), self.tool_hash(&entry.path())?);
-                }
-            }
-            let lld = sysroot.join("lib/rustlib").join(target).join("bin/rust-lld");
-            if lld.is_file() {
-                hashes.insert("rust/bundled-linker".into(), self.tool_hash(&lld)?);
-            }
-            self.watch(&lld)?;
-            hashes.extend(self.library_hashes(&sysroot.join("lib/rustlib").join(target).join("lib"))?);
-            let mut executables = BTreeMap::from([("rustc".into(), rustc.clone()), ("cargo".into(), cargo.clone())]);
-            for (name, path, version) in
-                [("compiler", rustc, version.clone()), ("cargo", cargo.clone(), output(root, &cargo, &["-vV"])?)]
-            {
-                hashes.insert(format!("rust/{name}"), self.tool_hash(&path)?);
-                hashes.insert(format!("rust/{name}-version"), sha256_hex(version.as_bytes()));
-            }
+            let mut executables = BTreeMap::from([("rustc".into(), rustc), ("cargo".into(), cargo.clone())]);
+            hashes.insert("rust/compiler-version".into(), sha256_hex(version.as_bytes()));
+            hashes.insert("rust/cargo-version".into(), sha256_hex(output(root, &cargo, &["-vV"])?.as_bytes()));
             let cc = executable(root, env.get(OsStr::new("CC")), "cc")?;
             self.watch(&cc)?;
             native_binary(&cc)?;
-            hashes.insert("rust/cc".into(), self.tool_hash(&cc)?);
             hashes.insert("rust/cc-version".into(), sha256_hex(output(root, &cc, &["--version"])?.as_bytes()));
             let link_driver = executable(root, None, "cc")?;
             self.watch(&link_driver)?;
             native_binary(&link_driver)?;
             executables.insert("cc".into(), link_driver.clone());
-            hashes.insert("rust/link-driver".into(), self.tool_hash(&link_driver)?);
             hashes.insert(
                 "rust/link-driver-version".into(),
                 sha256_hex(output(root, &link_driver, &["--version"])?.as_bytes()),
             );
-            let linker = output(root, &link_driver, &["-print-prog-name=ld"])?;
-            let linker = locate_in(root, &OsString::from(linker.trim()), &env)?;
-            hashes.insert("rust/linker".into(), self.tool_hash(&linker)?);
             hashes.insert(
                 "rust/flags".into(),
                 if self.runtime {
@@ -293,19 +268,6 @@ impl Context {
             entry.insert(stamp(path)?);
         }
         Ok(())
-    }
-
-    fn library_hashes(&mut self, dir: &Path) -> Result<BTreeMap<String, String>, String> {
-        self.watch(dir)?;
-        let mut hashes = BTreeMap::new();
-        for entry in fs::read_dir(dir).map_err(|e| format!("selected Rust sysroot libraries: {e}"))? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            if entry.path().is_file() {
-                let name = entry.file_name().to_str().ok_or("Rust library name is not UTF-8")?.to_string();
-                hashes.insert(format!("rust/sysroot-library/{name}"), self.tool_hash(&entry.path())?);
-            }
-        }
-        Ok(hashes)
     }
 }
 

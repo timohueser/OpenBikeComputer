@@ -345,6 +345,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
                 .clone();
             let mut code = step.code;
             code.libraries.push(obc_data::engine::Library {
+                version: None,
                 name: format!("local-{child}"),
                 path: store.object(&file.sha256).canonicalize().map_err(|e| e.to_string())?,
                 sha256: file.sha256.clone(),
@@ -520,8 +521,12 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
     {
         return Err("Local planner services need prepared Node 24 or newer".into());
     }
-    let executable =
-        obc_data::engine::Library { name: "local-node".into(), path: node.clone(), sha256: hash_file(&node)?.0 };
+    let executable = obc_data::engine::Library {
+        version: Some(String::from_utf8(version.stdout).map_err(|e| e.to_string())?),
+        name: "local-node".into(),
+        path: node.clone(),
+        sha256: hash_file(&node)?.0,
+    };
     let mut children = BTreeMap::new();
     for (name, app) in [("search", "planner/search"), ("tiles", "planner/tiles"), ("frontend", "builder/web")] {
         if name == "search" && !web {
@@ -542,6 +547,7 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
                     .canonicalize()
                     .map_err(|e| format!("Prepare the builder bridge/Wasm with the builder README first: {e}"))?;
                 code.libraries.push(obc_data::engine::Library {
+                    version: None,
                     name: format!("local-frontend-{role}"),
                     sha256: hash_file(&path)?.0,
                     path,
@@ -565,6 +571,7 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
                         return Err("Local npm dependencies must be self-contained regular files".into());
                     }
                     code.libraries.push(obc_data::engine::Library {
+                        version: None,
                         name: format!(
                             "local-{name}-{}",
                             sha256_hex(path.strip_prefix(&modules).unwrap().as_os_str().as_encoded_bytes())
@@ -576,6 +583,7 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
                     pending.push(path);
                 } else if kind.is_file() {
                     code.libraries.push(obc_data::engine::Library {
+                        version: None,
                         name: format!(
                             "local-{name}-{}",
                             sha256_hex(path.strip_prefix(&modules).unwrap().as_os_str().as_encoded_bytes())

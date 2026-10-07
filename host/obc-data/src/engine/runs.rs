@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::plan::Plan;
-use super::{build_step, order, prepare, reusable, Built, Codes, InputKind, Receipt, Run as StepRun, Step};
+use super::{build_step, order, prepare, reusable, Built, Codes, InputKind, Receipt, Step};
 use crate::date;
 use crate::fetch::{self, http::Http};
 use crate::sources::Source;
@@ -309,7 +309,7 @@ impl Run {
         let mut done: HashMap<&str, super::release::Layer> = HashMap::new();
         let mut built = Vec::new();
         let mut failure: Option<String> = None;
-        let (mut running, mut reserved, mut rust_running) = (0, 0, false);
+        let (mut running, mut reserved) = (0, 0);
         let (sender, receiver) = mpsc::channel();
         std::thread::scope(|scope| loop {
             if failure.is_none() {
@@ -353,10 +353,8 @@ impl Run {
                     }
                     continue;
                 };
-                // In-process steps measure the whole process, so only one runs at a time.
-                let rust = matches!(step.run, StepRun::Rust(_));
                 let over = limits.memory_bytes.is_some_and(|memory| reserved + cost > memory);
-                if running >= limits.jobs || (running > 0 && over) || (rust && rust_running) {
+                if running >= limits.jobs || (running > 0 && over) {
                     i += 1;
                     continue;
                 }
@@ -379,7 +377,6 @@ impl Run {
                         });
                         running += 1;
                         reserved += cost;
-                        rust_running |= rust;
                     }
                     Err(e) => self.failed(step, e, &mut failure),
                 }
@@ -390,7 +387,6 @@ impl Run {
             let (step, cost, result) = receiver.recv().expect("a running step sends its result");
             running -= 1;
             reserved -= cost;
-            rust_running &= !matches!(step.run, StepRun::Rust(_));
             match result {
                 Ok(result) => {
                     let receipt = Box::new(result.receipt.clone());
@@ -799,7 +795,7 @@ mod tests {
     use super::*;
     use crate::engine::plan::Estimate;
     use crate::engine::tests::{fixture, pipeline, snapshot, step, steps_crate, summary, write, JOIN};
-    use crate::engine::{Code, Input, Request};
+    use crate::engine::{Code, Input, Request, Run as StepRun};
     use crate::store::Requested;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1008,14 +1004,14 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     }
 
     #[test]
-    fn two_steps_in_the_process_never_run_at_the_same_time() {
+    fn independent_rust_steps_run_in_parallel() {
         let fixture = fixture("runs-in-process");
         let steps: Vec<Step> = ["test/a", "test/b"]
             .map(|name| step(name, vec![snapshot("head", "1", &[])], steps_crate(), "out.txt", StepRun::Rust(tracked)))
             .into();
         let plan = fixture.plan(&steps).unwrap();
         fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: None }).unwrap();
-        assert_eq!(MOST.load(Ordering::SeqCst), 1);
+        assert_eq!(MOST.load(Ordering::SeqCst), 2);
     }
 
     fn first_file(request: &Request) -> Result<(), String> {

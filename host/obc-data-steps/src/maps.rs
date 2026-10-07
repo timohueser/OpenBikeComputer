@@ -930,6 +930,7 @@ pub(crate) mod tests {
             regions,
             store,
             Ok(obc_data::engine::Library {
+                version: None,
                 name: "osmium".into(),
                 path: std::path::PathBuf::from("/authored-copy-osmium"),
                 sha256: "0".repeat(64),
@@ -942,6 +943,7 @@ pub(crate) mod tests {
         let path = directory.join("authored-osmium");
         std::fs::write(&path, "authored fixture provider").unwrap();
         obc_data::engine::Library {
+            version: None,
             name: "osmium".into(),
             path: path.canonicalize().unwrap(),
             sha256: obc_data::store::hash_file(&path).unwrap().0,
@@ -1345,6 +1347,7 @@ pub(crate) mod tests {
                     &regions,
                     &store,
                     Ok(Some(obc_data::engine::Library {
+                        version: None,
                         name: "osmium".into(),
                         path: std::path::PathBuf::from("/authored-copy-osmium"),
                         sha256: "0".repeat(64),

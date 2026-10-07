@@ -17,6 +17,7 @@ pub struct Library {
     pub name: &'static str,
     pub path: PathBuf,
     pub sha256: String,
+    pub version: String,
     stamp: String,
 }
 
@@ -55,6 +56,7 @@ fn bind(name: &'static str, path: PathBuf) -> Result<Library, String> {
         return Err("GEOS libraries changed at startup; start a fresh worker".into());
     }
     Ok(Library {
+        version: geos::version().map_err(|error| format!("GEOS: {error}"))?,
         name,
         path,
         sha256: hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect(),

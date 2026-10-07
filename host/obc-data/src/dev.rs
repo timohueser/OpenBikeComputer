@@ -549,6 +549,7 @@ mod tests {
         std::fs::write(&binary, b"retained Simulator").unwrap();
         let code = Code {
             libraries: vec![crate::engine::Library {
+                version: None,
                 name: "simulator".into(),
                 path: binary.clone(),
                 sha256: hash_file(&binary).unwrap().0,
@@ -561,6 +562,7 @@ mod tests {
         let missing = Binding {
             code: Code {
                 libraries: vec![crate::engine::Library {
+                    version: None,
                     name: "node".into(),
                     path: root.join("absent-node"),
                     sha256: "0".repeat(64),

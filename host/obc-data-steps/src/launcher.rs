@@ -52,6 +52,7 @@ fn build(root: &Path, code: &str) -> Result<PathBuf, String> {
     let mut child = worker::compiler_command(&mut command)
         .args([
             "build",
+            "--release",
             "--locked",
             "--offline",
             "-p",
