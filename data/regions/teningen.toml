@@ -2,3 +2,5 @@ name = "Teningen"
 kind = "box"
 # west, south, east, north
 box = [7.798, 48.119, 7.83, 48.141]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

@@ -1,3 +1,5 @@
 name = "Iowa"
 kind = "geofabrik"
 areas = ["north-america/us/iowa"]
+countries = ["US"]
+time_zone = "America/Chicago"
