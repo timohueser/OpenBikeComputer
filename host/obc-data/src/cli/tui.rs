@@ -892,13 +892,6 @@ impl App {
             Action::Open(overlay) => {
                 (self.overlay, self.scroll, self.asking) = (Some(overlay), 0, false);
                 match overlay {
-                    Overlay::Schedule => {
-                        offer(KeyCode::Char('R'), Action::ScheduleRead, "R", "observe");
-                        offer(KeyCode::Char('e'), Action::ScheduleEdit, "e", "edit calendar");
-                        offer(KeyCode::Char('d'), Action::ScheduleDisable, "d", "disable");
-                        offer(KeyCode::Char('b'), Action::ScheduleBudget, "b", "setup budget");
-                    }
-                    Overlay::Version => offer(KeyCode::Char('R'), Action::CheckNow, "R", "check upstream"),
                     Overlay::Policy => {
                         self.policy_days = None;
                         let current = self.sources.get(self.source).map(|row| row.source.refresh);

@@ -1,6 +1,6 @@
 //! One source scope and filter, with details that remain readable in an 80-column terminal.
 
-use super::{state_style, Action, App, Hit, SourceRow};
+use super::{state_style, Action, App, Effect, Hit, SourceRow};
 use crate::sources::Refresh;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
