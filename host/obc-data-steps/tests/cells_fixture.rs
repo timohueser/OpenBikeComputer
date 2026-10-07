@@ -156,7 +156,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     fetched(&store, "land-polygons", &[], "land-polygons-split-3857.zip", &zip);
     // The Wikimedia captures, which only the compiles read, and this test has none.
     let [osm, poly] = [&pbf, &poly].map(|path| format!("sha256:{}", hash_file(path).unwrap().0));
-    let code = obc_pack::step::capture_code();
+    let code = obc_pack::step::capture_code().unwrap();
     for collection in ["landmarks", "peaks"] {
         let params = [
             ("collection", collection),

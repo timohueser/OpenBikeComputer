@@ -225,7 +225,8 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
 }
 
 /// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store. A plan that removes anything but `confirmed` deletes nothing.
+/// an import holds the store, including the verification and publication phases of a run.
+/// A plan that removes anything but `confirmed` deletes nothing.
 pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
         return Ok(None);

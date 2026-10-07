@@ -84,6 +84,20 @@ impl Context {
             }
         }
         let mut hashes = BTreeMap::new();
+        for library in &code.libraries {
+            let name = format!("native/library/{}", library.name);
+            if !crate::is_kebab(&library.name) || hashes.contains_key(&name) || !library.path.is_absolute() {
+                return Err("native libraries need unique kebab-case names and absolute paths".into());
+            }
+            let hash = self
+                .build
+                .tool_hash(&library.path)
+                .map_err(|error| format!("native library {}: {error}; start a fresh worker", library.name))?;
+            if hash != library.sha256 {
+                return Err(format!("native library {} changed; start a fresh worker", library.name));
+            }
+            hashes.insert(name, hash);
+        }
         for file in files {
             let relative =
                 file.strip_prefix(&root).map_err(|_| format!("{} is outside {}", file.display(), root.display()))?;

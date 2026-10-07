@@ -286,7 +286,8 @@ reached snapshot record, with the reasons: `live PRODUCT, …`, `newest of the s
 one entry for each kind of root that names objects that no reached record or layer has:
 `live release`, `fixture`, `planner recipe` or `import record`. The size of
 an entry is the size of its files. The collection takes the store lock alone, or refuses to start
-while a fetch, a build or an import holds it. Then it deletes each snapshot record and each object
+while a mutating run, fetch or import holds it. A writer run holds it through verification and
+publication preparation, until finish or drop. An admitted collection deletes each snapshot record and each object
 that is not reached. Receipts, release manifests, import records and upstream checks stay. A
 clean that cannot read live deletes nothing.
 
@@ -441,7 +442,7 @@ A step declares:
 | `name` | The layer name: lowercase kebab-case segments joined by `/` |
 | `inputs` | Snapshots, as `source`, `version`, `params` and `files`. With `params` (the `NAME=VALUE` of the fetch), the step reads the files that a fetch with them gives, and `files` is empty. Without, `files` names the files that the step reads, or is empty for every file. The layers of other steps, as `name` and `files`: the paths in the layer that the step reads, or none for every file. A selected path that the layer does not have fails the step |
 | `options` | A JSON object |
-| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `rust`: native or prepared compiler binding and dev/release profile, or `null` for native dev. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. A Rust step declares the crate of its function |
+| `code` | `paths`: files and directories, relative to the repository root. `crates`: workspace crates. `target`: a Rust target triple, or `null` for the host. `rust`: native or prepared compiler binding and dev/release profile, or `null` for native dev. `sources`: source content settings. `python`: the selected locked package `group`, or `null`. `python_packages`: a separate locked group without an interpreter binding, or `null`. `libraries`: named native files with absolute paths and expected SHA-256 digests. A Rust step declares the crate of its function |
 | `outputs` | Paths in the output directory. A path is a file, or a directory whose files are all part of the layer. The step must write each path and no other file. A symbolic link fails the step |
 | `client` | `"none"`, `"all"` or `{"paths": [<output>]}`. Selected paths name declared outputs: a file, or a directory and its files. Paths are sorted and unique. An empty selection or a path outside `outputs` fails the plan |
 | `run` | A Rust function in the process, or a command: a program and its arguments. No argument names a path outside the repository root: no argument is an absolute path, contains `=/` or has a `..` segment between `/` and `=` |
@@ -487,6 +488,13 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   are refused. Tool discovery and bytes are cached within a checking context. Each execution
   boundary checks tool, library, environment and selection/config witnesses. A change runs
   discovery again and invalidates changed file digests.
+- A declared native library enters code identity by its name and complete file digest. Its
+  installation path does not enter that identity. Each execution boundary checks the current
+  file against the declared digest. GEOS producers bind the loaded shared C and C++ libraries
+  at worker startup. A missing or changed file blocks these producers until a fresh worker
+  starts. New captures bind the same two digests. Selector children check the requested capture
+  code before selection and check the provider again before success. Held captures retain their
+  original inputs and must pass their content checks before reconstruction writes output.
 - Native discovery checks Cargo config in the checkout, its ancestors and Cargo home. It
   refuses build overrides except jobs and target directories. Network, registry, terminal and
   alias settings add no byte identity. The supported flags are ordered `--cfg` and explicit

@@ -121,6 +121,17 @@ pub struct Code {
     /// A locked Python group packaged for another runtime, without selecting its interpreter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_packages: Option<String>,
+    /// Native library files bound by the provider before its code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<Library>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Library {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

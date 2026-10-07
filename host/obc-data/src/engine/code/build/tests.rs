@@ -3,6 +3,42 @@ use crate::engine::code::rust::Packages;
 use crate::engine::tests::{fixture, repository, write};
 
 #[test]
+fn native_library_bindings_keep_original_bytes_and_recheck_the_current_files() {
+    use crate::engine::Library;
+    let fixture = fixture("code-libraries");
+    let root = fixture.root();
+    let files = [root.join("c-library"), root.join("cpp-library")];
+    for file in &files {
+        write(file, "initial implementation");
+    }
+    let mut code = Code {
+        libraries: ["geos-c", "geos-cpp"]
+            .into_iter()
+            .zip(&files)
+            .map(|(name, file)| Library {
+                name: name.into(),
+                path: file.canonicalize().unwrap(),
+                sha256: hash_file(file).unwrap().0,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let mut context = crate::engine::code::Context::default();
+    let before = context.files(&root, &code).unwrap();
+    assert_eq!(context.files(&root, &code).unwrap(), before);
+    assert_eq!(context.build.tools.len(), 2, "unchanged library bytes reuse the operation cache");
+    let copy = root.join("same-library-elsewhere");
+    std::fs::copy(&files[0], &copy).unwrap();
+    code.libraries[0].path = copy.canonicalize().unwrap();
+    assert_eq!(context.files(&root, &code).unwrap(), before, "installation paths do not enter byte identity");
+    write(&copy, "changed implementation");
+    assert!(context.files(&root, &code).unwrap_err().contains("changed; start a fresh worker"));
+    write(&copy, "initial implementation");
+    std::fs::remove_file(&files[1]).unwrap();
+    assert!(context.files(&root, &code).unwrap_err().contains("start a fresh worker"));
+}
+
+#[test]
 fn selected_profile_keeps_applicable_package_and_build_overrides() {
     let packages = Packages { names: ["producer".into(), "dependency".into()].into(), non_workspace: true };
     let text = "[profile.dev]\ndebug = 1\n[profile.dev.package.producer]\nopt-level = 2\n[profile.dev.package.other]\nopt-level = 3\n[profile.dev.package.'*']\ndebug = 0\n[profile.dev.build-override]\nopt-level = 1\n[profile.release]\nopt-level = 3\n";
