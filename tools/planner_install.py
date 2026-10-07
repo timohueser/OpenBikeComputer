@@ -195,6 +195,12 @@ def configuration(value, directory, release, objects_url, site_origin, api_origi
     return command, environment
 
 
+
+def same_data(actual, desired, service):
+    prefix = {"routing": "routing/", "search": "search/", "downloads": "offline/"}[service]
+    selected = lambda body: {name: item for name, item in body["files"].items() if name.startswith(prefix)}
+    return actual["region"] == desired["region"] and selected(actual) == selected(desired)
+
 def stage(request, base=BASE, units=UNITS, execute=run):
     value = installed(request["installed"])
     candidate = request["candidate"]
@@ -234,9 +240,7 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     stored = {"installed": value, "release": {"size": (directory / "release.json").stat().st_size, "sha256": runtime.digest(directory / "release.json")},
               "runtime": {"size": (directory / "runtime.json").stat().st_size, "sha256": runtime.digest(directory / "runtime.json")}}
     actual, actual_runtime = documents(directory, stored)
-    prefix = {"routing": "routing/", "search": "search/", "downloads": "offline/"}[value["service"]]
-    selected = lambda body: {name: item for name, item in body["files"].items() if name.startswith(prefix)}
-    if actual_runtime != descriptor or actual["region"] != release["region"] or selected(actual) != selected(release):
+    if actual_runtime != descriptor or not same_data(actual, release, value["service"]):
         raise ValueError("Installed service identity has different runtime or data")
     command, environment = configuration(value, directory, release, request["objects_url"], request["site_origin"], request["api_origin"])
     environment.update(OBC_PLANNER_RELEASE_SHA=stored["release"]["sha256"], OBC_PLANNER_RUNTIME_SHA=stored["runtime"]["sha256"])
@@ -279,7 +283,7 @@ def running(value, candidate, directory, execute, proc):
     return environment, pid
 
 
-def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
+def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc"), wait=True):
     value = installed(request["installed"])
     candidate = request["candidate"]
     if (value["service"], value["id"]) != (candidate["service"], candidate["id"]) or value["binding"] != binding(candidate):
@@ -296,8 +300,8 @@ def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
         raise ValueError("Candidate target differs from the running runtime")
     prerequisites(descriptor)
     name, port = value["service"], SERVICES[value["service"]][value["slot"]]
-    waiting = read is None
-    if waiting:
+    waiting = read is None and wait
+    if read is None:
         def read(path):
             origin = candidate["site_origin"] if name != "downloads" else None
             request = Request(f"http://127.0.0.1:{port}{path}", headers={"Origin": origin} if origin else {})
@@ -322,6 +326,30 @@ def probe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
             if not waiting or time.monotonic() >= deadline: raise
             time.sleep(1)
 
+
+
+def observe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
+    """Read exact published slots once. No preparation, restart or traffic change."""
+    state = inspect(base, execute)
+    services = []
+    for value in request["installed"]:
+        service = value["service"]
+        try:
+            if value not in state["installed"]:
+                raise ValueError("Published slot is not installed with its binding")
+            candidate = next(item for item in request["candidates"] if item["service"] == service)
+            directory = destination(value, base)
+            checked(directory, {**candidate["runtime"], "path": "runtime.json"})
+            retained = json.loads((directory / "release.json").read_bytes())
+            if not same_data(retained, request["document"], service):
+                raise ValueError("Installed selected data differs from publication")
+            actual = probe({"installed": value, "candidate": candidate}, base, execute, read, proc, wait=False)
+            if actual != candidate["expected"]:
+                raise ValueError("Opened service data differs from publication")
+            services.append({"service": service, "ready": True, "reason": None})
+        except (OSError, ValueError, KeyError, StopIteration) as error:
+            services.append({"service": service, "ready": False, "reason": str(error) or "Missing service metadata"})
+    return {"host": state, "services": services, "unavailable": None}
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

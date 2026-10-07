@@ -5,6 +5,15 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.as_slice() == ["live-status"] {
+        return match obc_data::vps::observe::main() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("obc data live-status: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|command| {
         matches!(command.as_str(), "commit" | "commit-start" | "commit-status" | "commit-approval")
     }) {

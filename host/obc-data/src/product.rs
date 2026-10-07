@@ -61,17 +61,14 @@ pub trait Product: Sync {
         false
     }
 
-    /// Compare current semantic declarations without admitting their execution tools.
-    fn local_plan(
-        &self,
-        _root: &Path,
-        _env: &Env,
-        _regions: &Regions,
-        _store: &Store,
-        _release: &Release,
-        _required: &BTreeMap<String, Vec<String>>,
-    ) -> Result<crate::local::Plan, Unplanned> {
-        Err(Unplanned::Invalid("this product has no Local declarations".into()))
+    /// Current semantic declarations for read-only status, without execution admission.
+    fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        self.steps(root, env, regions, store)
+    }
+
+    /// Remove only this owner's execution bindings when comparing published source/config.
+    fn status_options(&self, _layer: &str, options: &serde_json::Value) -> serde_json::Value {
+        options.clone()
     }
 
     /// Read pending Local work without acquiring data or admitting app processes.

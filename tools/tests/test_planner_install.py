@@ -1,5 +1,6 @@
 """Stored services stage without a source checkout or public traffic writes."""
 
+import hashlib
 import io
 import json
 import shlex
@@ -99,6 +100,41 @@ class PlannerInstall(unittest.TestCase):
         (directory / "data/offline/catalog.json").write_bytes(b'corrupt')
         with patch.object(install, "host", return_value=HOST), self.assertRaisesRegex(ValueError, "checksum"):
             install.probe(self.request, self.base, self.execute, lambda _: self.fail("corrupt data must not be accepted"), self.proc)
+
+    def test_read_only_observation_checks_opened_data_once_and_never_mutates_services(self):
+        self.stage()
+        request = {"installed": [self.value], "candidates": [self.candidate],
+                   "document": {**self.document, "files": {**self.document["files"],
+                                "routing/unrelated.bin": {"sha256": "c" * 64}}}}
+        self.assertNotEqual(runtime.encoded(request["document"]), runtime.encoded(self.document))
+        request["candidates"] = [json.loads(json.dumps(self.candidate))]
+        desired = runtime.encoded(request["document"])
+        request["candidates"][0]["release"].update(size=len(desired), sha256=hashlib.sha256(desired).hexdigest())
+
+        self.commands.clear()
+        with patch.object(install, "host", return_value=HOST):
+            observed = install.observe(request, self.base, self.execute,
+                lambda _: {"sha256": self.candidate["expected"]["catalog"]}, self.proc)
+            self.assertTrue(observed["services"][0]["ready"])
+            calls = []
+            def unavailable(path):
+                calls.append(path)
+                raise ValueError("offline")
+            failed = install.observe(request, self.base, self.execute, unavailable, self.proc)
+            self.assertFalse(failed["services"][0]["ready"])
+            self.assertEqual(failed["services"][0]["reason"], "offline")
+            self.assertEqual(len(calls), 1)
+            request["document"]["files"]["offline/catalog.json"] = {"sha256": "f" * 64}
+            mismatch = install.observe(request, self.base, self.execute, unavailable, self.proc)
+            self.assertIn("selected data differs", mismatch["services"][0]["reason"])
+            self.assertEqual(len(calls), 1, "changed selection refuses before HTTP")
+            request["document"] = self.document
+            (install.destination(self.value, self.base) / "release.json").write_bytes(b"tampered")
+            tampered = install.observe(request, self.base, self.execute, unavailable, self.proc)
+            self.assertFalse(tampered["services"][0]["ready"])
+            self.assertEqual(len(calls), 1)
+
+        self.assertTrue(all(command[:2] == ["systemctl", "show"] for command in self.commands))
 
     def test_reuse_checks_desired_object_pool_and_origin_against_the_running_process(self):
         self.stage()

@@ -1363,6 +1363,24 @@ small-source discovery allowlist: it does not download input objects for other s
 Exit status 1 of `status --check` is drift or leftovers, or a failure of R2. With `--json`, the
 first writes the status, and the second writes an error.
 
+Layer status compares current semantic declarations with the published producer's source/config
+witness at its recorded target/profile. New execution retains the full native identity. The
+runtime owner excludes builder execution bindings only from this read comparison; current
+target, files, command, outputs and configuration remain exact. Missing witness evidence is
+blocked. Known option, producer and input changes retain their existing state causes.
+
+With `--check`, `vps` is the independent installed runtime/data observation. An unavailable
+observer has `host: null`, no service results and an explicit `unavailable` reason. A complete
+observation has host inventory and one readiness result for each of routing, search and downloads.
+Each result compares the published slot and binding, actual process, verified installed files
+and opened data. The fixed `live-status` plumbing command admits only these reads. The
+`OBC_STATUS_HOST` credential is a separate forced read-only SSH authorization.
+
+The weekly report keeps one marked issue. A successful command exit alone cannot close it.
+Every current layer must be `ok`, R2 must have no drift or leftovers, attention must be empty,
+and all three service results must be ready. Missing setup or incomplete evidence keeps the
+issue open. An unchanged body emits no comment.
+
 ### Apply
 
 `apply live` makes the plan of live live. It needs the bucket, and it changes R2 in this order:
@@ -1502,7 +1520,7 @@ reconciliation preserve this distinction. No automatic schedule is enabled by th
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, old cache directories that `clean` imports, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and the installed VPS runtime/data observation and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE DAYS\|manual [--json]` | Writes `refresh` of the source in `data/sources.toml`. The edit keeps comments and the other lines. A policy in days for a source without `version = "date"` is refused. Writes the source |
@@ -1670,7 +1688,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Completed apply output | `Applied` |
 | `auto` admission | `Started` |
 | Completed auto output | `Result` |
-| Live timer state | `State3` |
+| Live timer state | `State4` |
 | `schedule live --setup-budget` | `Budget` |
 | `runs` | `RunList` |
 | `runs RUN` for a detached operation | `View` |
@@ -3335,6 +3353,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Host": {
+      "additionalProperties": false,
+      "description": "Actual host prerequisites. Absent interpreters cannot satisfy a runtime target.",
+      "properties": {
+        "glibc": {
+          "type": "string"
+        },
+        "node": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "python": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triple": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "triple",
+        "glibc",
+        "node",
+        "python"
+      ],
+      "type": "object"
+    },
     "ImportDir": {
       "properties": {
         "bytes": {
@@ -3479,6 +3528,33 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "terrain",
         "historical",
         "empty"
+      ],
+      "type": "object"
+    },
+    "Installed": {
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "service": {
+          "$ref": "#/$defs/Service"
+        },
+        "slot": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "service",
+        "id",
+        "slot",
+        "binding"
       ],
       "type": "object"
     },
@@ -3719,12 +3795,45 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Observation2": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/State2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServiceStatus"
+          },
+          "type": "array"
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "host",
+        "services",
+        "unavailable"
+      ],
+      "type": "object"
+    },
     "Observed": {
       "properties": {
         "state": {
           "anyOf": [
             {
-              "$ref": "#/$defs/State2"
+              "$ref": "#/$defs/State3"
             },
             {
               "type": "null"
@@ -5215,6 +5324,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Service": {
+      "enum": [
+        "routing",
+        "search",
+        "downloads"
+      ],
+      "type": "string"
+    },
+    "ServiceStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "ready": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service": {
+          "$ref": "#/$defs/Service"
+        }
+      },
+      "required": [
+        "service",
+        "ready",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Source": {
       "additionalProperties": false,
       "properties": {
@@ -5525,6 +5665,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "State2": {
       "additionalProperties": false,
       "properties": {
+        "host": {
+          "$ref": "#/$defs/Host"
+        },
+        "installed": {
+          "items": {
+            "$ref": "#/$defs/Installed"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "host",
+        "installed"
+      ],
+      "type": "object"
+    },
+    "State3": {
+      "additionalProperties": false,
+      "properties": {
         "apps": {
           "additionalProperties": false,
           "properties": {
@@ -5592,7 +5751,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "State3": {
+    "State4": {
       "properties": {
         "active": {
           "type": "boolean"
@@ -5686,13 +5845,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "$ref": "#/$defs/ProductStatus"
           },
           "type": "array"
+        },
+        "vps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Observation2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Installed runtime and opened data, independently from recorded-target source comparison."
         }
       },
       "required": [
         "from",
         "products",
         "attention",
-        "check"
+        "check",
+        "vps"
       ],
       "type": "object"
     },
