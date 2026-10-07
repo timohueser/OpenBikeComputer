@@ -134,14 +134,14 @@ pub struct Library {
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Rust {
     Native { profile: Profile },
     Prepared { profile: Profile },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     Dev,
@@ -207,7 +207,8 @@ pub struct SourceIdentity {
     pub git_inputs: std::collections::BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedRust {
     pub target: String,
     pub build: Rust,
@@ -215,6 +216,12 @@ pub struct ResolvedRust {
 
 impl CodeIdentity {
     /// Commitment checks the selected physical inputs, including projected build metadata.
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
+}
+
+impl SourceIdentity {
     pub fn committed(&self, root: &Path) -> Result<(), String> {
         code::committed(root, &self.git_inputs)
     }

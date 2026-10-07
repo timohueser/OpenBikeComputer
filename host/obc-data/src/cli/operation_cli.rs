@@ -51,6 +51,13 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     let plan_bytes = plan
         .map(|plan| {
             super::build_cli::complete(Some(plan))?;
+            if request.kind == Kind::Apply {
+                plan.approval
+                    .as_ref()
+                    .ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?
+                    .check()
+                    .map_err(|reason| Code::Blocked.error(reason))?;
+            }
             if plan.env != request.env {
                 return Err(Code::Usage.error("the saved plan names another environment"));
             }
@@ -416,9 +423,7 @@ pub(super) fn apply(
     if !json {
         super::build_cli::print_plan(&plan);
     }
-    if !plan.groups.is_empty() || !plan.remove.is_empty() {
-        super::api::confirm(&super::apply_cli::question(&plan), consent)?;
-    }
+    super::api::confirm(&super::apply_cli::question(&plan), consent)?;
     let request = Request { kind: Kind::Apply, env: args.env, only: Vec::new(), moves: Vec::new(), plan: None };
     print_handle(&start(root, &store, request, Some(&plan))?, json)
 }

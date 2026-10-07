@@ -25,8 +25,7 @@ pub fn identity(root: &Path, code: &Code) -> Result<CodeIdentity, String> {
 }
 
 pub fn source_config(root: &Path, code: &Code, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
-    let identity = Context::default().resolve(root, code, Mode::Source(rust), None)?;
-    Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+    Context::default().source_config(root, code, rust)
 }
 
 pub fn owner_identity(root: &Path, owner: &OwnerCode) -> Result<CodeIdentity, String> {
@@ -34,10 +33,7 @@ pub fn owner_identity(root: &Path, owner: &OwnerCode) -> Result<CodeIdentity, St
 }
 
 pub fn owner_source_config(root: &Path, owner: &OwnerCode, rust: &ResolvedRust) -> Result<SourceIdentity, String> {
-    let mut code = owner.code.clone();
-    code.crates.push(owner.crate_name.clone());
-    let identity = Context::default().resolve(root, &code, Mode::Source(Some(rust)), Some(&owner.crate_name))?;
-    Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+    Context::default().owner_source_config(root, owner, rust)
 }
 
 #[derive(Clone, Copy)]
@@ -68,6 +64,28 @@ impl Context {
 
     pub fn identity(&mut self, root: &Path, code: &Code) -> Result<CodeIdentity, String> {
         self.resolve(root, code, Mode::Execution, None)
+    }
+
+    pub fn source_config(
+        &mut self,
+        root: &Path,
+        code: &Code,
+        rust: Option<&ResolvedRust>,
+    ) -> Result<SourceIdentity, String> {
+        let identity = self.resolve(root, code, Mode::Source(rust), None)?;
+        Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
+    }
+
+    pub fn owner_source_config(
+        &mut self,
+        root: &Path,
+        owner: &OwnerCode,
+        rust: &ResolvedRust,
+    ) -> Result<SourceIdentity, String> {
+        let mut code = owner.code.clone();
+        code.crates.push(owner.crate_name.clone());
+        let identity = self.resolve(root, &code, Mode::Source(Some(rust)), Some(&owner.crate_name))?;
+        Ok(SourceIdentity { files: identity.source_config, rust: identity.rust, git_inputs: identity.git_inputs })
     }
 
     pub fn owner_identity(&mut self, root: &Path, owner: &OwnerCode) -> Result<CodeIdentity, String> {
@@ -183,6 +201,11 @@ impl Context {
             hashes.insert(relative.replace('\\', "/"), hash);
         }
         hashes.extend(dependencies);
+        if owner.is_some() && !code.paths.iter().any(|path| root.join("data/sources.toml").starts_with(root.join(path)))
+        {
+            // Embedded registry bytes are replaced by the owner's declared source projections.
+            hashes.remove("data/sources.toml");
+        }
         let mut source_config = hashes.clone();
         let rust = if !packages.names.is_empty() {
             let rust = match mode {
@@ -339,7 +362,7 @@ pub fn compiled(root: &Path, crates: &[String]) -> Result<String, String> {
     Ok(hash(&files))
 }
 
-fn source_hash(source: &crate::sources::Source, excluded: &[&str]) -> Result<String, String> {
+pub(crate) fn source_hash(source: &crate::sources::Source, excluded: &[&str]) -> Result<String, String> {
     let mut content = serde_json::to_value(source).map_err(|error| error.to_string())?;
     for field in excluded {
         content.as_object_mut().unwrap().remove(*field);
@@ -548,6 +571,65 @@ mod tests {
         run.require_committed_code();
         assert!(run.check_owner(&root, &owner).unwrap_err().contains("not committed"));
         run.finish(None).unwrap();
+    }
+
+    #[test]
+    fn embedded_owner_registry_uses_selected_content_but_preserves_explicit_raw_inputs() {
+        let fixture = fixture("owner-embedded-registry");
+        let root = fixture.root();
+        crate::engine::tests::repository(
+            &root,
+            &[("steps", "[dependencies]\nobc-data = { path = \"../obc-data\" }\n"), ("obc-data", "")],
+        );
+        write(
+            &root.join("obc-data/src/sources.rs"),
+            "pub const SOURCES: &str = include_str!(\"../../data/sources.toml\");\n",
+        );
+        let source = "[[source]]\nid = \"land\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Land\"\nfetch = { kind = \"http\", url = \"https://example.org/land\" }\nversion = \"date\"\nrefresh = 7\nredistribute = true\n";
+        let registry = format!("{source}{}", source.replace("land", "other").replace("Land", "Other"));
+        let path = root.join("data/sources.toml");
+        write(&path, &registry);
+        let owner = OwnerCode {
+            crate_name: "steps".into(),
+            code: Code { paths: vec!["steps/src/lib.rs".into()], sources: vec!["land".into()], ..Default::default() },
+        };
+        let mut context = Context::default();
+        let before = context.owner_identity(&root, &owner).unwrap();
+        assert!(before.git_inputs.contains("data/sources.toml"));
+        assert!(!before.files.contains_key("data/sources.toml"));
+        assert!(before.files.contains_key("data/sources.toml#land"));
+        let settings = |root: &Path| {
+            let source = crate::sources::Registry::load(root)
+                .unwrap()
+                .sources
+                .into_iter()
+                .find(|source| source.id == "land")
+                .unwrap();
+            source_hash(&source, &["refresh"]).unwrap()
+        };
+        let access = settings(&root);
+        write(&path, &registry.replace("refresh = 7", "refresh = 30").replace("Other", "New unrelated credit"));
+        assert_eq!(context.owner_identity(&root, &owner).unwrap(), before);
+        assert_eq!(settings(&root), access, "cadence and unrelated sources stay outside approval settings");
+        write(&path, &registry.replace("redistribute = true", "redistribute = false"));
+        assert_eq!(context.owner_identity(&root, &owner).unwrap(), before, "access controls do not change code bytes");
+        assert_ne!(settings(&root), access, "effective publication access still requires a new approval");
+        for change in [
+            registry.replace("attribution = \"Land\"", "attribution = \"New credit\""),
+            registry.replace("example.org/land", "example.org/new-land"),
+        ] {
+            write(&path, &change);
+            let changed = context.owner_identity(&root, &owner).unwrap();
+            assert_ne!(changed.files, before.files);
+            assert_ne!(changed.source_config, before.source_config);
+        }
+        write(&path, &registry);
+        let mut explicit = owner;
+        explicit.code.paths.push("data/sources.toml".into());
+        let raw = context.owner_identity(&root, &explicit).unwrap();
+        assert!(raw.files.contains_key("data/sources.toml"));
+        write(&path, &registry.replace("refresh = 7", "refresh = 30"));
+        assert_ne!(context.owner_identity(&root, &explicit).unwrap().files, raw.files);
     }
 
     #[test]

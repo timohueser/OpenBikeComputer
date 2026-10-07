@@ -1063,7 +1063,7 @@ impl App {
                 if self.asking {
                     let plan = &self.plan.as_ref().expect("confirmation has a plan").taken;
                     let owner = std::env::var("OBC_COMMIT_HOST").unwrap_or_else(|_| "not configured".into());
-                    let lines = vec![
+                    let mut lines = vec![
                         Line::from(super::apply_cli::question(plan)).bold(),
                         Line::from(format!(
                             "Execution: this machine ({}) · environment: {}",
@@ -1073,6 +1073,9 @@ impl App {
                         Line::from(format!("Publication owner: {owner}")),
                         Line::from("The exact reviewed plan is retained. Apply never commits configuration."),
                     ];
+                    if let Some(approval) = &plan.approval {
+                        lines.push(Line::from(approval.summary()));
+                    }
                     (" CONFIRM APPLY ".into(), lines, Vec::new(), None)
                 } else {
                     let (lines, footer, focus) = self.plan_lines();

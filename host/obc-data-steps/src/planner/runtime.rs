@@ -15,6 +15,32 @@ const BUILD: &str = "tools/planner_runtime_build.py";
 const RECIPE: &str = "data/planner-runtime.toml";
 const SERVICES: [&str; 3] = ["routing", "search", "downloads"];
 
+pub(super) fn approval_config(root: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(root.join(RECIPE)).map_err(|error| format!("{RECIPE}: {error}"))?;
+    let config: toml::Value = toml::from_str(&text).map_err(|error| format!("{RECIPE}: {error}"))?;
+    serde_json::to_value(config).map_err(|error| error.to_string())
+}
+
+pub(super) fn binding(step: &Step) -> Result<Option<obc_data::approval::RuntimeBinding>, String> {
+    let Some(service) = SERVICES.iter().find(|service| step.name == format!("planner/runtime/{service}")) else {
+        return Ok(None);
+    };
+    let target = step.options.get("target").cloned().ok_or("runtime has no selected target")?;
+    let builder = step.options.get("builder").cloned().ok_or("runtime has no selected builder")?;
+    if builder["kind"] != "container"
+        || !builder["image"].as_str().is_some_and(|image| {
+            image
+                .strip_prefix("sha256:")
+                .is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+    {
+        return Err(format!(
+            "automatic approval for native {service} runtime needs an exact prepared execution binding"
+        ));
+    }
+    Ok(Some(obc_data::approval::RuntimeBinding { target, builder }))
+}
+
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {

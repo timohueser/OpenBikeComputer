@@ -4,6 +4,7 @@ use crate::engine::{Code, OwnerCode, Python};
 use crate::sources::{FetchKind, Source};
 
 pub(super) fn owner(source: &Source) -> OwnerCode {
+    let sources: Vec<_> = std::iter::once(source.id.clone()).chain(source.fetch.from.clone()).collect();
     let mut paths = vec![
         "host/obc-data/src/fetch.rs",
         "host/obc-data/src/fetch/code.rs",
@@ -62,7 +63,11 @@ pub(super) fn owner(source: &Source) -> OwnerCode {
                 _ => {
                     return OwnerCode {
                         crate_name: "obc-data".into(),
-                        code: Code { paths: paths.into_iter().map(String::from).collect(), ..Default::default() },
+                        code: Code {
+                            paths: paths.into_iter().map(String::from).collect(),
+                            sources,
+                            ..Default::default()
+                        },
                     }
                 }
             };
@@ -72,6 +77,6 @@ pub(super) fn owner(source: &Source) -> OwnerCode {
     }
     OwnerCode {
         crate_name: "obc-data".into(),
-        code: Code { paths: paths.into_iter().map(String::from).collect(), python, ..Default::default() },
+        code: Code { paths: paths.into_iter().map(String::from).collect(), sources, python, ..Default::default() },
     }
 }

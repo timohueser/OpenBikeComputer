@@ -85,6 +85,8 @@ pub struct EnvPlan {
     pub listed: bool,
     /// Discovery could not resolve the step graph. Prepare and review a new plan before replay.
     pub needs_prepare: bool,
+    /// Complete manual publication reviews this owner record separately from source refreshes.
+    pub approval: Option<crate::approval::Review>,
 }
 
 /// Explicit preparation resolves inputs. Save `plan` after reviewing it, not this envelope.
@@ -253,6 +255,9 @@ pub(super) fn print_plan(plan: &EnvPlan) {
         let unlisted = if plan.listed { "" } else { "; R2 was not listed, so leftovers are unknown" };
         println!("REMOVE FROM R2 {} keys, {size}{unlisted}", plan.remove.len());
     }
+    if let Some(review) = &plan.approval {
+        println!("{}", review.summary());
+    }
 }
 
 /// What groups cost: the download, the build time and the output; `None` when the store does not
@@ -373,8 +378,8 @@ pub(super) struct Applying {
     pub(super) next: Live,
 }
 
-/// A saved no-op still needs the current graph and exact pointer observations.
-pub(super) fn recheck_noop(
+/// Recheck the approval after verification, including code for reused layers and unused acquisition.
+pub(super) fn recheck_approval(
     root: &Path,
     store: &Store,
     http: &Http,
@@ -383,7 +388,6 @@ pub(super) fn recheck_noop(
     saved: &EnvPlan,
     run: &mut Run,
 ) -> Result<(), Error> {
-    run.record(&Event::Phase { phase: Phase::Prepare })?;
     let current = planned_run(
         root,
         store,
@@ -397,7 +401,7 @@ pub(super) fn recheck_noop(
         Some(run),
     )?
     .plan;
-    if saved != &current {
+    if saved.approval != current.approval || saved.live != current.live {
         return Err(outdated());
     }
     Ok(())
@@ -424,8 +428,9 @@ pub(super) fn build_env(
     let Planned { loaded, steps, plan, live } =
         planned_run(root, store, http, remote, products, &args.env, only, basis, true, Some(run))?;
     if let Some(saved) = saved {
-        let unchanged = (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits)
-            == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits);
+        let unchanged =
+            (&saved.env, &saved.region, &saved.layers, &saved.blocked, &saved.live, &saved.edits, &saved.approval)
+                == (&plan.env, &plan.region, &plan.layers, &plan.blocked, &plan.live, &plan.edits, &plan.approval);
         if !unchanged || !(Plan { groups: plan.groups.clone() }).same_work(&Plan { groups: saved.groups.clone() }) {
             return Err(outdated());
         }
@@ -752,6 +757,24 @@ fn planned_run(
         }
     }
     (plan.remove, plan.listed) = (live.removed(&next, listed.as_deref()), listed.is_some());
+    let prior = super::commit_cli::approval_observation(store);
+    plan.approval = Some(if plan.needs_prepare || !plan.blocked.is_empty() {
+        crate::approval::Review::Unavailable {
+            owner: prior.ok().map(|prior| prior.owner),
+            reason: "the complete product graph is not available for automatic approval".into(),
+        }
+    } else {
+        crate::approval::review(
+            root,
+            &loaded.env,
+            &loaded.regions,
+            &steps,
+            products,
+            &loaded.sources,
+            remote.expect("Live has a remote").describe(),
+            prior,
+        )
+    });
     crate::worker::check(root)?;
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
@@ -795,6 +818,7 @@ fn env_plan(
         remove: Vec::new(),
         listed: false,
         needs_prepare: !env.fetch_failures.is_empty(),
+        approval: None,
     }
 }
 
