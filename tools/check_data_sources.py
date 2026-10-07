@@ -43,8 +43,10 @@ NOT_SOURCES = {
     "rustup.rs": "install hint",
     "json-schema.org": "schema identifier",
     "www.w3.org": "XML namespace",
+    "writewithharper.com": "prose checker documentation",
     # Toolchain installers: build tools, not bake inputs.
     "download.osgeo.org": "GEOS for obc-pack",
+    "nodejs.org": "Node for the verification console",
     # A service a host app queries while it runs; no bake reads it.
     "nominatim.openstreetmap.org": "obc-usb-host geocoder",
 }
