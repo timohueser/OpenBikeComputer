@@ -871,11 +871,11 @@ check *args:
     fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/tools/licenses/deny.toml"
+        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/tools/licenses/deny.toml"
+        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/tools/licenses/deny.toml"
+        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features check --config "$OBC_ROOT/tools/licenses/deny.toml"
+        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/tools/licenses/deny.toml"
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
     if want wasm; then
