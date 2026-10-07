@@ -10,62 +10,6 @@ pub(crate) struct Catalog {
     pub file: LayerFile,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn immutable_update_preserves_unrelated_catalog_and_staged_work_and_refuses_a_changed_pointer() {
-        let scratch = crate::store::tests::Scratch::new("fixture-catalog-apply");
-        let root = &scratch.0;
-        std::fs::create_dir(root.join("fixtures")).unwrap();
-        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
-        std::fs::write(root.join("unrelated"), "staged owner work").unwrap();
-        assert!(std::process::Command::new("git")
-            .args(["add", "unrelated"])
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
-        let staged = std::fs::read(root.join(".git/index")).unwrap();
-        let old = "a".repeat(64);
-        let text = format!("schema=1\nbase_url=\"https://fixtures.example/v1/\"\n\n[packages.ride]\nsummary=\"Ride\"\narchive=\"packages/{old}.tar.gz\"\nsha256=\"{old}\"\nbytes=10\nprovenance=\"Original\"\nlicense=\"ODbL-1.0\"\n\n# Owner's unchanged scenario\n[scenarios.ride]\npackages=[\"ride\"]\n");
-        std::fs::write(root.join("fixtures/catalog.toml"), &text).unwrap();
-        let reviewed = Catalog::read(root).unwrap();
-        let digest = "b".repeat(64);
-        let selected = [(
-            "ride".into(),
-            (
-                LayerFile { path: format!("packages/{digest}.tar.gz"), size: 20, sha256: digest.clone() },
-                "Ride".into(),
-                "ODbL-1.0".into(),
-            ),
-        )]
-        .into();
-        reviewed.replace(root, &selected).unwrap();
-        let applied = Catalog::read(root).unwrap();
-        assert_eq!(applied.document["packages"]["ride"]["sha256"].as_str(), Some(digest.as_str()));
-        assert!(applied.text.ends_with("# Owner's unchanged scenario\n[scenarios.ride]\npackages=[\"ride\"]\n"));
-        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), staged);
-        assert!(reviewed.replace(root, &selected).unwrap_err().contains("catalog changed"));
-        assert_eq!(Catalog::read(root).unwrap().text, applied.text);
-        assert!(applied
-            .replace(
-                root,
-                &[(
-                    "new-map".into(),
-                    (
-                        LayerFile { path: "packages/placeholder.tar.gz".into(), size: 1, sha256: "c".repeat(64) },
-                        "New map".into(),
-                        "ODbL-1.0".into()
-                    )
-                )]
-                .into()
-            )
-            .is_err());
-    }
-}
-
 impl Catalog {
     pub fn assets(&self, root: &Path, id: &str, map: &str) -> Result<BTreeMap<String, LayerFile>, String> {
         let mut assets = BTreeMap::new();
@@ -190,5 +134,61 @@ impl Catalog {
             return Err("fixture catalog changed before replacement; review a new plan".into());
         }
         crate::store::write_atomic(&root.join(&self.file.path), updated.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn immutable_update_preserves_unrelated_catalog_and_staged_work_and_refuses_a_changed_pointer() {
+        let scratch = crate::store::tests::Scratch::new("fixture-catalog-apply");
+        let root = &scratch.0;
+        std::fs::create_dir(root.join("fixtures")).unwrap();
+        assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
+        std::fs::write(root.join("unrelated"), "staged owner work").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "unrelated"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        let staged = std::fs::read(root.join(".git/index")).unwrap();
+        let old = "a".repeat(64);
+        let text = format!("schema=1\nbase_url=\"https://fixtures.example/v1/\"\n\n[packages.ride]\nsummary=\"Ride\"\narchive=\"packages/{old}.tar.gz\"\nsha256=\"{old}\"\nbytes=10\nprovenance=\"Original\"\nlicense=\"ODbL-1.0\"\n\n# Owner's unchanged scenario\n[scenarios.ride]\npackages=[\"ride\"]\n");
+        std::fs::write(root.join("fixtures/catalog.toml"), &text).unwrap();
+        let reviewed = Catalog::read(root).unwrap();
+        let digest = "b".repeat(64);
+        let selected = [(
+            "ride".into(),
+            (
+                LayerFile { path: format!("packages/{digest}.tar.gz"), size: 20, sha256: digest.clone() },
+                "Ride".into(),
+                "ODbL-1.0".into(),
+            ),
+        )]
+        .into();
+        reviewed.replace(root, &selected).unwrap();
+        let applied = Catalog::read(root).unwrap();
+        assert_eq!(applied.document["packages"]["ride"]["sha256"].as_str(), Some(digest.as_str()));
+        assert!(applied.text.ends_with("# Owner's unchanged scenario\n[scenarios.ride]\npackages=[\"ride\"]\n"));
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), staged);
+        assert!(reviewed.replace(root, &selected).unwrap_err().contains("catalog changed"));
+        assert_eq!(Catalog::read(root).unwrap().text, applied.text);
+        assert!(applied
+            .replace(
+                root,
+                &[(
+                    "new-map".into(),
+                    (
+                        LayerFile { path: "packages/placeholder.tar.gz".into(), size: 1, sha256: "c".repeat(64) },
+                        "New map".into(),
+                        "ODbL-1.0".into()
+                    )
+                )]
+                .into()
+            )
+            .is_err());
     }
 }

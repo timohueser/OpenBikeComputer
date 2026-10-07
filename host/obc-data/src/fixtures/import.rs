@@ -10,33 +10,6 @@ pub(crate) fn packaging(root: &Path) -> Result<BTreeMap<String, String>, String>
     materializer().files(root)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::tests::{fixture, write};
-
-    #[test]
-    fn reviewed_sealer_changes_refuse_before_materializing_any_archive() {
-        let fixture = fixture("reviewed-fixture-sealer");
-        let root = fixture.root();
-        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for path in ["pyproject.toml", "uv.lock", "tools/data_fixtures.py", "tools/fixtures.py"] {
-            write(&root.join(path), &std::fs::read_to_string(real.join(path)).unwrap());
-        }
-        let reviewed = packaging(&root).unwrap();
-        write(&root.join("tools/data_fixtures.py"), "raise RuntimeError('must not execute changed sealer')\n");
-        let archive = root.join("unreviewed.tar.gz");
-        let error = materialize(
-            &root,
-            &["seal".into(), "ride".into(), root.to_string_lossy().into(), archive.to_string_lossy().into()],
-            Some(&reviewed),
-        )
-        .unwrap_err();
-        assert!(error.contains("changed after review"), "{error}");
-        assert!(!archive.exists());
-    }
-}
-
 fn materializer() -> Code {
     Code {
         paths: vec!["tools/data_fixtures.py".into(), "tools/fixtures.py".into()],
@@ -174,16 +147,15 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
             });
         }
         for (collection, name) in [("landmarks", "content.json"), ("peaks", "peaks.json")] {
-            if snapshot.files.iter().any(|f| f.name == name) {
-                if content
+            if snapshot.files.iter().any(|f| f.name == name)
+                && content
                     .insert(
                         collection.into(),
                         CapturedInput { source: source.clone(), version: version.clone(), files: Vec::new() },
                     )
                     .is_some()
-                {
-                    return Err(format!("bootstrap selects conflicting {collection} inputs"));
-                }
+            {
+                return Err(format!("bootstrap selects conflicting {collection} inputs"));
             }
         }
         if id == "assistant-wiki" {
@@ -306,4 +278,31 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
         content,
         empty,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::{fixture, write};
+
+    #[test]
+    fn reviewed_sealer_changes_refuse_before_materializing_any_archive() {
+        let fixture = fixture("reviewed-fixture-sealer");
+        let root = fixture.root();
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for path in ["pyproject.toml", "uv.lock", "tools/data_fixtures.py", "tools/fixtures.py"] {
+            write(&root.join(path), &std::fs::read_to_string(real.join(path)).unwrap());
+        }
+        let reviewed = packaging(&root).unwrap();
+        write(&root.join("tools/data_fixtures.py"), "raise RuntimeError('must not execute changed sealer')\n");
+        let archive = root.join("unreviewed.tar.gz");
+        let error = materialize(
+            &root,
+            &["seal".into(), "ride".into(), root.to_string_lossy().into(), archive.to_string_lossy().into()],
+            Some(&reviewed),
+        )
+        .unwrap_err();
+        assert!(error.contains("changed after review"), "{error}");
+        assert!(!archive.exists());
+    }
 }

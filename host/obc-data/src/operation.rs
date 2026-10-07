@@ -52,7 +52,7 @@ impl Request {
         {
             return Err("fixture operations need exact package preparation or a typed reviewed apply plan".into());
         }
-        if self.fixture.is_some() {
+        if let Some(fixture) = &self.fixture {
             if self.kind != Kind::Apply
                 || self.env != "fixtures"
                 || self.dev.is_some()
@@ -62,7 +62,7 @@ impl Request {
             {
                 return Err("fixture apply takes only its reviewed collection plan".into());
             }
-            return self.fixture.as_ref().expect("present above").check();
+            return fixture.check();
         }
         if (self.kind == Kind::DevPrepare) != self.dev.is_some()
             || self.dev.is_some()

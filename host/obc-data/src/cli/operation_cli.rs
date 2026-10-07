@@ -360,7 +360,7 @@ pub(super) fn perform(
     let request = request()?;
     let root = super::root()?;
     let result = if request.env == "fixtures" {
-        super::fixture_cli::perform(&root, store, &request, fixtures)
+        super::fixture_cli::perform(&root, store, request, fixtures)
     } else {
         match request.kind {
             Kind::Auto => super::auto_cli::perform(&root, products, &request.env),
