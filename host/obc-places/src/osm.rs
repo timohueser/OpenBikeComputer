@@ -182,10 +182,10 @@ pub fn harvest(
                 }
                 Element::Relation(r) => {
                     let tags: HashMap<_, _> = r.tags().collect();
-                    if tags.contains_key("wikidata") || tags.contains_key("wikipedia") {
-                        if !merging || index == 0 || seen_links.insert(r.id()) {
-                            links.push(r.id(), relation_link(r.id(), &tags));
-                        }
+                    if (tags.contains_key("wikidata") || tags.contains_key("wikipedia"))
+                        && (!merging || index == 0 || seen_links.insert(r.id()))
+                    {
+                        links.push(r.id(), relation_link(r.id(), &tags));
                     }
                     if matches!(tags.get("type").copied(), Some("multipolygon" | "boundary")) {
                         let poi = relation_poi(r.id(), &tags);
