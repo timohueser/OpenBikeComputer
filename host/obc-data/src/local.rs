@@ -88,6 +88,80 @@ pub fn plan(
     Ok(plan)
 }
 
+/// Reuse only compatible portable layers, including the exact files that new consumers need.
+pub fn reuse(
+    root: &Path,
+    store: &Store,
+    remote: &Remote,
+    product: &dyn Product,
+    release: &Release,
+    steps: &[Step],
+) -> Result<BTreeMap<String, Layer>, String> {
+    let required: BTreeMap<_, _> =
+        steps.iter().filter(|step| product.portable(step)).map(|step| (step.name.clone(), Vec::new())).collect();
+    let first = plan(root, store, product, release, steps, &required)?;
+    let mut names: BTreeSet<_> = first.layers.iter().map(|layer| layer.step.clone()).collect();
+    while !names.is_empty() {
+        let ancestors = |name: &str| {
+            let mut found = BTreeSet::new();
+            let mut pending = vec![name.to_string()];
+            while let Some(name) = pending.pop() {
+                if found.insert(name.clone()) {
+                    if let Some(step) = steps.iter().find(|step| step.name == name) {
+                        pending.extend(step.layers().map(String::from));
+                    }
+                }
+            }
+            found
+        };
+        let closed: BTreeSet<_> = names.iter().flat_map(|name| ancestors(name)).collect();
+        // A private ancestor is retained provenance, never an executable or an inferred portable input.
+        let private_reads: BTreeSet<_> = steps
+            .iter()
+            .filter(|step| !closed.contains(&step.name))
+            .flat_map(|step| step.layers())
+            .filter(|name| closed.contains(*name) && !names.contains(*name))
+            .map(String::from)
+            .collect();
+        if !private_reads.is_empty() {
+            names.retain(|name| ancestors(name).is_disjoint(&private_reads));
+            continue;
+        }
+        let mut required: BTreeMap<_, Vec<String>> = names.iter().map(|name| (name.clone(), Vec::new())).collect();
+        for step in steps.iter().filter(|step| !closed.contains(&step.name)) {
+            for input in &step.inputs {
+                let Input::Layer { name, files } = input else { continue };
+                let Some(extra) = required.get_mut(name) else { continue };
+                if files.is_empty() {
+                    let original =
+                        release.layers.iter().find(|layer| &layer.step == name).ok_or("missing original input")?;
+                    extra.extend(original.files.iter().map(|file| file.path.clone()));
+                } else {
+                    extra.extend(files.iter().cloned());
+                }
+                extra.sort();
+                extra.dedup();
+            }
+        }
+        let checked = plan(root, store, product, release, steps, &required)?;
+        if !checked.blocked.is_empty() {
+            for layer in checked.blocked {
+                names.remove(&layer.layer);
+            }
+            continue;
+        }
+        let adopted = transfer(root, store, remote, product, release, steps, &required, &checked)?;
+        return Ok(adopted
+            .original
+            .layers
+            .into_iter()
+            .filter(|layer| closed.contains(&layer.step))
+            .map(|layer| (layer.step.clone(), layer))
+            .collect());
+    }
+    Ok(BTreeMap::new())
+}
+
 struct Compatibility<'a> {
     root: &'a Path,
     store: &'a Store,
@@ -247,6 +321,23 @@ pub fn adopt(
 ) -> Result<Adoption, String> {
     let _using = store.using()?;
     let _anchor = store.lock(&format!("local-{}", product.name()))?;
+    let adoption = transfer(root, store, remote, product, release, steps, required, confirmed)?;
+    store.put_adoption(&adoption)?;
+    Ok(adoption)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer(
+    root: &Path,
+    store: &Store,
+    remote: &Remote,
+    product: &dyn Product,
+    release: &Release,
+    steps: &[Step],
+    required: &BTreeMap<String, Vec<String>>,
+    confirmed: &Plan,
+) -> Result<Adoption, String> {
+    let _using = store.using()?;
     let current = plan(root, store, product, release, steps, required)?;
     if &current != confirmed || !current.blocked.is_empty() || current.layers.is_empty() {
         return Err("portable adoption changed or is blocked; review it again".into());
@@ -287,9 +378,7 @@ pub fn adopt(
     if plan(root, store, product, release, steps, required)? != current {
         return Err("portable provenance changed during adoption; review it again".into());
     }
-    let adoption = Adoption { original: release.clone(), plan: current };
-    store.put_adoption(&adoption)?;
-    Ok(adoption)
+    Ok(Adoption { original: release.clone(), plan: current })
 }
 
 pub fn saved(store: &Store) -> Result<Vec<Adoption>, String> {
@@ -502,6 +591,93 @@ mod tests {
                 producers: BTreeMap::from([(code_digest, producer)]),
             },
         )
+    }
+
+    #[test]
+    fn transient_reuse_preserves_the_saved_anchor_and_feeds_new_work_without_foreign_receipts() {
+        let fixture = fixture("auto-portable-layer");
+        let root = fixture.root();
+        let (mut steps, original) = authored(&root);
+        object(&fixture.store, &original.layers[1].files[0], b"client");
+        let required = BTreeMap::from([("test/client".into(), Vec::new())]);
+        let mut saved_release = original.clone();
+        saved_release.region = "saved-region".into();
+        let saved_plan = plan(&root, &fixture.store, &Portable, &saved_release, &steps, &required).unwrap();
+        fixture.store.put_adoption(&Adoption { original: saved_release, plan: saved_plan }).unwrap();
+        let anchor = fixture.store.root().join("local/test.json");
+        let before = std::fs::read(&anchor).unwrap();
+        let mut consumer = crate::engine::tests::step(
+            "test/new",
+            vec![Input::layer("test/client")],
+            Code { crates: vec!["steps".into()], ..Default::default() },
+            "new.bin",
+            Run::Rust(engine::pass),
+        );
+        consumer.options = json!({"path":"new.bin"});
+        steps.push(consumer);
+        let reused = reuse(
+            &root,
+            &fixture.store,
+            &Remote::Public("https://unused.invalid".into()),
+            &Portable,
+            &original,
+            &steps,
+        )
+        .unwrap();
+        assert_eq!(reused.len(), 2, "private ancestry is retained metadata, without acquiring its bytes or tools");
+        assert_eq!(reused["test/client"], original.layers[1]);
+        assert_eq!(std::fs::read(&anchor).unwrap(), before, "auto must not replace the saved Local selection");
+        let against = crate::engine::changes::Against {
+            layers: original.layers.iter().map(|layer| (layer.step.as_str(), layer)).collect(),
+            ..Default::default()
+        };
+        let work = crate::engine::changes::changes_reusing(&fixture.store, &root, &steps, &against, &reused).unwrap();
+        assert_eq!(work.builds().map(|build| build.step.as_str()).collect::<Vec<_>>(), ["test/new"]);
+        assert!(work.fetches().is_empty());
+        let local = engine::plan::plan_reusing(&fixture.store, &root, &steps, &reused).unwrap();
+        assert_eq!(local.builds().map(|build| build.step.as_str()).collect::<Vec<_>>(), ["test/new"]);
+        assert!(local.fetches().is_empty());
+        let mut run = crate::engine::runs::Run::create(&fixture.store, "auto live").unwrap();
+        run.reuse_layers(&reused);
+        let context = crate::engine::runs::Context {
+            store: &fixture.store,
+            root: &root,
+            sources: &[],
+            http: &Http::new(),
+            copies: None,
+            limits: crate::engine::runs::Limits { jobs: 1, memory_bytes: None },
+        };
+        let built = run.build(&context, &steps, &work).unwrap();
+        assert_eq!(built.len(), 1);
+        assert_eq!(std::fs::read(fixture.store.object(&built[0].receipt.files[0].sha256)).unwrap(), b"client");
+        assert_eq!(fixture.store.layers().unwrap().len(), 1, "only the actual native consumer has a build receipt");
+        let names = steps.iter().map(|step| step.name.as_str()).collect();
+        let stored = engine::release::stored_reusing(&fixture.store, &root, &steps, &names, &reused).unwrap();
+        assert_eq!(stored["test/input"], original.layers[0]);
+        assert_eq!(stored["test/client"], original.layers[1]);
+        let assembled =
+            engine::release::release_reusing(&fixture.store, &root, "local-region", &[], &steps, &original, &reused)
+                .unwrap()
+                .unwrap();
+        assert_eq!(assembled.layers.iter().find(|layer| layer.step == "test/client"), Some(&original.layers[1]));
+        assert_eq!(assembled.producers[&original.layers[1].code], original.producers[&original.layers[1].code]);
+        assembled.check_named().unwrap();
+        assert!(!root.join("absent-original-provider").exists());
+        assert_eq!(std::fs::read(&anchor).unwrap(), before);
+        steps[2].inputs = vec![Input::layer("test/input")];
+        assert!(
+            reuse(
+                &root,
+                &fixture.store,
+                &Remote::Public("https://unused.invalid".into()),
+                &Portable,
+                &original,
+                &steps
+            )
+            .unwrap()
+            .is_empty(),
+            "a new consumer cannot infer portability for a private ancestor"
+        );
     }
 
     #[test]
