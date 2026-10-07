@@ -94,7 +94,7 @@ fn hash(value: &impl serde::Serialize) -> Result<String, String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn review(
+pub(crate) fn review(
     root: &Path,
     env: &Env,
     regions: &Regions,
