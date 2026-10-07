@@ -3,6 +3,7 @@
 
 mod background;
 mod execution;
+mod host;
 mod live;
 mod local;
 mod plan;
@@ -228,6 +229,7 @@ enum Hit {
 
 #[derive(Clone)]
 struct App {
+    host: String,
     screen: Screen,
     overlay: Option<Overlay>,
     sources: Vec<SourceRow>,
@@ -361,6 +363,7 @@ fn list_runs(store: &Store) -> Result<Vec<Details>, Error> {
 impl App {
     fn new(sources: Vec<SourceRow>, runs: Vec<Details>) -> Self {
         Self {
+            host: host::current(),
             screen: Screen::Live,
             overlay: None,
             sources,
@@ -1331,9 +1334,10 @@ impl App {
                     let request = view.dev.as_ref().unwrap();
                     let mut lines = vec![
                         Line::from(format!(
-                            "Prepare {} for {} on this machine?",
+                            "Prepare {} for {} on {}?",
                             request.app.name(),
-                            view.taken.region
+                            view.taken.region,
+                            self.host
                         ))
                         .bold(),
                         Line::from("The exact source versions and pending work stay pinned."),
@@ -1349,11 +1353,7 @@ impl App {
                     let owner = std::env::var("OBC_COMMIT_HOST").unwrap_or_else(|_| "not configured".into());
                     let mut lines = vec![
                         Line::from(super::apply_cli::question(plan)).bold(),
-                        Line::from(format!(
-                            "Execution: this machine ({}) · environment: {}",
-                            std::env::consts::OS,
-                            plan.env
-                        )),
+                        Line::from(format!("Execution: {} · environment: {}", self.host, plan.env)),
                         Line::from(format!("Publication owner: {owner}")),
                         Line::from("The exact reviewed plan is retained. Apply never commits configuration."),
                     ];

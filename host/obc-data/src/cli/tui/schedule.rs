@@ -105,7 +105,7 @@ impl App {
     }
 
     pub(super) fn schedule_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![Line::from(format!("This machine: {} · environment: live", std::env::consts::OS))];
+        let mut lines = vec![Line::from(format!("This machine: {} · environment: live", self.host))];
         if self.asking {
             lines.push(Line::from(match &self.schedule.pending {
                 Some(Change::Install { calendar, zone }) => format!("Enable Live automation at {calendar} {zone}?"),

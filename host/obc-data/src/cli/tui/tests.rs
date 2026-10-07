@@ -352,7 +352,9 @@ fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_s
     let updated = app.clone();
     app.complete(Effect::LocalReview(request.clone()), updated);
     assert!(app.asking);
+    app.host = "fixture-laptop (macos)".into();
     let drawn = screen(&mut app, 80, 24).join(" ");
+    assert!(drawn.contains("fixture-laptop"), "{drawn}");
     assert!(drawn.contains("Simulator") && drawn.contains("CONFIRM LOCAL PREPARATION"), "{drawn}");
     assert!(drawn.contains("2026-10-01") && drawn.contains("area=europe/test"), "{drawn}");
     let mut reviewed = request;
@@ -369,6 +371,7 @@ fn local_uses_read_only_entry_and_exact_shared_confirmation_without_losing_app_s
 fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
     use crate::operation::Kind;
     let mut app = planned(0, false, &["move:land", "move:osm"]);
+    app.host = "fixture-vps (linux)".into();
     let taken = &mut app.plan.as_mut().unwrap().taken;
     taken.only = vec!["none".into()];
     taken.groups.retain(|group| !plan::is_move(group));
@@ -378,7 +381,10 @@ fn apply_requires_confirmation_and_retains_the_exact_zero_move_plan() {
     assert_eq!(app.key(KeyCode::Char('a')), Effect::None);
     assert!(app.asking);
     let drawn = screen(&mut app, 80, 24).join("\n");
-    assert!(drawn.contains("CONFIRM APPLY") && drawn.contains("environment: live"), "{drawn}");
+    assert!(
+        drawn.contains("CONFIRM APPLY") && drawn.contains("environment: live") && drawn.contains("fixture-vps (linux)"),
+        "{drawn}"
+    );
     assert!(drawn.contains(&super::super::apply_cli::question(&reviewed)), "{drawn}");
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "confirmation cannot change consent");
     app.key(KeyCode::Esc);
@@ -695,10 +701,14 @@ fn version_review_retains_pending_intent_and_exposes_each_request_before_the_pla
 #[test]
 fn schedule_has_explicit_host_scope_confirmation_and_never_intercepts_form_text() {
     let mut app = app();
+    app.host = "fixture-vps (linux)".into();
     assert_eq!(app.key(KeyCode::Char('s')), Effect::ScheduleRead);
     app.schedule.state = Some(Err("live schedules need the configured Linux systemd host".into()));
     let text = screen(&mut app, 80, 24).join(" ");
-    assert!(text.contains("environment: live") && text.contains("systemd host"), "{text}");
+    assert!(
+        text.contains("fixture-vps (linux)") && text.contains("environment: live") && text.contains("systemd host"),
+        "{text}"
+    );
     if !cfg!(target_os = "linux") {
         assert!(text.contains("unsupported"), "{text}");
         assert_eq!(app.key(KeyCode::Char('d')), Effect::None);
