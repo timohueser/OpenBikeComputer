@@ -363,9 +363,12 @@ A late or missing weekly planet does not block a version of `osm-replication`, b
 is a version of `osm-planet`. The fetch does not apply the diffs. No product reads the two
 sources: `obc data fetch` gets them, and `osm-planet` gives the OSM credit.
 
-A `dtm` or `capture` fetch runs a program in the repository root, with the Python of `uv run
-<packages> python`: `--locked --group <group>` for a dependency group of `pyproject.toml`
-(`OBC_PYTHON` replaces that Python).
+A `dtm` or `capture` fetch runs in the explicit repository root. The offline system selector
+of `uv python find` selects its Python and honors `UV_PYTHON`. A standard-library capture
+runs that interpreter directly. A package capture uses `uv run --locked --offline
+--no-default-groups --no-python-downloads --group GROUP python`, bound to that interpreter.
+It prepares the locked group when the capture runs. Cached captures need no Python runtime.
+The capture checks its code and interpreter before execution and before accepting output.
 The program writes each file of the request to a directory under `partial/`, and its progress to
 standard error. The store takes every file in that directory but hidden, `.part` and `.tmp` files.
 A failed run keeps the directory and writes no record. A directory of a `manual` source, or one
@@ -488,6 +491,15 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   are refused. Tool discovery and bytes are cached within a checking context. Each execution
   boundary checks tool, library, environment and selection/config witnesses. A change runs
   discovery again and invalidates changed file digests.
+- Acquisition and planning declare an owner crate and its source paths. The same resolver
+  selects its normal and build dependencies, profiles and execution tools. The owner and engine
+  source trees use the declared paths. Their dependency metadata stays conservative: an unused
+  UI dependency edit can change owner identity. Ordinary UI source edits do not.
+- Source/config evidence is separate from full execution identity. It uses the same traversal,
+  selected source and package projections, repository profile and toolchain configuration.
+  It resolves at the recorded producer target and profile without selecting native tools,
+  libraries or a Python interpreter. This evidence does not prove equal recomputation on another
+  host. Real execution still requires its complete native identity.
 - A declared native library enters code identity by its name and complete file digest. Its
   installation path does not enter that identity. Each execution boundary checks the current
   file against the declared digest. GEOS producers bind the loaded shared C and C++ libraries
@@ -1220,7 +1232,11 @@ first writes the status, and the second writes an error.
 
 1. It refuses when `data/` has changes that are not committed, apart from
    `data/env/local.toml`: live builds from a committed `data/`. The steps run the code of the
-   working tree, also code that is not committed. It does not commit or push. Build preparation
+   working tree. Used acquisition, planning and producer code must also be committed.
+   Commitment checks the physical inputs of the same code resolver. Selected manifests and
+   lockfiles must be clean even when their content projection excludes an edit. UI source files
+   outside an owner's declaration do not block apply. Preparation and Local builds may use
+   working-tree code. Apply does not commit or push. Build preparation
    can run on the laptop or VPS. All final R2 writes run in one VPS owner under an exclusive OS lock.
 2. It asks once in a terminal: "Apply M changes to live? removes X GB from R2", with the groups
    and `remove` of the plan. `--yes` does not ask. `--plan FILE` applies that plan; the plan must
