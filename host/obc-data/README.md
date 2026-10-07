@@ -93,12 +93,10 @@ reconcile the owner result. Progress shows acknowledged writes and unresolved ow
 After a Rust edit, new planning or work requires quitting and launching `obc data` again.
 Existing Run observation, stop and reconciliation stay available.
 
-Live apply reviews automatic approval, including a no-change apply. Inspect `plan.approval` before
-confirmation. `applied.approval` reports the separate owner result. Native planner runtime builders
-need prepared Linux executables, self-contained npm and the selected CPython standard libraries.
-Select Python with `UV_PYTHON`; run through the checked worker. External npm implementation files,
-script tool wrappers and ambiguous loaded Python libraries block native approval. Container builders
-use their exact local image. Manual publication remains available when automatic approval is unavailable.
+Live apply reviews `plan.approval`, including no-change applies. `applied.approval` reports the
+result. Native runtimes require Linux executables, self-contained npm and CPython
+libraries. Select Python with `UV_PYTHON`; use the checked worker. Unsupported providers block
+automatic approval; manual publication remains available. Containers bind exact local images.
 The configured Linux owner needs a valid `/etc/machine-id` and the fixed `/var/lib/obc-data/store`.
 Its current approval is owner-local. `commit-approval` reads it without changing any state.
 
