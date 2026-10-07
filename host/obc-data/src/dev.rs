@@ -472,7 +472,12 @@ mod tests {
         stop(&store).unwrap();
         assert!(!obsolete.exists());
         assert!(current.join("planner-service").exists());
-        std::fs::create_dir_all(&obsolete).unwrap();
+        crate::commit::durable(
+            &obsolete.join("service.json"),
+            &serde_json::to_vec(&serde_json::json!({"view":obsolete})).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(obsolete.join("planner-service"), b"retained native bytes").unwrap();
         let mut uncertain = stopped;
         uncertain.status = "starting".into();
         crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
