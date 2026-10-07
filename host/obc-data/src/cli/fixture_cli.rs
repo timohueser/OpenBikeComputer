@@ -110,7 +110,7 @@ fn environment(id: &str, package: &fixtures::Package) -> Result<Env, String> {
     })
 }
 
-fn declarations(
+fn recipes(
     collection: &FixtureCollection,
     package: &fixtures::Package,
     env: &Env,
@@ -141,7 +141,7 @@ fn inspect(root: &Path, store: &Store, collection: &FixtureCollection, only: &[S
         let listed = (|| {
             env = environment(id, package)?;
             let inputs = inputs.as_ref().map_err(Clone::clone)?;
-            declarations(collection, package, &env, &regions, store, inputs)
+            recipes(collection, package, &env, &regions, store, inputs)
         })();
         let (work, blocked) = match listed {
             Ok(listed) => (
@@ -216,8 +216,8 @@ pub(super) fn perform(
             let declaration = &declarations.packages[id];
             let env = environment(id, declaration)?;
             let inputs = package.inputs.as_ref().expect("reviewed inputs");
-            let steps = declarations(collection, declaration, &env, &regions, store, inputs)
-                .map_err(|e| Code::Blocked.error(e))?;
+            let steps =
+                recipes(collection, declaration, &env, &regions, store, inputs).map_err(|e| Code::Blocked.error(e))?;
             let work = plan::plan(store, root, &steps.steps)?;
             if !work.same_work(&plan::Plan { groups: package.plan.groups.clone() }) {
                 return Err(Code::PlanOutdated.error("fixture work changed before build"));
