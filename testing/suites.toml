@@ -820,10 +820,10 @@ triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
 [[suite]]
 id = "planner.tiles"
 route = "ordinary"
-command = "npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles"
+command = "npm test --prefix planner/tiles && npm run build --prefix planner/tiles"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-tiles/**"]
+triggers = ["planner/tiles/**"]
 
 [[suite]]
 id = "planner.query-decoder"
