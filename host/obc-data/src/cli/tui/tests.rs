@@ -637,7 +637,7 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
         "stale        osm                   120 d > 90 d",
         "old cache    /home/rider/obc-bake  12 files, 1.2 GB",
         "unreachable  maps                  a fetch that the step list needs failed",
-        "r region   R check R2   p plan   u undo environment   ? help",
+        "r region   R check R2   s schedule   p plan   u undo environment   ? help",
     ];
     assert_eq!(drawn, live, "{drawn:#?}");
     assert_eq!(app.key(KeyCode::Char('R')), Effect::Status { check: true }, "only `R` lists R2");
@@ -652,6 +652,78 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
     (app.row, app.source) = (5, 1);
     app.key(KeyCode::Enter);
     assert_eq!((app.screen, app.source), (Screen::Sources, 0), "the stale source");
+}
+
+#[test]
+fn version_review_retains_pending_intent_and_exposes_each_request_before_the_plan() {
+    let mut app = app();
+    app.screen = Screen::Sources;
+    assert_eq!(app.key(KeyCode::Char('v')), Effect::Versions("osm".into()));
+    let mut updated = app.clone();
+    updated.versions = Some(crate::cli::versions::Versions {
+        source: "osm".into(),
+        common: vec!["2024-01-09".into()],
+        newest: false,
+        requests: vec![crate::cli::versions::Request {
+            params: vec![("area".into(), "europe/east".into())],
+            live: Some("2024-01-02".into()),
+            stored: vec!["2024-01-09".into()],
+            upstream: None,
+            unavailable: Some("The west area upstream check failed".into()),
+        }],
+    });
+    app.complete(Effect::Versions("osm".into()), updated);
+    app.choice = 1;
+    assert_eq!(app.key(KeyCode::Enter), Effect::None);
+    assert!(app.moves.is_empty(), "newest cannot hide an unresolved request");
+    let text = screen(&mut app, 80, 24).join(" ");
+    assert!(
+        text.contains("ALL active requests") && text.contains("area=europe/east") && text.contains("west area"),
+        "{text}"
+    );
+    app.choice = 2;
+    assert_eq!(app.key(KeyCode::Enter), Effect::None);
+    assert_eq!(app.move_args(), ["osm@2024-01-09"]);
+    assert_eq!(app.key(KeyCode::Char('p')), Effect::Plan);
+    assert_eq!(app.move_args(), ["osm@2024-01-09"], "opening Plan retains intent");
+    app.plan = Some(PlanView::new(plan()));
+    app.key(KeyCode::Esc);
+    app.key(KeyCode::Char('p'));
+    assert_eq!(app.move_args(), ["osm@2024-01-09"], "reopening does not clear intent");
+}
+
+#[test]
+fn schedule_has_explicit_host_scope_confirmation_and_never_intercepts_form_text() {
+    let mut app = app();
+    assert_eq!(app.key(KeyCode::Char('s')), Effect::ScheduleRead);
+    app.schedule.state = Some(Err("live schedules need the configured Linux systemd host".into()));
+    let text = screen(&mut app, 80, 24).join(" ");
+    assert!(text.contains("environment: live") && text.contains("systemd host"), "{text}");
+    if !cfg!(target_os = "linux") {
+        assert!(text.contains("unsupported"), "{text}");
+        assert_eq!(app.key(KeyCode::Char('d')), Effect::None);
+    }
+    app.schedule.editing = true;
+    app.schedule.calendar = "daily".into();
+    app.schedule.zone = "UTC".into();
+    app.key(KeyCode::Char('q'));
+    assert_eq!(app.schedule.calendar, "dailyq", "typing never quits or invokes commands");
+    app.key(KeyCode::Backspace);
+    app.key(KeyCode::Tab);
+    app.key(KeyCode::Enter);
+    assert!(app.asking);
+    let text = screen(&mut app, 80, 24).join(" ");
+    assert!(text.contains("daily UTC") && text.contains("publish to Live") && text.contains("This machine:"), "{text}");
+    app.busy = true;
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::None);
+    app.busy = false;
+    assert_eq!(
+        app.key(KeyCode::Char('y')),
+        Effect::ScheduleChange(schedule::Change::Install { calendar: "daily".into(), zone: "UTC".into() })
+    );
+    app.key(KeyCode::Esc);
+    assert!(!app.asking && app.schedule.pending.is_none());
+    assert!(app.moves.is_empty() && app.plan.is_none(), "schedule has no manual plan side effects");
 }
 
 #[test]

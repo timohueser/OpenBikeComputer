@@ -56,6 +56,60 @@ impl View {
 }
 
 impl App {
+    pub(super) fn version_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![
+            Line::from("Move ALL active requests of this source. Nothing fetches until preparation."),
+            Line::from("Pending intent enters Plan; apply needs the exact reviewed plan."),
+        ];
+        let Some(versions) = &self.versions else { return lines };
+        let rows = std::iter::once(("Keep normal Live selection".to_string(), true))
+            .chain(std::iter::once(("Newest for each request".into(), versions.newest)))
+            .chain(versions.common.iter().map(|v| (format!("All requests @ {v}"), true)));
+        for (index, (label, available)) in rows.enumerate() {
+            let line = Line::from(format!("{} {label}", if available { " " } else { "blocked" }));
+            lines.push(if self.choice == index { line.reversed() } else { line });
+        }
+        if versions.requests.is_empty() {
+            lines.push(Line::from("No active requests. Held provenance cannot be moved."));
+        }
+        if let Some(version) = self.moves.get(&versions.source) {
+            lines.push(Line::from(format!(
+                "Pending ALL-request move: {}",
+                version.as_deref().unwrap_or("newest per request")
+            )));
+        }
+        lines.extend(versions.lines().into_iter().skip(2).map(Line::from));
+        lines
+    }
+
+    pub(super) fn version_choose(&mut self) -> Effect {
+        if self.busy {
+            return Effect::None;
+        }
+        let Some(versions) = &self.versions else { return Effect::None };
+        let source = versions.source.clone();
+        if self.choice == 0 {
+            self.moves.remove(&source);
+        } else {
+            let version = if self.choice == 1 { None } else { versions.common.get(self.choice - 2).cloned() };
+            if let Err(error) = versions.check(version.as_deref()) {
+                self.notice = Some(error);
+                return Effect::None;
+            }
+            self.moves.insert(source, version);
+        }
+        self.plan = None;
+        self.overlay = None;
+        Effect::None
+    }
+
+    pub(super) fn move_args(&self) -> Vec<String> {
+        self.moves
+            .iter()
+            .map(|(source, version)| version.as_ref().map_or(source.clone(), |v| format!("{source}@{v}")))
+            .collect()
+    }
+
     pub(super) fn source_visible(&self) -> bool {
         self.source_view.rows(&self.sources).iter().any(|(index, _)| *index == self.source)
     }
@@ -146,6 +200,12 @@ impl App {
                 )),
             ];
             lines.extend(super::expansion(row));
+            if let Some(version) = self.moves.get(&row.source.id) {
+                lines.push(Line::from(format!(
+                    "Pending ALL-request move: {} · p review plan",
+                    version.as_deref().unwrap_or("newest per request")
+                )));
+            }
             if let Some(credential) = &row.source.credential {
                 lines.push(Line::from(format!("New fetch needs: {}", credential.describe())));
             }
