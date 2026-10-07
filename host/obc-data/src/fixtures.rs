@@ -57,12 +57,9 @@ pub struct Plan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackagePlan {
-    pub region: String,
     pub bootstrap: LayerFile,
-    pub sources: BTreeMap<String, String>,
     pub inputs: Option<Inputs>,
-    pub work: Option<crate::engine::plan::Plan>,
-    pub blocked: Vec<String>,
+    pub plan: crate::cli::EnvPlan,
 }
 
 impl Plan {
@@ -76,10 +73,10 @@ impl Plan {
             return Err("fixture apply has no isolated destination".into());
         }
         for (id, package) in &self.packages {
-            if !crate::is_kebab(id) || !crate::is_kebab(&package.region) {
+            if !crate::is_kebab(id) || package.plan.env != format!("fixtures-{id}") {
                 return Err("fixture apply has an invalid package or region".into());
             }
-            if !package.blocked.is_empty() || package.inputs.is_none() || package.work.is_none() {
+            if !package.plan.blocked.is_empty() || package.plan.needs_prepare || package.inputs.is_none() {
                 return Err(format!("fixture {id} requires preparation and a complete review"));
             }
             digest(&package.bootstrap.sha256)?;
