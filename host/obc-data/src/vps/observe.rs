@@ -30,6 +30,7 @@ pub struct ServiceStatus {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
+    document: serde_json::Value,
     installed: Vec<Installed>,
     candidates: Vec<Candidate>,
 }
@@ -85,7 +86,15 @@ fn request(product: &LiveProduct, remote: &Remote) -> Result<Request, String> {
         })
         .collect::<Result<Vec<_>, String>>()?;
     super::commit::stages(&candidates, &installed)?;
-    Ok(Request { installed, candidates })
+    let files = data["files"]
+        .as_object()
+        .ok_or("missing published service files")?
+        .iter()
+        .filter(|(name, _)| ["routing/", "search/", "offline/"].iter().any(|prefix| name.starts_with(prefix)))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    let document = serde_json::json!({"region":data["region"], "files":files});
+    Ok(Request { document, installed, candidates })
 }
 
 pub fn read(product: Option<&LiveProduct>, remote: &Remote) -> Observation {

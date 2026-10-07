@@ -195,6 +195,12 @@ def configuration(value, directory, release, objects_url, site_origin, api_origi
     return command, environment
 
 
+
+def same_data(actual, desired, service):
+    prefix = {"routing": "routing/", "search": "search/", "downloads": "offline/"}[service]
+    selected = lambda body: {name: item for name, item in body["files"].items() if name.startswith(prefix)}
+    return actual["region"] == desired["region"] and selected(actual) == selected(desired)
+
 def stage(request, base=BASE, units=UNITS, execute=run):
     value = installed(request["installed"])
     candidate = request["candidate"]
@@ -234,9 +240,7 @@ def stage(request, base=BASE, units=UNITS, execute=run):
     stored = {"installed": value, "release": {"size": (directory / "release.json").stat().st_size, "sha256": runtime.digest(directory / "release.json")},
               "runtime": {"size": (directory / "runtime.json").stat().st_size, "sha256": runtime.digest(directory / "runtime.json")}}
     actual, actual_runtime = documents(directory, stored)
-    prefix = {"routing": "routing/", "search": "search/", "downloads": "offline/"}[value["service"]]
-    selected = lambda body: {name: item for name, item in body["files"].items() if name.startswith(prefix)}
-    if actual_runtime != descriptor or actual["region"] != release["region"] or selected(actual) != selected(release):
+    if actual_runtime != descriptor or not same_data(actual, release, value["service"]):
         raise ValueError("Installed service identity has different runtime or data")
     command, environment = configuration(value, directory, release, request["objects_url"], request["site_origin"], request["api_origin"])
     environment.update(OBC_PLANNER_RELEASE_SHA=stored["release"]["sha256"], OBC_PLANNER_RUNTIME_SHA=stored["runtime"]["sha256"])
@@ -335,8 +339,10 @@ def observe(request, base=BASE, execute=run, read=None, proc=Path("/proc")):
                 raise ValueError("Published slot is not installed with its binding")
             candidate = next(item for item in request["candidates"] if item["service"] == service)
             directory = destination(value, base)
-            for name, item in [("release.json", candidate["release"]), ("runtime.json", candidate["runtime"])]:
-                checked(directory, {**item, "path": name})
+            checked(directory, {**candidate["runtime"], "path": "runtime.json"})
+            retained = json.loads((directory / "release.json").read_bytes())
+            if not same_data(retained, request["document"], service):
+                raise ValueError("Installed selected data differs from publication")
             actual = probe({"installed": value, "candidate": candidate}, base, execute, read, proc, wait=False)
             if actual != candidate["expected"]:
                 raise ValueError("Opened service data differs from publication")

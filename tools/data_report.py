@@ -14,6 +14,15 @@ def output(argv):
     return subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, check=True).stdout
 
 
+
+def read_status():
+    result = subprocess.run(['./tools/obc', 'data', 'status', '--check', '--json'],
+                            cwd=ROOT, capture_output=True, text=True, check=False)
+    document = json.loads(result.stdout)
+    if result.returncode not in (0, 1) or not isinstance(document, dict) or not {'products', 'attention', 'check'} <= document.keys():
+        raise ValueError('Status did not return its documented structured result')
+    return document
+
 def summarize(status):
     """A clear report requires complete structured evidence, not a successful exit alone."""
     rows, clear = [], True
@@ -80,8 +89,8 @@ def main():
     parser.add_argument('--update', action='store_true', help='Update the single GitHub report issue')
     args = parser.parse_args()
     try:
-        raw = args.status.read_text() if args.status else output(['./tools/obc', 'data', 'status', '--check', '--json'])
-        clear, body = summarize(json.loads(raw))
+        status = json.loads(args.status.read_text()) if args.status else read_status()
+        clear, body = summarize(status)
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         # Do not copy stderr from a credential-bearing transport into a public issue.
         clear, body = False, MARKER + '\n\nRead-only check unavailable. Repair the status command or observer setup; no clear result is recorded.\n'

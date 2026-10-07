@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -17,10 +18,16 @@ result = subprocess.run(['systemctl', 'show', f"obc-planner-downloads-{unit['slo
 code = Path(result.stdout.strip())
 if code != expected / 'code' or code.resolve() != code:
     raise ValueError('No owned installed downloads helper; apply the reviewed runtime first')
-for name, item in [('release.json', candidate['release']), ('runtime.json', candidate['runtime'])]:
+result = subprocess.run(['systemctl', 'show', f"obc-planner-downloads-{unit['slot']}.service",
+                         '--property=Environment', '--value'], capture_output=True, text=True, check=True)
+environment = dict(item.split('=', 1) for item in shlex.split(result.stdout) if '=' in item)
+if environment.get('OBC_PLANNER_SERVICE_ID') != unit['id'] or environment.get('OBC_PLANNER_BINDING') != unit['binding']:
+    raise ValueError('Installed helper unit differs from publication')
+for name, digest, size in [('release.json', environment.get('OBC_PLANNER_RELEASE_SHA'), None),
+                           ('runtime.json', candidate['runtime']['sha256'], candidate['runtime']['size'])]:
     path = expected / name
-    if path.stat().st_size != item['size'] or hashlib.file_digest(path.open('rb'), 'sha256').hexdigest() != item['sha256']:
-        raise ValueError('Installed helper metadata differs from publication')
+    if size is not None and path.stat().st_size != size or hashlib.file_digest(path.open('rb'), 'sha256').hexdigest() != digest:
+        raise ValueError('Installed helper metadata differs from its binding')
 descriptor = json.loads((expected / 'runtime.json').read_bytes())
 archive = expected / 'runtime.tar.gz'
 if archive.stat().st_size != descriptor['payload']['bytes'] or hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() != descriptor['payload']['sha256']:

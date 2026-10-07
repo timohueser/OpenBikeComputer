@@ -102,7 +102,10 @@ class PlannerInstall(unittest.TestCase):
 
     def test_read_only_observation_checks_opened_data_once_and_never_mutates_services(self):
         self.stage()
-        request = {"installed": [self.value], "candidates": [self.candidate]}
+        request = {"installed": [self.value], "candidates": [self.candidate],
+                   "document": {**self.document, "files": {**self.document["files"],
+                                "routing/unrelated.bin": {"sha256": "c" * 64}}}}
+        self.assertNotEqual(runtime.encoded(request["document"]), runtime.encoded(self.document))
         self.commands.clear()
         with patch.object(install, "host", return_value=HOST):
             observed = install.observe(request, self.base, self.execute,
@@ -116,6 +119,16 @@ class PlannerInstall(unittest.TestCase):
             self.assertFalse(failed["services"][0]["ready"])
             self.assertEqual(failed["services"][0]["reason"], "offline")
             self.assertEqual(len(calls), 1)
+            request["document"]["files"]["offline/catalog.json"] = {"sha256": "f" * 64}
+            mismatch = install.observe(request, self.base, self.execute, unavailable, self.proc)
+            self.assertIn("selected data differs", mismatch["services"][0]["reason"])
+            self.assertEqual(len(calls), 1, "changed selection refuses before HTTP")
+            request["document"] = self.document
+            (install.destination(self.value, self.base) / "release.json").write_bytes(b"tampered")
+            tampered = install.observe(request, self.base, self.execute, unavailable, self.proc)
+            self.assertFalse(tampered["services"][0]["ready"])
+            self.assertEqual(len(calls), 1)
+
         self.assertTrue(all(command[:2] == ["systemctl", "show"] for command in self.commands))
 
     def test_reuse_checks_desired_object_pool_and_origin_against_the_running_process(self):
