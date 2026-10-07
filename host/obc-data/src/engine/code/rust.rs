@@ -104,7 +104,7 @@ impl Metadata {
 
     pub fn load_with(root: &Path, target: &str, mut command: Command) -> Result<Self, String> {
         let output = crate::worker::compiler_command(&mut command)
-            .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", &target])
+            .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", target])
             .current_dir(root)
             .env("RUSTUP_AUTO_INSTALL", "0")
             .output()
