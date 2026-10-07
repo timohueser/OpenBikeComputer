@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 
-use geos::{CoordSeq, Geom as _, Geometry, GeometryTypes};
+use geos::{Geom as _, Geometry, GeometryTypes};
 use obc_map_scene::M_PER_DEG;
+use obc_pbf::area::{read_coords, ring_to_coordseq};
 use rayon::prelude::*;
 
 use crate::serialize::{Feature, Kind};
@@ -353,11 +354,6 @@ pub fn packed_size_budget(g: &Geom) -> usize {
     12 + pts * 4 + hole_overhead
 }
 
-pub(crate) fn ring_to_coordseq(coords: &[(f64, f64)]) -> CoordSeq {
-    let buf: Vec<[f64; 2]> = coords.iter().map(|&(x, y)| [x, y]).collect();
-    CoordSeq::new_from_vec(&buf).expect("coordseq")
-}
-
 fn to_geos(g: &Geom) -> Geometry {
     match g {
         Geom::Line(c) => Geometry::create_line_string(ring_to_coordseq(c)).expect("linestring"),
@@ -372,18 +368,6 @@ fn to_geos(g: &Geom) -> Geometry {
         // Only simple geoms are ever clipped (clip happens before flatten).
         _ => unreachable!("to_geos on non-simple geom"),
     }
-}
-
-/// Read a LineString or LinearRing's coordinate sequence into owned `(x, y)` pairs. Works on the
-/// borrowed `ConstGeometry` that ring accessors return.
-fn read_coords<G: geos::Geom>(g: &G) -> Vec<(f64, f64)> {
-    let cs = g.get_coord_seq().expect("coord seq");
-    let n = cs.size().expect("size");
-    let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        out.push((cs.get_x(i).expect("x"), cs.get_y(i).expect("y")));
-    }
-    out
 }
 
 pub(crate) fn from_geos<G: Geom_>(g: &G) -> Geom {
@@ -431,29 +415,6 @@ pub fn topology_preserve_simplify(geom: &Geom, tol: f64) -> Geom {
     }
 }
 
-/// Whether a ring assembles into a valid polygon. Matches osmium's assembler: a self-intersecting
-/// ring, a degenerate ring, or any construction error is rejected.
-pub fn polygon_is_valid(exterior: &[(f64, f64)], interiors: &[Vec<(f64, f64)>]) -> bool {
-    // A linear ring needs ≥4 positions (≥3 distinct + closing); fewer make GEOS error.
-    if exterior.len() < 4 {
-        return false;
-    }
-    let Ok(ext) = Geometry::create_linear_ring(ring_to_coordseq(exterior)) else {
-        return false;
-    };
-    let mut holes = Vec::with_capacity(interiors.len());
-    for r in interiors {
-        let Ok(ring) = Geometry::create_linear_ring(ring_to_coordseq(r)) else {
-            return false;
-        };
-        holes.push(ring);
-    }
-    match Geometry::create_polygon(ext, holes) {
-        Ok(p) => p.is_valid().unwrap_or(false),
-        Err(_) => false,
-    }
-}
-
 /// Collect every [`Geom::Polygon`] out of a possibly nested geometry, dropping anything else.
 pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
     match g {
@@ -467,51 +428,12 @@ pub(crate) fn collect_polygons(g: Geom, out: &mut Vec<Geom>) {
     }
 }
 
-/// Assemble a multipolygon or boundary relation's member ways into polygons-with-holes.
-///
-/// `members` is each member way's resolved coordinate list. GEOS `build_area`, fed them as a
-/// `MultiLineString`, stitches fragments sharing endpoint nodes into closed rings and applies the
-/// even-odd nesting rule, so member roles are not trusted. Each result is gated on
-/// [`polygon_is_valid`]; un-assemblable or invalid geometry returns empty, as osmium also drops
-/// broken relations.
-///
-/// Two-tier: `build_area` on the raw linework, then a retry after noding — splitting members that
-/// cross or self-touch mid-segment — so only messy relations pay the extra cost.
+/// Convert assembled source rings to render geometry.
 pub fn assemble_multipolygon(members: &[Vec<(f64, f64)>]) -> Vec<Geom> {
-    let polys = build_area_from_members(members, false);
-    if !polys.is_empty() {
-        return polys;
-    }
-    build_area_from_members(members, true)
-}
-
-/// Build polygons from member-way linework via GEOS `build_area`. `node_first`
-/// planar-nodes the linework first (repair path for crossing/self-touching members).
-fn build_area_from_members(members: &[Vec<(f64, f64)>], node_first: bool) -> Vec<Geom> {
-    let lines: Vec<Geometry> = members
-        .iter()
-        .filter(|m| m.len() >= 2)
-        .filter_map(|m| Geometry::create_line_string(ring_to_coordseq(m)).ok())
-        .collect();
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    let Ok(mls) = Geometry::create_multiline_string(lines) else {
-        return Vec::new();
-    };
-    let noded = if node_first { mls.node() } else { Ok(mls) };
-    let assembled = noded.and_then(|g| g.build_area());
-    let Ok(area) = assembled else {
-        return Vec::new();
-    };
-    let mut polys = Vec::new();
-    collect_polygons(from_geos(&area), &mut polys);
-    // Keep only rings osmium would accept (same guard as the closed-way path).
-    polys.retain(|g| match g {
-        Geom::Polygon { exterior, interiors } => polygon_is_valid(exterior, interiors),
-        _ => false,
-    });
-    polys
+    obc_pbf::area::assemble_multipolygon(members)
+        .into_iter()
+        .map(|p| Geom::Polygon { exterior: p.exterior, interiors: p.interiors })
+        .collect()
 }
 
 /// A clip box as a GEOS polygon, ccw and closed. Shared by [`clip_to_box`] and [`crate::land`], so
@@ -1079,6 +1001,7 @@ pub fn clip_to_box(geom: &Geom, bbox: (i64, i64, i64, i64)) -> Geom {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use obc_pbf::area::polygon_is_valid;
 
     fn ring(pts: &[(f64, f64)]) -> Vec<(f64, f64)> {
         pts.to_vec()

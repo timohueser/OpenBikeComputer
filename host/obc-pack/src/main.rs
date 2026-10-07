@@ -18,11 +18,11 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use obc_map_core::progress::{PackError, Progress};
 use obc_pack::config::Config;
 use obc_pack::cut::CutOptions;
-use obc_pack::ingest::{self, Bbox};
 use obc_pack::pipeline::{pack, PackOptions};
-use obc_pack::progress::{PackError, Progress};
+use obc_pbf::bbox::{box_area_km2, declared_bbox, Bbox};
 
 struct Args {
     pbfs: Vec<String>,
@@ -93,7 +93,7 @@ fn check_region(args: &Args) -> Result<(), String> {
     let mut region = args.opts.bbox.map(Bbox::to_degrees);
     if region.is_none() {
         for pbf in &args.pbfs {
-            let Some((w2, s2, e2, n2)) = ingest::declared_bbox(pbf)? else { continue };
+            let Some((w2, s2, e2, n2)) = declared_bbox(pbf)? else { continue };
             region = Some(match region {
                 Some((w, s, e, n)) => (w.min(w2), s.min(s2), e.max(e2), n.max(n2)),
                 None => (w2, s2, e2, n2),
@@ -104,7 +104,7 @@ fn check_region(args: &Args) -> Result<(), String> {
         eprintln!("obc-pack: no source declares a bounding box, so the region size was not measured");
         return Ok(());
     };
-    let area = ingest::box_area_km2(region);
+    let area = box_area_km2(region);
     if area > REGION_LIMIT_KM2 {
         let (w, s, e, n) = region;
         return Err(format!(

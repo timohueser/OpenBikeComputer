@@ -40,8 +40,8 @@ use obc_map_scene::M_PER_DEG;
 use crate::config::{Config, ContourClass};
 use crate::geom::{topology_preserve_simplify, Geom};
 use crate::ingest::{IngestFeature, Ingested};
-use crate::progress::{Phase, Progress};
 use crate::terrain::TerrainSet;
+use obc_map_core::progress::{Phase, Progress};
 
 /// Upper bound on the samples one strip holds resident. 4 M samples is 8 MB of `i16` — small next to
 /// the ingested extract sitting beside it, and large enough that any single region cell, and the

@@ -14,7 +14,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use crate::progress::Progress;
+use obc_map_core::progress::Progress;
 
 /// Small documents, such as a region index or a catalog manifest, are read whole: each is parsed as
 /// one document and a partial one is worthless.
@@ -126,7 +126,7 @@ mod tests {
         let archive = dir.join("dataset.zip");
         std::fs::write(&archive, sample_zip(&[("a.txt", b"a"), ("b.txt", b"b")])).expect("write archive");
 
-        let cancel = crate::progress::CancelToken::new();
+        let cancel = obc_map_core::progress::CancelToken::new();
         cancel.cancel();
         let progress = Progress::new(cancel, |_, _| {});
         let out = dir.join("out");

@@ -8,6 +8,7 @@ use obc_formats::obcm::{
     STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, STYLE_TICKED_BIT, VERSION as OBCM_VERSION,
 };
 use std::convert::Infallible;
+use std::io::{self, Seek, SeekFrom, Write};
 
 /// The `Offset Scale` every `.obcm` this packer writes carries: `U = 16`, a 64 GiB addressable
 /// interior. A constant rather than a knob, which pins the byte for determinism.
@@ -394,4 +395,124 @@ pub fn check_scale_covers(total: u64) {
         "a {total}-byte map does not fit the {}-byte-unit interior this packer writes (§1.1)",
         SCALE.unit()
     );
+}
+
+/// One encoded drawing level. Counts describe the index and chunk buffers.
+pub struct LodBytes<'a> {
+    pub index: &'a [u8],
+    pub nodes: u32,
+    pub chunks: &'a [u8],
+    pub chunk_count: u32,
+}
+
+/// Streaming file framing. Producers encode one level at a time and supply the section bytes.
+pub struct MapWriter<W> {
+    output: W,
+    cursor: u64,
+    styles: Vec<u8>,
+    table: Vec<u8>,
+    table_offset: usize,
+    levels: usize,
+}
+
+impl<W: Write + Seek> MapWriter<W> {
+    pub fn new(
+        output: W,
+        levels: usize,
+        styles: &[Style],
+        marker: u16,
+        bounds: (i64, i64, i64, i64),
+    ) -> io::Result<Self> {
+        let styles = pack_style_dict(styles);
+        let (table_offset, payload_start) = prefix_offsets(styles.len(), levels);
+        let mut writer =
+            Self { output, cursor: 0, styles, table: Vec::with_capacity(levels * LOD_ENTRY_LEN), table_offset, levels };
+        let header = header_bytes(levels, marker, bounds, table_offset, STYLE_OFFSET, STYLE_OFFSET, STYLE_OFFSET);
+        // Keep the borrowed style bytes outside the mutable writer walk.
+        let styles = std::mem::take(&mut writer.styles);
+        writer.emit(|w| {
+            w.put(&header)?;
+            let at = w.begin_section()?;
+            debug_assert_eq!(at, STYLE_OFFSET as u64);
+            w.put(&styles)?;
+            let at = w.begin_section()?;
+            debug_assert_eq!(at, table_offset as u64);
+            w.put(&vec![0; levels * LOD_ENTRY_LEN])?;
+            let at = w.begin_section()?;
+            debug_assert_eq!(at, payload_start as u64);
+            Ok(())
+        })?;
+        writer.styles = styles;
+        Ok(writer)
+    }
+
+    fn emit(&mut self, bytes: impl FnOnce(&mut UnitWriter<'_, io::Error>) -> io::Result<()>) -> io::Result<()> {
+        let mut sink = |bytes: &[u8]| self.output.write_all(bytes);
+        let mut w = UnitWriter::new(SCALE, self.cursor, &mut sink);
+        bytes(&mut w)?;
+        self.cursor = w.at();
+        Ok(())
+    }
+
+    pub fn position(&self) -> usize {
+        self.cursor as usize
+    }
+
+    pub fn lod(&mut self, chunk_size: usize, max_mpp: Option<f64>, bytes: Option<LodBytes<'_>>) -> io::Result<()> {
+        assert!(self.table.len() < self.levels * LOD_ENTRY_LEN, "all declared levels are already written");
+        let (nodes, chunks) = bytes.as_ref().map_or((0, 0), |b| (b.nodes, b.chunk_count));
+        push_lod_entry(&mut self.table, max_mpp, scaled(self.cursor as usize), nodes, chunk_size, chunks);
+        self.emit(|w| match bytes {
+            Some(bytes) => {
+                w.put(bytes.index)?;
+                w.put(bytes.chunks)
+            }
+            None => {
+                w.put(&0u32.to_le_bytes())?;
+                w.begin_section()?;
+                Ok(())
+            }
+        })
+    }
+
+    pub fn finish(mut self, poi: &[u8], nav: &[u8], landmarks: &[u8], peaks: &[u8]) -> io::Result<u64> {
+        assert_eq!(self.table.len(), self.levels * LOD_ENTRY_LEN, "every declared level must be written");
+        let poi_offset = self.position();
+        let nav_offset = poi_offset + poi.len();
+        let mut landmark = (0, 0);
+        let mut peak = (0, 0);
+        let mut dark_style = 0;
+        let styles = std::mem::take(&mut self.styles);
+        self.emit(|w| {
+            w.put(poi)?;
+            w.put(nav)?;
+            for (bytes, section) in [(landmarks, &mut landmark), (peaks, &mut peak)] {
+                if !bytes.is_empty() {
+                    let start = w.begin_section()? as usize;
+                    w.put(bytes)?;
+                    *section = (start, w.begin_section()? as usize - start);
+                }
+            }
+            dark_style = w.begin_section()? as usize;
+            w.put(&styles)
+        })?;
+        check_scale_covers(self.cursor);
+        self.output.seek(SeekFrom::Start(self.table_offset as u64))?;
+        self.output.write_all(&self.table)?;
+        self.output.seek(SeekFrom::Start(32))?;
+        self.output.write_all(&scaled(poi_offset).to_le_bytes())?;
+        self.output.write_all(&scaled(nav_offset).to_le_bytes())?;
+        for (offset, (start, length)) in [
+            (obc_formats::obcm::HEADER_LANDMARK_OFFSET_OFF, landmark),
+            (obc_formats::obcm::HEADER_PEAK_OFFSET_OFF, peak),
+        ] {
+            self.output.seek(SeekFrom::Start(offset as u64))?;
+            self.output.write_all(&scaled(start).to_le_bytes())?;
+            self.output.write_all(&scaled(length).to_le_bytes())?;
+        }
+        self.output.seek(SeekFrom::Start(obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF as u64))?;
+        self.output.write_all(&scaled(dark_style).to_le_bytes())?;
+        self.output.seek(SeekFrom::Start(self.cursor))?;
+        Ok(self.cursor)
+    }
 }

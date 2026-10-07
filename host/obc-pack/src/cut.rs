@@ -38,14 +38,16 @@ use crate::config::{Config, ContourClass};
 use crate::grid::{
     cells_intersecting, on_grid_boundary, segment_crossing, Axis, Band, BandTable, CellId, UBox, GRID_ORIGIN,
 };
-use crate::ingest::{Bbox, Ingested};
-use crate::nav::{self, CutRun, JunctionKey, NavGraph, RoutableWay};
-use crate::poi::Poi;
-use crate::progress::{PackError, Phase, Progress};
+use crate::ingest::Ingested;
+use crate::nav::{self, CutRun, JunctionKey, NavGraph};
 use crate::semantic::build_semantic_levels;
 use crate::serialize::{serialize_lods_streaming, validate_chunk_size, Node};
 use crate::terrain::TerrainSet;
 use obc_elevation::{ElevationSource, NullElevation};
+use obc_map_core::progress::{PackError, Phase, Progress};
+use obc_pbf::bbox::Bbox;
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 
 mod memo;
 use memo::{merge_key, prepare_lod, LodSet, PreparedSemantic};
@@ -375,7 +377,7 @@ pub fn cut_ingested(
                     Some(s) => s,
                     None => &mut null,
                 };
-                crate::poi::fill_summit_elevations(&mut pois, terrain);
+                obc_places::metadata::fill_summit_elevations(&mut pois, terrain);
                 let square = cell.square();
                 let cell_landmarks: Vec<_> = landmarks
                     .iter()

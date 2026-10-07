@@ -6,6 +6,8 @@ publish = false  # internal host tool — not published to crates.io
 description = "The bakery: bake the curated region list into a catalog tree and publish it"
 
 [dependencies]
+obc-pbf = { workspace = true }
+obc-map-core = { workspace = true }
 obc-osm = { workspace = true }
 # The packer, linked rather than spawned: `pipeline::pack` is the one code path
 # both hosts already share (#906), and it hands back the byte count and a cancel
@@ -53,5 +55,6 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = { workspace = true, default-features = true }
 
 [dev-dependencies]
+obc-places = { workspace = true }
 # The shared scratch-path helper the CLI tests build their throwaway paths with.
 obcm-testkit = { workspace = true }

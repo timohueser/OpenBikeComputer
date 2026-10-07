@@ -58,6 +58,8 @@ serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
+obc-places = { workspace = true }
+obc-map-core = { workspace = true }
 # The shared scratch-path helper the CLI/oracle tests build their throwaway trees with.
 # The tree's one hand-written OBCM byte builder, and deliberately independent of every production
 # serializer — which is what makes it an oracle. The §8 nav fixtures here are built with it rather

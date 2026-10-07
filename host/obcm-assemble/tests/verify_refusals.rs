@@ -18,15 +18,16 @@
 
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
+use obc_map_core::progress::Progress;
 use obc_pack::config::default_profiles;
 use obc_pack::config::LineStyle as PackLineStyle;
 use obc_pack::geom::Geom;
+use obc_pack::nav::build_graph_with;
 use obc_pack::nav::DEFAULT_MIN_COMPONENT_EDGES;
-use obc_pack::nav::{build_graph_with, RoutableWay};
-use obc_pack::progress::Progress;
 use obc_pack::quadtree::build_lod_with;
 use obc_pack::serialize::Style;
 use obc_pack::{serialize_lods, LodLayer};
+use obc_places::routing::RoutableWay;
 use obc_reader::{MapCache, MapTables, NavDirectory, Reader};
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::verify::verify_map;

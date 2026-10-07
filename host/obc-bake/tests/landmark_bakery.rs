@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use obc_bake::landmarks::{LandmarkBakeOptions, LandmarkBakery, LandmarkCapture, LandmarkStatus};
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
-use obc_pack::progress::Progress;
+use obc_map_core::progress::Progress;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = obcm_testkit::scratch::scratch_dir("obc-bake-landmarks", name);

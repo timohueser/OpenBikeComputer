@@ -13,17 +13,18 @@ use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::geom::{footprint_below, strip_small_holes, topology_preserve_simplify, Geom};
-use crate::ingest::{ingest_osm, Bbox, IngestFeature, Ingested};
+use crate::ingest::{ingest_osm, IngestFeature, Ingested};
 use crate::land;
 use crate::merge::{
     merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with, MergeStats,
 };
-use crate::progress::{PackError, Phase, Progress};
 use crate::quadtree::build_lod_with;
 use crate::semantic::{build_semantic_levels, SemanticClass};
 use crate::serialize::serialize_lods_streaming;
 use crate::terrain::TerrainSet;
 use obc_elevation::{ElevationSource, NullElevation};
+use obc_map_core::progress::{PackError, Phase, Progress};
+use obc_pbf::bbox::Bbox;
 
 // Meters → degrees divisor for simplify tolerance; shared so the packer's scale
 // matches the Earth model everything else uses.
@@ -115,10 +116,10 @@ fn run(
         return Err("no features found matching config".into());
     }
     if opts.dump_pois {
-        crate::poi::dump(&ingested.pois);
+        obc_places::metadata::dump(&ingested.pois);
     }
     if opts.dump_hours {
-        crate::poi::dump_hours(&ingested.pois);
+        obc_places::metadata::dump_hours(&ingested.pois);
     }
     progress.check()?;
 
@@ -187,7 +188,7 @@ fn run(
         Some(s) => s,
         None => &mut null,
     };
-    crate::poi::fill_summit_elevations(&mut ingested.pois, terrain);
+    obc_places::metadata::fill_summit_elevations(&mut ingested.pois, terrain);
     let file = std::fs::File::create(output).map_err(|e| format!("create {out_name}: {e}"))?;
     let mut w = std::io::BufWriter::new(file);
     // The per-LOD closure runs inside the serializer, which has no error channel for a caller's

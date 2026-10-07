@@ -4,8 +4,8 @@
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{PoiMetadata, SourceId};
 use obc_map_scene::BBox;
-use obc_pack::poi::{classify, Poi};
 use obc_pack::{serialize_lods, LodLayer, Node};
+use obc_places::metadata::{classify, Poi};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource};
 
 /// A one-degree box (min_lon, min_lat, max_lon, max_lat) in microdegrees; every record sits well

@@ -11,10 +11,10 @@ use crate::geom::{clip_to_box, footprint_below, strip_small_holes, topology_pres
 use crate::grid::{cells_intersecting, CellId, UBox};
 use crate::ingest::{IngestFeature, Ingested};
 use crate::merge::{merge_classes, merge_fills_with, merge_line_classes, merge_line_trails_with, merge_lines_with};
-use crate::progress::Progress;
 use crate::quadtree::build_lod_with;
 use crate::semantic::{SemanticClass, SemanticScheme};
 use crate::serialize::Node;
+use obc_map_core::progress::Progress;
 
 type LodFeatures<'a> = Arc<Vec<(u8, Cow<'a, Geom>)>>;
 type MergeKey = (usize, bool, bool);
@@ -392,7 +392,7 @@ mod tests {
         .unwrap();
         let merges = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = Arc::clone(&merges);
-        let progress = Progress::new(crate::progress::CancelToken::new(), move |_, line| {
+        let progress = Progress::new(obc_map_core::progress::CancelToken::new(), move |_, line| {
             if line.contains("line fragment(s)") {
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }

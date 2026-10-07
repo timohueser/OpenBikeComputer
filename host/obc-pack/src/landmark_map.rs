@@ -2,11 +2,10 @@
 
 use crate::{
     grid::CellId,
-    hours::Schedule,
     landmarks::{Content, Photo},
-    poi::LandmarkLink,
 };
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
+use obc_places::{hours::Schedule, metadata::LandmarkLink};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -270,7 +269,7 @@ pub fn artifacts(
         }
     }
     let artifact = |landmarks: Vec<Landmark>| {
-        let (pool, refs) = crate::hours::build_hours_pool(&landmarks, |landmark| landmark.hours.as_ref());
+        let (pool, refs) = obc_places::hours::build_hours_pool(&landmarks, |landmark| landmark.hours.as_ref());
         if pool.len() >= POI_HOURS_REF_NONE as usize {
             return Err("landmark hours pool budget".to_string());
         }

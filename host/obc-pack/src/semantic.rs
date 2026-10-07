@@ -11,6 +11,7 @@
 //! cells have identical seams. The emitted geometry is ordinary OBCM polygons; the device has no
 //! semantic-grid code.
 
+use obc_pbf::area::ring_to_coordseq;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::ops::{Index, IndexMut};
 
@@ -21,11 +22,10 @@ use crate::config::Lod;
 #[cfg(any(debug_assertions, test))]
 use crate::geom::coverage_is_valid;
 use crate::geom::{
-    collect_polygons, coverage_simplify_vw, from_geos, ring_to_coordseq, topology_preserve_simplify,
-    try_polygon_to_geos, Geom,
+    collect_polygons, coverage_simplify_vw, from_geos, topology_preserve_simplify, try_polygon_to_geos, Geom,
 };
 use crate::ingest::IngestFeature;
-use crate::progress::Progress;
+use obc_map_core::progress::Progress;
 
 const CLASSES: usize = 7;
 const SOURCE_SCALE: usize = 4;
@@ -176,7 +176,7 @@ pub fn build_semantic_levels(
         let lod = &lods[index];
         let nominal_mpp = lod.simplify_m;
         progress.stage(
-            crate::progress::Phase::Quadtree,
+            obc_map_core::progress::Phase::Quadtree,
             format!(
                 "Building semantic coverage LOD {index} ({nominal_mpp} m/px grid, shown through {} m/px)...",
                 lod.max_mpp.expect("finite semantic rung")

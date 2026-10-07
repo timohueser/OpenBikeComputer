@@ -6,32 +6,32 @@
 //! LOD-table and header bytes. The POI and nav-graph sections reuse the geometry tree's BFS flatten
 //! and `u32` node encoding.
 
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Seek, Write};
 
 use obc_formats::obcm::{
     BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
 };
 
 use obc_formats::obcm::{
-    nav_edge_id, settlement_class_of, UnitWriter, FILLER, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN,
-    NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN,
-    NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CAT_ENTRY_LEN,
-    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID,
-    SUMMIT_CATEGORY_ID, SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID,
+    nav_edge_id, settlement_class_of, FILLER, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS,
+    NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE, NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN,
+    NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE,
+    POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID, SUMMIT_CATEGORY_ID,
+    SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID,
 };
 
 use obc_map_core::serialize::{
     align_up, check_scale_covers, emit_nav_section, header_bytes, lay_out, pack_profile_table, prefix_offsets,
-    push_lod_entry, scaled, NavBody, STYLE_OFFSET,
+    push_lod_entry, scaled, LodBytes, MapWriter, NavBody, STYLE_OFFSET,
 };
 pub use obc_map_core::serialize::{
     pack_style_dict, validate_chunk_size, NavProfile, Style, MAX_SAFE_CHUNK_SIZE, MIN_CHUNK_SIZE, SCALE,
 };
 
 use crate::nav::{polyline_len_m, NavGraph};
-use crate::poi::{table_row, Poi};
 use obc_elevation::ElevationSource;
 use obc_map_scene::ground_dist_m;
+use obc_places::metadata::{table_row, Poi};
 
 /// Max delta (microdegrees) before a segment is densified to keep deltas in 16-bit range.
 /// Crate-visible so `geom::packed_size_budget` can count the midpoints `densify` will insert.
@@ -42,10 +42,6 @@ pub(crate) const MAX_SEGMENT: i64 = 30_000;
 /// It is the symmetric positive `i16` limit, because anchor selection reasons about unsigned
 /// Chebyshev distance.
 pub(crate) const MAX_HOLE_ANCHOR_DELTA: i64 = i16::MAX as i64;
-
-// The serializer's blob length must equal `hours.rs`'s `Schedule::encode` width, or the pool bytes
-// and the `POI_HOURS_BLOB_LEN` the directory advertises disagree.
-const _: () = assert!(POI_HOURS_BLOB_LEN == crate::hours::BLOB_LEN, "hours blob length must match hours.rs");
 
 // A cap-degree record must fit one chunk, or `pack_nav_chunk` would drop real junctions.
 const _: () = assert!(NAV_NODE_FIXED_LEN + NAV_MAX_DEGREE * NAV_NEIGHBOR_LEN <= NAV_CHUNK_SIZE);
@@ -628,7 +624,7 @@ pub fn serialize_poi_section(
 ) -> io::Result<Vec<u8>> {
     // `refs[k]` is POI k's 0-based pool index (or `None` for no hours), aligned to `pois`.
     let (pool, refs) =
-        crate::hours::build_hours_pool(pois, |p| has_hours(p.subtype).then_some(p.hours.as_ref()).flatten());
+        obc_places::hours::build_hours_pool(pois, |p| has_hours(p.subtype).then_some(p.hours.as_ref()).flatten());
     serialize_poi_pool(pois, global_bbox, section_offset, &pool, &refs)
 }
 
@@ -668,7 +664,7 @@ fn serialize_poi_pool(
             name: p.name.clone(),
             payload: match p.subtype {
                 SUMMIT_SUBTYPE_ID => p.elevation_m.unwrap_or(SUMMIT_ELEVATION_UNKNOWN) as u16,
-                s if settlement_class_of(s).is_some() => crate::poi::settlement_payload(p.population),
+                s if settlement_class_of(s).is_some() => obc_places::metadata::settlement_payload(p.population),
                 _ => hours_ref.unwrap_or(POI_HOURS_REF_NONE),
             },
         });
@@ -1453,17 +1449,13 @@ where
     W: Write + Seek,
     F: FnMut(usize) -> (Option<Node>, usize, Option<f64>),
 {
-    let style_data = pack_style_dict(styles);
-    let (lod_table_offset, payload_start) = prefix_offsets(style_data.len(), lod_count);
-
-    let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
     let mut dropped = 0usize;
     let schedules: Vec<_> = pois
         .iter()
         .map(|p| has_hours(p.subtype).then_some(p.hours.as_ref()).flatten())
         .chain(landmarks.iter().map(|p| p.hours.as_ref()))
         .collect();
-    let (pool, refs) = crate::hours::build_hours_pool(&schedules, |schedule| *schedule);
+    let (pool, refs) = obc_places::hours::build_hours_pool(&schedules, |schedule| *schedule);
     if pool.len() >= POI_HOURS_REF_NONE as usize {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "hours pool exceeds its record limit"));
     }
@@ -1471,127 +1463,27 @@ where
     let landmark_bytes = crate::landmark_map::serialize(landmarks, &landmark_refs)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let peak_bytes = crate::peak_map::serialize(peaks).map_err(io::Error::other)?;
-    let (
-        poi_section_offset,
-        nav_section_offset,
-        landmark_offset,
-        landmark_len,
-        peak_offset,
-        peak_len,
-        dark_style_offset,
-        cursor,
-    ) = {
-        let mut sink = |bytes: &[u8]| w.write_all(bytes);
-        let mut u = UnitWriter::new(SCALE, 0, &mut sink);
-
-        // 1. Header, then filler to the style table's boundary. The POI and nav offsets are not
-        // known until the LODs are sized, so write `STYLE_OFFSET` placeholders (any unit-aligned
-        // byte will do; `scaled` refuses a non-boundary) and patch them in step 5.
-        u.put(&header_bytes(
-            lod_count,
-            marker_color,
-            global_bbox,
-            lod_table_offset,
-            STYLE_OFFSET,
-            STYLE_OFFSET,
-            STYLE_OFFSET,
-        ))?;
-        let at = u.begin_section()?; // → the style table
-        debug_assert_eq!(at, STYLE_OFFSET as u64);
-
-        // 2. Style table, then a zeroed LOD table patched in step 5. The cursor arriving where
-        // `prefix_offsets` said it would is what keeps the header's claim and the bytes one
-        // statement.
-        u.put(&style_data)?;
-        let at = u.begin_section()?; // → the LOD table
-        debug_assert_eq!(at, lod_table_offset as u64, "the header names the table the cursor reached");
-        u.put(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
-        let at = u.begin_section()?; // → the first LOD's index
-        debug_assert_eq!(at, payload_start as u64, "the first LOD entry names the index the cursor reached");
-
-        // 3. Per-LOD: build → serialize → stream payload → drop the tree.
-        for i in 0..lod_count {
-            let (root, chunk_size, max_mpp) = build(i);
-            // Serialized before its LOD-table entry, because the entry states this region's counts;
-            // the entry's offset is simply where the cursor stands.
-            let region = match root {
-                Some(root) => {
-                    let out = serialize_tree(&root, chunk_size);
-                    drop(root); // free the tree before writing this LOD / building the next
-                    Some(out)
-                }
-                None => None,
-            };
-            let (nc, cc) = region.as_ref().map_or((0, 0), |&(_, nc, _, cc, _)| (nc, cc));
-            push_lod_entry(&mut table, max_mpp, scaled(u.at() as usize), nc, chunk_size, cc);
-            match region {
-                Some((ib, _, cb, _, lod_dropped)) => {
-                    dropped += lod_dropped;
-                    u.put(&ib)?;
-                    u.put(&cb)?;
-                }
-                // Empty region: no index, no chunk, the mandatory single-`0` offset table, then the
-                // boundary the LOD behind it has to start on.
-                None => {
-                    u.put(&0u32.to_le_bytes())?;
-                    u.begin_section()?;
-                }
-            }
-        }
-
-        // 4. The POI section begins at the current cursor; the nav section follows it.
-        let poi_section_offset = u.at() as usize;
-        u.put(&serialize_poi_pool(pois, global_bbox, poi_section_offset, &pool, &refs[..pois.len()])?)?;
-        let nav_section_offset = u.at() as usize;
-        u.put(&serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain))?;
-        let (landmark_offset, landmark_len) = if landmark_bytes.is_empty() {
-            (0, 0)
-        } else {
-            let start = u.begin_section()? as usize;
-            u.put(&landmark_bytes)?;
-            let end = u.begin_section()? as usize;
-            (start, end - start)
-        };
-        let (peak_offset, peak_len) = if peak_bytes.is_empty() {
-            (0, 0)
-        } else {
-            let start = u.begin_section()? as usize;
-            u.put(&peak_bytes)?;
-            let end = u.begin_section()? as usize;
-            (start, end - start)
-        };
-        let dark_style_offset = u.begin_section()? as usize;
-        u.put(&style_data)?;
-        (
-            poi_section_offset,
-            nav_section_offset,
-            landmark_offset,
-            landmark_len,
-            peak_offset,
-            peak_len,
-            dark_style_offset,
-            u.at() as usize,
-        )
-    };
-
-    // 5. Back-patch the LOD table and the header's two section-offset fields, then leave the cursor
-    // at EOF. Both fields are scaled, like every offset the header carries.
-    check_scale_covers(cursor as u64);
-    w.seek(SeekFrom::Start(lod_table_offset as u64))?;
-    w.write_all(&table)?;
-    w.seek(SeekFrom::Start(32))?;
-    w.write_all(&scaled(poi_section_offset).to_le_bytes())?;
-    w.write_all(&scaled(nav_section_offset).to_le_bytes())?;
-    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_LANDMARK_OFFSET_OFF as u64))?;
-    w.write_all(&scaled(landmark_offset).to_le_bytes())?;
-    w.write_all(&scaled(landmark_len).to_le_bytes())?;
-    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_PEAK_OFFSET_OFF as u64))?;
-    w.write_all(&scaled(peak_offset).to_le_bytes())?;
-    w.write_all(&scaled(peak_len).to_le_bytes())?;
-    w.seek(SeekFrom::Start(obc_formats::obcm::HEADER_DARK_STYLE_OFFSET_OFF as u64))?;
-    w.write_all(&scaled(dark_style_offset).to_le_bytes())?;
-    w.seek(SeekFrom::Start(cursor as u64))?;
-    Ok((cursor as u64, dropped))
+    let mut writer = MapWriter::new(w, lod_count, styles, marker_color, global_bbox)?;
+    for i in 0..lod_count {
+        let (root, chunk_size, max_mpp) = build(i);
+        let region = root.map(|root| {
+            let out = serialize_tree(&root, chunk_size);
+            drop(root);
+            out
+        });
+        let bytes = region.as_ref().map(|(index, nodes, chunks, count, _)| LodBytes {
+            index,
+            nodes: *nodes,
+            chunks,
+            chunk_count: *count,
+        });
+        dropped += region.as_ref().map_or(0, |region| region.4);
+        writer.lod(chunk_size, max_mpp, bytes)?;
+    }
+    let poi_offset = writer.position();
+    let poi = serialize_poi_pool(pois, global_bbox, poi_offset, &pool, &refs[..pois.len()])?;
+    let nav = serialize_nav_section(nav, profiles, global_bbox, poi_offset + poi.len(), terrain);
+    Ok((writer.finish(&poi, &nav, &landmark_bytes, &peak_bytes)?, dropped))
 }
 
 #[cfg(test)]
@@ -1730,7 +1622,7 @@ mod tests {
         // and POI + nav sections, so the fixture carries POIs of a few categories (two sharing one
         // pooled schedule) and a small nav graph.
         use crate::nav::{Edge, Node as NavNode};
-        use crate::poi::Poi;
+        use obc_places::metadata::Poi;
         use std::io::Cursor;
 
         let bbox = (0, 0, 1_000_000, 1_000_000);
@@ -1784,7 +1676,7 @@ mod tests {
             lat_udeg: lat,
             name: name.map(String::from),
             from_node: true,
-            hours: hours.and_then(crate::hours::parse),
+            hours: hours.and_then(obc_places::hours::parse),
             elevation_m: None,
             population: None,
         };
@@ -1811,29 +1703,31 @@ mod tests {
             NavProfile { name: "Gravel".into(), highway: [24; 32], surface: [32; 8], climb_weight: 8 },
         ];
 
-        let (reference, ref_dropped) =
-            serialize_lods(&lods, &styles, 0xABCD, bbox, &pois, &nav, &profiles, &mut NullElevation);
-        assert_eq!(ref_dropped, 0, "nothing overflows in this fixture");
+        for nav in [&nav, &NavGraph::default()] {
+            let (reference, ref_dropped) =
+                serialize_lods(&lods, &styles, 0xABCD, bbox, &pois, nav, &profiles, &mut NullElevation);
+            assert_eq!(ref_dropped, 0, "nothing overflows in this fixture");
 
-        let mut cur = Cursor::new(Vec::new());
-        let (total, dropped) = serialize_lods_streaming(
-            &mut cur,
-            lods.len(),
-            &styles,
-            0xABCD,
-            bbox,
-            &pois,
-            &[],
-            &crate::peak_map::Peaks::default(),
-            &nav,
-            &profiles,
-            &mut NullElevation,
-            |i| (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp),
-        )
-        .unwrap();
+            let mut cur = Cursor::new(Vec::new());
+            let (total, dropped) = serialize_lods_streaming(
+                &mut cur,
+                lods.len(),
+                &styles,
+                0xABCD,
+                bbox,
+                &pois,
+                &[],
+                &crate::peak_map::Peaks::default(),
+                nav,
+                &profiles,
+                &mut NullElevation,
+                |i| (Some(lods[i].root.clone()), lods[i].chunk_size, lods[i].max_mpp),
+            )
+            .unwrap();
 
-        assert_eq!(cur.into_inner(), reference, "streaming output must be byte-identical");
-        assert_eq!(total as usize, reference.len());
-        assert_eq!(dropped, 0, "and reports the same (zero) drop count");
+            assert_eq!(cur.into_inner(), reference, "streaming output must be byte-identical");
+            assert_eq!(total as usize, reference.len());
+            assert_eq!(dropped, 0, "and reports the same (zero) drop count");
+        }
     }
 }

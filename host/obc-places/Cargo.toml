@@ -8,3 +8,7 @@ description = "Shared OSM place selection and coordinates for planner and device
 
 [dependencies]
 obc-formats = { workspace = true }
+obc-render = { workspace = true }
+unicode-normalization = { workspace = true }
+obc-map-core = { workspace = true }
+obc-elevation = { workspace = true }

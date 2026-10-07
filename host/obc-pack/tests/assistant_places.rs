@@ -2,10 +2,11 @@
 #![cfg(feature = "external-fixtures")]
 
 use obc_formats::obcm::{PoiCategory, SourceId};
+use obc_map_core::progress::Progress;
 use obc_pack::config::Config;
-use obc_pack::ingest::{ingest_osm, Bbox};
-use obc_pack::progress::Progress;
+use obc_pack::ingest::ingest_osm;
 use obc_pack::{serialize_lods, LodLayer, Node};
+use obc_pbf::bbox::Bbox;
 use obc_reader::reader::places::{PlaceQuery, PlaceWindow, QueryProgress};
 use obc_reader::{MapCache, MapTables, PoiCategorySet, Reader, SliceSource};
 

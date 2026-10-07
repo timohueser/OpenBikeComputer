@@ -1,6 +1,7 @@
 //! Measure compiled landmark content through the production OSM join and map encoder.
 use obc_formats::obcm::{landmarks, POI_HOURS_REF_NONE};
-use obc_pack::{config::Config, ingest::ingest_osm_ways, landmark_map, progress::Progress};
+use obc_map_core::progress::Progress;
+use obc_pack::{config::Config, ingest::ingest_osm_ways, landmark_map};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{

@@ -3482,9 +3482,12 @@ dependencies = [
  "obc-dem",
  "obc-file-source",
  "obc-formats",
+ "obc-map-core",
  "obc-map-scene",
  "obc-osm",
  "obc-pack",
+ "obc-pbf",
+ "obc-places",
  "obc-reader",
  "obc-render",
  "obcm-assemble",
@@ -3529,8 +3532,10 @@ dependencies = [
  "obc-formats",
  "obc-host-core",
  "obc-link",
+ "obc-map-core",
  "obc-map-scene",
  "obc-pack",
+ "obc-places",
  "obc-ports",
  "obc-reader",
  "obc-render",
@@ -3576,6 +3581,7 @@ dependencies = [
  "obc-file-source",
  "obc-fixtures",
  "obc-formats",
+ "obc-map-core",
  "obc-osm",
  "obc-pack",
  "obc-search-bake",
@@ -3675,6 +3681,7 @@ dependencies = [
  "obc-link",
  "obc-map-scene",
  "obc-pack",
+ "obc-places",
  "obc-ports",
  "obc-reader",
  "obc-render",
@@ -3789,6 +3796,7 @@ dependencies = [
  "obc-formats",
  "obc-map-core",
  "obc-map-scene",
+ "obc-pbf",
  "obc-places",
  "obc-reader",
  "obc-render",
@@ -3804,7 +3812,6 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.0",
- "unicode-normalization",
  "ureq",
  "url",
  "zip",
@@ -3812,10 +3819,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-pbf"
+version = "0.1.0"
+dependencies = [
+ "geos",
+ "obc-map-core",
+ "osmpbf",
+ "rayon",
+]
+
+[[package]]
 name = "obc-places"
 version = "0.1.0"
 dependencies = [
+ "obc-elevation",
  "obc-formats",
+ "obc-map-core",
+ "obc-render",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -3899,6 +3920,7 @@ dependencies = [
  "flate2",
  "geo",
  "obc-data",
+ "obc-map-core",
  "obc-pack",
  "obc-places",
  "osmpbfreader",
@@ -4040,8 +4062,10 @@ dependencies = [
  "obc-file-source",
  "obc-formats",
  "obc-host-core",
+ "obc-map-core",
  "obc-map-scene",
  "obc-pack",
+ "obc-places",
  "obc-reader",
  "obc-render",
  "obc-route",

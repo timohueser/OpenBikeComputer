@@ -21,7 +21,7 @@ fn device_and_search_keep_the_same_shared_places_and_search_metadata() {
             &[source.to_str().unwrap().to_owned()],
             &config,
             None,
-            &obc_pack::Progress::silent(),
+            &obc_map_core::progress::Progress::silent(),
         )
         .unwrap();
         let output = temporary.path().join(format!("{n}.jsonl.zst"));

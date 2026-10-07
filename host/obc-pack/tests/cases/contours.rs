@@ -11,12 +11,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use obc_map_core::progress::{Phase, Progress};
 use obc_map_scene::BBox;
 use obc_pack::config::{Config, ContourClass};
 use obc_pack::cut::{cut, CutOptions};
 use obc_pack::grid::BandTable;
 use obc_pack::pipeline::{pack, PackOptions};
-use obc_pack::progress::{Phase, Progress};
 use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The synthetic terrain's posting and cell size: both legal OBCT header values, both small, so the
