@@ -96,7 +96,7 @@ Existing Run observation, stop and reconciliation stay available.
 ## Portable-data API
 
 Pass the current producer declarations and an exact published release to `local::plan`.
-Request client layers and any extra file paths needed by Local consumers. Inspect blocked
+Request original client layers and any extra file paths needed by Local consumers. Inspect blocked
 selections before passing the unchanged plan to `local::adopt`. Use `local::saved` to read
 the saved anchors. These APIs preserve the original producer and create no build receipt.
 They do not start apps or services. The [Local contract](../../specs/obc-data.md#local-portable-data)
