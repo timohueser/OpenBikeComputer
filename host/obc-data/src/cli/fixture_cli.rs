@@ -378,10 +378,9 @@ pub(super) fn perform(
                         fixtures::archives(root, store, &http, &catalog, &bootstrap, package, &sources)?;
                         let env = environment(id, package, None)?;
                         if let Some(version) = package.sources.get("geofabrik-extracts") {
-                            let area = package
-                                .osm
-                                .strip_suffix("-latest.osm.pbf")
-                                .ok_or("exact fixture recovery needs its recorded Geofabrik area")?;
+                            let area = package.osm.strip_suffix("-latest.osm.pbf").ok_or_else(|| {
+                                "exact fixture recovery needs its recorded Geofabrik area".to_string()
+                            })?;
                             build_cli::fetcher_recorded(root, store, &http, &sources, &env, None, Some(&mut run))(
                                 &Wanted {
                                     source: "geofabrik-extracts".into(),

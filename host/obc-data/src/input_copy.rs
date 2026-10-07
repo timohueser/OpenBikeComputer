@@ -256,7 +256,7 @@ pub fn reads(live: &Live) -> Result<Vec<Read>, String> {
 }
 
 /// Exact reads from one product release, without a publication pointer or remote lookup.
-pub fn reads_release(release: &crate::engine::Release) -> Result<Vec<Read>, String> {
+pub fn reads_release(release: &crate::engine::release::Release) -> Result<Vec<Read>, String> {
     let mut reads = Vec::new();
     for layer in &release.layers {
         for input in layer.inputs.iter().filter(|i| i.kind == InputKind::Snapshot) {
