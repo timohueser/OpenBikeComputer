@@ -1,6 +1,7 @@
 import http from 'node:http';
 import {open, realpath} from 'node:fs/promises';
 import {Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {fetch as tiles} from './worker.mjs';
@@ -20,16 +21,18 @@ export class Files {
       if (error.code === 'ENOENT') return null;
       throw error;
     }
-    const info = await file.stat();
+    let info;
+    try { info = await file.stat(); } catch (error) { await file.close(); throw error; }
     if (!info.isFile()) { await file.close(); throw new Error('Object is not a regular file'); }
     const etag = `${info.size}-${info.mtimeMs}`;
     if (options.onlyIf && options.onlyIf.etagMatches !== etag) {
       await file.close(); return {etag};
     }
     const offset = options.range?.offset ?? 0;
-    const length = options.range?.length ?? info.size;
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0
-        || offset + length > info.size) { await file.close(); throw new Error('Invalid object range'); }
+    const requested = options.range?.length ?? info.size;
+    const length = Math.min(requested, info.size - offset);
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(requested) || offset < 0 || requested < 0
+        || offset > info.size) { await file.close(); throw new Error('Invalid object range'); }
     const stream = length ? file.createReadStream({start: offset, end: offset + length - 1, autoClose: true}) : null;
     if (!stream) await file.close();
     const body = stream ? Readable.toWeb(stream) : new ReadableStream({start(controller) { controller.close(); }});
@@ -43,12 +46,12 @@ export async function serve(root, port) {
   const bucket = new Files(await realpath(root));
   const server = http.createServer(async (request, response) => {
     try {
-      const url = new URL(request.url, `http://127.0.0.1:${port}`);
+      const url = new URL(request.url, `http://127.0.0.1:${server.address().port}`);
       const pending = [];
       const result = await tiles(new Request(url, {method: request.method}), {BUCKET: bucket},
         {waitUntil(value) { pending.push(value); }}, null);
       response.writeHead(result.status, Object.fromEntries(result.headers));
-      if (result.body) Readable.fromWeb(result.body).pipe(response);
+      if (result.body) await pipeline(Readable.fromWeb(result.body), response);
       else response.end();
       await Promise.all(pending);
     } catch (error) {
