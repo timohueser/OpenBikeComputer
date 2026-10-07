@@ -1,4 +1,4 @@
-# Local Web planner
+# Local apps
 
 Prepare Rust, the native C compiler, GEOS, Node 24+, Python 3.12+ and `uv`.
 Follow the [builder core setup](../../../../builder/wasm/README.md) for the production
@@ -11,7 +11,8 @@ npm ci --prefix planner/tiles
 uv sync --locked --group search-runtime
 ```
 
-The commands below do not install dependencies. Start from a current checkout.
+Simulator needs Rust, Python and its native system libraries. It does not need the browser
+or search tools. The commands do not install dependencies. Start from a current checkout.
 On Linux, prepare the systemd user manager, linger and private `OBC_RUN_ENV_FILE`
 as in the [data setup](../../../obc-data/README.md#operation).
 
@@ -28,22 +29,26 @@ saved Local versions. `--refresh-live` takes the current published versions.
 The working tree supplies current producer code, region geometry and options.
 Compatible portable layers keep their original provenance. Only changed layers build.
 New builds need the tools and source credentials of their selected producers.
-The route executable always builds for the current host.
-Preparation leaves stopped apps stopped. It updates an already running owner.
+Routing and Simulator executables build for the current host.
+Preparation leaves stopped apps stopped. It updates only affected running services.
+Use `--app web-planner`, `--app map-builder` or `--app simulator`. Web planner is the default.
+Web planner and Map builder share Vite and tiles. Stop removes a shared child only after its last app stops.
 
 | Command | Action |
 | --- | --- |
+| `dev --check` | Check pending work offline from saved Local versions |
+| `dev --inputs` | Prepare metadata from saved versions, then return a plan |
 | `dev --prepare` | Return a retained preparation run handle |
-| `dev --start` | Start the last verified view; open the browser unless `--json` |
-| `dev --stop` | Ask the owning supervisor to drain its children |
-| `dev --open` | Open the ready planner at `http://127.0.0.1:5173/planner.html` |
-| `dev --logs` | Read recent supervisor stderr |
-| `dev --status` | Read service state without starting work |
+| `dev --start` | Start the selected prepared app; open its browser unless `--json` |
+| `dev --stop` | Drain only the selected app's unused children |
+| `dev --open` | Open a ready browser app |
+| `dev --logs` | Read recent supervisor and selected child logs |
+| `dev --status` | Read each app's state without work |
 
 Inspect or stop preparation with `obc data runs RUN`. Serving uses a separate
 store lock. Preparation can run while the prior view serves. Startup replaces
 only affected running children. Stop also removes obsolete known views after
-drain. It retains the current prepared view and saved data collection root. Opening a terminal view starts no download or build.
+drain. It retains the current prepared view and saved data collection root. Start refuses a view that differs from the selected Local configuration.
 
 Ports `5173`, `8780`, `8788` and `8789` must be free before the first start.
 Readiness checks the opened routing package, search grid and query model.
