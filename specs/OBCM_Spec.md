@@ -2,7 +2,7 @@
 
 OBCM (OpenStreetMap Binary Chunked Map) is a compact binary map format designed
 for efficient rendering on memory-constrained devices such as microcontrollers
-(MCUs). It is written by the Rust packer (`host/obc-pack`) and read by the
+(MCUs). It is written by the Rust packer (`host/obc-bake`) and read by the
 Rust crate (`firmware/obc-reader`, shared by the desktop simulator and the nRF54L
 firmware).
 
@@ -46,7 +46,7 @@ Every structure a header or directory offset reaches begins on a **unit boundary
 brackets above are separated by `0..U-1` bytes of `0xFF` filler wherever the previous one did not
 end on one. §1.2 states that rule once and what it costs.
 
-The byte layout is produced by `host/obc-pack/src/serialize.rs` (`serialize_lods`) and parsed by
+The byte layout is produced by `host/obc-bake/src/serialize.rs` (`serialize_lods`) and parsed by
 `firmware/obc-reader/src/reader/mod.rs` plus `firmware/obc-reader/src/reader/nav.rs`. All multi-byte
 integers are **little-endian**.
 
@@ -624,7 +624,7 @@ the hours pool.
 ### 7.4 Canonical category / subtype table (normative)
 
 This is the **normative home** of the id table; `obc-formats/src/obcm.rs` is its code
-authority for subtype ids, categories, and fallback labels. `obc-pack`'s `poi.rs`
+authority for subtype ids, categories, and fallback labels. `obc-places`' `metadata.rs`
 adds only the OSM `key=value` classification that produces each subtype, while the
 device reads the shared table directly. **Ids are append-only** — an existing
 row's category or subtype id must never be renumbered (an old map's records would
@@ -1163,7 +1163,7 @@ the saturating arithmetic.
 #### Canonical way-kind table (normative)
 
 `Way Kind = (surface_class << 5) | highway_class`. This mirrors the packer's single
-source of truth (`obc-pack/src/nav.rs` — `highway_class` / `surface_class` /
+source of truth (`obc-places/src/routing.rs` — `highway_class` / `surface_class` /
 `classify`); profile configs and the web builder key their multipliers by these
 class names.
 
@@ -1251,15 +1251,14 @@ distance (100 m in the reference router).
   for §1.1, and `UnitWriter`, §1.2's boundary-and-filler rule as a cursor) and
   `firmware/obc-formats/src/io.rs` (checked little-endian primitives plus the neutral
   byte-source/sink seam). It contains no reader, packer, cache, or rendering policy.
-- **Writer (Rust, std host):** `host/obc-pack/src/serialize.rs` (`serialize_lods`,
-  `serialize_tree`, `serialize_poi_section`, `serialize_nav_section`,
-  `flatten_nav_tree` (§8.2 bin-packing), `pack_nav_record`, `pack_edge_record`,
-  `pack_profile_table`, `pack_feature`, `pack_chunk`, `pack_style_dict`),
-  `host/obc-places/src/metadata.rs` (the OSM-tag classifier for the shared §7.4 ids),
-  `host/obc-places/src/hours.rs` (the `opening_hours` parser + 29-byte blob
-  encoder + dedup pool for §7.5), `host/obc-pack/src/nav.rs` (the routable-graph
-  builder + the canonical way-kind table behind §8.6), and
-  `host/obc-pack/src/config.rs` (the `routing` config + profile quantization).
+- **Writer (Rust, std host):** `host/obc-draw/src/serialize.rs` encodes feature trees.
+  `host/obc-network/src/serialize.rs` encodes POI, graph and snap sections.
+  `host/obc-map-core/src/serialize.rs` frames these bytes, styles and routing profiles.
+  `host/obc-bake/src/serialize.rs` composes a complete map. Shared OSM place classification
+  lives in `host/obc-places/src/metadata.rs`, hours in `host/obc-places/src/hours.rs`,
+  and way-kind classification in `host/obc-places/src/routing.rs`. Graph construction lives
+  in `host/obc-network/src/nav.rs`. Routing config and profile quantization live in
+  `host/obc-map-core/src/config.rs`.
 - **Reader + renderer (Rust, no_std):** `firmware/obc-reader` — `reader.rs`
   (`Reader`, `for_each_feature`, `select_lod_for_mpp`, the POI + nav directories +
   the profile table in `MapTables`, `for_each_nav_node`, `NavNeighbor` delta
@@ -1267,7 +1266,7 @@ distance (100 m in the reference router).
   `firmware/obc-render`
   (`Viewport`, `RenderScratch`). Format-contract tests in
   `firmware/obc-reader/tests/format.rs` (byte pins) and
-  `host/obc-pack/tests/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
+  `host/obc-bake/tests/packer_cases/nav_round_trip.rs` (writer↔reader §8 round trip, incl.
   the profile table, kinds, delta reconstruction, and the bin-packing fill floor).
 
 ## 9. Landmark section
