@@ -1310,6 +1310,44 @@ It refuses while the local worker drains. Result reads verify their sealed bytes
 The shared run view includes `logs`, the bounded tail of its worker stderr. A missing log yields
 an empty list. A read failure appears in `observation_error` and preserves the run state.
 
+## Manual automatic approval
+
+A manual Live apply reviews automatic approval even when no layer changes. It requires committed
+data and used code. It verifies every available complete product without unchanged-byte shortcuts.
+The parent confirmation retains the exact plan, including the approval review. Preparation and
+Local builds do not establish approval.
+
+The configured publication owner has one `commits/current.approval`. Its observation distinguishes
+absence from failed reads. The plan pins the owner's fingerprint and the exact prior record SHA.
+The fingerprint uses the Linux machine identity and canonical fixed owner root. It contains no
+raw machine identity or credential. The owner checks it, the prior record and original pointers
+under its existing writer lock before mutation. An SSH alias is not an owner identity.
+
+The record binds the effective region, layers, publication target, selected-source settings and
+producer declarations. Actual source versions and freshness cadence are excluded. Selected-source
+access and publication settings remain included. Manual data commitment still includes them all.
+The same code resolver supplies acquisition, planning and producer source/config witnesses.
+Implicit embedded registry bytes use declared source projections; explicit raw registry inputs
+remain raw. Operator UI source stays outside scoped owner code.
+
+Each native target/profile has its latest checked execution entry. A same-context apply replaces
+its old tools. A different context survives only when current declarations reproduce each source
+witness at its recorded Rust target/profile and the common configuration is unchanged. This
+comparison selects no foreign execution tools. It retains the original checked execution identity;
+it does not approve recomputation by another host. Changed acquisition or planning code can remove
+an old entry without rebuilding a layer.
+
+Prepared runtime execution binds its actual target and exact container image. Version-only native
+runtime builders cannot establish automatic approval. Missing unused acquisition tools can also
+leave current execution unavailable. Retained-input manual publication remains supported; the
+approval outcome states what is unavailable. Only comparable prior entries can survive.
+
+Complete publication seals its result and finishes owner state before writing approval. The
+approval record binds that publication SHA, run and bundle. The sealed publication does not
+contain an approval digest. Owner results report publication and approval separately: recorded,
+unavailable or unresolved. A partial or unknown publication writes no approval. An approval write
+failure does not change a checked publication into a failed publication. Observation and explicit
+reconciliation preserve this distinction. No automatic schedule is enabled by this record alone.
 
 ## Commands
 

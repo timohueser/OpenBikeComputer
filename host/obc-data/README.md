@@ -92,3 +92,9 @@ Stop drains admitted local work and prevents publication handoff. After handoff,
 reconcile the owner result. Progress shows acknowledged writes and unresolved owner outcomes.
 After a Rust edit, new planning or work requires quitting and launching `obc data` again.
 Existing Run observation, stop and reconciliation stay available.
+
+Live apply reviews automatic approval, including a no-change apply. Inspect `plan.approval` before
+confirmation. `applied.approval` reports the separate owner result. Native planner runtime builders
+need exact execution binding before automatic approval is available; manual publication still works.
+The configured Linux owner needs a valid `/etc/machine-id` and the fixed `/var/lib/obc-data/store`.
+Its current approval is owner-local. `commit-approval` reads it without changing any state.
