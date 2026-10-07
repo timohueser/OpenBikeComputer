@@ -1688,7 +1688,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | Completed apply output | `Applied` |
 | `auto` admission | `Started` |
 | Completed auto output | `Result` |
-| Live timer state | `State3` |
+| Live timer state | `State4` |
 | `schedule live --setup-budget` | `Budget` |
 | `runs` | `RunList` |
 | `runs RUN` for a detached operation | `View` |
@@ -3353,6 +3353,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Host": {
+      "additionalProperties": false,
+      "description": "Actual host prerequisites. Absent interpreters cannot satisfy a runtime target.",
+      "properties": {
+        "glibc": {
+          "type": "string"
+        },
+        "node": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "python": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triple": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "triple",
+        "glibc",
+        "node",
+        "python"
+      ],
+      "type": "object"
+    },
     "ImportDir": {
       "properties": {
         "bytes": {
@@ -3497,6 +3528,33 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "terrain",
         "historical",
         "empty"
+      ],
+      "type": "object"
+    },
+    "Installed": {
+      "additionalProperties": false,
+      "properties": {
+        "binding": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "service": {
+          "$ref": "#/$defs/Service"
+        },
+        "slot": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "service",
+        "id",
+        "slot",
+        "binding"
       ],
       "type": "object"
     },
@@ -3737,12 +3795,45 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Observation2": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/State2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/ServiceStatus"
+          },
+          "type": "array"
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "host",
+        "services",
+        "unavailable"
+      ],
+      "type": "object"
+    },
     "Observed": {
       "properties": {
         "state": {
           "anyOf": [
             {
-              "$ref": "#/$defs/State2"
+              "$ref": "#/$defs/State3"
             },
             {
               "type": "null"
@@ -5233,6 +5324,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "Service": {
+      "enum": [
+        "routing",
+        "search",
+        "downloads"
+      ],
+      "type": "string"
+    },
+    "ServiceStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "ready": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "service": {
+          "$ref": "#/$defs/Service"
+        }
+      },
+      "required": [
+        "service",
+        "ready",
+        "reason"
+      ],
+      "type": "object"
+    },
     "Source": {
       "additionalProperties": false,
       "properties": {
@@ -5543,6 +5665,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "State2": {
       "additionalProperties": false,
       "properties": {
+        "host": {
+          "$ref": "#/$defs/Host"
+        },
+        "installed": {
+          "items": {
+            "$ref": "#/$defs/Installed"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "host",
+        "installed"
+      ],
+      "type": "object"
+    },
+    "State3": {
+      "additionalProperties": false,
+      "properties": {
         "apps": {
           "additionalProperties": false,
           "properties": {
@@ -5610,7 +5751,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "State3": {
+    "State4": {
       "properties": {
         "active": {
           "type": "boolean"
@@ -5704,13 +5845,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "$ref": "#/$defs/ProductStatus"
           },
           "type": "array"
+        },
+        "vps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Observation2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Installed runtime and opened data, independently from recorded-target source comparison."
         }
       },
       "required": [
         "from",
         "products",
         "attention",
-        "check"
+        "check",
+        "vps"
       ],
       "type": "object"
     },
