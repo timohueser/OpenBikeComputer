@@ -184,6 +184,6 @@ node ../../tools/planner_sun_bench.mjs http://127.0.0.1:4175
 ```
 
 [Sunlight index](../../../../../specs/planner-sun-tiles.md).
-See the [search README](../../../../../apps/planner-search/README.md) for its
+See the [search README](../../../../../planner/search/README.md) for its
 code and real-data suites. iOS rendering and offline downloads have separate
 validation.

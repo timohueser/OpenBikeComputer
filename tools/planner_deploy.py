@@ -140,11 +140,11 @@ def install(host, data, document, base):
     maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT) + "/", f"{host}:{SOURCE}/", input=tracked)
     for part, destination in [("routing", "routing"), ("search", "search/data"), ("offline", "offline")]:
         maps.run("rsync", "-az", str(runtime / part) + "/", f"{host}:{base}/{destination}/")
-    search_prefix = b"apps/planner-search/"
+    search_prefix = b"planner/search/"
     search_files = b"\0".join(path[len(search_prefix):] for path in tracked.split(b"\0") if path.startswith(search_prefix)) + b"\0"
-    maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT / "apps/planner-search") + "/",
+    maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT / "planner/search") + "/",
              f"{host}:{base}/search/", input=search_files)
-    maps.run("rsync", "-az", str(maps.ROOT / "apps/planner-search/node_modules") + "/", f"{host}:{base}/search/node_modules/")
+    maps.run("rsync", "-az", str(maps.ROOT / "planner/search/node_modules") + "/", f"{host}:{base}/search/node_modules/")
     ssh(host, f"""cd {SOURCE}
 /root/.cargo/bin/cargo build --locked --release -p planner-service -j 2
 mkdir -p {base}/bin

@@ -7,8 +7,8 @@ shared JavaScript resource before it generates the project. To build it by hand,
 run from the repository root:
 
 ```sh
-npm ci --prefix apps/planner-search
-node apps/planner-search/native-build.mjs OUTPUT
+npm ci --prefix planner/search
+node planner/search/native-build.mjs OUTPUT
 ```
 
 Keep one `PlannerSearchRuntime` per installed map inside one actor. Pass the

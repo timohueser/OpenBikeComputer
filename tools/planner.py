@@ -22,7 +22,7 @@ from tools.planner_runtime import DATA_LAYERS
 from tools.planner_components import Cache
 
 ROOT = maps.ROOT
-SEARCH = ROOT / "apps/planner-search"
+SEARCH = ROOT / "planner/search"
 REGION = "baden-wuerttemberg-switzerland"
 RECIPES = ROOT / "tools/planner-regions"
 # The local preview commands. Each holds the lock of its data directory.
