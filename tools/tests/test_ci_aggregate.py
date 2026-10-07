@@ -58,9 +58,9 @@ class AggregateTests(unittest.TestCase):
         self.assertNotIn("OBC_NEEDS_RESULTS", step.get("env", {}))
         graph, _, units = test_plan.load(root)
         files = [".github/workflows/ci.yml"] + [
-            f".github/workflows/{index:04d}-{'x' * 220}.yml" for index in range(524)
+            f"docs/content/{index:04d}-{'x' * 80}.md" for index in range(524)
         ]
-        files.append('.github/workflows/\nOBC_SELECTION_PLAN_JSON\n$(touch "$RUNNER_TEMP/injected")`touch "$RUNNER_TEMP/injected"`.yml')
+        files.append('docs/content/\nOBC_SELECTION_PLAN_JSON\n$(touch "$RUNNER_TEMP/injected")`touch "$RUNNER_TEMP/injected"`.md')
         data = test_plan.plan_data(test_plan.select(units, graph, files))
         serialized = json.dumps(data)
         self.assertGreater(len(serialized.encode()), 128 * 1024)
