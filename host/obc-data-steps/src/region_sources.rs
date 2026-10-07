@@ -19,8 +19,6 @@ pub struct Source {
     pub extract: String,
     pub poly: String,
     pub coverage: Coverage,
-    /// A checked captured input retains its actual source instead of posing as Geofabrik.
-    pub prepared: Option<Step>,
 }
 
 impl Source {
@@ -103,7 +101,6 @@ pub fn resolve(
                 coverage: Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?,
                 poly: poly_version,
                 extract: String::new(),
-                prepared: None,
             });
         }
         if missing {
@@ -197,24 +194,22 @@ pub fn inputs(prefix: &str, selection: &Selection) -> Vec<Step> {
     selection
         .sources
         .iter()
-        .map(|source| {
-            source.prepared.clone().unwrap_or_else(|| Step {
-                name: format!("{prefix}/source/{}", source.id),
-                inputs: [source.input(EXTRACTS), source.input(POLY)]
-                    .into_iter()
-                    .chain(selection.index.iter().map(|version| Input::Snapshot {
-                        source: INDEX.into(),
-                        version: version.clone(),
-                        params: Vec::new(),
-                        files: Vec::new(),
-                    }))
-                    .collect(),
-                options: json!({}),
-                code: Code { crates: vec!["obc-osm".into()], ..Default::default() },
-                outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
-                run: Run::Rust(obc_osm::step::area),
-                client: Client::None,
-            })
+        .map(|source| Step {
+            name: format!("{prefix}/source/{}", source.id),
+            inputs: [source.input(EXTRACTS), source.input(POLY)]
+                .into_iter()
+                .chain(selection.index.iter().map(|version| Input::Snapshot {
+                    source: INDEX.into(),
+                    version: version.clone(),
+                    params: Vec::new(),
+                    files: Vec::new(),
+                }))
+                .collect(),
+            options: json!({}),
+            code: Code { crates: vec!["obc-osm".into()], ..Default::default() },
+            outputs: vec!["source.osm.pbf".into(), "source.poly".into()],
+            run: Run::Rust(obc_osm::step::area),
+            client: Client::None,
         })
         .collect()
 }

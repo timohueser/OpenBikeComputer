@@ -18,7 +18,7 @@ pub struct Bbox {
 }
 
 impl Bbox {
-    pub(crate) fn new([west, south, east, north]: [f64; 4]) -> Result<Self, String> {
+    fn new([west, south, east, north]: [f64; 4]) -> Result<Self, String> {
         let lon = -180.0..=180.0;
         let lat = -90.0..=90.0;
         if lon.contains(&west)

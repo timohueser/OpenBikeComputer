@@ -23,9 +23,7 @@ use obc_map_core::grid::{id_width, Band, BandTable, CellId};
 use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
 
-mod captured;
 pub(crate) mod catalog;
-pub(crate) use captured::recipes as fixture_recipes;
 
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_osm::SOURCE_LEAF_LOG2;
@@ -35,16 +33,6 @@ pub const EXTRACTS: &str = "geofabrik-extracts";
 pub const TILE_LIST: &str = "copernicus-glo-30-tiles";
 
 pub struct Maps;
-
-struct RecipeInputs {
-    selection: crate::region_sources::Selection,
-    tile_list: String,
-    land_polygons: Option<String>,
-    glo30: String,
-    catalog_index: Option<(String, String)>,
-    content: Option<Vec<Step>>,
-    terrain: Option<obc_data::fixtures::CapturedInput>,
-}
 
 impl Product for Maps {
     fn name(&self) -> &'static str {
@@ -156,46 +144,13 @@ impl Maps {
         else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
-        self.recipes(
-            env,
-            regions,
-            store,
-            tool,
-            libraries,
-            RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index, content: None, terrain: None },
-        )
-    }
-
-    fn recipes(
-        &self,
-        env: &Env,
-        regions: &Regions,
-        store: &Store,
-        tool: Result<Option<obc_data::engine::Library>, String>,
-        libraries: Result<Vec<obc_data::engine::Library>, String>,
-        inputs: RecipeInputs,
-    ) -> Result<Steps, Unplanned> {
-        let RecipeInputs {
-            selection,
-            tile_list,
-            land_polygons,
-            glo30,
-            catalog_index,
-            content: supplied_content,
-            terrain: captured_terrain,
-        } = inputs;
-        let mut wanted = Vec::new();
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let mut steps = Vec::new();
         let mut blocked = Vec::new();
         for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
             let mut leaf_wanted = Vec::new();
-            let reference = match if captured_terrain.is_some() {
-                Ok(None)
-            } else {
-                reference(env, store, leaf, cells, &mut leaf_wanted)
-            } {
+            let reference = match reference(env, store, leaf, cells, &mut leaf_wanted) {
                 Ok(reference) => {
                     wanted.extend(leaf_wanted);
                     reference
@@ -207,10 +162,7 @@ impl Maps {
                 }
                 Err(error) => return Err(error),
             };
-            let mut terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
-            if let Some(input) = &captured_terrain {
-                captured::bind_terrain(env, store, &mut terrain, input, cells)?;
-            }
+            let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
             steps.extend(reference);
             steps.push(terrain);
         }
@@ -218,15 +170,9 @@ impl Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let captured_content = supplied_content.is_some();
-        let mut content_steps = supplied_content.unwrap_or_default();
+        let mut content_steps = Vec::new();
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        if captured_content {
-            for collection in ["landmarks", "peaks"] {
-                content_names.insert(collection, vec![content_layer(collection)]);
-            }
-        }
-        for source in selection.sources.iter().filter(|_| !captured_content) {
+        for source in &selection.sources {
             let area = vec![("area".to_string(), source.id.clone())];
             for collection in ["landmarks", "peaks"] {
                 let name = if selection.direct {
@@ -323,9 +269,8 @@ impl Maps {
             Err(reason) => blocked.push(BlockedLayer { layer: "maps/osm".into(), reason }),
         }
         if blocked.is_empty() {
-            if catalog_index.is_none() && selection.sources.iter().any(|source| source.prepared.is_none()) {
-                return Err(Unplanned::Failed("catalog index was not fetched".into()));
-            }
+            let (body, version) =
+                catalog_index.ok_or_else(|| Unplanned::Failed("catalog index was not fetched".into()))?;
             match catalog::step(
                 env,
                 regions.get(&env.region).expect("the environment names a region"),
@@ -333,7 +278,8 @@ impl Maps {
                 &selection,
                 &steps,
                 &glo30,
-                catalog_index.as_ref().map(|(body, version)| (version.clone(), body.as_str())),
+                version,
+                &body,
             ) {
                 Ok(step) => steps.push(step),
                 Err(Unplanned::Invalid(reason)) => blocked.push(BlockedLayer { layer: catalog::LAYER.into(), reason }),

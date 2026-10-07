@@ -70,7 +70,7 @@ impl App {
             }
             AttentionKind::OldCache => Some(Fix::Store),
             AttentionKind::Drift | AttentionKind::Leftovers => Some(Fix::Plan),
-            AttentionKind::Unreachable => None,
+            AttentionKind::Uncommitted | AttentionKind::Unreachable => None,
         }
     }
 

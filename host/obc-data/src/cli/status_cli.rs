@@ -82,6 +82,8 @@ pub enum AttentionKind {
     Stale,
     /// A source that is blocked.
     Blocked,
+    /// Edits in `data/` that git does not have; an apply refuses them.
+    Uncommitted,
     /// A cache directory of the older bake tools that `clean` moves into the store.
     OldCache,
     /// Keys that live uses and R2 lacks, or holds with another size.
@@ -97,6 +99,7 @@ impl AttentionKind {
         match self {
             AttentionKind::Stale => "stale",
             AttentionKind::Blocked => "blocked",
+            AttentionKind::Uncommitted => "uncommitted",
             AttentionKind::OldCache => "old cache",
             AttentionKind::Drift => "drift",
             AttentionKind::Leftovers => "leftovers",
@@ -167,6 +170,12 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         Some(&producers),
     )?;
     let mut attention = Vec::new();
+    if let Ok(paths) = super::edit_cli::uncommitted(root).map(|paths| paths.join(", ")) {
+        if !paths.is_empty() {
+            let reason = format!("{paths}. {}", super::edit_cli::COMMIT_DATA);
+            attention.push(Attention { kind: AttentionKind::Uncommitted, about: "data/".into(), reason });
+        }
+    }
     // `Live::read` gives one live product per product, in their order.
     let products = live.products.iter().zip(products).map(|(product, offered)| {
         let release = product.release.as_ref().map(|(id, _)| id.clone());

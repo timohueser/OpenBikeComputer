@@ -20,8 +20,6 @@ pub struct Roots {
     pub live: BTreeMap<(String, String), Vec<String>>,
     /// Exact source versions of saved Local data, including stopped experiments.
     pub local: BTreeMap<(String, String), Vec<String>>,
-    /// Exact inputs of saved fixture package releases, independent of Live and Local selections.
-    pub fixtures: BTreeMap<(String, String), Vec<String>>,
     /// Each SHA-256 that a live layer, a fixture or a planner region recipe names, with which of
     /// them.
     pub sha256s: BTreeMap<String, &'static str>,
@@ -83,41 +81,6 @@ impl Roots {
         Ok(())
     }
 
-    fn add_fixtures(&mut self, store: &Store) -> Result<(), String> {
-        for saved in crate::fixtures::saved(store)? {
-            self.name([saved.archive.sha256].into_iter(), "fixture");
-            let selected = saved.selection;
-            self.name(selected.assets.values().map(|asset| asset.sha256.clone()), "fixture");
-            self.name(
-                selected.copies.iter().flat_map(|copy| &copy.record.files).map(|file| file.sha256.clone()),
-                "fixture",
-            );
-            self.name(
-                selected.release.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
-                "fixture",
-            );
-            for input in std::iter::once(&selected.inputs.osm)
-                .chain(selected.inputs.content.values())
-                .chain(&selected.inputs.terrain)
-                .chain(selected.inputs.historical.values())
-            {
-                let packages = self.fixtures.entry((input.source.clone(), input.version.clone())).or_default();
-                if !packages.contains(&selected.package) {
-                    packages.push(selected.package.clone());
-                }
-            }
-            for layer in &selected.release.layers {
-                for (source, read) in &layer.snapshots {
-                    let packages = self.fixtures.entry((source.clone(), read.version.clone())).or_default();
-                    if !packages.contains(&selected.package) {
-                        packages.push(selected.package.clone());
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Record `why` for each SHA-256 that no other root named first.
     fn name(&mut self, sha256s: impl Iterator<Item = String>, why: &'static str) {
         sha256s.for_each(|sha256| {
@@ -166,7 +129,6 @@ pub struct Kept {
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut roots = roots.clone();
     roots.add_local(store)?;
-    roots.add_fixtures(store)?;
     let mut named = roots.sha256s.clone();
     for path in files(&store.root().join("imports"), &["jsonl"])? {
         let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -215,11 +177,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let key = (source.clone(), version.clone());
         let live = roots.live.get(&key).map(|products| format!("live {}", products.join(", ")));
         let local = roots.local.get(&key).map(|products| format!("local {}", products.join(", ")));
-        let fixture = roots.fixtures.get(&key).map(|packages| format!("fixture {}", packages.join(", ")));
         let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
         let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
-        let because: Vec<String> =
-            [live, local, fixture, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        let because: Vec<String> = [live, local, newest_of_source, newest_of_request].into_iter().flatten().collect();
         if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;

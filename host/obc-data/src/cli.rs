@@ -8,10 +8,8 @@ mod auto_cli;
 mod build_cli;
 pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
 pub mod commit_cli;
-mod config_cli;
 mod dev_cli;
 mod edit_cli;
-mod fixture_cli;
 mod freshness;
 pub mod operation_cli;
 mod r2_cli;
@@ -98,11 +96,6 @@ enum Command {
     Layer { env: String, layer: String, switch: edit_cli::Switch },
     /// Restore data/env/ENV.toml to its committed version: the edits that are not applied go.
     Undo { env: String },
-    /// Review and commit only working bake configuration. Nothing pushes.
-    Config {
-        #[command(subcommand)]
-        action: config_cli::Action,
-    },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
     /// Start durable input preparation and return its run handle. Nothing builds or uploads.
@@ -146,13 +139,6 @@ enum Command {
 
 /// Run `obc data` with the products whose steps this binary links.
 pub fn main(products: &[&dyn Product]) -> ExitCode {
-    main_with_fixtures(products, None)
-}
-
-pub fn main_with_fixtures(
-    products: &[&dyn Product],
-    fixtures: Option<&crate::fixtures::FixtureCollection>,
-) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -165,7 +151,7 @@ pub fn main_with_fixtures(
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli, products, fixtures) {
+    match run(cli, products) {
         Ok(code) => code,
         Err(error) => error.report(json),
     }
@@ -176,11 +162,7 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(
-    cli: Cli,
-    products: &[&dyn Product],
-    fixtures: Option<&crate::fixtures::FixtureCollection>,
-) -> Result<ExitCode, Error> {
+fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
     crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -189,12 +171,9 @@ fn run(
         None => return status_cli::status(&root()?, products, false, json),
         Some(command) => command,
     };
-    let command = fixture_cli::dispatch(&root()?, command, fixtures, json)?;
-    let Some(command) = command else { return Ok(ExitCode::SUCCESS) };
     let done = match command {
         Command::Perform { store, run, request } => {
-            return operation_cli::perform(&Store::at(store), &run, &request, products, fixtures)
-                .map(|()| ExitCode::SUCCESS);
+            return operation_cli::perform(&Store::at(store), &run, &request, products).map(|()| ExitCode::SUCCESS);
         }
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
@@ -261,7 +240,6 @@ fn run(
             edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
         }
         Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
-        Command::Config { action } => config_cli::run(&root()?, action, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
         Command::Build(args) => operation_cli::build(&root()?, args, json),

@@ -266,7 +266,6 @@ mod tests {
             moves: Vec::new(),
             plan: None,
             dev: None,
-            fixture: None,
         };
         let control = operation::Control {
             run: id.clone(),
@@ -304,7 +303,6 @@ mod tests {
             moves: Vec::new(),
             plan: None,
             dev: None,
-            fixture: None,
         };
         for (id, fails) in [("2026-10-06-120000", false), ("2026-10-06-120001", true)] {
             let control = operation::Control {
@@ -432,7 +430,6 @@ mod tests {
             moves: Vec::new(),
             plan: Some(crate::engine::LayerFile { path: "plan.json".into(), size: 1, sha256: "d".repeat(64) }),
             dev: None,
-            fixture: None,
         };
         let control = operation::Control {
             run: id.clone(),

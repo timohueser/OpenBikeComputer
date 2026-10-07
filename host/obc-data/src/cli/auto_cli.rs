@@ -57,7 +57,6 @@ pub(super) fn start(root: &Path, env: String, json: bool) -> std::result::Result
         moves: Vec::new(),
         plan: None,
         dev: None,
-        fixture: None,
     };
     match started(operation_cli::start(root, &store, request, None), env)? {
         Started::Admitted(handle) => operation_cli::print_handle(&handle, json),

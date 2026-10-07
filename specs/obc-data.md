@@ -4,31 +4,6 @@
 the environments. It fetches sources into the store. The crate is `host/obc-data`.
 All files under `data/` are TOML. A file with an unknown key is refused.
 
-## Fixture collection
-
-`data/env/fixtures.toml` selects packages and canonical box regions. It is a collection, not an
-ordinary environment. First-import fields select exact recorded inputs only while no saved or
-published package selection exists.
-
-Each rebuilt archive contains `.obc-data.json`: the package id, original PBF coverage, selected
-source versions, request parameters, file hashes, immutable input-copy records, asset identities
-and the Maps release with its producer receipts. `copied_sources` names the raw copies published
-with that selection. The local saved envelope adds the archive hash
-and size. The payload does not contain its own archive hash. The Git catalog marks these archives
-with `selection = true`; it remains the consumer authority.
-
-Read-only planning does not download archives. Explicit preparation can recover the exact catalog
-archive and restore its input objects. Recorded public raw copies remain readable after a policy change. New raw uploads require current
-redistribution permission. Other inputs recover from their exact original source at
-the recorded version, parameters and hashes. Missing history refuses without newest substitution.
-`--move SOURCE[@VERSION]` permits acquisition for that source. Saved requests keep their own exact
-versions; a new request needs an explicit move. Coverage outside the saved PBF is refused.
-
-Apply binds the prior selection, catalog bytes, current recipe and packaging identities. It verifies
-all outputs, uploads immutable archives and permitted raw input objects to the isolated Fixture bucket, then
-replaces only the reviewed Git catalog entries. It does not commit or push. Saved selections and
-their exact objects remain store collection roots.
-
 ## Files
 
 ### `data/sources.toml`
@@ -179,18 +154,6 @@ The options of the [planner layers](#planner) that are the same for each region.
 | `climate.first_year` | integer | The first of the ten years of ERA5-Land that the climate layer reads |
 | `snow.seasons` | array of 2 integers | The first and the last season of HR-WSI and MODIS that the snow layer reads |
 | `sun.horizon_samples`, `sun.horizon_directions` | integer | The horizon profiles of the sun layer: [the sun archive](planner-sun-tiles.md) |
-
-## Configuration commit
-
-`config review` binds changed working bake configuration to HEAD, exact file bytes and Git modes.
-The scope is `data/sources.toml`, `data/env/live.toml`, `data/env/fixtures.toml`,
-`data/planner.toml`, `data/planner-runtime.toml` and `data/regions/`. Ignored Local state is outside this scope.
-New files and tracked deletions are included. A changed HEAD, path, mode or byte requires a new review.
-
-`config commit` uses an ordinary Git partial commit. Unrelated staged files stay staged.
-Git hooks and signing run with a finite deadline and no terminal input. Errors remain visible.
-If Git advances HEAD but changes the reviewed result, the command reports that actual HEAD and
-refuses exact-reviewed success. It does not push or replace the full index. Unsupported hosts refuse.
 
 ## State of a source
 
@@ -1410,8 +1373,9 @@ issue open. An unchanged body emits no comment.
 
 `apply live` makes the plan of live live. It needs the bucket, and it changes R2 in this order:
 
-1. It refuses when `data/` has changes that are not committed, apart from
-   `data/env/local.toml`: live builds from a committed `data/`. The steps run the code of the
+1. It refuses when `data/` has edits that git does not have, apart from
+   `data/env/local.toml`: live builds from a committed `data/`. The refusal names the files and
+   says `git add data && git commit`; `status` lists them as `uncommitted`. The steps run the code of the
    working tree. Used acquisition, planning and producer code must also be committed.
    Commitment checks the physical inputs of the same code resolver. Selected manifests and
    lockfiles must be clean even when their content projection excludes an edit. UI source files
@@ -1699,13 +1663,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `region create` | `Region` |
 | `region delete` | `Deletion` |
 | `region ENV ID`, `layer`, `undo` | `Edited` |
-| `config review` | `ConfigReview` |
-| `config commit` | `ConfigCommit` |
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
-| `plan fixtures` | `FixturePlan` |
-| Completed fixture prepare or apply output | `FixtureOutcome` |
-| `plan ENV` except fixtures, `dev --check` | `EnvPlan` |
+| `plan`, `dev --check` | `EnvPlan` |
 | `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
 | `dev --start`, `dev --stop`, `dev --status` | `Observed` |
 | `dev --logs` | `Logs` |
@@ -1839,6 +1799,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "const": "blocked",
           "description": "A source that is blocked.",
+          "type": "string"
+        },
+        {
+          "const": "uncommitted",
+          "description": "Edits in `data/` that git does not have; an apply refuses them.",
           "type": "string"
         },
         {
@@ -2050,46 +2015,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "CapturedInput": {
-      "additionalProperties": false,
-      "properties": {
-        "files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "params": {
-          "items": {
-            "maxItems": 2,
-            "minItems": 2,
-            "prefixItems": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "type": "array"
-          },
-          "type": "array"
-        },
-        "source": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "version",
-        "params",
-        "files"
-      ],
-      "type": "object"
-    },
     "Check": {
       "description": "The owned prefixes of R2 against live.",
       "properties": {
@@ -2279,63 +2204,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
-    },
-    "ConfigCommit": {
-      "properties": {
-        "commit": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "commit"
-      ],
-      "type": "object"
-    },
-    "ConfigFile": {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "type": "string"
-        },
-        "sha256": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sha256",
-        "mode"
-      ],
-      "type": "object"
-    },
-    "ConfigReview": {
-      "additionalProperties": false,
-      "properties": {
-        "diff": {
-          "type": "string"
-        },
-        "files": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/ConfigFile"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "type": "object"
-        },
-        "head": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "head",
-        "files",
-        "diff"
-      ],
-      "type": "object"
     },
     "Credential": {
       "additionalProperties": false,
@@ -2602,13 +2470,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers"
       ],
       "type": "object"
-    },
-    "Empty": {
-      "enum": [
-        "historical",
-        "selected"
-      ],
-      "type": "string"
     },
     "EnvPlan": {
       "additionalProperties": false,
@@ -3252,78 +3113,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "FixtureOutcome": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/FixturePlan"
-        },
-        {
-          "properties": {
-            "archives": {
-              "additionalProperties": {
-                "$ref": "#/$defs/LayerFile"
-              },
-              "type": "object"
-            },
-            "catalog": {
-              "$ref": "#/$defs/LayerFile"
-            }
-          },
-          "required": [
-            "archives",
-            "catalog"
-          ],
-          "type": "object"
-        }
-      ],
-      "description": "Preparation returns its review; apply returns only verified immutable archives and the new Git pointer."
-    },
-    "FixturePlan": {
-      "additionalProperties": false,
-      "properties": {
-        "catalog": {
-          "$ref": "#/$defs/LayerFile"
-        },
-        "configuration": {
-          "description": "The exact package declarations and canonical regions used for this review.",
-          "type": "string"
-        },
-        "destination": {
-          "type": "string"
-        },
-        "moves": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "packages": {
-          "additionalProperties": {
-            "$ref": "#/$defs/PackagePlan"
-          },
-          "type": "object"
-        },
-        "packaging": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "worker": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "catalog",
-        "configuration",
-        "destination",
-        "worker",
-        "packaging",
-        "packages",
-        "moves"
-      ],
-      "type": "object"
-    },
     "GcPlan": {
       "description": "What `clean` deletes from the store, or deleted, and what stays.",
       "properties": {
@@ -3528,57 +3317,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "name",
         "digest",
         "files"
-      ],
-      "type": "object"
-    },
-    "Inputs": {
-      "additionalProperties": false,
-      "description": "Exact imported inputs of one package, separate from producer receipts.",
-      "properties": {
-        "content": {
-          "additionalProperties": {
-            "$ref": "#/$defs/CapturedInput"
-          },
-          "type": "object"
-        },
-        "empty": {
-          "additionalProperties": {
-            "$ref": "#/$defs/Empty"
-          },
-          "description": "Record-proven emptiness stays distinct from an explicit fixture selection.",
-          "type": "object"
-        },
-        "historical": {
-          "additionalProperties": {
-            "$ref": "#/$defs/CapturedInput"
-          },
-          "description": "Pinned compiled sidecars stay separate from current producer outputs.",
-          "type": "object"
-        },
-        "osm": {
-          "$ref": "#/$defs/CapturedInput"
-        },
-        "osm_sha256": {
-          "type": "string"
-        },
-        "terrain": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CapturedInput"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "osm",
-        "osm_sha256",
-        "content",
-        "terrain",
-        "historical",
-        "empty"
       ],
       "type": "object"
     },
@@ -3988,54 +3726,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
-    },
-    "PackagePlan": {
-      "additionalProperties": false,
-      "properties": {
-        "assets": {
-          "additionalProperties": {
-            "$ref": "#/$defs/LayerFile"
-          },
-          "type": "object"
-        },
-        "bootstrap": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LayerFile"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "inputs": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Inputs"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "plan": {
-          "$ref": "#/$defs/EnvPlan"
-        },
-        "selection": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "bootstrap",
-        "selection",
-        "inputs",
-        "assets",
-        "plan"
-      ],
-      "type": "object"
     },
     "Phase": {
       "enum": [

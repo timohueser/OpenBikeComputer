@@ -36,8 +36,7 @@ pub struct Read {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Retained {
     pub step: String,
     pub key: Key,
@@ -150,18 +149,8 @@ impl Record {
         fetch::merge(store, &self.source, &self.version, &self.snapshot().files).map(drop)
     }
 
-    /// Pin original fetches before recovery. Missing objects still make the snapshot unavailable.
-    pub(crate) fn seed(&self, key: &Key, store: &Store) -> Result<(), String> {
-        self.validate(key)?;
-        let _lock = store.lock(&fetch::snapshot_lock(&self.source, &self.version))?;
-        if let Some(snapshot) = fetch::merge(store, &self.source, &self.version, &self.snapshot().files)? {
-            store.put_snapshot(&snapshot)?;
-        }
-        Ok(())
-    }
-
     /// Restore only the named exact objects of a validated immutable input record.
-    pub fn materialize(
+    fn materialize(
         &self,
         key: &Key,
         store: &Store,
@@ -259,16 +248,8 @@ fn sha256(value: &str) -> bool {
 
 /// The reads named by the manifests. No input object or copy record is fetched here.
 pub fn reads(live: &Live) -> Result<Vec<Read>, String> {
-    live.releases().try_fold(Vec::new(), |mut reads, (_, _, release)| {
-        reads.extend(reads_release(release)?);
-        Ok(reads)
-    })
-}
-
-/// Exact reads from one product release, without a publication pointer or remote lookup.
-pub fn reads_release(release: &crate::engine::release::Release) -> Result<Vec<Read>, String> {
     let mut reads = Vec::new();
-    for layer in &release.layers {
+    for layer in live.releases().flat_map(|(_, _, r)| &r.layers) {
         for input in layer.inputs.iter().filter(|i| i.kind == InputKind::Snapshot) {
             let snapshot = layer
                 .snapshots

@@ -9,6 +9,7 @@ use obc_pack::catalog::{Boundary, CellSource};
 pub const INDEX: &str = "geofabrik-index";
 pub const LAYER: &str = "maps/catalog";
 
+#[allow(clippy::too_many_arguments)]
 pub fn step(
     env: &Env,
     region: &obc_data::regions::Region,
@@ -16,34 +17,20 @@ pub fn step(
     selection: &crate::region_sources::Selection,
     listed: &[Step],
     glo30: &str,
-    index: Option<(String, &str)>,
+    version: String,
+    body: &str,
 ) -> Result<Step, Unplanned> {
-    let areas = index
-        .as_ref()
-        .map(|(_, body)| obc_data::regions::geofabrik::parse(body.as_bytes()))
-        .transpose()
-        .map_err(Unplanned::Failed)?
-        .unwrap_or_default();
-    let primary: BTreeMap<_, _> = if index.is_some() {
-        selection
-            .sources
-            .iter()
-            .map(|source| {
-                let params = [("area".into(), source.id.clone())];
-                let (_, digest) = file(env, store, POLY, &source.poly, &params)?;
-                let poly =
-                    std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
-                Ok((source.id.clone(), poly))
-            })
-            .collect::<Result<_, Unplanned>>()?
-    } else {
-        if !matches!(region.area, obc_data::regions::Area::Box { .. })
-            || selection.sources.iter().any(|source| source.prepared.is_none())
-        {
-            return Err(Unplanned::Invalid("an index-free catalog requires checked captured inputs and a box".into()));
-        }
-        BTreeMap::new()
-    };
+    let areas = obc_data::regions::geofabrik::parse(body.as_bytes()).map_err(Unplanned::Failed)?;
+    let primary: BTreeMap<_, _> = selection
+        .sources
+        .iter()
+        .map(|source| {
+            let params = [("area".into(), source.id.clone())];
+            let (_, digest) = file(env, store, POLY, &source.poly, &params)?;
+            let poly = std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
+            Ok((source.id.clone(), poly))
+        })
+        .collect::<Result<_, Unplanned>>()?;
     if primary.keys().any(|id| !areas.contains_key(id)) {
         return Err(Unplanned::Invalid("Geofabrik index lacks a selected source area".into()));
     }
@@ -105,7 +92,7 @@ pub fn step(
             terrain: terrain.into_iter().map(|id| id.to_string()).collect(),
         });
     }
-    if index.is_none() || !selection.direct || selection.sources[0].id != env.region {
+    if !selection.direct || selection.sources[0].id != env.region {
         let shape = requested.geojson();
         let parsed: serde_json::Value = serde_json::from_str(&shape).map_err(|e| Unplanned::Failed(e.to_string()))?;
         let mut outline = format!("{}\n", region.id);
@@ -161,12 +148,7 @@ pub fn step(
     };
     let mut inputs: Vec<Input> =
         listed.iter().filter(|step| !step.client.is_none()).map(|step| Input::layer(&step.name)).collect();
-    inputs.extend(index.map(|(version, _)| Input::Snapshot {
-        source: INDEX.into(),
-        version,
-        params: Vec::new(),
-        files: Vec::new(),
-    }));
+    inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
     Ok(Step {
         name: LAYER.into(),
         inputs,
