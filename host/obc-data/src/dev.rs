@@ -455,7 +455,7 @@ pub fn open(store: &Store, app: App) -> Result<(), String> {
     if state.status != "ready" {
         return Err("Local Web planner is not ready".into());
     }
-    if !state.apps.get(&app).is_some_and(|state| state.status == "ready") {
+    if state.apps.get(&app).is_none_or(|state| state.status != "ready") {
         return Err(format!("{} is not ready", app.name()));
     }
     let url = app.url().ok_or("Simulator has no browser address")?;
