@@ -8,6 +8,7 @@ mod auto_cli;
 mod build_cli;
 pub use build_cli::EnvPlan;
 pub mod commit_cli;
+mod dev_cli;
 mod edit_cli;
 mod freshness;
 pub mod operation_cli;
@@ -115,6 +116,8 @@ enum Command {
     },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
+    /// Prepare and open the Local Web planner; serving does not hold the bake lock.
+    Dev(dev_cli::Dev),
     /// Clean the local store: delete what no live release or fixture reaches, and move the
     /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
     Clean {
@@ -264,6 +267,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 Ok(())
             }
         }
+        Command::Dev(args) => dev_cli::run(&root()?, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

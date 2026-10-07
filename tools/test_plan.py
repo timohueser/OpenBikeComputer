@@ -111,12 +111,12 @@ RUST_FOUNDATION_PATHS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     ".cargo/config",
 }
 # Broad policy changes select unscoped suites. Scoped suites follow their own inputs and
-# the shared selector, aggregate and CI workflow. Agent prose (CLAUDE.md, AGENTS.md) is not on
+# the shared selector, aggregate and CI workflow. Agent prose (AGENTS.md) is not on
 # this list: it instructs an agent, it does not decide or execute anything. It is owned by the
 # documentation route so it is not an unowned path; the check that reads it is the
 # unconditional `guards` job, not a platform build.
@@ -530,7 +530,7 @@ def select(
                     continue
                 claim_package(name, reason)
             for unit in units:
-                if unit.foundation or (unit.rust_packages and path != "rustfmt.toml"):
+                if unit.foundation or (unit.rust_packages and path != ".rustfmt.toml"):
                     claim(unit, reason)
 
         for name, package in sorted(graph.packages.items()):
@@ -943,7 +943,7 @@ AUDITED_PATHS = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     "specs/vectors/obcm-v2.json",
     "tools/test_plan.py",

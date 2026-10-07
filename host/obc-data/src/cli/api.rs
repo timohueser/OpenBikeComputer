@@ -218,9 +218,12 @@ mod tests {
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
             schema(
-                "`prepare`, `build`, `apply`, `auto`",
+                "`prepare`, `build`, `apply`, `auto`, `dev --prepare`",
                 generator.subschema_for::<crate::cli::operation_cli::Handle>(),
             ),
+            schema("`dev --start`, `dev --stop`, `dev --status`", generator.subschema_for::<crate::dev::Observed>()),
+            schema("`dev --logs`", generator.subschema_for::<crate::dev::Logs>()),
+            schema("`dev`, completed dev preparation", generator.subschema_for::<crate::dev::Prepared>()),
             schema("Completed prepare output", generator.subschema_for::<build_cli::Prepared>()),
             schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
             schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),

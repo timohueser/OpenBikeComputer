@@ -1,5 +1,5 @@
 {
-  "CLAUDE.md": 1152,
+  "AGENTS.md": 1152,
   "CONTRIBUTING.md": 106,
   "README.md": 984,
   "apps/obc-desktop/README.md": 580,
@@ -8,7 +8,7 @@
   "apps/obc-sim/assets/README.md": 266,
   "tools/verification/README.md": 933,
   "apps/obc-web-demo/README.md": 343,
-  "apps/planner-search/README.md": 591,
+  "planner/search/README.md": 591,
   "planner/service/README.md": 287,
   "builder/app/tests/device-smoke/README.md": 582,
   "builder/tests/corpus/README.md": 131,

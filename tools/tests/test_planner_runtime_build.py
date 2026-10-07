@@ -66,7 +66,7 @@ class RuntimeBuild(unittest.TestCase):
     def test_search_copies_only_identity_covered_files_without_container_git(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            app = root / "apps/planner-search"
+            app = root / "planner/search"
             (app / "web/vendor").mkdir(parents=True)
             (app / ".gitignore").write_text("web/vendor/\n")
             (app / "server.mjs").write_text("export const service = true;\n")

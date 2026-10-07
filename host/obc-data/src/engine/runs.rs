@@ -352,10 +352,8 @@ impl Run {
         // The planned steps and the layers that they read, in dependency order.
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
         for step in ordered.iter().rev() {
-            if needed.contains(step.name.as_str()) {
-                if !self.originals.contains_key(&step.name) {
-                    needed.extend(step.layers());
-                }
+            if needed.contains(step.name.as_str()) && !self.originals.contains_key(&step.name) {
+                needed.extend(step.layers());
             }
         }
         let position: HashMap<&str, usize> =

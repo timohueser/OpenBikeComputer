@@ -36,6 +36,7 @@ pub(super) fn start(root: &Path, env: String, json: bool) -> std::result::Result
         only: Vec::new(),
         moves: Vec::new(),
         plan: None,
+        dev: None,
     };
     match operation_cli::start(root, &store, request, None) {
         Ok(handle) => operation_cli::print_handle(&handle, json),

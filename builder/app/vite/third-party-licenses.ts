@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite";
 
-// This module imports nothing local: apps/planner-search/native-build.mjs loads it in plain Node,
+// This module imports nothing local: planner/search/native-build.mjs loads it in plain Node,
 // which resolves no extensionless relative import.
 
 /** The `attribution` of one source in data/sources.toml, the one home of every credit. */

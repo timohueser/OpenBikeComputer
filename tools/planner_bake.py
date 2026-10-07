@@ -15,7 +15,7 @@ from . import planner_prepare as preparation, planner_release as releases
 from .planner_runtime import open_url
 
 
-SEARCH = maps.ROOT / "apps/planner-search"
+SEARCH = maps.ROOT / "planner/search"
 # Producers that bake at the same time. Most leave cores idle in long single-threaded steps; two at a
 # time keeps the two largest, the search database and the basemap heap, within 16 GB of memory.
 CONCURRENT = 2

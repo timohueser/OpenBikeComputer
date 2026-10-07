@@ -163,7 +163,7 @@ def publish(source, routing, output, cache=None):
             relative = database.relative_to(source).as_posix()
             package(f"grid-search-{component}-{name}", {"source": release["files"][relative]}, partition_search,
                 lambda stage, database=database, filename=filename, component=component: partition_search(stage, database, lookups[component], filename, bounds, meta[component]),
-                bounds, paths=[maps.ROOT / "apps/planner-search" / path for path in ("storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json")])
+                bounds, paths=[maps.ROOT / "planner/search" / path for path in ("storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json")])
             cell_files.append(filename)
         geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, f"routes/tiles/{name}.json"]})
         grid_cells.append({**cell, "files": [filename.removeprefix("search/") for filename in cell_files]})

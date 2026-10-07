@@ -58,8 +58,8 @@ For lexical search and reverse lookup, install the locked search dependencies
 and build the shared JavaScript bundle and reference:
 
 ```sh
-npm exec --prefix apps/planner-search -- esbuild apps/planner-search/phone-benchmark.mjs --bundle --format=iife --global-name=PlannerSearchBenchmark --target=safari17 --outfile=/tmp/search-benchmark.js
-node apps/planner-search/phone-reference.mjs SEARCH.sqlite /tmp/search-reference.json
+npm exec --prefix planner/search -- esbuild planner/search/phone-benchmark.mjs --bundle --format=iife --global-name=PlannerSearchBenchmark --target=safari17 --outfile=/tmp/search-benchmark.js
+node planner/search/phone-reference.mjs SEARCH.sqlite /tmp/search-reference.json
 ```
 
 Copy the database to `Documents/search/baden-wuerttemberg.sqlite`. Copy both

@@ -1,7 +1,7 @@
 import type { Place } from '../editor';
 import { placeCategories, poiKinds, type PlaceCategory } from '../poi-kinds';
 import type { QueryPoint, Where, QueryRequest, SearchPlace } from './types';
-import contract from '../../../../../../apps/planner-search/query/contract.json' with { type: 'json' };
+import contract from '../../../../../../planner/search/query/contract.json' with { type: 'json' };
 
 /** The query language that search accepts. */
 export { contract };

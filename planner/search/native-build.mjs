@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {licenseNotices} from '../../builder/app/vite/third-party-licenses.ts';
 
 const output = process.argv[2] && path.resolve(process.argv[2]);
-if (!output) throw new Error('Usage: node apps/planner-search/native-build.mjs OUTPUT');
+if (!output) throw new Error('Usage: node planner/search/native-build.mjs OUTPUT');
 await mkdir(output, {recursive: true});
 const result = await build({
   entryPoints: [fileURLToPath(new URL('./native.mjs', import.meta.url))], bundle: true,
