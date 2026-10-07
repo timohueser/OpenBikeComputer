@@ -178,7 +178,7 @@ pub(super) fn prepare(
     super::print_json(&prepared)
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 enum Output {
     Apps(Prepared),
