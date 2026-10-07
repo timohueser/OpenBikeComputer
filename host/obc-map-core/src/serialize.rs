@@ -10,6 +10,28 @@ use obc_formats::obcm::{
 use std::convert::Infallible;
 use std::io::{self, Seek, SeekFrom, Write};
 
+/// Largest coordinate delta before inserting intermediate wire points.
+pub const MAX_SEGMENT: i64 = 30_000;
+
+/// Append intermediate points between `p1` and `p2` (then `p2`) so no single (dx, dy) step exceeds
+/// the 16-bit delta range, using an integer step count and banker's-rounded midpoints.
+pub fn densify(p1: (i64, i64), p2: (i64, i64), out: &mut Vec<(i64, i64)>) {
+    let dx = p2.0 - p1.0;
+    let dy = p2.1 - p1.1;
+    let max_dist = dx.abs().max(dy.abs());
+    if max_dist > MAX_SEGMENT {
+        let steps = max_dist / MAX_SEGMENT + 1;
+        for step in 1..steps {
+            let t = step as f64 / steps as f64;
+            out.push((
+                (p1.0 as f64 + dx as f64 * t).round_ties_even() as i64,
+                (p1.1 as f64 + dy as f64 * t).round_ties_even() as i64,
+            ));
+        }
+    }
+    out.push(p2);
+}
+
 /// The `Offset Scale` every `.obcm` this packer writes carries: `U = 16`, a 64 GiB addressable
 /// interior. A constant rather than a knob, which pins the byte for determinism.
 pub const SCALE: OffsetScale = OffsetScale::DEFAULT;

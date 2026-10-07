@@ -9,7 +9,7 @@ use obc_formats::obcm::{
     SUMMIT_ELEVATION_UNKNOWN, SUMMIT_SUBTYPE_ID,
 };
 use obc_map_core::serialize::{
-    align_up, emit_nav_section, emit_poi_section, lay_out, pack_profile_table, scaled, NavBody, NavProfile, PoiBytes,
+    densify, emit_nav_section, emit_poi_section, pack_profile_table, NavBody, NavProfile, PoiBytes,
 };
 use obc_map_core::tree::{flatten_tree, FlattenTree, TreeWalk};
 use obc_map_scene::ground_dist_m;

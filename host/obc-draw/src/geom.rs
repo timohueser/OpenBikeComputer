@@ -283,8 +283,8 @@ pub fn to_feature(style_id: u8, g: &Geom) -> Option<Feature> {
 #[inline]
 fn densify_extra(p1: (i64, i64), p2: (i64, i64)) -> usize {
     let max_dist = (p2.0 - p1.0).abs().max((p2.1 - p1.1).abs());
-    if max_dist > crate::serialize::MAX_SEGMENT {
-        (max_dist / crate::serialize::MAX_SEGMENT) as usize
+    if max_dist > obc_map_core::serialize::MAX_SEGMENT {
+        (max_dist / obc_map_core::serialize::MAX_SEGMENT) as usize
     } else {
         0
     }
