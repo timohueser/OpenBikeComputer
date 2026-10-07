@@ -909,6 +909,9 @@ of `live` also has:
 - `edits`: per product, `region` with `from` (the region of the live release, or `null` when
   nothing is live) and `to`, and `layers` with the optional layers that the environment switches
   `on` and `off`; `settings` marks a definition or policy change with no selection change.
+- `missing_credentials`: notices for credential files or variables that selected layers can
+  need for new acquisition. These appear even before bulk discovery. They do not block use of
+  verified cached inputs and do not enter replay identity.
 - `remove`: the keys, with `bytes`, that an apply of the plan removes from R2: the
   [leftovers](#live) once the releases after the plan are live, files first and manifests last.
   A layer that the store lacks counts without its objects, because its new objects are not known
@@ -995,10 +998,12 @@ terrain are blocked too. Other leaves and bands keep their steps.
 
 A capture keeps its params while no source of the capture moves: the step list reads the capture
 of the region that the saved plan or live reads, or else the newest capture of the region in the
-store. A new extract alone therefore asks for no new capture. A missing capture, missing capture inputs or an automatic stale-source move blocks only its
-content and artifacts. The reason asks for `--move wikidata`. Status and
-plans do not start bulk captures without an explicit move. A capture that moves explicitly
-reads the extract and the `.poly` of now. `code=` is the digest of the code that makes the boundary and the
+store. A new extract alone therefore asks for no new capture. Ordinary preparation fetches a
+missing capture. Policy refresh selects one new version for the stale capture bundle: Wikidata, Wikipedia and
+Commons keep matching manifest, article and image bytes. Other areas and collections keep
+their versions. The bundle retains its capture params. A saved plan replays those exact params. Status and ordinary plans do not
+start bulk captures. A capture that moves explicitly reads the extract and the `.poly` of now.
+Missing held capture inputs remain blocked; retained-copy failure never selects replacement data. `code=` is the digest of the code that makes the boundary and the
 candidates or the summits, so `--move wikidata` after a change of that code asks for a new capture.
 A held request keeps its original `code=` even when source text changes. Its selection is
 provisional until the offline content step reconstructs the boundary and candidates or summits
@@ -2322,6 +2327,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "missing_credentials": {
+          "description": "Missing credentials for possible new inputs. Cached inputs remain usable.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "moves": {
           "additionalProperties": {
             "type": [
@@ -2376,6 +2388,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "region",
         "layers",
         "settings",
+        "missing_credentials",
         "moves",
         "versions",
         "live",

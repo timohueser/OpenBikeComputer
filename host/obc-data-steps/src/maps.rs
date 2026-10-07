@@ -331,14 +331,28 @@ fn captures_at(
     {
         blocked.push(BlockedLayer {
             layer: layer.clone(),
-            reason: format!("capture fetch failed: {error}; plan with `--move wikidata`"),
+            reason: format!("capture fetch failed: {error}; prepare again to retry"),
         });
         return Ok(Vec::new());
     }
+    let bundle = capture_refresh(env, &params)?;
     let mut inputs = Vec::new();
     let mut missing = Vec::new();
     for source in CAPTURES {
-        if let Some(version) = snapshot_version(env, store, source, &params, &mut missing)? {
+        let version = match &bundle {
+            Some(version) => {
+                let key = (source.into(), obc_data::store::sorted(&params));
+                env.requests.borrow_mut().insert(key.clone());
+                if let Some(version) = version {
+                    env.read.borrow_mut().insert(key, version.clone());
+                } else {
+                    missing.push(Wanted { source: source.into(), version: None, params: params.clone() });
+                }
+                version.clone()
+            }
+            None => snapshot_version(env, store, source, &params, &mut missing)?,
+        };
+        if let Some(version) = version {
             if snapshot_files(store, source, &version, &params, &[]).map_err(Unplanned::Failed)?.is_none() {
                 missing.push(Wanted { source: source.into(), version: Some(version), params: params.clone() });
                 continue;
@@ -348,25 +362,36 @@ fn captures_at(
         }
     }
     if !missing.is_empty() {
-        let retained = missing.iter().all(|wanted| {
-            wanted.version.as_ref().is_some_and(|version| {
-                env.retained.iter().any(|read| {
-                    read.key.source == wanted.source
-                        && read.key.version == *version
-                        && read.params == obc_data::store::sorted(&wanted.params)
-                })
-            })
-        });
-        if retained || CAPTURES.iter().any(|source| env.moves.contains_key(*source)) {
-            return Err(Unplanned::NeedsFetch(missing));
-        } else {
-            let reason = format!("{collection} capture missing; plan with `--move wikidata`");
-            blocked.push(BlockedLayer { layer: layer.clone(), reason });
-        }
-        return Ok(Vec::new());
+        return Err(Unplanned::NeedsFetch(missing));
     }
     inputs.extend(read);
     Ok(vec![(collection, inputs)])
+}
+
+/// A capture manifest pins its sibling article and image files from the same acquisition.
+fn capture_refresh(env: &Env, params: &[(String, String)]) -> Result<Option<Option<String>>, Unplanned> {
+    if env.planned.is_some() {
+        return Ok(None);
+    }
+    let key = |source: &str| (source.to_string(), obc_data::store::sorted(params));
+    let explicit = |source: &str| env.moves.contains_key(source) && !env.stale.contains(source);
+    let resolved = CAPTURES.iter().filter_map(|source| env.resolved.get(&key(source))).max().cloned();
+    let refreshing = resolved.is_some()
+        || CAPTURES.iter().any(|source| {
+            explicit(source) || (env.moves.contains_key(*source) && env.stale_requests.contains(&key(source)))
+        });
+    if !refreshing {
+        return Ok(None);
+    }
+    let named = CAPTURES
+        .iter()
+        .filter(|source| explicit(source))
+        .filter_map(|source| env.moves.get(*source)?.as_ref())
+        .collect::<BTreeSet<_>>();
+    if named.len() > 1 {
+        return Err(invalid("a Wikimedia capture needs one version for Wikidata, Wikipedia and Commons".into()));
+    }
+    Ok(Some(named.first().map(|version| (*version).clone()).or(resolved)))
 }
 
 /// The params of a fetch.
@@ -374,8 +399,8 @@ type Params = Vec<(String, String)>;
 
 /// The params of the capture of `collection` for the region `area`, and the extract and the `.poly`
 /// that it reads: those of the capture that `env` reads (a saved plan, or live), or else of the
-/// newest capture in the store. Missing inputs or stale discovery code block the capture until
-/// an explicit source move. A new extract alone asks for no new capture. A moved capture reads
+/// newest capture in the store. Policy refreshes retain these params. A new extract alone asks
+/// for no new capture. An explicit moved capture reads
 /// the extract and the `.poly` of `now`, with the code of now.
 #[cfg(test)]
 fn capture_params(
@@ -405,7 +430,7 @@ fn capture_params_at(
     };
     let mut kept = None;
     let moved = CAPTURES.iter().any(|source| env.moves.contains_key(*source) && !env.stale.contains(*source));
-    if !moved {
+    if !moved || env.planned.is_some() {
         let named: Vec<&Vec<(String, String)>> = match &env.planned {
             Some(planned) => planned.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
             None => env.live.keys().filter(|(source, _)| source == CAPTURES[0]).map(|(_, p)| p).collect(),
@@ -435,13 +460,6 @@ fn capture_params_at(
         Ok(Some(inputs))
     };
     if let Some(params) = kept {
-        if !moved
-            && CAPTURES
-                .iter()
-                .any(|source| env.stale_requests.contains(&(source.to_string(), obc_data::store::sorted(&params))))
-        {
-            return Err(invalid(format!("{collection} capture stale; plan with `--move wikidata`")));
-        }
         for source in CAPTURES {
             let _ = version(env, store, source, &params).map_err(Unplanned::Failed)?;
         }
@@ -981,6 +999,7 @@ pub(crate) mod tests {
             "geometry": serde_json::from_str::<serde_json::Value>(&Coverage::parse_poly(&poly).unwrap().geojson()).unwrap()}]});
         fetched(store, catalog::INDEX, "1", &[], &[("index.json".into(), index.to_string())]);
         let area = [("area".into(), "europe/grimsel".into())];
+        captured(store, "1", "europe/grimsel", "osm", &poly);
         fetched(store, POLY, "1", &area, &[("europe/grimsel.poly".into(), poly)]);
         fetched(store, EXTRACTS, "1", &area, &[("europe/grimsel.osm.pbf".into(), "osm".into())]);
         fetched(store, LAND, "1", &[], &[("land.zip".into(), "land".into())]);
@@ -1383,16 +1402,13 @@ pub(crate) mod tests {
         for source in CAPTURES {
             fetched(&store, source, "1", &params, &[("#peaks=0/recipe.json".into(), "1".into())]);
         }
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert_eq!(
-            listed.blocked.iter().map(|b| b.layer.as_str()).collect::<Vec<_>>(),
-            ["maps/landmark-content", "maps/catalog", "maps/landmarks/0037-0032"]
-        );
-        assert!(listed.blocked.iter().all(|b| b.reason.contains("--move wikidata")));
-        for name in ["maps/terrain/0037-0032", "maps/network/0037-0032", "maps/peak-content", "maps/peaks/0037-0032"] {
-            assert!(listed.steps.iter().any(|step| step.name == name), "{name}");
-        }
-        env.moves.insert("wikidata".into(), Some("1".into()));
+        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
+            panic!("ordinary preparation must fetch missing landmark captures")
+        };
+        assert_eq!(wanted.len(), 3);
+        assert!(wanted
+            .iter()
+            .all(|fetch| fetch.params.iter().any(|(name, value)| name == "collection" && value == "landmarks")));
         let failed = Wanted {
             source: "wikidata".into(),
             version: None,
@@ -1405,7 +1421,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stale_capture_requires_a_move_and_explicit_intent_overrides_related_staleness() {
+    fn stale_capture_refreshes_its_request_and_explicit_intent_overrides_related_staleness() {
         let temp = temp("capture-code");
         let store = Store::at(temp.0.join("store"));
         let (mut env, regions) = freiburg(&store);
@@ -1444,21 +1460,48 @@ pub(crate) mod tests {
         }
         assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"));
         env.stale.insert("wikidata".into());
+        env.moves.insert("wikidata".into(), None);
         env.stale_requests.insert(("wikidata".into(), obc_data::store::sorted(&params)));
-        let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(listed.blocked.iter().all(|b| b.reason.contains("capture stale")));
-        assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
-        assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"), "fresh collection stays available");
+        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
+            panic!("the policy refreshes the stale request without a manual move")
+        };
+        assert_eq!(wanted.len(), 3, "all siblings refresh; unrelated collections keep their versions");
+        assert_eq!(wanted[0].source, "wikidata");
+        assert_eq!(obc_data::store::sorted(&wanted[0].params), obc_data::store::sorted(&params));
+        assert_eq!(wanted[0].version, None);
+        let mut refreshed = env.clone();
+        for source in CAPTURES {
+            fetched(&store, source, "2", &params, &[("#landmarks=0/recipe.json".into(), "updated".into())]);
+        }
+        refreshed.resolve(&wanted[0], "2".into());
+        let steps = map_steps(&root(), &refreshed, &regions, &store).unwrap().steps;
+        for (layer, expected) in [("maps/landmark-content", "2"), ("maps/peak-content", "1")] {
+            let content = steps.iter().find(|step| step.name == layer).unwrap();
+            for source in CAPTURES {
+                assert!(content.inputs.iter().any(|input| matches!(input,
+                    Input::Snapshot { source: found, version, .. } if found == source && version == expected)));
+            }
+        }
+        let mut replay = env.clone();
+        replay.stale.clear();
+        replay.stale_requests.clear();
+        replay.planned =
+            Some(CAPTURES.map(|source| ((source.into(), obc_data::store::sorted(&params)), "2".into())).into());
+        let (saved, _) = super::capture_params(
+            &replay,
+            &store,
+            "landmarks",
+            &[("area".into(), "europe/test".into())],
+            ("changed osm", "changed poly"),
+        )
+        .unwrap();
+        assert_eq!(saved, obc_data::store::sorted(&params), "replay keeps the exact reviewed capture params");
         env.stale = ["wikipedia".into(), "commons".into()].into();
         env.moves.insert("wikidata".into(), None);
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
             panic!("an explicit move overrides stale sibling capture blocking")
         };
-        assert_eq!(wanted.len(), 2);
-        assert!(
-            wanted.iter().all(|fetch| fetch.source == "wikidata"),
-            "automatic sibling markers do not force newest fetches"
-        );
+        assert_eq!(wanted.len(), 6, "an explicit source move refreshes both complete bundles");
         env.stale.clear();
         env.moves = CAPTURES.map(|source| (source.into(), None)).into();
         let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {

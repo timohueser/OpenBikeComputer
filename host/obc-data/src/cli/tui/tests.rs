@@ -121,6 +121,7 @@ fn plan() -> EnvPlan {
         "remove": [{"key": "planner/objects/aa", "bytes": 1_100_000_000}, {"key": "planner/objects/bb", "bytes": 5_000_000}],
         "listed": true,
         "needs_prepare": false,
+        "missing_credentials": [],
     }))
     .unwrap()
 }
@@ -703,6 +704,10 @@ fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
     ] {
         assert!(drawn.contains(words), "{words}: {drawn}");
     }
+    app.plan.as_mut().unwrap().taken.missing_credentials =
+        vec!["Missing ~/.cdsapirc: needed for new climate inputs".into()];
+    assert!(screen(&mut app, 100, 32).join("\n").contains("Missing ~/.cdsapirc"));
+    app.plan.as_mut().unwrap().taken.missing_credentials.clear();
     assert_eq!(drawn.matches("[x]").count(), 2, "required changes are plain rows: {drawn}");
     assert!(drawn.contains("a review apply") && drawn.contains("f prepare inputs") && drawn.contains("b build only"));
     assert_eq!(app.key(KeyCode::Char(' ')), Effect::None, "an edit always goes");

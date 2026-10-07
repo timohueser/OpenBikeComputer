@@ -36,7 +36,7 @@ a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a 
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
 Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
-Missing source credentials block only a selected new fetch; verified retained inputs remain usable.
+Plan names missing credentials before input preparation. Verified retained inputs remain usable.
 Publication also requires its own bucket credentials.
 
 ## Daily commands
@@ -53,6 +53,7 @@ Publication also requires its own bucket credentials.
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data dev` | Prepare Local from working-tree code and saved source versions |
 
+Preparation fetches missing Wikimedia captures and refreshes stale requests by policy.
 Preparation leaves stopped apps stopped. Use the Local app commands to start one.
 An incomplete plan needs preparation and a new review. Apply does not commit configuration.
 A failed or stopped apply leaves live as it was until its pointer switch. Apply the plan again:

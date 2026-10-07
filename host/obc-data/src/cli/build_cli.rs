@@ -64,6 +64,8 @@ pub struct EnvPlan {
     pub region: String,
     pub layers: Vec<String>,
     pub settings: Option<crate::settings::Settings>,
+    /// Missing credentials for possible new inputs. Cached inputs remain usable.
+    pub missing_credentials: Vec<String>,
     /// Source move intent: an explicit version, or each request's newest version. Exact resolved
     /// versions are in `versions`; fetching never changes this intent.
     pub moves: BTreeMap<String, Option<String>>,
@@ -236,6 +238,7 @@ pub(super) fn print_plan(plan: &EnvPlan) {
         let release = live.release.as_ref().map_or("nothing".into(), |id| format!("release {}", &id[..8]));
         println!("live {}: {release}", live.product);
     }
+    plan.missing_credentials.iter().for_each(|notice| println!("{notice}"));
     replaced(plan).iter().for_each(|line| println!("{line}"));
     for blocked in &plan.blocked {
         println!("blocked {}: {}", blocked.product, blocked.reason);
@@ -739,7 +742,8 @@ fn planned_run(
     let Some(live) = live else {
         let all = plan::plan(store, root, &steps)?;
         crate::worker::check(root)?;
-        let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
+        let mut plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
+        plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
     let edits = edits(products, env, &live, &blocked);
@@ -751,6 +755,7 @@ fn planned_run(
     let against = against(&live, env, &edits, &blocked, drift.as_deref(), store);
     let all = changes::changes(store, root, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
+    plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
     let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &BTreeMap::new())?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     for (now, next) in live.products.iter().zip(&next.products) {
@@ -787,6 +792,23 @@ fn planned_run(
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
+fn missing_credentials(products: &[&dyn Product], env: &Env, sources: &[Source]) -> Vec<String> {
+    products
+        .iter()
+        .flat_map(|product| product.credential_sources(env))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let source = sources.iter().find(|source| source.id == id)?;
+            let credential = source.credential.as_ref().filter(|credential| !credential.present())?;
+            Some(format!(
+                "Missing {}: needed for new `{id}` inputs. Verified cached inputs remain usable.",
+                credential.describe()
+            ))
+        })
+        .collect()
+}
+
 fn env_plan(
     env: &Env,
     only: &[String],
@@ -819,6 +841,7 @@ fn env_plan(
         region: env.region.clone(),
         layers: env.layers.clone(),
         settings: env.settings.clone(),
+        missing_credentials: Vec::new(),
         moves: env.moves.clone(),
         versions: versions.collect(),
         live: releases,
