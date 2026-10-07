@@ -14,6 +14,8 @@ use crate::store::{hash_file, sha256_hex, Store};
 
 mod records;
 pub use records::{saved, Saved};
+mod catalog;
+pub(crate) use catalog::Catalog;
 
 pub type Assemble = fn(&Release, &Store, &Path) -> Result<(), String>;
 pub type Recipes = fn(&Env, &Regions, &Store, &Inputs) -> Result<Steps, Unplanned>;
