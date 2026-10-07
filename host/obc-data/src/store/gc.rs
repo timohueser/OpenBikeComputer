@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{sorted, Snapshot, Store};
+use super::{read_record, read_records, sorted, Snapshot, Store};
 use crate::engine::{self, InputKind};
 use crate::live::Live;
 
@@ -185,10 +185,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         kept_snapshots.entry(source).or_default().push(snapshot);
         reached.extend(snapshot.files.iter().map(|file| file.sha256.clone()));
     }
-    let mut receipts = Vec::new();
-    for key in names(&store.root().join("layers"), "json")? {
-        receipts.extend(store.layer(&key)?);
-    }
+    // A receipt that this build cannot read can be of a newer build: its objects stay.
+    let receipts: Vec<engine::Receipt> = read_records(&store.root().join("layers"), read_record)
+        .map_err(|e| format!("{e}; a newer obc data may have written it, so nothing is collected"))?;
     let mut keys = HashSet::new();
     // The reached layers of each step.
     let mut layers = HashMap::<&str, Vec<&engine::Receipt>>::new();
@@ -198,8 +197,9 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         for receipt in &receipts {
             let inputs_reached = receipt.inputs.iter().all(|input| match input.kind {
                 InputKind::Snapshot => kept_snapshots.get(input.name.as_str()).is_some_and(|snapshots| {
+                    let names: HashSet<&str> = input.files.iter().map(String::as_str).collect();
                     snapshots.iter().any(|snapshot| {
-                        let files = snapshot.files.iter().filter(|file| input.files.contains(&file.name));
+                        let files = snapshot.files.iter().filter(|file| names.contains(file.name.as_str()));
                         engine::digest(files.map(|file| (file.name.as_str(), file.sha256.as_str()))) == input.digest
                     })
                 }),
@@ -271,7 +271,9 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
         return Ok(None);
     };
     let plan = plan(store, roots)?;
-    if (&confirmed.snapshots, &confirmed.objects) != (&plan.snapshots, &plan.objects) {
+    if (&confirmed.snapshots, &confirmed.objects, confirmed.partial_bytes)
+        != (&plan.snapshots, &plan.objects, plan.partial_bytes)
+    {
         return Err("the store changed after the plan; nothing was deleted".into());
     }
     for snapshot in &plan.snapshots {
@@ -535,6 +537,8 @@ mod tests {
         assert!(store.layer("stale").unwrap().is_some(), "a receipt is history and stays");
         let again = super::plan(&store, &roots).unwrap();
         assert!(again.snapshots.is_empty() && again.objects.is_empty());
+        write_atomic(&store.root().join("layers/newer.json"), b"{\"format\": 2}").unwrap();
+        assert!(super::plan(&store, &roots).unwrap_err().contains("nothing is collected"));
     }
 
     #[test]

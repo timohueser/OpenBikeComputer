@@ -124,8 +124,8 @@ enum Command {
     Runs(runs_cli::Runs),
     /// Prepare and open the Local Web planner; serving does not hold the bake lock.
     Dev(dev_cli::Dev),
-    /// Clean the local store: delete what no live release or fixture reaches, and move the
-    /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
+    /// Clean the local store: delete what no live release reaches, and empty `partial/`.
+    /// Shows the plan; `--apply` asks, then cleans.
     Clean {
         #[arg(long)]
         apply: bool,

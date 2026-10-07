@@ -657,7 +657,6 @@ licence = "Apache-2.0"
 licence_url = "https://github.com/onthegomap/planetiler"
 fetch = { kind = "installed" }
 version = "release"
-start = "0.10.2"
 refresh = "manual"
 redistribute = false
 

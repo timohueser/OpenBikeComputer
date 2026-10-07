@@ -133,16 +133,19 @@ impl Env {
         if let Some(version) = self.resolved.get(&fetch) {
             return Ok(Some(version));
         }
+        let start = crate::sources::all().iter().find(|s| s.id == source).and_then(|s| s.start.as_deref());
         let versions: BTreeSet<&str> = match self.live.get(&fetch) {
             Some(read) => read.iter().map(String::as_str).collect(),
-            None if params.is_empty() => {
+            // A source with a `start` has one version for all its requests: a new request, such
+            // as a tile of a new region, reads the version that live reads.
+            None if params.is_empty() || start.is_some() => {
                 let reads = self.live.iter().filter(|((id, _), _)| id == source).flat_map(|(_, read)| read);
                 reads.map(String::as_str).collect()
             }
             None => BTreeSet::new(),
         };
         match versions.len() {
-            0 => Ok(crate::sources::all().iter().find(|s| s.id == source).and_then(|s| s.start.as_deref())),
+            0 => Ok(start),
             1 => Ok(versions.first().copied()),
             _ => {
                 let versions = versions.into_iter().collect::<Vec<_>>().join(" and ");
@@ -249,6 +252,15 @@ mod tests {
         env.resolved.insert(("extract".into(), area("b")), "2026-09-20".into());
         assert_eq!(env.version("extract", &area("a")), Ok(Some("2026-09-01")), "an unrelated request keeps live");
         assert_eq!(env.version("extract", &area("b")), Ok(Some("2026-09-20")), "the selected request moves");
+    }
+
+    #[test]
+    fn a_start_version_serves_only_a_source_that_live_does_not_read() {
+        let tile = |id: &str| vec![("tile".to_string(), id.to_string())];
+        let mut env = Env::default();
+        assert_eq!(env.version("hansen-gfc", &tile("a")), Ok(Some("v1.11")));
+        env.live.insert(("hansen-gfc".into(), tile("a")), ["v1.12".into()].into());
+        assert_eq!(env.version("hansen-gfc", &tile("b")), Ok(Some("v1.12")), "a new tile keeps the moved version");
     }
 
     #[test]

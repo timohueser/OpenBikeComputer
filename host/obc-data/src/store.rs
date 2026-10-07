@@ -348,8 +348,8 @@ fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     text.map(|text| serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))).transpose()
 }
 
-/// A receipt that this build cannot parse, such as one of an older format, is absent: its step
-/// builds again.
+/// For reuse, a receipt that this build cannot parse, such as one of an older format, is absent:
+/// its step builds again. The collection reads receipts strictly.
 fn read_receipt(path: &Path) -> Result<Option<Receipt>, String> {
     Ok(read_text(path)?.and_then(|text| serde_json::from_str(&text).ok()))
 }

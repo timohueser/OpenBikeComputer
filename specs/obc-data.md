@@ -246,7 +246,9 @@ and `-`, and does not start with `.`. A `date` version is also a `YYYY-MM-DD` da
 
 `obc data clean` shows one plan. With `--apply`, it asks once, as [Errors](#errors) says, and
 then collects. The collection deletes only the plan that it showed: when the plan of now differs,
-it deletes nothing.
+also in the size of `partial/`, it deletes nothing. A receipt that the command cannot read, such
+as one that a newer `obc data` wrote, stops the collection. For reuse, such a receipt is absent and
+its step builds again.
 
 The collection deletes what no live release, saved Local adoption or fixture reaches. Its roots are the live
 releases (see [Live](#live)), the files of the checkout that it runs in, and the store:

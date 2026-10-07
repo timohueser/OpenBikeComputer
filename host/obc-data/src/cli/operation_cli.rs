@@ -254,6 +254,9 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
         }
     }
     let using = operation::claim(store, run, request)?;
+    std::env::set_var("OBC_DATA_STORE", store.root());
+    #[cfg(target_os = "linux")]
+    std::env::set_var("OBC_BAKE_BUDGETED", "1");
     let (watched, id) = (Store::at(store.root()), run.to_string());
     std::thread::spawn(move || loop {
         if operation::stopped(&watched, &id).unwrap_or(false) {
@@ -261,9 +264,6 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     });
-    std::env::set_var("OBC_DATA_STORE", store.root());
-    #[cfg(target_os = "linux")]
-    std::env::set_var("OBC_BAKE_BUDGETED", "1");
     SESSION
         .set(Session { store: Store::at(store.root()), control })
         .map_err(|_| Code::Usage.error("this worker already owns an operation"))?;
