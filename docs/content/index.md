@@ -70,8 +70,8 @@ computer, before the ride.
 | Route reader | [`obc-route`](src:firmware/obc-route) | Reads OBCR routes and provides conversion, matching, and profiles. |
 | Renderer | [`obc-render`](src:firmware/obc-render) | Draws maps without allocation. |
 | Application | [`obc-app`](src:firmware/obc-app) | Controls screens, input, navigation, and ride recording. |
-| Simulator | [`obc-sim`](src:apps/obc-sim) | Hosts the application on a desktop. |
-| Web demo | [`obc-web-demo`](src:apps/obc-web-demo) | Hosts the application in WebAssembly. |
+| Simulator | [`obc-sim`](src:sim/desktop) | Hosts the application on a desktop. |
+| Web demo | [`obc-web-demo`](src:sim/web-demo) | Hosts the application in WebAssembly. |
 | Builder bridge | [`obc-builder-bridge`](src:builder/wasm) | Converts routes, assembles maps, and renders previews in the browser. |
 
 Start with [System architecture](software/architecture/). Then read

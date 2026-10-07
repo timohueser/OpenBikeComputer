@@ -54,6 +54,11 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
     let area = || vec![("area".to_string(), AREA.to_string())];
     let poly = "test\n1\n   7.79 47.99\n   7.82 47.99\n   7.82 48.02\n   7.79 48.02\n   7.79 47.99\nEND\nEND\n";
     fetched(&store, "geofabrik-poly", DAY, area(), &format!("{AREA}.poly"), poly.as_bytes());
+    let index = serde_json::json!({"type":"FeatureCollection", "features":[{"type":"Feature",
+        "properties":{"id":"test","name":"Test","parent":null,
+            "urls":{"pbf":format!("https://download.geofabrik.de/{AREA}-latest.osm.pbf")}},
+        "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+    fetched(&store, "geofabrik-index", "1", Vec::new(), "index.json", &serde_json::to_vec(&index).unwrap());
     let pbf = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/planner.osm.pbf")).unwrap();
     fetched(&store, "geofabrik-extracts", DAY, area(), &format!("{AREA}-261001.osm.pbf"), &pbf);
     // The tile list names no tile: the region is sea to GLO-30, so the layers read no tile.
@@ -61,7 +66,13 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     fetched(&store, "nominatim-country-data", "1", Vec::new(), "nominatim_db-1-py3-none-any.whl", &country_data());
 
-    let text = "name = \"Test\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n";
+    let text = r#"name = "Test"
+kind = "box"
+box = [7.79,47.99,7.82,48.02]
+countries = ["DE"]
+time_zone = "Europe/Berlin"
+"#;
+
     let regions = Regions::new(vec![parse_region(AREA, text).unwrap()]).unwrap();
     let read = [
         GLO30,
@@ -94,7 +105,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
             ["planner/runtime/routing", "planner/runtime/search", "planner/runtime/downloads", "planner/runtime"]
         );
         let mut steps = planned.steps;
-        let rust = ["planner/osm", "planner/terrain", "planner/routing"];
+        let rust = ["planner/source/europe/test", "planner/osm", "planner/terrain", "planner/routing"];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
             if step.name == "planner/basemap" {
@@ -123,7 +134,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
 
     let built = build(&steps(false, &env));
     let names: Vec<&str> = built.iter().map(|built| built.receipt.step.as_str()).collect();
-    assert_eq!(names.len(), 3);
+    assert_eq!(names.len(), 4);
     for name in ["planner/osm", "planner/terrain", "planner/routing"] {
         assert!(names.contains(&name), "{name} is not built");
     }
@@ -138,7 +149,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
         .collect();
     let dir = temp.0.join("routing");
     obc_data::engine::view(&package, &dir).unwrap();
-    route_engine::open(&dir).unwrap().verify().unwrap();
+    planner_router::open(&dir).unwrap().verify().unwrap();
     let paths: Vec<&str> = routing.files.iter().map(|file| file.path.as_str()).collect();
     for path in ["blocks/blocks.json", "blocks/catalog.json", "routes/9-267-177.json", "routing/route-catalog.json"] {
         assert!(paths.contains(&path), "{path} is not in the layer");
@@ -238,7 +249,7 @@ fn a_build_makes_the_routing_package_and_its_overlays_and_a_second_plan_builds_n
             "python",
             "-c",
             r#"
-import copy, json, pathlib, sqlite3, sys
+import copy, hashlib, json, pathlib, sqlite3, sys
 from tools import planner_runtime as runtime, planner_offline as offline, planner_downloads as downloads, planner_grid_index as grid_index
 source = pathlib.Path(sys.argv[1])
 _, document = runtime.release(source, include_sources=False)
@@ -246,11 +257,11 @@ assert document['osm_sha256'] == sys.argv[2]
 indexes = {index['kind']: index for path in (source / 'indexes').rglob('index.json')
     for index in [json.loads(path.read_bytes())]}
 assert indexes['sun']['metadata']['sun_format'] == 3
-assert indexes['sun']['metadata']['terrain_sha256'] == indexes['terrain']['source']['sha256']
+assert indexes['sun']['metadata']['terrain_grid_sha256'] == hashlib.sha256(runtime.encoded(indexes['terrain'])).hexdigest()
 assert set(indexes['sun']['files']) == {'maps/sun.json'}
 options = {key: document[key] for key in ('region', 'bounds', 'attribution', 'landcover_attribution')}
 for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bounds', [0, 0, 1, 1]),
-                          ('sun', 'terrain_sha256', '0' * 64)]:
+                          ('sun', 'terrain_grid_sha256', '0' * 64)]:
     wrong = copy.deepcopy(indexes)
     wrong[kind]['metadata'][field] = value
     try:
@@ -275,8 +286,10 @@ for cell in search['cells']:
                 assert db.execute("SELECT source FROM places WHERE name='Bäckerei'").fetchone() == ('n10',)
             else:
                 assert db.execute('SELECT house,source FROM addresses').fetchone() == ('3', 'n13')
-service = downloads.Downloads(source / 'runtime/offline', source / 'selections', 1000000, 'https://example.org/objects')
+public = 'https://api.example/planner-api/services/' + 'a' * 64 + '/downloads'
+service = downloads.Downloads(source / 'runtime/offline', source / 'selections', 1000000, 'https://example.org/objects', public)
 selection = service.prepare({'bounds': document['bounds']})
+assert selection['source'] == public + '/bundles/' + selection['id']
 bundle = json.loads((source / 'selections' / selection['id'] / 'bundle.json').read_bytes())
 assert any(name.startswith('search/tiles/pois/') for name in bundle['files'])
 assert any(name.startswith('search/tiles/addresses/') for name in bundle['files'])
@@ -313,7 +326,10 @@ for name, entry in catalog['files'].items():
         || file.path.starts_with("indexes/")));
     let metadata_bytes: u64 = release.named.iter().map(|file| file.size).sum();
     eprintln!("planner named verification metadata: {} files, {metadata_bytes} bytes", release.named.len());
-    let pointer = Planner.pointer().unwrap()(&release, &store).unwrap();
+    let publication = temp.0.join("publication");
+    std::fs::create_dir_all(publication.join("data")).unwrap();
+    std::fs::write(publication.join("data/planner-runtime.toml"), "[publication]\nsite_origin='https://site.example'\napi_origin='https://api.example'\nobjects_origin='https://objects.example'\n").unwrap();
+    let pointer = Planner.pointer().unwrap()(&publication, &release, &store).unwrap();
     assert_eq!(pointer.document["active"]["id"], release.id());
     assert_eq!(pointer.document["active"]["name"], "Test");
     assert!(pointer.document["active"].get("routing").is_none(), "runtime endpoints need real code receipts");

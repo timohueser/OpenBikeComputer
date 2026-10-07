@@ -1,13 +1,15 @@
-//! Host tests for the A* router. Fixture graphs are serialized with the real `obc-pack` writer and
+//! Host tests for the A* router. Fixture graphs are serialized with the real `obc-bake` writer and
 //! parsed with the real `obc-reader`, so the router runs end to end over genuine on-wire bytes.
 
 use crate::common::nav::{digest, plan_p};
 
 use crate::common::{decode, route_points, VecSink};
+use obc_bake::serialize::serialize_lods;
+use obc_draw::serialize::{LodLayer, Node as GeomNode};
 use obc_elevation::NullElevation;
 use obc_formats::io::SliceSource;
-use obc_pack::nav::{Edge, NavGraph, Node};
-use obc_pack::{serialize_lods, LodLayer, NavProfile, Node as GeomNode};
+use obc_map_core::serialize::NavProfile;
+use obc_network::nav::{Edge, NavGraph, Node};
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_route::nav::{plan_route, NavError, NavPhase, NavPlanner, NavScratch};
 use obc_route::{BikeType, RouteIndex, RouteObjectInfo, RouteReader};
@@ -1557,7 +1559,7 @@ fn the_climb_weight_steers_from_the_pass_to_the_valley() {
     let graph = pass_vs_valley();
 
     // The packer really baked the climb the assertions below spend.
-    let (up, down) = obc_pack::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
+    let (up, down) = obc_network::nav::integrate_edge_ascent(&[at(0, 0), at(1, 1)], &mut Hillside);
     assert!(
         (up as i64 - ROW_CLIMB_M as i64).abs() <= 4,
         "the pass leg bakes about {ROW_CLIMB_M} m of ascent, baked {up}"
@@ -1594,7 +1596,7 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
 
     // The two maps differ on the wire and a grid column really climbs a row of the hillside.
     assert_ne!(flat, hilly, "the terrain-baked map must differ on the wire");
-    let (up, _) = obc_pack::nav::integrate_edge_ascent(&[at(0, 0), at(0, 500), at(1, 0)], &mut Hillside);
+    let (up, _) = obc_network::nav::integrate_edge_ascent(&[at(0, 0), at(0, 500), at(1, 0)], &mut Hillside);
     assert!(up >= ROW_CLIMB_M as u16 - 4, "a grid column climbs a row of the hillside, baked {up} m");
 
     let (route, obcr) = plan_with_elevation(&hilly, &mut NullElevation);
@@ -1619,7 +1621,7 @@ fn the_climb_aware_optimum_matches_a_directional_dijkstra() {
     let n = graph.nodes.len();
     let mut adj = vec![Vec::<(usize, u32)>::new(); n];
     for e in &graph.edges {
-        let (fwd, back) = obc_pack::nav::integrate_edge_ascent(&e.polyline, &mut Knoll);
+        let (fwd, back) = obc_network::nav::integrate_edge_ascent(&e.polyline, &mut Knoll);
         let base = weighted(e.length_m, e.kind, &prof);
         let charge = |asc: u16| base + asc as u32 * prof.climb_weight as u32;
         adj[e.a as usize].push((e.b as usize, charge(fwd)));

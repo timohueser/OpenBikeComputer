@@ -12,7 +12,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 const INDEX: &str = "planner/index";
-const PUBLIC: &str = "https://maps.openbikecomputer.com/planner";
 const TILES: &str = "https://tiles.openbikecomputer.com";
 
 pub fn named(release: &Release) -> Result<Vec<LayerFile>, String> {
@@ -32,7 +31,9 @@ pub fn named(release: &Release) -> Result<Vec<LayerFile>, String> {
     Ok(files)
 }
 
-pub fn pointer(release: &Release, store: &Store) -> Result<Pointer, String> {
+pub fn pointer(root: &std::path::Path, release: &Release, store: &Store) -> Result<Pointer, String> {
+    let origins = super::runtime::publication(root)?;
+    let public = format!("{}/planner", origins.objects_origin);
     let document: Value = serde_json::from_slice(&descriptor(release, store)?).map_err(|e| e.to_string())?;
     let id = release.id();
     let tiles = format!("{TILES}/releases/{id}");
@@ -43,7 +44,7 @@ pub fn pointer(release: &Release, store: &Store) -> Result<Pointer, String> {
         .map(|kind| (kind, format!("{tiles}/{kind}.json")))
         .collect();
     let mut active = json!({
-        "id": id, "manifest": format!("{PUBLIC}/releases/{id}/release.json"),
+        "id": id, "manifest": format!("{public}/releases/{id}/release.json"),
         "region": document["region"], "name": document["name"], "bounds": document["bounds"],
         "basemap": format!("{tiles}/basemap.json"), "places": format!("{tiles}/places.json"),
         "overlays": format!("{tiles}/overlays.json"), "terrain": format!("{tiles}/terrain/{{z}}/{{x}}/{{y}}.webp"),
@@ -56,8 +57,7 @@ pub fn pointer(release: &Release, store: &Store) -> Result<Pointer, String> {
     if services.as_object().is_some_and(|services| !services.is_empty()) {
         active["services"] = services;
     }
-    // The required runtime layer blocks publication until real code receipts supply service endpoints.
-    Ok(Pointer { document: json!({"format": 1, "active": active}).as_object().unwrap().clone() })
+    Ok(Pointer { document: json!({"format": 1, "origins": origins, "active": active}).as_object().unwrap().clone() })
 }
 
 fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String> {
@@ -185,7 +185,7 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         ));
     }
     if routing_changed {
-        route_engine::open(&source.join("runtime/routing"))
+        planner_router::open(&source.join("runtime/routing"))
             .and_then(|graph| graph.verify())
             .map_err(|e| e.to_string())?;
     }

@@ -7,11 +7,11 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub(crate) struct Deletion {
-    pub(super) region: String,
-    pub(super) sha256: String,
-    pub(super) used_by: Vec<String>,
+    pub(in crate::cli) region: String,
+    pub(in crate::cli) sha256: String,
+    pub(in crate::cli) used_by: Vec<String>,
 }
 
 pub(super) fn definition_path(root: &Path, id: &str) -> Result<PathBuf, Error> {
@@ -29,7 +29,7 @@ pub(super) fn definition_path(root: &Path, id: &str) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
-pub(super) fn deletion(root: &Path, id: &str) -> Result<Deletion, Error> {
+pub(in crate::cli) fn deletion(root: &Path, id: &str) -> Result<Deletion, Error> {
     let regions = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
     if regions.get(id).is_none() {
         return Err(Code::Usage.error(format!("no region `{id}`")));
@@ -101,7 +101,7 @@ fn names(value: &serde_json::Value, id: &str) -> bool {
     }
 }
 
-pub(super) fn remove(root: &Path, expected: &Deletion) -> Result<(), Error> {
+pub(in crate::cli) fn remove(root: &Path, expected: &Deletion) -> Result<(), Error> {
     let current = deletion(root, &expected.region)?;
     if current.sha256 != expected.sha256 || !current.used_by.is_empty() {
         return Err(Code::PlanOutdated.error("the region definition or its references changed; review deletion again"));

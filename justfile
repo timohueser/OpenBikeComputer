@@ -264,7 +264,7 @@ pack *args:
     out="${_POS[2]:-}"
     if [[ -n "$out" ]]; then out="$(_abspath "$out")"
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
-    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
+    ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
     _say "preset $preset"
     cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
@@ -497,14 +497,14 @@ web *args:
     # This is the maintainer schema host: a present binary may still predate the
     # config/parser source the editor is showing. Cargo's no-op rebuild is cheap
     # and makes the served schema and every preview use this checkout exactly.
-    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-pack )
-    [[ -d builder/app/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/app && _run npm ci ); }
+    _say "refreshing obc-pack…"; ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
+    [[ -d builder/web/node_modules ]] || { _say "installing frontend dependencies…"; ( cd builder/web && _run npm ci ); }
     # Generated bindings are gitignored; existence cannot prove that any bridge
     # matches its Rust source. Warm wasm-pack builds are incremental.
-    _say "refreshing the wasm bridges…"; ( cd builder/app && _run npm run build:wasm )
+    _say "refreshing the wasm bridges…"; ( cd builder/web && _run npm run build:wasm )
     # Always rebuild this small local bundle: tools/obc.local is runtime state,
     # but a source checkout must never keep serving yesterday's platform adapter.
-    _say "building the maintainer frontend…"; ( cd builder/app && _run npm run build )
+    _say "building the maintainer frontend…"; ( cd builder/web && _run npm run build )
     _run uv run --locked --group builder python -m builder.server "$@"
 
 # Run the desktop app (Tauri + the shared published-cell frontend). The Rust side
@@ -526,7 +526,7 @@ desktop *args:
       build|build-only) mode=build ;;
       *) _err "unknown desktop option: '$o'  (want: dev build)"; exit 1 ;;
     esac; done
-    fe="$OBC_ROOT/builder/app"
+    fe="$OBC_ROOT/builder/web"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # The app imports the shared WASM core. Generated bindings are gitignored;
     # existence cannot prove that any bridge matches its Rust source, so always
@@ -537,14 +537,14 @@ desktop *args:
       # `cargo run` embed dist/desktop; opt out of it and the window follows Vite.
       _say "starting Vite (desktop mode) on :5173 — leave it running, then this window follows it"
       ( cd "$fe" && npm run dev -- --mode desktop & )
-      cd "$OBC_ROOT/apps/obc-desktop"; _run cargo run --no-default-features
+      cd "$OBC_ROOT/builder/desktop"; _run cargo run --no-default-features
     else
       # vite/esbuild strips types without checking them; svelte-check is what
       # fails loudly when the app drifts from a bridge's generated bindings.
       _say "type-checking the frontend…"; ( cd "$fe" && _run npm run check )
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
-      cd "$OBC_ROOT/apps/obc-desktop"
+      cd "$OBC_ROOT/builder/desktop"
       [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
       _run cargo run --release
     fi
@@ -617,7 +617,7 @@ site *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     port="${1:-4173}"
-    fe="$OBC_ROOT/builder/app"
+    fe="$OBC_ROOT/builder/web"
     [[ -d "$fe/node_modules" ]] || { _say "installing frontend deps…"; ( cd "$fe" && _run npm ci ); }
     # Generated bindings are gitignored; existence cannot prove that any bridge
     # matches its Rust source, so always rebuild — warm builds are incremental.
@@ -745,7 +745,7 @@ fmt:
     _run cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
     _run cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
-    _run cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
+    _run cargo fmt --manifest-path builder/desktop/Cargo.toml
 
 [doc("Regenerate THIRD-PARTY.md (the licence texts shipped binaries owe). Args: (none) | --check.")]
 [group('build')]
@@ -763,8 +763,8 @@ bench *args:
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
     case "${1:-}" in
-      check) _run cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt ;;
-      write) _run cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt ;;
+      check) _run cargo run -p obc-bench --release -- --check sim/bench/golden.txt ;;
+      write) _run cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt ;;
       *)     _run cargo run -p obc-bench --release ;;
     esac
 
@@ -818,7 +818,7 @@ check *args:
       step "fmt (board crate)" cargo fmt --check --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
       step "fmt (bootloader)"  cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml
       step "fmt (sensor mock)" cargo fmt --check --manifest-path firmware/obc-sensor-sim/Cargo.toml
-      step "fmt (desktop app)" cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml
+      step "fmt (desktop app)" cargo fmt --check --manifest-path builder/desktop/Cargo.toml
     fi
     want clippy && step "clippy (workspace, all-targets/features)" \
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -856,7 +856,7 @@ check *args:
     fi
     if want frontend; then
       if command -v npm >/dev/null 2>&1; then
-        fe="$OBC_ROOT/builder/app"
+        fe="$OBC_ROOT/builder/web"
         pushd "$fe" >/dev/null
         [[ -d node_modules ]] || step "frontend deps (npm ci)" npm ci
         # Not optional: the TS wrapper imports the generated bindings, so svelte-check
@@ -871,11 +871,11 @@ check *args:
     fi
     if want deny; then
       if command -v cargo-deny >/dev/null 2>&1; then
-        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
-        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/apps/obc-desktop/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
+        step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
+        step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
+        step "deny (bootloader)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-boot/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
+        step "deny (sensor sim)"   cargo deny --manifest-path "$OBC_ROOT/firmware/obc-sensor-sim/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
+        step "deny (desktop app)"  cargo deny --manifest-path "$OBC_ROOT/builder/desktop/Cargo.toml" --all-features --config "$OBC_ROOT/tools/licenses/deny.toml" check
       else _warn "skip deny — cargo-deny not installed (cargo install cargo-deny)"; SKIPPED+=("deny"); fi
     fi
     if want wasm; then
@@ -927,14 +927,14 @@ ready *args:
 # `tests QUERY`, `changed --since rN`, `propose plan.json` for a coverage plan, and
 # `suggest file.json` for a requirement that does not exist yet or no longer describes the
 # product. `suggestions` lists the open ones; `--decided` shows the owner's answer. Check
-# `propose` and `suggest` with --check first. Needs the agent token file; see tools/req.py.
+# `propose` and `suggest` with --check first. Needs the agent token file; see tools/verification/req.py.
 [doc("Read and write the verification console. Args: SYS-nnn | list | proposal ID | tests QUERY | changed --since rN | propose plan.json | suggest file.json | suggestions")]
 [group('agent')]
 req *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init
-    _run python3 "$OBC_TOOLS/req.py" "$@"
+    _run python3 "$OBC_TOOLS/verification/req.py" "$@"
 
 # List and view omit bodies and discussion. Body, comments and checks are separate reads.
 # Pass native `gh` filters or a PR number, URL or branch after the mode; view defaults to this branch.

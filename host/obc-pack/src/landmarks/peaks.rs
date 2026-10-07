@@ -66,7 +66,7 @@ pub struct PeakContent {
 }
 
 pub(super) fn is_summit(tags: &BTreeMap<String, String>) -> bool {
-    crate::poi::classify(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+    obc_places::metadata::classify(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .is_some_and(|p| p.subtype == obc_formats::obcm::SUMMIT_SUBTYPE_ID)
 }
 
@@ -237,7 +237,7 @@ pub fn compile(
         include_bytes!("photo.rs"),
         include_bytes!("text.rs"),
         include_bytes!("locale.rs"),
-        include_bytes!("../poi.rs"),
+        include_bytes!("../../../obc-places/src/metadata.rs"),
         locale::LANGUAGE_BYTES,
         PHOTO_POOL_BYTES,
     ] {

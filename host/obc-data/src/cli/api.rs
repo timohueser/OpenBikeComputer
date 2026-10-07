@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Why a command failed, and what to do about it.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Error {
     pub code: Code,
     pub message: String,
@@ -27,6 +27,8 @@ pub struct Failure<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
+    /// Another admitted operation owns the environment. No work waits for it.
+    Busy,
     /// An argument is not valid, an id names nothing, the command runs outside the repository, or
     /// another command must run first.
     Usage,
@@ -57,7 +59,7 @@ pub enum Code {
 impl Code {
     pub fn exit(self) -> u8 {
         match self {
-            Code::Usage | Code::NoTerminal => 2,
+            Code::Busy | Code::Usage | Code::NoTerminal => 2,
             Code::PlanOutdated => 3,
             Code::Blocked => 4,
             Code::VerifyFailed => 5,
@@ -73,6 +75,7 @@ impl Code {
     /// The fix of an error that gives no other.
     pub(super) fn fix(self) -> &'static str {
         match self {
+            Code::Busy => "Observe the current run or retry after it drains. No work is queued.",
             Code::Usage => "Correct the command. `obc data --help` lists the commands and their arguments.",
             Code::NoTerminal => "Show the plan to a person. When they agree, run the command again with `--yes`.",
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
@@ -94,6 +97,13 @@ impl Code {
 
     pub fn error(self, message: impl Into<String>) -> Error {
         Error { code: self, message: message.into(), fix: self.fix().into(), run: None }
+    }
+}
+
+impl Error {
+    pub(super) fn with_run(mut self, run: &str) -> Self {
+        self.run = Some(run.into());
+        self
     }
 }
 
@@ -146,7 +156,10 @@ impl Error {
 }
 
 pub(super) fn start_run(store: &crate::store::Store, command: &str) -> Result<crate::engine::runs::Run, Error> {
-    let run = crate::engine::runs::Run::create(store, command)?;
+    let run = match super::operation_cli::resume(store, command)? {
+        Some(run) => run,
+        None => crate::engine::runs::Run::create(store, command)?,
+    };
     let id = run.id();
     eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
     Ok(run)
@@ -196,6 +209,7 @@ mod tests {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
+            schema("`versions SOURCE`", generator.subschema_for::<crate::cli::versions::Versions>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
             schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
@@ -204,14 +218,30 @@ mod tests {
             schema("`region create`", generator.subschema_for::<crate::regions::Region>()),
             schema("`region delete`", generator.subschema_for::<regions_cli::Deletion>()),
             schema("`region ENV ID`, `layer`, `undo`", generator.subschema_for::<edit_cli::Edited>()),
+            schema("`config review`", generator.subschema_for::<crate::cli::config_cli::Review>()),
+            schema("`config commit`", generator.subschema_for::<crate::cli::config_cli::Committed>()),
             schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
-            schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
-            schema("`prepare`", generator.subschema_for::<build_cli::Prepared>()),
-            schema("`build`", generator.subschema_for::<build_cli::Built>()),
-            schema("`apply`", generator.subschema_for::<apply_cli::Applied>()),
+            schema("`plan fixtures`", generator.subschema_for::<crate::fixtures::Plan>()),
+            schema("Completed fixture prepare or apply output", generator.subschema_for::<crate::fixtures::Outcome>()),
+            schema("`plan ENV` except fixtures, `dev --check`", generator.subschema_for::<build_cli::EnvPlan>()),
+            schema(
+                "`prepare`, `build`, `apply`, `dev --prepare`",
+                generator.subschema_for::<crate::cli::operation_cli::Handle>(),
+            ),
+            schema("`dev --start`, `dev --stop`, `dev --status`", generator.subschema_for::<crate::dev::Observed>()),
+            schema("`dev --logs`", generator.subschema_for::<crate::dev::Logs>()),
+            schema("`dev`, completed dev preparation", generator.subschema_for::<crate::dev::Prepared>()),
+            schema("Completed prepare output, `dev --inputs`", generator.subschema_for::<build_cli::Prepared>()),
+            schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
+            schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
+            schema("`auto` admission", generator.subschema_for::<crate::cli::auto_cli::Started>()),
+            schema("Completed auto output", generator.subschema_for::<crate::cli::auto_cli::Result>()),
+            schema("Live timer state", generator.subschema_for::<crate::schedule::State>()),
+            schema("`schedule live --setup-budget`", generator.subschema_for::<crate::operation::budget::Budget>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
-            schema("`runs RUN`", generator.subschema_for::<Details>()),
+            schema("`runs RUN` for a detached operation", generator.subschema_for::<crate::cli::operation_cli::View>()),
+            schema("`runs RUN` for other journals", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),
             schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),

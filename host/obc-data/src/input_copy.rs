@@ -399,11 +399,24 @@ impl Restore<'_> {
 }
 
 pub fn fetch(
+    root: &std::path::Path,
     store: &Store,
     http: &Http,
     copies: Option<&Restore>,
     request: &Request,
     selected: &[String],
+) -> Result<Snapshot, String> {
+    fetch_checked(root, store, http, copies, request, selected, None)
+}
+
+pub(crate) fn fetch_checked(
+    root: &std::path::Path,
+    store: &Store,
+    http: &Http,
+    copies: Option<&Restore>,
+    request: &Request,
+    selected: &[String],
+    checks: Option<crate::fetch::Checks<'_>>,
 ) -> Result<Snapshot, String> {
     if let Some(snapshot) = copies
         .map(|c| {
@@ -417,7 +430,7 @@ pub fn fetch(
     {
         return Ok(snapshot);
     }
-    fetch::fetch(store, http, request)
+    fetch::fetch_checked(root, store, http, request, checks)
 }
 
 #[cfg(test)]
@@ -510,6 +523,7 @@ mod tests {
         let source = crate::sources::parse_sources(crate::live::tests::LAND).unwrap().remove(0);
         let remote = Remote::Bucket(Bucket::local(&dir));
         let restored = fetch(
+            &fixture.root(),
             &fresh,
             &Http::new(),
             Some(&Restore { remote: &remote, live: &old }),
@@ -524,6 +538,7 @@ mod tests {
         assert!(!old.expected().contains_key(&format!("{INPUTS}/objects/{}", sha256_hex(b"unused"))));
         old.products[0].release.as_mut().unwrap().1.layers[1].snapshots.get_mut("land").unwrap().params = small.clone();
         assert!(fetch(
+            &fixture.root(),
             &fresh,
             &Http::new(),
             Some(&Restore { remote: &remote, live: &old }),
@@ -580,7 +595,7 @@ mod tests {
         });
         assert!(!source.credential.as_ref().unwrap().present());
         let request = Request { source: &source, version: Some("2026-10-01".into()), params: params.clone() };
-        assert!(fetch(&fresh, &Http::new(), Some(&copies), &request, &[]).unwrap().files.is_empty());
+        assert!(fetch(&fixture.root(), &fresh, &Http::new(), Some(&copies), &request, &[]).unwrap().files.is_empty());
         assert_eq!(
             crate::engine::snapshot_files(&fresh, "wikipedia", "2026-10-01", &params, &[]).unwrap(),
             Some(BTreeMap::new())
@@ -589,6 +604,7 @@ mod tests {
         source.id = "wikidata".into();
         assert_eq!(
             fetch(
+                &fixture.root(),
                 &fresh,
                 &Http::new(),
                 Some(&copies),
@@ -640,25 +656,41 @@ mod tests {
         fresh
             .put_snapshot(&Snapshot { source: source.id.clone(), version: "2026-10-01".into(), files: vec![old] })
             .unwrap();
-        assert!(fetch(&fresh, &Http::new(), Some(&copies), &request, &[]).unwrap_err().contains("but the record has"));
+        assert!(fetch(&fixture.root(), &fresh, &Http::new(), Some(&copies), &request, &[])
+            .unwrap_err()
+            .contains("but the record has"));
         assert!(!fresh.object(&record.files[0].sha256).exists());
         let fresh = Store::at(fixture.scratch.0.join("corrupt"));
         let object = dir.join(format!("{INPUTS}/objects/{}", record.files[0].sha256));
         std::fs::remove_file(&object).unwrap();
         write(&object, "torn");
-        assert!(fetch(&fresh, &Http::new(), Some(&copies), &request, &[])
+        assert!(fetch(&fixture.root(), &fresh, &Http::new(), Some(&copies), &request, &[])
             .unwrap_err()
             .contains("another SHA-256 or size"));
         assert!(fresh.snapshot("land", "2026-10-01").unwrap().is_none());
         live.inputs.insert(key.clone(), None);
-        assert!(fetch(&fresh, &Http::new(), Some(&Restore { remote: &remote, live: &live }), &request, &[])
-            .unwrap_err()
-            .contains("retained input copy is missing"));
+        assert!(fetch(
+            &fixture.root(),
+            &fresh,
+            &Http::new(),
+            Some(&Restore { remote: &remote, live: &live }),
+            &request,
+            &[]
+        )
+        .unwrap_err()
+        .contains("retained input copy is missing"));
         assert_eq!(
-            fetch(&fixture.store, &Http::new(), Some(&Restore { remote: &remote, live: &live }), &request, &[])
-                .unwrap()
-                .files
-                .len(),
+            fetch(
+                &fixture.root(),
+                &fixture.store,
+                &Http::new(),
+                Some(&Restore { remote: &remote, live: &live }),
+                &request,
+                &[]
+            )
+            .unwrap()
+            .files
+            .len(),
             1,
             "verified local bytes can repair a deleted remote record"
         );

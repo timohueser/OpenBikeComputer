@@ -1,32 +1,118 @@
-# Data publication owner
+# Data operations
 
-The [data contract](../../specs/obc-data.md#apply) defines publication and durable intents.
+Run `obc data` from the repository root. It opens the keyboard interface in a terminal;
+without a terminal it prints status. Use `--json` for structured command output.
+The [data guide](../../docs/content/software/data.md) explains the model.
+The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 
 ## Setup
 
-Prepare one Linux VPS owner. Install its matching MIT `obc-data-plumbing` binary at
-`/opt/obc-data/bin/obc-data-plumbing`. Install rclone. Give the owner the same `OBC_R2_*`
-bucket configuration as the initiating machine. The known entry point must load these
-credentials on local and SSH invocation. Create `/var/lib/obc-data/incoming` and
-`/var/lib/obc-data/store`. Only the owner account may change them.
+Prepare the selected Rust toolchain, native compiler and producer tools before a build.
+Discovery does not install them. Unsupported compiler settings or missing providers refuse
+new work. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) for browser
+assets, search dependencies and matching-host apps.
 
-Set `OBC_COMMIT_HOST` to the configured SSH host on the laptop. Install rsync and SSH
-on both machines. On that VPS, set `OBC_COMMIT_HOST=local`. Both paths run the same owner.
-`OBC_DATA_STORE` selects the initiating build cache; it does not select the owner state.
+For retained Linux work, prepare systemd user services, linger and a private environment file
+as in the [Linux bake setup](src/operation/README.md). macOS workers detach from the terminal.
 
-## Operation
+For publication, prepare one Linux VPS owner with rclone, rsync and SSH. Install its matching
+MIT `obc-data-plumbing` at `/opt/obc-data/bin/obc-data-plumbing`. Put its private environment
+in `/etc/obc-data/owner.env`. Give it the same publication bucket as the initiating machine.
+Only that owner account may change `/var/lib/obc-data/incoming` and `/var/lib/obc-data/store`,
+and it must admit the fixed system service through systemd. Set `OBC_COMMIT_HOST=local` there.
+On the laptop, select that owner with its configured SSH host.
 
-Run `obc data prepare live --json`. Review and save its `.plan`. Run
-`obc data apply live --plan PLAN --yes`. The initiating machine builds and verifies.
-The VPS owner uploads, switches and cleans under one inherited OS lock.
+Planner publication also needs the configured Linux CPython and Node versions, their host
+libraries, systemd and Caddy. Add its API virtual host to `/etc/caddy/Caddyfile`. The owner
+controls `/opt/obc-planner/services`, `/etc/systemd/system`, `/etc/caddy/planner/data` and
+the downloads state directories. Set limits through the Linux setup before automatic work.
 
-After a disconnect, query the original operation on the VPS:
+| Configuration or credential | Purpose |
+| --- | --- |
+| `data/env/live.toml` | Published region and optional layers |
+| `data/env/fixtures.toml` | Exact fixture package selection and source versions |
+| `data/env/local.toml` | Local region and layers; ignored by Git |
+| `data/regions/` | Saved Box or area selections |
+| `data/sources.toml` | Source declarations and refresh policy |
+| `data/planner.toml` | Planner producer options |
+| `data/planner-runtime.toml` | Runtime target and publication origins |
+| `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key |
+| `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
+| `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
+| `OBC_COMMIT_HOST` | Fixed publication owner: configured SSH host, or `local` on that owner |
+| `OBC_DATA_STORE` | Initiating build cache; not the fixed owner state |
+| `OBC_RUN_ENV_FILE` | Absolute private Linux worker environment file |
+| `UV_PYTHON` | Selected prepared Python interpreter |
+| `~/.cdsapirc` | CDS credential for a selected climate fetch |
+| `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
-```sh
-/opt/obc-data/bin/obc-data-plumbing commit-status RUN
-```
+Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
+Missing source credentials block only a selected new fetch; verified retained inputs remain usable.
+Publication also requires its own bucket credentials and owner admission.
+Follow the [fixture setup](../../fixtures/README.md) for its isolated bucket and exact source packages.
 
-Inspect `/var/lib/obc-data/store/runs/RUN.jsonl` for acknowledged writes. A pending intent
-blocks every later commit. Do not delete it or retry from a later object read alone.
-There is no automatic reconciliation or timeout takeover. Reusing a run id with another
-bundle is refused. Planner activation stays blocked until its service switch runs in the owner.
+## Daily commands
+
+| Command | Action |
+| --- | --- |
+| `obc data` | Open the interface |
+| `obc data plan live --json > PLAN` | Save the current review after required input preparation |
+| `obc data prepare live --json` | Return a retained input-preparation handle |
+| `obc data runs RUN --follow` | Observe progress |
+| `obc data runs RUN --result` | Read the final output; preparation includes `.plan` |
+| `obc data apply live --plan PLAN --yes` | Execute the exact owner-approved plan |
+| `obc data runs RUN --stop` | Drain admitted local work before handoff |
+| `obc data runs RUN --reconcile` | Record a verified final owner reply |
+| `obc data clean` | Review unused store bytes before `--apply` |
+| `obc data dev` | Prepare Local from working-tree code and saved source versions |
+
+Preparation leaves stopped apps stopped. Use the Local app commands to start one.
+An incomplete plan needs preparation and a new review. Apply does not commit configuration.
+After a disconnect, observe the original Run. A missing owner record does not permit a retry
+or timeout takeover. Inspect `/var/lib/obc-data/store/runs/RUN.jsonl` for acknowledged writes.
+An unresolved intent blocks another commit; do not delete it.
+
+## Terminal controls
+
+Checks and edits run in the background. An admitted check or edit finishes before `q` closes
+the terminal. Run controls remain usable after checkout edits.
+
+| View | Keys |
+| --- | --- |
+| Local | `2` opens it; `r` selects its region; Space changes optional layers |
+| Local inputs | `R` checks saved data; `f` checks Live inputs over the network; `b` reviews work |
+| Local apps | arrows select an app; `s` starts or stops; `o` opens a browser; `l` reads logs |
+| Live region | `r` opens saved regions; `/` filters; Enter selects |
+| Region editor | `n` creates an area selection; `b` creates a Box; `d` reviews deletion |
+| Area selection | F5 loads the public area list; arrows and Space select; F3 shows selected areas |
+| Region fields | Tab and Shift-Tab move; F2 saves the file; Esc keeps the draft |
+| Sources | `f` changes scope; `/` filters; Enter shows details; `R` checks upstream |
+| Source versions | `v` lists requests; Enter selects a source-wide move |
+| Source policy | `e` opens presets; `c` enters 1..65535 whole days |
+| Automation | `s` details; `e` edits Daily/Weekly/Monthly/Custom; arrows select; Tab field; Enter reviews; `y` confirms |
+| Automation host | `d` disables future runs; `b` reviews limits; the Live row shows cadence, next run and last result |
+| Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
+| Configuration | `C` reviews Git changes; `e` edits the message; Enter reviews the commit; `y` commits; `R` refreshes |
+| Config CLI | `config review --json > REVIEW`; `config commit --review REVIEW -m MESSAGE --yes`; no push |
+| Apply | `a` reviews the machine, live changes and removals; `y` starts the exact reviewed plan |
+| Run | Enter opens progress; `R` observes; `x` stops admitted local work; `c` reconciles an owner result |
+| Prepared run | `p` reviews its returned plan before build or apply |
+| Error | `!` opens the full message and fix; `x` dismisses it outside an input or Run |
+| Current Rust code | F6 drains the check, restores the terminal and launches a fresh worker |
+
+
+Region and policy edits save files for review. `u` resets only Live settings, not regions or
+source policies. First entry into Regions or Local does not fetch or build. Required Plan
+rows always apply; only source moves have checkboxes. Esc hides a Run and `q` quits its viewer;
+neither stops the retained operation. Stop refuses after publication handoff.
+Manual laptop apply does not need the Linux schedule controller.
+
+## Agents
+
+Use the same plan and retained-operation APIs as the interface. Report the executing host,
+selected environment, exact source moves, build work and publication outcome.
+Inspect `plan.approval` even for a no-change apply; `applied.approval` is separate from publication.
+Unsupported automatic approval does not disable manual publication.
+Keep original provenance when adopting portable data; do not create a foreign build receipt.
+See [portable Local data](../../specs/obc-data.md#local-portable-data) and
+[automatic approval](../../specs/obc-data.md#manual-automatic-approval).

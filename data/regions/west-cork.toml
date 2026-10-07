@@ -1,0 +1,3 @@
+name = "West Cork"
+kind = "box"
+box = [-9.9, 51.43, -9.5, 51.65]

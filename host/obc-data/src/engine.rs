@@ -7,6 +7,8 @@ pub mod changes;
 pub(crate) mod code;
 pub mod plan;
 mod process;
+pub use code::{python_executable, runtime_rust, RuntimeRust};
+
 pub mod release;
 pub mod runs;
 pub mod state;
@@ -23,6 +25,7 @@ use crate::date;
 use crate::store::{hash_file, sha256_hex, FileRecord, Snapshot, Store};
 
 /// What a step reads, the code that makes its layer, and how it runs.
+#[derive(Clone)]
 pub struct Step {
     /// The layer name: kebab-case segments joined by `/`.
     pub name: String,
@@ -76,6 +79,7 @@ fn covers(prefix: &str, path: &str) -> bool {
     path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
 }
 
+#[derive(Clone)]
 pub enum Input {
     Snapshot {
         source: String,
@@ -99,7 +103,7 @@ impl Input {
 
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
 /// gives stale data.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Code {
     /// Files and directories, relative to the repository root.
@@ -109,6 +113,9 @@ pub struct Code {
     /// Resolve Rust dependencies for this target; None selects the producer host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// None binds the native dev build. Prepared builds bind their toolchain in step options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<Rust>,
     /// The content settings of these sources. Freshness and access controls are excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
@@ -118,9 +125,34 @@ pub struct Code {
     /// A locked Python group packaged for another runtime, without selecting its interpreter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_packages: Option<String>,
+    /// Native library or executable files bound by the provider before its code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<Library>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Library {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Rust {
+    Native { profile: Profile },
+    Prepared { profile: Profile },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    Dev,
+    Release,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Python {
     /// None selects the project's base packages, without default groups.
@@ -132,8 +164,80 @@ impl Code {
     pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
         code::files(root, self)
     }
+
+    /// Start tools with the same checked runtime policy as an engine step.
+    pub fn command(&self, root: &Path, argv: &[String]) -> Result<std::process::Command, String> {
+        let expected = code::hash(&self.files(root)?);
+        process::command(root, argv, Some((self, &expected)))
+    }
+
+    /// Resolve source/config at a recorded target without selecting its execution tools.
+    pub fn source_config(&self, root: &Path, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
+        code::source_config(root, self, rust)
+    }
+
+    /// Resolve content, execution and commitment inputs in one traversal.
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::identity(root, self)
+    }
 }
 
+/// Native acquisition or planning code, with scoped owner source and its actual dependencies.
+#[derive(Debug, Clone)]
+pub struct OwnerCode {
+    pub crate_name: String,
+    pub code: Code,
+}
+
+impl OwnerCode {
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::owner_identity(root, self)
+    }
+
+    pub fn source_config(&self, root: &Path, rust: &ResolvedRust) -> Result<SourceIdentity, String> {
+        code::owner_source_config(root, self, rust)
+    }
+}
+
+/// Source compatibility is resolved at the recorded producer target and profile.
+/// It permits consuming existing bytes; it does not prove that another host emits them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeIdentity {
+    pub files: BTreeMap<String, String>,
+    pub source_config: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+    /// Repository-relative physical inputs, before manifest or source projection.
+    pub git_inputs: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceIdentity {
+    pub files: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+    pub git_inputs: std::collections::BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedRust {
+    pub target: String,
+    pub build: Rust,
+}
+
+impl CodeIdentity {
+    /// Commitment checks the selected physical inputs, including projected build metadata.
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
+}
+
+impl SourceIdentity {
+    pub fn committed(&self, root: &Path) -> Result<(), String> {
+        code::committed(root, &self.git_inputs)
+    }
+}
+
+#[derive(Clone)]
 pub enum Run {
     /// A function in this process. Its code must declare the crate of the function. One binary
     /// links every product, so Cargo unifies their features: a step crate enables every feature
@@ -156,6 +260,8 @@ pub struct Request {
     /// Receipt metadata for exactly the selected files of each layer input.
     pub layer_files: BTreeMap<String, Vec<LayerFile>>,
     pub options: Value,
+    /// Exact native providers from the checked execution identity.
+    pub libraries: Vec<Library>,
     /// An empty directory: the layer is the files the step writes in it.
     pub output: PathBuf,
     /// Where the step may write a JSON object of metrics.
@@ -375,15 +481,15 @@ impl Step {
 /// The code hash and the code files of each `Code`, computed once per value.
 #[derive(Default)]
 struct Codes<'a> {
-    cached: HashMap<&'a Code, (String, BTreeMap<String, String>)>,
+    cached: HashMap<&'a Code, (String, CodeIdentity)>,
     context: code::Context,
 }
 
 impl<'a> Codes<'a> {
-    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, BTreeMap<String, String>), String> {
+    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, CodeIdentity), String> {
         if !self.cached.contains_key(code) {
-            let files = self.context.files(root, code)?;
-            self.cached.insert(code, (code::hash(&files), files));
+            let identity = self.context.identity(root, code)?;
+            self.cached.insert(code, (code::hash(&identity.files), identity));
         }
         Ok(&self.cached[code])
     }
@@ -481,13 +587,14 @@ pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
-/// A step whose layer is the one file of its snapshot inputs, as it is, at the path of the option
+/// A step whose layer is the one file of its snapshot or selected layer inputs, at the path of the option
 /// `path`: a layer that other steps read, whatever gives its bytes. It only passes an input on, so,
 /// like the rest of the engine, it is no code of a step. Its step declares the crate `obc-data`,
 /// which adds no file.
 pub fn pass(request: &Request) -> Result<(), String> {
     let path = request.options["path"].as_str().ok_or("option `path` is not a string")?;
-    let files: Vec<&PathBuf> = request.snapshots.values().flat_map(BTreeMap::values).collect();
+    let files: Vec<&PathBuf> =
+        request.snapshots.values().chain(request.layers.values()).flat_map(BTreeMap::values).collect();
     let [file] = files[..] else {
         return Err(format!("the step reads {} files, not one", files.len()));
     };
@@ -513,7 +620,7 @@ fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
 fn prepare(
     store: &Store,
     step: &Step,
-    layers: &HashMap<&str, Receipt>,
+    layers: &HashMap<&str, release::Layer>,
     code: &str,
 ) -> Result<(Receipt, Request), String> {
     if !step.options.is_object() {
@@ -525,6 +632,7 @@ fn prepare(
         layers: BTreeMap::new(),
         layer_files: BTreeMap::new(),
         options: step.options.clone(),
+        libraries: step.code.libraries.clone(),
         output: PathBuf::new(),
         metrics: PathBuf::new(),
     };
@@ -591,6 +699,13 @@ fn prepare(
     match &step.run {
         Run::Rust(_) if step.code.crates.is_empty() => {
             return Err("a Rust step must declare the crate of its function in its code".into());
+        }
+        Run::Rust(_)
+            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Release })) =>
+        {
+            return Err(
+                "a Rust function runs in the native dev worker; use a command for prepared or release code".into()
+            );
         }
         Run::Command(argv) => {
             let outside = |arg: &&String| {
@@ -671,9 +786,7 @@ fn execute(
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
-        Run::Command(argv) => {
-            process::run(root, argv, request, step.code.python.as_ref().map(|_| (&step.code, receipt.code.as_str())))
-        }
+        Run::Command(argv) => process::run(root, argv, request, Some((&step.code, receipt.code.as_str()))),
     }?;
     check_code(checks, root, step, &receipt.code)?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
@@ -788,6 +901,46 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     impl Fixture {
         pub(crate) fn root(&self) -> PathBuf {
             self.scratch.0.join("repository")
+        }
+
+        pub(crate) fn with_acquisition(&self) {
+            let root = self.root();
+            let source = crate::fetch::tests::source("https://example.org/file.bin", "date");
+            for path in crate::fetch::owner_code(&source).code.paths {
+                write(&root.join(path), "// fixture acquisition backend\n");
+            }
+            write(&root.join("host/obc-data/src/lib.rs"), "");
+            write(
+                &root.join("host/obc-data/Cargo.toml"),
+                "[package]\nname = \"obc-data\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            );
+            let manifest = root.join("Cargo.toml");
+            let mut workspace: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+            workspace["workspace"]["members"].as_array_mut().unwrap().push("host/obc-data".into());
+            write(&manifest, &toml::to_string(&workspace).unwrap());
+            let lock =
+                Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&root).output().unwrap();
+            assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
+        }
+
+        pub(crate) fn with_sources(&self, sources: &[crate::sources::Source]) {
+            let root = self.root();
+            for source in sources {
+                for path in crate::fetch::owner_code(source).code.paths {
+                    write(&root.join(path), "// fixture acquisition backend\n");
+                }
+            }
+            let mut registry = sources.to_vec();
+            for source in &mut registry {
+                // Registry URLs stay HTTPS; requests use the existing loopback transport seam.
+                if let Some(url) = &mut source.fetch.url {
+                    *url = url.replacen("http://", "https://", 1);
+                }
+            }
+            write(
+                &root.join("data/sources.toml"),
+                &toml::to_string(&std::collections::BTreeMap::from([("source", registry)])).unwrap(),
+            );
         }
 
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
@@ -1137,6 +1290,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             (Run::Rust(nothing), steps_crate(), "did not write its output upper.txt"),
             (Run::Rust(extra), steps_crate(), "wrote extra.txt, which is not one of its outputs"),
             (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
+            (
+                Run::Rust(upper),
+                Code { rust: Some(Rust::Native { profile: Profile::Release }), ..steps_crate() },
+                "native dev worker",
+            ),
+            (
+                Run::Rust(upper),
+                Code {
+                    rust: Some(Rust::Prepared { profile: Profile::Release }),
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    ..steps_crate()
+                },
+                "native dev worker",
+            ),
             (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "argument /usr/bin/true names a path"),
             (Run::Command(vec!["x".into(), "--in=/tmp".into()]), Code::default(), "argument --in=/tmp names a path"),
             (Run::Command(vec!["x".into(), "a/../../b".into()]), Code::default(), "argument a/../../b names a path"),
@@ -1200,8 +1367,12 @@ mod x;
         );
         write(&scratch.0.join("app/build.rs"), "fn main() {}\n");
         let mut context = code::Context::default();
-        let selected =
-            |target: &str| Code { crates: vec!["app".into()], target: Some(target.into()), ..Default::default() };
+        let selected = |target: &str| Code {
+            crates: vec!["app".into()],
+            target: Some(target.into()),
+            rust: Some(Rust::Prepared { profile: Profile::Release }),
+            ..Default::default()
+        };
         let linux = context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap();
         let mac = context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap();
         for kind in ["normal", "build"] {

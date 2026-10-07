@@ -28,7 +28,7 @@ def recipe(path):
     if not re.fullmatch(r"[a-f0-9]{64}", document["osm"]["sha256"]):
         raise ValueError("Pin the OSM SHA-256 in the recipe")
     profiles = document["profiles"]
-    # The presets of route-build (`Profile::presets`); it rejects any other ID at bake time.
+    # The presets of planner-router-build (`Profile::presets`); it rejects any other ID at bake time.
     if not isinstance(profiles, list) or not profiles or any(
             not isinstance(profile, str) or not re.fullmatch(r"(?:touring|road|gravel|mtb|hiking)(?:/(?:shorter|less-climbing))?", profile)
             for profile in profiles) or len(profiles) != len(set(profiles)):

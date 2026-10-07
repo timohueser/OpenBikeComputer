@@ -4,15 +4,22 @@
 
 mod api;
 mod apply_cli;
+mod auto_cli;
 mod build_cli;
+pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
 pub mod commit_cli;
+mod config_cli;
+mod dev_cli;
 mod edit_cli;
+mod fixture_cli;
 mod freshness;
+pub mod operation_cli;
 mod r2_cli;
 mod regions_cli;
 mod runs_cli;
 mod status_cli;
 mod tui;
+mod versions;
 
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
@@ -46,6 +53,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    Perform {
+        #[arg(long)]
+        store: std::path::PathBuf,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        request: String,
+    },
     /// What is live: the release of each product, the state of its layers, and what needs attention.
     Status(status_cli::StatusArgs),
     /// Every source with licence, R2 copy, live version, newest upstream version, age, policy and
@@ -55,6 +71,8 @@ enum Command {
         #[arg(long)]
         check_now: bool,
     },
+    /// Versions known for every active request of a source, with each request's availability.
+    Versions { source: String },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
         /// SOURCE or SOURCE@VERSION. Without a version: upstream's newest file.
@@ -80,18 +98,39 @@ enum Command {
     Layer { env: String, layer: String, switch: edit_cli::Switch },
     /// Restore data/env/ENV.toml to its committed version: the edits that are not applied go.
     Undo { env: String },
+    /// Review and commit only working bake configuration. Nothing pushes.
+    Config {
+        #[command(subcommand)]
+        action: config_cli::Action,
+    },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
-    /// Resolve the environment's inputs and return a plan for review. Nothing builds or uploads.
+    /// Start durable input preparation and return its run handle. Nothing builds or uploads.
     Prepare(build_cli::PlanArgs),
-    /// Fetch and build the environment into the store, and write the release of each product
-    /// whose every layer is built. Nothing uploads.
+    /// Start a durable build into the store and return its run handle. Nothing uploads.
     Build(build_cli::BuildArgs),
-    /// Build the plan of live, upload what R2 lacks, switch the pointers, and remove from R2 what no
-    /// live release uses. Asks once; without a terminal, `--yes` or `--plan` is required.
+    /// Review live, start its durable build/publication, and return a run handle.
+    /// Asks once; without a terminal, `--yes` or `--plan` is required.
     Apply(apply_cli::ApplyArgs),
+    /// Start a durable refresh of used stale sources, then build and verify.
+    Auto { env: String },
+    /// Inspect, enable or disable the operator's live timer.
+    Schedule {
+        env: String,
+        #[arg(long, conflicts_with_all = ["disable", "setup_budget"], requires = "time_zone")]
+        calendar: Option<String>,
+        #[arg(long, requires = "calendar")]
+        time_zone: Option<String>,
+        #[arg(long, conflicts_with = "setup_budget")]
+        disable: bool,
+        /// Install and verify bake limits without enabling a timer.
+        #[arg(long)]
+        setup_budget: bool,
+    },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
+    /// Prepare and open the Local Web planner; serving does not hold the bake lock.
+    Dev(dev_cli::Dev),
     /// Clean the local store: delete what no live release or fixture reaches, and move the
     /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
     Clean {
@@ -107,6 +146,13 @@ enum Command {
 
 /// Run `obc data` with the products whose steps this binary links.
 pub fn main(products: &[&dyn Product]) -> ExitCode {
+    main_with_fixtures(products, None)
+}
+
+pub fn main_with_fixtures(
+    products: &[&dyn Product],
+    fixtures: Option<&crate::fixtures::FixtureCollection>,
+) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -119,7 +165,7 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli, products) {
+    match run(cli, products, fixtures) {
         Ok(code) => code,
         Err(error) => error.report(json),
     }
@@ -130,20 +176,45 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
+fn run(
+    cli: Cli,
+    products: &[&dyn Product],
+    fixtures: Option<&crate::fixtures::FixtureCollection>,
+) -> Result<ExitCode, Error> {
     crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let command = match cli.command {
-        None if terminal && !json => return tui::run(&root()?, products).map(|()| ExitCode::SUCCESS),
+        None if terminal && !json => return tui::run(&root()?, products),
         None => return status_cli::status(&root()?, products, false, json),
         Some(command) => command,
     };
+    let command = fixture_cli::dispatch(&root()?, command, fixtures, json)?;
+    let Some(command) = command else { return Ok(ExitCode::SUCCESS) };
     let done = match command {
+        Command::Perform { store, run, request } => {
+            return operation_cli::perform(&Store::at(store), &run, &request, products, fixtures)
+                .map(|()| ExitCode::SUCCESS);
+        }
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
+        Command::Versions { source } => {
+            let (rows, _) = source_listing(&root()?, products, false)?;
+            let row = rows
+                .iter()
+                .find(|row| row.source.id == source)
+                .ok_or_else(|| Code::Usage.error(format!("no source `{source}`")))?;
+            let versions = versions::read(&Store::open()?, row)?;
+            if json {
+                print_json(&versions)
+            } else {
+                versions.lines().iter().for_each(|line| println!("{line}"));
+                Ok(())
+            }
+        }
         Command::Fetch { target, params } => {
-            let registry = registry(&root()?)?;
+            let root = root()?;
+            let registry = registry(&root)?;
             let (id, version) = match target.split_once('@') {
                 Some((id, version)) => (id, Some(version.to_string())),
                 None => (target.as_str(), None),
@@ -167,7 +238,10 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
                 remote.as_ref().zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
             print_snapshot(
                 &store,
-                &fetched(source, crate::input_copy::fetch(&store, &Http::new(), copies.as_ref(), &request, &[]))?,
+                &fetched(
+                    source,
+                    crate::input_copy::fetch(&root, &store, &Http::new(), copies.as_ref(), &request, &[]),
+                )?,
                 json,
             )
         }
@@ -187,10 +261,66 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
         }
         Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
+        Command::Config { action } => config_cli::run(&root()?, action, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
-        Command::Prepare(args) => build_cli::prepare(&root()?, products, args, json),
-        Command::Build(args) => build_cli::build(&root()?, products, args, json),
-        Command::Apply(args) => apply_cli::apply(&root()?, products, args, json),
+        Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
+        Command::Build(args) => operation_cli::build(&root()?, args, json),
+        Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
+        Command::Auto { env } => auto_cli::start(&root()?, env, json),
+        Command::Schedule { env, calendar, time_zone, disable, setup_budget } => {
+            let (root, store) = (root()?, Store::open()?);
+            if setup_budget {
+                let budget =
+                    crate::schedule::setup_budget(&root, &store, &env).map_err(|reason| Code::Blocked.error(reason))?;
+                return if json {
+                    print_json(&budget).map(|()| ExitCode::SUCCESS)
+                } else {
+                    println!("bake CPU/memory limits and disk reserve configured; live timer unchanged");
+                    Ok(ExitCode::SUCCESS)
+                };
+            }
+            let state = if disable {
+                crate::schedule::disable(&root, &store, &env)
+            } else if let Some(calendar) = calendar {
+                crate::schedule::install(
+                    &root,
+                    &store,
+                    &env,
+                    &calendar,
+                    time_zone.as_deref().expect("clap requires a time zone"),
+                )
+            } else {
+                crate::schedule::state(&root, &store, &env)
+            }
+            .map_err(|reason| Code::Blocked.error(reason))?;
+            if json {
+                print_json(&state)
+            } else {
+                println!("live timer: {}", if state.enabled { "enabled" } else { "disabled" });
+                if let Some(reason) = &state.blocked {
+                    println!("not runnable: {reason}");
+                } else if state.enabled && !state.active {
+                    println!("not runnable: the installed timer is inactive");
+                }
+                if let (Some(calendar), Some(zone)) = (&state.calendar, &state.time_zone) {
+                    println!("{calendar} {zone}");
+                }
+                println!(
+                    "next: {}; last trigger: {}",
+                    state.next.as_deref().unwrap_or("none"),
+                    state.last_trigger.as_deref().unwrap_or("none")
+                );
+                if let Some(run) = &state.last_run {
+                    println!("last run: {} {:?}", run.run.summary.id, run.run.summary.outcome);
+                    if let Some(error) = &run.observation_error {
+                        println!("observation: {error}");
+                    }
+                }
+                Ok(())
+            }
+        }
+        Command::Dev(args) => dev_cli::run(&root()?, products, args, json),
+
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),
@@ -273,8 +403,8 @@ fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::
     let roots = roots(root, products, store)?;
     let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
-            .error("a fetch, a build or an import uses the store; nothing was deleted")
-            .fix("Run `obc data clean --apply` again when the fetch, the build or the import ends.")
+            .error("a run, fetch or import uses the store; nothing was deleted")
+            .fix("Run `obc data clean --apply` again when the run, fetch or import ends.")
     })?;
     Ok(CleanPlan { store: removed, import: import::apply(store, &old_dirs()?)? })
 }

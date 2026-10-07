@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use obc_data::engine::release::Release;
 use obc_data::engine::LayerFile;
 use obc_data::store::{hash_file, Store};
-use obc_data::vps::{Candidate, Host, Ready, Service};
+use obc_data::vps::{Candidate, Host, Origins, Ready, Service};
 use serde_json::Value;
 
 fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String> {
@@ -47,26 +47,20 @@ fn ready(service: Service, document: &Value) -> Result<Ready, String> {
     })
 }
 
-/// Metadata and available bytes are checked. The view stays alive during staging.
-pub struct Prepared {
-    candidates: Vec<Candidate>,
-    _view: tempfile::TempDir,
-}
-
-impl Prepared {
-    pub fn candidates(&self) -> &[Candidate] {
-        &self.candidates
-    }
-}
-
-pub fn prepare(release: &Release, store: &Store, objects_url: &str, site_origin: &str) -> Result<Prepared, String> {
+/// The caller owns the view. Only metadata is copied; staging resolves its selected objects.
+pub fn prepare_into(
+    release: &Release,
+    store: &Store,
+    origins: &Origins,
+    view: &std::path::Path,
+) -> Result<Vec<Candidate>, String> {
+    origins.check()?;
     release.check_named()?;
     let manifest = named(release, "release.json")?;
     let document: Value =
         serde_json::from_slice(&std::fs::read(checked(store, &manifest)?).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let identities = super::runtime::identities(release)?;
-    let view = tempfile::tempdir_in(store.root()).map_err(|e| e.to_string())?;
     let mut candidates = Vec::new();
     let owned = release.objects();
     for service in [Service::Routing, Service::Search, Service::Downloads] {
@@ -77,7 +71,7 @@ pub fn prepare(release: &Release, store: &Store, objects_url: &str, site_origin:
         let target: Host =
             serde_json::from_value(body["target"].clone()).map_err(|e| format!("runtime target: {e}"))?;
         let expected = ready(service, &document)?;
-        let source = view.path().join(name);
+        let source = view.join(name);
         std::fs::create_dir_all(source.join("objects")).map_err(|e| e.to_string())?;
         for file in [&manifest, &descriptor] {
             let destination = source.join(&file.path);
@@ -111,7 +105,7 @@ pub fn prepare(release: &Release, store: &Store, objects_url: &str, site_origin:
             }
             let file = LayerFile { path: format!("objects/{sha256}"), sha256, size };
             if store.object(&file.sha256).exists() {
-                std::fs::hard_link(checked(store, &file)?, source.join(&file.path)).map_err(|e| e.to_string())?;
+                checked(store, &file)?;
             }
         }
         candidates.push(Candidate {
@@ -122,11 +116,12 @@ pub fn prepare(release: &Release, store: &Store, objects_url: &str, site_origin:
             source,
             release: manifest.clone(),
             runtime: descriptor,
-            objects_url: objects_url.into(),
-            site_origin: site_origin.into(),
+            objects_url: origins.objects_url(),
+            site_origin: origins.site_origin.clone(),
+            api_origin: origins.api_origin.clone(),
         });
     }
-    Ok(Prepared { candidates, _view: view })
+    Ok(candidates)
 }
 
 #[cfg(test)]
@@ -154,7 +149,9 @@ mod tests {
             let body: Value =
                 serde_json::from_slice(&std::fs::read(candidate.source.join(&candidate.runtime.path)).unwrap())
                     .unwrap();
-            if !candidate.source.join("objects").join(body["payload"]["sha256"].as_str().unwrap()).is_file() {
+            if !candidate.source.join("objects").join(body["payload"]["sha256"].as_str().unwrap()).is_file()
+                && !self.state.installed.iter().any(|unit| unit.service == candidate.service && unit.id == candidate.id)
+            {
                 return Err("missing staged runtime bytes".into());
             }
             self.staged.push(staged.installed.clone());
@@ -162,9 +159,6 @@ mod tests {
         }
         fn probe(&mut self, staged: &Stage) -> Result<Ready, String> {
             let installed = &staged.installed;
-            if staged.candidate.site_origin != "https://openbikecomputer.com" {
-                return Err("site origin needs configuration".into());
-            }
             if self.failed == Some(installed.service) {
                 return Err("candidate is not healthy".into());
             }
@@ -216,6 +210,7 @@ mod tests {
             region: "test".into(),
             optional: Vec::new(),
             named: Vec::new(),
+            producers: Default::default(),
             layers: [
                 "planner/routing/grid",
                 "planner/search/pois/grid",
@@ -283,13 +278,26 @@ mod tests {
             failed: None,
         };
         let staged = |release: &Release, current: &[Installed], fake: &mut Fake| {
-            let prepared = prepare(
+            let view = tempfile::tempdir_in(store.root()).unwrap();
+            let candidates = prepare_into(
                 release,
                 &store,
-                "https://maps.openbikecomputer.com/planner/objects",
-                "https://openbikecomputer.com",
+                &Origins {
+                    site_origin: "https://openbikecomputer.com".into(),
+                    api_origin: "https://releases.openbikecomputer.com".into(),
+                    objects_origin: "https://maps.openbikecomputer.com".into(),
+                },
+                view.path(),
             )?;
-            stage(prepared.candidates(), current, fake)
+            for candidate in &candidates {
+                for (digest, _) in release.objects() {
+                    let path = store.object(digest);
+                    if path.is_file() {
+                        std::fs::hard_link(path, candidate.source.join("objects").join(digest)).unwrap();
+                    }
+                }
+            }
+            stage(&candidates, current, fake)
         };
         let first = staged(&release, &[], &mut fake).unwrap();
         assert_eq!(fake.staged.len(), 3);
@@ -299,10 +307,25 @@ mod tests {
         std::fs::remove_file(store.object(&sha256_hex(b"routing"))).unwrap();
         assert_eq!(staged(&release, &first, &mut fake).unwrap(), first);
         assert!(fake.staged.is_empty());
-        let prepared =
-            prepare(&release, &store, "https://maps.openbikecomputer.com/planner/objects", "https://other.example")
-                .unwrap();
-        assert!(stage(prepared.candidates(), &first, &mut fake).unwrap_err().contains("site origin"));
+        let view = tempfile::tempdir_in(store.root()).unwrap();
+        let candidates = prepare_into(
+            &release,
+            &store,
+            &Origins {
+                site_origin: "https://other.example".into(),
+                api_origin: "https://releases.openbikecomputer.com".into(),
+                objects_origin: "https://maps.openbikecomputer.com".into(),
+            },
+            view.path(),
+        )
+        .unwrap();
+        let configured = stage(&candidates, &first, &mut fake).unwrap();
+        assert!(configured.iter().all(|unit| unit.slot == 1));
+        assert_eq!(
+            configured.iter().map(|unit| &unit.id).collect::<Vec<_>>(),
+            first.iter().map(|unit| &unit.id).collect::<Vec<_>>()
+        );
+        fake.staged.clear();
         let offline = put("offline/catalog.json", b"catalog with an optional map");
         document["files"][&offline.path] = json!({"bytes": offline.size, "sha256": offline.sha256, "transport": {"bytes": offline.size, "sha256": offline.sha256, "encoding": "identity"}});
         release.layers[4].files.retain(|file| file.path != offline.path);

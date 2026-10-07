@@ -13,9 +13,9 @@ for (const name of ['LICENSE.md', 'ThirdParty.json']) {
 // Use the web planner's palette, POI categories, style and search kinds in the native renderer.
 const cache = new URL('node_modules/.cache/', import.meta.url);
 await mkdir(cache, { recursive: true });
-await cp(new URL('../../builder/app/src/lib/planner/poi-kinds.json', import.meta.url), new URL('poi-kinds.json', cache));
+await cp(new URL('../../builder/web/src/lib/planner/poi-kinds.json', import.meta.url), new URL('poi-kinds.json', cache));
 for (const name of ['poi-kinds', 'map-style']) {
-  let text = await readFile(new URL(`../../builder/app/src/lib/planner/${name}.ts`, import.meta.url), 'utf8');
+  let text = await readFile(new URL(`../../builder/web/src/lib/planner/${name}.ts`, import.meta.url), 'utf8');
   text = text.replaceAll('"./poi-kinds"', '"./poi-kinds.mjs"');
   await writeFile(new URL(`${name}.mjs`, cache), ts.transpileModule(text, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -29,7 +29,7 @@ const { poiKinds } = await import(new URL('poi-kinds.mjs', cache).href);
 const maps = new URL('../Packages/OBCKit/Sources/OBCUI/Resources/Map/', import.meta.url);
 await mkdir(maps, { recursive: true });
 await writeFile(new URL('poi-kinds.json', maps), JSON.stringify(poiKinds));
-await cp(new URL('../../apps/planner-search/query/contract.json', import.meta.url), new URL('contract.json', maps));
+await cp(new URL('../../planner/search/query/contract.json', import.meta.url), new URL('contract.json', maps));
 for (const theme of ['light', 'dark']) {
   const style = mapStyle(theme, config, '__TERRAIN__', '__CONTOURS__');
   // The web renderer generates contours from DEM tiles; native uses the DEM hillshade.

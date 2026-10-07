@@ -38,7 +38,7 @@ def search_lookup(source, output):
 
 
 def search_shard(source, lookup, output, bounds, metadata):
-    sys.path.insert(0, str(ROOT / "apps/planner-search"))
+    sys.path.insert(0, str(ROOT / "planner/search"))
     try:
         from storage import create, finish
     finally:

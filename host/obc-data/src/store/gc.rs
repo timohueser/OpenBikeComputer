@@ -1,5 +1,5 @@
 //! The collection of `obc data clean`: delete the objects and the snapshot records that no live
-//! release or fixture reaches. Receipts and import records stay: they are history.
+//! release, saved Local adoption or fixture reaches. Receipts and import records stay: they are history.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -14,10 +14,14 @@ use crate::engine::{self, InputKind};
 use crate::live::Live;
 
 /// What live and the repository keep.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Roots {
     /// `(source, version)` that a layer of a live release read, with the products.
     pub live: BTreeMap<(String, String), Vec<String>>,
+    /// Exact source versions of saved Local data, including stopped experiments.
+    pub local: BTreeMap<(String, String), Vec<String>>,
+    /// Exact inputs of saved fixture package releases, independent of Live and Local selections.
+    pub fixtures: BTreeMap<(String, String), Vec<String>>,
     /// Each SHA-256 that a live layer, a fixture or a planner region recipe names, with which of
     /// them.
     pub sha256s: BTreeMap<String, &'static str>,
@@ -57,6 +61,56 @@ impl Roots {
                 }
             }
         }
+    }
+
+    fn add_local(&mut self, store: &Store) -> Result<(), String> {
+        for adoption in crate::local::saved(store)? {
+            self.name(
+                adoption.plan.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
+                "local release",
+            );
+            for name in adoption.inputs()? {
+                let layer =
+                    adoption.original.layers.iter().find(|layer| layer.step == name).expect("checked provenance");
+                for (source, read) in &layer.snapshots {
+                    let products = self.local.entry((source.clone(), read.version.clone())).or_default();
+                    if !products.contains(&adoption.plan.product) {
+                        products.push(adoption.plan.product.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn add_fixtures(&mut self, store: &Store) -> Result<(), String> {
+        for saved in crate::fixtures::saved(store)? {
+            self.name(saved.assets.iter().map(|asset| asset.sha256.clone()), "fixture");
+            self.name([saved.bootstrap.sha256, saved.archive.sha256].into_iter(), "fixture");
+            self.name(
+                saved.release.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
+                "fixture",
+            );
+            for input in std::iter::once(&saved.inputs.osm)
+                .chain(saved.inputs.content.values())
+                .chain(&saved.inputs.terrain)
+                .chain(saved.inputs.historical.values())
+            {
+                let packages = self.fixtures.entry((input.source.clone(), input.version.clone())).or_default();
+                if !packages.contains(&saved.package) {
+                    packages.push(saved.package.clone());
+                }
+            }
+            for layer in &saved.release.layers {
+                for (source, read) in &layer.snapshots {
+                    let packages = self.fixtures.entry((source.clone(), read.version.clone())).or_default();
+                    if !packages.contains(&saved.package) {
+                        packages.push(saved.package.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Record `why` for each SHA-256 that no other root named first.
@@ -105,6 +159,9 @@ pub struct Kept {
 /// its source, and a layer input whose digest is of the files that it selects (all when it names
 /// none) of a reached layer of its step.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
+    let mut roots = roots.clone();
+    roots.add_local(store)?;
+    roots.add_fixtures(store)?;
     let mut named = roots.sha256s.clone();
     for path in files(&store.root().join("imports"), &["jsonl"])? {
         let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -152,9 +209,12 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
         let (source, version) = (&snapshot.source, &snapshot.version);
         let key = (source.clone(), version.clone());
         let live = roots.live.get(&key).map(|products| format!("live {}", products.join(", ")));
+        let local = roots.local.get(&key).map(|products| format!("local {}", products.join(", ")));
+        let fixture = roots.fixtures.get(&key).map(|packages| format!("fixture {}", packages.join(", ")));
         let newest_of_source = (retrieved(snapshot) >= newest[source.as_str()]).then(|| "newest of the source".into());
         let newest_of_request = kept.contains(&key).then(|| "newest of a request".into());
-        let because: Vec<String> = [live, newest_of_source, newest_of_request].into_iter().flatten().collect();
+        let because: Vec<String> =
+            [live, local, fixture, newest_of_source, newest_of_request].into_iter().flatten().collect();
         if because.is_empty() {
             plan.snapshots.push(format!("{source}@{version}"));
             continue;
@@ -225,7 +285,8 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
 }
 
 /// Delete what nothing reaches, and say what. `None`, and nothing deleted, while a fetch, a build or
-/// an import holds the store. A plan that removes anything but `confirmed` deletes nothing.
+/// an import holds the store, including the verification and publication phases of a run.
+/// A plan that removes anything but `confirmed` deletes nothing.
 pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Plan>, String> {
     let Some(_alone) = store.try_alone()? else {
         return Ok(None);

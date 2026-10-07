@@ -389,6 +389,7 @@ fn the_terrain_step_reads_its_reference_layer_as_the_archive_of_the_old_bake() {
         snapshots: [(obc_dem::step::GLO30.to_string(), [("plane.tif".to_string(), tile)].into())].into(),
         layers: [("maps/reference/0000-0000".to_string(), layer)].into(),
         layer_files: Default::default(),
+        libraries: Vec::new(),
         options: serde_json::json!({"posting_log2": POSTING_LOG2, "cell_log2": CELL_LOG2, "cells": cells}),
         output: output.clone(),
         metrics: scratch.join("step/metrics.json"),

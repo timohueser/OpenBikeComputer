@@ -13,8 +13,7 @@ use crate::regions::{geofabrik, parse_region, Bbox, Region, Regions};
 use crate::store::{hash_file, Store};
 
 mod delete;
-#[cfg(test)]
-pub(super) use delete::Deletion;
+pub(super) use delete::{deletion, remove, Deletion};
 
 #[derive(Subcommand)]
 pub(super) enum Action {
@@ -41,38 +40,38 @@ pub(super) enum Action {
     },
 }
 
-#[derive(Args)]
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(super) struct Create {
-    id: String,
+    pub(super) id: String,
     #[arg(long)]
-    name: String,
+    pub(super) name: String,
     /// Repeat for each source path. Selection is independent of the saved region id.
     #[arg(long = "area", required_unless_present = "bbox", conflicts_with = "bbox")]
-    areas: Vec<String>,
+    pub(super) areas: Vec<String>,
     /// West,south,east,north in degrees.
     #[arg(long = "box", required_unless_present = "areas", allow_hyphen_values = true)]
-    bbox: Option<String>,
+    pub(super) bbox: Option<String>,
     /// Required for boxes and areas without country metadata. Other areas derive their countries.
     #[arg(long = "country")]
-    countries: Vec<String>,
+    pub(super) countries: Vec<String>,
     /// An explicit IANA zone. The computer's local zone is never used.
     #[arg(long)]
-    time_zone: String,
+    pub(super) time_zone: String,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(super) struct Suggestions {
-    version: String,
-    areas: Vec<Suggestion>,
+    pub(super) version: String,
+    pub(super) areas: Vec<Suggestion>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
-struct Suggestion {
-    id: String,
-    name: String,
-    parent: Option<String>,
-    countries: Vec<String>,
-    bounds: Bbox,
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub(super) struct Suggestion {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) parent: Option<String>,
+    pub(super) countries: Vec<String>,
+    pub(super) bounds: Bbox,
 }
 
 pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(), Error> {
@@ -133,7 +132,7 @@ pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(),
     }
 }
 
-fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
+pub(super) fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
     let (version, index) = cached_index(store)?;
     let query = query.trim().to_lowercase();
     let areas = index
@@ -148,6 +147,18 @@ fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
         })
         .collect();
     Ok(Suggestions { version, areas })
+}
+
+/// Explicit preparation of the small public index; opening or searching a view never fetches it.
+pub(super) fn load_areas(root: &Path, store: &Store) -> Result<Suggestions, Error> {
+    let registry = super::registry(root)?;
+    let source = super::find(&registry, "geofabrik-index")?;
+    let request = crate::fetch::Request { source, version: None, params: Vec::new() };
+    super::fetched(
+        source,
+        crate::input_copy::fetch(root, store, &crate::fetch::http::Http::new(), None, &request, &[]),
+    )?;
+    suggestions(store, "")
 }
 
 const INDEX_URL: &str = "https://download.geofabrik.de/index-v1.json";
@@ -191,7 +202,7 @@ struct Definition<'a> {
     time_zone: &'a str,
 }
 
-fn create(root: &Path, store: &Store, mut args: Create) -> Result<Region, Error> {
+pub(super) fn create(root: &Path, store: &Store, mut args: Create) -> Result<Region, Error> {
     let bbox = args
         .bbox
         .as_ref()

@@ -39,14 +39,14 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_pack::config::Config;
-use obc_pack::cut::{cut_ingested, CutOptions, SourceExtent};
-use obc_pack::geom::Geom;
-use obc_pack::grid::BandTable;
-use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
+use obc_bake::cut::{cut_ingested, CutOptions, SourceExtent};
+use obc_draw::geom::Geom;
+use obc_draw::ingest::{IngestFeature, Ingested};
+use obc_map_core::config::Config;
+use obc_map_core::grid::BandTable;
+use obc_map_core::progress::Progress;
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 
 /// The `2^18` lon line the fixture straddles.
 const SEAM: i64 = 7_602_176;
@@ -219,7 +219,7 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
 
 fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {
     Poi {
-        hours: Some(obc_pack::hours::parse(hours).expect("the fixture's opening_hours parses")),
+        hours: Some(obc_places::hours::parse(hours).expect("the fixture's opening_hours parses")),
         ..poi(subtype, lat, lon, name)
     }
 }
@@ -288,10 +288,7 @@ fn extract(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         summit.elevation_m = Some(3000);
         pois.push(summit);
     }
-    (
-        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
-        ways,
-    )
+    (Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois }, ways)
 }
 
 /// A skin reproducing the config's own styling exactly, in ascending id order: the engine refuses

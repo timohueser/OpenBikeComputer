@@ -227,8 +227,8 @@ class ReadyPlanTests(unittest.TestCase):
             ("python3 a.py | cargo build --release", False),
             ("python3 a.py & cargo build --release", False),
             ("python3 a.py\ncargo build --release", False),
-            ("cd builder/app && npm test", False),
-            ("xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py", False),
+            ("cd builder/web && npm test", False),
+            ("xvfb-run -a dbus-run-session -- python3 builder/desktop/e2e/launch.py", False),
         ):
             self.assertEqual(ready.builds_nothing(command), free, command)
 

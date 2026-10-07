@@ -282,8 +282,8 @@ fn run_cell_bake(
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
 
     let bands = match flags.get("bands") {
-        Some(path) => obc_pack::grid::BandTable::load(path)?,
-        None => obc_pack::grid::BandTable::recommended(),
+        Some(path) => obc_map_core::grid::BandTable::load(path)?,
+        None => obc_map_core::grid::BandTable::recommended(),
     };
     let revision: u32 = match flags.get("schema-revision") {
         Some(v) => v.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
@@ -332,7 +332,7 @@ fn run_cell_bake(
                 allow_short_reference: flags.has("allow-short-reference"),
             },
         }
-        .run(&obc_pack::progress::Progress::stdout())?;
+        .run(&obc_map_core::progress::Progress::stdout())?;
         print!("{}", summary.render());
         // The credit is a licence obligation, printed wherever the dataset was used.
         println!("{}\n", obc_data::sources::attribution("copernicus-glo-30"));
@@ -367,7 +367,7 @@ fn run_cell_bake(
             peaks: flags.get("peaks").map(PathBuf::from),
         },
     };
-    let summary = bakery.run(&obc_pack::progress::Progress::stdout())?;
+    let summary = bakery.run(&obc_map_core::progress::Progress::stdout())?;
     print!("{}", summary.render());
     if let Some(path) = flags.get("summary-json") {
         let json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
@@ -401,15 +401,15 @@ fn run_planet_bake(
     let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
     let bands = match flags.get("bands") {
-        Some(path) => obc_pack::grid::BandTable::load(path)?,
-        None => obc_pack::grid::BandTable::recommended(),
+        Some(path) => obc_map_core::grid::BandTable::load(path)?,
+        None => obc_map_core::grid::BandTable::recommended(),
     };
     let revision: u32 = match flags.get("schema-revision") {
         Some(value) => value.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
         None => 1,
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let progress = obc_pack::progress::Progress::stdout();
+    let progress = obc_map_core::progress::Progress::stdout();
     // Fail before the planet is read when Osmium, which shards it, is unavailable. Tests inject the
     // runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
@@ -474,7 +474,7 @@ fn ensure_dem_sources(
     cache: &Path,
     cell_log2: u8,
 ) -> Result<PathBuf, String> {
-    let progress = obc_pack::progress::Progress::stdout();
+    let progress = obc_map_core::progress::Progress::stdout();
     let mut coverages = Vec::new();
     for region in regions {
         let poly = source.fetch_poly(region, &progress)?;
@@ -501,7 +501,7 @@ fn ensure_dem_sources(
 /// The source box of the terrain cells the coverages select.
 fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8) -> Result<obc_dem::BboxUdeg, String> {
     let log2 = u32::from(cell_log2);
-    obc_pack::grid::CellId::new(log2, 0, 0)?;
+    obc_map_core::grid::CellId::new(log2, 0, 0)?;
     obc_bake::terrain::source_bbox(coverages.iter().flat_map(|coverage| coverage.cells(log2)))
         .ok_or_else(|| "no region resolved to a terrain cell".into())
 }
@@ -585,7 +585,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
             allow_short_reference: flags.has("allow-short-reference"),
         },
     }
-    .run(&obc_pack::progress::Progress::stdout())?;
+    .run(&obc_map_core::progress::Progress::stdout())?;
     print!("{}", summary.render());
 
     // The catalog generator reads the tree's `schema.json`, the cell store's document, which a tree
@@ -737,7 +737,7 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
         capture: &capture,
         opts: obc_bake::landmarks::LandmarkBakeOptions { out, cache, force: flags.has("force"), no_capture },
     }
-    .run(&obc_pack::progress::Progress::stdout())?;
+    .run(&obc_map_core::progress::Progress::stdout())?;
     print!("{}", summary.render());
     if summary.ok() {
         return Ok(());

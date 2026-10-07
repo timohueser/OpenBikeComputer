@@ -1,6 +1,8 @@
 //! Join canonical peak articles to the exact summit nodes carried by a map.
-use crate::{grid::CellId, landmarks::peaks::PeakContent, poi::Poi};
+use crate::landmarks::peaks::PeakContent;
 use obc_formats::obcm::{landmarks::ContentRef, peaks::*, SourceId, SUMMIT_SUBTYPE_ID};
+use obc_map_core::grid::CellId;
+use obc_places::metadata::Poi;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -141,7 +143,8 @@ pub fn artifacts(paths: &[PathBuf], cells: &[CellId]) -> Result<BTreeMap<CellId,
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         for a in content.associations {
             // The rounding of a summit POI, from the same decimicro degrees.
-            let (lat, lon) = (crate::serialize::to_udeg(a.latitude), crate::serialize::to_udeg(a.longitude));
+            let (lat, lon) =
+                ((a.latitude * 1e6).round_ties_even() as i64, (a.longitude * 1e6).round_ties_even() as i64);
             let cell = CellId::containing(log2, lat, lon);
             if wanted.contains(&cell) {
                 owner.insert(SourceId::osm(1, a.node_id as u64), cell);

@@ -8,6 +8,7 @@
 //! that are the same for each region.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
@@ -16,18 +17,18 @@ use obc_data::regions::Regions;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
-use route_build::grid::{mercator, tile_bounds};
+use planner_router_build::grid::{mercator, tile_bounds};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::maps::{invalid, outlines, text, EXTRACTS, TILE_LIST};
+use crate::maps::{invalid, text, TILE_LIST};
 use crate::python;
 
-const SEARCH: &str = "apps/planner-search";
-/// `apps/planner-search/records.py` and the files that it reads: the data kinds of the query
+const SEARCH: &str = "planner/search";
+/// `planner/search/records.py` and the files that it reads: the data kinds of the query
 /// contract, and the POI kinds of the web planner, which the places also read.
-const RECORDS: [&str; 3] = ["apps/planner-search/records.py", "apps/planner-search/query/contract.json", POI_KINDS];
-const POI_KINDS: &str = "builder/app/src/lib/planner/poi-kinds.json";
+const RECORDS: [&str; 3] = ["planner/search/records.py", "planner/search/query/contract.json", POI_KINDS];
+const POI_KINDS: &str = "builder/web/src/lib/planner/poi-kinds.json";
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
     "natural-earth",
@@ -81,6 +82,7 @@ struct Routing {
 
 mod catalog;
 pub mod install;
+mod local;
 mod runtime;
 
 pub struct Planner;
@@ -90,8 +92,93 @@ impl Product for Planner {
         "planner"
     }
 
+    fn approval_config(&self, root: &std::path::Path) -> Result<serde_json::Value, String> {
+        runtime::approval_config(root)
+    }
+
+    fn runtime_binding(&self, step: &Step) -> Result<Option<obc_data::approval::RuntimeBinding>, String> {
+        runtime::binding(step)
+    }
+
+    fn planning_code(&self, _env: &Env) -> Result<Option<obc_data::engine::OwnerCode>, String> {
+        Ok(Some(obc_data::engine::OwnerCode {
+            crate_name: "obc-data-steps".into(),
+            code: Code {
+                paths: [
+                    "host/obc-data-steps/src/planner.rs",
+                    "host/obc-data-steps/src/planner",
+                    "host/obc-data-steps/src/maps.rs",
+                    "host/obc-data-steps/src/maps",
+                    "host/obc-data-steps/src/region_sources.rs",
+                    "host/obc-data-steps/src/lib.rs",
+                ]
+                .map(String::from)
+                .into(),
+                libraries: obc_pack::step::geos_libraries()?,
+                ..Default::default()
+            },
+        }))
+    }
+
+    fn portable(&self, step: &Step) -> bool {
+        step.name.starts_with("planner/") && !step.name.starts_with("planner/runtime/") && !step.client.is_none()
+    }
+
+    fn local_plan(
+        &self,
+        root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        release: &obc_data::engine::release::Release,
+        required: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> Result<obc_data::local::Plan, Unplanned> {
+        let declarations = self.declarations(root, env, regions, store, Ok(None), false)?;
+        obc_data::local::plan(root, store, self, release, &declarations.steps, required).map_err(Unplanned::Failed)
+    }
+
+    fn dev_check(
+        &self,
+        root: &Path,
+        store: &Store,
+        request: &obc_data::dev::Request,
+    ) -> Result<obc_data::cli::EnvPlan, String> {
+        local::check(root, store, request)
+    }
+
+    fn dev_inputs(
+        &self,
+        root: &Path,
+        store: &Store,
+        request: &obc_data::dev::Request,
+        run: &mut obc_data::engine::runs::Run,
+    ) -> Result<obc_data::cli::EnvPlan, String> {
+        local::inputs(root, store, request, run)
+    }
+
+    fn dev_prepare(
+        &self,
+        root: &std::path::Path,
+        store: &Store,
+        request: &obc_data::dev::Request,
+        run: &mut obc_data::engine::runs::Run,
+    ) -> Result<obc_data::dev::Prepared, String> {
+        local::prepare(root, store, request, run)
+    }
+
     fn pointer(&self) -> Option<obc_data::product::PointerFn> {
         Some(catalog::pointer)
+    }
+
+    fn services(
+        &self,
+        root: &std::path::Path,
+        release: &obc_data::engine::release::Release,
+        store: &Store,
+        destination: &std::path::Path,
+    ) -> Result<Vec<obc_data::vps::Candidate>, String> {
+        let origins = runtime::publication(root)?;
+        install::prepare_into(release, store, &origins, destination)
     }
 
     fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
@@ -121,16 +208,36 @@ impl Product for Planner {
         regions: &Regions,
         store: &Store,
     ) -> Result<obc_data::product::Steps, Unplanned> {
+        self.steps_with_tool(root, env, regions, store, obc_osm::OsmiumRunner::default().binding())
+    }
+}
+
+impl Planner {
+    /// Plan with an explicit prepared-tool observation. Multiple area inputs need the merge tool.
+    pub fn steps_with_tool(
+        &self,
+        root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<obc_data::engine::Library, String>,
+    ) -> Result<obc_data::product::Steps, Unplanned> {
+        self.declarations(root, env, regions, store, tool.map(Some), true)
+    }
+
+    fn declarations(
+        &self,
+        root: &std::path::Path,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<Option<obc_data::engine::Library>, String>,
+        execution: bool,
+    ) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
         let region =
             regions.get(&env.region).ok_or_else(|| Unplanned::Failed(format!("no region `{}`", env.region)))?;
-        let Some(source_area) = region.source_area() else {
-            return Err(invalid(format!(
-                "region `{}`: the planner reads the OSM of one Geofabrik area only",
-                region.id
-            )));
-        };
         if region.countries.is_empty() {
             return Err(invalid(format!("region `{}` names no `countries`, which the route catalog needs", region.id)));
         }
@@ -140,32 +247,37 @@ impl Product for Planner {
         let on = |layer: &str| env.layers.iter().any(|name| name == layer);
         let mut wanted = Vec::new();
         let glo30 = version(env, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
-        let outlines = outlines(env, regions, store, &mut wanted)?;
+        let selection = crate::region_sources::resolve(env, regions, store, &mut wanted)?;
         let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-        let area = vec![("area".to_string(), source_area.to_string())];
-        let extract = snapshot(env, store, EXTRACTS, area, &mut wanted)?;
         let assets = vec![
             snapshot(env, store, "protomaps-assets", Vec::new(), &mut wanted)?,
             snapshot(env, store, "tangrams-icons", Vec::new(), &mut wanted)?,
         ];
         let model = snapshot(env, store, "query-model", Vec::new(), &mut wanted)?;
         let country_data = snapshot(env, store, "nominatim-country-data", Vec::new(), &mut wanted)?;
-        let (Some(outlines), Some(tile_list), Ok(glo30)) = (outlines, tile_list, glo30) else {
+        let (Some(selection), Some(tile_list), Ok(glo30)) = (selection, tile_list, glo30) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
-        let (west, south, east, north) = outlines[0].bbox();
+        let requested = obc_bake::coverage::Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
+            .ok_or_else(|| Unplanned::Failed("cannot union planner region coverage".into()))?;
+        let (west, south, east, north) = requested.bbox();
         let bounds = [west, south, east, north].map(|udeg| udeg as f64 / 1e6);
         let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
         let coverage = terrain_bounds(bounds, config.terrain.margin_m);
-        let osm = Step {
-            name: "planner/osm".into(),
-            inputs: vec![extract],
-            options: json!({"path": "osm.pbf"}),
-            code: Code { paths: Vec::new(), crates: vec!["obc-data".into()], ..Default::default() },
-            outputs: vec!["osm.pbf".into()],
-            run: Run::Rust(obc_data::engine::pass),
-            client: Client::None,
+        let source_steps = crate::region_sources::inputs("planner", &selection);
+        let osm = if selection.sources.len() == 1 {
+            Step {
+                name: "planner/osm".into(),
+                inputs: vec![Input::Layer { name: source_steps[0].name.clone(), files: vec!["source.osm.pbf".into()] }],
+                options: json!({"path": "osm.pbf"}),
+                code: Code { crates: vec!["obc-data".into()], ..Default::default() },
+                outputs: vec!["osm.pbf".into()],
+                run: Run::Rust(obc_data::engine::pass),
+                client: Client::None,
+            }
+        } else {
+            crate::region_sources::combined("planner/osm", &source_steps, tool.map_err(Unplanned::Invalid)?.as_ref())?
         };
         let mut inputs = vec![Input::layer(osm.name.clone())];
         for source in BASEMAP_SOURCES {
@@ -213,12 +325,12 @@ impl Product for Planner {
             }),
             code: Code {
                 paths: Vec::new(),
-                crates: vec!["route-build".into()],
+                crates: vec!["planner-router-build".into()],
                 sources: vec!["osm-planet".into(), "copernicus-glo-30".into()],
                 ..Default::default()
             },
             outputs: vec!["routing".into(), "blocks".into(), "routes".into()],
-            run: Run::Rust(route_build::step::step),
+            run: Run::Rust(planner_router_build::step::step),
             client: Client::All,
         };
         let overlays = python(
@@ -241,12 +353,12 @@ impl Product for Planner {
             "planner/model",
             vec![model],
             json!({}),
-            ("apps/planner-search/setup.py", None),
+            ("planner/search/setup.py", None),
             &[
-                "apps/planner-search/setup.py",
-                "apps/planner-search/query/artifacts.py",
-                "apps/planner-search/query/schema.py",
-                "apps/planner-search/query/contract.json",
+                "planner/search/setup.py",
+                "planner/search/query/artifacts.py",
+                "planner/search/query/schema.py",
+                "planner/search/query/contract.json",
             ],
             &["model"],
         );
@@ -276,8 +388,8 @@ impl Product for Planner {
                 "planner/search/records",
                 vec![Input::layer(dump.name.clone())],
                 json!({}),
-                ("apps/planner-search/split.py", Some("planner-search")),
-                &[["apps/planner-search/split.py"].as_slice(), &RECORDS].concat(),
+                ("planner/search/split.py", Some("planner-search")),
+                &[["planner/search/split.py"].as_slice(), &RECORDS].concat(),
                 &["pois.jsonl.zst", "addresses.jsonl.zst"],
             )
         };
@@ -313,9 +425,10 @@ impl Product for Planner {
             &["tools/planner_places.py", "tools/planner_mvt.py", POI_KINDS],
             &["places.pmtiles"],
         );
-        let mut steps = vec![
+        let mut steps = source_steps;
+        steps.extend([
             osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
-        ];
+        ]);
         if on("climate") {
             let first_year = config.climate.first_year;
             let params = vec![bbox, ("first-year".to_string(), first_year.to_string())];
@@ -335,7 +448,7 @@ impl Product for Planner {
         if on("sun") {
             steps.push(python(
                 "planner/sun",
-                vec![Input::layer("planner/terrain")],
+                vec![Input::layer("planner/terrain/grid")],
                 json!({
                     "bounds": bounds,
                     "time_zone": region.time_zone,
@@ -347,6 +460,8 @@ impl Product for Planner {
                 &[
                     "tools/planner_sun.py",
                     "tools/planner_sun_horizons.py",
+                    "tools/planner_offline.py",
+                    "tools/planner_runtime.py",
                     "tools/planner_map_archive.py",
                     "tools/planner_geo.py",
                 ],
@@ -381,11 +496,11 @@ impl Product for Planner {
                         "tools/planner_geo.py",
                         "tools/planner_offline.py",
                         "tools/planner_runtime.py",
-                        "apps/planner-search/storage.py",
-                        "apps/planner-search/index.py",
-                        "apps/planner-search/schema.sql",
-                        "apps/planner-search/indexes.sql",
-                        "apps/planner-search/web/address-terms.json",
+                        "planner/search/storage.py",
+                        "planner/search/index.py",
+                        "planner/search/schema.sql",
+                        "planner/search/indexes.sql",
+                        "planner/search/web/address-terms.json",
                     ],
                 ),
                 None => ("tools.planner_grid_pack", None, PACK.to_vec()),
@@ -456,7 +571,7 @@ impl Product for Planner {
         });
         match wanted.is_empty() {
             true => {
-                let mut runtime = runtime::steps(root);
+                let mut runtime = if execution { runtime::steps(root) } else { Default::default() };
                 steps.append(&mut runtime.steps);
                 Ok(obc_data::product::Steps { steps, blocked: runtime.blocked })
             }
@@ -601,6 +716,11 @@ fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
     [west, south, east, north]
 }
 
+/// Resolve only the native routing providers for the checked runtime adapter.
+pub fn native_routing(args: &[String]) -> Option<Result<serde_json::Value, String>> {
+    runtime::native_routing(args)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -610,7 +730,7 @@ mod tests {
 
     use super::*;
     use crate::maps::tests::{fetched, root, temp, Temp};
-    use crate::maps::Maps;
+    use crate::maps::{Maps, EXTRACTS};
 
     const AREA: &str = "europe/test";
 
@@ -650,7 +770,7 @@ mod tests {
         fetched(&store, "geofabrik-poly", "2026-10-01", &area, &[(format!("{AREA}.poly"), poly.into())]);
         let list = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
         fetched(&store, TILE_LIST, "1", &[], &[("tileList.txt".into(), list.into())]);
-        fetched(&store, obc_pack::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
+        fetched(&store, obc_draw::step::LAND, "1", &[], &[("land-polygons-split-3857.zip".into(), "land".into())]);
         fetched(&store, "protomaps-basemaps", "1", &[], &[(obc_data::fetch::basemap_jar(), "jar".into())]);
         for day in days {
             fetched(&store, EXTRACTS, day, &area, &[(format!("{AREA}-{day}.osm.pbf"), (*day).into())]);
@@ -665,17 +785,123 @@ mod tests {
     }
 
     #[test]
+    fn local_metadata_pins_selected_versions_and_derives_the_current_saved_box() {
+        let temp = temp("planner-local-metadata");
+        let store = store(&temp, &["2026-10-01", "2026-10-02"]);
+        let mut env = env("ride", &[]);
+        env.live.insert((EXTRACTS.into(), vec![("area".into(), AREA.into())]), ["2026-10-01".into()].into());
+        let region = |bbox: &str| {
+            Regions::new(vec![parse_region(
+                "ride",
+                &format!(
+            "name = \"Ride\"\nkind = \"box\"\nbox = [{bbox}]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n"
+        ),
+            )
+            .unwrap()])
+            .unwrap()
+        };
+        std::fs::create_dir_all(temp.0.join("data/env")).unwrap();
+        std::fs::write(Env::path(&temp.0, "live"), "region = \"ride\"\nlayers = []\n").unwrap();
+        let definitions = region("7.79, 47.99, 7.82, 48.02");
+        let request = obc_data::dev::Request {
+            region: Some("ride".into()),
+            refresh_live: false,
+            app: obc_data::dev::App::WebPlanner,
+            inputs_only: false,
+            reviewed: None,
+        };
+        let configured = local::environment(&temp.0, &definitions, &request).unwrap();
+        assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());
+        std::fs::write(Env::path(&temp.0, "local"), "region = \"ride\"\nlayers = [\"sun\"]\n").unwrap();
+        let configured = local::environment(
+            &temp.0,
+            &definitions,
+            &obc_data::dev::Request {
+                region: None,
+                refresh_live: true,
+                app: obc_data::dev::App::WebPlanner,
+                inputs_only: false,
+                reviewed: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(configured.layers, ["sun"]);
+        assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());
+        assert!(!std::fs::read_to_string(Env::path(&temp.0, "local")).unwrap().contains("pins"));
+        let first = Planner
+            .declarations(&root(), &env, &region("7.79, 47.99, 7.82, 48.02"), &store, Ok(None), false)
+            .unwrap()
+            .steps;
+        let changed = Planner
+            .declarations(&root(), &env, &region("7.79, 47.99, 7.81, 48.01"), &store, Ok(None), false)
+            .unwrap()
+            .steps;
+        for steps in [&first, &changed] {
+            assert!(steps.iter().all(|step| !step.name.starts_with("planner/runtime/")));
+            let extract = steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
+            assert!(
+                matches!(&extract.inputs[0], Input::Snapshot { source, version, .. } if source == EXTRACTS && version == "2026-10-01")
+            );
+            assert!(extract.code.libraries.is_empty(), "comparison does not need the original Osmium executable");
+        }
+        let routing = |steps: &[Step]| {
+            steps.iter().find(|step| step.name == "planner/routing").unwrap().options["bounds"].clone()
+        };
+        assert_ne!(routing(&first), routing(&changed), "the same saved ID does not hide a changed box");
+    }
+
+    #[test]
     fn a_saved_single_area_id_reads_the_selected_upstream_path() {
         let temp = temp("planner-saved-source");
         let store = store(&temp, &["2026-10-01"]);
         let region = parse_region("ride/freiburg", "name = \"My ride\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n").unwrap();
         let regions = Regions::new(vec![region]).unwrap();
         let listed = Planner.steps(&root(), &env("ride/freiburg", &[]), &regions, &store).unwrap();
-        let osm = listed.steps.iter().find(|step| step.name == "planner/osm").unwrap();
+        let osm = listed.steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
         let Input::Snapshot { params, .. } = &osm.inputs[0] else {
             panic!("OSM snapshot");
         };
         assert_eq!(params, &[("area".into(), AREA.into())]);
+    }
+
+    #[test]
+    fn multiple_areas_keep_each_request_and_use_the_union_bounds() {
+        let temporary = temp("planner-multi-source");
+        let store = store(&temporary, &["2026-10-01"]);
+        let area = [("area".into(), "europe/second".into())];
+        let shape = "second\n1\n 7.82 47.99\n 7.85 47.99\n 7.85 48.02\n 7.82 48.02\n 7.82 47.99\nEND\nEND\n";
+        fetched(&store, "geofabrik-poly", "2026-10-02", &area, &[("europe/second.poly".into(), shape.into())]);
+        fetched(&store, EXTRACTS, "2026-10-02", &area, &[("europe/second.osm.pbf".into(), "second".into())]);
+        let region = parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/test','europe/second']\ncountries=['DE']\ntime_zone='Europe/Berlin'\n").unwrap();
+        let env = env("ride", &[]);
+        let steps = Planner
+            .steps_with_tool(
+                &root(),
+                &env,
+                &Regions::new(vec![region]).unwrap(),
+                &store,
+                Ok(obc_data::engine::Library {
+                    name: "osmium".into(),
+                    path: std::path::PathBuf::from("/authored-copy-osmium"),
+                    sha256: "0".repeat(64),
+                }),
+            )
+            .unwrap()
+            .steps;
+        let versions = steps
+            .iter()
+            .filter(|step| step.name.starts_with("planner/source/"))
+            .map(|step| {
+                let Input::Snapshot { version, params, .. } = &step.inputs[0] else { panic!("area request") };
+                (params[0].1.as_str(), version.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(versions, [("europe/second", "2026-10-02"), ("europe/test", "2026-10-01")]);
+        let osm = steps.iter().find(|step| step.name == "planner/osm").unwrap();
+        assert_eq!(osm.inputs.len(), 2);
+        let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
+        assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
+        assert_eq!(env.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
     }
 
     #[test]
@@ -695,6 +921,7 @@ mod tests {
             .steps;
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
         let layers = [
+            "source/europe/test",
             "osm",
             "terrain",
             "routing",
@@ -726,6 +953,7 @@ mod tests {
         assert_eq!(
             intermediate,
             [
+                "planner/source/europe/test",
                 "planner/osm",
                 "planner/terrain",
                 "planner/routing",
@@ -741,9 +969,12 @@ mod tests {
                 "planner/basemap"
             ]
         );
-        let [osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        let [source, osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        assert!(
+            matches!(&osm.inputs[0], Input::Layer { name, files } if name == "planner/source/europe/test" && files == &["source.osm.pbf"])
+        );
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
-        let Input::Snapshot { source, version, params, .. } = &osm.inputs[0] else { panic!("not a snapshot") };
+        let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
         // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
         assert_eq!(terrain.options["bounds"], json!([7.382257389170511, 47.71727272727273, 8.4375, 48.45835188280866]));
@@ -802,15 +1033,28 @@ mod tests {
         let store = store(&temp, &["2026-10-01"]);
         crate::maps::tests::without_models(&store, &env(AREA, &[]), &regions());
         let mut steps = Planner.steps(&root(), &env(AREA, &[]), &regions(), &store).unwrap().steps;
-        steps.extend(Maps.steps(&root(), &env(AREA, &[]), &regions(), &store).unwrap().steps);
+        steps.extend(
+            Maps.steps_with_tool(
+                &root(),
+                &env(AREA, &[]),
+                &regions(),
+                &store,
+                Ok(crate::maps::tests::authored_tool(store.root())),
+            )
+            .unwrap()
+            .steps,
+        );
         for step in &steps {
             let files = step.code.files(&root()).unwrap();
             assert!(!files.contains_key("Cargo.lock"), "{} declares Cargo.lock", step.name);
-            let route_build = files.keys().any(|path| path.starts_with("host/route-build/src/"));
-            assert_eq!(route_build, step.name == "planner/routing", "{}", step.name);
+            let planner_router_build = files.keys().any(|path| path.starts_with("planner/router-build/src/"));
+            assert_eq!(planner_router_build, step.name == "planner/routing", "{}", step.name);
             if step.name == "planner/terrain" {
                 assert!(files.keys().any(|path| path.starts_with("host/obc-dem/src/")));
-                assert!(!files.keys().any(|path| path.starts_with("host/route-build/")), "terrain reads route-build");
+                assert!(
+                    !files.keys().any(|path| path.starts_with("planner/router-build/")),
+                    "terrain reads planner-router-build"
+                );
             }
         }
     }
@@ -918,6 +1162,12 @@ mod tests {
         let temp = temp("planner-python");
         let store = store(&temp, &["2026-10-01"]);
         let steps = Planner.steps(&root(), &env(AREA, &["climate", "snow", "sun"]), &regions(), &store).unwrap().steps;
+        let sun = steps.iter().find(|step| step.name == "planner/sun").unwrap();
+        assert!(
+            matches!(sun.inputs.as_slice(), [Input::Layer { name, files }]
+            if name == "planner/terrain/grid" && files.is_empty()),
+            "sun consumes portable terrain without its private bake input"
+        );
         let mut python = 0;
         for step in &steps {
             let Run::Command(argv) = &step.run else { continue };

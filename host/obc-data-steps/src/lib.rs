@@ -2,12 +2,18 @@
 
 pub mod maps;
 pub mod planner;
+mod region_sources;
 
 use obc_data::engine::{Client, Code, Input, Python, Run, Step};
 use obc_data::product::Product;
 use serde_json::Value;
 
 pub const PRODUCTS: &[&dyn Product] = &[&maps::Maps, &planner::Planner];
+pub const FIXTURES: obc_data::fixtures::FixtureCollection = obc_data::fixtures::FixtureCollection {
+    maps: &maps::Maps,
+    recipes: maps::fixture_recipes,
+    assemble: maps::catalog::assemble,
+};
 
 /// The request protocol imported by every Python step.
 pub(crate) const PYTHON: [&str; 1] = ["tools/step_request.py"];

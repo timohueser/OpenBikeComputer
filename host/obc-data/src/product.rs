@@ -11,7 +11,7 @@ use crate::env::Env;
 use crate::regions::Regions;
 use crate::store::{sorted, Store};
 
-pub trait Product {
+pub trait Product: Sync {
     /// Kebab-case. Each of its layer names starts with `<name>/`.
     fn name(&self) -> &'static str;
 
@@ -23,6 +23,21 @@ pub trait Product {
     /// The optional layers that `layers` of an environment can switch on.
     fn optional(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// The native owner that selects requests and constructs this product's recipes.
+    fn planning_code(&self, _env: &Env) -> Result<Option<crate::engine::OwnerCode>, String> {
+        Ok(None)
+    }
+
+    /// Publication settings beyond the region and selected layers. Source versions are not settings.
+    fn approval_config(&self, _root: &Path) -> Result<serde_json::Value, String> {
+        Ok(serde_json::Value::Null)
+    }
+
+    /// Prepared execution is declared by its actual runtime owner, separately from source code.
+    fn runtime_binding(&self, _step: &Step) -> Result<Option<crate::approval::RuntimeBinding>, String> {
+        Ok(None)
     }
 
     /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
@@ -37,6 +52,68 @@ pub trait Product {
 
     /// The named publication files, from release receipts. Their identity precedes the release id.
     fn named(&self, _release: &Release) -> Result<Vec<LayerFile>, String> {
+        Ok(Vec::new())
+    }
+
+    /// This owner permits consuming these stored bytes across producer hosts.
+    /// Native service executables are never portable data.
+    fn portable(&self, _step: &Step) -> bool {
+        false
+    }
+
+    /// Compare current semantic declarations without admitting their execution tools.
+    fn local_plan(
+        &self,
+        _root: &Path,
+        _env: &Env,
+        _regions: &Regions,
+        _store: &Store,
+        _release: &Release,
+        _required: &BTreeMap<String, Vec<String>>,
+    ) -> Result<crate::local::Plan, Unplanned> {
+        Err(Unplanned::Invalid("this product has no Local declarations".into()))
+    }
+
+    /// Read pending Local work without acquiring data or admitting app processes.
+    fn dev_check(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+    ) -> Result<crate::cli::EnvPlan, String> {
+        Err("this product has no Local app plan".into())
+    }
+
+    /// Resolve only missing metadata for a later complete Local review.
+    fn dev_inputs(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+        _run: &mut crate::engine::runs::Run,
+    ) -> Result<crate::cli::EnvPlan, String> {
+        Err("this product has no Local app metadata".into())
+    }
+
+    /// Resolve and verify a Local view under the caller's finite preparation run.
+    fn dev_prepare(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+        _run: &mut crate::engine::runs::Run,
+    ) -> Result<crate::dev::Prepared, String> {
+        Err("this product has no Local app".into())
+    }
+
+    /// Prepare the three planner service views in caller-owned storage, before handoff.
+    fn services(
+        &self,
+        _root: &Path,
+        _release: &Release,
+        _store: &Store,
+        _destination: &Path,
+    ) -> Result<Vec<crate::vps::Candidate>, String> {
         Ok(Vec::new())
     }
 
@@ -87,7 +164,7 @@ pub struct BlockedLayer {
 }
 
 /// Gives the pointer of a release from the store.
-pub type PointerFn = fn(&Release, &Store) -> Result<Pointer, String>;
+pub type PointerFn = fn(&Path, &Release, &Store) -> Result<Pointer, String>;
 
 /// What clients read of a release.
 pub struct Pointer {

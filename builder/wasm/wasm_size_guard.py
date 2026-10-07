@@ -29,8 +29,8 @@ ADVICE = {
 }
 
 PKG_DIRS = {
-    "builder": Path("builder/app/src/lib/core/pkg"),
-    "flat-device": Path("builder/app/test-support/flat-device/pkg"),
+    "builder": Path("builder/web/src/lib/core/pkg"),
+    "flat-device": Path("builder/web/test-support/flat-device/pkg"),
 }
 UNBUDGETED = {"flat-device"}
 

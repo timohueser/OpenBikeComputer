@@ -22,11 +22,11 @@ PRESETS_DIR = os.path.join(PROJECT_ROOT, "presets")
 # palette.json ships with the repo: the device's 64-color gamut offered as the
 # default color picker. Editable, with a generated fallback if it's missing.
 PALETTE_FILE = os.path.join(PROJECT_ROOT, "palette.json")
-# Generated repo copy of obc-pack's config schema — the fallback for /api/schema
+# Generated repo copy of map-core's config schema — the fallback for /api/schema
 # when the binary isn't built yet. A Rust stale-generation test pins the file's
 # *contents*; test_schema_source.py pins this path, because a string-built path
 # that stops resolving degrades silently (the fallback just never fires).
-SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-pack", "schema", "config.schema.json")
+SCHEMA_FILE = os.path.join(paths.REPO_ROOT, "host", "obc-map-core", "schema", "config.schema.json")
 
 app = FastAPI(title="OBC Schema Editor")
 
@@ -227,7 +227,7 @@ async def build_schema_preview(request: Request):
         },
     )
 
-# The SPA (builder/app/, built by Vite into static/dist/ —
+# The SPA (builder/web/, built by Vite into static/dist/ —
 # gitignored, so a fresh checkout needs one `npm run build`). Mounted last:
 # every /api route above wins, everything else falls through to the app.
 # Without a build, "/" explains how to produce one.
@@ -244,9 +244,9 @@ else:
             "<body style='font-family: system-ui; max-width: 40rem; margin: 4rem auto;"
             " color: #24331c; background: #ece8cf; padding: 0 1rem;'>"
             "<h1>Frontend not built yet</h1>"
-            "<p>The web builder's UI is compiled from <code>builder/app/</code>. "
+            "<p>The web builder's UI is compiled from <code>builder/web/</code>. "
             "Build it once (requires Node):</p>"
-            "<pre>cd builder/app\nnpm ci\nnpm run build</pre>"
+            "<pre>cd builder/web\nnpm ci\nnpm run build</pre>"
             "<p>…then restart this server.</p>",
             status_code=503,
         )

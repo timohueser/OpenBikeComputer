@@ -35,7 +35,7 @@ PRODUCT_ROOTS = (
     "firmware/obc-fw-nrf54l",
     "firmware/obc-boot",
     "firmware/obc-sensor-sim",
-    "apps/obc-desktop",
+    "builder/desktop",
 )
 
 @dataclass(frozen=True)
@@ -53,7 +53,7 @@ JOBS: dict[str, Job] = {
     "clippy": Job(needs=("selection",), roots=(ROOT_WORKSPACE,)),
     "test": Job(needs=("selection",), roots=(ROOT_WORKSPACE,), script="tools/ci/test.sh"),
     "ui-snapshots": Job(needs=("selection",), packages=("obc-sim",)),
-    "builder-python": Job(needs=("selection",), packages=("obc-pack",)),
+    "builder-python": Job(needs=("selection",), packages=("obc-bake", "obc-pack")),
     "embedded": Job(needs=("selection",), roots=("firmware/obc-fw-nrf54l", "firmware/obc-sensor-sim")),
     "boot": Job(needs=("selection",), roots=("firmware/obc-boot",)),
     "device": Job(needs=("selection",), packages=("obc-app", "obc-link")),
@@ -74,7 +74,7 @@ JOBS: dict[str, Job] = {
     "verification": Job(needs=("selection",)),
     "planner-search": Job(needs=("selection",)),
     "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
-    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("apps/obc-desktop",)),
+    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("builder/desktop",)),
     "desktop-launch": Job(needs=("selection", "desktop")),
 }
 
@@ -111,12 +111,12 @@ RUST_FOUNDATION_PATHS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     ".cargo/config",
 }
 # Broad policy changes select unscoped suites. Scoped suites follow their own inputs and
-# the shared selector, aggregate and CI workflow. Agent prose (CLAUDE.md, AGENTS.md) is not on
+# the shared selector, aggregate and CI workflow. Agent prose (AGENTS.md) is not on
 # this list: it instructs an agent, it does not decide or execute anything. It is owned by the
 # documentation route so it is not an unowned path; the check that reads it is the
 # unconditional `guards` job, not a platform build.
@@ -530,7 +530,7 @@ def select(
                     continue
                 claim_package(name, reason)
             for unit in units:
-                if unit.foundation or (unit.rust_packages and path != "rustfmt.toml"):
+                if unit.foundation or (unit.rust_packages and path != ".rustfmt.toml"):
                     claim(unit, reason)
 
         for name, package in sorted(graph.packages.items()):
@@ -943,7 +943,7 @@ AUDITED_PATHS = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     "specs/vectors/obcm-v2.json",
     "tools/test_plan.py",
@@ -951,9 +951,9 @@ AUDITED_PATHS = (
     "fixtures/catalog.toml",
     ".github/workflows/bake.yml",
     "testing/suites.toml",
-    "builder/app/src/lib/example.ts",
+    "builder/web/src/lib/example.ts",
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
-    "apps/obc-desktop/src/main.rs",
+    "builder/desktop/src/main.rs",
     "docs/index.md",
 )
 

@@ -47,8 +47,10 @@ pub(super) fn discover(
     inventory.requests.borrow_mut().clear();
     inventory.read.borrow_mut().clear();
     inventory.fetch_failures.clear();
-    let mut fetch =
-        status_cli::discovery_fetch(build_cli::fetcher_recorded(store, http, sources, &inventory, copies, run), false);
+    let mut fetch = status_cli::discovery_fetch(
+        build_cli::fetcher_recorded(root, store, http, sources, &inventory, copies, run),
+        false,
+    );
     for product in products {
         match build_cli::product_steps(root, *product, &mut inventory, regions, store, &mut fetch) {
             Ok(_) => (),
@@ -138,10 +140,12 @@ mod tests {
         let (url, requests) = serve(|_, _| whole(b"metadata"));
         let url = url.replacen("/data/", "/data/{version}/", 1);
         let fixture = fixture("inventory-run-metadata");
+        fixture.with_acquisition();
         let sources = [
             Source { id: "geofabrik-poly".into(), ..source(&url, "release") },
             Source { id: "bulk".into(), ..source(&url, "release") },
         ];
+        fixture.with_sources(&sources);
         let regions = Regions::new(Vec::new()).unwrap();
         let mut run = Run::create(&fixture.store, "prepare live").unwrap();
         let id = run.id().to_string();

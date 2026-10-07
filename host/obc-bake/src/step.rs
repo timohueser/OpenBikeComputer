@@ -1,51 +1,61 @@
-//! The OSM step of the device maps in `obc data`: the extract of the region, cut into its source
-//! leaves with the Osmium extract of the planet bake.
+//! Concrete cell output checks for the full-map writer.
 
-use std::path::PathBuf;
-
-use obc_data::engine::Request;
-use obc_pack::grid::id_width;
-use obc_pack::progress::Progress;
-
-use crate::planet::{ExtractRequest, LeafId, OsmiumRunner, ShardRunner, SOURCE_LEAF_LOG2};
-
-/// The path in the layer of the OSM of a leaf.
-pub fn leaf_pbf(leaf: LeafId) -> String {
-    format!("osm/{}", name(leaf))
-}
-
-fn name(leaf: LeafId) -> String {
-    let width = id_width(SOURCE_LEAF_LOG2);
-    format!("{:0width$}-{:0width$}.osm.pbf", leaf.i, leaf.j)
-}
-
-/// The option `leaves` names each leaf as `[i, j]`. The step reads the one file of its snapshots,
-/// and writes [`leaf_pbf`] for each leaf. Its metrics name the Osmium version.
-pub fn osm(request: &Request) -> Result<(), String> {
-    let leaves = request.options["leaves"].as_array().ok_or("option `leaves` is not a list")?;
-    let leaves = leaves.iter().map(|leaf| match leaf.as_array().map(Vec::as_slice) {
-        Some([i, j]) => Some(LeafId { i: i.as_i64()?, j: j.as_i64()? }),
-        _ => None,
-    });
-    let leaves = leaves.collect::<Option<Vec<_>>>().ok_or("a leaf is not [i, j]")?;
-    let files: Vec<&PathBuf> = request.snapshots.values().flat_map(|files| files.values()).collect();
-    let [extract] = files[..] else {
-        return Err(format!("the step reads {} files, not one", files.len()));
-    };
-    let requests: Vec<ExtractRequest> =
-        leaves.iter().map(|&leaf| ExtractRequest { output: name(leaf), bbox: leaf.extract_bbox() }).collect();
-    // Osmium writes its config beside the extracts, which is not part of the layer.
-    let dir = request.output.with_file_name("extract");
-    let osmium = OsmiumRunner::default();
-    // The key holds no Osmium version, so the metrics name the one that made the bytes.
-    let metrics = serde_json::json!({"osmium": osmium.version()?});
-    std::fs::write(&request.metrics, metrics.to_string()).map_err(|e| format!("{}: {e}", request.metrics.display()))?;
-    osmium.split(extract, &dir, &requests, &Progress::silent())?;
-    let osm = request.output.join("osm");
-    std::fs::create_dir(&osm).map_err(|e| format!("{}: {e}", osm.display()))?;
-    for leaf in leaves {
-        let path = request.output.join(leaf_pbf(leaf));
-        std::fs::rename(dir.join(name(leaf)), &path).map_err(|e| format!("{}: {e}", path.display()))?;
+#[cfg(test)]
+mod tests {
+    use obc_map_core::config::{Config, CELL_SCHEMA as SCHEMA};
+    #[test]
+    fn partial_empty_cells_keep_real_artifacts_and_full_empty_cells_have_no_payload() {
+        use crate::serialize::serialize_lods;
+        use obc_draw::serialize::{LodLayer, Node};
+        use obc_map_core::cell::Job;
+        use obc_map_core::grid::CellId;
+        let dir = obcm_testkit::scratch::scratch_dir("step", "empty-coverage");
+        let config = Config::parse(SCHEMA).unwrap();
+        let ids = [CellId::new(18, 1204, 1052).unwrap(), CellId::new(18, 1204, 1053).unwrap()];
+        let tree = dir.join("cut");
+        let mut artifacts = Vec::new();
+        for id in ids {
+            let lods = config
+                .lods
+                .iter()
+                .map(|lod| LodLayer {
+                    max_mpp: lod.max_mpp,
+                    chunk_size: config.chunk_size,
+                    root: Node::Leaf { bbox: id.square(), features: Vec::new() },
+                })
+                .collect::<Vec<_>>();
+            let (body, dropped) = serialize_lods(
+                &lods,
+                &config.styles(),
+                config.marker_color,
+                id.square(),
+                &[],
+                &Default::default(),
+                &config.routing.profiles,
+                &mut obc_elevation::NullElevation,
+            );
+            assert_eq!(dropped, 0);
+            let path = format!("cells/network/{:04}/{:04}.obcm", id.i, id.j);
+            std::fs::create_dir_all(tree.join(&path).parent().unwrap()).unwrap();
+            std::fs::write(tree.join(&path), &body).unwrap();
+            artifacts.push((id, tree.join(path), true));
+        }
+        let output = dir.join("output");
+        let partial_body = std::fs::read(&artifacts[1].1).unwrap();
+        let job = Job::parse(&serde_json::json!({
+            "band": "network", "leaf": [22, 75, 65],
+            "cells": ids.iter().map(|id| [id.i, id.j]).collect::<Vec<_>>(),
+            "partial_cells": [ids[1].to_string()],
+        }))
+        .unwrap();
+        job.finish(&output, &artifacts).unwrap();
+        let empty: Vec<String> =
+            serde_json::from_slice(&std::fs::read(output.join("metadata/empty.json")).unwrap()).unwrap();
+        assert_eq!(empty, [ids[0].to_string()]);
+        assert!(!output.join(obc_map_core::cell::cell_path(&job.band, &ids[0])).exists());
+        assert_eq!(
+            std::fs::read(output.join(obc_map_core::cell::cell_path(&job.band, &ids[1]))).unwrap(),
+            partial_body
+        );
     }
-    Ok(())
 }

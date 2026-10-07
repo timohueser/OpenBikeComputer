@@ -14,34 +14,46 @@ use crate::store::{self, FileRecord, Snapshot, Store};
 /// The rasters of a national terrain model that cover `bbox=WEST,SOUTH,EAST,NORTH`, from the
 /// adapter of the reference ingest (`ingest.py fetch`). A box where the model has no data gives a
 /// fetch without files.
-pub fn dtm(store: &Store, request: &Request) -> Result<Snapshot, String> {
+pub(crate) fn dtm(
+    root: &Path,
+    store: &Store,
+    request: &Request,
+    checks: Option<crate::fetch::Checks<'_>>,
+) -> Result<Snapshot, String> {
     let source = request.source;
     let [bbox] = values(request, ["bbox"])?;
     let bbox = parse_bbox(bbox)?;
-    let root = root()?;
     let key = source.id.strip_prefix("dtm-").unwrap_or(&source.id).to_string();
     capture(
+        root,
         store,
         request,
+        checks,
         &format!("bbox={bbox}"),
         &[source],
         |_| &[0],
         true,
         |work, out| {
-            let mut command = python(&root, &["--locked", "--group", "terrain-reference"]);
+            let mut command = python(root, Some("terrain-reference"))?;
             command.arg("host/obc-dem/reference/ingest.py");
             command.args(["fetch", &key, &format!("--bbox={bbox}"), "--work"]).arg(work).arg("--out").arg(out);
-            command
+            Ok(command)
         },
     )
 }
 
 /// A source of `kind = "capture"`: the program that captures it, with the `NAME=VALUE` it takes.
-pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
+pub(crate) fn run(
+    root: &Path,
+    store: &Store,
+    request: &Request,
+    checks: Option<crate::fetch::Checks<'_>>,
+) -> Result<Snapshot, String> {
     let source = request.source;
-    let root = root()?;
     match source.id.as_str() {
-        "wikidata" | "wikipedia" | "commons" => wiki(store, request, &root, SELECTOR.get().map(PathBuf::as_path)),
+        "wikidata" | "wikipedia" | "commons" => {
+            wiki(store, request, root, SELECTOR.get().map(PathBuf::as_path), checks)
+        }
         "modis-snow" | "hr-wsi" => {
             let [bbox, seasons] = values(request, ["bbox", "seasons"])?;
             let bbox = parse_bbox(bbox)?;
@@ -49,18 +61,20 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
             let (first, last) = years.ok_or_else(|| format!("`seasons={seasons}` is not FIRST-LAST, two years"))?;
             let kind = if source.id == "hr-wsi" { "copernicus-hr-wsi" } else { "nasa-modis" };
             capture(
+                root,
                 store,
                 request,
+                checks,
                 &format!("bbox={bbox}&seasons={seasons}"),
                 &[source],
                 |_| &[0],
                 // HR-WSI has no product in parts of its extent.
                 source.id == "hr-wsi",
                 |_, out| {
-                    let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
+                    let mut command = python(root, Some("planner-snow"))?;
                     command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
                     command.args(["--first-season", first, "--last-season", last, "--fetch"]).arg(out);
-                    command
+                    Ok(command)
                 },
             )
         }
@@ -68,16 +82,18 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
             let [bbox] = values(request, ["bbox"])?;
             let bbox = parse_bbox(bbox)?;
             capture(
+                root,
                 store,
                 request,
+                checks,
                 &format!("bbox={bbox}"),
                 &[source],
                 |_| &[0],
                 false,
                 |_, out| {
-                    let mut command = python(&root, &["--locked", "--group", "planner-snow"]);
+                    let mut command = python(root, Some("planner-snow"))?;
                     command.args(["-m", "tools.planner_snow", &format!("--bounds={bbox}"), "--fetch-trails"]).arg(out);
-                    command
+                    Ok(command)
                 },
             )
         }
@@ -88,17 +104,19 @@ pub fn run(store: &Store, request: &Request) -> Result<Snapshot, String> {
                 return Err(format!("`first-year={first}` is not a year"));
             }
             capture(
+                root,
                 store,
                 request,
+                checks,
                 &format!("bbox={bbox}&first-year={first}"),
                 &[source],
                 |_| &[0],
                 false,
                 |_, out| {
-                    let mut command = python(&root, &["--locked", "--group", "planner-climate"]);
+                    let mut command = python(root, Some("planner-climate"))?;
                     command.args(["-m", "tools.planner_climate", &format!("--bounds={bbox}"), "--first-year", first]);
                     command.arg("--fetch").arg(out);
-                    command
+                    Ok(command)
                 },
             )
         }
@@ -121,7 +139,13 @@ pub fn select_with(binary: PathBuf) {
 /// digest of the code that makes the boundary and the candidates or summits. The program
 /// finds the candidates in the extract itself and selects them with `selector`. [`wiki_owners`]
 /// splits the files into the three records.
-fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) -> Result<Snapshot, String> {
+fn wiki(
+    store: &Store,
+    request: &Request,
+    root: &Path,
+    selector: Option<&Path>,
+    checks: Option<crate::fetch::Checks<'_>>,
+) -> Result<Snapshot, String> {
     let [collection, area, osm, poly, code] = values(request, ["collection", "area", "osm", "poly", "code"])?;
     if !["landmarks", "peaks"].contains(&collection) {
         return Err(format!("`collection={collection}` is not `landmarks` or `peaks`"));
@@ -142,9 +166,10 @@ fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) 
     let registry = Registry::load(root)?;
     let find = |id: &str| registry.sources.iter().find(|source| source.id == id).ok_or(format!("no source `{id}`"));
     let owners = [find("wikidata")?, find("wikipedia")?, find("commons")?];
-    capture(store, request, &query, &owners, wiki_owners, false, |_, out| {
+    capture(root, store, request, checks, &query, &owners, wiki_owners, false, |_, out| {
         // The capture needs no package beyond the standard library.
-        let mut command = python(root, &[]);
+        let mut command = python(root, None)?;
+        command.env("OBC_CAPTURE_CODE", code);
         command.arg(&tool).arg("--poly").arg(&poly_file);
         match collection {
             "peaks" => command.arg("--peaks-osm").arg(&osm_file),
@@ -152,7 +177,7 @@ fn wiki(store: &Store, request: &Request, root: &Path, selector: Option<&Path>) 
         };
         // A failed run keeps its directory, and each run asks once more for what failed before.
         command.arg("--select-with").arg(selector).arg("--retry-failed").arg("--out").arg(out);
-        command
+        Ok(command)
     })
 }
 
@@ -191,14 +216,17 @@ fn wiki_owners(path: &str) -> &'static [usize] {
 /// from its path. A run that fails keeps both directories, so the next run can resume, unless
 /// they are older than the `refresh` of the source or the source is manual. With `empty`, a run
 /// that writes no file gives a fetch without files; else it fails.
-pub fn capture(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture(
+    root: &Path,
     store: &Store,
     request: &Request,
+    checks: Option<crate::fetch::Checks<'_>>,
     query: &str,
     sources: &[&Source],
     owners: impl Fn(&str) -> &'static [usize],
     empty: bool,
-    command: impl FnOnce(&Path, &Path) -> Command,
+    command: impl FnOnce(&Path, &Path) -> Result<Command, String>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
     let today = date::format(date::today());
@@ -231,6 +259,7 @@ pub fn capture(
             return Err(format!("source `{}` is blocked: credential missing: {}", source.id, credential.describe()));
         }
     }
+    super::check_owner(root, source, checks)?;
     let staging = store.partial(&format!("capture-{key}"));
     let staging = std::path::absolute(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
     if let Ok(modified) = fs::metadata(&staging).and_then(|m| m.modified()) {
@@ -248,13 +277,18 @@ pub fn capture(
     for dir in [&work, &out] {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let mut command = command(&work, &out);
+    let code = super::owner_code(source).code;
+    let before = code.files(root)?;
+    let mut command = command(&work, &out)?;
     eprintln!("obc data: capturing {}#{query}", source.id);
     // Standard output is the answer of `obc data`, so the program writes its progress to standard error.
     let status = command.stdout(std::io::stderr()).status();
     let status = status.map_err(|e| format!("source `{}`: {:?}: {e}", source.id, command.get_program()))?;
     if !status.success() {
         return Err(format!("source `{}`: {:?} failed with {status}", source.id, command.get_program()));
+    }
+    if code.files(root)? != before {
+        return Err("capture code or Python runtime changed; plan again".into());
     }
     let mut files: Vec<Vec<FileRecord>> = vec![Vec::new(); sources.len()];
     for path in walk(&out)? {
@@ -330,26 +364,29 @@ fn parse_bbox(text: &str) -> Result<String, String> {
     Err(format!("`bbox={text}` is not WEST,SOUTH,EAST,NORTH in degrees, west < east, south < north"))
 }
 
-/// The repository root, where the capture programs are.
-fn root() -> Result<PathBuf, String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    crate::find_root(&cwd).ok_or_else(|| "no data/sources.toml above the current directory".into())
-}
-
-/// `OBC_PYTHON`, or else Python under `uv run` with the arguments `packages`, which name its
-/// packages, or `python3` without; in the repository root.
-fn python(root: &Path, packages: &[&str]) -> Command {
-    let mut command = match (std::env::var_os("OBC_PYTHON"), packages) {
-        (Some(python), _) => Command::new(python),
-        (None, []) => Command::new("python3"),
-        (None, packages) => {
+/// Use the same selected interpreter as the capture's code identity.
+pub(super) fn python(root: &Path, group: Option<&str>) -> Result<Command, String> {
+    let executable = crate::engine::code::python_executable(root)?;
+    let mut command = match group {
+        None => Command::new(&executable),
+        Some(group) => {
             let mut command = Command::new("uv");
-            command.arg("run").args(packages).arg("python");
+            command.args([
+                "run",
+                "--locked",
+                "--offline",
+                "--no-default-groups",
+                "--no-python-downloads",
+                "--group",
+                group,
+                "python",
+            ]);
+            command.env("UV_PYTHON", &executable).env("UV_NO_SYNC", "0");
             command
         }
     };
     command.current_dir(root);
-    command
+    Ok(command)
 }
 
 /// Every file under `dir`, sorted, but hidden, `.part` and `.tmp` files: a killed run leaves
@@ -374,7 +411,72 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::wiki_owners;
+    use super::*;
+
+    #[test]
+    fn a_retained_empty_capture_needs_no_runtime_or_owner_checkout() {
+        let scratch = crate::store::tests::Scratch::new("capture-retained-no-runtime");
+        let store = Store::at(scratch.0.join("store"));
+        let source = crate::sources::embedded("hr-wsi");
+        let version = date::format(date::today());
+        let params = vec![("bbox".into(), "7,47,8,48".into()), ("seasons".into(), "2024-2025".into())];
+        store
+            .put_requested(
+                &source.id,
+                &store::Requested { version: version.clone(), params: params.clone(), files: Vec::new() },
+            )
+            .unwrap();
+        let mut context = crate::engine::code::Context::default();
+        let request = Request { source, version: Some(version.clone()), params };
+        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, Some((&mut context, true))).unwrap();
+        assert_eq!(snapshot.version, version);
+        assert!(snapshot.files.is_empty());
+        assert!(!scratch.0.join("absent-checkout").exists());
+    }
+
+    #[test]
+    fn capture_commands_use_the_identity_interpreter_and_locked_group() {
+        use crate::engine::tests::write;
+        let fixture = crate::engine::tests::fixture("capture-interpreter");
+        let root = fixture.root();
+        write(&root.join(".python-version"), "3.12\n");
+        write(&root.join("pyproject.toml"), "[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[dependency-groups]\ncapture = []\n[tool.uv]\npackage = false\ndefault-groups = []\n");
+        let lock = Command::new("uv")
+            .args(["lock", "--offline", "--no-python-downloads"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
+        let selected = crate::engine::code::python_executable(&root).unwrap();
+        let code = crate::engine::Code {
+            python: Some(crate::engine::Python { group: Some("capture".into()) }),
+            ..Default::default()
+        };
+        code.identity(&root).unwrap();
+        let mut direct = python(&root, None).unwrap();
+        assert_eq!(direct.get_program(), selected.as_os_str());
+        let output = direct.args(["-c", "import sys; print(sys.executable)"]).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).canonicalize().unwrap(),
+            selected.canonicalize().unwrap()
+        );
+        let mut grouped = python(&root, Some("capture")).unwrap();
+        assert!(grouped.get_args().any(|arg| arg == "--no-default-groups"));
+        assert!(grouped.get_envs().any(|(name, value)| name == "UV_PYTHON" && value == Some(selected.as_os_str())));
+        assert!(!root.join(".venv").exists(), "selection neither syncs nor installs");
+        let output = grouped
+            .env_remove("UV_PROJECT_ENVIRONMENT")
+            .env_remove("VIRTUAL_ENV")
+            .args(["-c", "import sys; print(sys._base_executable)"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(
+            PathBuf::from(String::from_utf8(output.stdout).unwrap().trim()).canonicalize().unwrap(),
+            selected.canonicalize().unwrap()
+        );
+    }
 
     #[test]
     fn a_wikimedia_file_goes_to_the_record_of_its_licence() {

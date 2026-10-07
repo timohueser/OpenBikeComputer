@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use obc_bake::planet::LeafId;
+use obc_bake::cut::{cut, CutOptions};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run};
 use obc_data::env::Env;
@@ -22,10 +22,10 @@ use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
 use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
 use obc_formats::obcm::SourceId;
-use obc_pack::config::Config;
-use obc_pack::cut::{cut, CutOptions};
-use obc_pack::grid::{BandTable, CellId};
-use obc_pack::progress::Progress;
+use obc_map_core::config::Config;
+use obc_map_core::grid::{BandTable, CellId};
+use obc_map_core::progress::Progress;
+use obc_osm::LeafId;
 
 const STEM: &str = "Copernicus_DSM_COG_10_N46_00_E008_00_DEM";
 const VERSION: &str = "2022-05-09";
@@ -66,9 +66,17 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
 /// Record a fetch without files of each national model that the step list asks for: the store has
 /// no national data of the Grimsel, so the terrain reads GLO-30 alone.
 fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) =
-        Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), env, regions, store)
-    else {
+    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps_with_tool(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        env,
+        regions,
+        store,
+        Ok(obc_data::engine::Library {
+            name: "osmium".into(),
+            path: std::path::PathBuf::from("/authored-copy-osmium"),
+            sha256: "0".repeat(64),
+        }),
+    ) else {
         return;
     };
     for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
@@ -111,11 +119,11 @@ fn land_zip(path: &Path) {
 
 /// The OSM of each leaf: the extract as it is.
 fn copy(request: &Request) -> Result<(), String> {
-    let extract = request.snapshots[EXTRACTS].values().next().ok_or("no extract")?;
+    let extract = request.layers.values().flat_map(|files| files.values()).next().ok_or("no extract")?;
     std::fs::create_dir(request.output.join("osm")).map_err(|e| e.to_string())?;
     for leaf in request.options["leaves"].as_array().ok_or("no leaves")? {
         let leaf = LeafId { i: leaf[0].as_i64().unwrap(), j: leaf[1].as_i64().unwrap() };
-        std::fs::copy(extract, request.output.join(obc_bake::step::leaf_pbf(leaf))).map_err(|e| e.to_string())?;
+        std::fs::copy(extract, request.output.join(obc_osm::step::leaf_pbf(leaf))).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -152,7 +160,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     fetched(&store, "land-polygons", &[], "land-polygons-split-3857.zip", &zip);
     // The Wikimedia captures, which only the compiles read, and this test has none.
     let [osm, poly] = [&pbf, &poly].map(|path| format!("sha256:{}", hash_file(path).unwrap().0));
-    let code = obc_pack::step::capture_code();
+    let code = obc_pack::step::capture_code().unwrap();
     for collection in ["landmarks", "peaks"] {
         let params = [
             ("collection", collection),
@@ -166,26 +174,39 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         }
     }
 
-    let region =
-        parse_region(AREA, "name = \"Grimsel east\"\nkind = \"geofabrik\"\nareas = [\"europe/grimsel-east\"]\n")
-            .unwrap();
+    let region = parse_region("grimsel-box", REGION).unwrap();
     let regions = Regions::new(vec![region]).unwrap();
     let live = BTreeMap::from([
         ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),
         ((TILE_LIST.into(), Vec::new()), [VERSION.to_string()].into()),
     ]);
-    let env = Env { name: "test".into(), region: AREA.into(), live, ..Env::default() };
+    let env = Env { name: "test".into(), region: "grimsel-box".into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &env, &regions);
-    let listed = Maps.steps(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &env, &regions, &store).unwrap();
+    let listed = Maps
+        .steps_with_tool(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            &env,
+            &regions,
+            &store,
+            Ok(obc_data::engine::Library {
+                name: "osmium".into(),
+                path: std::path::PathBuf::from("/authored-copy-osmium"),
+                sha256: "0".repeat(64),
+            }),
+        )
+        .unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 
     for step in &mut steps {
         match step.name.as_str() {
-            "maps/osm" => step.run = Run::Rust(copy),
-            "maps/landmark-content" => step.run = Run::Rust(landmark_content),
-            "maps/peak-content" => step.run = Run::Rust(peak_content),
+            "maps/osm" => {
+                step.run = Run::Rust(copy);
+                step.code.libraries.clear();
+            }
+            name if name.starts_with("maps/landmark-content/") => step.run = Run::Rust(landmark_content),
+            name if name.starts_with("maps/peak-content/") => step.run = Run::Rust(peak_content),
             name if name.starts_with("maps/coarse/") || name.starts_with("maps/mid/") => {
                 step.run = Run::Rust(authored_geometry)
             }
@@ -210,18 +231,40 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
 
-    let mut release = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    let mut release =
+        obc_data::engine::release::release(&store, &root, "maps", &env.region, &[], &steps).unwrap().unwrap();
     release.name_files(Maps.named(&release).unwrap()).unwrap();
     Maps.verify(&root, None, &release, &store).unwrap();
-    let pointer = Maps.pointer().unwrap()(&release, &store).unwrap();
+    let pointer = Maps.pointer().unwrap()(&root, &release, &store).unwrap();
     assert!(
         release.named.iter().any(|file| file.path == "schema.json")
             && release.named.iter().any(|file| file.path == "LICENSE.txt")
     );
     let catalog: obc_pack::catalog::Catalog = serde_json::from_value(pointer.document.into()).unwrap();
     assert_eq!(catalog.schema.sha256, release.named.iter().find(|file| file.path == "schema.json").unwrap().sha256);
-    assert_eq!(catalog.regions.len(), 1);
-    assert!(catalog.regions[0].article_bytes.unwrap() > 0);
+    assert_eq!(
+        catalog.regions.iter().map(|region| region.id.as_str()).collect::<BTreeSet<_>>(),
+        [AREA, "grimsel-box"].into()
+    );
+    let selected = catalog.regions.iter().find(|region| region.id == env.region).unwrap();
+    assert!(selected.article_bytes.unwrap() > 0);
+    for region in &catalog.regions {
+        let named = release.named.iter().find(|file| file.path == format!("regions/{}/cells.json", region.id)).unwrap();
+        assert_eq!((&named.sha256, named.size), (&region.cells_sha256, region.cells_bytes));
+        let cells: obc_pack::catalog::RegionCellsDocument =
+            serde_json::from_slice(&std::fs::read(store.object(&named.sha256)).unwrap()).unwrap();
+        assert_eq!((cells.region_id.as_str(), &cells.schema_sha256), (region.id.as_str(), &catalog.schema.sha256));
+        assert_eq!(
+            cells.cells.iter().map(|(band, ids)| (band.clone(), ids.len() as u32)).collect::<BTreeMap<_, _>>(),
+            region.cell_count
+        );
+    }
+    let source = release.layers.iter().find(|layer| layer.step == format!("maps/source/{AREA}")).unwrap();
+    assert!(source.client_files().next().is_none());
+    for name in [EXTRACTS, "geofabrik-poly"] {
+        let read = &source.snapshots[name];
+        assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
+    }
     assert!(release
         .layers
         .iter()
@@ -321,7 +364,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut run = RunLog::create(&store, "build changed fixture").unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
-    let next = obc_data::engine::release::release(&store, &root, "maps", AREA, &[], &steps).unwrap().unwrap();
+    let next = obc_data::engine::release::release(&store, &root, "maps", &env.region, &[], &steps).unwrap().unwrap();
     let error = Maps.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
 }
@@ -364,7 +407,11 @@ fn peak_content(request: &Request) -> Result<(), String> {
 
 /// Authored coarse/mid geometry, serialized with the same style/profile tables as the real cuts.
 fn authored_geometry(request: &Request) -> Result<(), String> {
-    use obc_pack::serialize::{serialize_lods, Feature, Kind, LodLayer, Node};
+    use obc_bake::serialize::serialize_lods;
+    use obc_draw::serialize::Feature;
+    use obc_draw::serialize::Kind;
+    use obc_draw::serialize::LodLayer;
+    use obc_draw::serialize::Node;
     let config = Config::parse(include_str!("../../../builder/presets/schema.json"))?;
     let band = request.options["band"].as_str().ok_or("missing band")?;
     let table = BandTable::recommended();
@@ -416,8 +463,8 @@ fn authored_geometry(request: &Request) -> Result<(), String> {
 
 /// A structurally invalid payload whose valid header lets metadata generation complete.
 fn malformed_network(request: &Request) -> Result<(), String> {
-    obc_pack::step::cells(request)?;
-    let width = obc_pack::grid::id_width(18);
+    obc_network::step::cells(request)?;
+    let width = obc_map_core::grid::id_width(18);
     let pair = &request.options["cells"][0];
     let path = request.output.join(format!(
         "cells/network/{:0width$}/{:0width$}.obcm",

@@ -12,8 +12,8 @@ export function validateTile(data, { VectorTile, PbfReader }) {
 }
 
 async function main() {
-  const require = createRequire(new URL('../builder/app/package.json', import.meta.url));
-  const lock = JSON.parse(readFileSync(new URL('../builder/app/package-lock.json', import.meta.url)));
+  const require = createRequire(new URL('../builder/web/package.json', import.meta.url));
+  const lock = JSON.parse(readFileSync(new URL('../builder/web/package-lock.json', import.meta.url)));
   const modules = {};
   for (const name of ['@mapbox/vector-tile', 'pbf']) {
     const entry = require.resolve(name);

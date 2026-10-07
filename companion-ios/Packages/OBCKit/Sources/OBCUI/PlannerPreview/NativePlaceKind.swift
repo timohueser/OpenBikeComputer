@@ -12,9 +12,9 @@ enum NativePlaceKind {
         return "\(["n", "w", "r"][Int(type) - 1])\(identity)"
     }
     struct Entry: Decodable { let category: String; let label: String }
-    /// Basemap `pois` kinds (builder/app/src/lib/planner/poi-kinds.json).
+    /// Basemap `pois` kinds (builder/web/src/lib/planner/poi-kinds.json).
     static let entries: [String: Entry] = resource("poi-kinds") ?? [:]
-    /// The search query language (apps/planner-search/query/contract.json).
+    /// The search query language (planner/search/query/contract.json).
     struct Contract: Decodable {
         struct Kind: Decodable { let category: String? }
         let kinds: [String: Kind]

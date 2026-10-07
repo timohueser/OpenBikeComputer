@@ -1,6 +1,6 @@
 # Builder core
 
-Build from `builder/app`. Install `wasm-pack` first.
+Build from `builder/web`. Install `wasm-pack` first.
 
 ```sh
 npm ci
@@ -11,8 +11,8 @@ npm test
 
 | Output | Use |
 | --- | --- |
-| `../app/src/lib/core/pkg` | Production conversion, assembly, preview, grid, GPX, SHA-256, and store client APIs |
-| `../app/test-support/flat-device/pkg` | The same crate with `test-device`, for browser tests and the dev harness |
+| `../web/src/lib/core/pkg` | Production conversion, assembly, preview, grid, GPX, SHA-256, and store client APIs |
+| `../web/test-support/flat-device/pkg` | The same crate with `test-device`, for browser tests and the dev harness |
 
 Both outputs are generated. The test-device package must stay outside production imports.
 The app loads the production core before it imports synchronous data APIs. Workers load their own instance.
@@ -26,4 +26,4 @@ python3 builder/wasm/wasm_size_guard.py
 ```
 
 The fixture cutter needs GEOS. It is a dev dependency and must stay outside the production graph.
-The native flat-device library stays in `host/obc-flat-device`.
+The native flat-device library stays in `sim/flat-device`.

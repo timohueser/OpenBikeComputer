@@ -21,6 +21,7 @@ fn output(command: &mut Command, label: &str) -> Result<String, String> {
 pub(super) struct Identity {
     pub hashes: BTreeMap<String, String>,
     pub executable: PathBuf,
+    pub packages: BTreeMap<String, String>,
 }
 
 fn interpreter_command(root: &Path) -> Command {
@@ -51,12 +52,13 @@ pub(super) fn packages(root: &Path, group: Option<&str>) -> Result<BTreeMap<Stri
     Ok(BTreeMap::from([(format!("python/packages/{}", group.unwrap_or("base")), sha256_hex(packages.as_bytes()))]))
 }
 
-pub(crate) fn executable(root: &Path) -> Result<PathBuf, String> {
+pub fn executable(root: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(output(&mut interpreter_command(root), "uv offline interpreter")?.trim()))
 }
 
 pub(super) fn identity(root: &Path, runtime: &Python) -> Result<Identity, String> {
-    let mut hashes = packages(root, runtime.group.as_deref())?;
+    let packages = packages(root, runtime.group.as_deref())?;
+    let mut hashes = packages.clone();
     let executable = executable(root)?;
     let script = "import json,sys,sysconfig; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'abi':sysconfig.get_config_var('SOABI')}))";
     let interpreter = output(Command::new(&executable).args(["-c", script]), "Python runtime identity")?;
@@ -64,7 +66,7 @@ pub(super) fn identity(root: &Path, runtime: &Python) -> Result<Identity, String
         serde_json::from_str(&interpreter).map_err(|error| format!("Python identity: {error}"))?;
     let interpreter = serde_json::to_vec(&super::super::sorted(interpreter)).map_err(|error| error.to_string())?;
     hashes.insert("python/runtime".into(), sha256_hex(&interpreter));
-    Ok(Identity { executable, hashes })
+    Ok(Identity { executable, hashes, packages })
 }
 
 fn normalized(export: &str) -> String {
@@ -119,7 +121,10 @@ mod tests {
         let before = identity(root, &runtime).unwrap().hashes;
         let packaged = super::super::Code { python_packages: Some("selected".into()), ..Default::default() };
         let selected = super::super::files(root, &packaged).unwrap();
-        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected.keys().map(String::as_str).collect::<Vec<_>>(),
+            [super::super::SOURCE_BINDING, "python/packages/selected"]
+        );
         assert_eq!(selected["python/packages/selected"], before["python/packages/selected"]);
         assert!(!selected.contains_key("python/runtime"), "packaged dependencies select no host interpreter");
         project("1.0.0", "2.0.0", "1.0.0");

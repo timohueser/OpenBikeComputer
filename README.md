@@ -4,7 +4,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/timohueser/OpenBikeComputer/ci.yml?branch=develop&style=flat-square&label=CI)](https://github.com/timohueser/OpenBikeComputer/actions/workflows/ci.yml?query=branch%3Adevelop)
 [![Software: GPL-3.0-only](https://img.shields.io/badge/software-GPL--3.0--only-3c6e47?style=flat-square)](LICENSE)
-[![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/hardware-CERN--OHL--S--2.0-d46a28?style=flat-square)](LICENSE.hardware)
+[![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/hardware-CERN--OHL--S--2.0-d46a28?style=flat-square)](hardware/LICENSE)
 
 **An open-source GPS computer for bikepacking.**
 
@@ -119,7 +119,7 @@ just sim
 
 First builds take a few minutes; fixture downloads are cached. `just --list` lists tasks;
 `just --show TASK` shows a recipe. Run `./tools/obc setup` for the `obc` alias and completion.
-See the [simulator guide](apps/obc-sim/README.md) for controls and rendering.
+See the [simulator guide](sim/desktop/README.md) for controls and rendering.
 
 ## Roadmap
 
@@ -146,8 +146,9 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | --- | --- |
 | `firmware/` | Device application, rendering, protocols, storage, board image, and bootloader |
 | `host/` | Host tools, map bakers, fixtures, and test support |
-| `apps/` | Desktop simulator, desktop shell, and browser/WebAssembly hosts |
-| `builder/` | Svelte map builder, shared Rust/WASM core, presets, and maintainer server |
+| `planner/` | Router, build tools, service, search, and tile worker |
+| `sim/` | Desktop, web and phone simulators, host core, replay, feeder and benchmarks |
+| `builder/` | Web and desktop builder, Rust/WASM core, USB transport, presets, and server |
 | `companion-ios/` | SwiftUI companion app and shared iOS package |
 | `specs/` | Normative binary, wire, and vector contracts |
 | `fixtures/` | Scenario registry, source provenance, and fixture builders |
@@ -155,9 +156,9 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `docs/` | Public documentation, website, and project blog |
 | `hardware/` | KiCad schematics, PCB layouts, footprints, and component models |
 | `ops/` | Service configuration, probes, and runbooks |
-| `tools/` | The `obc` development command and repository tooling |
+| `tools/` | The `obc` command, repository tools, and verification console |
 
-The root Cargo workspace holds the `firmware/`, `host/`, and `apps/` crates. The nRF54L board image,
+`Cargo.toml` lists the root workspace crates. The nRF54L board image,
 bootloader, Tauri desktop app, and sensor simulator are standalone Cargo roots. The
 [architecture guide](https://openbikecomputer.com/docs/software/architecture/) explains the boundaries.
 
@@ -184,5 +185,5 @@ Contributions are always welcome! This project is in the very early stages and m
 
 Software is available under [GPL-3.0-only](LICENSE), except `host/obc-data`, which is MIT OR
 Apache-2.0 and depends on no GPL crate. Hardware design sources are available under
-[CERN-OHL-S-2.0](LICENSE.hardware). Third-party notices are listed in
+[CERN-OHL-S-2.0](hardware/LICENSE). Third-party notices are listed in
 [`THIRD-PARTY.md`](THIRD-PARTY.md).

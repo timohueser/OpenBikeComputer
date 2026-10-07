@@ -45,14 +45,14 @@ const IMMUTABLE: Upload<'static> =
 #[derive(Args)]
 pub struct ApplyArgs {
     /// The environment. Only `live` applies.
-    env: String,
+    pub(super) env: String,
     /// Apply this output of `plan live --json`. Exit status 3 when live or the plan of now differs.
     /// Without a terminal, it is the consent.
     #[arg(long)]
-    plan: Option<PathBuf>,
+    pub(super) plan: Option<PathBuf>,
     /// Do not ask.
     #[arg(long)]
-    yes: bool,
+    pub(super) yes: bool,
 }
 
 /// What an apply did.
@@ -67,6 +67,7 @@ pub struct Applied {
     pub switched: Vec<BuiltRelease>,
     /// The keys that it removed: no live release used them.
     pub removed: Vec<Object>,
+    pub approval: crate::approval::Outcome,
 }
 
 pub fn apply(root: &Path, products: &[&dyn Product], args: ApplyArgs, json: bool) -> Result<(), Error> {
@@ -86,6 +87,7 @@ pub fn apply(root: &Path, products: &[&dyn Product], args: ApplyArgs, json: bool
     if json {
         return super::print_json(&applied);
     }
+    println!("{}", applied.approval.summary());
     if applied.built.is_none() {
         println!("Live has every change.");
         return Ok(());
@@ -101,7 +103,7 @@ pub fn apply(root: &Path, products: &[&dyn Product], args: ApplyArgs, json: bool
 
 /// Whether the apply goes on without a question: with `--yes`, or with `--plan` and no terminal.
 /// Without a terminal, one of them is required.
-fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
+pub(super) fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
     if !terminal && !args.yes && args.plan.is_none() {
         return Err(Code::NoTerminal.error("there is no terminal to ask in; nothing changed"));
     }
@@ -109,13 +111,13 @@ fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
 }
 
 /// The one question before an apply.
-fn question(plan: &EnvPlan) -> String {
+pub(super) fn question(plan: &EnvPlan) -> String {
     let removes = bytes(plan.remove.iter().filter_map(|removal| removal.bytes).sum());
     let changes = match plan.groups.len() {
         1 => "1 change".into(),
         n => format!("{n} changes"),
     };
-    format!("Apply {changes} to live? removes {removes} from R2")
+    format!("Apply {changes} to live? removes {removes} from R2; review auto approval")
 }
 
 /// Apply `saved`, or else the plan of now. `ask` gets the plan before anything changes. The
@@ -148,6 +150,11 @@ fn apply_live(
     };
     build_cli::complete(Some(plan))?;
     build_cli::suits(products, plan)?;
+    plan.approval
+        .as_ref()
+        .ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?
+        .check()
+        .map_err(|reason| Code::Blocked.error(reason))?;
     if let Some(blocked) = plan.blocked.iter().find(|blocked| !blocked.layers.is_empty()) {
         let reasons =
             blocked.layers.iter().map(|layer| format!("{}: {}", layer.layer, layer.reason)).collect::<Vec<_>>();
@@ -159,44 +166,99 @@ fn apply_live(
     }
 
     let noop = plan.groups.is_empty() && plan.remove.is_empty();
-    if !noop {
-        ask(plan)?;
-    }
+    ask(plan)?;
     let mut run = super::api::start_run(store, "apply live")?;
-    if noop {
-        let applied = Applied { run: run.id().into(), ..Applied::default() };
-        let result = build_cli::recheck_noop(root, store, http, remote, products, plan, &mut run).map(|()| applied);
-        return super::api::finish_run(run, result, None);
-    }
+    run.require_committed_code();
     let preparation = (|| {
-        let expected = super::commit_cli::expected(plan, products)?;
-        let scratch = Scratch::new()?;
         let (built, next) = stage(root, store, http, remote, products, plan, &mut run)?;
-        crate::worker::check(root)?;
-        let directory = scratch.0.join("bundle");
-        let digest = super::commit_cli::pack(&directory, store, &run, expected, next, registry(root)?.sources, remote)?;
-        run.sync()?;
-        Ok((built, scratch, directory, digest))
+        let pending = publication(root, store, http, remote, products, plan, next, &mut run)?;
+        Ok((built, pending))
     })();
-    let (built, _scratch, directory, digest) = match preparation {
+    let (built, pending) = match preparation {
         Ok(prepared) => prepared,
         Err(error) => return super::api::finish_run(run, Err(error), None),
     };
     let id = run.id().to_string();
     drop(run);
     #[cfg(test)]
-    let committed = super::commit_cli::execute_for_test(&directory, &digest, store, remote, wait)?;
+    let committed = super::commit_cli::execute_for_test(&pending.directory, &pending.digest, store, remote, wait)?;
     #[cfg(not(test))]
     let committed = {
         let _ = wait;
-        super::commit_cli::submit(&directory, &digest, &id, store).map_err(|mut error| {
+        super::commit_cli::submit(&pending.directory, &pending.digest, &id, store).map_err(|mut error| {
             error.run = Some(id.clone());
             error
         })?
     };
-    let mut applied = Applied { run: id, built: Some(built), ..Applied::default() };
+    let mut applied = Applied { run: id, built: (!noop).then_some(built), ..Applied::default() };
     committed.apply(&mut applied);
     Ok(applied)
+}
+
+pub(super) struct Pending {
+    pub(super) _scratch: Scratch,
+    pub(super) directory: PathBuf,
+    pub(super) digest: String,
+}
+
+/// Seal the verified desired graph for the existing installed publication owner.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn publication(
+    root: &Path,
+    store: &Store,
+    http: &Http,
+    remote: &Remote,
+    products: &[&dyn Product],
+    plan: &EnvPlan,
+    next: Live,
+    run: &mut Run,
+) -> Result<Pending, Error> {
+    let expected = super::commit_cli::expected(plan, products)?;
+    let scratch = Scratch::new()?;
+    crate::worker::check(root)?;
+    let directory = scratch.0.join("bundle");
+    let sources = registry(root)?.sources;
+    let previous = Live::read(remote, products, &sources, store).map_err(r2_failed)?;
+    if previous.products.iter().any(|product| {
+        expected.get(&format!("{}/catalog.json", product.prefix)).is_some_and(|observed| observed != &product.observed)
+    }) {
+        return Err(Code::PlanOutdated.error("live changed while preparing service metadata"));
+    }
+    previous.restore_named(remote, store).map_err(r2_failed)?;
+    let views = |live: &Live, folder: &str| -> Result<Vec<crate::vps::Candidate>, Error> {
+        let mut services = Vec::new();
+        for product in products {
+            let Some(now) = live.products.iter().find(|now| now.product == product.name()) else { continue };
+            let Some((_, release)) = &now.release else { continue };
+            let mut candidates = product.services(root, release, store, &directory.join(folder))?;
+            if !candidates.is_empty() {
+                let origins: crate::vps::Origins = serde_json::from_value(
+                    now.document
+                        .as_ref()
+                        .and_then(|document| document.get("origins"))
+                        .cloned()
+                        .ok_or_else(|| Code::VerifyFailed.error("service view has no pointer origins"))?,
+                )
+                .map_err(|e| e.to_string())?;
+                origins.check()?;
+                for candidate in &mut candidates {
+                    candidate.site_origin = origins.site_origin.clone();
+                    candidate.api_origin = origins.api_origin.clone();
+                    candidate.objects_url = origins.objects_url();
+                }
+            }
+            services.extend(candidates);
+        }
+        Ok(services)
+    };
+    let services = (views(&next, "services")?, views(&previous, "previous-services")?);
+    build_cli::recheck_approval(root, store, http, remote, products, plan, run)?;
+    let approval =
+        plan.approval.clone().ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?;
+    let digest = super::commit_cli::pack(&directory, store, run, expected, next, sources, remote, services, approval)?;
+    run.sync()?;
+
+    Ok(Pending { _scratch: scratch, directory, digest })
 }
 
 /// Remove what no live release uses once no client can still read an older pointer: `wait` after
@@ -252,9 +314,9 @@ fn stage(
 ) -> Result<(Built, Live), Error> {
     let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
     let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan), run)?;
-    let Applying { live, next } = applying.expect("a build of live gives what an apply changes");
+    let Applying { next, .. } = applying.expect("a build of live gives what an apply changes");
     run.record(&Event::Phase { phase: Phase::Verify })?;
-    switches(root, products, store, &live, &next)?;
+    verify_products(root, products, store, &next)?;
     Ok((built, next))
 }
 
@@ -271,7 +333,7 @@ pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBu
 
 /// Refuse an apply while `data/` has changes that git does not have: live builds from a committed
 /// `data/`. `data/env/local.toml` is never in git.
-fn committed(root: &Path) -> Result<(), Error> {
+pub(super) fn committed(root: &Path) -> Result<(), Error> {
     let args = ["status", "--porcelain", "--untracked-files=all", "--", "data", ":(exclude)data/env/local.toml"];
     let out = std::process::Command::new("git")
         .args(args)
@@ -291,11 +353,10 @@ fn committed(root: &Path) -> Result<(), Error> {
         .fix("Commit data/ first: an apply builds live from the committed data/."))
 }
 
-/// Each product whose release `next` changes, with its pointer. Each release is checked here,
-/// before anything changes on R2.
-fn switches(root: &Path, products: &[&dyn Product], store: &Store, live: &Live, next: &Live) -> Result<(), Error> {
-    for (product, (live, next)) in products.iter().zip(live.products.iter().zip(&next.products)) {
-        let Some((id, release)) = next.release.as_ref().filter(|_| build_cli::changed(live, next)) else {
+/// Verify each complete product before publication, including unchanged releases.
+pub(super) fn verify_products(root: &Path, products: &[&dyn Product], store: &Store, next: &Live) -> Result<(), Error> {
+    for (product, next) in products.iter().zip(&next.products) {
+        let Some((id, release)) = next.release.as_ref() else {
             continue;
         };
         let name = product.name();
@@ -304,7 +365,7 @@ fn switches(root: &Path, products: &[&dyn Product], store: &Store, live: &Live, 
                 .error(format!("release {} of `{name}`: {e}; nothing changed", &id[..8]))
                 .fix(format!("Correct the steps of product `{name}`, then plan again."))
         };
-        product.verify(root, live.release.as_ref().map(|(_, release)| release), release, store).map_err(failed)?;
+        product.verify(root, None, release, store).map_err(failed)?;
         if next.document.is_none() {
             return Err(failed("release has no desired pointer".into()));
         }
@@ -514,7 +575,7 @@ mod tests {
 
     const NO_WAIT: Wait = Wait { pointer: Duration::ZERO, clock: Duration::ZERO };
 
-    /// A repository whose `data/` git has, `head@2020-01-01` in the store, and a local bucket with a
+    /// A committed repository, `head@2020-01-01` in the store, and a local bucket with a
     /// firmware file and the removal log.
     fn repository(name: &str) -> (Fixture, Remote) {
         let fixture = fixture(name);
@@ -525,10 +586,7 @@ mod tests {
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
         write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
-        let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
-        for args in [&["add", "data"][..], &["commit", "-q", "-m", "data"]] {
-            assert!(Command::new("git").args(git).args(args).current_dir(&root).status().unwrap().success());
-        }
+        commit(&fixture);
         fixture.fetched_version("head", "2020-01-01", "head.txt", b"head\n");
         upstream(&fixture, "head", "2020-01-01");
         upstream(&fixture, "tail", "1");
@@ -541,6 +599,13 @@ mod tests {
     fn apply(fixture: &Fixture, remote: &Remote, products: &[&dyn Product]) -> Result<Applied, Error> {
         let (root, http) = (fixture.root(), Http::new());
         apply_live(&root, &fixture.store, &http, remote, products, None, |_| Ok(()), NO_WAIT)
+    }
+
+    fn commit(fixture: &Fixture) {
+        let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
+        for args in [&["add", "."][..], &["commit", "-q", "-m", "fixture"]] {
+            assert!(Command::new("git").args(git).args(args).current_dir(fixture.root()).status().unwrap().success());
+        }
     }
 
     /// Every file in the local bucket.
@@ -802,7 +867,7 @@ mod tests {
             Versioned.named(release)
         }
         fn pointer(&self) -> Option<PointerFn> {
-            Some(|release, _| {
+            Some(|_, release, _| {
                 Ok(Pointer {
                     document: [("schema".into(), 2.into()), ("bound".into(), release.id().into())]
                         .into_iter()
@@ -912,6 +977,7 @@ mod tests {
         write(&fixture.scratch.0.join("bucket/test/objects/old"), "old");
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Failing]).unwrap_err();
         let events = crate::engine::runs::events(&fixture.store, err.run.as_ref().unwrap()).unwrap();
@@ -923,12 +989,48 @@ mod tests {
     }
 
     #[test]
+    fn a_no_change_apply_still_needs_consent_and_checks_the_complete_product() {
+        let (fixture, remote) = repository("approval-no-change-verify");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let root = fixture.root();
+        let plan = build_cli::plan_live(&root, &fixture.store, &Http::new(), &remote, &[&Failing], &[], false).unwrap();
+        assert!(plan.groups.is_empty() && plan.remove.is_empty());
+        let original = keys(&fixture);
+        let approval = crate::approval::read(&fixture.store).unwrap();
+        let asked = std::cell::Cell::new(false);
+        let error = apply_live(
+            &root,
+            &fixture.store,
+            &Http::new(),
+            &remote,
+            &[&Failing],
+            Some(&plan),
+            |reviewed| {
+                assert_eq!(reviewed, &plan);
+                asked.set(true);
+                Ok(())
+            },
+            NO_WAIT,
+        )
+        .unwrap_err();
+        assert!(asked.get(), "no-op publication cannot silently establish approval");
+        assert_eq!(error.code, Code::VerifyFailed);
+        assert_eq!(keys(&fixture), original);
+        assert_eq!(crate::approval::read(&fixture.store).unwrap(), approval);
+        assert!(!crate::engine::runs::events(&fixture.store, error.run.as_ref().unwrap())
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, Event::Published { .. })));
+    }
+
+    #[test]
     fn a_cleanup_failure_keeps_the_run_and_its_acknowledged_pointer_switch() {
         let (fixture, remote) = repository("apply-cleanup-journal");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let old = checked(&fixture, &remote).unwrap();
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let root = fixture.root();
         let log = fixture.scratch.0.join("bucket/removed.jsonl");
         let error = apply_live(
@@ -1017,11 +1119,15 @@ mod tests {
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let before = keys(&fixture);
         let error = apply(&fixture, &remote, &[&super::super::build_cli::tests::Partial]).unwrap_err();
         assert_eq!(error.code, Code::Blocked);
         assert!(error.message.contains("test/missing"));
         assert_eq!(keys(&fixture), before);
+        let previous =
+            Live::read_products(&remote, &[("test", "test")], &parse_sources(SOURCES).unwrap(), &fixture.store)
+                .unwrap();
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
         let mut run = Run::create(&fixture.store, "partial build").unwrap();
         let (built, applying) = build_cli::build_env(
@@ -1037,7 +1143,7 @@ mod tests {
         .unwrap();
         assert!(built.releases.is_empty());
         let applying = applying.unwrap();
-        assert_eq!(applying.next.products[0].release, applying.live.products[0].release);
+        assert_eq!(applying.next.products[0].release, previous.products[0].release);
         assert_eq!(keys(&fixture), before);
     }
 
@@ -1098,6 +1204,8 @@ mod tests {
             next,
             parse_sources(SOURCES).unwrap(),
             &remote,
+            (Vec::new(), Vec::new()),
+            plan.approval.clone().unwrap(),
         )
         .unwrap();
         let payload = Store::at(&directory);
@@ -1145,6 +1253,7 @@ mod tests {
         let original = checked(&fixture, &remote).unwrap();
         age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
         let pointer = fixture.scratch.0.join("bucket/test/catalog.json");
         let result = apply_live(
             &fixture.root(),
@@ -1184,6 +1293,8 @@ mod tests {
             next,
             parse_sources(SOURCES).unwrap(),
             &remote,
+            (Vec::new(), Vec::new()),
+            plan.approval.clone().unwrap(),
         )
         .unwrap();
         drop(run);

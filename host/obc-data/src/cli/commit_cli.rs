@@ -1,5 +1,7 @@
 //! The product-free final writer, with the original operation journal.
 
+pub(super) mod lifetime;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 #[cfg(not(test))]
@@ -27,6 +29,10 @@ pub(super) struct Bundle {
     expected: BTreeMap<String, Option<String>>,
     next: Live,
     sources: Vec<Source>,
+    services: Vec<crate::vps::Candidate>,
+    previous_services: Vec<crate::vps::Candidate>,
+    approval: crate::approval::Review,
+    automatic: Option<crate::approval::Admission>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -35,11 +41,12 @@ pub(super) struct Committed {
     uploaded: Vec<String>,
     switched: Vec<BuiltRelease>,
     removed: Vec<crate::r2::Object>,
+    approval: crate::approval::Outcome,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
-enum Reply {
+pub(super) enum Reply {
     Done { result: Committed, journal: Vec<Event> },
     Failed { error: Error, journal: Option<Vec<Event>> },
 }
@@ -49,6 +56,7 @@ impl Committed {
         applied.uploaded = self.uploaded;
         applied.switched = self.switched;
         applied.removed = self.removed;
+        applied.approval = self.approval;
     }
 }
 
@@ -71,6 +79,7 @@ pub(super) fn expected(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn pack(
     directory: &Path,
     store: &Store,
@@ -79,8 +88,17 @@ pub(super) fn pack(
     mut next: Live,
     sources: Vec<Source>,
     remote: &Remote,
+    services: (Vec<crate::vps::Candidate>, Vec<crate::vps::Candidate>),
+    approval: crate::approval::Review,
 ) -> Result<String, Error> {
     next.products.retain(|product| expected.contains_key(&format!("{}/catalog.json", product.prefix)));
+    let (mut services, mut previous_services) = services;
+    for candidate in &mut previous_services {
+        candidate.source = std::path::PathBuf::from("previous-services").join(candidate.service.name());
+    }
+    for candidate in &mut services {
+        candidate.source = std::path::PathBuf::from("services").join(candidate.service.name());
+    }
     let bundle = Bundle {
         run: run.id().into(),
         bucket: remote.describe().into(),
@@ -88,6 +106,10 @@ pub(super) fn pack(
         expected,
         next,
         sources,
+        services,
+        previous_services,
+        approval,
+        automatic: run.automatic.clone(),
     };
     let scratch = Scratch::new()?;
     let files = apply_cli::files(store, &scratch, &bundle.next)?;
@@ -124,8 +146,27 @@ fn sha(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+pub(super) fn approval_observation(store: &Store) -> Result<crate::approval::Observation, String> {
+    #[cfg(test)]
+    {
+        crate::approval::read(store)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = store;
+        let host = std::env::var("OBC_COMMIT_HOST")
+            .map_err(|_| "configure OBC_COMMIT_HOST to observe current automatic approval")?;
+        lifetime::approval(&host)
+    }
+}
+
 fn validate(bundle: &Bundle) -> Result<(), Error> {
     crate::engine::runs::check_id(&bundle.run)?;
+    if matches!(bundle.approval, crate::approval::Review::Ready { .. })
+        && (bundle.next.products.is_empty() || bundle.next.products.iter().any(|product| product.release.is_none()))
+    {
+        return Err(Code::VerifyFailed.error("automatic approval needs a complete desired publication"));
+    }
     let segment = |value: &str| {
         !value.is_empty()
             && !matches!(value, "." | "..")
@@ -184,6 +225,40 @@ fn validate(bundle: &Bundle) -> Result<(), Error> {
     if bundle.expected.len() != names.len() {
         return Err(Code::Usage.error("commit has an unexpected pointer key"));
     }
+    let planner = bundle.next.products.iter().find(|product| product.product == "planner" && product.release.is_some());
+    if let Some(planner) = planner {
+        let release = &planner.release.as_ref().unwrap().1;
+        if bundle.services.len() != 3
+            || bundle.services.iter().map(|candidate| candidate.service).collect::<BTreeSet<_>>().len() != 3
+        {
+            return Err(Code::Blocked.error("planner needs all three prepared service views"));
+        }
+        let document =
+            planner.document.as_ref().ok_or_else(|| Code::VerifyFailed.error("planner has no desired document"))?;
+        let origins: crate::vps::Origins = serde_json::from_value(
+            document.get("origins").cloned().ok_or_else(|| Code::VerifyFailed.error("planner has no origins"))?,
+        )
+        .map_err(|e| e.to_string())?;
+        origins.check()?;
+        for candidate in &bundle.services {
+            if candidate.source != std::path::PathBuf::from("services").join(candidate.service.name())
+                || !release.named.contains(&candidate.release)
+                || !release.named.contains(&candidate.runtime)
+                || candidate.release.path != "release.json"
+                || candidate.runtime.path != format!("runtime/{}.json", candidate.service.name())
+                || candidate.site_origin != origins.site_origin
+                || candidate.api_origin != origins.api_origin
+                || candidate.objects_url != origins.objects_url()
+                || document["active"]["services"][candidate.service.name()] != candidate.id
+            {
+                return Err(
+                    Code::VerifyFailed.error("prepared service differs from its release or desired publication")
+                );
+            }
+        }
+    } else if !bundle.services.is_empty() {
+        return Err(Code::Usage.error("service views have no planner release"));
+    }
     Ok(())
 }
 
@@ -198,27 +273,95 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
     if bundle.bucket != remote.describe() {
         return Err(Code::Blocked.error("commit owner names another bucket"));
     }
+    crate::approval::check_owner(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
     let Remote::Bucket(bucket) = remote else {
         return Err(Code::Blocked.error("commit needs R2 credentials on its owner"));
     };
     let mut owner = Owner::open(&store.root().join("commits"), &bundle.run, &bytes)?;
     let result_path = store.root().join("commits").join(format!("{}.result", bundle.run));
     if owner.finished() || result_path.exists() {
-        let result = serde_json::from_slice(&std::fs::read(result_path).map_err(|e| e.to_string())?)
-            .map_err(|e| Code::Failed.error(e.to_string()))?;
+        let publication = std::fs::read(result_path).map_err(|e| e.to_string())?;
+        let mut result: Committed =
+            serde_json::from_slice(&publication).map_err(|e| Code::Failed.error(e.to_string()))?;
         owner.finish()?;
+        result.approval =
+            approval_result(&bundle, store, &bundle.bucket, &bundle.run, digest, &sha256_hex(&publication));
         return Ok(result);
     }
+    let mut observed = BTreeMap::new();
+    if let Some(automatic) = &bundle.automatic {
+        automatic.recheck(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
+    } else {
+        crate::approval::recheck(store, &bundle.approval).map_err(|message| Code::PlanOutdated.error(message))?;
+    }
     for (key, expected) in &bundle.expected {
-        if remote.get(key)?.as_deref().map(sha256_hex) != *expected {
+        let body = remote.get(key)?;
+        if body.as_deref().map(sha256_hex) != *expected {
             return Err(Code::PlanOutdated.error(format!("{key} changed before the commit lock; plan again")));
         }
+        let document = body
+            .map(|body| {
+                serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&body).map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        observed.insert(key.clone(), document);
     }
-    for product in &bundle.next.products {
-        if product.product == "planner" && product.release.is_some() && !same_pointer(remote, product)? {
-            return Err(Code::Blocked.error("planner publication needs the service activation and retirement owner"));
+    let planner = bundle.next.products.iter().find(|product| product.product == "planner" && product.release.is_some());
+    let current_document = observed
+        .get("planner/catalog.json")
+        .and_then(Option::as_ref)
+        .filter(|document| document.contains_key("release"));
+    let current = if planner.is_some() { crate::vps::current(current_document)? } else { Vec::new() };
+    let approved = if let Some(planner) = planner {
+        let mut wanted =
+            planner.document.clone().ok_or_else(|| Code::VerifyFailed.error("planner has no desired pointer"))?;
+        let chosen = crate::vps::document(&mut wanted, current_document)?;
+        if planner.document.as_ref() != Some(&wanted) {
+            return Err(Code::PlanOutdated.error("service slot choices differ from the approved pointer"));
         }
-    }
+        let original = Live::read_products(remote, &[("planner", "planner")], &bundle.sources, store)?;
+        if original.products.first().map(|product| &product.observed) != bundle.expected.get("planner/catalog.json") {
+            return Err(Code::PlanOutdated.error("planner changed while reading original service metadata"));
+        }
+        let release =
+            original.products.first().and_then(|product| product.release.as_ref()).map(|(_, release)| release);
+        if current.len() != bundle.previous_services.len() {
+            return Err(Code::Blocked.error("current service metadata is incomplete"));
+        }
+        for candidate in &bundle.previous_services {
+            let release =
+                release.ok_or_else(|| Code::Blocked.error("previous service metadata has no original live release"))?;
+            if candidate.source != std::path::PathBuf::from("previous-services").join(candidate.service.name())
+                || !release.named.contains(&candidate.release)
+                || !release.named.contains(&candidate.runtime)
+                || candidate.release.path != "release.json"
+                || candidate.runtime.path != format!("runtime/{}.json", candidate.service.name())
+            {
+                return Err(Code::VerifyFailed.error("previous service view differs from exact observed live metadata"));
+            }
+            let origins: crate::vps::Origins = serde_json::from_value(
+                current_document
+                    .and_then(|document| document.get("origins"))
+                    .cloned()
+                    .ok_or_else(|| Code::VerifyFailed.error("original planner has no publication origins"))?,
+            )
+            .map_err(|e| Code::VerifyFailed.error(e.to_string()))?;
+            origins.check()?;
+            if candidate.api_origin != origins.api_origin
+                || candidate.site_origin != origins.site_origin
+                || candidate.objects_url != origins.objects_url()
+            {
+                return Err(Code::VerifyFailed.error("previous service origins differ from exact observed live"));
+            }
+        }
+        crate::vps::commit::stages(&bundle.previous_services, &current)?;
+        chosen
+    } else {
+        if !bundle.previous_services.is_empty() {
+            return Err(Code::Usage.error("previous service views have no planner publication"));
+        }
+        Vec::new()
+    };
     let payload = Store::at(directory);
     for (_, _, release) in bundle.next.releases() {
         release.write(&payload)?;
@@ -231,6 +374,30 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         run.record(&Event::Phase { phase: Phase::Upload })?;
         let uploaded = apply_cli::upload(bucket, &listed, &files, &mut run, &mut owner)?;
         run.record(&Event::Phase { phase: Phase::Switch })?;
+        let candidates = |views: &[crate::vps::Candidate]| {
+            views
+                .iter()
+                .map(|candidate| {
+                    let mut candidate = candidate.clone();
+                    candidate.source = directory.join(&candidate.source);
+                    candidate
+                })
+                .collect::<Vec<_>>()
+        };
+        let desired = candidates(&bundle.services);
+        let previous = candidates(&bundle.previous_services);
+        let mut service_owner = desired
+            .iter()
+            .find(|candidate| candidate.service == crate::vps::Service::Downloads)
+            .map(|downloads| crate::vps::local::Local::new(&payload, bucket, downloads))
+            .transpose()
+            .map_err(|e| Code::Blocked.error(e))?;
+        if let Some(backend) = &mut service_owner {
+            let mut guarded = crate::vps::commit::Guarded { backend, owner: &mut owner, run: &mut run };
+            crate::vps::commit::activate(&mut guarded, &desired, &previous, &current, &approved, || {
+                std::thread::sleep(wait.pointer + wait.clock)
+            })?;
+        }
         let mut switched = Vec::new();
         for product in &bundle.next.products {
             let Some((id, _)) = &product.release else { continue };
@@ -278,16 +445,29 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
             &mut run,
             &mut owner,
         )?;
-        Ok(Committed { uploaded, switched, removed })
+        if let Some(backend) = &mut service_owner {
+            use crate::vps::Vps;
+            if current.iter().any(|unit| !approved.contains(unit)) {
+                let switched = switch
+                    .ok_or_else(|| Code::Blocked.error("service retirement needs an acknowledged pointer switch"))?;
+                run.record(&Event::Phase { phase: Phase::Wait })?;
+                std::thread::sleep((wait.pointer + wait.clock).saturating_sub(switched.elapsed()));
+                run.record(&Event::Phase { phase: Phase::Cleanup })?;
+            }
+            crate::vps::commit::Guarded { backend, owner: &mut owner, run: &mut run }.retire(&current, &approved)?;
+        }
+        Ok(Committed { uploaded, switched, removed, approval: crate::approval::Outcome::NotRequested })
     })();
-    let result = super::api::finish_run(run, result, None).map_err(|mut error| {
+    let mut result = super::api::finish_run(run, result, None).map_err(|mut error| {
         if owner.unknown() {
             error.fix = format!("Commit {} has an unknown remote outcome. Inspect its durable intent; do not retry or clear it from a later read alone.", bundle.run);
         }
         error
     })?;
-    durable(&result_path, &serde_json::to_vec(&result).map_err(|e| e.to_string())?)?;
+    let publication = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
+    durable(&result_path, &publication)?;
     owner.finish()?;
+    result.approval = approval_result(&bundle, store, &bundle.bucket, &bundle.run, digest, &sha256_hex(&publication));
     for name in ["objects", "releases"] {
         let path = directory.join(name);
         if path.exists() {
@@ -297,6 +477,21 @@ fn execute(directory: &Path, digest: &str, store: &Store, remote: &Remote, wait:
         }
     }
     Ok(result)
+}
+
+fn approval_result(
+    bundle: &Bundle,
+    store: &Store,
+    bucket: &str,
+    run: &str,
+    digest: &str,
+    publication: &str,
+) -> crate::approval::Outcome {
+    if bundle.automatic.is_some() {
+        crate::approval::Outcome::NotRequested
+    } else {
+        crate::approval::record(store, &bundle.approval, bucket, run, digest, publication)
+    }
 }
 
 fn same_pointer(remote: &Remote, product: &crate::live::LiveProduct) -> Result<bool, Error> {
@@ -319,7 +514,30 @@ fn same_pointer(remote: &Remote, product: &crate::live::LiveProduct) -> Result<b
 }
 
 #[cfg(not(test))]
+pub(super) fn host(host: &str) -> Result<(), Error> {
+    if host.is_empty()
+        || !host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-_@".contains(&c))
+        || host.starts_with('-')
+    {
+        return Err(Code::Usage.error("OBC_COMMIT_HOST is not an SSH host"));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
 pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -> Result<Committed, Error> {
+    submit_checked(directory, digest, run, store, None)?
+        .ok_or_else(|| Code::Blocked.error("manual publication was not admitted"))
+}
+
+#[cfg(not(test))]
+pub(super) fn submit_checked(
+    directory: &Path,
+    digest: &str,
+    run: &str,
+    store: &Store,
+    automatic_root: Option<&Path>,
+) -> Result<Option<Committed>, Error> {
     let host = std::env::var("OBC_COMMIT_HOST")
         .map_err(|_| Code::Blocked.error("set OBC_COMMIT_HOST to the configured VPS, or local on that VPS"))?;
     let worker = "/opt/obc-data/bin/obc-data-plumbing";
@@ -328,59 +546,76 @@ pub(super) fn submit(directory: &Path, digest: &str, run: &str, store: &Store) -
         return Err(Code::Usage.error("commit bundle digest is not SHA-256"));
     }
     let incoming = format!("/var/lib/obc-data/incoming/{run}/{digest}");
+    self::host(&host)?;
     if host == "local" {
-        let output = Command::new(worker)
-            .args(["commit", directory.to_str().ok_or_else(|| Code::Usage.error("bundle path is not UTF-8"))?, digest])
+        std::fs::create_dir_all(&incoming).map_err(|e| e.to_string())?;
+    } else {
+        let prepared = Command::new("ssh")
+            .args(["-T", &host, "mkdir", "-p", "--", &incoming])
             .output()
             .map_err(|e| e.to_string())?;
-        return response(output, store, run);
+        if !prepared.status.success() {
+            return Err(Code::Failed.error("commit transfer directory could not be made; no publication owner started"));
+        }
     }
-    if host.is_empty()
-        || !host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-_@".contains(&c))
-        || host.starts_with('-')
-    {
-        return Err(Code::Usage.error("OBC_COMMIT_HOST is not an SSH host"));
-    }
-    let prepared =
-        Command::new("ssh").args(["-T", &host, "mkdir", "-p", "--", &incoming]).output().map_err(|e| e.to_string())?;
-    if !prepared.status.success() {
-        return Err(Code::Failed.error("commit transfer directory could not be made; no publication owner started"));
-    }
+    let target = if host == "local" { format!("{incoming}/") } else { format!("{host}:{incoming}/") };
     let copied = Command::new("rsync")
-        .args(["-r", "--", &format!("{}/", directory.display()), &format!("{host}:{incoming}/")])
+        .args(["-r", "--", &format!("{}/", directory.display()), &target])
         .output()
         .map_err(|e| e.to_string())?;
     if !copied.status.success() {
         return Err(Code::Failed.error("commit bundle transfer failed; no publication owner started"));
     }
-    let output = Command::new("ssh")
-        .args(["-T", &host, "nohup", worker, "commit", &incoming, digest])
-        .output()
-        .map_err(|e| e.to_string())?;
-    response(output, store, run).map_err(|mut error| {
-        if error.message.contains("failed or disconnected") {
-            error.fix =
-                format!("Query commit {run} on the VPS. Do not retry a remote mutation with an unknown outcome.");
+    let schedule = match automatic_root {
+        Some(root) => match crate::schedule::handoff(root, store)? {
+            Some(lock) => Some(lock),
+            None => return Ok(None),
+        },
+        None => None,
+    };
+    // Persist the handoff before admission. Transport failure cannot revoke a delayed dispatch.
+    super::operation_cli::handoff(store, run, &host, digest)?;
+    drop(schedule);
+    let mut command = if host == "local" {
+        Command::new(worker)
+    } else {
+        let mut command = Command::new("ssh");
+        command.args(["-T", &host, worker]);
+        command
+    };
+    let admitted = command.args(["commit-start", &incoming, digest]).output().map_err(|e| e.to_string())?;
+    if !admitted.status.success() {
+        return Err(Code::Blocked
+            .error("commit service admission failed or is uncertain")
+            .fix("Inspect the bound owner status. A delayed admission is still possible.")
+            .with_run(run));
+    }
+    loop {
+        let observed = lifetime::query(&host, run, digest)?;
+        let pending = observed.state.as_ref().is_some_and(|state| state.pending.is_some());
+        if pending && observed.reply.is_some() {
+            return Err(Code::Blocked
+                .error("commit has an unknown mutation outcome")
+                .fix("Inspect its durable owner intent. A later read alone cannot clear it.")
+                .with_run(run));
         }
-        error.run = Some(run.into());
-        error
-    })
+        if observed.reply.is_some() {
+            super::operation_cli::checked_owner(store, run, &host, digest, &observed)?;
+        }
+        if let Some(reply) = observed.reply {
+            return terminal(reply, store, run, &host, digest).map(Some);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
-
 #[cfg(not(test))]
-fn response(output: std::process::Output, store: &Store, run: &str) -> Result<Committed, Error> {
-    match serde_json::from_slice(&output.stdout) {
-        Ok(Reply::Done { result, journal }) if output.status.success() => {
-            Run::mirror(store, run, &journal)?;
-            Ok(result)
-        }
-        Ok(Reply::Failed { error, journal }) => {
-            if let Some(journal) = journal {
-                Run::mirror(store, run, &journal)?;
-            }
-            Err(error)
-        }
-        _ => Err(Code::Blocked.error("commit worker failed or disconnected; inspect its durable state and run")),
+fn terminal(reply: Reply, store: &Store, run: &str, host: &str, digest: &str) -> Result<Committed, Error> {
+    let journal = lifetime::journal(&reply).ok_or_else(|| Code::Blocked.error("terminal owner has no run journal"))?;
+    Run::mirror(store, run, journal)?;
+    super::operation_cli::resolved(store, run, host, digest, matches!(reply, Reply::Done { .. }), &reply)?;
+    match reply {
+        Reply::Done { result, .. } => Ok(result),
+        Reply::Failed { error, .. } => Err(error),
     }
 }
 
@@ -388,10 +623,27 @@ fn response(output: std::process::Output, store: &Store, run: &str) -> Result<Co
 pub fn main(args: &[String]) -> Result<u8, String> {
     let store = Store::at("/var/lib/obc-data/store");
     match args {
-        [command, run] if command == "commit-status" => {
-            crate::engine::runs::check_id(run)?;
-            let path = store.root().join("commits").join(format!("{run}.json"));
-            print!("{}", std::fs::read_to_string(path).map_err(|e| e.to_string())?);
+        [command, root, store] if command == "bake-preflight" => {
+            let (root, store) = (Path::new(root), Path::new(store));
+            if !root.is_absolute() || !store.is_absolute() {
+                return Err("bake preflight needs the configured absolute checkout and store".into());
+            }
+            let budget = crate::operation::budget::Budget::environment()?;
+            budget.disk(root, 0)?;
+            budget.disk(store, 0)?;
+            println!("{{\"ready\":true}}");
+            Ok(0)
+        }
+        [command] if command == "commit-approval" => {
+            println!("{}", serde_json::to_string(&crate::approval::read(&store)?).map_err(|error| error.to_string())?);
+            Ok(0)
+        }
+        [command, run, digest] if command == "commit-status" => {
+            println!("{}", serde_json::to_string(&lifetime::observe(&store, run, digest)?).map_err(|e| e.to_string())?);
+            Ok(0)
+        }
+        [command, directory, digest] if command == "commit-start" => {
+            lifetime::admit(&store, Path::new(directory), digest)?;
             Ok(0)
         }
         [command, directory, digest] if command == "commit" => {
@@ -403,17 +655,31 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             unsafe {
                 libc::signal(libc::SIGHUP, libc::SIG_IGN);
             }
-            let remote = Remote::from_env()?;
-            let result = execute(Path::new(directory), digest, &store, &remote, WAIT);
-            let journal = std::fs::read(Path::new(directory).join("bundle.json"))
-                .ok()
-                .filter(|bytes| sha256_hex(bytes) == *digest)
-                .and_then(|bytes| serde_json::from_slice::<Bundle>(&bytes).ok())
-                .and_then(|bundle| crate::engine::runs::events(&store, &bundle.run).ok());
+            let bytes = std::fs::read(Path::new(directory).join("bundle.json")).map_err(|e| e.to_string())?;
+            if sha256_hex(&bytes) != *digest {
+                return Err("commit bundle checksum differs".into());
+            }
+            let bundle: Bundle = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            validate(&bundle).map_err(|error| error.message)?;
+            let result = Remote::from_env()
+                .map_err(|e| Code::Blocked.error(e))
+                .and_then(|remote| execute(Path::new(directory), digest, &store, &remote, WAIT));
+            if let Err(error) = &result {
+                let events =
+                    crate::engine::runs::events(&store, &bundle.run).unwrap_or_else(|_| bundle.journal.clone());
+                if !matches!(events.last(), Some(Event::Finished { .. })) {
+                    let run = Run::attach(&store, &bundle.run, &events)?;
+                    run.finish(Some(&error.message))?;
+                }
+            }
+            let journal = crate::engine::runs::events(&store, &bundle.run).ok();
             let reply = match result {
                 Ok(result) => Reply::Done { result, journal: journal.ok_or("commit journal is missing")? },
                 Err(error) => Reply::Failed { error, journal },
             };
+            if lifetime::observe(&store, &bundle.run, digest)?.state.is_some() {
+                lifetime::persist_reply(&store, &bundle.run, &reply)?;
+            }
             let code = match &reply {
                 Reply::Done { .. } => 0,
                 Reply::Failed { error, .. } => error.code.exit(),
@@ -421,7 +687,7 @@ pub fn main(args: &[String]) -> Result<u8, String> {
             println!("{}", serde_json::to_string(&reply).map_err(|e| e.to_string())?);
             Ok(code)
         }
-        _ => Err("use commit BUNDLE SHA256 or commit-status RUN".into()),
+        _ => Err("use commit-start BUNDLE SHA256, commit BUNDLE SHA256, or commit-status RUN SHA256".into()),
     }
 }
 

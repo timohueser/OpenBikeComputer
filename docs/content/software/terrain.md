@@ -167,5 +167,5 @@ Map data carries the OpenStreetMap credit of the same registry.
 - DEM converter: [`obc-dem`](src:host/obc-dem)
 - Terrain publisher: [`terrain.rs`](src:host/obc-bake/src/terrain.rs)
 - Map assembly: [`terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
-- Edge ascent: [`nav.rs`](src:host/obc-pack/src/nav.rs)
+- Edge ascent: [`nav.rs`](src:host/obc-network/src/nav.rs)
 - Altimeter fusion: [`altitude.rs`](src:firmware/obc-app/src/altitude.rs)

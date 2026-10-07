@@ -23,7 +23,7 @@ def partition_search(stage, source, lookup, name, bounds, metadata):
 def partition_routing(stage, source, selection):
     selected = stage / "cells.json"
     selected.write_bytes(runtime.encoded(selection))
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "--bin", "route-blocks", cwd=maps.ROOT)
+    maps.run("cargo", "build", "--locked", "--release", "-p", "planner-router-build", "--bin", "route-blocks", cwd=maps.ROOT)
     maps.run(maps.ROOT / "target/release/route-blocks", source / "routing", stage / "routing", "--cells", selected)
     selected.unlink()
     routing = stage / "routing"
@@ -99,7 +99,7 @@ def publish(source, routing, output, cache=None):
     route_catalog = f"routes/{release['region']}.json"
     package("grid-route-catalog", {"source": release["files"][route_catalog]}, partition_routes,
             lambda stage: partition_routes(stage, source / route_catalog, [cell["id"] for cell in selection]))
-    paths = components.rust_sources("host/route-build")
+    paths = components.rust_sources("planner/router-build")
     root, _ = package("grid-routing", {"routing": release["routing_package"]}, partition_routing,
                       lambda stage: partition_routing(stage, source, selection), paths=paths)
     info = json.loads((root / "routing-info.json").read_bytes())
@@ -163,7 +163,7 @@ def publish(source, routing, output, cache=None):
             relative = database.relative_to(source).as_posix()
             package(f"grid-search-{component}-{name}", {"source": release["files"][relative]}, partition_search,
                 lambda stage, database=database, filename=filename, component=component: partition_search(stage, database, lookups[component], filename, bounds, meta[component]),
-                bounds, paths=[maps.ROOT / "apps/planner-search" / path for path in ("storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json")])
+                bounds, paths=[maps.ROOT / "planner/search" / path for path in ("storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json")])
             cell_files.append(filename)
         geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, f"routes/tiles/{name}.json"]})
         grid_cells.append({**cell, "files": [filename.removeprefix("search/") for filename in cell_files]})

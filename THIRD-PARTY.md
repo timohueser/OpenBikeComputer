@@ -7,7 +7,7 @@ file is that hand-over, one section per distributed artifact.
 
 **Generated — do not edit.** `obc licenses` rewrites it from the dependency graph;
 the `deny` CI job fails if it is out of date. Which licences are *allowed* in the tree
-is a separate question, answered by [`deny.toml`](deny.toml).
+is a separate question, answered by [`deny.toml`](tools/licenses/deny.toml).
 
 Each text is reproduced as the crate ships it, with one normalisation: runs of blank
 lines are collapsed to one and trailing spaces are dropped. cargo-about enriches some
@@ -9939,7 +9939,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-## iOS route library (`route-server`)
+## iOS route library (`planner-service`)
 
 _the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes._
 
@@ -10655,7 +10655,7 @@ authorization of the copyright holder.
 
 ```
 
-## Linux routing service (`route-server`, `x86_64-unknown-linux-gnu`)
+## Linux routing service (`planner-service`, `x86_64-unknown-linux-gnu`)
 
 _the HTTP executable in the stored routing runtime._
 
@@ -12517,7 +12517,7 @@ authorization of the copyright holder.
 
 ```
 
-## Linux routing service (`route-server`, `aarch64-unknown-linux-gnu`)
+## Linux routing service (`planner-service`, `aarch64-unknown-linux-gnu`)
 
 _the HTTP executable in the stored routing runtime._
 

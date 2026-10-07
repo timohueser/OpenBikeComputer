@@ -3,7 +3,7 @@
   "standalone_manifests": [
     "firmware/obc-fw-nrf54l/Cargo.toml",
     "firmware/obc-boot/Cargo.toml",
-    "apps/obc-desktop/Cargo.toml"
+    "builder/desktop/Cargo.toml"
   ],
   "forbidden_features": [
     {
@@ -49,17 +49,22 @@
       "obc-data-steps",
       "obc-dem",
       "obc-desktop",
+      "obc-draw",
       "obc-file-source",
       "obc-fixtures",
       "obc-flat-device",
       "obc-host-core",
       "obc-inspect",
       "obc-ios-host",
+      "obc-map-core",
       "obc-mkimage",
+      "obc-network",
+      "obc-osm",
       "obc-pack",
+      "obc-pbf",
       "obc-places",
-      "obc-search-bake",
       "obc-replay",
+      "obc-search-bake",
       "obc-sim",
       "obc-tree-walk",
       "obc-usb",
@@ -68,9 +73,9 @@
       "obc-web-demo",
       "obcm-assemble",
       "obcm-testkit",
-      "route-build",
-      "route-engine",
-      "route-server"
+      "planner-router-build",
+      "planner-router",
+      "planner-service"
     ],
     "standalone": [
       "obc-boot",

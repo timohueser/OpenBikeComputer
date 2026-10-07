@@ -2,7 +2,7 @@
 //!
 //! Nothing here touches the network: extracts and `.poly` files come from a [`LocalExtracts`] root,
 //! and the cutter is driven over a synthetic ingest rather than a PBF, through the real
-//! `obc_pack::cut::cut_ingested` — so every cell these tests inspect is a genuine OBCM file with a
+//! `obc_bake::cut::cut_ingested` — so every cell these tests inspect is a genuine OBCM file with a
 //! genuine header, but with a fixture that can be placed exactly on the grid lines the assertions
 //! are about.
 //!
@@ -27,20 +27,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use obc_bake::cells::{CellBakeOptions, CellBakery, CellCutter, CellRunSummary, CellStatus};
+use obc_bake::cut::{CutOptions, CutSummary};
 use obc_bake::presets::StyleDoc;
 use obc_bake::regions::Region;
 use obc_bake::source::LocalExtracts;
 use obc_bake::terrain::{
     ReferenceSource, TerrainBakeOptions, TerrainBakery, TerrainCell, TerrainCutter, TerrainDoc, TerrainRunSummary,
 };
-use obc_pack::config::Config;
-use obc_pack::cut::{CutOptions, CutSummary};
-use obc_pack::geom::Geom;
-use obc_pack::grid::{BandTable, CellId};
-use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
+use obc_draw::geom::Geom;
+use obc_draw::ingest::{IngestFeature, Ingested};
+use obc_map_core::config::Config;
+use obc_map_core::grid::{BandTable, CellId};
+use obc_map_core::progress::Progress;
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 
 const SNAPSHOT: &str = "2026-07-28";
 /// The two licences the fixture's landmark artifact is under: one article, one photo.
@@ -185,7 +185,7 @@ impl CellCutter for FixtureCutter {
         regions.sort();
         self.landmarks.lock().expect("landmarks").push((cells.clone(), regions));
         let (ing, ways) = fixture(config);
-        obc_pack::cut::cut_ingested(&ing, &ways, config, out_dir, opts, progress)
+        obc_bake::cut::cut_ingested(&ing, &ways, config, out_dir, opts, progress)
     }
 }
 
@@ -244,10 +244,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
             population: None,
         })
         .collect();
-    (
-        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
-        ways,
-    )
+    (Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois }, ways)
 }
 
 struct Fixture {
@@ -681,7 +678,7 @@ impl TerrainCutter for FakeDem {
 
     fn bake_cell(&self, ci: u32, cj: u32, posting_log2: u8, cell_log2: u8) -> Result<TerrainCell, String> {
         let len = obc_formats::obct::cell_block_len(posting_log2, cell_log2).expect("a pairing OBCT permits") as usize;
-        let width = obc_pack::grid::id_width(u32::from(cell_log2));
+        let width = obc_map_core::grid::id_width(u32::from(cell_log2));
         let id = format!("{cell_log2}/{ci:0width$}/{cj:0width$}");
         if id == TERRAIN_OCEAN {
             return Ok(TerrainCell::default());

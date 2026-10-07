@@ -20,6 +20,10 @@ path = "src/bin/obc-data-worker.rs"
 external-fixtures = []
 
 [dependencies]
+obc-map-core = { workspace = true }
+obc-draw = { workspace = true }
+obc-network = { workspace = true }
+obc-osm = { workspace = true }
 # Real assembly and reader verification before publishing map picks.
 obcm-assemble = { workspace = true, features = ["cli"] }
 obc-file-source = { workspace = true }
@@ -32,8 +36,8 @@ obc-pack = { path = "../obc-pack" }
 # The terrain steps.
 obc-dem = { path = "../obc-dem", features = ["terrarium"] }
 # The planner routing step and stored graph verification.
-route-engine = { path = "../route-engine" }
-route-build = { path = "../route-build" }
+planner-router = { path = "../../planner/router" }
+planner-router-build = { path = "../../planner/router-build" }
 # The planner search dump step.
 obc-search-bake = { path = "../obc-search-bake" }
 serde = { version = "1", features = ["derive"] }

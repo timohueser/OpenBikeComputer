@@ -15,7 +15,7 @@ from . import planner_prepare as preparation, planner_release as releases
 from .planner_runtime import open_url
 
 
-SEARCH = maps.ROOT / "apps/planner-search"
+SEARCH = maps.ROOT / "planner/search"
 # Producers that bake at the same time. Most leave cores idle in long single-threaded steps; two at a
 # time keeps the two largest, the search database and the basemap heap, within 16 GB of memory.
 CONCURRENT = 2
@@ -119,10 +119,10 @@ def build_terrain(stage, args, config):
 
 
 def build_routing(stage, osm, args, config):
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "-p", "obc-dem", cwd=maps.ROOT)
+    maps.run("cargo", "build", "--locked", "--release", "-p", "planner-router-build", "-p", "obc-dem", cwd=maps.ROOT)
     reference = terrain_inputs(args, config)
     routing = stage / "routing"
-    maps.run(maps.ROOT / "target/release/route-build", osm(), "--output", routing, "--region", config["region"],
+    maps.run(maps.ROOT / "target/release/planner-router-build", osm(), "--output", routing, "--region", config["region"],
              "--country", config["access"], "--bounds", ",".join(map(str, config["bounds"])),
              "--profiles", ",".join(config["profiles"]), "--countries", ",".join(config["countries"]),
              "--dem", args.dem_dir, *reference)
@@ -185,7 +185,7 @@ def specifications(config, prepared=None):
         paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py", maps.ROOT / "uv.lock"], functions=[sources.search_dump, sources.download])
     data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
     add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
-        paths=[SEARCH / "split.py", SEARCH / "records.py", maps.ROOT / "uv.lock", maps.ROOT / "builder/app/src/lib/planner/poi-kinds.json"])
+        paths=[SEARCH / "split.py", SEARCH / "records.py", maps.ROOT / "uv.lock", maps.ROOT / "builder/web/src/lib/planner/poi-kinds.json"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json"]] + [maps.ROOT / "uv.lock"]
     for component in ["pois", "addresses"]:
         add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
@@ -194,14 +194,14 @@ def specifications(config, prepared=None):
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "uv.lock"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/app/src/lib/planner/poi-kinds.json")])
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/web/src/lib/planner/poi-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}
     terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py"]
     add("terrain", build_terrain, {"elevation": elevation, **credits("copernicus-glo-30")}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
         functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
-    routing_paths = components.rust_sources("host/route-build")
+    routing_paths = components.rust_sources("planner/router-build")
     add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in

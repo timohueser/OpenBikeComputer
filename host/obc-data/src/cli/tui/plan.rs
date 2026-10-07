@@ -22,15 +22,20 @@ pub(super) struct PlanView {
     /// Plan shows the fetches and builds instead of the groups.
     pub steps: bool,
     pub group: usize,
+    pub dev: Option<crate::dev::Request>,
 }
 
-fn is_move(group: &Group) -> bool {
+pub(super) fn is_move(group: &Group) -> bool {
     matches!(group.cause, Some(Cause::Move { .. }))
 }
 
 impl PlanView {
     pub fn new(plan: EnvPlan) -> Self {
-        PlanView { taken: plan.clone(), all: plan, skipped: BTreeSet::new(), steps: false, group: 0 }
+        PlanView { taken: plan.clone(), all: plan, skipped: BTreeSet::new(), steps: false, group: 0, dev: None }
+    }
+
+    pub fn local(plan: EnvPlan, request: crate::dev::Request) -> Self {
+        Self { dev: Some(request), ..Self::new(plan) }
     }
 
     /// The `--only` of the moves that Plan takes: empty when it takes every move, `none` when it
@@ -47,6 +52,28 @@ impl PlanView {
         only
     }
 
+    pub fn versions(&self) -> Vec<Line<'static>> {
+        self.taken
+            .versions
+            .iter()
+            .map(|read| {
+                let params =
+                    read.params.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", ");
+                format!(
+                    "{} @ {}{}",
+                    read.product
+                        .as_ref()
+                        .map_or_else(|| read.source.clone(), |product| format!("{product}: {}", read.source)),
+                    read.version,
+                    if params.is_empty() { String::new() } else { format!(" · {params}") }
+                )
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(Line::from)
+            .collect()
+    }
+
     /// Whether `space` takes or leaves the selected group: a move.
     pub fn toggles(&self) -> bool {
         self.all.groups.get(self.group).is_some_and(|group| !self.steps && is_move(group))
@@ -60,6 +87,18 @@ impl PlanView {
         }
         self.only()
     }
+
+    /// A refused selection keeps the last resolved plan and its checkboxes together.
+    pub fn restore_selection(&mut self) {
+        self.skipped = self
+            .all
+            .groups
+            .iter()
+            .filter(|group| is_move(group))
+            .filter(|group| !self.taken.only.is_empty() && !self.taken.only.contains(&group.id))
+            .map(|group| group.id.clone())
+            .collect();
+    }
 }
 
 impl App {
@@ -70,15 +109,28 @@ impl App {
         let (all, taken) = (&view.all, &view.taken);
         let estimate = |value: Option<u64>, text: fn(u64) -> String| value.map_or("—".into(), text);
         let mut lines = Vec::new();
+        if let Some(approval) = &taken.approval {
+            lines.push(Line::from(approval.summary()));
+        }
         let mut focus = None;
         if all.groups.is_empty() {
-            lines.push(Line::from("Live has every change."));
+            lines.push(Line::from(if all.env == "local" {
+                "Local has every change."
+            } else {
+                "Live has every change."
+            }));
         } else if !view.steps {
             let mut table = vec![["", "CHANGE", "FETCH", "TIME", "OUTPUT"].map(String::from).to_vec()];
             for group in &all.groups {
                 let cost = Cost::of(std::slice::from_ref(group));
                 let fetch = if group.fetches.is_empty() { String::new() } else { estimate(cost.fetch, bytes) };
-                let mark = if view.skipped.contains(&group.id) { "[ ]" } else { "[x]" };
+                let mark = if !is_move(group) {
+                    ""
+                } else if view.skipped.contains(&group.id) {
+                    "[ ]"
+                } else {
+                    "[x]"
+                };
                 table.push(vec![
                     mark.into(),
                     change(group, &all.edits),
@@ -93,7 +145,7 @@ impl App {
                 let line = Line::from(row_text(cells, &widths));
                 lines.push(if i == view.group { line.reversed() } else { line });
             }
-            focus = Some(view.group + 1);
+            focus = Some(lines.len() - table.len() + view.group + 1);
         } else {
             let plan = Plan { groups: taken.groups.clone() };
             let fetches: Vec<Vec<String>> = plan
@@ -115,13 +167,35 @@ impl App {
             }
         }
 
+        if view.steps && !taken.versions.is_empty() {
+            lines.extend([Line::default(), Line::from("INPUT VERSIONS").dim()]);
+            lines.extend(view.versions());
+        }
+
         let removed = taken.remove.iter().map(|removal| removal.bytes).sum::<Option<u64>>();
-        let mut footer = vec![
-            Line::default(),
-            Line::from(format!("REMOVE FROM R2  {}, {}", keys(taken.remove.len()), estimate(removed, bytes))).bold(),
-        ];
+        let mut footer = vec![Line::default()];
+        if taken.env == "live" {
+            footer.push(
+                Line::from(format!("REMOVE FROM R2  {}, {}", keys(taken.remove.len()), estimate(removed, bytes)))
+                    .bold(),
+            );
+        }
+        if taken.env == "local" {
+            footer.extend(taken.live.iter().map(|product| {
+                Line::from(format!(
+                    "Input baseline {}: {}",
+                    product.product,
+                    product.release.as_deref().map_or("no Live release", |id| &id[..id.len().min(8)])
+                ))
+            }));
+        }
+        if taken.needs_prepare {
+            footer
+                .push(Line::styled("Inputs are unresolved. Prepare inputs, then review the new plan.", Color::Yellow));
+        }
         let blocked = taken.blocked.iter().map(|blocked| format!("blocked {}: {}", blocked.product, blocked.reason));
-        let unlisted = (!taken.listed).then(|| "R2 was not listed, so leftovers are unknown".to_string());
+        let unlisted =
+            (taken.env == "live" && !taken.listed).then(|| "R2 was not listed, so leftovers are unknown".to_string());
         footer.extend(blocked.chain(unlisted).map(|warning| Line::styled(format!("⚠ {warning}"), Color::Yellow)));
         if !taken.groups.is_empty() {
             let cost = Cost::of(&taken.groups);

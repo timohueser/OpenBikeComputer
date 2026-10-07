@@ -85,10 +85,11 @@ class ComponentTests(unittest.TestCase):
         digest = components.digest
         cases = {
             "tools/planner_places.py": {"places"},
-            "builder/app/src/lib/planner/poi-kinds.json": {"source-records", "pois", "addresses", "places"},
+            "builder/web/src/lib/planner/poi-kinds.json": {"source-records", "pois", "addresses", "places"},
             "tools/planner_overlays.py": {"overlays"},
             "tools/planner_map_archive.py": {"terrain", "sun"},
-            "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays", "sun"},
+            # Shared place metadata reads elevation through its normal Rust closure.
+            "firmware/obc-elevation/src/grid.rs": {"terrain", "routing", "overlays", "sun", "source-search", "source-records", "pois", "addresses", "places"},
             "firmware/obc-formats/Cargo.toml": {"terrain", "routing", "overlays", "sun", "source-search", "source-records", "pois", "addresses", "places"},
             "host/obc-places/src/lib.rs": {"source-search", "source-records", "pois", "addresses", "places"},
             "host/obc-search-bake/src/places.rs": {"source-search", "source-records", "pois", "addresses", "places"},

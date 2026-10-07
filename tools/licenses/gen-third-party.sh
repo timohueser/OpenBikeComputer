@@ -9,14 +9,14 @@
 # licence files already.
 #
 # The web bundle is NOT here. Its notices are generated from the emitted chunks at build
-# time (builder/app/vite/third-party-licenses.ts) and ship beside it, because only the
+# time (builder/web/vite/third-party-licenses.ts) and ship beside it, because only the
 # bundler knows which npm packages actually made it into the output.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$ROOT/THIRD-PARTY.md"
 TPL="$ROOT/tools/licenses/third-party.hbs"
-CFG="$ROOT/about.toml"
+CFG="$ROOT/tools/licenses/about.toml"
 
 check=0
 [ "${1:-}" = "--check" ] && check=1
@@ -41,10 +41,10 @@ fi
 ARTIFACTS=(
     "Device firmware (\`UPDATE.BIN\`)|firmware/obc-fw-nrf54l/Cargo.toml|the image the device runs, and the one served from updates.openbikecomputer.com"
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
-    "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
-    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
-    "Linux routing service (\`route-server\`, \`x86_64-unknown-linux-gnu\`)|apps/route-server/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
-    "Linux routing service (\`route-server\`, \`aarch64-unknown-linux-gnu\`)|apps/route-server/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
+    "Desktop application|builder/desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
+    "iOS route library (\`planner-service\`)|planner/service/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
+    "Linux routing service (\`planner-service\`, \`x86_64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
+    "Linux routing service (\`planner-service\`, \`aarch64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
 )
 
 # Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence
@@ -70,7 +70,7 @@ trap 'rm -f "$tmp"' EXIT
     echo
     echo "**Generated — do not edit.** \`obc licenses\` rewrites it from the dependency graph;"
     echo "the \`deny\` CI job fails if it is out of date. Which licences are *allowed* in the tree"
-    echo "is a separate question, answered by [\`deny.toml\`](deny.toml)."
+    echo "is a separate question, answered by [\`deny.toml\`](tools/licenses/deny.toml)."
     echo
     echo "Each text is reproduced as the crate ships it, with one normalisation: runs of blank"
     echo "lines are collapsed to one and trailing spaces are dropped. cargo-about enriches some"

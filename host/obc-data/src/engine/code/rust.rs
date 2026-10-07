@@ -6,12 +6,20 @@ use std::process::Command;
 
 use serde::Deserialize;
 
-type Selected = (BTreeSet<PathBuf>, BTreeMap<String, String>);
+type Selected = (BTreeSet<PathBuf>, BTreeMap<String, String>, Packages);
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(super) struct Packages {
+    pub names: BTreeSet<String>,
+    pub non_workspace: bool,
+}
 
 #[derive(Deserialize)]
 pub(super) struct Metadata {
     packages: Vec<Package>,
     resolve: Resolve,
+    #[serde(default)]
+    workspace_members: BTreeSet<String>,
     #[serde(skip)]
     checksums: BTreeMap<(String, String, String), String>,
     #[serde(skip)]
@@ -74,9 +82,11 @@ impl Metadata {
             Some(target) => target.to_string(),
             None => {
                 let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-                let host = Command::new(rustc)
+                let mut command = Command::new(rustc);
+                let host = crate::worker::compiler_command(&mut command)
                     .arg("-vV")
                     .current_dir(root)
+                    .env("RUSTUP_AUTO_INSTALL", "0")
                     .output()
                     .map_err(|error| format!("rustc: {error}"))?;
                 if !host.status.success() {
@@ -89,9 +99,14 @@ impl Metadata {
             }
         };
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let output = Command::new(cargo)
-            .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", &target])
+        Self::load_with(root, &target, Command::new(cargo))
+    }
+
+    pub fn load_with(root: &Path, target: &str, mut command: Command) -> Result<Self, String> {
+        let output = crate::worker::compiler_command(&mut command)
+            .args(["metadata", "--format-version", "1", "--locked", "--offline", "--filter-platform", target])
             .current_dir(root)
+            .env("RUSTUP_AUTO_INSTALL", "0")
             .output()
             .map_err(|error| format!("cargo metadata: {error}"))?;
         if !output.status.success() {
@@ -131,6 +146,15 @@ impl Metadata {
         Ok(true)
     }
 
+    pub fn directory(&self, name: &str) -> Option<PathBuf> {
+        self.packages
+            .iter()
+            .find(|package| package.name == name && package.source.is_none())?
+            .manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+    }
+
     pub fn selected(&self, root: &Path, crates: &[String], include_engine: bool) -> Result<Selected, String> {
         let packages: HashMap<_, _> = self.packages.iter().map(|package| (package.id.as_str(), package)).collect();
         let nodes: HashMap<_, _> = self.resolve.nodes.iter().map(|node| (node.id.as_str(), node)).collect();
@@ -143,7 +167,8 @@ impl Metadata {
                 .ok_or_else(|| format!("the workspace has no crate `{name}`"))?;
             pending.push(package.id.as_str());
         }
-        let (mut seen, mut dirs, mut identities) = (BTreeSet::new(), BTreeSet::new(), BTreeMap::new());
+        let (mut seen, mut dirs, mut identities, mut selected) =
+            (BTreeSet::new(), BTreeSet::new(), BTreeMap::new(), Packages::default());
         while let Some(id) = pending.pop() {
             let package = packages.get(id).ok_or_else(|| format!("cargo has no resolved package `{id}`"))?;
             // Engine plumbing is not producer code. Selected content settings have their own projection.
@@ -151,6 +176,8 @@ impl Metadata {
                 continue;
             }
             let node = nodes.get(id).ok_or_else(|| format!("cargo has no resolved node `{id}`"))?;
+            selected.names.insert(package.name.clone());
+            selected.non_workspace |= !self.workspace_members.contains(id);
             let mut features = node.features.clone();
             features.sort();
             features.dedup();
@@ -195,7 +222,7 @@ impl Metadata {
                     .map(|dep| dep.pkg.as_str()),
             );
         }
-        Ok((dirs, identities))
+        Ok((dirs, identities, selected))
     }
 }
 

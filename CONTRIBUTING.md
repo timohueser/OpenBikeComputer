@@ -9,8 +9,8 @@ Start with [simulator setup](README.md#try-the-simulator) to clone the repositor
 shared tools, and run the application without hardware. Run the commands below from the checkout
 root. `./tools/obc` works without an installed alias; `./tools/obc help TASK` describes a task.
 
-Use each surface's README for its extra setup and checks: [simulator](apps/obc-sim/README.md),
-[board firmware](firmware/obc-fw-nrf54l/README.md), or [web demo](apps/obc-web-demo/README.md).
+Use each surface's README for its extra setup and checks: [simulator](sim/desktop/README.md),
+[board firmware](firmware/obc-fw-nrf54l/README.md), or [web demo](sim/web-demo/README.md).
 
 ## Check your change
 

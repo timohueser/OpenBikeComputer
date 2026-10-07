@@ -18,6 +18,9 @@ pub const REMOVAL_LOG: &str = "removed.jsonl";
 
 const REMOTE: &str = "obcr2";
 
+mod fixture_target;
+pub use fixture_target::fixture_destination;
+
 /// rclone's exit status for a directory that does not exist.
 const DIRECTORY_NOT_FOUND: i32 = 3;
 

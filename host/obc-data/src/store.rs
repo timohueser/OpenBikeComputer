@@ -116,7 +116,21 @@ impl Store {
         }
     }
 
-    /// The shared lock that a fetch, a build or an import holds while it adds objects and their
+    /// Inspect an existing owner lock without creating a file or a directory.
+    pub fn is_locked(&self, key: &str) -> Result<bool, String> {
+        let file = match File::open(self.lock_path(key)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.to_string()),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(false),
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(e)) => Err(e.to_string()),
+        }
+    }
+
+    /// The shared lock that a mutating run, fetch or import holds while it uses objects and their
     /// records. A collection waits for no holder: it refuses to start.
     pub fn using(&self) -> Result<Lock, String> {
         let (file, path) = self.lock_file(STORE_LOCK)?;
@@ -124,18 +138,22 @@ impl Store {
         Ok(Lock(file))
     }
 
-    /// The store alone, for a collection, or `None` while a fetch, a build or an import runs.
+    /// The store alone, for a collection, or `None` while a mutating run, fetch or import runs.
     pub fn try_alone(&self) -> Result<Option<Lock>, String> {
         self.try_lock(STORE_LOCK)
     }
 
     fn lock_file(&self, key: &str) -> Result<(File, PathBuf), String> {
-        let name: String =
-            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
-        let path = self.root.join("locks").join(format!("{name}.lock"));
+        let path = self.lock_path(key);
         create_parent(&path)?;
         let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path);
         Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
+    }
+
+    pub(crate) fn lock_path(&self, key: &str) -> PathBuf {
+        let name: String =
+            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
+        self.root.join("locks").join(format!("{name}.lock"))
     }
 
     pub(crate) fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
@@ -201,6 +219,26 @@ impl Store {
             return Ok(());
         }
         write_record(&path, files)
+    }
+
+    pub fn producer(&self, code: &str) -> Result<Option<crate::engine::release::Producer>, String> {
+        if code.len() != 64 || !code.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Ok(None);
+        }
+        read_record(&self.root.join("producers").join(format!("{code}.json")))
+    }
+
+    pub fn put_producer(&self, code: &str, producer: &crate::engine::release::Producer) -> Result<(), String> {
+        producer.check(code)?;
+        write_record(&self.root.join("producers").join(format!("{code}.json")), producer)
+    }
+
+    pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
+        read_records(&self.root.join("local"))
+    }
+
+    pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
+        write_record(&self.root.join("local").join(format!("{}.json", adoption.plan.product)), adoption)
     }
 
     /// The manifest of a release.

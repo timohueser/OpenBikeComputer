@@ -131,6 +131,11 @@ jobs:
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
         with:
           just-version: "1.57.0"
+      - name: Prepare native area-union tool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends osmium-tool
+          osmium --version
       - name: Repository tool unit tests
         id: python-repository-tools
         run: |
@@ -149,7 +154,7 @@ jobs:
         run: python3 tools/check_fixture_policy.py
 
   # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
-  # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
+  # shared .rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: selection
@@ -177,7 +182,7 @@ jobs:
           cargo fmt --check --manifest-path firmware/obc-boot/Cargo.toml || rc=1
           echo "::endgroup::"
           echo "::group::obc-desktop (workspace-excluded)"
-          cargo fmt --check --manifest-path apps/obc-desktop/Cargo.toml || rc=1
+          cargo fmt --check --manifest-path builder/desktop/Cargo.toml || rc=1
           echo "::endgroup::"
           exit $rc
 
@@ -242,7 +247,7 @@ jobs:
         with:
           node-version: "22"
       - name: Prepare locked planner artifact readers
-        run: npm ci --omit=dev --ignore-scripts --prefix builder/app
+        run: npm ci --omit=dev --ignore-scripts --prefix builder/web
       # The planner Python steps run under uv: obc-data-steps runs one in its tests.
       - uses: actions/setup-java@v4
         with:
@@ -402,7 +407,7 @@ jobs:
       - name: Prepare web-builder packer tests
         run: |
           uv sync --locked --group builder-test
-          cargo build -p obc-pack --release --locked
+          cargo build -p obc-bake --bin obc-pack --release --locked
       - name: Packer binary and corpus are present
         run: |
           test -x target/release/obc-pack
@@ -628,17 +633,17 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --all-features --config deny.toml check
+        run: cargo deny --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
-        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-boot bootloader)
-        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-sensor-sim)
-        run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config tools/licenses/deny.toml check
       # The desktop shell is the one artifact a *user* installs, so its tree is the
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
-        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path builder/desktop/Cargo.toml --all-features --config tools/licenses/deny.toml check
       # deny.toml skips the repository's own crates, so it cannot see obc-data reach one.
       - name: obc-data depends on no GPL crate
         run: python3 tools/check_obc_data_licence.py
@@ -655,7 +660,7 @@ jobs:
       - name: THIRD-PARTY.md is current
         run: tools/licenses/gen-third-party.sh --check
 
-  # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
+  # The web demo (sim/web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
   # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
   # (`ci.wasm-size` owns the Trunk build, so the plan starts this job for the demo's own inputs.)
@@ -684,13 +689,13 @@ jobs:
         with:
           node-version: "22"
       - name: Install web demo browser runner
-        working-directory: apps/obc-web-demo/tests/browser
+        working-directory: sim/web-demo/tests/browser
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
       - name: Shipping web demo browser journey
         id: browser-journey
-        run: npm test --prefix apps/obc-web-demo/tests/browser
+        run: npm test --prefix sim/web-demo/tests/browser
       - name: Require browser journey execution
         if: ${{ !cancelled() }}
         env:
@@ -738,17 +743,17 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
           retention-days: 1
       # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
       - uses: actions/upload-artifact@v4
         with:
           name: obc-flat-device-pkg
-          path: builder/app/test-support/flat-device/pkg
+          path: builder/web/test-support/flat-device/pkg
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
-  # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
+  # anchor audit AGENTS.md otherwise asks for by hand: every internal ../page/#anchor must
   # resolve to a real heading id.
   docs:
     needs: selection
@@ -771,7 +776,7 @@ jobs:
   # protocol vector/contract tests, and every model test.
   #
   # DEVELOPER_DIR pins the Xcode toolchain (project floor is Xcode 26.x, see
-  # companion-ios/CLAUDE.md) so a runner-image update can't silently move it — when the
+  # companion-ios/README.md) so a runner-image update can't silently move it — when the
   # image drops this version the job fails loudly and the pin gets bumped on purpose.
   ios-unit:
     needs: selection
@@ -828,7 +833,7 @@ jobs:
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'planner.native-tiles')
         id: planner-tiles
         shell: bash
-        run: bash apps/planner-native/test-tiles.sh 2>&1 | tee "$RUNNER_TEMP/planner-tiles.log"
+        run: bash companion-ios/PlannerNative/test-tiles.sh 2>&1 | tee "$RUNNER_TEMP/planner-tiles.log"
       - name: Upload planner PMTiles results
         if: ${{ !cancelled() && (steps.planner-tiles.outcome == 'success' || steps.planner-tiles.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -981,7 +986,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: builder/app
+        working-directory: builder/web
     steps:
       - uses: actions/checkout@v4
         with:
@@ -990,18 +995,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
       # The device the USB suites run against. The desktop-frontend job does not download it: that
       # job only builds the shipped bundle, which must not contain this package at all.
       - uses: actions/download-artifact@v4
         with:
           name: obc-flat-device-pkg
-          path: builder/app/test-support/flat-device/pkg
+          path: builder/web/test-support/flat-device/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
       - run: npm ci
       - name: svelte-check
         run: npm run check
@@ -1043,30 +1048,30 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
       - name: Install the builder's build dependencies
-        working-directory: builder/app
+        working-directory: builder/web
         run: npm ci
       - name: Install builder browser runner
-        working-directory: builder/app/tests/browser
+        working-directory: builder/web/tests/browser
         run: |
           npm ci
           npx playwright install --with-deps chromium --only-shell
       - name: Builder assemble and download journey
         id: browser-journey
-        run: npm test --prefix builder/app/tests/browser
+        run: npm test --prefix builder/web/tests/browser
       - name: Require browser journey execution
         if: ${{ !cancelled() }}
         env:
           JOURNEY_OUTCOME: ${{ steps.browser-journey.outcome }}
         run: test "$JOURNEY_OUTCOME" = success
       - name: Planner request budget
-        run: npm run test:planner --prefix builder/app/tests/browser
+        run: npm run test:planner --prefix builder/web/tests/browser
       - name: Upload builder browser evidence
         if: ${{ !cancelled() && (steps.browser-journey.outcome == 'success' || steps.browser-journey.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1087,21 +1092,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-builder-bridge-pkg
-          path: builder/app/src/lib/core/pkg
+          path: builder/web/src/lib/core/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
       - name: Build the desktop bundle
-        working-directory: builder/app
+        working-directory: builder/web
         run: |
           npm ci
           npm run build:desktop
       - uses: actions/upload-artifact@v4
         with:
           name: obc-desktop-frontend
-          path: builder/app/dist/desktop
+          path: builder/web/dist/desktop
           retention-days: 1
 
   desktop:
@@ -1141,7 +1146,7 @@ jobs:
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/obc-desktop
+          workspaces: builder/desktop
           key: desktop-${{ matrix.slug }}
       # wry's Linux backend. macOS and Windows need nothing extra — which is most of
       # why Tauri was chosen over Electron (#906) — but Linux wants WebKitGTK.
@@ -1161,24 +1166,24 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-desktop-frontend
-          path: builder/app/dist/desktop
+          path: builder/web/dist/desktop
       # Order matters. `cargo test` never produces the plain binary — even with
       # --all-targets it builds bins as *test harnesses*, a different artifact — so the
       # `build` below is a full codegen + link either way. Running it first means the
       # normal lib it produces is already there for `test` to link against, instead of
       # `test` building one set of artifacts and `build` starting a second.
       - name: "obc-desktop: clippy"
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: cargo clippy --release --all-targets --locked -- -D warnings
       - name: "obc-desktop: build (release)"
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: cargo build --release --locked
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
       - name: "obc-desktop: test"
         id: desktop-tests
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         env:
           NEXTEST_PROFILE: ci
         run: |
@@ -1189,18 +1194,18 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-tests-${{ matrix.slug }}-${{ github.run_attempt }}
-          path: apps/obc-desktop/target/nextest/ci/junit.xml
+          path: builder/desktop/target/nextest/ci/junit.xml
           if-no-files-found: error
       # Recorded so an accidental native dependency or bundling regression is visible.
       - name: "obc-desktop: record the artifact size"
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: |
           bytes=$(wc -c < "target/release/${{ matrix.exe }}")
           echo "| ${{ matrix.slug }} | $bytes bytes |" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: obc-desktop-${{ matrix.slug }}
-          path: apps/obc-desktop/target/release/${{ matrix.exe }}
+          path: builder/desktop/target/release/${{ matrix.exe }}
           retention-days: 7
       # macOS ships two architectures and this crate is built on the Apple-silicon
       # runner, so cross-build the Intel slice to keep a future universal bundle open.
@@ -1209,7 +1214,7 @@ jobs:
       # correctness gate on the app anyone runs.
       - name: "obc-desktop: the macOS Intel slice (build-only)"
         if: runner.os == 'macOS' && github.event_name == 'push'
-        working-directory: apps/obc-desktop
+        working-directory: builder/desktop
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
@@ -1229,7 +1234,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: obc-desktop-linux-x86_64
-          path: apps/obc-desktop/target/release
+          path: builder/desktop/target/release
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -1246,13 +1251,13 @@ jobs:
           sudo apt-get install -y "libwebkit2gtk-4.1-0=$webkit_version" "webkit2gtk-driver=$webkit_version" xvfb imagemagick dbus-daemon
           uv sync --locked --group desktop-e2e
           cargo install tauri-driver --version 2.0.6 --locked
-          chmod +x apps/obc-desktop/target/release/obc-desktop
+          chmod +x builder/desktop/target/release/obc-desktop
           dpkg-query -W libwebkit2gtk-4.1-0 webkit2gtk-driver xvfb
       - name: Launch the release frontend and select a catalog region
         id: launch
         env:
           OBC_DESKTOP_EVIDENCE: ${{ runner.temp }}/desktop-launch
-        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python apps/obc-desktop/e2e/launch.py
+        run: xvfb-run -a dbus-run-session -- uv run --locked --group desktop-e2e python builder/desktop/e2e/launch.py
       - name: Upload Linux launch evidence
         if: ${{ !cancelled() && (steps.launch.outcome == 'success' || steps.launch.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -1276,19 +1281,19 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: apps/planner-search/package-lock.json
+          cache-dependency-path: planner/search/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: npm ci --prefix apps/planner-search
+      - run: npm ci --prefix planner/search
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
-      - run: UV_PROJECT_ENVIRONMENT="$PWD/apps/planner-search/.venv" uv sync --locked --group search-test
-      - run: npm test --prefix apps/planner-search
-      - run: npm run test:query --prefix apps/planner-search
-      - run: npm ci --prefix apps/planner-tiles
-      - run: npm test --prefix apps/planner-tiles && npm run build --prefix apps/planner-tiles
+      - run: UV_PROJECT_ENVIRONMENT="$PWD/planner/search/.venv" uv sync --locked --group search-test
+      - run: npm test --prefix planner/search
+      - run: npm run test:query --prefix planner/search
+      - run: npm ci --prefix planner/tiles
+      - run: npm test --prefix planner/tiles && npm run build --prefix planner/tiles
 
   verification:
     needs: selection
@@ -1304,16 +1309,16 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: apps/obc-verification/package-lock.json
-      - run: npm ci --prefix apps/obc-verification
-      - run: npm run check --prefix apps/obc-verification
-      - run: npm run test:ci --prefix apps/obc-verification
-      - run: npm run build --prefix apps/obc-verification
+          cache-dependency-path: tools/verification/package-lock.json
+      - run: npm ci --prefix tools/verification
+      - run: npm run check --prefix tools/verification
+      - run: npm run test:ci --prefix tools/verification
+      - run: npm run build --prefix tools/verification
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
           name: web-verification-${{ github.run_attempt }}
-          path: apps/obc-verification/verification-junit.xml
+          path: tools/verification/verification-junit.xml
           if-no-files-found: error
           retention-days: 7
 
@@ -1331,7 +1336,14 @@ jobs:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - name: Verify selected suites and required jobs
-        env:
-          OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
-          OBC_NEEDS_RESULTS: ${{ toJSON(needs) }}
-        run: python3 tools/ci_aggregate.py
+        # The runner writes this script to a file; JSON stays outside exec's environment.
+        run: |
+          cat > "$RUNNER_TEMP/ci-selection-plan.json" <<'OBC_SELECTION_PLAN_JSON'
+          ${{ needs.selection.outputs.plan }}
+          OBC_SELECTION_PLAN_JSON
+          cat > "$RUNNER_TEMP/ci-needs-results.json" <<'OBC_NEEDS_RESULTS_JSON'
+          ${{ toJSON(needs) }}
+          OBC_NEEDS_RESULTS_JSON
+          python3 tools/ci_aggregate.py \
+            --plan-file "$RUNNER_TEMP/ci-selection-plan.json" \
+            --needs-file "$RUNNER_TEMP/ci-needs-results.json"

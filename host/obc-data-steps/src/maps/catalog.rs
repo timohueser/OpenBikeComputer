@@ -9,47 +9,63 @@ use obc_pack::catalog::{Boundary, CellSource};
 pub const INDEX: &str = "geofabrik-index";
 pub const LAYER: &str = "maps/catalog";
 
-#[allow(clippy::too_many_arguments)]
 pub fn step(
     env: &Env,
     region: &obc_data::regions::Region,
     store: &Store,
-    outlines: &[Coverage],
+    selection: &crate::region_sources::Selection,
     listed: &[Step],
-    extract: &str,
     glo30: &str,
-    version: String,
-    body: &str,
+    index: Option<(String, &str)>,
 ) -> Result<Step, Unplanned> {
-    let areas = obc_data::regions::geofabrik::parse(body.as_bytes()).map_err(Unplanned::Failed)?;
-    let source_area =
-        region.source_area().ok_or_else(|| Unplanned::Invalid("catalog requires one source area".into()))?;
-    if !areas.contains_key(source_area) {
-        return Err(Unplanned::Invalid(format!("Geofabrik index has no area `{source_area}`")));
+    let areas = index
+        .as_ref()
+        .map(|(_, body)| obc_data::regions::geofabrik::parse(body.as_bytes()))
+        .transpose()
+        .map_err(Unplanned::Failed)?
+        .unwrap_or_default();
+    let primary: BTreeMap<_, _> = if index.is_some() {
+        selection
+            .sources
+            .iter()
+            .map(|source| {
+                let params = [("area".into(), source.id.clone())];
+                let (_, digest) = file(env, store, POLY, &source.poly, &params)?;
+                let poly =
+                    std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
+                Ok((source.id.clone(), poly))
+            })
+            .collect::<Result<_, Unplanned>>()?
+    } else {
+        if !matches!(region.area, obc_data::regions::Area::Box { .. })
+            || selection.sources.iter().any(|source| source.prepared.is_none())
+        {
+            return Err(Unplanned::Invalid("an index-free catalog requires checked captured inputs and a box".into()));
+        }
+        BTreeMap::new()
+    };
+    if primary.keys().any(|id| !areas.contains_key(id)) {
+        return Err(Unplanned::Invalid("Geofabrik index lacks a selected source area".into()));
     }
-    let source_coverage = Coverage::union(&outlines.iter().collect::<Vec<_>>())
-        .ok_or("cannot union source coverage")
-        .map_err(|e| Unplanned::Failed(e.into()))?;
+    let source_coverage = &selection.coverage;
+    let requested = Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
+        .ok_or_else(|| Unplanned::Failed("cannot union requested region coverage".into()))?;
     let mut coverage = BTreeMap::new();
     let mut available = BTreeMap::new();
     for band in BandTable::recommended().bands {
         let boundary = source_coverage.boundary_cells(band.cell_log2);
-        let cells = source_coverage.cells(band.cell_log2);
+        let cells = requested.cells(band.cell_log2);
         coverage.insert(
             band.id.clone(),
             cells.iter().map(|id| (id.to_string(), !source_coverage.covers(*id, &boundary))).collect(),
         );
         available.insert(band.id, cells);
     }
-    let terrain_available = source_coverage.cells(V1_CELL_LOG2.into());
-    let params = [("area".into(), source_area.to_string())];
-    let poly_version = version_of_poly(env, store, &params)?;
-    let (_, digest) = file(env, store, POLY, &poly_version, &params)?;
-    let primary_poly = std::fs::read_to_string(store.object(&digest)).map_err(|e| Unplanned::Failed(e.to_string()))?;
+    let terrain_available = requested.cells(V1_CELL_LOG2.into());
     let mut picks = Vec::new();
-    let bbox = source_coverage.bbox();
+    let bbox = requested.bbox();
     for area in areas.values() {
-        if area.id != source_area
+        if !primary.contains_key(&area.id)
             && (area.bounds.east * 1e6 < bbox.0 as f64
                 || area.bounds.west * 1e6 > bbox.2 as f64
                 || area.bounds.north * 1e6 < bbox.1 as f64
@@ -57,7 +73,7 @@ pub fn step(
         {
             continue;
         }
-        let poly = if area.id == source_area { primary_poly.clone() } else { poly(area) };
+        let poly = primary.get(&area.id).cloned().unwrap_or_else(|| poly(area));
         let outline = Coverage::parse_poly(&poly).map_err(Unplanned::Failed)?;
         // Candidate selections are admitted only when every band and terrain cell is built.
         let mut cells = BTreeMap::new();
@@ -89,17 +105,40 @@ pub fn step(
             terrain: terrain.into_iter().map(|id| id.to_string()).collect(),
         });
     }
-    if source_area != env.region {
-        let mut primary = picks
+    if index.is_none() || !selection.direct || selection.sources[0].id != env.region {
+        let shape = requested.geojson();
+        let parsed: serde_json::Value = serde_json::from_str(&shape).map_err(|e| Unplanned::Failed(e.to_string()))?;
+        let mut outline = format!("{}\n", region.id);
+        for (polygon, rings) in parsed["coordinates"]
+            .as_array()
+            .ok_or_else(|| Unplanned::Failed("region outline has no polygons".into()))?
             .iter()
-            .find(|pick| pick.id == source_area)
-            .cloned()
-            .ok_or_else(|| Unplanned::Invalid(format!("catalog has no complete source `{source_area}`")))?;
-        primary.id = region.id.clone();
-        primary.name = region.name.clone();
-        primary.parent = None;
-        picks.retain(|pick| pick.id != primary.id);
-        picks.push(primary);
+            .enumerate()
+        {
+            for (ring, points) in rings.as_array().expect("polygon rings").iter().enumerate() {
+                outline.push_str(&format!("{}{polygon}-{ring}\n", if ring == 0 { "" } else { "!" }));
+                for point in points.as_array().expect("ring points") {
+                    outline.push_str(&format!(" {} {}\n", point[0], point[1]));
+                }
+                outline.push_str("END\n");
+            }
+        }
+        outline.push_str("END\n");
+        picks.retain(|pick| pick.id != region.id);
+        picks.push(Pick {
+            id: region.id.clone(),
+            name: region.name.clone(),
+            parent: None,
+            boundary: Boundary {
+                tolerance_udeg: DEFAULT_TOLERANCE_UDEG,
+                rings: simplified_rings(&outline, DEFAULT_TOLERANCE_UDEG).map_err(Unplanned::Failed)?,
+            },
+            cells: available
+                .iter()
+                .map(|(band, cells)| (band.clone(), cells.iter().map(ToString::to_string).collect()))
+                .collect(),
+            terrain: terrain_available.iter().map(ToString::to_string).collect(),
+        });
     }
     if !picks.iter().any(|pick| pick.id == env.region) {
         return Err(Unplanned::Invalid(format!("catalog has no complete selection for `{}`", env.region)));
@@ -109,7 +148,11 @@ pub fn step(
         pick.parent = pick.parent.take().filter(|parent| ids.contains(parent));
     }
     let options = Options {
-        sources: vec![CellSource { extract_id: source_area.into(), snapshot: extract.into() }],
+        sources: selection
+            .sources
+            .iter()
+            .map(|source| CellSource { extract_id: source.id.clone(), snapshot: source.extract.clone() })
+            .collect(),
         coverage,
         picks,
         posting_log2: V1_POSTING_LOG2,
@@ -118,12 +161,22 @@ pub fn step(
     };
     let mut inputs: Vec<Input> =
         listed.iter().filter(|step| !step.client.is_none()).map(|step| Input::layer(&step.name)).collect();
-    inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
+    inputs.extend(index.map(|(version, _)| Input::Snapshot {
+        source: INDEX.into(),
+        version,
+        params: Vec::new(),
+        files: Vec::new(),
+    }));
     Ok(Step {
         name: LAYER.into(),
         inputs,
         options: serde_json::to_value(options).map_err(|e| Unplanned::Failed(e.to_string()))?,
-        code: Code { paths: vec!["builder/presets".into()], crates: vec!["obc-pack".into()], ..Default::default() },
+        code: Code {
+            paths: vec!["builder/presets".into()],
+            crates: vec!["obc-pack".into()],
+            sources: vec!["osm-planet".into(), "copernicus-glo-30".into()],
+            ..Default::default()
+        },
         outputs: ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt", "regions", "objects"]
             .map(String::from)
             .into(),
@@ -132,11 +185,7 @@ pub fn step(
     })
 }
 
-fn version_of_poly(env: &Env, store: &Store, params: &[(String, String)]) -> Result<String, Unplanned> {
-    version(env, store, POLY, params).map_err(Unplanned::Failed)?.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))
-}
-
-fn poly(area: &obc_data::regions::geofabrik::Area) -> String {
+pub(crate) fn poly(area: &obc_data::regions::geofabrik::Area) -> String {
     let mut text = format!("{}\n", area.id);
     for (polygon, rings) in area.polygons.iter().enumerate() {
         for (ring, points) in rings.iter().enumerate() {
@@ -157,7 +206,7 @@ pub fn named(release: &obc_data::engine::release::Release) -> Result<Vec<obc_dat
 }
 
 pub fn pointer() -> PointerFn {
-    |release, store| {
+    |_, release, store| {
         let file =
             release.named.iter().find(|file| file.path == "catalog.json").ok_or("release has no catalog root")?;
         let body = std::fs::read(store.object(&file.sha256)).map_err(|e| format!("{}: {e}", file.path))?;
@@ -167,4 +216,5 @@ pub fn pointer() -> PointerFn {
 }
 
 mod verify;
+pub(crate) use verify::assemble;
 pub use verify::verify;

@@ -22,7 +22,7 @@ from tools.planner_runtime import DATA_LAYERS
 from tools.planner_components import Cache
 
 ROOT = maps.ROOT
-SEARCH = ROOT / "apps/planner-search"
+SEARCH = ROOT / "planner/search"
 REGION = "baden-wuerttemberg-switzerland"
 RECIPES = ROOT / "tools/planner-regions"
 # The local preview commands. Each holds the lock of its data directory.
@@ -68,11 +68,11 @@ def verify(args, full=False):
     for path in [route / "route-catalog.json"] + [search / "model" / name for name in
                  ["model.int8.onnx", "tokenizer.json", "tokenizer_config.json", "labels.json"]] + [
                      SEARCH / ".venv/bin/python", SEARCH / "node_modules/opening_hours/package.json",
-                     maps.APP / "node_modules/vite/package.json", ROOT / "target/release/route-server"]:
+                     maps.APP / "node_modules/vite/package.json", ROOT / "target/release/planner-service"]:
         if not path.is_file() or not path.stat().st_size:
             raise ValueError(f"Missing {path}. Run obc planner setup.")
     if full:
-        run(ROOT / "target/release/route-server", route, "--verify")
+        run(ROOT / "target/release/planner-service", route, "--verify")
     return manifest
 
 
@@ -120,7 +120,7 @@ def serve(args):
         "OBC_SEARCH_PYTHON": str(SEARCH / ".venv/bin/python"),
         "OBC_SEARCH_REGIONS": args.region,
     }
-    commands = [([str(ROOT / "target/release/route-server"), str(args.data_dir / "routing")], ROOT),
+    commands = [([str(ROOT / "target/release/planner-service"), str(args.data_dir / "routing")], ROOT),
                 (["node", "server.mjs"], SEARCH),
                 ([args.pmtiles, "serve", str(args.data_dir / "maps"), "--interface=127.0.0.1",
                   f"--port={args.tile_port}", f"--public-url={tiles}"], ROOT),

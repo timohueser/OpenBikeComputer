@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 
-use obc_pack::progress::Progress;
+use obc_map_core::progress::Progress;
 
 use crate::regions::Region;
 

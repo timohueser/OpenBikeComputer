@@ -5,7 +5,7 @@ import OBCTransport
 
 /// The launch-argument surface: `-OBCScenario` and friends parse into `MockLaunchOptions` and
 /// produce a configured `MockControl`. These names are stable automation API; a rename must also
-/// update CLAUDE.md and the XCUITest helper.
+/// update README.md and the XCUITest helper.
 final class MockLaunchOptionsTests: XCTestCase {
     private func parse(_ args: [String], env: [String: String] = [:]) -> MockLaunchOptions {
         // Real argv always has the executable path first; mirror that.

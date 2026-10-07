@@ -10,29 +10,46 @@ pub fn run() -> Result<u8, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = obc_data::find_root(&cwd).ok_or("obc data runs in a repository checkout")?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let code = worker::fingerprint(&root)?;
-    let executable = build(&root, &code)?;
-    if worker::fingerprint(&root)? != code {
-        return Err("Rust producer code changed during compilation; restart obc data".into());
+    let mut screen = None;
+    loop {
+        let code = worker::fingerprint(&root)?;
+        let executable = build(&root, &code)?;
+        if worker::fingerprint(&root)? != code {
+            return Err("Rust producer code changed during compilation; restart obc data".into());
+        }
+        let directory = tempfile::Builder::new().prefix("obc-data-worker-").tempdir().map_err(|e| e.to_string())?;
+        let copy = copy_worker(&executable, directory.path())?;
+        let sha256 = obc_data::store::hash_file(&copy)?.0;
+        let mut command = Command::new(&copy);
+        if let Some(screen) = &screen {
+            command.env(worker::SCREEN, screen);
+        }
+        let status = command
+            .args(std::env::args_os().skip(1))
+            .env(worker::ROOT, &root)
+            .env(worker::CODE, code)
+            .env(worker::EXE, sha256)
+            .status()
+            .map_err(|e| format!("{}: {e}", copy.display()))?;
+        // The child has exited, so Windows can remove the copied executable too.
+        directory.close().map_err(|e| format!("remove worker copy: {e}"))?;
+        let exit = status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
+        if let Some(selected) = reload_screen(exit) {
+            screen = Some(selected);
+            continue;
+        }
+        return Ok(exit);
     }
-    let directory = tempfile::Builder::new().prefix("obc-data-worker-").tempdir().map_err(|e| e.to_string())?;
-    let copy = copy_worker(&executable, directory.path())?;
-    let sha256 = obc_data::store::hash_file(&copy)?.0;
-    let status = Command::new(&copy)
-        .args(std::env::args_os().skip(1))
-        .env(worker::ROOT, &root)
-        .env(worker::CODE, code)
-        .env(worker::EXE, sha256)
-        .status()
-        .map_err(|e| format!("{}: {e}", copy.display()))?;
-    // The child has exited, so Windows can remove the copied executable too.
-    directory.close().map_err(|e| format!("remove worker copy: {e}"))?;
-    Ok(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1))
+}
+
+fn reload_screen(exit: u8) -> Option<String> {
+    (worker::RELOAD_EXIT..worker::RELOAD_EXIT + 5).contains(&exit).then(|| (exit - worker::RELOAD_EXIT + 1).to_string())
 }
 
 fn build(root: &Path, code: &str) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut child = Command::new(cargo)
+    let mut command = Command::new(cargo);
+    let mut child = worker::compiler_command(&mut command)
         .args([
             "build",
             "--locked",
@@ -90,6 +107,16 @@ fn copy_worker(executable: &Path, directory: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relaunch_status_preserves_only_known_terminal_screens() {
+        for (offset, screen) in ["1", "2", "3", "4", "5"].iter().enumerate() {
+            assert_eq!(reload_screen(worker::RELOAD_EXIT + offset as u8).as_deref(), Some(*screen));
+        }
+        for exit in [0, 1, 2, 3, 4, 5, worker::RELOAD_EXIT - 1, worker::RELOAD_EXIT + 5, 255] {
+            assert_eq!(reload_screen(exit), None);
+        }
+    }
 
     #[test]
     fn only_the_worker_binary_artifact_is_selected_and_its_copy_is_independent() {
