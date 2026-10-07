@@ -1526,6 +1526,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Applied": {
       "description": "What an apply did.",
       "properties": {
+        "approval": {
+          "$ref": "#/$defs/Outcome"
+        },
         "built": {
           "anyOf": [
             {
@@ -1567,7 +1570,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "built",
         "uploaded",
         "switched",
-        "removed"
+        "removed",
+        "approval"
       ],
       "type": "object"
     },
@@ -1951,7 +1955,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "outcome": {
-          "$ref": "#/$defs/Outcome"
+          "$ref": "#/$defs/Outcome2"
         },
         "phase": {
           "anyOf": [
@@ -2145,6 +2149,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "description": "What a build of an environment would fetch and build.",
       "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Review"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Complete manual publication reviews this owner record separately from source refreshes."
+        },
         "blocked": {
           "description": "Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.",
           "items": {
@@ -2237,7 +2252,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "blocked",
         "remove",
         "listed",
-        "needs_prepare"
+        "needs_prepare",
+        "approval"
       ],
       "type": "object"
     },
@@ -2584,6 +2600,29 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         }
       ]
+    },
+    "Execution": {
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "$ref": "#/$defs/Profile"
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Role"
+          },
+          "type": "object"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "profile",
+        "roles"
+      ],
+      "type": "object"
     },
     "Failure": {
       "description": "What `--json` writes when a command fails.",
@@ -3123,6 +3162,82 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Outcome": {
       "oneOf": [
         {
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "const": "not_requested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "sha256": {
+              "type": "string"
+            },
+            "status": {
+              "const": "recorded",
+              "type": "string"
+            },
+            "unavailable": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "sha256",
+            "unavailable"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Publication succeeds independently of this owner-local durable write.",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unresolved",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Outcome2": {
+      "oneOf": [
+        {
           "enum": [
             "running",
             "ok"
@@ -3500,6 +3615,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layers"
       ],
       "type": "object"
+    },
+    "Profile": {
+      "enum": [
+        "dev",
+        "release"
+      ],
+      "type": "string"
     },
     "Publication": {
       "description": "A remote write that acknowledged success. Verification can still fail afterward.",
@@ -4044,6 +4166,120 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "ResolvedRust": {
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/Rust"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "build"
+      ],
+      "type": "object"
+    },
+    "Review": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "config": {
+              "type": "string"
+            },
+            "executions": {
+              "items": {
+                "$ref": "#/$defs/Execution"
+              },
+              "type": "array"
+            },
+            "expected": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "owner": {
+              "type": "string"
+            },
+            "status": {
+              "const": "ready",
+              "type": "string"
+            },
+            "unavailable": {
+              "description": "Retained inputs can be applied when unused acquisition tools are absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "owner",
+            "expected",
+            "config",
+            "executions",
+            "unavailable"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "owner": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason",
+            "owner"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Role": {
+      "additionalProperties": false,
+      "properties": {
+        "execution": {
+          "type": "string"
+        },
+        "rust": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResolvedRust"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_config": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rust",
+        "source_config",
+        "execution"
+      ],
+      "type": "object"
+    },
     "RunFetch": {
       "additionalProperties": false,
       "properties": {
@@ -4191,6 +4427,44 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "last_wall_ms"
       ],
       "type": "object"
+    },
+    "Rust": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "native",
+              "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/Profile"
+            }
+          },
+          "required": [
+            "kind",
+            "profile"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "prepared",
+              "type": "string"
+            },
+            "profile": {
+              "$ref": "#/$defs/Profile"
+            }
+          },
+          "required": [
+            "kind",
+            "profile"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Source": {
       "additionalProperties": false,
@@ -4740,7 +5014,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "outcome": {
-          "$ref": "#/$defs/Outcome"
+          "$ref": "#/$defs/Outcome2"
         },
         "started": {
           "description": "`YYYY-MM-DDTHH:MM:SSZ`",
