@@ -76,8 +76,8 @@ fn creation_saves_one_normalized_selection_and_never_overwrites_a_definition() {
         region.area,
         crate::regions::Area::Geofabrik { areas: vec!["europe/bayern".into(), "europe/switzerland".into()] }
     );
-    assert_eq!(Regions::load(&scratch.0).unwrap().iter().count(), 1, "no hidden child definitions");
-    let path = scratch.0.join("data/regions/ride/alps.toml");
+    assert_eq!(crate::settings::regions(&scratch.0, &store).unwrap().iter().count(), 1, "no hidden child definitions");
+    let path = store.root().join("regions/ride/alps.toml");
     let original = std::fs::read(&path).unwrap();
     assert!(create(&scratch.0, &store, args("ride/alps")).is_err());
     assert_eq!(std::fs::read(path).unwrap(), original);
@@ -90,7 +90,7 @@ fn creation_saves_one_normalized_selection_and_never_overwrites_a_definition() {
             selected.areas = vec!["europe/missing".into()];
         }
         assert!(create(&scratch.0, &store, selected).is_err());
-        assert!(!scratch.0.join(format!("data/regions/{invalid}.toml")).exists());
+        assert!(!store.root().join(format!("regions/{invalid}.toml")).exists());
     }
     let mut fallback = args("explicit-country");
     fallback.areas = vec!["europe/missing-metadata".into()];

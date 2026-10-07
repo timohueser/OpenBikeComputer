@@ -117,13 +117,16 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
 
 /// What `status` writes; with `check`, what `status --check` writes.
 pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, Error> {
-    let (store, registry, mut loaded) = (Store::open()?, registry(root)?, load(root, "live")?);
+    let (store, mut registry) = (Store::open()?, registry(root)?);
     let remote = remote()?;
     if check && matches!(remote, Remote::Public(_)) {
         let error = Code::Blocked.error("`--check` lists R2, and a listing needs `OBC_R2_BUCKET` and its key");
         return Err(error);
     }
     let live = read_live(&remote, &registry, products, &store)?;
+    crate::settings::observe(&store, &live)?;
+    let mut loaded = load(root, "live", &store)?;
+    registry.sources = loaded.sources.clone();
     loaded.env.live = live.versions();
     let http = Http::new();
     let copies = crate::input_copy::Restore { remote: &remote, live: &live };

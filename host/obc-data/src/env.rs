@@ -25,6 +25,7 @@ pub struct Env {
     pub region: String,
     /// The optional layers that are on.
     pub layers: Vec<String>,
+    pub settings: Option<crate::settings::Settings>,
     /// The versions of each fetch that the live releases read; empty without a live release.
     pub live: LiveVersions,
     /// Exact reads with retained input copies. Credentials are needed only for a new fetch.
@@ -298,11 +299,5 @@ mod tests {
             env.edit("# Only a comment.\n"),
             "# Only a comment.\nregion = \"europe/andorra\"\nlayers = [\"climate\", \"sun\"]\n"
         );
-    }
-
-    #[test]
-    fn live_is_valid() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        Env::load(&root, "live", &Regions::load(&root).unwrap()).unwrap();
     }
 }

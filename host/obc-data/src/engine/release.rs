@@ -16,6 +16,8 @@ use crate::store::{self, sha256_hex, write_atomic, Store};
 #[serde(deny_unknown_fields)]
 pub struct Release {
     pub product: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<crate::settings::Settings>,
     /// The region of the environment that the release was built for.
     pub region: String,
     /// The optional layers of the product that the environment switched on, sorted.
@@ -143,7 +145,15 @@ impl Release {
             .filter(|(code, _)| layers.iter().any(|layer| &layer.code == *code))
             .map(|(code, producer)| (code.clone(), producer.clone()))
             .collect();
-        Release { product: product.into(), region: region.into(), optional, layers, named: Vec::new(), producers }
+        Release {
+            settings: None,
+            product: product.into(),
+            region: region.into(),
+            optional,
+            layers,
+            named: Vec::new(),
+            producers,
+        }
     }
 
     /// Add only witnesses whose full identity matches the unchanged recorded code digest.

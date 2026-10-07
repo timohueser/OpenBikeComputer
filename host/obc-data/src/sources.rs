@@ -62,11 +62,12 @@ pub enum VersionScheme {
 }
 
 /// How old the live version may get before the source is stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
 pub enum Refresh {
     Days(u16),
     /// Never stale: only `--move` moves the source.
+    #[default]
     Manual,
 }
 
@@ -194,6 +195,7 @@ pub struct Source {
     /// it. Without it, the first fetch takes the newest version upstream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
+    #[serde(default)]
     pub refresh: Refresh,
     pub redistribute: bool,
     /// R2 keeps a copy, because upstream cannot give a version again.
@@ -411,28 +413,6 @@ pub struct Status {
     pub age_days: Option<i64>,
 }
 
-/// `text`, `data/sources.toml`, with the `refresh` of source `id` replaced. Comments and the other
-/// lines stay.
-pub fn set_refresh(text: &str, id: &str, refresh: Refresh) -> Result<String, String> {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let header = |line: &String| line.trim_start().starts_with('[');
-    let names = |line: &String| {
-        toml::from_str::<toml::Table>(line).is_ok_and(|table| table.get("id").and_then(|v| v.as_str()) == Some(id))
-    };
-    let at = lines.iter().position(names).ok_or_else(|| format!("no source `{id}`"))?;
-    let start = lines[..at].iter().rposition(header).map_or(0, |i| i + 1);
-    let end = lines[at..].iter().position(header).map_or(lines.len(), |i| at + i);
-    let key = |line: &String| line.split_once('=').is_some_and(|(key, _)| key.trim() == "refresh");
-    let line = (start..end).find(|&i| key(&lines[i])).ok_or_else(|| format!("source `{id}` has no `refresh`"))?;
-    let (key, old) = lines[line].split_once('=').expect("a key line has `=`");
-    // The value is a number or "manual", so a `#` starts the comment.
-    let value = old.split('#').next().unwrap_or_default();
-    let (space, tail) = (&value[..value.len() - value.trim_start().len()], &old[value.trim_end().len()..]);
-    let refresh = toml::Value::try_from(refresh).map_err(|e| e.to_string())?;
-    lines[line] = format!("{key}={space}{refresh}{tail}");
-    Ok(join(text, lines))
-}
-
 /// `lines` with the line end of `text`.
 pub(crate) fn join(text: &str, lines: Vec<String>) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
@@ -608,14 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_is_replaced_in_its_source_only() {
-        let land = OSM.replace("\"osm\"", "\"land\"").replace("refresh = 7", "refresh = 7  # weekly");
-        let text = format!("# sources\n{OSM}{land}");
-        let edited = set_refresh(&text, "land", Refresh::Manual).unwrap();
-        let manual = land.replace("refresh = 7  # weekly", "refresh = \"manual\"  # weekly");
-        assert_eq!(edited, format!("# sources\n{OSM}{manual}\n"));
-        assert_eq!(parse_sources(&edited).unwrap()[1].refresh, Refresh::Manual);
-        assert_eq!(set_refresh(&text, "qrank", Refresh::Manual).unwrap_err(), "no source `qrank`");
+    fn refresh_days_are_positive_whole_numbers() {
         assert_eq!("30".parse(), Ok(Refresh::Days(30)));
         for days in [1, 14, 65535] {
             assert_eq!(days.to_string().parse(), Ok(Refresh::Days(days)));

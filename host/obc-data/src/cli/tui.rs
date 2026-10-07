@@ -26,7 +26,6 @@ use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
 use crate::product::Product;
-use crate::regions::Regions;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
 use crate::store::{gc, Store};
 
@@ -142,7 +141,7 @@ enum Effect {
     PlanClean,
     /// `obc data clean --apply` of the plan that Clean shows.
     Clean,
-    /// `obc data status [--check]`, and `data/env/live.toml`, for Live.
+    /// `obc data status [--check]`, and the stored Live settings, for Live.
     Status {
         check: bool,
     },
@@ -233,9 +232,9 @@ struct App {
     runs: Vec<Details>,
     /// What `status` wrote; `None` until it is read, or when it failed.
     status: Option<Status>,
-    /// `data/env/live.toml`.
+    /// the stored Live settings.
     env: Option<Edited>,
-    /// `data/env/live.toml` differs from its committed version: `undo` takes the edits back.
+    /// Pending settings differ from the applied settings: `undo` discards them.
     edited: bool,
     /// The id of each region, or why `data/regions/` could not be read.
     regions: Result<Vec<crate::regions::Region>, String>,
@@ -296,7 +295,7 @@ pub fn run(root: &Path, products: &[&dyn Product]) -> Result<std::process::ExitC
             app.screen = *selected;
         }
     }
-    app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+    app.regions = crate::settings::regions(root, &store).map(|regions| regions.iter().cloned().collect());
     app.notice = app.regions.clone().err().map(|message| super::Code::InvalidData.error(message));
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -393,10 +392,10 @@ impl App {
         Ok(())
     }
 
-    /// Read `data/env/live.toml` and `status [--check]` again.
+    /// Read the stored Live settings and `status [--check]` again.
     fn read_live(&mut self, root: &Path, products: &[&dyn Product], check: bool) -> Result<(), Error> {
-        self.edited = edit_cli::edited(root, LIVE);
-        let env = edit_cli::current(root, LIVE);
+        self.edited = edit_cli::edited(root, &Store::open()?, LIVE);
+        let env = edit_cli::current(root, &Store::open()?, LIVE);
         self.env = env.as_ref().ok().cloned();
         let status = status_cli::read(root, products, check);
         self.status = status.as_ref().ok().cloned();
@@ -1475,7 +1474,7 @@ fn help() -> Vec<Line<'static>> {
         line(&format!("{} tab", numbers.join(" ")), "screens".into()),
         line("↑ ↓ j k", "move".into()),
         line("p", "plan".into()),
-        line("u", format!("undo the edits of data/env/{LIVE}.toml")),
+        line("u", "restore applied Live region, layers and policies".into()),
         line("esc", "close".into()),
         line("q", "quit".into()),
         line("?", "help".into()),

@@ -997,6 +997,13 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py` and the
     /// crate `steps`.
+    pub(crate) fn live_settings(fixture: &Fixture, region: &str) {
+        let regions = crate::regions::Regions::load(&fixture.root()).unwrap();
+        let definitions = regions.iter().map(|region| (region.id.clone(), region.definition().unwrap())).collect();
+        let settings = crate::settings::Settings { region: region.into(), definitions, ..Default::default() };
+        crate::settings::save(&fixture.store, &settings).unwrap();
+    }
+
     pub(crate) fn fixture(name: &str) -> Fixture {
         let scratch = Scratch::new(name);
         let store = Store::at(scratch.0.join("store"));
