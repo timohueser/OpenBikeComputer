@@ -53,7 +53,7 @@ def commands(value):
     node = value["node"]
     return {
         "routing": ([str(view / "planner-service"), str(view / "data/routing")], root),
-        "search": ([node, "server.mjs"], root / "apps/planner-search"),
+        "search": ([node, "server.mjs"], root / "planner/search"),
         "tiles": ([node, "src/local.mjs", str(view), "8789"], root / "planner/tiles"),
         "frontend": ([node, "node_modules/vite/bin/vite.js", "--mode", "web", "--host", "127.0.0.1",
                       "--port", "5173", "--strictPort"], root / "builder/app"),

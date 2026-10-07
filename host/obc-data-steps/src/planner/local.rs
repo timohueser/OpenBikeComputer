@@ -326,7 +326,7 @@ fn providers(root: &Path) -> Result<(BTreeMap<String, Binding>, std::path::PathB
     let executable =
         obc_data::engine::Library { name: "local-node".into(), path: node.clone(), sha256: hash_file(&node)?.0 };
     let mut children = BTreeMap::new();
-    for (name, app) in [("search", "apps/planner-search"), ("tiles", "planner/tiles"), ("frontend", "builder/app")] {
+    for (name, app) in [("search", "planner/search"), ("tiles", "planner/tiles"), ("frontend", "builder/app")] {
         let mut code = Code {
             paths: vec![app.into()],
             libraries: vec![executable.clone()],
