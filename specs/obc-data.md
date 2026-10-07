@@ -4831,6 +4831,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "View": {
       "properties": {
+        "logs": {
+          "description": "Recent worker stderr. Reading it does not change the run or owner state.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "observation_error": {
           "type": [
             "string",
@@ -4856,7 +4863,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "run",
         "operation",
         "observation_error",
-        "result"
+        "result",
+        "logs"
       ],
       "type": "object"
     }
