@@ -52,7 +52,7 @@ pub(super) fn packages(root: &Path, group: Option<&str>) -> Result<BTreeMap<Stri
     Ok(BTreeMap::from([(format!("python/packages/{}", group.unwrap_or("base")), sha256_hex(packages.as_bytes()))]))
 }
 
-pub(crate) fn executable(root: &Path) -> Result<PathBuf, String> {
+pub fn executable(root: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(output(&mut interpreter_command(root), "uv offline interpreter")?.trim()))
 }
 

@@ -7,6 +7,8 @@ pub mod changes;
 pub(crate) mod code;
 pub mod plan;
 mod process;
+pub use code::{python_executable, runtime_rust, RuntimeRust};
+
 pub mod release;
 pub mod runs;
 pub mod state;
