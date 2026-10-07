@@ -79,12 +79,15 @@ an admitted check or edit finishes before the terminal closes.
 | Area selection | F5 loads the public area list; arrows and Space select; F3 shows selected areas |
 | Region fields | Tab and Shift-Tab move; F2 saves the file; Esc keeps the draft |
 | Sources | `f` changes scope; `/` filters; Enter shows details; `R` checks upstream |
+| Source versions | `v` lists requests; Enter selects a source-wide move |
 | Source policy | `e` opens presets; `c` enters 1..65535 whole days |
+| Automation | `s` state; `e` calendar; `d` disable; `b` limits; Tab field; Enter review; `y` confirm |
 | Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
 | Apply | `a` reviews the machine, live changes and removals; `y` starts the exact reviewed plan |
 | Run | Enter opens progress; `R` observes; `x` stops admitted local work; `c` reconciles an owner result |
 | Prepared run | `p` reviews its returned plan before build or apply |
 | Error | `!` opens the full message and fix; `x` dismisses it outside an input or Run |
+| Current Rust code | F6 drains the check, restores the terminal and launches a fresh worker |
 
 Region and policy writes save files for review and commit. `u` resets only the live environment;
 it does not reset region files or source policies. Opening Regions or Local does not fetch or build data.
@@ -93,8 +96,7 @@ An incomplete preview requires preparation and a new review. Apply does not comm
 Esc hides a Run; `q` quits the viewing process. Neither stops the retained operation.
 Stop drains admitted local work and prevents publication handoff. After handoff, observe or
 reconcile the owner result. Progress shows acknowledged writes and unresolved owner outcomes.
-After a Rust edit, new planning or work requires quitting and launching `obc data` again.
-Existing Run observation, stop and reconciliation stay available.
+F6 reloads current Rust code and keeps the selected screen. Run controls stay available. Schedules need the configured Linux host; manual laptop apply does not.
 
 Live apply reviews `plan.approval`, including no-change applies. `applied.approval` reports the
 result. Native runtimes require Linux executables, self-contained npm and CPython

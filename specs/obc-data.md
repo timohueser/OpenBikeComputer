@@ -180,6 +180,14 @@ capture policy is not evidence of a network check. The source row reports missin
 but credentials block only a selected new fetch. Verified local bytes or retained copies need
 no upstream credential. The live column also lists held versions for provenance.
 
+`versions SOURCE` reports the active request params, Live pin, stored request record versions
+and current upstream result. Its common versions are the intersection of these known versions
+across all active requests. Stored records do not prove that their object bytes remain present.
+The newest-per-request choice needs a successful current version observation for every request.
+Unavailable observations remain in the report. Held provenance is not an active move target.
+Terminal version choices retain source-wide `--move` intent until Plan resolves the exact reads;
+only the reviewed plan admits a build or apply.
+
 ## Store
 
 The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomputer/store/`.
