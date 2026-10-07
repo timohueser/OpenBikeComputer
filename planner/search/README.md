@@ -48,12 +48,10 @@ its filtered records.
 
 One process serves the one region that `OBC_SEARCH_REGIONS` names.
 
-Stored services use the [runtime target](../../specs/obc-data.md#service-runtimes).
-The downloads archive carries `tools.planner_install` for slot staging and probes.
-Run it with the configured CPython and `-S` from the extracted archive.
-The commit worker must verify and extract this archive before it invokes the helper.
-Staging does not switch traffic. Publication stays blocked until the commit worker
-integrates installation and readiness.
+Live apply builds services on the VPS from the pushed commit. Configure the Python and
+Node `major.minor` versions in `data/planner-runtime.toml` and set `OBC_PLANNER_HOST`.
+The [runtime contract](../../specs/obc-data.md#service-runtimes) defines installation
+and readiness. Allow a short outage while the services stop and receive the new data.
 
 ## Runtime and data limits
 
