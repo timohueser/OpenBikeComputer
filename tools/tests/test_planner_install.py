@@ -108,9 +108,9 @@ class PlannerInstall(unittest.TestCase):
             install.probe(self.request, self.base, self.execute, lambda _: self.fail("wrong pool must not be reused"), self.proc)
         directory = install.destination(self.value, self.base)
         routing = {"service": "routing", "id": "a" * 64, "slot": 0, "binding": "b" * 64}
-        (self.proc / '42/cmdline').write_bytes(b'\0'.join(str(item).encode() for item in [directory / 'code/bin/route-server', directory / 'data/routing']))
+        (self.proc / '42/cmdline').write_bytes(b'\0'.join(str(item).encode() for item in [directory / 'code/bin/planner-service', directory / 'data/routing']))
         (self.proc / '42/exe').unlink()
-        (self.proc / '42/exe').symlink_to(directory / 'code/bin/route-server')
+        (self.proc / '42/exe').symlink_to(directory / 'code/bin/planner-service')
         (self.proc / '42/environ').write_bytes(b'OBC_PLANNER_SERVICE_ID=' + b'a' * 64 + b'\0OBC_PLANNER_BINDING=' + b'b' * 64 + b'\0ROUTE_LISTEN=127.0.0.1:8787\0ROUTE_ORIGIN=https://old.example')
         with self.assertRaisesRegex(ValueError, "routing configuration"):
             install.running(routing, {"site_origin": "https://new.example"}, directory, self.execute, self.proc)

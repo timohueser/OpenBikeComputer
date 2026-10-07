@@ -73,9 +73,9 @@
       "obc-web-demo",
       "obcm-assemble",
       "obcm-testkit",
-      "route-build",
-      "route-engine",
-      "route-server"
+      "planner-router-build",
+      "planner-router",
+      "planner-service"
     ],
     "standalone": [
       "obc-boot",

@@ -119,10 +119,10 @@ def build_terrain(stage, args, config):
 
 
 def build_routing(stage, osm, args, config):
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-build", "-p", "obc-dem", cwd=maps.ROOT)
+    maps.run("cargo", "build", "--locked", "--release", "-p", "planner-router-build", "-p", "obc-dem", cwd=maps.ROOT)
     reference = terrain_inputs(args, config)
     routing = stage / "routing"
-    maps.run(maps.ROOT / "target/release/route-build", osm(), "--output", routing, "--region", config["region"],
+    maps.run(maps.ROOT / "target/release/planner-router-build", osm(), "--output", routing, "--region", config["region"],
              "--country", config["access"], "--bounds", ",".join(map(str, config["bounds"])),
              "--profiles", ",".join(config["profiles"]), "--countries", ",".join(config["countries"]),
              "--dem", args.dem_dir, *reference)
@@ -201,7 +201,7 @@ def specifications(config, prepared=None):
     terrain_paths = [*rust_manifests, *elevation_paths, map_requirements, maps.ROOT / "tools/planner_map_archive.py"]
     add("terrain", build_terrain, {"elevation": elevation, **credits("copernicus-glo-30")}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
         functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
-    routing_paths = components.rust_sources("host/route-build")
+    routing_paths = components.rust_sources("planner/router-build")
     add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in

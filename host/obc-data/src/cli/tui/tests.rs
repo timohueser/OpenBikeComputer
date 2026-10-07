@@ -50,7 +50,7 @@ fn status() -> Status {
         };
     let planner = vec![
         layer("planner/basemap", State::Stale, "osm: 120 d > 90 d"),
-        layer("planner/routing", State::CodeChanged, "host/route-build/src/main.rs"),
+        layer("planner/routing", State::CodeChanged, "planner/router-build/src/main.rs"),
         layer("planner/overlays", State::InputChanged, "planner/routing"),
         layer("planner/sun", State::NotApplied, "missing in live"),
     ];
@@ -102,7 +102,7 @@ fn plan() -> EnvPlan {
         ),
         group(
             "code:planner/routing",
-            json!({"kind": "code", "paths": ["host/route-build"], "crates": []}),
+            json!({"kind": "code", "paths": ["planner/router-build"], "crates": []}),
             json!([]),
             vec![routing, build("planner/overlays", 7, 63_000_000)],
         ),
@@ -604,7 +604,7 @@ fn plan_takes_or_leaves_only_a_move_and_always_shows_what_r2_loses() {
         "planner +sun",
         "move land",
         "move osm",
-        "code of host/route-build",
+        "code of planner/router-build",
         "REMOVE FROM R2",
         "2 keys, 1.10 GB",
         "blocked maps",

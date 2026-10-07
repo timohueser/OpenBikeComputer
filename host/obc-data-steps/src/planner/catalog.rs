@@ -185,7 +185,7 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         ));
     }
     if routing_changed {
-        route_engine::open(&source.join("runtime/routing"))
+        planner_router::open(&source.join("runtime/routing"))
             .and_then(|graph| graph.verify())
             .map_err(|e| e.to_string())?;
     }
