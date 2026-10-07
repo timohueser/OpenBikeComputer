@@ -11,15 +11,22 @@ use crate::store::Store;
 use clap::Args;
 
 #[derive(Args)]
-#[command(group(clap::ArgGroup::new("action").args(["prepare", "start", "stop", "open", "logs", "status"]).multiple(false)))]
+#[command(group(clap::ArgGroup::new("action").args(["prepare", "start", "stop", "open", "logs", "status", "check", "inputs"]).multiple(false)))]
 pub(super) struct Dev {
     /// The saved region; defaults to the prior Local selection, then live.
     pub region: Option<String>,
     /// Take the current published versions instead of the saved Local versions.
     #[arg(long)]
     pub refresh_live: bool,
+    /// The individual app to prepare or control.
+    #[arg(long, value_enum, default_value = "web-planner")]
+    pub app: dev::App,
     #[arg(long)]
     pub prepare: bool,
+    #[arg(long)]
+    pub check: bool,
+    #[arg(long)]
+    pub inputs: bool,
     #[arg(long)]
     pub start: bool,
     #[arg(long)]
@@ -32,21 +39,35 @@ pub(super) struct Dev {
     pub status: bool,
 }
 
-pub(super) fn run(root: &Path, args: Dev, json: bool) -> Result<(), Error> {
+pub(super) fn run(root: &Path, products: &[&dyn Product], args: Dev, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     if (args.start || args.stop || args.open || args.logs || args.status)
         && (args.region.is_some() || args.refresh_live)
     {
         return Err(Code::Usage.error("region and version refresh apply only to Local preparation"));
     }
+    if args.check {
+        let request = Request {
+            region: args.region,
+            refresh_live: args.refresh_live,
+            app: args.app,
+            inputs_only: false,
+            reviewed: None,
+        };
+        let product = products
+            .iter()
+            .find(|product| product.name() == "planner")
+            .ok_or_else(|| Code::Blocked.error("this worker has no Local planner"))?;
+        return super::print_json(&product.dev_check(root, &store, &request)?);
+    }
     if args.stop {
-        return super::print_json(&dev::Observed { state: dev::stop(&store)? });
+        return super::print_json(&dev::Observed { state: dev::stop_app(&store, args.app)? });
     }
     if args.open {
-        return dev::open(&store).map_err(Into::into);
+        return dev::open(&store, args.app).map_err(Into::into);
     }
     if args.logs {
-        let logs = dev::logs(&store)?;
+        let logs = dev::logs(&store, args.app)?;
         if json {
             return super::print_json(&dev::Logs { logs });
         }
@@ -68,7 +89,13 @@ pub(super) fn run(root: &Path, args: Dev, json: bool) -> Result<(), Error> {
                 only: Vec::new(),
                 moves: Vec::new(),
                 plan: None,
-                dev: Some(Request { region: args.region, refresh_live: args.refresh_live }),
+                dev: Some(Request {
+                    region: args.region,
+                    refresh_live: args.refresh_live,
+                    app: args.app,
+                    inputs_only: args.inputs,
+                    reviewed: None,
+                }),
             },
             None,
         )?;
@@ -90,12 +117,18 @@ pub(super) fn run(root: &Path, args: Dev, json: bool) -> Result<(), Error> {
                 _ => std::thread::sleep(std::time::Duration::from_millis(250)),
             }
         }
+        if args.inputs {
+            let view = operation_cli::view(&store, &handle.run)?;
+            return super::print_json(&view.result.ok_or_else(|| {
+                Code::RunFailed.error("Local input preparation has no result").with_run(&handle.run)
+            })?);
+        }
         return super::print_json(&dev::prepared(&store)?);
     }
     let prepared = dev::prepared(&store)?;
-    let state = dev::start(root, &store, &prepared)?;
-    if !json {
-        dev::open(&store)?;
+    let state = dev::start(root, &store, &prepared, args.app)?;
+    if !json && args.app.url().is_some() {
+        dev::open(&store, args.app)?;
     }
     super::print_json(&dev::Observed { state: Some(state) })
 }
@@ -109,12 +142,16 @@ pub(super) fn prepare(
 ) -> Result<(), Error> {
     let mut run = operation_cli::resume(store, "dev local")?
         .ok_or_else(|| Code::RunFailed.error("Local preparation has no retained operation").with_run(id))?;
-    let result = (|| -> Result<Prepared, Error> {
+    let result = (|| -> Result<Output, Error> {
         run.record(&Event::Phase { phase: Phase::Prepare })?;
         let product = products
             .iter()
             .find(|product| product.name() == "planner")
             .ok_or_else(|| Code::Blocked.error("this worker does not link the Local Web planner"))?;
+        if request.inputs_only {
+            let plan = product.dev_inputs(root, store, request, &mut run)?;
+            return Ok(Output::Inputs(super::build_cli::Prepared { run: id.into(), plan }));
+        }
         let prepared = product.dev_prepare(root, store, request, &mut run)?;
         run.check_stop(store)?;
         crate::commit::durable(
@@ -122,7 +159,7 @@ pub(super) fn prepare(
             &serde_json::to_vec(&prepared).map_err(|e| e.to_string())?,
         )?;
         dev::replace(root, store, &prepared)?;
-        Ok(prepared)
+        Ok(Output::Apps(prepared))
     })();
     let error = result.as_ref().err().map(|e| e.message.as_str());
     let finished = run.finish(error);
@@ -139,4 +176,11 @@ pub(super) fn prepare(
         }
     };
     super::print_json(&prepared)
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum Output {
+    Apps(Prepared),
+    Inputs(super::build_cli::Prepared),
 }

@@ -285,7 +285,7 @@ impl App {
             return vec![Line::styled(error.clone(), Color::Red)];
         }
         let mut lines = vec![Line::from(vec![Span::from("/ ").bold(), filter])];
-        let current = self.env.as_ref().map(|env| env.region.as_str());
+        let current = self.current_env().map(|env| env.region.as_str());
         for (i, id) in self.shown_regions().into_iter().enumerate() {
             let line = Line::from(format!("{} {id}", if Some(id) == current { "●" } else { " " }));
             lines.push(if i == self.choice { line.reversed() } else { line });

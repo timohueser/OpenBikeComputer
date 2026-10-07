@@ -57,7 +57,7 @@ pub struct BuildArgs {
 }
 
 /// What a build of an environment would fetch and build.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EnvPlan {
     pub env: String,

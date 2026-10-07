@@ -10,7 +10,7 @@ import {fetch as tiles} from './worker.mjs';
 export class Files {
   constructor(root) { this.root = root; }
   async get(key, options = {}) {
-    if (!/^(planner\/objects\/[a-f0-9]{64}|planner\/releases\/[a-f0-9]{64}\/public\/[A-Za-z0-9 _.,@/-]+)$/.test(key)
+    if (!/^((?:planner|cell-catalog)\/objects\/[a-f0-9]{64}|cell-catalog\/releases\/[a-f0-9]{64}\/catalog\.json|planner\/releases\/[a-f0-9]{64}\/public\/[A-Za-z0-9 _.,@/-]+)$/.test(key)
         || key.split('/').includes('..')) return null;
     let file;
     try {
@@ -48,7 +48,17 @@ export async function serve(root, port) {
     try {
       const url = new URL(request.url, `http://127.0.0.1:${server.address().port}`);
       const pending = [];
-      const result = await tiles(new Request(url, {method: request.method}), {BUCKET: bucket},
+      let result;
+      if (url.pathname.startsWith('/cell-catalog/')) {
+        if (request.method !== 'GET' && request.method !== 'HEAD') result = new Response(null, {status: 405});
+        else {
+          const file = await bucket.get(url.pathname.slice(1));
+          result = new Response(file && request.method !== 'HEAD' ? file.body : null,
+            {status: file ? 200 : 404, headers: {'Access-Control-Allow-Origin': '*',
+              'Content-Type': url.pathname.endsWith('.json') ? 'application/json' : 'application/octet-stream'}});
+          if (file && request.method === 'HEAD') await file.body.cancel();
+        }
+      } else result = await tiles(new Request(url, {method: request.method}), {BUCKET: bucket},
         {waitUntil(value) { pending.push(value); }}, null);
       response.writeHead(result.status, Object.fromEntries(result.headers));
       if (result.body) await pipeline(Readable.fromWeb(result.body), response);

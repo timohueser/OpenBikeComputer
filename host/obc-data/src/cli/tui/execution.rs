@@ -17,6 +17,7 @@ pub(super) struct Execution {
     pub handle: Option<operation_cli::Handle>,
     pub view: Option<Arc<operation_cli::View>>,
     pub active: Option<Arc<operation_cli::View>>,
+    pub dev_request: Option<(String, crate::dev::Request)>,
 }
 
 impl Execution {
@@ -128,7 +129,9 @@ impl App {
         } else if matches!(view.operation, Some(Status::UnknownOwner { .. } | Status::AwaitingOwner { .. })) {
             lines.push(Line::from("Live outcome is not yet known. Observe or reconcile the owner result."));
         } else if matches!(view.operation, Some(Status::Finished { ok: true })) {
-            lines.push(Line::from(if run.summary.command.starts_with("prepare ") {
+            lines.push(Line::from(if run.summary.command == "dev local" {
+                "Local preparation completed. Stopped apps remain stopped."
+            } else if run.summary.command.starts_with("prepare ") {
                 "Input preparation completed. No publication was requested."
             } else if run.summary.command.starts_with("build ") {
                 "Build completed. No publication was requested."

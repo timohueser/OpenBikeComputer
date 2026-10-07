@@ -136,6 +136,10 @@ impl Product for Planner {
         obc_data::local::plan(root, store, self, release, &declarations.steps, required).map_err(Unplanned::Failed)
     }
 
+    fn dev_check(&self, root: &Path, store: &Store, request: &obc_data::dev::Request) -> Result<obc_data::cli::EnvPlan, String> { local::check(root, store, request) }
+
+    fn dev_inputs(&self, root: &Path, store: &Store, request: &obc_data::dev::Request, run: &mut obc_data::engine::runs::Run) -> Result<obc_data::cli::EnvPlan, String> { local::inputs(root, store, request, run) }
+
     fn dev_prepare(
         &self,
         root: &std::path::Path,
@@ -781,12 +785,12 @@ mod tests {
         std::fs::create_dir_all(temp.0.join("data/env")).unwrap();
         std::fs::write(Env::path(&temp.0, "live"), "region = \"ride\"\nlayers = []\n").unwrap();
         let definitions = region("7.79, 47.99, 7.82, 48.02");
-        let request = obc_data::dev::Request { region: Some("ride".into()), refresh_live: false };
+        let request = obc_data::dev::Request { region: Some("ride".into()), refresh_live: false, app: obc_data::dev::App::WebPlanner, inputs_only: false, reviewed: None };
         let configured = local::environment(&temp.0, &definitions, &request).unwrap();
         assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());
         std::fs::write(Env::path(&temp.0, "local"), "region = \"ride\"\nlayers = [\"sun\"]\n").unwrap();
         let configured =
-            local::environment(&temp.0, &definitions, &obc_data::dev::Request { region: None, refresh_live: true })
+            local::environment(&temp.0, &definitions, &obc_data::dev::Request { region: None, refresh_live: true, app: obc_data::dev::App::WebPlanner, inputs_only: false, reviewed: None })
                 .unwrap();
         assert_eq!(configured.layers, ["sun"]);
         assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());

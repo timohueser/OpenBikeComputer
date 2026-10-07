@@ -6,6 +6,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub mod apps;
+pub use apps::{App, AppState};
+
 use crate::engine::Code;
 use crate::store::{hash_file, sha256_hex, Store};
 
@@ -14,6 +17,9 @@ use crate::store::{hash_file, sha256_hex, Store};
 pub struct Request {
     pub region: Option<String>,
     pub refresh_live: bool,
+    pub app: App,
+    pub inputs_only: bool,
+    pub reviewed: Option<Box<crate::cli::EnvPlan>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -23,6 +29,7 @@ pub struct Prepared {
     pub descriptor: String,
     pub supervisor: Binding,
     pub children: std::collections::BTreeMap<String, Binding>,
+    pub apps: std::collections::BTreeSet<App>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -43,6 +50,13 @@ impl Binding {
 
 impl Prepared {
     pub fn check(&self, root: &Path) -> Result<(), String> {
+        self.check_apps(root, &self.apps)
+    }
+
+    pub fn check_apps(&self, root: &Path, apps: &std::collections::BTreeSet<App>) -> Result<(), String> {
+        if !apps.is_subset(&self.apps) {
+            return Err("Prepare the selected Local app first".into());
+        }
         let body = std::fs::read(self.view.join("service.json")).map_err(|e| e.to_string())?;
         if sha256_hex(&body) != self.descriptor {
             return Err("Prepared Local service view changed".into());
@@ -53,9 +67,13 @@ impl Prepared {
         {
             return Err("Prepared Local service view belongs to another root".into());
         }
+        let (env, _) = crate::env::Env::local(root, &crate::regions::Regions::load(root)?)?;
+        if value["region"] != env.region || value["layers"] != serde_json::json!(env.layers) || value["configuration"] != configuration(root)? {
+            return Err("Prepare the selected Local region and layers before starting this app".into());
+        }
         self.supervisor.check(root)?;
-        for child in self.children.values() {
-            child.check(root)?;
+        for name in apps.iter().flat_map(|app| app.children()).collect::<std::collections::BTreeSet<_>>() {
+            self.children.get(*name).ok_or_else(|| format!("Prepare the Local {name} service first"))?.check(root)?;
         }
         Ok(())
     }
@@ -68,12 +86,22 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     pub status: String,
+    pub apps: std::collections::BTreeMap<App, AppState>,
+    pub region: Option<String>,
+    pub layers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// Bind the selected region definition and layers, including edits under an unchanged region id.
+pub fn configuration(root: &Path) -> Result<String, String> {
+    let regions = crate::regions::Regions::load(root)?;
+    let (env,_) = crate::env::Env::local(root,&regions)?;
+    Ok(sha256_hex(&serde_json::to_vec(&(regions.get(&env.region),env.layers)).map_err(|e| e.to_string())?))
 }
 
 fn directory(store: &Store) -> PathBuf {
@@ -90,6 +118,9 @@ pub fn state(store: &Store) -> Result<Option<State>, String> {
     let mut state: State = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     if !store.is_locked("dev-local")? && state.status == "ready" {
         state.status = "interrupted".into();
+        for app in state.apps.values_mut().filter(|app| matches!(app.status.as_str(), "ready" | "starting")) {
+            app.status = "interrupted".into();
+        }
     }
     Ok(Some(state))
 }
@@ -142,18 +173,27 @@ fn drained(store: &Store, state: &State) -> Result<bool, String> {
     Ok(proof["token"] == state.token)
 }
 
-pub fn start(root: &Path, store: &Store, prepared: &Prepared) -> Result<State, String> {
-    change(root, store, prepared, true)?.ok_or_else(|| "Local start did not admit an owner".into())
+pub fn start(root: &Path, store: &Store, prepared: &Prepared, app: App) -> Result<State, String> {
+    change(root, store, prepared, Some(app))?.ok_or_else(|| "Local start did not admit an owner".into())
 }
 
 /// A completed preparation updates only an already running owner.
 pub fn replace(root: &Path, store: &Store, prepared: &Prepared) -> Result<Option<State>, String> {
-    change(root, store, prepared, false)
+    change(root, store, prepared, None)
 }
 
-fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) -> Result<Option<State>, String> {
+fn change(root: &Path, store: &Store, prepared: &Prepared, start: Option<App>) -> Result<Option<State>, String> {
     let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
+    let start_stopped = start.is_some();
     let original = state(store)?;
+    let mut apps: std::collections::BTreeSet<_> = original
+        .as_ref()
+        .into_iter()
+        .flat_map(|state| &state.apps)
+        .filter(|(_, state)| state.status == "ready")
+        .map(|(app, _)| *app)
+        .collect();
+    apps.extend(start);
     let updating = original.as_ref().filter(|state| state.status == "ready");
     if !start_stopped && (!store.is_locked("dev-local")? || updating.is_none()) {
         return Ok(None);
@@ -168,7 +208,7 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
     {
         return Err("Local service view leaves its store".into());
     }
-    prepared.check(root)?;
+    prepared.check_apps(root, &apps)?;
     let code =
         crate::engine::digest(prepared.supervisor.files.iter().map(|(key, value)| (key.as_str(), value.as_str())));
     let directory = directory(store);
@@ -216,10 +256,25 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
     if !start_stopped && !replaced && !same_ready_owner(store, updating.expect("checked above"))? {
         return Ok(None);
     }
+    let mut intent: std::collections::BTreeMap<App, String> = match std::fs::read(directory.join("desired.json")) {
+        Ok(bytes) => {
+            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            serde_json::from_value(value["apps"].clone()).map_err(|e| e.to_string())?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(error) => return Err(error.to_string()),
+    };
+    intent.retain(|app, _| apps.contains(app));
+    if let Some(app) = start {
+        intent.insert(
+            app,
+            SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos().to_string(),
+        );
+    }
     crate::commit::durable(
         &directory.join("desired.json"),
         &serde_json::to_vec(&serde_json::json!({
-            "token": token, "view": prepared.view, "sha256": digest, "code": code
+            "token": token, "view": prepared.view, "sha256": digest, "code": code, "apps": intent
         }))
         .map_err(|error| error.to_string())?,
     )?;
@@ -233,6 +288,9 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
                 token: token.clone(),
                 code: Some(code.clone()),
                 status: "starting".into(),
+                apps: Default::default(),
+                region: None,
+                layers: Vec::new(),
                 view: Some(prepared.view.clone()),
                 url: None,
                 message: None,
@@ -246,8 +304,6 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
             "--offline",
             "--no-default-groups",
             "--no-sync",
-            "--group",
-            "search-runtime",
             "--no-python-downloads",
             "python",
             "-m",
@@ -309,12 +365,18 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start_stopped: bool) 
             if state.token != token {
                 return Err("Local owner changed during startup".into());
             }
-            if state.status == "ready" && state.view.as_ref() == Some(&prepared.view) {
-                if let Err(error) = prepared.check(root) {
+            if state.status == "ready"
+                && state.view.as_ref() == Some(&prepared.view)
+                && apps.iter().all(|app| state.apps.get(app).is_some_and(|state| state.status == "ready"))
+            {
+                if let Err(error) = prepared.check_apps(root, &apps) {
                     stop_owner(store)?;
                     return Err(error);
                 }
                 return Ok(Some(state));
+            }
+            if let Some(failed) = start.and_then(|app| state.apps.get(&app)).filter(|state| state.status == "failed") {
+                return Err(failed.message.clone().unwrap_or_else(|| "Local app failed".into()));
             }
             if matches!(state.status.as_str(), "failed" | "stopped" | "interrupted") {
                 return Err(state.message.unwrap_or_else(|| format!("Local services are {}", state.status)));
@@ -379,15 +441,15 @@ fn clean_views(store: &Store) -> Result<(), String> {
     crate::commit::durable_directory(&views)
 }
 
-pub fn open(store: &Store) -> Result<(), String> {
+pub fn open(store: &Store, app: App) -> Result<(), String> {
     let state = state(store)?.ok_or("Local Web planner is not running")?;
     if state.status != "ready" {
         return Err("Local Web planner is not ready".into());
     }
-    let url = state.url.ok_or("Local Web planner has no checked URL")?;
-    if url != "http://127.0.0.1:5173/planner.html" {
-        return Err("Local Web planner URL differs from the known loopback service".into());
+    if !state.apps.get(&app).is_some_and(|state| state.status == "ready") {
+        return Err(format!("{} is not ready", app.name()));
     }
+    let url = app.url().ok_or("Simulator has no browser address")?;
     #[cfg(target_os = "macos")]
     let program = "open";
     #[cfg(not(target_os = "macos"))]
@@ -399,8 +461,62 @@ pub fn open(store: &Store) -> Result<(), String> {
 }
 
 /// Recent bounded supervisor output; reading logs does not change its state.
-pub fn logs(store: &Store) -> Result<Vec<String>, String> {
-    crate::cli::operation_cli::tail(&directory(store).join("stderr.log"))
+pub fn logs(store: &Store, app: App) -> Result<Vec<String>, String> {
+    let mut logs = crate::cli::operation_cli::tail(&directory(store).join("stderr.log"))?;
+    for child in app.children() {
+        logs.extend(
+            crate::cli::operation_cli::tail(&directory(store).join(format!("{child}.log")))?
+                .into_iter()
+                .map(|line| format!("{child}: {line}")),
+        );
+    }
+    Ok(logs)
+}
+
+/// Stop only children that no other requested app needs.
+pub fn stop_app(store: &Store, app: App) -> Result<Option<State>, String> {
+    let _admission = store.try_lock("dev-admission-local")?.ok_or("Local app admission is already in progress")?;
+    let Some(owner) = state(store)? else { return Ok(None) };
+    if !store.is_locked("dev-local")? {
+        if owner.status == "stopped" || drained(store, &owner)? {
+            clean_views(store)?;
+        }
+        return Ok(Some(owner));
+    }
+    let file = directory(store).join("desired.json");
+    let mut desired: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    if desired["token"] != owner.token {
+        return Err("Local owner changed before stop".into());
+    }
+    let mut apps: std::collections::BTreeMap<App, String> =
+        serde_json::from_value(desired["apps"].clone()).map_err(|e| e.to_string())?;
+    apps.remove(&app);
+    if apps.is_empty() {
+        let stopped = stop_owner(store)?;
+        if stopped.as_ref().is_some_and(|state| state.status == "stopped")
+            || stopped.as_ref().map(|state| drained(store, state)).transpose()?.unwrap_or(false)
+        {
+            clean_views(store)?;
+        }
+        return Ok(stopped);
+    }
+    desired["apps"] = serde_json::to_value(apps).map_err(|e| e.to_string())?;
+    crate::commit::durable(&file, &serde_json::to_vec(&desired).map_err(|e| e.to_string())?)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let current = state(store)?;
+        if current.as_ref().is_none_or(|state| state.token != owner.token) {
+            return Err("Local owner changed while stopping an app".into());
+        }
+        if current.as_ref().is_some_and(|state| state.apps.get(&app).is_none_or(|app| app.status == "stopped")) {
+            return Ok(current);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("Local app is still draining; inspect its logs".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Read the last completed preparation without starting any producer or service.
@@ -451,6 +567,7 @@ mod tests {
             descriptor: "unused".into(),
             supervisor: binding,
             children: Default::default(),
+            apps: Default::default(),
         };
         crate::commit::durable(&directory(&store).join("prepared.json"), &serde_json::to_vec(&prepared).unwrap())
             .unwrap();
@@ -460,6 +577,9 @@ mod tests {
             token: "owner".into(),
             code: None,
             status: "stopped".into(),
+            apps: Default::default(),
+            region: None,
+            layers: Vec::new(),
             view: Some(obsolete.clone()),
             url: None,
             message: None,
