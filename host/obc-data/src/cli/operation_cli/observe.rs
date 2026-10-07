@@ -16,21 +16,23 @@ pub struct View {
     pub operation: Option<operation::Status>,
     pub observation_error: Option<String>,
     pub result: Option<serde_json::Value>,
+    /// Recent worker stderr. Reading it does not change the run or owner state.
+    pub logs: Vec<String>,
 }
 
 /// Observation computes the owner outcome without changing the control or local journal.
 pub fn view(store: &Store, run: &str) -> Result<View, Error> {
-    let mut view = View {
-        run: runs::details(store, run)?,
-        operation: operation::status(store, run)?,
-        observation_error: None,
-        result: None,
-    };
+    let mut view = local(store, run)?;
     if let Some(operation::Status::AwaitingOwner { host, bundle }) = &view.operation {
         #[cfg(not(test))]
         match crate::cli::commit_cli::lifetime::query(host, run, bundle) {
             Ok(observed) => apply_observation(store, &mut view, &observed)?,
-            Err(error) => view.observation_error = Some(error),
+            Err(error) => {
+                view.observation_error = Some(match view.observation_error.take() {
+                    Some(previous) => format!("{previous}; owner: {error}"),
+                    None => error,
+                })
+            }
         }
         #[cfg(test)]
         let _ = (host, bundle);
@@ -50,6 +52,44 @@ pub fn view(store: &Store, run: &str) -> Result<View, Error> {
         view.run.summary.outcome = runs::Outcome::Running;
     }
     Ok(view)
+}
+
+fn local(store: &Store, run: &str) -> Result<View, Error> {
+    let mut view = View {
+        run: runs::details(store, run)?,
+        operation: operation::status(store, run)?,
+        observation_error: None,
+        result: None,
+        logs: Vec::new(),
+    };
+    match tail(&operation::directory(store, run)?.join("stderr.log")) {
+        Ok(lines) => view.logs = lines,
+        Err(error) => view.observation_error = Some(format!("worker log: {error}")),
+    }
+    Ok(view)
+}
+
+fn tail(path: &std::path::Path) -> Result<Vec<String>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const BYTES: u64 = 16 * 1024;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file() {
+        return Err("stderr.log is not a regular file".into());
+    }
+    let start = metadata.len().saturating_sub(BYTES);
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(start)).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(BYTES).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if start > 0 { text.split_once('\n').map_or(text.as_ref(), |(_, rest)| rest) } else { text.as_ref() };
+    let mut lines: Vec<_> = text.lines().rev().take(12).map(String::from).collect();
+    lines.reverse();
+    Ok(lines)
 }
 
 fn output(store: &Store, run: &str) -> Result<Option<serde_json::Value>, Error> {
@@ -124,12 +164,8 @@ pub(in crate::cli) fn checked_owner(
     bundle: &str,
     observed: &crate::cli::commit_cli::lifetime::Observation,
 ) -> Result<bool, Error> {
-    let mut current = View {
-        run: runs::details(store, run)?,
-        operation: Some(operation::Status::AwaitingOwner { host: host.into(), bundle: bundle.into() }),
-        observation_error: None,
-        result: None,
-    };
+    let mut current = local(store, run)?;
+    current.operation = Some(operation::Status::AwaitingOwner { host: host.into(), bundle: bundle.into() });
     apply_observation(store, &mut current, observed)?;
     match current.operation {
         Some(operation::Status::Finished { ok }) => Ok(ok),
@@ -151,12 +187,8 @@ pub fn reconcile(store: &Store, run: &str) -> Result<View, Error> {
         return Ok(current);
     };
     let observed = crate::cli::commit_cli::lifetime::query(&host, run, &bundle)?;
-    let mut current = View {
-        run: runs::details(store, run)?,
-        operation: Some(operation::Status::AwaitingOwner { host: host.clone(), bundle: bundle.clone() }),
-        observation_error: None,
-        result: None,
-    };
+    let mut current = local(store, run)?;
+    current.operation = Some(operation::Status::AwaitingOwner { host: host.clone(), bundle: bundle.clone() });
     apply_observation(store, &mut current, &observed)?;
     let Some(operation::Status::Finished { ok }) = current.operation else {
         return Err(Code::Blocked.error("owner outcome stays unresolved; no local history changed").with_run(run));
@@ -184,6 +216,40 @@ mod tests {
     use crate::cli::commit_cli::{lifetime::Observation, Committed, Reply};
     use crate::engine::runs::{Event, Outcome};
     use crate::store::tests::Scratch;
+
+    #[test]
+    fn recent_logs_are_bounded_partial_text_and_never_hide_the_run_on_read_error() {
+        let scratch = Scratch::new("operation-log-tail");
+        let store = Store::at(&scratch.0);
+        let run = Run::create(&store, "prepare local").unwrap();
+        let id = run.id().to_string();
+        assert!(view(&store, &id).unwrap().logs.is_empty());
+        let directory = operation::directory(&store, &id).unwrap();
+        assert!(!directory.exists(), "an absent log is not created by observation");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("stderr.log");
+        let mut bytes = vec![b'x'; 32 * 1024];
+        bytes.push(b'\n');
+        for line in 0..31 {
+            bytes.extend_from_slice(format!("line {line}\n").as_bytes());
+        }
+        bytes.extend_from_slice(b"partial\xff");
+        std::fs::write(&path, bytes).unwrap();
+        let journal = std::fs::read(store.run(&id)).unwrap();
+        let observed = view(&store, &id).unwrap();
+        assert_eq!(observed.logs.len(), 12);
+        assert_eq!(observed.logs[0], "line 20");
+        assert_eq!(observed.logs.last().unwrap(), "partial�");
+        assert_eq!(std::fs::read(store.run(&id)).unwrap(), journal);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let failed = view(&store, &id).unwrap();
+        assert_eq!(failed.run.summary.id, id);
+        assert_eq!(failed.run.summary.outcome, Outcome::Running);
+        assert!(failed.logs.is_empty());
+        assert!(failed.observation_error.unwrap().contains("not a regular file"));
+        run.finish(None).unwrap();
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -296,6 +362,7 @@ mod tests {
             operation: Some(operation::Status::AwaitingOwner { host: "publisher".into(), bundle: "a".repeat(64) }),
             observation_error: None,
             result: None,
+            logs: Vec::new(),
         };
         let before = std::fs::read(store.run(&id)).unwrap();
         let mut final_journal = journal.clone();

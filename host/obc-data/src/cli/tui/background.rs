@@ -55,7 +55,12 @@ pub(super) fn run_loop(
                 })?;
                 let notice = result.err().or(updated.as_ref().and_then(|app| app.notice.clone()));
                 if let Some(updated) = updated {
-                    app.complete(effect, updated);
+                    app.complete(effect.clone(), updated);
+                }
+                if notice.is_some() && matches!(effect, Effect::Select(_)) {
+                    if let Some(view) = &mut app.plan {
+                        view.restore_selection();
+                    }
                 }
                 if notice.is_some() {
                     app.notice = notice;
@@ -123,8 +128,31 @@ pub(super) fn run_loop(
                 };
             }
             if read.elapsed() >= TICK {
-                if app.screen == Screen::Runs {
-                    app.runs = list_runs(store)?;
+                let selected = app.runs.get(app.run).map(|run| run.summary.id.clone());
+                app.runs = list_runs(store)?;
+                for view in app.execution.active.iter().chain(app.execution.view.iter()) {
+                    if !matches!(
+                        view.operation,
+                        Some(
+                            crate::operation::Status::AwaitingOwner { .. }
+                                | crate::operation::Status::UnknownOwner { .. }
+                                | crate::operation::Status::Finished { .. }
+                        )
+                    ) {
+                        continue;
+                    }
+                    if let Some(run) = app.runs.iter_mut().find(|run| run.summary.id == view.run.summary.id) {
+                        *run = view.run.clone();
+                    }
+                }
+                app.run = selected
+                    .and_then(|id| app.runs.iter().position(|run| run.summary.id == id))
+                    .unwrap_or(0)
+                    .min(app.runs.len().saturating_sub(1));
+                if !app.busy && effect == Effect::None {
+                    if let Some(id) = app.observed_run() {
+                        effect = Effect::ObserveRun(id);
+                    }
                 }
                 read = Instant::now();
             }
@@ -136,6 +164,16 @@ pub(super) fn run_loop(
 }
 
 impl App {
+    pub(super) fn observed_run(&self) -> Option<String> {
+        let shown = (self.overlay == Some(super::Overlay::Run)).then(|| self.execution.selected.clone()).flatten();
+        shown.or_else(|| self.execution.handle.as_ref().map(|handle| handle.run.clone())).or_else(|| {
+            self.runs
+                .iter()
+                .find(|run| run.summary.outcome == crate::engine::runs::Outcome::Running)
+                .map(|run| run.summary.id.clone())
+        })
+    }
+
     /// Completion changes data, never the user's focus, filters or draft inputs.
     pub(super) fn complete(&mut self, effect: Effect, updated: App) {
         let selected = self.sources.get(self.source).map(|row| row.source.id.clone());
@@ -195,6 +233,38 @@ impl App {
                     current.taken = updated.taken;
                 }
             }
+            Effect::Start(_, _) => {
+                if let Some(handle) = updated.execution.handle {
+                    let id = handle.run.clone();
+                    self.execution.handle = Some(handle);
+                    self.execution.active = None;
+                    if self.overlay == Some(super::Overlay::Plan) {
+                        self.execution.selected = Some(id);
+                        self.execution.view = None;
+                        (self.overlay, self.scroll) = (Some(super::Overlay::Run), 0);
+                    }
+                }
+            }
+            Effect::ObserveRun(id) | Effect::StopRun(id) | Effect::ReconcileRun(id) => {
+                if let Some(view) = updated.execution.view.filter(|view| view.run.summary.id == id) {
+                    if self.execution.selected.as_ref() == Some(&id) {
+                        self.execution.view = Some(view.clone());
+                    }
+                    if self.execution.handle.as_ref().is_some_and(|handle| handle.run == id) {
+                        self.execution.active = Some(view.clone());
+                    }
+                    if let Some(run) = self.runs.iter_mut().find(|run| run.summary.id == id) {
+                        *run = view.run.clone();
+                    }
+                    if matches!(
+                        view.operation,
+                        Some(crate::operation::Status::Finished { .. } | crate::operation::Status::Stopped)
+                    ) && self.execution.handle.as_ref().is_some_and(|handle| handle.run == id)
+                    {
+                        self.execution.handle = None;
+                    }
+                }
+            }
             Effect::None | Effect::Quit => {}
         }
     }
@@ -208,11 +278,16 @@ pub(super) fn perform(
     app: &mut App,
     effect: Effect,
 ) -> Result<(), Error> {
-    crate::worker::check(root).map_err(|message| {
-        Code::Blocked
-            .error(message)
-            .fix("Leave any input with Esc, press q to quit, then run obc data again to load the current Rust code.")
-    })?;
+    if matches!(effect, Effect::Start(_, _)) {
+        app.execution.handle = None;
+    }
+    if !matches!(effect, Effect::ObserveRun(_) | Effect::StopRun(_) | Effect::ReconcileRun(_)) {
+        crate::worker::check(root).map_err(|message| {
+            Code::Blocked.error(message).fix(
+                "Leave any input with Esc, press q to quit, then run obc data again to load the current Rust code.",
+            )
+        })?;
+    }
     match effect {
         Effect::None | Effect::Quit => Ok(()),
         Effect::Initial => app.reload(root, products, false).and(app.read_live(root, products, false)),
@@ -287,6 +362,28 @@ pub(super) fn perform(
                 false => plan_live(root, &Store::open()?, &Http::new(), &crate::cli::remote()?, products, &only, false),
             };
             view.taken = taken.inspect_err(|_| app.overlay = None)?;
+            Ok(())
+        }
+        Effect::Start(kind, plan) => {
+            let handle = super::execution::start(root, store, kind, &plan)?;
+            app.saved = Some(format!("Started run {} · Esc hides it · quitting does not stop it", handle.run));
+            app.execution.handle = Some(handle);
+            Ok(())
+        }
+        next @ (Effect::ObserveRun(_) | Effect::ReconcileRun(_) | Effect::StopRun(_)) => {
+            let id = match &next {
+                Effect::ObserveRun(id) | Effect::ReconcileRun(id) | Effect::StopRun(id) => id,
+                _ => unreachable!(),
+            };
+            let view = match &next {
+                Effect::ReconcileRun(_) => crate::cli::operation_cli::reconcile(store, id)?,
+                Effect::StopRun(_) => {
+                    crate::operation::stop(store, id).map_err(|message| crate::cli::Code::Blocked.error(message))?;
+                    crate::cli::operation_cli::view(store, id)?
+                }
+                _ => crate::cli::operation_cli::view(store, id)?,
+            };
+            app.execution.view = Some(std::sync::Arc::new(view));
             Ok(())
         }
     }

@@ -1307,6 +1307,8 @@ are noninteractive and bound command execution and output collection to 30 secon
 nor missing remote state clear a barrier. `runs RUN --reconcile` is an explicit mutation: it checks
 a final bound reply and journal prefix, copies acknowledged events, and resolves local control.
 It refuses while the local worker drains. Result reads verify their sealed bytes.
+The shared run view includes `logs`, the bounded tail of its worker stderr. A missing log yields
+an empty list. A read failure appears in `observation_error` and preserves the run state.
 
 
 ## Commands
@@ -4829,6 +4831,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "View": {
       "properties": {
+        "logs": {
+          "description": "Recent worker stderr. Reading it does not change the run or owner state.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "observation_error": {
           "type": [
             "string",
@@ -4854,7 +4863,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "run",
         "operation",
         "observation_error",
-        "result"
+        "result",
+        "logs"
       ],
       "type": "object"
     }
