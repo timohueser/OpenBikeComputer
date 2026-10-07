@@ -20,6 +20,7 @@ path = "src/bin/obc-data-worker.rs"
 external-fixtures = []
 
 [dependencies]
+obc-map-core = { workspace = true }
 obc-draw = { workspace = true }
 obc-network = { workspace = true }
 obc-osm = { workspace = true }
@@ -44,7 +45,6 @@ serde_json = "1"
 toml = "0.9"
 
 [dev-dependencies]
-obc-map-core = { workspace = true }
 # A stand-in for the Nominatim archive in the planner build test.
 flate2 = "1"
 obc-elevation = { path = "../../firmware/obc-elevation" }
