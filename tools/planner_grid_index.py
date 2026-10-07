@@ -1,6 +1,7 @@
 """Compose planner release and offline selection metadata from small grid indexes."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -90,8 +91,8 @@ def compose(indexes, options):
     identities = json.loads(terrain["metadata"]["source_sha256"])
     if not set(data["source_sha256"][1:]) <= set(identities):
         raise ValueError("Routing and maps use different terrain sources")
-    if "sun" in indexes and indexes["sun"]["metadata"]["terrain_sha256"] != terrain["source"]["sha256"]:
-        raise ValueError("Sun uses another terrain archive")
+    if "sun" in indexes and indexes["sun"]["metadata"].get("terrain_grid_sha256") != hashlib.sha256(runtime.encoded(terrain)).hexdigest():
+        raise ValueError("Sun uses another terrain grid")
     shared = {name: name for name in indexes["assets"]["files"]}
     shared.update(indexes["fonts"]["aliases"])
     for name in {*(name for cell in cells.values() for name in cell["files"]), *shared.values()}:
