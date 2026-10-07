@@ -4,7 +4,7 @@
 runnable scenario, and how to get it. Consumers must not know bucket paths or reach into another
 crate's `assets/` directory.
 
-The catalog is tracked. Large generated and captured bytes are not.
+The catalog is tracked. Generated and captured bytes are external.
 
 ## Daily use
 
@@ -61,9 +61,10 @@ obc data prepare fixtures --only sim-grimsel --move copernicus-glo-30@VERSION
 ```
 
 Plan does not download packages. Cold preparation verifies the exact catalog archive and restores
-selected raw objects from the Fixture bucket. Missing copies block; explicit moves permit acquisition.
+permitted raw copies from the Fixture bucket. Other inputs require exact original bytes.
+Missing history blocks; explicit moves permit acquisition.
 New requests need a move. Region expansion beyond the captured PBF blocks.
-Apply builds, verifies, seals, uploads and updates the Git catalog. Review and commit that update.
+Apply builds, verifies, seals, uploads and updates the Git catalog. Review and commit the update.
 
 Configure separate `OBC_FIXTURE_R2_*` and production target identities before planning. Preparation
 needs no production credentials. Main and Fixture buckets or local roots must not overlap.
