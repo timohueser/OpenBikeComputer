@@ -788,8 +788,8 @@ run. A run without a `finished` event whose lock is free has failed. A command t
 A discovery fetch without a pin uses `newest` as its request version. Its finished event
 records the acquired version separately. `runs RUN` gives the last phase and acknowledged
 remote writes, also after a later phase fails. An acknowledged write is not proof that later
-verification passes. An interrupted write can have an unknown remote outcome. The ordinary
-run journal does not make publication atomic or recover an interrupted commit.
+verification passes. An interrupted write can have an unknown remote outcome; the next apply
+uploads what R2 still lacks.
 
 ### Versions
 
@@ -1096,20 +1096,13 @@ and require no newer glibc than the baseline.
 
 The pointer's `services` identities bind runtime content to routing grid content, search
 grid and model content, or the offline index for downloads. They do not bind receipt keys
-or unrelated optional layers. An apply does not install services: it refuses a planner switch
-whose `services` differ from live. Data producers can build independently.
-
-Staging uses two slots per service. The current publication identifies the active slot;
-running units do not establish traffic ownership. Unknown or conflicting ownership blocks
-staging. A healthy slot with the same content and endpoint binding is reused. A changed service
-or origin configuration uses the other slot. The full desired pointer holds those choices; the
-plan derives them without unit discovery.
+or unrelated optional layers. An apply does not install services yet, so it refuses to switch
+the planner pointer. Data producers can build independently.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
-The private selection key binds the object pool as well as the catalog and bounds. Old quotes
-remain available while their service slot is retained. After retirement, a missing bundle
-requires a new quote. Job creation completes synchronously; there is no mutable polling path.
+The private selection key binds the object pool as well as the catalog and bounds. A quote
+stays valid while its bundle exists; a missing bundle requires a new quote. Job creation completes synchronously; there is no mutable polling path.
 
 A grid cell is a zoom 9 Web Mercator tile that the bounds of the region overlap, clipped to the
 bounds, with the id `9-<x>-<y>`. The JSON objects that `planner/routing` writes have their keys in
@@ -1279,8 +1272,8 @@ blocked. Known option, producer and input changes retain their existing state ca
 
 ### Apply
 
-`apply live` makes the plan of live live. It needs the bucket. The machine that runs it writes R2
-in this order:
+`apply live` makes the plan of live live. It needs the bucket. One machine applies at a time:
+two machines must not apply at once. The machine that runs it writes R2 in this order:
 
 1. It refuses when `data/` has edits that git does not have, apart from
    `data/env/local.toml`: live builds from a committed `data/`. The refusal names the files and
@@ -1303,25 +1296,30 @@ in this order:
    holds with another size, in one transfer per set of headers; a key with another size goes
    first. Then it checks the size of each key.
 6. It reads the pointer of each product that changes again. When its SHA-256 is not the
-   `observed` of the plan, it switches nothing. A planner switch that changes `services` is
-   refused before the upload.
+   `observed` of the plan, it switches nothing. A planner switch is refused before the upload,
+   because an apply does not install the planner services yet.
 7. It writes the pointer of each product whose full desired document changes: the document with
    `"release": "<id>"` and `"applied"`, the time of the switch (`YYYY-MM-DDTHH:MM:SSZ`), and
-   `Cache-Control: public, max-age=60, must-revalidate`. Then it checks the pointer.
+   `Cache-Control: public, max-age=60, must-revalidate`. Then it checks the pointer. Before
+   each write, it keeps the old pointer bytes at `runs/<run>/previous/<key>` in the store: a
+   rollback copies that file back to the key. The plan lists each pointer of an older publisher
+   that the apply replaces.
 8. A client that read an old pointer finishes its downloads first. So the apply waits 10 minutes
    after its own switch, and 12 minutes after the newest `applied` of the pointers before it
    (10 minutes, and 2 for a clock that differs).
 9. It reads live again. When a pointer is not the one that this apply wrote or reviewed, it removes
-   nothing. Otherwise it removes the [leftovers](#live) that the `remove` list of the plan holds:
-   the files first and the manifests last, 1000 keys per delete, with one write of
-   `removed.jsonl` per delete.
+   nothing. Otherwise it removes the [leftovers](#live) that the `remove` list of the plan holds,
+   in three passes: the files and objects, then the input-copy records, then the release
+   manifests. A pass starts only after the pass before it succeeded. Each pass deletes 1000 keys
+   per call, with one write of `removed.jsonl` per call.
 
 An apply never removes a key that its reviewed plan did not list. A record on R2 of a version that
 live reads stays, also when `r2_copy` of its source is off now.
 
 A failure before step 7 leaves live as it was. A new plan uploads only what R2 still lacks.
-A stop takes effect before the upload, before the switch and during the wait. The leftovers of a
-stopped apply stay until the next apply. The objects, manifests and named files are immutable,
+A stop takes effect before the upload, before the switch and during the wait. A removal that
+stops or fails keeps every manifest and record that names a remaining key, so the next apply
+finds and removes the rest. The objects, manifests and named files are immutable,
 with `Cache-Control: public, max-age=31536000, immutable`.
 
 ### Detached operations
@@ -3163,6 +3161,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "LiveRelease": {
       "additionalProperties": false,
       "properties": {
+        "key": {
+          "default": "",
+          "description": "The key of the pointer on R2.",
+          "type": "string"
+        },
         "observed": {
           "description": "SHA-256 of the exact pointer bytes that consent observed; None means absent.",
           "type": [
@@ -3192,7 +3195,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "product",
         "release",
         "pointer",
-        "observed"
+        "observed",
+        "key"
       ],
       "type": "object"
     },

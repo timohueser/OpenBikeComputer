@@ -124,6 +124,9 @@ pub struct LiveRelease {
     pub pointer: Option<String>,
     /// SHA-256 of the exact pointer bytes that consent observed; None means absent.
     pub observed: Option<String>,
+    /// The key of the pointer on R2.
+    #[serde(default)]
+    pub key: String,
 }
 
 /// What the environment file changes against the live release of a product.
@@ -231,6 +234,7 @@ pub(super) fn print_plan(plan: &EnvPlan) {
         let release = live.release.as_ref().map_or("nothing".into(), |id| format!("release {}", &id[..8]));
         println!("live {}: {release}", live.product);
     }
+    replaced(plan).iter().for_each(|line| println!("{line}"));
     for blocked in &plan.blocked {
         println!("blocked {}: {}", blocked.product, blocked.reason);
     }
@@ -261,6 +265,13 @@ pub(super) fn print_plan(plan: &EnvPlan) {
     if !plan.live.is_empty() {
         removals(plan).iter().for_each(|line| println!("{line}"));
     }
+}
+
+/// The pointers of older publishers that an apply of `plan` replaces. The apply keeps their bytes
+/// in its run directory.
+pub(super) fn replaced(plan: &EnvPlan) -> Vec<String> {
+    let older = plan.live.iter().filter(|live| live.release.is_none() && live.observed.is_some());
+    older.map(|live| format!("REPLACES {} of an older publisher", live.key)).collect()
 }
 
 /// What an apply of `plan` removes from R2, one line per prefix.
@@ -709,7 +720,6 @@ fn planned_run(
         let plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
-    let originals = BTreeMap::new();
     let edits = edits(products, env, &live, &blocked);
     let listed = match remote {
         Some(remote @ Remote::Bucket(_)) => Some(live.list(remote).map_err(|e| Code::R2Failed.error(e))?),
@@ -717,9 +727,9 @@ fn planned_run(
     };
     let drift = listed.as_deref().map(|listed| live.drift(listed));
     let against = against(&live, env, &edits, &blocked, drift.as_deref(), store);
-    let all = changes::changes_reusing(store, root, &steps, &against, &originals)?;
+    let all = changes::changes(store, root, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
-    let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &originals)?;
+    let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &BTreeMap::new())?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     for (now, next) in live.products.iter().zip(&next.products) {
         let layered = plan.groups.iter().any(|group| {
@@ -777,6 +787,7 @@ fn env_plan(
                 release: product.release.as_ref().map(|(id, _)| id.clone()),
                 pointer: document_digest(product),
                 observed: product.observed.clone(),
+                key: format!("{}/catalog.json", product.prefix),
             });
             (releases.collect(), edits)
         }
@@ -953,11 +964,7 @@ fn next_reusing(
                     && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) =>
             {
                 let pointer = product.pointer().expect("unblocked live product has a pointer");
-                let mut pointer = pointer(root, release, store).map_err(|e| Code::VerifyFailed.error(e))?;
-                if name == "planner" {
-                    crate::vps::document(&mut pointer.document, now.document.as_ref())
-                        .map_err(|e| Code::VerifyFailed.error(e))?;
-                }
+                let pointer = pointer(root, release, store).map_err(|e| Code::VerifyFailed.error(e))?;
                 if pointer.document.contains_key("release") || pointer.document.contains_key("applied") {
                     return Err(product_bug(name, "pointer includes publication fields".into()));
                 }
@@ -2007,7 +2014,8 @@ pub(crate) mod tests {
                 pointer: Some(crate::store::sha256_hex(b"{\"schema\":1}")),
                 observed: Some(crate::store::sha256_hex(
                     format!("{{\"schema\": 1, \"release\": \"{}\"}}", release.id()).as_bytes()
-                ))
+                )),
+                key: "test/catalog.json".into(),
             }]
         );
         assert_eq!((plan.groups.len(), plan.edits.len(), plan.remove.len(), plan.listed), (0, 0, 0, true));

@@ -161,6 +161,7 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
                 release: prior.map(|release| release.id()),
                 pointer: None,
                 observed: None,
+                key: String::new(),
             });
             Ok(())
         })();
@@ -249,6 +250,7 @@ pub(super) fn inputs(
             release: product.release.as_ref().map(|(id, _)| id.clone()),
             pointer: None,
             observed: product.observed.clone(),
+            key: format!("{}/catalog.json", product.prefix),
         }));
     }
     let mut request = request.clone();

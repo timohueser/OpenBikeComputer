@@ -1300,6 +1300,7 @@ impl App {
                         Line::from("The exact reviewed plan is retained. Apply never commits configuration."),
                         Line::default(),
                     ];
+                    lines.extend(super::build_cli::replaced(plan).into_iter().map(Line::from));
                     lines.extend(super::build_cli::removals(plan).into_iter().map(Line::from));
                     (" CONFIRM APPLY ".into(), lines, Vec::new(), None)
                 } else {

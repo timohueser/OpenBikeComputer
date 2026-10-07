@@ -316,11 +316,11 @@ impl Live {
     /// The objects of `listed` that an earlier release of `obc data` used and that live does not
     /// use: the manifest of each release that is not live, its files and its input copies. A key
     /// that no manifest of `obc data` names, such as one of an older publisher, is never in it.
-    /// The manifests come last, so a removal that stops part way leaves them to find the rest.
+    /// They are in [`removal_pass`] order.
     pub fn removable(&self, remote: &Remote, store: &Store, listed: &[Object]) -> Result<Vec<Object>, String> {
         let used = self.expected();
         let live: BTreeSet<&str> = self.releases().map(|(_, id, _)| id).collect();
-        let (mut files, mut manifests) = (BTreeSet::new(), BTreeSet::new());
+        let mut keys = BTreeSet::new();
         let mut reads = BTreeSet::new();
         for product in &self.products {
             let releases = format!("{}/releases/", product.prefix);
@@ -328,26 +328,26 @@ impl Live {
             for id in ids.filter(|id| !live.contains(id) && is_sha256(id)) {
                 // Bytes that are not a manifest of this product belong to another publisher.
                 let Ok(release) = manifest(remote, store, &product.product, &product.prefix, id) else { continue };
-                manifests.insert(format!("{releases}{id}.json"));
-                files.extend(release.named.iter().map(|file| format!("{releases}{id}/{}", file.path)));
+                keys.insert(format!("{releases}{id}.json"));
+                keys.extend(release.named.iter().map(|file| format!("{releases}{id}/{}", file.path)));
                 let objects = release.objects().into_keys().map(|sha256| sha256.to_string());
-                files.extend(objects.map(|sha256| format!("{}/objects/{sha256}", product.prefix)));
+                keys.extend(objects.map(|sha256| format!("{}/objects/{sha256}", product.prefix)));
                 reads.extend(input_copy::reads_release(&release)?.into_iter().map(|read| read.key));
             }
         }
         for key in reads {
-            files.insert(key.path());
+            keys.insert(key.path());
             let record = input_copy::read(remote, &key)?;
-            files.extend(
+            keys.extend(
                 record.iter().flat_map(|record| &record.files).map(|file| format!("{INPUTS}/objects/{}", file.sha256)),
             );
         }
         let listed: BTreeMap<&str, &Object> = listed.iter().map(|object| (object.key.as_str(), object)).collect();
-        let removable = |keys: BTreeSet<String>| {
-            let keys = keys.into_iter().filter(|key| !used.contains_key(key));
-            keys.filter_map(|key| listed.get(key.as_str()).map(|object| (*object).clone())).collect::<Vec<_>>()
-        };
-        Ok([removable(files), removable(manifests)].concat())
+        let keys = keys.into_iter().filter(|key| !used.contains_key(key));
+        let mut removable: Vec<Object> =
+            keys.filter_map(|key| listed.get(key.as_str()).map(|object| (*object).clone())).collect();
+        removable.sort_by_key(|object| removal_pass(&object.key));
+        Ok(removable)
     }
 
     /// R2 against live: what live lacks and what an apply removes.
@@ -363,6 +363,18 @@ impl Live {
 
 fn is_sha256(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The order in which an apply removes a key: 0 for a file or an object, 1 for the record of an
+/// input copy, 2 for a release manifest. A record and a manifest name the keys before them.
+pub fn removal_pass(key: &str) -> u8 {
+    if key.starts_with(&format!("{INPUTS}/records/")) {
+        1
+    } else if key.split_once("/releases/").is_some_and(|(_, name)| !name.contains('/')) {
+        2
+    } else {
+        0
+    }
 }
 
 /// The prefix of a key that a removal lists it under: its first two segments.
@@ -729,6 +741,20 @@ pub(crate) mod tests {
         let check = live.check(&remote, &store).unwrap();
         assert_eq!(check.prefixes, ["test-catalog", "old", "inputs"]);
         assert!(check.drift.is_empty() && check.leftovers.is_empty(), "{check:?}");
+    }
+
+    #[test]
+    fn a_manifest_goes_after_its_records_and_a_record_after_its_files() {
+        let id = "a".repeat(64);
+        let keys = [
+            format!("cell-catalog/releases/{id}.json"),
+            "inputs/records/osm/1/b.json".into(),
+            format!("cell-catalog/releases/{id}/release.json"),
+            "cell-catalog/objects/c".into(),
+            "inputs/objects/d".into(),
+        ];
+        let passes: Vec<u8> = keys.iter().map(|key| removal_pass(key)).collect();
+        assert_eq!(passes, [2, 1, 0, 0, 0]);
     }
 
     #[test]

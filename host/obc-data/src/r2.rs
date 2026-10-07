@@ -197,8 +197,12 @@ impl Bucket {
     }
 
     /// Upload each `(file, key)` with one rclone call and the same headers. A key that already
-    /// holds the same checksum is skipped, so a repeated call uploads only what is missing.
+    /// holds the same checksum is skipped, so a repeated call uploads only what is missing. It
+    /// does not check immutability: a key with other bytes is replaced.
     pub fn put_many(&self, files: &[(PathBuf, String)], upload: &Upload) -> Result<(), String> {
+        if upload.immutable {
+            return Err("a batch upload does not check immutable keys; upload only keys that the bucket lacks".into());
+        }
         if files.is_empty() {
             return Ok(());
         }

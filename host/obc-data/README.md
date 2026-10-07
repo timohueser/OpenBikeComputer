@@ -13,8 +13,9 @@ new work. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) 
 assets, search dependencies and matching-host apps.
 
 Retained workers detach from the terminal. Publication runs on the machine that applies: it
-needs rclone and the bucket credentials below. An apply refuses a planner release that changes
-its services, because it does not install them yet.
+needs rclone and the bucket credentials below. One machine applies at a time. An apply refuses
+to switch the planner, because it does not install the planner services yet. Before it replaces
+a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a rollback.
 
 | Configuration or credential | Purpose |
 | --- | --- |

@@ -18,7 +18,6 @@ pub mod r2;
 pub mod regions;
 pub mod sources;
 pub mod store;
-pub mod vps;
 pub mod worker;
 
 use std::path::{Path, PathBuf};

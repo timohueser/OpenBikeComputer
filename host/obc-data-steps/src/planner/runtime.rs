@@ -19,10 +19,31 @@ const SERVICES: [&str; 3] = ["routing", "search", "downloads"];
 #[serde(deny_unknown_fields)]
 struct Config {
     target: Option<Value>,
-    publication: Option<obc_data::vps::Origins>,
+    publication: Option<Origins>,
 }
 
-pub(super) fn publication(root: &Path) -> Result<obc_data::vps::Origins, String> {
+/// The HTTPS origins that the planner pointer names.
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Origins {
+    pub site_origin: String,
+    pub api_origin: String,
+    pub objects_origin: String,
+}
+
+impl Origins {
+    fn check(&self) -> Result<(), String> {
+        for origin in [&self.site_origin, &self.api_origin, &self.objects_origin] {
+            let host = origin.strip_prefix("https://").ok_or("publication needs HTTPS origins")?;
+            if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-:".contains(&byte)) {
+                return Err(format!("publication origin `{origin}` has a path, credentials or unsafe characters"));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn publication(root: &Path) -> Result<Origins, String> {
     let config: Config =
         toml::from_str(&std::fs::read_to_string(root.join(RECIPE)).map_err(|e| format!("{RECIPE}: {e}"))?)
             .map_err(|e| format!("{RECIPE}: {e}"))?;

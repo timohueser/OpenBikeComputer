@@ -93,17 +93,6 @@ pub trait Product: Sync {
         Err("this product has no Local app".into())
     }
 
-    /// Prepare the three planner service views in caller-owned storage, before handoff.
-    fn services(
-        &self,
-        _root: &Path,
-        _release: &Release,
-        _store: &Store,
-        _destination: &Path,
-    ) -> Result<Vec<crate::vps::Candidate>, String> {
-        Ok(Vec::new())
-    }
-
     /// Check stored artifacts before publication. `root` locates the offline verification tools.
     fn verify(
         &self,

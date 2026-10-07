@@ -17,7 +17,7 @@ use super::{bytes, confirm, Code, Error};
 use crate::date;
 use crate::engine::runs::{Event, Phase, Publication, Run};
 use crate::fetch::http::Http;
-use crate::live::{Live, Remote, INPUTS};
+use crate::live::{removal_pass, Live, Remote, INPUTS};
 use crate::product::Product;
 use crate::r2::{Bucket, Object, Scratch, Upload};
 use crate::store::{hash_file, sha256_hex, write_atomic, Store};
@@ -190,7 +190,11 @@ fn publish(
     let previous = Live::read(remote, products, &[], store).map_err(r2_failed)?;
     let changed: Vec<usize> =
         (0..next.products.len()).filter(|&at| build_cli::changed(&previous.products[at], &next.products[at])).collect();
-    services(&previous, &next, &changed)?;
+    if changed.iter().any(|&at| next.products[at].product == "planner") {
+        return Err(Code::Blocked
+            .error("an apply cannot switch the planner yet: it does not install the planner services; nothing changed")
+            .fix("Apply with the planner unchanged. The service install step comes in the next change."));
+    }
 
     run.check_stop(store)?;
     run.record(&Event::Phase { phase: Phase::Upload })?;
@@ -220,6 +224,10 @@ fn publish(
         document.insert("release".into(), id.clone().into());
         document.insert("applied".into(), date::timestamp(date::now()).into());
         let key = format!("{}/catalog.json", product.prefix);
+        if let Some(bytes) = remote.get(&key)? {
+            // A rollback copies this file back to the key.
+            crate::store::durable(&store.root().join("runs").join(run.id()).join("previous").join(&key), &bytes)?;
+        }
         let body = serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?;
         let file = write(&scratch, &key, &body)?;
         bucket.put(&file, &key, &POINTER).map_err(r2_failed)?;
@@ -274,22 +282,11 @@ fn publish(
     let removable = live.removable(remote, store, &live.list(remote).map_err(r2_failed)?).map_err(r2_failed)?;
     let removals: Vec<Object> = removable.into_iter().filter(|object| reviewed.contains(object.key.as_str())).collect();
     run.record(&Event::Phase { phase: Phase::Cleanup })?;
-    delete(bucket, &removals, "obc data apply live: no live release uses it", run, &mut applied.removed)
-}
-
-/// Refuse a planner switch that changes its services: the next change of this command installs
-/// them on the VPS.
-fn services(previous: &Live, next: &Live, changed: &[usize]) -> Result<(), Error> {
-    for &at in changed.iter().filter(|&&at| next.products[at].product == "planner") {
-        let services =
-            |live: &Live| live.products[at].document.as_ref().map(|document| document["active"]["services"].clone());
-        if services(previous) != services(next) {
-            return Err(Code::Blocked
-                .error(
-                    "the planner release changes its services, and an apply cannot install them yet; nothing changed",
-                )
-                .fix("Apply without planner service changes, or wait for the service install step."));
-        }
+    // A key goes only after every key that its manifest or record names: a failed pass leaves
+    // the names that the next apply finds the rest with.
+    for pass in 0..3 {
+        let keys: Vec<Object> = removals.iter().filter(|object| removal_pass(&object.key) == pass).cloned().collect();
+        delete(bucket, &keys, "obc data apply live: no live release uses it", run, &mut applied.removed)?;
     }
     Ok(())
 }
@@ -446,6 +443,9 @@ pub(super) fn upload(bucket: &Bucket, listed: &[Object], files: &[File], run: &m
         }
         missing.insert(file.key.as_str(), file);
     }
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
     for file in missing.values() {
         let (found, size) = hash_file(&file.path).map_err(|e| Code::Failed.error(format!("{}: {e}", file.key)))?;
         if (&found, size) != (&file.sha256, file.size) {
@@ -461,7 +461,7 @@ pub(super) fn upload(bucket: &Bucket, listed: &[Object], files: &[File], run: &m
         groups.entry(headers).or_default().push((file.path.clone(), file.key.clone()));
     }
     for ((cache_control, content_type), group) in &groups {
-        let upload = Upload { cache_control: *cache_control, content_type: *content_type, immutable: true };
+        let upload = Upload { cache_control: *cache_control, content_type: *content_type, immutable: false };
         bucket.put_many(group, &upload).map_err(r2_failed)?;
     }
     let keys: Vec<String> = missing.keys().map(|key| key.to_string()).collect();
@@ -588,8 +588,14 @@ mod tests {
             write(&dir.join(key), "older publisher");
         }
 
+        let plan =
+            build_cli::plan_live(&fixture.root(), &fixture.store, &Http::new(), &remote, &[&Versioned], &[], true)
+                .unwrap();
+        assert_eq!(build_cli::replaced(&plan), ["REPLACES test/catalog.json of an older publisher"]);
         let applied = apply(&fixture, &remote, &[&Versioned]).unwrap();
         assert!(applied.removed.is_empty(), "no earlier release of this command: {:?}", applied.removed);
+        let previous = fixture.store.root().join("runs").join(&applied.run).join("previous/test/catalog.json");
+        assert_eq!(std::fs::read(previous).unwrap(), b"{\"schema_version\": 3}", "a rollback copies it back");
         let keys = keys(&fixture);
         for key in older {
             assert_eq!(keys[key], b"older publisher", "{key} stays");
