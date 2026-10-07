@@ -81,7 +81,7 @@ regenerates it in the same pull request, with the reason stated.
 
 ## Format
 
-`rustfmt.toml` is committed, so let rustfmt own style. Formatting takes five invocations, and CI
+`.rustfmt.toml` is committed, so let rustfmt own style. Formatting takes five invocations, and CI
 checks all of them: the workspace is a *virtual* manifest, so `--all` is required or it formats
 nothing, and `--all` skips the four excluded crates.
 

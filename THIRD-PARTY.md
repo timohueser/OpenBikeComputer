@@ -7,7 +7,7 @@ file is that hand-over, one section per distributed artifact.
 
 **Generated — do not edit.** `obc licenses` rewrites it from the dependency graph;
 the `deny` CI job fails if it is out of date. Which licences are *allowed* in the tree
-is a separate question, answered by [`deny.toml`](deny.toml).
+is a separate question, answered by [`deny.toml`](tools/licenses/deny.toml).
 
 Each text is reproduced as the crate ships it, with one normalisation: runs of blank
 lines are collapsed to one and trailing spaces are dropped. cargo-about enriches some

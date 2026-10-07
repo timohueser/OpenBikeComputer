@@ -16,7 +16,7 @@ include:
   - project.local.yml
 
 options:
-  preGenCommand: npm ci --prefix ReplayAssets && npm ci --prefix ../apps/planner-search && node ../apps/planner-search/native-build.mjs ../target/PlannerSearch
+  preGenCommand: npm ci --prefix ReplayAssets && npm ci --prefix ../planner/search && node ../planner/search/native-build.mjs ../target/PlannerSearch
   bundleIdPrefix: com.openbikecomputer
   deploymentTarget:
     iOS: "17.0"

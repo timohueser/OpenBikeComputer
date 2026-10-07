@@ -3,7 +3,7 @@
 The Companion app compiles the Swift files in this directory. `RouteProvider`
 calls the planner-service static library. `PMTilesArchive` reads the map and route
 network tiles of an installed map. Follow
-[the iOS on-ramp](../CLAUDE.md) to build the app.
+[the iOS on-ramp](../README.md) to build the app.
 
 Run from the repository root to compare the PMTiles reader with the pinned
 upstream writer:

@@ -15,8 +15,8 @@ To prepare dependencies and the query model separately, install Node 24 or later
 Python 3.12 or later, `uv`, and the GitHub CLI. Run from the repository root:
 
 ```sh
-python3 apps/planner-search/setup.py
-OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix apps/planner-search
+python3 planner/search/setup.py
+OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix planner/search
 ```
 
 Use the search directory from `obc planner prepare`. The
@@ -29,8 +29,8 @@ Build packages in a fresh directory. An interrupted build has no completion meta
 Build independent components from one verified enriched dump:
 
 ```sh
-uv run --locked --group planner-search python apps/planner-search/split.py SOURCE.jsonl.zst /tmp/search-records
-uv run --locked --group planner-search python apps/planner-search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256 --time-zone=Europe/Berlin
+uv run --locked --group planner-search python planner/search/split.py SOURCE.jsonl.zst /tmp/search-records
+uv run --locked --group planner-search python planner/search/build.py /tmp/search-records/pois.jsonl.zst --component pois --output DATA/pois --region REGION --bounds=WEST,SOUTH,EAST,NORTH --countries=de,ch --osm-sha256=SHA256 --time-zone=Europe/Berlin
 ```
 
 Use `addresses.jsonl.zst`, `--component addresses`, and `DATA/addresses` for
@@ -57,7 +57,7 @@ integrates installation and readiness.
 
 ## Runtime and data limits
 
-[`query/`](query/README.md) parses sentences with the pinned int8 model.
+[`query/`](query/) parses sentences with the pinned int8 model.
 [`query/contract.json`](query/contract.json) defines the decoded request.
 [`validation.mjs`](validation.mjs) checks its plan context. The resolver applies it to the view, route, days, and places. Explicit words override
 pointing; pointing overrides the view. Edited requests bypass inference.
@@ -88,11 +88,11 @@ Search packages use schema 5. Rebuild with `build.py` after a schema change.
 ## Checks
 
 ```sh
-npm test --prefix apps/planner-search
-npm run test:query --prefix apps/planner-search
-npm run test:data --prefix apps/planner-search
-npm run test:model --prefix apps/planner-search
-node apps/planner-search/benchmark.mjs PACKAGE.sqlite REFERENCE.sqlite
+npm test --prefix planner/search
+npm run test:query --prefix planner/search
+npm run test:data --prefix planner/search
+npm run test:model --prefix planner/search
+node planner/search/benchmark.mjs PACKAGE.sqlite REFERENCE.sqlite
 ```
 
 The first two suites run in CI without large downloads. The last two use local packages
@@ -105,7 +105,7 @@ It reports host query times and combined process memory. It does not measure pho
 ## Model development
 
 The generator, templates, decoder, training, and ONNX export code live in `query/`.
-Use [its README](query/README.md) to restore training data and retrain. Keep the held-out
+Use [the training CLI](query/train.py) to retrain. Keep the held-out
 sentences separate from template and lexicon changes.
 
 Search data carries the `osm-planet` credit of [`data/sources.toml`](../../data/sources.toml).

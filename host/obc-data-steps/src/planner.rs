@@ -23,10 +23,10 @@ use serde_json::json;
 use crate::maps::{invalid, text, TILE_LIST};
 use crate::python;
 
-const SEARCH: &str = "apps/planner-search";
-/// `apps/planner-search/records.py` and the files that it reads: the data kinds of the query
+const SEARCH: &str = "planner/search";
+/// `planner/search/records.py` and the files that it reads: the data kinds of the query
 /// contract, and the POI kinds of the web planner, which the places also read.
-const RECORDS: [&str; 3] = ["apps/planner-search/records.py", "apps/planner-search/query/contract.json", POI_KINDS];
+const RECORDS: [&str; 3] = ["planner/search/records.py", "planner/search/query/contract.json", POI_KINDS];
 const POI_KINDS: &str = "builder/app/src/lib/planner/poi-kinds.json";
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
@@ -297,12 +297,12 @@ impl Planner {
             "planner/model",
             vec![model],
             json!({}),
-            ("apps/planner-search/setup.py", None),
+            ("planner/search/setup.py", None),
             &[
-                "apps/planner-search/setup.py",
-                "apps/planner-search/query/artifacts.py",
-                "apps/planner-search/query/schema.py",
-                "apps/planner-search/query/contract.json",
+                "planner/search/setup.py",
+                "planner/search/query/artifacts.py",
+                "planner/search/query/schema.py",
+                "planner/search/query/contract.json",
             ],
             &["model"],
         );
@@ -332,8 +332,8 @@ impl Planner {
                 "planner/search/records",
                 vec![Input::layer(dump.name.clone())],
                 json!({}),
-                ("apps/planner-search/split.py", Some("planner-search")),
-                &[["apps/planner-search/split.py"].as_slice(), &RECORDS].concat(),
+                ("planner/search/split.py", Some("planner-search")),
+                &[["planner/search/split.py"].as_slice(), &RECORDS].concat(),
                 &["pois.jsonl.zst", "addresses.jsonl.zst"],
             )
         };
@@ -438,11 +438,11 @@ impl Planner {
                         "tools/planner_geo.py",
                         "tools/planner_offline.py",
                         "tools/planner_runtime.py",
-                        "apps/planner-search/storage.py",
-                        "apps/planner-search/index.py",
-                        "apps/planner-search/schema.sql",
-                        "apps/planner-search/indexes.sql",
-                        "apps/planner-search/web/address-terms.json",
+                        "planner/search/storage.py",
+                        "planner/search/index.py",
+                        "planner/search/schema.sql",
+                        "planner/search/indexes.sql",
+                        "planner/search/web/address-terms.json",
                     ],
                 ),
                 None => ("tools.planner_grid_pack", None, PACK.to_vec()),
