@@ -2,7 +2,7 @@
 
 These settings live in the Cloudflare dashboard. No repository file holds them. Check them after
 any account change. The settings that the repository does hold are in the
-[tile Worker README](../apps/planner-tiles/README.md).
+[tile Worker README](../planner/tiles/README.md).
 
 ## What costs money
 

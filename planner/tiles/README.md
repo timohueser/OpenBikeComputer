@@ -9,9 +9,9 @@ Cloudflare edge.
 Install Node 24 or later. Run from the repository root:
 
 ```sh
-npm ci --prefix apps/planner-tiles
-npm test --prefix apps/planner-tiles
-npm run build --prefix apps/planner-tiles
+npm ci --prefix planner/tiles
+npm test --prefix planner/tiles
+npm run build --prefix planner/tiles
 ```
 
 For dashboard deployment, create the `obc-planner-tiles` Worker. Paste
@@ -26,7 +26,7 @@ a paid CPU allowance.
 With a Cloudflare deployment credential, run:
 
 ```sh
-npm run deploy --prefix apps/planner-tiles
+npm run deploy --prefix planner/tiles
 ```
 
 | Path | Result |
