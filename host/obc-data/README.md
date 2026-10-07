@@ -103,5 +103,6 @@ Its current approval is owner-local. `commit-approval` reads it without changing
 
 Compare current declarations and an exact release through `local::plan`.
 Name original client layers and extra paths. Review blockers before `local::adopt`.
-`local::saved` reads collection roots. Adoption keeps original provenance, creates no build
-receipt and starts no apps. See the [Local contract](../../specs/obc-data.md#local-portable-data).
+`local::saved` reads collection roots. Adoption preserves provenance and creates no build receipt.
+See the [Local contract](../../specs/obc-data.md#local-portable-data) and
+[Local Web commands](../obc-data-steps/src/planner/README.md).

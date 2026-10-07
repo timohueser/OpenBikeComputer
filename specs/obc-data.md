@@ -1199,6 +1199,31 @@ release and selection in a separate adoption record. It creates no Local receipt
 producer identity. A failure leaves verified cache bytes and keeps the previous anchor.
 Local rebuilds keep their full execution identity. These APIs do not start apps or services.
 
+### Local app services
+
+`dev` prepares the current requested region and opens its Web planner. The default is the
+saved Local region, then the live environment. The first source is Live unless selected
+explicitly. Subsequent preparation pins the saved source versions. Declarations derive current
+region geometry and options; recorded options are not substitute declarations.
+
+Live adoption retains original provenance. A blocked comparison requires an explicit Local
+build. Matching-host native route execution keeps its full compiler/profile identity and
+compiled root/code stamp. Startup rejects a changed stamp or prepared descriptor. It requires
+prepared Python, Node dependency trees and builder bridge/Wasm; it installs nothing.
+
+Preparation is a retained finite `dev_prepare` operation in environment `local`. It shares
+normal Run fetch/build/verify events. `dev --prepare` returns its handle. Serving owns a distinct
+stable store lock; it does not retain the environment operation lock. The known supervisor
+starts routing, search, grid tiles and Vite. It compares child-specific code/config/data
+fingerprints before replacement. A token-bound stop drains owned process groups. It does not
+signal an arbitrary PID or restart failed children.
+
+Views are immutable and contain verified objects, native execution and service metadata.
+Readiness binds the opened routing package, search region/grid and query model to that view.
+Frontend asset checks and HTTP availability are separate from browser workflow verification.
+`dev --status` and `dev --logs` are observations. Start, stop and open are explicit actions.
+Saved portable-data roots survive app shutdown.
+
 ### State of a layer
 
 The engine computes the state of each layer when it is asked, and stores nothing. It compares
