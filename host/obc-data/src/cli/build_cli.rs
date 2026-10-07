@@ -465,7 +465,8 @@ pub(super) fn build_env(
         }
         return Ok((built, None));
     };
-    let (next, missing) = next_reusing(root, store, products, &loaded.sources, &live, &steps, &plan, &run.originals)?;
+    let (mut next, missing) = next_reusing(root, store, products, &live, &steps, &plan, &run.originals)?;
+    retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     if let Some(layer) = missing.first() {
         return Err(Code::Failed.error(format!("the store lacks the layer `{layer}` after the build")));
     }
@@ -752,7 +753,7 @@ fn planned_run(
         return Ok(Planned { loaded, steps, plan, live: None });
     };
     let mut originals = BTreeMap::new();
-    if let Some(run) = run.as_deref_mut().filter(|run| run.automatic.is_some()) {
+    if let Some(run) = run.filter(|run| run.automatic.is_some()) {
         let approved = run.automatic.as_ref().expect("filtered above");
         if !blocked.is_empty() {
             return Err(Code::Blocked.error("automatic product declarations are incomplete"));
@@ -791,7 +792,8 @@ fn planned_run(
     let against = against(&live, env, &edits, &blocked, check.as_ref(), store);
     let all = changes::changes_reusing(store, root, &steps, &against, &originals)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
-    let (next, _) = next_reusing(root, store, products, &loaded.sources, &live, &steps, &plan, &originals)?;
+    let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &originals)?;
+    retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     for (now, next) in live.products.iter().zip(&next.products) {
         let layered = plan.groups.iter().any(|group| {
             group
@@ -994,13 +996,11 @@ impl Edit {
 
 /// Live after an apply of `plan`, as far as the store knows it: the release of each product that
 /// the plan changes, of its live layers and the layers of the groups that the store has; and the
-/// input copies that the releases and the layers to build read. Also the layers of the groups that
-/// the store lacks.
+/// layers of the groups that the store lacks.
 fn next_reusing(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
-    sources: &[Source],
     live: &Live,
     steps: &[Step],
     plan: &EnvPlan,
@@ -1069,7 +1069,11 @@ fn next_reusing(
             document,
         });
     }
-    for read in crate::input_copy::reads(&next)? {
+    Ok((next, missing))
+}
+
+fn retain_input_copies(store: &Store, sources: &[Source], live: &Live, next: &mut Live) -> Result<(), Error> {
+    for read in crate::input_copy::reads(next)? {
         if !live.inputs.contains_key(&read.key)
             && !sources.iter().any(|s| s.id == read.key.source && s.r2_copy && s.redistribute)
         {
@@ -1084,7 +1088,7 @@ fn next_reusing(
         };
         next.inputs.insert(read.key, record);
     }
-    Ok((next, missing))
+    Ok(())
 }
 
 /// The `--move SOURCE[@VERSION]` of a plan or a build.
