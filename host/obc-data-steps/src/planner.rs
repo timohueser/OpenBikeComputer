@@ -658,6 +658,11 @@ fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
     [west, south, east, north]
 }
 
+/// Resolve only the native routing providers for the checked runtime adapter.
+pub fn native_routing(args: &[String]) -> Option<Result<serde_json::Value, String>> {
+    runtime::native_routing(args)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -1054,9 +1059,4 @@ mod tests {
         }
         assert_eq!(python, 26, "twelve producers, thirteen grid steps and the final index");
     }
-}
-
-/// Resolve only the native routing providers for the checked runtime adapter.
-pub fn native_routing(args: &[String]) -> Option<Result<serde_json::Value, String>> {
-    runtime::native_routing(args)
 }
