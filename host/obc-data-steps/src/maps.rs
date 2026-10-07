@@ -160,7 +160,7 @@ impl Maps {
         env: &Env,
         regions: &Regions,
         store: &Store,
-        tool: Result<obc_data::engine::Library, String>,
+        tool: Result<Option<obc_data::engine::Library>, String>,
         libraries: Result<Vec<obc_data::engine::Library>, String>,
         inputs: RecipeInputs,
     ) -> Result<Steps, Unplanned> {

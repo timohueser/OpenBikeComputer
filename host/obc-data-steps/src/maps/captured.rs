@@ -67,7 +67,7 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
         env,
         regions,
         store,
-        obc_osm::OsmiumRunner::default().binding(),
+        obc_osm::OsmiumRunner::default().binding().map(Some),
         obc_pack::step::geos_libraries(),
         RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index: None, content: Some(content) },
     )
