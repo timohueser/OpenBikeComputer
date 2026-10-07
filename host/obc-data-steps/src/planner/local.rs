@@ -366,7 +366,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
             serde_json::from_slice(&std::fs::read(store.object(&file.sha256)).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         service["release"] = json!(original.id());
-        service["expected"] = json!({"routing":document["routing_package"], "search":document["files"][format!("search/{}.grid.json", env.region)]["sha256"], "model": ["labels.json", "tokenizer.json", "model.int8.onnx"].into_iter().map(|name| (name,document["files"][format!("search/model/{name}")]["sha256"].clone())).collect::<BTreeMap<_,_>>()});
+        service["expected"] = json!({"routing":document["routing_package"], "search":document["files"][format!("search/{}.grid.json", env.region)]["sha256"], "model": (["labels.json", "tokenizer.json", "model.int8.onnx"].into_iter().map(|name| (name,document["files"][format!("search/model/{name}")]["sha256"].clone())).collect::<BTreeMap<_,_>>())});
     }
     if let Some(original) = releases.get("maps") {
         service["maps_release"] = json!(original.id());
