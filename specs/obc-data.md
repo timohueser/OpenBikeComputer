@@ -1249,13 +1249,13 @@ Local rebuilds keep their full execution identity. These APIs do not start apps 
 
 `dev` prepares current working-tree data. `data/env/local.toml` holds its region and
 optional layers. The first preparation copies Live settings. An explicit region changes
-Local. The saved Local release pins source versions. Only `--refresh-live` replaces those
+Local. Each saved Local product release pins source versions. Only `--refresh-live` replaces those
 pins with the current published versions. A failed pointer observation is not absence.
 Current declarations derive region geometry, source requests, inputs and semantic options.
 Compatible portable layers retain original provenance through the shared verified reuse
 path. Only missing or changed layers execute with their full current native identity.
 Unused original execution tools are not required for reuse.
-Matching-host native route execution keeps its full compiler/profile identity and compiled
+Matching-host native routing and Simulator execution keep full compiler/profile identity and compiled
 root/code stamp. Startup rejects a changed stamp or prepared descriptor. It requires prepared
 Python, Node dependency trees and builder bridge/Wasm; it installs nothing.
 
@@ -1264,7 +1264,10 @@ normal Run fetch/build/verify events. `dev --prepare` returns its handle. Prepar
 starts a stopped app owner. It replaces only affected children of an already running owner.
 Serving owns a distinct
 stable store lock; it does not retain the environment operation lock. The known supervisor
-starts routing, search, grid tiles and Vite. It compares child-specific code/config/data
+admits only the selected app's children. Web planner uses routing, search, tiles and Vite;
+Map builder shares tiles and Vite; Simulator uses its retained executable and assembled map.
+A shared child stops only after its last app stops. A failed app stays failed until an explicit start.
+Each app admits only its own providers. Start rejects a saved view with changed Local region geometry or layers. It compares child-specific code/config/data
 fingerprints before replacement. A token-bound stop drains owned process groups. It does not
 signal an arbitrary PID or restart failed children.
 
@@ -1632,12 +1635,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `region ENV ID`, `layer`, `undo` | `Edited` |
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
-| `plan` | `EnvPlan` |
+| `plan`, `dev --check` | `EnvPlan` |
 | `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
 | `dev --start`, `dev --stop`, `dev --status` | `Observed` |
 | `dev --logs` | `Logs` |
 | `dev`, completed dev preparation | `Prepared` |
-| Completed prepare output | `Prepared2` |
+| Completed prepare output, `dev --inputs` | `Prepared2` |
 | Completed build output | `Built` |
 | Completed apply output | `Applied` |
 | `auto` admission | `Started` |
@@ -1656,6 +1659,33 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 ```json
 {
   "$defs": {
+    "App": {
+      "enum": [
+        "web-planner",
+        "map-builder",
+        "simulator"
+      ],
+      "type": "string"
+    },
+    "AppState": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "message"
+      ],
+      "type": "object"
+    },
     "Applied": {
       "description": "What an apply did.",
       "properties": {
@@ -2968,6 +2998,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "product": {
+          "description": "Local product whose saved release supplies this pin; absent for the shared Live plan.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "type": "string"
         },
@@ -3860,6 +3897,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Prepared": {
       "additionalProperties": false,
       "properties": {
+        "apps": {
+          "items": {
+            "$ref": "#/$defs/App"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
         "children": {
           "additionalProperties": {
             "$ref": "#/$defs/Binding"
@@ -3880,7 +3924,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "view",
         "descriptor",
         "supervisor",
-        "children"
+        "children",
+        "apps"
       ],
       "type": "object"
     },
@@ -5166,13 +5211,40 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "State2": {
       "additionalProperties": false,
       "properties": {
+        "apps": {
+          "additionalProperties": false,
+          "properties": {
+            "map-builder": {
+              "$ref": "#/$defs/AppState"
+            },
+            "simulator": {
+              "$ref": "#/$defs/AppState"
+            },
+            "web-planner": {
+              "$ref": "#/$defs/AppState"
+            }
+          },
+          "type": "object"
+        },
         "code": {
           "type": [
             "string",
             "null"
           ]
         },
+        "layers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
           "type": [
             "string",
             "null"
@@ -5199,7 +5271,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "token",
-        "status"
+        "status",
+        "apps",
+        "region",
+        "layers"
       ],
       "type": "object"
     },

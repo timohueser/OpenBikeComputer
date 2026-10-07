@@ -22,6 +22,7 @@ pub(super) struct PlanView {
     /// Plan shows the fetches and builds instead of the groups.
     pub steps: bool,
     pub group: usize,
+    pub dev: Option<crate::dev::Request>,
 }
 
 pub(super) fn is_move(group: &Group) -> bool {
@@ -30,7 +31,11 @@ pub(super) fn is_move(group: &Group) -> bool {
 
 impl PlanView {
     pub fn new(plan: EnvPlan) -> Self {
-        PlanView { taken: plan.clone(), all: plan, skipped: BTreeSet::new(), steps: false, group: 0 }
+        PlanView { taken: plan.clone(), all: plan, skipped: BTreeSet::new(), steps: false, group: 0, dev: None }
+    }
+
+    pub fn local(plan: EnvPlan, request: crate::dev::Request) -> Self {
+        Self { dev: Some(request), ..Self::new(plan) }
     }
 
     /// The `--only` of the moves that Plan takes: empty when it takes every move, `none` when it
@@ -45,6 +50,28 @@ impl PlanView {
             return vec![NONE.into()];
         }
         only
+    }
+
+    pub fn versions(&self) -> Vec<Line<'static>> {
+        self.taken
+            .versions
+            .iter()
+            .map(|read| {
+                let params =
+                    read.params.iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(", ");
+                format!(
+                    "{} @ {}{}",
+                    read.product
+                        .as_ref()
+                        .map_or_else(|| read.source.clone(), |product| format!("{product}: {}", read.source)),
+                    read.version,
+                    if params.is_empty() { String::new() } else { format!(" · {params}") }
+                )
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(Line::from)
+            .collect()
     }
 
     /// Whether `space` takes or leaves the selected group: a move.
@@ -87,7 +114,11 @@ impl App {
         }
         let mut focus = None;
         if all.groups.is_empty() {
-            lines.push(Line::from("Live has every change."));
+            lines.push(Line::from(if all.env == "local" {
+                "Local has every change."
+            } else {
+                "Live has every change."
+            }));
         } else if !view.steps {
             let mut table = vec![["", "CHANGE", "FETCH", "TIME", "OUTPUT"].map(String::from).to_vec()];
             for group in &all.groups {
@@ -136,17 +167,35 @@ impl App {
             }
         }
 
+        if view.dev.is_some() && view.steps && !taken.versions.is_empty() {
+            lines.extend([Line::default(), Line::from("INPUT VERSIONS").dim()]);
+            lines.extend(view.versions());
+        }
+
         let removed = taken.remove.iter().map(|removal| removal.bytes).sum::<Option<u64>>();
-        let mut footer = vec![
-            Line::default(),
-            Line::from(format!("REMOVE FROM R2  {}, {}", keys(taken.remove.len()), estimate(removed, bytes))).bold(),
-        ];
+        let mut footer = vec![Line::default()];
+        if taken.env == "live" {
+            footer.push(
+                Line::from(format!("REMOVE FROM R2  {}, {}", keys(taken.remove.len()), estimate(removed, bytes)))
+                    .bold(),
+            );
+        }
+        if taken.env == "local" {
+            footer.extend(taken.live.iter().map(|product| {
+                Line::from(format!(
+                    "Input baseline {}: {}",
+                    product.product,
+                    product.release.as_deref().map_or("no Live release", |id| &id[..id.len().min(8)])
+                ))
+            }));
+        }
         if taken.needs_prepare {
             footer
                 .push(Line::styled("Inputs are unresolved. Prepare inputs, then review the new plan.", Color::Yellow));
         }
         let blocked = taken.blocked.iter().map(|blocked| format!("blocked {}: {}", blocked.product, blocked.reason));
-        let unlisted = (!taken.listed).then(|| "R2 was not listed, so leftovers are unknown".to_string());
+        let unlisted =
+            (taken.env == "live" && !taken.listed).then(|| "R2 was not listed, so leftovers are unknown".to_string());
         footer.extend(blocked.chain(unlisted).map(|warning| Line::styled(format!("⚠ {warning}"), Color::Yellow)));
         if !taken.groups.is_empty() {
             let cost = Cost::of(&taken.groups);

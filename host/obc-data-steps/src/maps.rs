@@ -99,6 +99,16 @@ impl Maps {
         store: &Store,
         tool: Result<obc_data::engine::Library, String>,
     ) -> Result<Steps, Unplanned> {
+        self.steps_with_bindings(env, regions, store, tool.map(Some), obc_pack::step::geos_libraries())
+    }
+
+    pub(crate) fn declarations(
+        &self,
+        env: &Env,
+        regions: &Regions,
+        store: &Store,
+        tool: Result<Option<obc_data::engine::Library>, String>,
+    ) -> Result<Steps, Unplanned> {
         self.steps_with_bindings(env, regions, store, tool, obc_pack::step::geos_libraries())
     }
 
@@ -107,7 +117,7 @@ impl Maps {
         env: &Env,
         regions: &Regions,
         store: &Store,
-        tool: Result<obc_data::engine::Library, String>,
+        tool: Result<Option<obc_data::engine::Library>, String>,
         libraries: Result<Vec<obc_data::engine::Library>, String>,
     ) -> Result<Steps, Unplanned> {
         let mut wanted = Vec::new();
@@ -233,7 +243,7 @@ impl Maps {
             match tool
                 .as_ref()
                 .map_err(|reason| Unplanned::Invalid(reason.clone()))
-                .and_then(|tool| crate::region_sources::combined("maps/region-osm", &inputs, Some(tool)))
+                .and_then(|tool| crate::region_sources::combined("maps/region-osm", &inputs, tool.as_ref()))
             {
                 Ok(combined) => steps.push(combined),
                 Err(Unplanned::Invalid(reason)) => {
@@ -647,12 +657,12 @@ fn snapshot_version(
 
 /// The OSM of each leaf: the extract of the region, cut to the square of the leaf and a halo. Only
 /// the map cells read it.
-fn osm(extract: Input, leaves: &BTreeSet<LeafId>, binding: obc_data::engine::Library) -> Step {
+fn osm(extract: Input, leaves: &BTreeSet<LeafId>, binding: Option<obc_data::engine::Library>) -> Step {
     Step {
         name: "maps/osm".into(),
         inputs: vec![extract],
         options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>()}),
-        code: Code { crates: vec!["obc-osm".into()], libraries: vec![binding], ..Default::default() },
+        code: Code { crates: vec!["obc-osm".into()], libraries: binding.into_iter().collect(), ..Default::default() },
         outputs: vec!["osm".into()],
         run: Run::Rust(obc_osm::step::osm),
         client: Client::None,
@@ -1283,11 +1293,11 @@ pub(crate) mod tests {
                     &env,
                     &regions,
                     &store,
-                    Ok(obc_data::engine::Library {
+                    Ok(Some(obc_data::engine::Library {
                         name: "osmium".into(),
                         path: std::path::PathBuf::from("/authored-copy-osmium"),
                         sha256: "0".repeat(64),
-                    }),
+                    })),
                     Err("GEOS library missing; start a fresh worker".into()),
                 )
                 .unwrap();

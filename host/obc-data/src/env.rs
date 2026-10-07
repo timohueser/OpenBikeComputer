@@ -79,6 +79,18 @@ impl Env {
         Env::parse(name, &text, regions).map_err(|e| format!("data/env/{name}.toml: {e}"))
     }
 
+    /// Local defaults to Live until an explicit Local edit or preparation writes its file.
+    pub fn local(root: &Path, regions: &Regions) -> Result<(Env, String), String> {
+        let text = match std::fs::read_to_string(Self::path(root, "local")) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::read_to_string(Self::path(root, "live")).map_err(|e| e.to_string())?
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        Ok((Self::parse("local", &text, regions)?, text))
+    }
+
     pub fn parse(name: &str, text: &str, regions: &Regions) -> Result<Env, String> {
         let file: EnvFile = toml::from_str(text).map_err(|e| e.to_string())?;
         if file.pins.is_some() {

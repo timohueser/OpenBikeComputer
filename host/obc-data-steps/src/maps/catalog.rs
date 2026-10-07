@@ -198,4 +198,5 @@ pub fn pointer() -> PointerFn {
 }
 
 mod verify;
+pub(crate) use verify::assemble;
 pub use verify::verify;

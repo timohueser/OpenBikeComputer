@@ -22,15 +22,17 @@ class Local(unittest.TestCase):
                 view = directory / str(number)
                 view.mkdir()
                 (view / "planner-service").write_bytes(binary)
-                value = {"view": str(view), "routing_executable": runtime.digest(view / "planner-service"),
+                value = {"view": str(view), "region": "ride", "layers": [],
+                         "executables": {"planner-service": runtime.digest(view / "planner-service")},
                          "fingerprints": {name: number if name == "frontend" else 0
                                           for name in ("routing", "search", "tiles", "frontend")}}
                 local.write(view / "service.json", value)
                 views.append(value)
-            def select(number):
+            def select(number, apps=None):
                 view = Path(views[number]["view"])
                 local.write(directory / "desired.json", {"token": "owner", "code": "supervisor",
-                                                          "view": str(view), "sha256": runtime.digest(view / "service.json")})
+                                                          "view": str(view), "sha256": runtime.digest(view / "service.json"),
+                                                          "apps": apps or {"web-planner": "1", "map-builder": "1", "simulator": "1"}})
             select(0)
             made, stopped = [], []
             def spawn(argv, **options):
@@ -41,12 +43,21 @@ class Local(unittest.TestCase):
                 self.assertTrue(options["start_new_session"])
                 made.append(child)
                 return child
-            def ready(value):
+            observed = []
+            def ready(value, app):
+                if app != "map-builder": return
+                observed.append(local.read(directory / "state.json") if (directory / "state.json").exists() else None)
                 if value == views[0]: select(1)
-                else: local.write(directory / "stop.json", {"token": "owner"})
+                elif "web-planner" in local.read(directory / "desired.json")["apps"]:
+                    select(1, {"map-builder": "1", "simulator": "1"})
+                else:
+                    self.assertEqual([child.name for child in stopped], ["frontend", "search", "routing"])
+                    local.write(directory / "stop.json", {"token": "owner"})
+            def check_view(_value, apps):
+                if apps == ["simulator"]: raise ValueError("Simulator executable is not prepared")
             recipes = {name: ([name], directory) for name in views[0]["fingerprints"]}
             with patch.object(local, "commands", return_value=(recipes, {})), patch.object(local, "ready", side_effect=ready), \
-                 patch.object(local.runtime, "release", return_value=("manifest", {"files": {}})), \
+                 patch.object(local, "check_view", side_effect=check_view), \
                  patch.object(local.maps, "check_port"), patch.object(local.maps, "stop_process", side_effect=stopped.append), \
                  patch.object(local.subprocess, "Popen", side_effect=spawn), patch.object(local.time, "sleep"):
                 local.supervise(directory, "owner", lock)
@@ -55,16 +66,17 @@ class Local(unittest.TestCase):
             self.assertCountEqual(stopped, made)
             self.assertEqual(local.read(directory / "state.json")["status"], "stopped")
             self.assertEqual(local.read(directory / "drained.json"), {"token": "owner"})
-            select(0)
+            self.assertTrue(any(state and state["apps"]["simulator"]["status"] == "failed" for state in observed))
+            select(0, {"web-planner": "2"})
             (directory / "stop.json").unlink()
             with patch.object(local, "commands", return_value=(recipes, {})), patch.object(local, "ready", side_effect=ValueError("service failed")), \
-                 patch.object(local.runtime, "release", return_value=("manifest", {"files": {}})), \
+                 patch.object(local, "check_view"), \
                  patch.object(local.maps, "check_port"), patch.object(local.maps, "stop_process", side_effect=stopped.append), \
                  patch.object(local.subprocess, "Popen", side_effect=spawn), patch.object(local.time, "monotonic", side_effect=[0, 100]):
-                with self.assertRaisesRegex(ValueError, "service failed"):
+                with self.assertRaisesRegex(ValueError, "All requested Local apps failed"):
                     local.supervise(directory, "owner", lock)
             self.assertEqual(local.read(directory / "state.json")["status"], "failed")
-            self.assertEqual(local.read(directory / "state.json")["message"], "service failed")
+            self.assertEqual(local.read(directory / "state.json")["apps"]["web-planner"]["message"], "service failed")
             self.assertEqual(local.read(directory / "drained.json"), {"token": "owner"})
             self.assertTrue(all(child in stopped for child in made))
             with lock.open("a") as released:
@@ -79,12 +91,12 @@ class Local(unittest.TestCase):
             from io import BytesIO
             return BytesIO(json.dumps({"package": "routes"} if url.endswith("/v1/region") else search).encode())
         with patch.object(local, "urlopen", side_effect=opened):
-            local.ready(value)
+            local.ready(value, "web-planner")
             search["regions"][0]["id"] = "another-region"
-            with self.assertRaisesRegex(ValueError, "another prepared grid"): local.ready(value)
+            with self.assertRaisesRegex(ValueError, "another prepared grid"): local.ready(value, "web-planner")
             search["regions"][0]["id"] = "ride"
             search["parser"]["model"] = {"labels.json": "another-model"}
-            with self.assertRaisesRegex(ValueError, "another query model"): local.ready(value)
+            with self.assertRaisesRegex(ValueError, "another query model"): local.ready(value, "web-planner")
 
     def test_private_launch_environment_cannot_replace_the_selected_python_runtime(self):
         import hashlib
@@ -102,7 +114,7 @@ class Local(unittest.TestCase):
             root = Path(temporary).resolve()
             binary = root / "compiled"
             binary.write_bytes(b"native artifact")
-            request = {"output": str(root / "output"), "options": {"root": str(root), "code": "declared-code"}}
+            request = {"output": str(root / "output"), "options": {"package": "planner-service", "root": str(root), "code": "declared-code"}}
             artifact = json.dumps({"reason": "compiler-artifact", "target": {"name": "planner-service"}, "executable": str(binary)})
             def run(argv, **options):
                 if argv[0] == "cargo":

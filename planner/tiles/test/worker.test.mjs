@@ -197,7 +197,8 @@ test('Local files serve the same grid bytes over loopback without an R2 cache', 
   const id = 'f'.repeat(64), prefix = `planner/releases/${id}`;
   const tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Local data"}');
   const hash = createHash('sha256').update(tilejson).digest('hex');
-  const objects = new Map([...grid(prefix, {basemap: archive()}),
+  const objects = new Map([[`cell-catalog/releases/${id}/catalog.json`, '{"format":1}'],
+    [`cell-catalog/objects/${hash}`, tilejson], ...grid(prefix, {basemap: archive()}),
     [`${prefix}/public/maps/basemap.json.json`, pointer(hash, tilejson)], [`planner/objects/${hash}`, tilejson]]);
   let server;
   try {
@@ -219,6 +220,21 @@ test('Local files serve the same grid bytes over loopback without an R2 cache', 
     assert.equal(info.attribution, 'Local data');
     assert.deepEqual(info.tiles, [`${origin}/releases/${id}/basemap/{z}/{x}/{y}`]);
     assert.equal((await fetch(`${origin}/releases/${'1'.repeat(64)}/basemap.json`)).status, 404);
+    const catalog = `${origin}/cell-catalog/releases/${id}/catalog.json`;
+    assert.deepEqual(await (await fetch(catalog)).json(), {format:1});
+    const object = `${origin}/cell-catalog/objects/${hash}`;
+    const range = await fetch(object, {headers: {Range:'bytes=5-12'}});
+    assert.equal(range.status, 206);
+    assert.equal(range.headers.get('Content-Range'), `bytes 5-12/${tilejson.length}`);
+    assert.deepEqual(Buffer.from(await range.arrayBuffer()), tilejson.subarray(5,13));
+    const head = await fetch(object, {method:'HEAD'});
+    assert.equal(head.headers.get('Content-Length'), String(tilejson.length));
+    assert.equal(await head.text(), '');
+    assert.equal((await fetch(object, {headers:{Range:'bytes=9999-'}})).status,416);
+    const cors = await fetch(object, {method:'OPTIONS', headers:{'Access-Control-Request-Headers':'range'}});
+    assert.equal(cors.status, 204);
+    assert.equal(cors.headers.get('Access-Control-Allow-Headers'),'Range');
+    assert.equal((await fetch(`${origin}/cell-catalog/unknown`)).status,404);
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     await rm(root, {recursive:true, force:true});

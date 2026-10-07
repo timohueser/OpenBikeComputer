@@ -31,124 +31,169 @@ def prepare(view):
     return release
 
 
+APPS = {"web-planner": ("routing", "search", "tiles", "frontend"),
+        "map-builder": ("tiles", "frontend"), "simulator": ("simulator",)}
+PORTS = {"routing": 8788, "search": 8780, "tiles": 8789, "frontend": 5173}
+
+
 def commands(value):
     root, view = Path(value["root"]), Path(value["view"])
-    manifest = read(view / "planner" / "release.json")
-    tiles = f"http://127.0.0.1:8789/releases/{value['release']}"
-    files = manifest["files"]
-    config = {**{key: manifest[key] for key in ("name", "bounds", "attribution", "landcover_attribution")},
-              "id": value["release"], "basemap": tiles + "/basemap.json", "places": tiles + "/places.json",
-              "overlays": tiles + "/overlays.json", "terrain": tiles + "/terrain/{z}/{x}/{y}.webp",
-              "terrain_attribution": read(view / "data/maps/terrain.json")["attribution"],
-              "glyphs": tiles + "/maps/assets/fonts/{fontstack}/{range}.pbf",
-              "sprites": tiles + "/maps/assets/sprites/v4", "routes": tiles + "/routes/tiles/{cell}.json",
-              "routing": "/routing", "search": "/api/planner-search",
-              "layers": {name: tiles + f"/{name}.json" for name in runtime.DATA_LAYERS if f"maps/{name}.json" in files}}
     env = {**os.environ, "ROUTE_LISTEN": "127.0.0.1:8788", "OBC_SEARCH_PORT": "8780",
-           "OBC_SEARCH_DATA": str(view / "data/search"), "OBC_SEARCH_REGIONS": manifest["region"],
-           "OBC_SEARCH_PYTHON": sys.executable, "OBC_SEARCH_ORIGINS": "http://127.0.0.1:5173", "VITE_PLANNER_CONFIG": json.dumps(config),
+           "OBC_SEARCH_DATA": str(view / "data/search"), "OBC_SEARCH_REGIONS": value["region"],
+           "OBC_SEARCH_PYTHON": sys.executable, "OBC_SEARCH_ORIGINS": "http://127.0.0.1:5173",
            "OBC_PLANNER_ROUTING_URL": "http://127.0.0.1:8788", "OBC_PLANNER_TILES_URL": "http://127.0.0.1:8789"}
-    for key in ("NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME"):
+    for key in ("NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONHOME", "VITE_CATALOG_URL", "VITE_PLANNER_CONFIG"):
         env.pop(key, None)
-    node = value["node"]
+    if value.get("release"):
+        manifest = read(view / "planner" / "release.json")
+        tiles = f"http://127.0.0.1:8789/releases/{value['release']}"
+        files = manifest["files"]
+        config = {**{key: manifest[key] for key in ("name", "bounds", "attribution", "landcover_attribution")},
+                  "id": value["release"], "basemap": tiles + "/basemap.json", "places": tiles + "/places.json",
+                  "overlays": tiles + "/overlays.json", "terrain": tiles + "/terrain/{z}/{x}/{y}.webp",
+                  "terrain_attribution": read(view / "data/maps/terrain.json")["attribution"],
+                  "glyphs": tiles + "/maps/assets/fonts/{fontstack}/{range}.pbf", "sprites": tiles + "/maps/assets/sprites/v4",
+                  "routes": tiles + "/routes/tiles/{cell}.json", "routing": "/routing", "search": "/api/planner-search",
+                  "layers": {name: tiles + f"/{name}.json" for name in runtime.DATA_LAYERS if f"maps/{name}.json" in files}}
+        env["VITE_PLANNER_CONFIG"] = json.dumps(config)
+    if value.get("maps_release"):
+        env["VITE_CATALOG_URL"] = f"http://127.0.0.1:8789/cell-catalog/releases/{value['maps_release']}/catalog.json"
+    node = value.get("node")
     return {
         "routing": ([str(view / "planner-service"), str(view / "data/routing")], root),
         "search": ([node, "server.mjs"], root / "planner/search"),
         "tiles": ([node, "src/local.mjs", str(view), "8789"], root / "planner/tiles"),
         "frontend": ([node, "node_modules/vite/bin/vite.js", "--mode", "web", "--host", "127.0.0.1",
                       "--port", "5173", "--strictPort"], root / "builder/web"),
+        "simulator": ([str(view / "obc-sim"), str(view / "map.obcm"), "--physical"], root),
     }, env
 
 
-def ready(value):
+def ready(value, app):
     def get(url):
         with urlopen(url, timeout=1) as response:
             return json.load(response)
-    route = get("http://127.0.0.1:8788/v1/region")
-    search = get("http://127.0.0.1:8780/api/planner-search/status")
-    expected = value["expected"]
-    if route["package"] != expected["routing"] or not search["parser"]["ready"]:
-        raise ValueError("Routing or search is not ready for the prepared data")
-    if len(search["regions"]) != 1 or (search["regions"][0]["grid"] != expected["search"]
-                                       or search["regions"][0]["id"] != value["region"]):
-        raise ValueError("Search opened another prepared grid")
-    if search["parser"]["model"] != expected["model"]:
-        raise ValueError("Search opened another query model")
-    with urlopen(f"http://127.0.0.1:8789/releases/{value['release']}/basemap.json", timeout=1):
-        pass
-    with urlopen("http://127.0.0.1:5173/planner.html", timeout=1):
-        pass
+    if app == "web-planner":
+        route = get("http://127.0.0.1:8788/v1/region")
+        search = get("http://127.0.0.1:8780/api/planner-search/status")
+        expected = value["expected"]
+        if route["package"] != expected["routing"] or not search["parser"]["ready"]:
+            raise ValueError("Routing or search is not ready for the prepared data")
+        if len(search["regions"]) != 1 or (search["regions"][0]["grid"] != expected["search"] or search["regions"][0]["id"] != value["region"]):
+            raise ValueError("Search opened another prepared grid")
+        if search["parser"]["model"] != expected["model"]:
+            raise ValueError("Search opened another query model")
+        with urlopen(f"http://127.0.0.1:8789/releases/{value['release']}/basemap.json", timeout=1): pass
+    if app == "map-builder":
+        with urlopen(f"http://127.0.0.1:8789/cell-catalog/releases/{value['maps_release']}/catalog.json", timeout=1): pass
+    if app != "simulator":
+        with urlopen("http://127.0.0.1:5173/" + ("planner.html" if app == "web-planner" else ""), timeout=1): pass
+
+
+def check_view(value, apps):
+    view = Path(value["view"])
+    if "web-planner" in apps:
+        manifest = runtime.release(view / "planner", include_sources=False)[1]
+        for name, item in manifest["files"].items():
+            if name.startswith(("routing/", "search/")) or name == "maps/terrain.json":
+                offline.verify(view / "data" / name, item)
+    for app, binary in (("web-planner", "planner-service"), ("simulator", "obc-sim")):
+        if app in apps and runtime.digest(view / binary) != value["executables"][binary]:
+            raise ValueError("Prepared native Local executable changed")
+    if "simulator" in apps and runtime.digest(view / "map.obcm") != value["map_sha256"]:
+        raise ValueError("Prepared Simulator map changed")
 
 
 def supervise(directory, token, lock):
     directory = directory.resolve()
-    children, current = {}, None
+    children, current, intents, value = {}, None, {}, None
+    apps = {app: {"status": "stopped", "message": None} for app in APPS}
     with lock.open("a") as owner:
-        try:
-            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        def status(**values):
             desired = read(directory / "desired.json")
             if desired["token"] == token:
-                write(directory / "state.json", {"token": token, "code": desired["code"], "status": "failed",
-                                                  "message": "Another Local supervisor still owns the services"})
-            raise
-        def status(**values):
-            if read(directory / "desired.json")["token"] == token:
-                write(directory / "state.json", {"token": token, "code": read(directory / "desired.json")["code"], **values})
+                write(directory / "state.json", {"token": token, "code": desired["code"], "apps": apps,
+                                                  "region": value["region"] if value else None, "layers": value.get("layers", []) if value else [], **values})
+        def required():
+            return {child for app in intents if apps[app]["status"] != "failed" for child in APPS[app]}
+        def drain_unused():
+            needed = required()
+            for name in reversed(list(children)):
+                if name not in needed: maps.stop_process(children.pop(name))
         try:
             while True:
                 stop = directory / "stop.json"
-                if stop.exists() and read(stop).get("token") == token:
-                    break
+                if stop.exists() and read(stop).get("token") == token: break
                 desired = read(directory / "desired.json")
-                if desired["token"] != token:
-                    raise ValueError("Local owner token changed while services run")
+                if desired["token"] != token: raise ValueError("Local owner token changed while apps run")
+                wanted = desired["apps"]
+                if not wanted or not set(wanted) <= APPS.keys(): raise ValueError("Local owner has no known requested app")
                 value = read(Path(desired["view"]) / "service.json")
                 if runtime.digest(Path(desired["view"]) / "service.json") != desired["sha256"]:
                     raise ValueError("Prepared service view changed")
-                if current != value:
-                    status(status="starting", view=value["view"])
-                    manifest = runtime.release(Path(value["view"]) / "planner", include_sources=False)[1]
-                    for name, item in manifest["files"].items():
-                        if name.startswith(("routing/", "search/")) or name == "maps/terrain.json":
-                            offline.verify(Path(value["view"]) / "data" / name, item)
-                    if runtime.digest(Path(value["view"]) / "planner-service") != value["routing_executable"]:
-                        raise ValueError("Prepared native route service changed")
+                if current != value or wanted != intents:
+                    for app in APPS:
+                        if app not in wanted: apps[app] = {"status": "stopped", "message": None}
+                        elif wanted[app] != intents.get(app): apps[app] = {"status": "starting", "message": None}
+                    intents = wanted
+                    for app in intents:
+                        if apps[app]["status"] != "failed":
+                            try: check_view(value, [app])
+                            except (OSError, ValueError, KeyError) as error:
+                                apps[app] = {"status": "failed", "message": str(error)}
+                    drain_unused()
                     recipes, env = commands(value)
-                    changed = [name for name in recipes if not current
-                               or current["fingerprints"][name] != value["fingerprints"][name]]
+                    changed = [name for name in required() if name not in children or not current
+                               or current["fingerprints"].get(name) != value["fingerprints"][name]]
                     for name in reversed(changed):
-                        if name in children:
-                            maps.stop_process(children.pop(name))
-                    if not current:
-                        for port in (5173, 8780, 8788, 8789): maps.check_port(port)
-                    for name in changed:
-                        argv, cwd = recipes[name]
-                        children[name] = subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True)
+                        if name in children: maps.stop_process(children.pop(name))
+                    for name in sorted(changed, key=lambda name: list(recipes).index(name)):
+                        try:
+                            if name in PORTS: maps.check_port(PORTS[name])
+                            argv, cwd = recipes[name]
+                            with (directory / f"{name}.log").open("ab") as logs:
+                                children[name] = subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True, stdout=logs, stderr=logs)
+                        except (OSError, ValueError) as error:
+                            for app in intents:
+                                if name in APPS[app]: apps[app] = {"status": "failed", "message": str(error)}
                     deadline = time.monotonic() + 90
                     while True:
-                        if any(child.poll() is not None for child in children.values()):
-                            raise ValueError("A Local planner service stopped before readiness")
-                        if stop.exists() and read(stop).get("token") == token:
-                            return
-                        try:
-                            ready(value)
-                            break
-                        except (OSError, ValueError, KeyError):
-                            if time.monotonic() >= deadline: raise
-                            time.sleep(0.25)
+                        for name, child in children.items():
+                            if child.poll() is not None:
+                                for app in intents:
+                                    if name in APPS[app]: apps[app] = {"status": "failed", "message": f"Local {name} stopped; inspect its logs"}
+                        drain_unused()
+                        for app in intents:
+                            if apps[app]["status"] != "failed":
+                                try:
+                                    ready(value, app)
+                                    apps[app] = {"status": "ready", "message": None}
+                                except (OSError, ValueError, KeyError) as error:
+                                    apps[app] = {"status": "starting", "message": str(error)}
+                                    if time.monotonic() >= deadline: apps[app]["status"] = "failed"
+                        status(status="ready" if any(app["status"] == "ready" for app in apps.values()) else "starting", view=value["view"])
+                        if stop.exists() and read(stop).get("token") == token: return
+                        if read(directory / "desired.json") != desired: break
+                        if all(apps[app]["status"] in ("ready", "failed") for app in intents): break
+                        time.sleep(0.25)
                     current = value
-                    status(status="ready", view=value["view"], url="http://127.0.0.1:5173/planner.html")
-                if any(child.poll() is not None for child in children.values()):
-                    raise ValueError("A Local planner service stopped")
+                for name, child in children.items():
+                    if child.poll() is not None:
+                        for app in intents:
+                            if name in APPS[app]: apps[app] = {"status": "failed", "message": f"Local {name} stopped; inspect its logs"}
+                drain_unused()
+                if all(apps[app]["status"] == "failed" for app in intents):
+                    raise ValueError("All requested Local apps failed; inspect their app logs")
+                status(status="ready", view=value["view"])
                 time.sleep(0.25)
         except BaseException as error:
             status(status="failed", message=str(error))
             raise
         finally:
-            for child in reversed(list(children.values())):
-                maps.stop_process(child)
+            for child in reversed(list(children.values())): maps.stop_process(child)
             if not (directory / "state.json").exists() or read(directory / "state.json").get("status") != "failed":
+                for app in apps.values(): app["status"] = "stopped"
                 status(status="stopped")
             write(directory / "drained.json", {"token": token})
 
