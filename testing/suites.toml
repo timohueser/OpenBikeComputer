@@ -101,11 +101,11 @@ triggers = [
   "tools/data_registry.py",
   "tools/planner_*.py",
   "tools/planner_mvt_verify.mjs",
-  "apps/planner-search/*.py",
-  "apps/planner-search/*.sql",
-  "apps/planner-search/web/address-terms.json",
-  "apps/planner-search/query/*.py",
-  "apps/planner-search/query/contract.json",
+  "planner/search/*.py",
+  "planner/search/*.sql",
+  "planner/search/web/address-terms.json",
+  "planner/search/query/*.py",
+  "planner/search/query/contract.json",
   "host/obc-search-bake/policy.py",
   "builder/app/src/lib/planner/poi-kinds.json",
 ]
@@ -209,7 +209,7 @@ triggers = [
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",
   "host/obc-flat-device/**",
-  "apps/planner-search/query/contract.json",
+  "planner/search/query/contract.json",
   # The web build embeds credits from it.
   "data/sources.toml",
 ]
@@ -250,7 +250,7 @@ triggers = [
   "builder/app/tests/browser/package.json",
   "builder/app/package.json",
   "builder/app/vite.config.ts",
-  "apps/planner-search/query/contract.json",
+  "planner/search/query/contract.json",
 ]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
@@ -353,7 +353,7 @@ triggers = [
   # The replay-assets prepare step transpiles the web map style.
   "builder/app/src/lib/planner/map-style.ts",
   "data/sources.toml",
-  "apps/planner-search/query/contract.json",
+  "planner/search/query/contract.json",
   "specs/vectors/**",
 ]
 # These tests wait on real time: condition polling has a 30-second default deadline, and
@@ -400,7 +400,7 @@ route = "required"
 command = "obc check fmt"
 jobs = ["fmt"]
 foundation = true
-triggers = ["rustfmt.toml"]
+triggers = [".rustfmt.toml"]
 
 [[suite]]
 id = "ci.rust-clippy"
@@ -424,7 +424,7 @@ route = "ordinary"
 command = "obc check deny"
 jobs = ["deny"]
 foundation = true
-triggers = ["deny.toml"]
+triggers = ["tools/licenses/deny.toml"]
 
 # The other half of the dependency work, and a different job: the `test` job runs this script as
 # one step. It reads `cargo metadata` and compiles nothing, so a plan too large to run locally
@@ -499,7 +499,7 @@ command = "obc check docs"
 jobs = ["docs"]
 # The agent on-ramps are owned here so they are not unowned paths. `build_docs.py` does not
 # read them; the check that does is the unconditional `guards` job.
-triggers = ["docs/**", "CLAUDE.md", "AGENTS.md"]
+triggers = ["docs/**", "AGENTS.md", "**/AGENTS.md", "companion-ios/README.md"]
 
 [[suite]]
 id = "ci.licenses"
@@ -507,7 +507,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/app/package-lock.json", "tools/licenses/about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "ci.obc-data-licence"
@@ -567,23 +567,23 @@ triggers = [
   "tools/build-planner-ios.sh",
   "tools/build-ios-host.sh",
   "companion-ios/PlannerNative/*.swift",
-  "apps/planner-search/native.mjs",
-  "apps/planner-search/native-build.mjs",
-  "apps/planner-search/calendar-date.mjs",
-  "apps/planner-search/federation.mjs",
-  "apps/planner-search/hours.mjs",
-  "apps/planner-search/local-query.mjs",
-  "apps/planner-search/query.mjs",
-  "apps/planner-search/resolver.mjs",
-  "apps/planner-search/runtime.mjs",
-  "apps/planner-search/validation.mjs",
-  "apps/planner-search/package.json",
-  "apps/planner-search/package-lock.json",
+  "planner/search/native.mjs",
+  "planner/search/native-build.mjs",
+  "planner/search/calendar-date.mjs",
+  "planner/search/federation.mjs",
+  "planner/search/hours.mjs",
+  "planner/search/local-query.mjs",
+  "planner/search/query.mjs",
+  "planner/search/resolver.mjs",
+  "planner/search/runtime.mjs",
+  "planner/search/validation.mjs",
+  "planner/search/package.json",
+  "planner/search/package-lock.json",
   "companion-ios/PlannerSearch/*.swift",
-  "apps/planner-search/web/**",
-  "apps/planner-search/query/contract.json",
-  "apps/planner-search/query/lexicon/kinds.json",
-  # The project step runs apps/planner-search/native-build.mjs, which loads the notice module.
+  "planner/search/web/**",
+  "planner/search/query/contract.json",
+  "planner/search/query/lexicon/kinds.json",
+  # The project step runs planner/search/native-build.mjs, which loads the notice module.
   "builder/app/vite/third-party-licenses.ts",
   "data/sources.toml",
   "rust-toolchain.toml",
@@ -611,23 +611,23 @@ triggers = [
   "tools/build-planner-ios.sh",
   "tools/build-ios-host.sh",
   "companion-ios/PlannerNative/*.swift",
-  "apps/planner-search/native.mjs",
-  "apps/planner-search/native-build.mjs",
-  "apps/planner-search/calendar-date.mjs",
-  "apps/planner-search/federation.mjs",
-  "apps/planner-search/hours.mjs",
-  "apps/planner-search/local-query.mjs",
-  "apps/planner-search/query.mjs",
-  "apps/planner-search/resolver.mjs",
-  "apps/planner-search/runtime.mjs",
-  "apps/planner-search/validation.mjs",
-  "apps/planner-search/package.json",
-  "apps/planner-search/package-lock.json",
+  "planner/search/native.mjs",
+  "planner/search/native-build.mjs",
+  "planner/search/calendar-date.mjs",
+  "planner/search/federation.mjs",
+  "planner/search/hours.mjs",
+  "planner/search/local-query.mjs",
+  "planner/search/query.mjs",
+  "planner/search/resolver.mjs",
+  "planner/search/runtime.mjs",
+  "planner/search/validation.mjs",
+  "planner/search/package.json",
+  "planner/search/package-lock.json",
   "companion-ios/PlannerSearch/*.swift",
-  "apps/planner-search/web/**",
-  "apps/planner-search/query/contract.json",
-  "apps/planner-search/query/lexicon/kinds.json",
-  # The project step runs apps/planner-search/native-build.mjs, which loads the notice module.
+  "planner/search/web/**",
+  "planner/search/query/contract.json",
+  "planner/search/query/lexicon/kinds.json",
+  # The project step runs planner/search/native-build.mjs, which loads the notice module.
   "builder/app/vite/third-party-licenses.ts",
   "data/sources.toml",
   "rust-toolchain.toml",
@@ -812,10 +812,10 @@ triggers = ["companion-ios/PlannerNative/PMTilesArchive.swift", "companion-ios/P
 [[suite]]
 id = "planner.search"
 route = "ordinary"
-command = "npm test --prefix apps/planner-search"
+command = "npm test --prefix planner/search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
+triggers = ["planner/search/**", "companion-ios/PlannerSearch/**"]
 
 [[suite]]
 id = "planner.tiles"
@@ -828,23 +828,23 @@ triggers = ["planner/tiles/**"]
 [[suite]]
 id = "planner.query-decoder"
 route = "ordinary"
-command = "npm run test:query --prefix apps/planner-search"
+command = "npm run test:query --prefix planner/search"
 jobs = ["planner-search"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/query/**", "apps/planner-search/package.json", "pyproject.toml", "uv.lock"]
+triggers = ["planner/search/query/**", "planner/search/package.json", "pyproject.toml", "uv.lock"]
 
 [[suite]]
 id = "planner.search-data"
 route = "manual"
-command = "npm run test:data --prefix apps/planner-search"
+command = "npm run test:data --prefix planner/search"
 fixtures = ["local-photon-search-packages"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/**", "companion-ios/PlannerSearch/**"]
+triggers = ["planner/search/**", "companion-ios/PlannerSearch/**"]
 
 [[suite]]
 id = "planner.query-model"
 route = "manual"
-command = "npm run test:model --prefix apps/planner-search"
+command = "npm run test:model --prefix planner/search"
 fixtures = ["local-query-onnx-model"]
 platforms = ["linux", "macos"]
-triggers = ["apps/planner-search/query/**"]
+triggers = ["planner/search/query/**"]

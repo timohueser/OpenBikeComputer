@@ -154,7 +154,7 @@ jobs:
         run: python3 tools/check_fixture_policy.py
 
   # cargo fmt --check for all Cargo roots. rustfmt walks up from each file and finds the
-  # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
+  # shared .rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
     needs: selection
@@ -633,17 +633,17 @@ jobs:
         with:
           tool: cargo-deny
       - name: cargo-deny (firmware workspace)
-        run: cargo deny --all-features --config deny.toml check
+        run: cargo deny --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-fw-nrf54l board crate)
-        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-boot bootloader)
-        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path firmware/obc-boot/Cargo.toml --all-features --config tools/licenses/deny.toml check
       - name: cargo-deny (obc-sensor-sim)
-        run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path firmware/obc-sensor-sim/Cargo.toml --all-features --config tools/licenses/deny.toml check
       # The desktop shell is the one artifact a *user* installs, so its tree is the
       # one where a bad licence or a live advisory matters most.
       - name: cargo-deny (obc-desktop app)
-        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config deny.toml check
+        run: cargo deny --manifest-path apps/obc-desktop/Cargo.toml --all-features --config tools/licenses/deny.toml check
       # deny.toml skips the repository's own crates, so it cannot see obc-data reach one.
       - name: obc-data depends on no GPL crate
         run: python3 tools/check_obc_data_licence.py
@@ -753,7 +753,7 @@ jobs:
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
-  # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
+  # anchor audit AGENTS.md otherwise asks for by hand: every internal ../page/#anchor must
   # resolve to a real heading id.
   docs:
     needs: selection
@@ -776,7 +776,7 @@ jobs:
   # protocol vector/contract tests, and every model test.
   #
   # DEVELOPER_DIR pins the Xcode toolchain (project floor is Xcode 26.x, see
-  # companion-ios/CLAUDE.md) so a runner-image update can't silently move it — when the
+  # companion-ios/README.md) so a runner-image update can't silently move it — when the
   # image drops this version the job fails loudly and the pin gets bumped on purpose.
   ios-unit:
     needs: selection
@@ -1281,17 +1281,17 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: apps/planner-search/package-lock.json
+          cache-dependency-path: planner/search/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: npm ci --prefix apps/planner-search
+      - run: npm ci --prefix planner/search
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: *python-uv-version
-      - run: UV_PROJECT_ENVIRONMENT="$PWD/apps/planner-search/.venv" uv sync --locked --group search-test
-      - run: npm test --prefix apps/planner-search
-      - run: npm run test:query --prefix apps/planner-search
+      - run: UV_PROJECT_ENVIRONMENT="$PWD/planner/search/.venv" uv sync --locked --group search-test
+      - run: npm test --prefix planner/search
+      - run: npm run test:query --prefix planner/search
       - run: npm ci --prefix planner/tiles
       - run: npm test --prefix planner/tiles && npm run build --prefix planner/tiles
 

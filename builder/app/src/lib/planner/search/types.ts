@@ -5,7 +5,7 @@ import { releaseFetch } from '../release';
 import { searchLine } from './plan';
 import { routeSegments } from './segments';
 
-// Values of the query language are strings: the search contract (`apps/planner-search/query/contract.json`) lists them.
+// Values of the query language are strings: the search contract (`planner/search/query/contract.json`) lists them.
 export type Quantity = { value: number; unit: string };
 export type QueryDay = number | 'today' | 'tomorrow' | 'every';
 export type Along = { ref: string; at?: Quantity; from?: Quantity; to?: Quantity };

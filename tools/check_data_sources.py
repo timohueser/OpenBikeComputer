@@ -43,6 +43,7 @@ NOT_SOURCES = {
     "rustup.rs": "install hint",
     "json-schema.org": "schema identifier",
     "www.w3.org": "XML namespace",
+    "cdn.jsdelivr.net": "search lexicon setup instructions",
     "writewithharper.com": "prose checker documentation",
     # Toolchain installers: build tools, not bake inputs.
     "download.osgeo.org": "GEOS for obc-pack",

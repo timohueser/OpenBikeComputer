@@ -148,10 +148,10 @@ def code_paths(service):
         return [name for name in ("LICENSE", "THIRD-PARTY.md", "rust-toolchain.toml", ".cargo/config.toml") if (ROOT / name).is_file()]
     if service == "downloads":
         return ["LICENSE", *(f"tools/{name}" for name in DOWNLOAD_FILES)]
-    source = ROOT / "apps/planner-search"
+    source = ROOT / "planner/search"
     names = [*SERVICE_FILES, "package.json", "package-lock.json"]
     names.extend(path.name for path in sorted(source.glob("LICENSE.*")))
-    return ["LICENSE", *(f"apps/planner-search/{name}" for name in names)]
+    return ["LICENSE", *(f"planner/search/{name}" for name in names)]
 
 
 def npm_packages(tree):
@@ -172,7 +172,7 @@ def npm_packages(tree):
 
 
 def service_files():
-    root = ROOT / "apps/planner-search"
+    root = ROOT / "planner/search"
     names = [*SERVICE_FILES, *(path.name for path in sorted(root.glob("LICENSE.*")))]
     return sorted(set(filter(None, run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *names], cwd=root).split("\0"))))
 
@@ -303,7 +303,7 @@ def build(request, inside=False):
             (payload / "bin/planner-service").chmod(0o755)
             (payload / "THIRD-PARTY.md").write_text(routing_notices(wanted["triple"]))
         elif service == "search":
-            source = ROOT / "apps/planner-search"
+            source = ROOT / "planner/search"
             app = work / "dependencies"
             app.mkdir()
             for name in ("package.json", "package-lock.json"):
