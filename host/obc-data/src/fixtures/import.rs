@@ -72,9 +72,20 @@ pub(crate) fn archives(
     http: &Http,
     catalog: &Catalog,
     bootstrap: &Bootstrap,
+    package: &Package,
     sources: &[Source],
 ) -> Result<(), String> {
-    for (id, hash) in &bootstrap.source_packages {
+    let mut packages = bootstrap.source_packages.clone();
+    for (source, version) in &package.sources {
+        if let Some(id) = source.strip_prefix("fixture-") {
+            digest(version)?;
+            if packages.get(id).is_some_and(|original| original != version) {
+                return Err(format!("{source}: declared archive differs from the original bootstrap"));
+            }
+            packages.insert(id.into(), version.clone());
+        }
+    }
+    for (id, hash) in &packages {
         let source = format!("fixture-{id}");
         if crate::engine::snapshot_files(store, &source, hash, &[], &[])?.is_some() {
             continue;
@@ -191,6 +202,38 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join(&package.bootstrap)).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
+    if let Some(version) = package.sources.get("land-polygons") {
+        if let Some(snapshot) = store.snapshot("land-polygons", version)? {
+            for expected in record["land_source"]["files"].as_array().into_iter().flatten() {
+                if !snapshot.files.iter().any(|file| {
+                    expected["path"].as_str() == Some(&file.name)
+                        && expected["sha256"].as_str() == Some(&file.sha256)
+                        && expected["bytes"].as_u64() == Some(file.size)
+                }) {
+                    return Err("historical land polygons differ from the original extracted file record".into());
+                }
+            }
+        }
+    }
+    let mut historical = BTreeMap::new();
+    if let Some(version) = record["terrain"]["source_package_sha256"].as_str() {
+        let source = "fixture-sim-grimsel";
+        let name = "grimsel.obcd";
+        let snapshot = store.snapshot(source, version)?.ok_or_else(|| {
+            format!("import exact historical terrain sidecar archive {version} before fixture preparation")
+        })?;
+        if !snapshot.files.iter().any(|file| {
+            file.name == name
+                && record["terrain"]["sha256"].as_str() == Some(&file.sha256)
+                && record["terrain"]["bytes"].as_u64() == Some(file.size)
+        }) {
+            return Err("historical terrain sidecar differs from its original record".into());
+        }
+        historical.insert(
+            name.into(),
+            CapturedInput { source: source.into(), version: version.into(), files: vec![name.into()] },
+        );
+    }
     let empty = [
         ("landmarks", record["map"]["landmark_records"].as_u64() == Some(0)),
         ("peaks", record["map"]["peak_associations"].as_array().is_some_and(Vec::is_empty)),
@@ -199,7 +242,41 @@ pub(crate) fn inputs(root: &Path, store: &Store, package: &Package, bootstrap: &
     .filter(|(name, absent)| *absent && !content.contains_key(*name))
     .map(|(name, _)| name.into())
     .collect();
+    let terrain_version =
+        bootstrap.source_packages.get("assistant-terrain").or_else(|| package.sources.get("fixture-assistant-terrain"));
+    let terrain = terrain_version
+        .map(|version| -> Result<Option<CapturedInput>, String> {
+            let source = "fixture-assistant-terrain";
+            let Some(snapshot) = store.snapshot(source, version)? else { return Ok(None) };
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join("fixtures/sources/ride-assistant/assistant-terrain.json"))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let mut files = Vec::new();
+            for entry in manifest["sources"].as_array().ok_or("captured terrain manifest has no sources")? {
+                let name = entry["path"].as_str().ok_or("captured terrain has no file path")?;
+                if entry["transform"] != "none"
+                    || !snapshot.files.iter().any(|file| {
+                        file.name == name
+                            && entry["sha256"].as_str() == Some(&file.sha256)
+                            && entry["bytes"].as_u64() == Some(file.size)
+                    })
+                {
+                    return Err(format!("captured terrain `{name}` differs from its exact original raw TIFF record"));
+                }
+                files.push(name.into());
+            }
+            if files.is_empty() {
+                return Err("captured terrain archive has no raw TIFFs".into());
+            }
+            Ok(Some(CapturedInput { source: source.into(), version: version.clone(), files }))
+        })
+        .transpose()?
+        .flatten();
     Ok(Inputs {
+        historical,
+        terrain,
         osm: captured.ok_or_else(|| {
             format!(
                 "import exact captured PBF {} for {}; a latest extract is not a substitute",

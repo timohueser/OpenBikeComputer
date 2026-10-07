@@ -36,6 +36,9 @@ pub struct Inputs {
     pub osm: CapturedInput,
     pub osm_sha256: String,
     pub content: BTreeMap<String, CapturedInput>,
+    pub terrain: Option<CapturedInput>,
+    /// Pinned compiled sidecars stay separate from current producer outputs.
+    pub historical: BTreeMap<String, CapturedInput>,
     /// Collections explicitly empty in the original package record.
     pub empty: Vec<String>,
 }
@@ -109,8 +112,16 @@ impl Plan {
 impl Inputs {
     pub fn check(&self) -> Result<(), String> {
         digest(&self.osm_sha256)?;
-        for input in std::iter::once(&self.osm).chain(self.content.values()) {
+        for input in
+            std::iter::once(&self.osm).chain(self.content.values()).chain(&self.terrain).chain(self.historical.values())
+        {
             input.check()?;
+        }
+        for (path, input) in &self.historical {
+            relative(path)?;
+            if input.files.len() != 1 {
+                return Err("historical fixture sidecar must select one file".into());
+            }
         }
         let mut selected = std::collections::BTreeSet::new();
         for name in self.content.keys().chain(&self.empty) {
@@ -130,6 +141,12 @@ impl CapturedInput {
             || self.version.chars().any(char::is_control)
         {
             return Err("fixture captured input has no normalized source and version".into());
+        }
+        for (path, input) in &self.historical {
+            relative(path)?;
+            if input.files.len() != 1 {
+                return Err("historical fixture sidecar must select one file".into());
+            }
         }
         let mut selected = std::collections::BTreeSet::new();
         for file in &self.files {
@@ -223,7 +240,15 @@ impl Package {
         relative(&self.bootstrap)?;
         let path = root.join(&self.bootstrap);
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let bootstrap: Bootstrap = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let mut bootstrap: Bootstrap = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let record: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        if let Some(hash) = record["terrain"]["source_package_sha256"].as_str() {
+            // The original archive is input only: its old map never supplies a current receipt.
+            if self.region != "grimsel" || self.map != "grimsel.obcm" {
+                return Err("unknown historical terrain sidecar role".into());
+            }
+            bootstrap.source_packages.insert("sim-grimsel".into(), hash.into());
+        }
         let region = regions.get(&self.region).ok_or("fixture region is missing")?;
         let Area::Box { bbox } = &region.area else { return Err("fixture region is not a box".into()) };
         if bootstrap.bounds_lon_lat != [bbox.west, bbox.south, bbox.east, bbox.north] {

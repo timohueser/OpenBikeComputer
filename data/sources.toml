@@ -744,3 +744,13 @@ fetch = { kind = "by-hand", url = "https://github.com/timohueser/OpenBikeCompute
 version = "digest"
 refresh = "manual"
 redistribute = true
+
+[[source]]
+id = "fixture-sim-grimsel"
+kind = "data"
+licence = "LicenseRef-Copernicus-DEM"
+attribution = "Pinned historical Grimsel terrain sidecar; current map bytes use current producers"
+fetch = { kind = "by-hand", url = "https://fixtures.openbikecomputer.com/v1/packages/{version}.tar.gz" }
+version = "digest"
+refresh = "manual"
+redistribute = true

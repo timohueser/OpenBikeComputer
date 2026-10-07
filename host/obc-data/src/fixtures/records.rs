@@ -128,6 +128,8 @@ mod tests {
             package: "ride".into(),
             bootstrap: files[0].clone(),
             inputs: Inputs {
+                terrain: None,
+                historical: BTreeMap::new(),
                 osm: CapturedInput { source: "fixture-osm".into(), version: "1".into(), files: Vec::new() },
                 osm_sha256: files[0].sha256.clone(),
                 content: BTreeMap::new(),

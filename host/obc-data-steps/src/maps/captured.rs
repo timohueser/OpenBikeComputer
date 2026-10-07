@@ -67,20 +67,111 @@ pub(crate) fn recipes(env: &Env, regions: &Regions, store: &Store, inputs: &Inpu
         ));
     }
     let mut wanted = Vec::new();
-    let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
-    let glo30 = snapshot_version(env, store, GLO30, &[], &mut wanted)?;
-    let land_polygons = snapshot_version(env, store, LAND, &[], &mut wanted)?;
-    let (Some(tile_list), Some(glo30), true) = (tile_list, glo30, wanted.is_empty()) else {
-        return Err(Unplanned::NeedsFetch(wanted));
+    let glo30 = env
+        .moves
+        .get(GLO30)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| invalid("fixture terrain needs an explicitly selected GLO30 version".into()))?
+        .clone();
+    let selected_terrain = match &inputs.terrain {
+        Some(terrain) => {
+            snapshot_files(store, &terrain.source, &terrain.version, &[], &terrain.files)
+                .map_err(Unplanned::Failed)?
+                .ok_or_else(|| invalid("restore the exact captured terrain files before building".into()))?;
+            terrain.clone()
+        }
+        None => obc_data::fixtures::CapturedInput { source: GLO30.into(), version: glo30.clone(), files: Vec::new() },
     };
+    let land_polygons = snapshot_version(env, store, LAND, &[], &mut wanted)?;
+    if !wanted.is_empty() {
+        return Err(Unplanned::NeedsFetch(wanted));
+    }
     Maps.recipes(
         env,
         regions,
         store,
         obc_osm::OsmiumRunner::default().binding().map(Some),
         obc_pack::step::geos_libraries(),
-        RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index: None, content: Some(content) },
+        RecipeInputs {
+            selection,
+            tile_list: String::new(),
+            land_polygons,
+            glo30,
+            catalog_index: None,
+            content: Some(content),
+            terrain: Some(selected_terrain),
+        },
     )
+}
+
+/// A captured list is an exact selection, not a declaration that omitted squares are sea.
+pub(super) fn bind_terrain(
+    env: &Env,
+    store: &Store,
+    step: &mut Step,
+    input: &obc_data::fixtures::CapturedInput,
+    cells: &[CellId],
+) -> Result<(), Unplanned> {
+    let required: BTreeSet<_> = cells
+        .iter()
+        .flat_map(|cell| obc_dem::fetch::tiles_for(obc_bake::terrain::source_bbox([*cell]).expect("a cell has a box")))
+        .map(|tile| tile.file_name())
+        .collect();
+    let missing: Vec<_> = required.iter().filter(|file| !input.files.contains(file)).cloned().collect();
+    step.inputs = vec![Input::Snapshot {
+        source: input.source.clone(),
+        version: input.version.clone(),
+        params: Vec::new(),
+        files: required.iter().filter(|file| input.files.contains(file)).cloned().collect(),
+    }];
+    if !missing.is_empty() {
+        let Some(Some(version)) = env.moves.get(GLO30) else {
+            return Err(invalid(format!("captured terrain lacks full required coverage: {}; select the exact historical `{GLO30}` version in data/env/fixtures.toml before preparation", missing.join(", "))));
+        };
+        let params: Vec<_> = missing.iter().map(|name| ("tile".into(), name.trim_end_matches(".tif").into())).collect();
+        let files = match read(env, store, GLO30, &params).map_err(Unplanned::Failed)? {
+            Ok(files) => files,
+            Err(fetch) => return Err(Unplanned::NeedsFetch(vec![fetch])),
+        };
+        if missing.iter().any(|name| !files.contains_key(name)) {
+            return Err(invalid(format!("historical terrain still lacks required raw TIFFs: {}; restore this exact source version, never substitute sea or newest", missing.join(", "))));
+        }
+        step.inputs.push(Input::Snapshot { source: GLO30.into(), version: version.clone(), params, files: missing });
+        step.code.sources.push(GLO30.into());
+    }
+    if matches!(&step.inputs[0], Input::Snapshot { files, .. } if files.is_empty()) {
+        step.inputs.remove(0);
+    }
+    step.code.crates.push("obc-data-steps".into());
+    step.code.sources.push(input.source.clone());
+    step.options["dataset"] = serde_json::json!("captured-glo-30");
+    step.run = Run::Rust(captured_terrain);
+    Ok(())
+}
+
+fn captured_terrain(request: &Request) -> Result<(), String> {
+    let mut files = BTreeMap::new();
+    for selected in request.snapshots.values() {
+        for (name, path) in selected {
+            if files.insert(name.clone(), path.clone()).is_some() {
+                return Err("captured terrain selects a raw TIFF twice".into());
+            }
+        }
+    }
+    if files.is_empty() {
+        return Err("captured terrain has no raw TIFFs".into());
+    }
+    let declared = Request {
+        step: request.step.clone(),
+        snapshots: [(GLO30.into(), files)].into(),
+        layers: request.layers.clone(),
+        layer_files: request.layer_files.clone(),
+        options: request.options.clone(),
+        libraries: request.libraries.clone(),
+        output: request.output.clone(),
+        metrics: request.metrics.clone(),
+    };
+    obc_dem::step::terrain(&declared)
 }
 
 fn empty_content(request: &Request) -> Result<(), String> {
@@ -182,6 +273,42 @@ fn copy_content(request: &Request) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_terrain_requires_the_full_cell_window_and_keeps_its_actual_snapshot() {
+        let cell = CellId::containing(V1_CELL_LOG2.into(), 46_600_000, 8_300_000);
+        let files: Vec<_> = obc_dem::fetch::tiles_for(obc_bake::terrain::source_bbox([cell]).unwrap())
+            .iter()
+            .map(|tile| tile.file_name())
+            .collect();
+        let mut input = obc_data::fixtures::CapturedInput {
+            source: "fixture-assistant-terrain".into(),
+            version: "a".repeat(64),
+            files: files.clone(),
+        };
+        let mut step = terrain(LeafId { i: 0, j: 0 }, &[cell], &HashSet::new(), "unused", None);
+        let temporary = super::super::tests::temp("captured-terrain-window");
+        let store = Store::at(&temporary.0);
+        let env = Env::default();
+        bind_terrain(&env, &store, &mut step, &input, &[cell]).unwrap();
+        let [Input::Snapshot { source, version, params, files: selected }] = &step.inputs[..] else {
+            panic!("one captured snapshot")
+        };
+        assert_eq!(source, &input.source);
+        assert_eq!(version, &input.version);
+        assert!(params.is_empty());
+        assert_eq!(selected, &files);
+        assert_eq!(step.options["dataset"], "captured-glo-30");
+        let missing = input.files.pop().unwrap();
+        assert!(format!("{:?}", bind_terrain(&env, &store, &mut step, &input, &[cell]).unwrap_err()).contains(&missing));
+        let env = Env { moves: [(GLO30.into(), Some("2022-05-09".into()))].into(), ..Default::default() };
+        let Unplanned::NeedsFetch(wanted) = bind_terrain(&env, &store, &mut step, &input, &[cell]).unwrap_err() else {
+            panic!("only the missing raw tile requires exact-version acquisition")
+        };
+        assert_eq!(wanted.len(), 1);
+        assert_eq!(wanted[0].version.as_deref(), Some("2022-05-09"));
+        assert_eq!(wanted[0].params, vec![("tile".into(), missing.trim_end_matches(".tif").into())]);
+    }
 
     #[test]
     fn captured_input_checks_stored_bytes_and_keeps_the_box_as_explicit_recipe_data() {

@@ -43,6 +43,7 @@ struct RecipeInputs {
     glo30: String,
     catalog_index: Option<(String, String)>,
     content: Option<Vec<Step>>,
+    terrain: Option<obc_data::fixtures::CapturedInput>,
 }
 
 impl Product for Maps {
@@ -151,7 +152,7 @@ impl Maps {
             store,
             tool,
             libraries,
-            RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index, content: None },
+            RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index, content: None, terrain: None },
         )
     }
 
@@ -164,7 +165,15 @@ impl Maps {
         libraries: Result<Vec<obc_data::engine::Library>, String>,
         inputs: RecipeInputs,
     ) -> Result<Steps, Unplanned> {
-        let RecipeInputs { selection, tile_list, land_polygons, glo30, catalog_index, content } = inputs;
+        let RecipeInputs {
+            selection,
+            tile_list,
+            land_polygons,
+            glo30,
+            catalog_index,
+            content,
+            terrain: captured_terrain,
+        } = inputs;
         let mut wanted = Vec::new();
         let outlines = &selection.outlines;
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
@@ -172,7 +181,11 @@ impl Maps {
         let mut blocked = Vec::new();
         for (&leaf, cells) in &leaves(outlines, V1_CELL_LOG2.into()) {
             let mut leaf_wanted = Vec::new();
-            let reference = match reference(env, store, leaf, cells, &mut leaf_wanted) {
+            let reference = match if captured_terrain.is_some() {
+                Ok(None)
+            } else {
+                reference(env, store, leaf, cells, &mut leaf_wanted)
+            } {
                 Ok(reference) => {
                     wanted.extend(leaf_wanted);
                     reference
@@ -184,7 +197,10 @@ impl Maps {
                 }
                 Err(error) => return Err(error),
             };
-            let terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
+            let mut terrain = terrain(leaf, cells, &land, &glo30, reference.as_ref());
+            if let Some(input) = &captured_terrain {
+                captured::bind_terrain(env, store, &mut terrain, input, cells)?;
+            }
             steps.extend(reference);
             steps.push(terrain);
         }

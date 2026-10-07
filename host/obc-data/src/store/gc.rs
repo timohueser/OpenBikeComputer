@@ -91,6 +91,16 @@ impl Roots {
                 saved.release.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
                 "fixture",
             );
+            for input in std::iter::once(&saved.inputs.osm)
+                .chain(saved.inputs.content.values())
+                .chain(&saved.inputs.terrain)
+                .chain(saved.inputs.historical.values())
+            {
+                let packages = self.fixtures.entry((input.source.clone(), input.version.clone())).or_default();
+                if !packages.contains(&saved.package) {
+                    packages.push(saved.package.clone());
+                }
+            }
             for layer in &saved.release.layers {
                 for (source, read) in &layer.snapshots {
                     let packages = self.fixtures.entry((source.clone(), read.version.clone())).or_default();

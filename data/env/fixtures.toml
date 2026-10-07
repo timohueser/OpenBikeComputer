@@ -5,11 +5,21 @@ map = "grimsel.obcm"
 osm = "switzerland.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/grimsel-v19.json"
 
+[packages.sim-grimsel.sources]
+fixture-assistant-terrain = "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c"
+copernicus-glo-30 = "2022-05-09"
+land-polygons = "2026-06-19"
+
 [packages.grimsel-demo]
 region = "grimsel-demo"
 map = "grimsel-demo.obcm"
 osm = "switzerland.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/grimsel-demo-v19.json"
+
+[packages.grimsel-demo.sources]
+fixture-assistant-terrain = "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c"
+copernicus-glo-30 = "2022-05-09"
+land-polygons = "2026-06-19"
 
 [packages.sim-monaco]
 asset_source = "fixture-authored-motion"
@@ -18,11 +28,20 @@ map = "monaco.obcm"
 osm = "monaco.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/monaco-v19.json"
 
+[packages.sim-monaco.sources]
+copernicus-glo-30 = "2022-05-09"
+land-polygons = "2026-06-19"
+
 [packages.sim-freiburg]
 region = "freiburg"
 map = "freiburg.obcm"
 osm = "europe/germany/baden-wuerttemberg/freiburg-regbez-latest.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/freiburg-v19.json"
+
+[packages.sim-freiburg.sources]
+geofabrik-extracts = "2026-08-03"
+copernicus-glo-30 = "2022-05-09"
+land-polygons = "2026-06-19"
 
 [packages.sim-assistant-meiringen]
 asset_source = "fixture-authored-motion"
@@ -31,9 +50,19 @@ map = "meiringen.obcm"
 osm = "switzerland.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/meiringen-v19.json"
 
+[packages.sim-assistant-meiringen.sources]
+fixture-assistant-terrain = "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c"
+copernicus-glo-30 = "2022-05-09"
+land-polygons = "2026-06-19"
+
 [packages.sim-assistant-west-cork]
 asset_source = "fixture-authored-motion"
 region = "west-cork"
 map = "west-cork.obcm"
 osm = "west-cork.osm.pbf"
 bootstrap = "fixtures/sources/ride-assistant/west-cork-v19.json"
+
+[packages.sim-assistant-west-cork.sources]
+fixture-assistant-terrain = "1b78da601a72be6eee2b7eca9bba6026e0c1b0e61fb7b0e915971a1d3464d95c"
+copernicus-glo-30 = "2022-05-09"
+land-polygons = "2026-06-19"
