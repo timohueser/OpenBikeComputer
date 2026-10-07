@@ -4,6 +4,7 @@ Use the [data contract](../../../../specs/obc-data.md#automatic-work).
 
 Prepare a Linux operator with systemd user services, enabled linger and delegated cgroup-v2 CPU
 and memory controllers. Prepare the locked offline Cargo dependencies and the selected native tools.
+Create the configured build-store directory.
 Update `/opt/obc-data/bin/obc-data-plumbing` so it supports `bake-preflight`.
 
 Set `OBC_RUN_ENV_FILE` to an absolute operator-owned file with mode `0600`.
@@ -20,8 +21,8 @@ and runtime tools. Select Python with `UV_PYTHON`.
 | `OBC_BAKE_ALERT_UNIT` | Installed operator notification service, outside `obc-data-*` |
 
 For an optimized host worker, use the existing `CARGO_PROFILE_DEV_OPT_LEVEL=3` setting.
-Profile settings enter the checked execution identity. Review a complete manual Live apply on this
-host before automatic work. Set `OBC_PLANNER_RUNTIME_BUILDER=native` for new runtime builds on the
+Profile settings enter the checked execution identity. Run `obc data schedule live --setup-budget` to install and verify the slice without a timer.
+Then review a complete manual Live apply on this host before automatic work. Set `OBC_PLANNER_RUNTIME_BUILDER=native` for new runtime builds on the
 budgeted Linux host. Docker daemon builds do not inherit the bake slice; verified cached artifacts
 remain usable. Laptop container publication stays supported. Keep the installed commit owner and
 serving services outside the bake slice.

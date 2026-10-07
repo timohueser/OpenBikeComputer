@@ -1206,7 +1206,7 @@ building and verifying; its result is verified, not applied. Disable and the fir
 one short admission lock. An admitted irreversible owner completes normally. `auto` installs no timer.
 
 `schedule live` reads actual operator systemd unit state, calendar, time zone, next trigger and
-last run. Installed enablement and activity are separate from runnable setup. Missing or changed
+last run. `--setup-budget` configures only the bake slice before manual approval; it leaves the timer unchanged. Installed enablement and activity are separate from runnable setup. Missing or changed
 setup reports a blocked reason without hiding enablement. `--calendar` and `--time-zone` validate
 calendar and host setup before replacing the known units. `--disable` stops only the timer;
 it never stops retained work, serving or final publication. Non-live schedules are unsupported.
@@ -1214,7 +1214,8 @@ it never stops retained work, serving or final publication. Non-live schedules a
 The timer is persistent. One missed occurrence causes one catch-up admission, without a missed-run
 backlog. Its locked offline Cargo entry uses the existing fresh producer launcher. Entry compilation
 and retained bake workers share the operator's CPU and memory slice. Serving and installed commit
-owners stay outside that slice. Effective cgroup-v2 limits are checked before bake admission.
+owners stay outside that slice. Effective cgroup-v2 limits are checked before bake admission. Step scheduling clamps its existing
+memory ceiling to the configured host budget, preserving any lower caller limit.
 An actual Docker runtime build is refused on a budgeted Linux worker because the daemon does not
 inherit those limits. Verified stored runtimes and laptop container publication remain supported.
 
