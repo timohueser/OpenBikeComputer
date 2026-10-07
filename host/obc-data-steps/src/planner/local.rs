@@ -499,6 +499,13 @@ fn link(store: &Store, file: &obc_data::engine::LayerFile, destination: &Path) -
     if hash_file(&original)? != (file.sha256.clone(), file.size) {
         return Err("Local view object differs from its recorded bytes".into());
     }
+    if destination.exists() {
+        return if hash_file(destination)? == (file.sha256.clone(), file.size) {
+            Ok(())
+        } else {
+            Err("Local view path has different recorded bytes".into())
+        };
+    }
     std::fs::create_dir_all(destination.parent().expect("view path")).map_err(|e| e.to_string())?;
     std::fs::hard_link(original, destination).map_err(|e| e.to_string())
 }
@@ -603,6 +610,27 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_layers_share_identical_objects_but_reject_path_conflicts() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Store::at(scratch.path().join("store"));
+        let source = scratch.path().join("source");
+        let destination = scratch.path().join("view/object");
+        for bytes in [b"one", b"two"] {
+            std::fs::write(&source, bytes).unwrap();
+            let (sha256, size) = hash_file(&source).unwrap();
+            store.insert(&source, &sha256).unwrap();
+            let file = obc_data::engine::LayerFile { path: "object".into(), sha256, size };
+            if bytes == b"one" {
+                link(&store, &file, &destination).unwrap();
+                link(&store, &file, &destination).unwrap();
+            } else {
+                assert!(link(&store, &file, &destination).unwrap_err().contains("different recorded bytes"));
+            }
+        }
+        assert_eq!(std::fs::read(destination).unwrap(), b"one");
+    }
 
     #[test]
     fn equivalent_product_bytes_get_a_new_view_for_changed_captured_configuration() {
