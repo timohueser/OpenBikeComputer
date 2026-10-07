@@ -10,7 +10,7 @@ description = "OpenBikeComputer desktop app: the published-cell builder in a Tau
 # (WebKitGTK on Linux, WebView2 on Windows), so joining the workspace would put a
 # GUI toolkit and its system headers in the way of `cargo test` for the renderer.
 # The cost is the usual one for an excluded crate: its own Cargo.lock, its own
-# fmt/clippy/test invocations, and its own CI job — see the repo CLAUDE.md and
+# fmt/clippy/test invocations, and its own CI job — see the repo AGENTS.md and
 # .github/workflows/ci.yml's `desktop` job.
 [workspace]
 

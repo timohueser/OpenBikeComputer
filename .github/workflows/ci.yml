@@ -753,7 +753,7 @@ jobs:
           retention-days: 1
 
   # Render the docs site (stdlib-only Python, no pip) and fail on error, plus the cross-page
-  # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
+  # anchor audit AGENTS.md otherwise asks for by hand: every internal ../page/#anchor must
   # resolve to a real heading id.
   docs:
     needs: selection
@@ -776,7 +776,7 @@ jobs:
   # protocol vector/contract tests, and every model test.
   #
   # DEVELOPER_DIR pins the Xcode toolchain (project floor is Xcode 26.x, see
-  # companion-ios/CLAUDE.md) so a runner-image update can't silently move it — when the
+  # companion-ios/README.md) so a runner-image update can't silently move it — when the
   # image drops this version the job fails loudly and the pin gets bumped on purpose.
   ios-unit:
     needs: selection

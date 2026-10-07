@@ -688,7 +688,7 @@ def check_links(rendered):
     `#fragment`) a real heading id on that page. `rendered` maps each page's
     site-root-relative URL ('docs/' for the docs index, 'blog/…' for posts) to its
     content HTML, so cross-tree links (docs <-> blog) validate too. Returns the number
-    of broken links — the cross-page `../page/#anchor` check CLAUDE.md otherwise asks
+    of broken links — the cross-page `../page/#anchor` check AGENTS.md otherwise asks
     me to do by hand."""
     pages = set(rendered)
     slugs = {url: set(HEADING_ID_RE.findall(content)) for url, content in rendered.items()}
