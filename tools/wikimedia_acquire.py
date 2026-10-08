@@ -512,13 +512,8 @@ class Acquisition:
             if language not in LANGUAGES or not title or "|" in title:
                 raise ValueError("invalid article identity")
             key = f"{language}:{title}"
-            reused = self.reuse("article", key, refresh)
-            if reused and request.get("qid"):
-                retained = self.value("article", key)
-                if retained["status"] == "present" and retained.get("qid") != request["qid"]:
-                    self.fail("article", key, "article-identity-mismatch")
-            if not reused:
-                groups.setdefault(language, {})[title] = request
+            if not self.reuse("article", key, refresh):
+                groups.setdefault(language, set()).add(title)
         for language, titles in groups.items():
             for chunk in batches(sorted(titles)):
                 raw = self.json(api(f"{language}.wikipedia.org", action="query", formatversion=2, titles="|".join(chunk), redirects=1, prop="pageprops|revisions", rvprop="ids|timestamp", rvslots="main"))
@@ -538,9 +533,9 @@ class Acquisition:
                     if not revisions:
                         self.fail("article", key, "article-revision-missing")
                         continue
-                    qid = titles[title].get("qid")
-                    if qid and page.get("pageprops", {}).get("wikibase_item") != qid:
-                        self.fail("article", key, "article-identity-mismatch")
+                    qid = page.get("pageprops", {}).get("wikibase_item")
+                    if qid is not None and (not isinstance(qid, str) or not re.fullmatch(r"Q[1-9][0-9]*", qid)):
+                        self.fail("article", key, "invalid-page-item")
                         continue
                     revision = revisions[0]["revid"]
                     identity = f"{language}:{page['pageid']}"

@@ -90,7 +90,7 @@ write Store objects or maintain a separate permanent index.
 The request object has `check_id`, a stable operation token, and `refresh`, a
 boolean. Optional arrays name `entities` by QID, `links` by
 `wikidata:<QID>` or `wikipedia:<language>:<title>`, `articles` by objects with
-`language`, `title` and optional expected `qid`, and `commons`, `categories`
+`language` and `title`, and `commons`, `categories`
 and retained `files` by exact filename or category title. Entity acquisition
 includes the shared class closure and bounded locale dependencies.
 
@@ -124,6 +124,13 @@ An image asset has relative `path`, `sha256`, `bytes`, `url` and `input` fields.
 `input` is `thumbnail500` or a validated retained `original`. Source snapshots
 own the JSON facts and every asset they reference. Temporary request envelopes
 stay under `--work`. They are not source snapshot or publication outputs.
+
+An article pin records the resolved page's actual Wikidata item and alias proof.
+A redirect to another subject is a present source fact. Compilation rejects that
+article for the requested subject and records an identity omission. Other eligible
+languages remain usable. An unresolved API response still blocks acquisition.
+A QID subject requires the article's matching Wikidata item. A no-item article
+remains eligible for a confirmed synthetic Wikipedia subject.
 
 A thumbnail file fact retains `revision_before` and `revision_after` witnesses.
 Both match the canonical filename, file timestamp and SHA-1, required credit

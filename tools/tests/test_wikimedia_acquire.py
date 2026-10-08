@@ -133,7 +133,7 @@ class AcquisitionTests(unittest.TestCase):
             raw = {"query": {"normalized": [{"from": "the_Hill", "to": "The Hill"}],
                              "redirects": [{"from": "The Hill", "to": "Hill"}], "pages": [page()]}}
             operation = self.operation(root, responses=[raw, rendered()])
-            operation.articles([dict(language="en", title="the_Hill", qid="Q1")])
+            operation.articles([dict(language="en", title="the_Hill")])
             result = operation.value("article", "en:the_Hill")
             self.assertEqual(result["identity"], "en:7")
             self.assertEqual(result["revision"], 10)
@@ -142,23 +142,37 @@ class AcquisitionTests(unittest.TestCase):
             self.assertIn("with_html", operation.transport.json.call_args.args[1])
             self.assertTrue(operation.finish()["complete"])
             changed = self.operation(root / "changed", responses=[raw, rendered(11)])
-            changed.articles([dict(language="en", title="the_Hill", qid="Q1")])
+            changed.articles([dict(language="en", title="the_Hill")])
             self.assertEqual(changed.finish()["failures"][0]["reason"], "article-changed-during-acquisition")
             self.assertIsNone(changed.value("article", "en:the_Hill"))
 
-    def test_article_refresh_reuses_html_and_checks_subject_identity(self):
+    def test_article_refresh_reuses_html_and_retains_actual_subject_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = self.operation(root / "first", responses=[{"query": {"pages": [page()]}}, rendered()])
-            first.articles([dict(language="en", title="Hill", qid="Q1")])
+            first.articles([dict(language="en", title="Hill")])
             inputs = self.inputs(first)
             refresh = self.operation(root / "refresh", inputs=inputs, responses=[{"query": {"pages": [page()]}}])
-            refresh.articles([dict(language="en", title="Hill", qid="Q1")], refresh=True)
+            refresh.articles([dict(language="en", title="Hill")], refresh=True)
             self.assertEqual(refresh.transport.json.call_count, 1)
             self.assertEqual(refresh.finish()["records"][0]["sha256"], inputs[0]["sha256"])
-            bad = self.operation(root / "bad", inputs=inputs)
-            bad.articles([dict(language="en", title="Hill", qid="Q2")])
-            self.assertFalse(bad.finish()["complete"])
+            alias = {"query": {"redirects": [{"from": "Other peak", "to": "Hill"}], "pages": [page()]}}
+            redirected = self.operation(root / "redirected", inputs=inputs, responses=[alias])
+            redirected.articles([dict(language="en", title="Other peak")])
+            result = redirected.value("article", "en:Other peak")
+            self.assertEqual(result["qid"], "Q1")
+            self.assertEqual(result["aliases"], alias["query"]["redirects"])
+            self.assertEqual(result["revision"], 10)
+            self.assertTrue(redirected.finish()["complete"])
+            warm = self.operation(root / "warm", inputs=self.inputs(redirected))
+            warm.articles([dict(language="en", title="Other peak")])
+            self.assertEqual(warm.value("article", "en:Other peak")["qid"], "Q1")
+            self.assertTrue(warm.finish()["complete"])
+            warm.transport.json.assert_not_called()
+            invalid = self.operation(root / "invalid", responses=[{"query": {"pages": [page(qid=42)]}}])
+            invalid.articles([dict(language="en", title="Hill")])
+            self.assertEqual(invalid.finish()["failures"][0]["reason"], "invalid-page-item")
+            self.assertIsNone(invalid.value("article", "en:Hill"))
 
     def test_dependency_inputs_are_shared_across_subjects(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -177,12 +191,12 @@ class AcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = self.operation(root / "first", responses=[{"query": {"pages": [page()]}}, rendered()])
-            first.articles([dict(language="en", title="Hill", qid="Q1")])
+            first.articles([dict(language="en", title="Hill")])
             inputs = self.inputs(first)
             alias = {"query": {"normalized": [{"from": "Another_Hill", "to": "Another Hill"}],
                                "redirects": [{"from": "Another Hill", "to": "Hill"}], "pages": [page()]}}
             second = self.operation(root / "second", inputs=inputs, responses=[alias])
-            second.articles([dict(language="en", title="Another_Hill", qid="Q1")])
+            second.articles([dict(language="en", title="Another_Hill")])
             result = second.value("article", "en:Another_Hill")
             self.assertEqual(second.transport.json.call_count, 1)
             self.assertEqual(result["identity"], "en:7")
@@ -196,7 +210,7 @@ class AcquisitionTests(unittest.TestCase):
             alias = {"query": {"normalized": [{"from": "Another_Hill", "to": "Another Hill"}],
                                "redirects": [{"from": "Another Hill", "to": "Hill"}], "pages": [page()]}}
             operation = self.operation(Path(temporary), responses=[alias, rendered()])
-            operation.articles([dict(language="en", title="Hill", qid="Q1"), dict(language="en", title="Another_Hill", qid="Q1")])
+            operation.articles([dict(language="en", title="Hill"), dict(language="en", title="Another_Hill")])
             self.assertEqual(operation.transport.json.call_count, 2)
             self.assertEqual(operation.value("article", "en:Hill")["aliases"], [])
             self.assertEqual(len(operation.value("article", "en:Another_Hill")["aliases"]), 2)
