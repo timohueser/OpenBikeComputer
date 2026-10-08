@@ -672,6 +672,8 @@ class Acquisition:
                     os.link(asset_source, asset_target)
                 assets.append(asset)
         manifest = dict(schema=1, complete=not self.failures, records=records, assets=assets, failures=self.failures)
+        if isinstance(getattr(self.transport, "metrics", None), dict):
+            manifest["acquisition"] = dict(self.transport.metrics)
         write_json(self.out / "manifest.json", manifest)
         return manifest
 

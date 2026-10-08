@@ -4,7 +4,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 
 use super::{check_version, file_name, merge, snapshot_lock, Request};
 use crate::date;
@@ -60,7 +59,7 @@ pub(crate) fn run(
             if request.params.iter().any(|(name, _)| name == "content") {
                 super::wikimedia::run(root, store, request, checks)
             } else {
-                wiki(store, request, root, SELECTOR.get().map(PathBuf::as_path), checks)
+                legacy(store, request)
             }
         }
         "modis-snow" | "hr-wsi" => {
@@ -133,23 +132,8 @@ pub(crate) fn run(
     }
 }
 
-/// The binary that answers the selection commands of the capture tool, such as
-/// `landmark-content`: the `obc data` binary, which links the compiler. `obc-data-plumbing` has none.
-static SELECTOR: OnceLock<PathBuf> = OnceLock::new();
-
-/// Let the Wikimedia captures of this process select places with `binary`.
-pub fn select_with(binary: PathBuf) {
-    let _ = SELECTOR.set(binary);
-}
-
 /// Retained regional captures are immutable compiler inputs. New facts use shared acquisition.
-fn wiki(
-    store: &Store,
-    request: &Request,
-    _root: &Path,
-    _selector: Option<&Path>,
-    _checks: Option<crate::fetch::Checks<'_>>,
-) -> Result<Snapshot, String> {
+fn legacy(store: &Store, request: &Request) -> Result<Snapshot, String> {
     let snapshots = if let Some(version) = &request.version {
         store.snapshot(&request.source.id, version)?.into_iter().collect()
     } else {
@@ -391,7 +375,7 @@ mod tests {
             )
             .unwrap();
         let mut context = crate::engine::code::Context::default();
-        let request = Request { source, version: Some(version.clone()), params };
+        let request = Request { refresh: false, source, version: Some(version.clone()), params };
         let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, Some(&mut context)).unwrap();
         assert_eq!(snapshot.version, version);
         assert!(snapshot.files.is_empty());

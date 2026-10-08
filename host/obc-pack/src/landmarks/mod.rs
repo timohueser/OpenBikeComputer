@@ -116,6 +116,8 @@ struct Snapshot {
     #[serde(default)]
     aliases: BTreeMap<String, String>,
     #[serde(default)]
+    omissions: Vec<Omission>,
+    #[serde(default)]
     coverage: Value,
     #[serde(default)]
     peaks: Option<peaks::PeakCapture>,
@@ -125,6 +127,8 @@ struct Snapshot {
 pub struct Content {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub aliases: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub wikipedia_aliases: BTreeMap<String, String>,
     pub schema: u32,
     pub input_sha256: String,
     pub policy_sha256: String,
@@ -437,6 +441,7 @@ fn compile_selected(
     input.extend_from_slice(&boundary_bytes);
     let mut content = Content {
         aliases: snapshot.aliases,
+        wikipedia_aliases: BTreeMap::new(),
         schema: 2,
         input_sha256: hash(&input),
         policy_sha256: hash(&policy_input),
@@ -446,7 +451,7 @@ fn compile_selected(
         counts: Counts { captured: snapshot.places.len(), ..Counts::default() },
         candidate_qids: Vec::new(),
         records: Vec::new(),
-        omissions: Vec::new(),
+        omissions: snapshot.omissions,
         photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
@@ -538,6 +543,21 @@ fn compile_selected(
         if let Some(image) = &photo {
             content.counts.images += 1;
             content.counts.photo_bytes += image.bytes;
+        }
+        for article in place["articles"].as_array().into_iter().flatten().filter(|article| article["compact"] == true) {
+            let language = string(article, "language")?;
+            if !variants.iter().any(|variant| {
+                variant.language == language && variant.attribution.revision == article["revision"].to_string()
+            }) {
+                continue;
+            }
+            let mut titles = vec![string(article, "title")?, string(article, "requested_title")?];
+            for alias in article["aliases"].as_array().into_iter().flatten() {
+                titles.extend([alias["from"].as_str(), alias["to"].as_str()].into_iter().flatten());
+            }
+            for title in titles {
+                content.wikipedia_aliases.insert(format!("{language}:{}", title.replace('_', " ")), qid.clone());
+            }
         }
         content.records.push(Record {
             qid,

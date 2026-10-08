@@ -222,6 +222,7 @@ impl Inputs<'_> {
                             &http,
                             copies.as_ref(),
                             &obc_data::fetch::Request {
+                                refresh: env.moves.contains_key(&source.id),
                                 source,
                                 version: wanted.version,
                                 params: wanted.params.clone(),

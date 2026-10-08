@@ -259,7 +259,7 @@ pub(super) fn photo(
     let path = format!("{qid}.rgb222");
     Ok((
         Photo {
-            credit: credit::photo(&attribution)?,
+            credit: credit::online_photo(&attribution)?,
             file_identity: page["pageid"].as_u64().map(|page_id| PhotoIdentity { filename: filename.clone(), page_id }),
             page_revision: page["revisions"][0]["revid"].as_u64(),
             file_revision: Some(FileRevision {

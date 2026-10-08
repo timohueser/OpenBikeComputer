@@ -16,9 +16,5 @@ fn main() -> ExitCode {
             Err(error) => obc_data::cli::failed(error),
         };
     }
-    match std::env::current_exe() {
-        Ok(binary) => obc_data::fetch::capture::select_with(binary),
-        Err(error) => return obc_data::cli::failed(error.to_string()),
-    }
     obc_data::cli::main(obc_data_steps::PRODUCTS)
 }

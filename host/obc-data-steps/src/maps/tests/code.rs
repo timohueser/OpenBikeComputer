@@ -90,9 +90,9 @@ fn authored_map(request: &Request) -> Result<(), String> {
     } else if request.options.get("band").is_some() {
         &["cells", "metadata"]
     } else if request.step.starts_with("maps/landmark") {
-        &["landmarks"]
+        &["landmarks", "shared-content"]
     } else if request.step.starts_with("maps/peak") {
-        &["peaks"]
+        &["peaks", "shared-content"]
     } else if request.step == catalog::LAYER {
         for file in ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt"] {
             std::fs::write(request.output.join(file), "catalog").map_err(|e| e.to_string())?;

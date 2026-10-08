@@ -421,6 +421,25 @@ mod tests {
     use crate::store::tests::Scratch;
     use crate::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot};
 
+    #[test]
+    fn resumable_content_owns_its_inputs_and_completed_work_is_collectable() {
+        let scratch = Scratch::new("content-resume-roots");
+        let store = Store::at(&scratch.0);
+        let digest = object(&store, b"pinned conversion input");
+        let operation = store.partial("wikimedia-operation");
+        fs::create_dir_all(operation.join("work/records")).unwrap();
+        fs::write(operation.join("inputs.json"), format!("[{{\"sha256\":\"{digest}\"}}]")).unwrap();
+        fs::write(operation.join("work/records/completed.json"), b"{}").unwrap();
+        let active = plan(&store, &Roots::default()).unwrap();
+        assert!(active.objects.is_empty());
+        assert_eq!(active.partial_bytes, 0);
+        assert!(active.kept.iter().any(|entry| entry.because.contains(&"resumable operation".into())));
+        fs::remove_dir_all(operation.join("work/records")).unwrap();
+        let complete = plan(&store, &Roots::default()).unwrap();
+        assert!(complete.objects.iter().any(|(sha, _)| sha == &digest));
+        assert!(complete.partial_bytes > 0);
+    }
+
     fn object(store: &Store, bytes: &[u8]) -> String {
         let sha256 = sha256_hex(bytes);
         let part = store.partial("object");

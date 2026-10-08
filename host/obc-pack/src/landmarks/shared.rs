@@ -6,8 +6,11 @@ pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(S
     for (name, path) in files.iter().filter(|(name, _)| {
         name.starts_with("content/") && !name.starts_with("content/manifest/") && !name.starts_with("content/assets/")
     }) {
-        let value: Value =
-            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| format!("{name}: {e}"))?;
+        let bytes = fs::read(path).map_err(|e| e.to_string())?;
+        if Path::new(name).file_stem().and_then(|name| name.to_str()) != Some(hash(&bytes).as_str()) {
+            return Err(format!("shared fact checksum changed: {name}"));
+        }
+        let value: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{name}: {e}"))?;
         if !matches!(value["status"].as_str(), Some("present" | "missing")) {
             return Err("unresolved shared content".into());
         }
@@ -106,11 +109,13 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
             sources.push(
                 serde_json::json!({"path":alias,"sha256":hash(&bytes),"bytes":bytes.len(),"url":"wikimedia:entity"}),
             );
-            let canonical = string(&value, "identity")?;
+            let canonical = value["identity"].as_str().unwrap_or(string(&value, "key")?);
             if canonical != string(&value, "key")? && !facts.contains_key(&("entity".into(), canonical.into())) {
                 let alias = format!("entities/{canonical}.json");
-                fs::copy(path, root.join(&alias)).map_err(|e| e.to_string())?;
-                sources.push(serde_json::json!({"path":alias,"sha256":hash(&bytes),"bytes":bytes.len(),"url":"wikimedia:entity"}));
+                if !sources.iter().any(|source| source["path"] == alias) {
+                    fs::copy(path, root.join(&alias)).map_err(|e| e.to_string())?;
+                    sources.push(serde_json::json!({"path":alias,"sha256":hash(&bytes),"bytes":bytes.len(),"url":"wikimedia:entity"}));
+                }
             }
         }
         sources.push(serde_json::json!({"path":relative,"sha256":hash(&bytes),"bytes":bytes.len(),"url":value["url"].as_str().unwrap_or("wikimedia:content")}));
@@ -147,7 +152,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
             let key = ("article".into(), format!("{language}:{title}"));
             let Some(article) = facts.get(&key) else { return Err(format!("missing shared article: {}", key.1)) };
             if article["status"] == "present" {
-                articles.push(serde_json::json!({"language":language,"title":article["title"],"path":paths[&key],"revision":article["revision"],"url":article["url"],"compact":true}));
+                articles.push(serde_json::json!({"language":language,"title":article["title"],"path":paths[&key],"revision":article["revision"],"url":article["url"],"compact":true,"requested_title":title,"aliases":article["aliases"]}));
             }
         }
         let mut candidates = Vec::new();
@@ -215,9 +220,28 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
                 images.push(image);
             }
         }
-        places.push(serde_json::json!({"qid":canonical,"entity_path":paths.get(&("entity".into(),id.clone())),"articles":articles,"images":images,"commons_categories":listings}));
+        places.push(serde_json::json!({"qid":canonical,"entity_path":paths.get(&("entity".into(),id.clone())).or_else(||paths.get(&("entity".into(),canonical.clone()))),"articles":articles,"images":images,"commons_categories":listings}));
     }
     fs::write(root.join("manifest.json"),serde_json::to_vec(&serde_json::json!({"schema":2,"sources":sources,"places":places,"aliases":aliases,"coverage":{"entity_coverage_complete":true,"asset_phase_complete":true}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())
+}
+
+pub fn landmark_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[String]) -> Result<(), String> {
+    let facts = facts(files)?;
+    let chosen = selected(&facts, ids);
+    view(files, root, &chosen.iter().cloned().collect::<Vec<_>>())?;
+    let mut omissions = Vec::new();
+    for id in ids.iter().filter(|id| !chosen.contains(*id)) {
+        let fact = facts.get(&("entity".into(), id.clone())).ok_or_else(|| format!("missing shared entity: {id}"))?;
+        let reason =
+            if fact["status"] == "missing" { "confirmed_missing_entity" } else { "policy_exclusion_or_no_category" };
+        omissions.push(serde_json::json!({"qid":id,"asset":"site","reason":reason}));
+    }
+    let path = root.join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    manifest["omissions"] = serde_json::json!(omissions);
+    manifest["coverage"]["candidate_identities"] = serde_json::json!(ids.len());
+    fs::write(path, serde_json::to_vec(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> Result<(), String> {
@@ -283,10 +307,10 @@ pub fn bundles(files: &BTreeMap<String, std::path::PathBuf>, output: &Path) -> R
                 .insert((kind.to_owned(), string(&pin, "key")?.to_owned()), serde_json::json!({"pin":pin,"data":data}));
         }
     }
+    fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if entries.is_empty() {
         return Ok(());
     }
-    fs::create_dir_all(output).map_err(|e| e.to_string())?;
     let mut records = Vec::new();
     let mut bytes = 64usize;
     let mut index = 0;
@@ -313,4 +337,92 @@ fn write_bundle(output: &Path, index: usize, records: &[Value]) -> Result<(), St
         serde_json::to_vec(&serde_json::json!({"schema":1,"records":records})).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pin(root: &Path, files: &mut BTreeMap<String, std::path::PathBuf>, value: Value) -> Value {
+        let data = serde_json::to_vec(&value).unwrap();
+        let digest = hash(&data);
+        let name = format!("content/{}/{digest}.json", value["kind"].as_str().unwrap());
+        let path = root.join(&name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, data).unwrap();
+        files.insert(name.clone(), path);
+        json!({"kind":value["kind"],"key":value["key"],"identity":value["identity"],"revision":value["revision"],"status":value["status"],"sha256":digest,"checked_at":"2026-01-01T00:00:00Z","path":name})
+    }
+
+    #[test]
+    fn compact_facts_compile_offline_with_exact_aliases_and_omission_reasons() {
+        let root = obcm_testkit::scratch::scratch_dir("landmarks", "shared-offline");
+        let mut files = BTreeMap::new();
+        pin(
+            &root,
+            &mut files,
+            json!({"kind":"entity","key":"Q9","identity":"Q1","revision":7,"status":"present","entity":{"id":"Q1","lastrevid":7,"redirects":{"from":"Q9","to":"Q1"},"labels":{"en":{"value":"Castle"}},"sitelinks":{"enwiki":{"title":"Old Castle"}},"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}],"P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]}}}),
+        );
+        pin(
+            &root,
+            &mut files,
+            json!({"kind":"entity","key":"Q23413","identity":"Q23413","revision":2,"status":"present","entity":{"id":"Q23413","claims":{}}}),
+        );
+        pin(&root, &mut files, json!({"kind":"entity","key":"Q2","status":"missing"}));
+        pin(
+            &root,
+            &mut files,
+            json!({"kind":"article","key":"en:Old Castle","identity":"en:4","revision":9,"status":"present","language":"en","title":"Castle","qid":"Q1","aliases":[{"from":"Old Castle","to":"Castle"}],"url":"https://en.wikipedia.org/w/index.php?title=Castle&oldid=9","license":{"url":"https://creativecommons.org/licenses/by-sa/4.0/"},"original_notices":"","lead_html":"<section><p>Castle is a fortified building with thick stone walls. It stands beside a river.</p></section>"}),
+        );
+        let view_root = root.join("view");
+        landmark_view(&files, &view_root, &["Q9".into(), "Q2".into()]).unwrap();
+        let boundary = root.join("boundary.json");
+        fs::write(&boundary, r#"{"type":"Polygon","coordinates":[[[-1,-1],[1,-1],[1,1],[-1,1],[-1,-1]]]}"#).unwrap();
+        let compiled = compile(&view_root.join("manifest.json"), &boundary, &root.join("compiled"), false).unwrap();
+        assert_eq!(compiled.records.len(), 1, "{:?}", compiled.omissions);
+        assert_eq!(compiled.records[0].qid, "Q1");
+        assert_eq!(compiled.aliases["Q9"], "Q1");
+        assert_eq!(compiled.wikipedia_aliases["en:Old Castle"], "Q1");
+        assert_eq!(compiled.wikipedia_aliases["en:Castle"], "Q1");
+        assert!(compiled
+            .omissions
+            .iter()
+            .any(|omission| omission.qid == "Q2" && omission.reason == "confirmed_missing_entity"));
+        assert!(compiled.records[0].photo.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_publication_has_compact_provenance_and_excludes_conversion_inputs() {
+        let root = obcm_testkit::scratch::scratch_dir("landmarks", "shared-bundle");
+        let mut files = BTreeMap::new();
+        let entity = pin(
+            &root,
+            &mut files,
+            json!({"kind":"entity","key":"Q1","identity":"Q1","revision":7,"status":"present","entity":{"id":"Q1"}}),
+        );
+        let pixels = pin(
+            &root,
+            &mut files,
+            json!({"kind":"file","key":"File:Image.jpg","status":"present","asset":{"path":"assets/private.jpg","sha256":"pixels"}}),
+        );
+        let manifest = root.join("manifest.json");
+        fs::write(&manifest, serde_json::to_vec(&json!({"schema":1,"records":[entity.clone(),pixels]})).unwrap())
+            .unwrap();
+        files.insert(format!("content/manifest/{}.json", hash(&fs::read(&manifest).unwrap())), manifest);
+        let output = root.join("bundles");
+        bundles(&files, &output).unwrap();
+        let data = fs::read(output.join("0000.json")).unwrap();
+        let bundle: Value = serde_json::from_slice(&data).unwrap();
+        assert_eq!(bundle["records"].as_array().unwrap().len(), 1);
+        let record = &bundle["records"][0];
+        assert_eq!(hash(record["data"].as_str().unwrap().as_bytes()), entity["sha256"]);
+        assert_eq!(record["pin"]["revision"], 7);
+        assert!(!String::from_utf8(data).unwrap().contains("private.jpg"));
+        for source in ["wikidata", "wikipedia", "commons"] {
+            assert!(!obc_data::sources::embedded(source).r2_copy);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }

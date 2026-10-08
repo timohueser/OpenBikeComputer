@@ -100,7 +100,7 @@ pub(super) fn run(
     root: &Path,
     store: &Store,
     request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
+    mut checks: Option<crate::fetch::Checks<'_>>,
 ) -> Result<Snapshot, String> {
     let [(name, body)] = request.params.as_slice() else {
         return Err("Wikimedia shared fetch takes content=<JSON>".into());
@@ -118,14 +118,17 @@ pub(super) fn run(
         (store.requested(&request.source.id, &version, &request.params)?, store.snapshot(&request.source.id, &version)?)
     {
         let files: Vec<_> = snapshot.files.into_iter().filter(|file| names.contains(&file.name)).collect();
-        if files.len() == names.len() && files.iter().all(|file| store.object(&file.sha256).is_file()) {
+        if !request.refresh
+            && files.len() == names.len()
+            && files.iter().all(|file| store.object(&file.sha256).is_file())
+        {
             return Ok(Snapshot { source: request.source.id.clone(), version, files });
         }
     }
     if version != date::format(date::today()) {
         return Err(format!("Wikimedia {version} facts are not pinned in the Store"));
     }
-    super::check_owner(root, request.source, checks)?;
+    super::check_owner(root, request.source, checks.as_deref_mut())?;
     let key = store::sha256_hex(body.as_bytes());
     let _lock = store.lock(&format!("wikimedia-{key}"))?;
     let _api_lock = store.lock("wikimedia-api")?;
@@ -133,41 +136,56 @@ pub(super) fn run(
     let (work, out) = (staging.join("work"), staging.join("out"));
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    requested["check_id"] = json!(format!("{}-{version}", &key[..32]));
+    let operation = if request.refresh {
+        format!("{}-{version}-{}", &key[..32], date::now())
+    } else {
+        format!("{}-{version}", &key[..32])
+    };
+    requested["check_id"] = json!(operation);
     requested["refresh"] = json!(false);
     let requests_path = staging.join("requests.json");
     let inputs_path = staging.join("inputs.json");
     fs::write(&requests_path, serde_json::to_vec(&requested).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let registry = crate::sources::Registry::load(root)?;
-    let fresh = inputs(store)?
-        .into_iter()
-        .filter(|pin| {
-            let Ok(index) = owner(pin["kind"].as_str().unwrap_or_default()) else { return false };
-            let Some(source) = registry.sources.iter().find(|source| source.id == SOURCES[index]) else { return false };
-            match source.refresh {
-                crate::sources::Refresh::Manual => true,
-                crate::sources::Refresh::Days(_) if pin["kind"] == "file" => true,
-                crate::sources::Refresh::Days(days) => pin["checked_at"]
-                    .as_str()
-                    .and_then(date::seconds)
-                    .is_some_and(|checked| date::now().saturating_sub(checked) < u64::from(days) * 86_400),
-            }
-        })
-        .collect::<Vec<_>>();
-    fs::write(&inputs_path, serde_json::to_vec(&fresh).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let admitted = inputs(store)?;
+    fs::write(&inputs_path, serde_json::to_vec(&admitted).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let code = super::owner_code(request.source).code;
     let before = code.files(root)?;
-    let mut command = capture::python(root, None)?;
-    command
-        .arg("tools/wikimedia_acquire.py")
-        .arg("--work")
-        .arg(&work)
-        .arg("--out")
-        .arg(&out)
-        .arg("--requests")
-        .arg(&requests_path)
-        .arg("--inputs")
-        .arg(&inputs_path);
+    let adopt = adoption_views(store, &work)?;
+    let mut acquisition = json!({"requests":0,"api_response_body_bytes":0,"media_response_body_bytes":0,"historical_requests":null,"historical_response_body_bytes":null});
+    let mut stale = stale_requests(&requested, &admitted, &registry);
+    // Adoption is evidence of a revision, not evidence of a current source check.
+    if request.refresh || !adopt.is_empty() {
+        stale = requested.clone();
+    }
+    if stale.as_object().is_some_and(|fields| fields.values().any(|v| v.as_array().is_some_and(|a| !a.is_empty()))) {
+        stale["refresh"] = json!(true);
+        stale["check_id"] = json!(format!("{}-refresh", requested["check_id"].as_str().unwrap()));
+        let refresh_work = staging.join("refresh");
+        fs::create_dir_all(&refresh_work).map_err(|e| e.to_string())?;
+        let refresh_request = staging.join("refresh.json");
+        fs::write(&refresh_request, serde_json::to_vec(&stale).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let status = runner(root, &refresh_work, &out, &refresh_request, &inputs_path, &adopt)?
+            .stdout(std::io::stderr())
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("Wikimedia revision check failed with {status}; retained work: {}", staging.display()));
+        }
+        let refreshed = read(&out.join("manifest.json"))?;
+        count_api(&mut acquisition, &refreshed);
+        let mut refreshed_inputs = admitted;
+        for pin in refreshed["records"].as_array().ok_or("refresh lacks records")? {
+            let mut pin = pin.clone();
+            pin["path"] = json!(out.join(text(&pin, "path")?));
+            refreshed_inputs.retain(|old| old["kind"] != pin["kind"] || old["key"] != pin["key"]);
+            refreshed_inputs.push(pin);
+        }
+        fs::write(&inputs_path, serde_json::to_vec(&refreshed_inputs).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    }
+    let mut command = runner(root, &work, &out, &requests_path, &inputs_path, &[])?;
     let status = command.stdout(std::io::stderr()).status().map_err(|e| e.to_string())?;
     if !status.success() {
         return Err(format!(
@@ -182,16 +200,152 @@ pub(super) fn run(
     {
         return Err("Wikimedia acquisition is incomplete".into());
     }
-    media(root, store, &out, &requested, &mut manifest)?;
+    count_api(&mut acquisition, &manifest);
+    media(root, store, &out, &requested, &mut manifest, &mut acquisition)?;
     if code.files(root)? != before {
         return Err("acquisition code changed; prepare again".into());
     }
     let snapshot = admit(store, &out, &manifest, &request.params, &version, &request.source.id)?;
     fs::remove_dir_all(staging).map_err(|e| e.to_string())?;
+    if let Some(checks) = checks {
+        checks.acquisition = Some(acquisition);
+    }
     Ok(snapshot)
 }
 
-fn media(root: &Path, store: &Store, out: &Path, requested: &Value, manifest: &mut Value) -> Result<(), String> {
+fn count_api(total: &mut Value, manifest: &Value) {
+    for (output, input) in [("requests", "requests"), ("api_response_body_bytes", "transferred_bytes")] {
+        total[output] = json!(total[output].as_u64().zip(manifest["acquisition"][input].as_u64()).map(|(a, b)| a + b));
+    }
+}
+
+fn runner(
+    root: &Path,
+    work: &Path,
+    out: &Path,
+    requests: &Path,
+    inputs: &Path,
+    adopt: &[std::path::PathBuf],
+) -> Result<std::process::Command, String> {
+    let mut command = capture::python(root, None)?;
+    command
+        .arg("tools/wikimedia_acquire.py")
+        .arg("--work")
+        .arg(work)
+        .arg("--out")
+        .arg(out)
+        .arg("--requests")
+        .arg(requests)
+        .arg("--inputs")
+        .arg(inputs);
+    for view in adopt {
+        command.arg("--adopt").arg(view);
+    }
+    Ok(command)
+}
+
+fn stale_requests(request: &Value, pins: &[Value], registry: &crate::sources::Registry) -> Value {
+    let mut stale = json!({});
+    for (field, kind) in [
+        ("entities", "entity"),
+        ("links", "link"),
+        ("articles", "article"),
+        ("commons", "commons"),
+        ("categories", "category"),
+    ] {
+        let values = request[field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|value| {
+                let key = if field == "articles" {
+                    format!(
+                        "{}:{}",
+                        value["language"].as_str().unwrap_or_default(),
+                        value["title"].as_str().unwrap_or_default()
+                    )
+                } else {
+                    value.as_str().unwrap_or_default().to_owned()
+                };
+                pins.iter().any(|pin| {
+                    pin["kind"] == kind && pin["key"] == key && {
+                        let source = &registry.sources.iter().find(|s| s.id == SOURCES[owner(kind).unwrap()]).unwrap();
+                        match source.refresh {
+                            crate::sources::Refresh::Manual => false,
+                            crate::sources::Refresh::Days(days) => pin["checked_at"]
+                                .as_str()
+                                .and_then(date::seconds)
+                                .is_none_or(|checked| date::now().saturating_sub(checked) >= u64::from(days) * 86_400),
+                        }
+                    }
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        stale[field] = json!(values);
+    }
+    stale
+}
+
+fn adoption_views(store: &Store, work: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut captures = BTreeMap::<(String, String), BTreeMap<String, String>>::new();
+    for source in SOURCES {
+        for snapshot in store.snapshots(source)? {
+            for file in snapshot.files {
+                let Some((query, path)) = file.name.strip_prefix('#').and_then(|name| name.split_once('/')) else {
+                    continue;
+                };
+                if !query.starts_with("landmarks=") && !query.starts_with("peaks=") {
+                    continue;
+                }
+                if !store.object(&file.sha256).is_file() {
+                    continue;
+                }
+                if Path::new(path).components().any(|part| !matches!(part, Component::Normal(_))) {
+                    return Err("legacy source path escapes capture".into());
+                }
+                let group = captures.entry((snapshot.version.clone(), query.into())).or_default();
+                if group.get(path).is_some_and(|digest| digest != &file.sha256) {
+                    return Err("legacy capture source pins conflict".into());
+                }
+                group.insert(path.into(), file.sha256);
+            }
+        }
+    }
+    let mut views = Vec::new();
+    for ((version, query), files) in captures {
+        if !files.contains_key("manifest.json") {
+            continue;
+        }
+        let view = work.join("adopt").join(store::sha256_hex(format!("{version}:{query}").as_bytes()));
+        for (relative, digest) in files {
+            let target = view.join(relative);
+            fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+            if !target.is_file() {
+                fs::hard_link(store.object(&digest), target).map_err(|e| e.to_string())?;
+            }
+        }
+        views.push(view);
+    }
+    for entry in fs::read_dir(store.root().join("partial")).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_name().to_str().is_some_and(|name| name.starts_with("capture-"))
+            && entry.path().join("out").is_dir()
+        {
+            views.push(std::path::absolute(entry.path().join("out")).map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(views)
+}
+
+fn media(
+    root: &Path,
+    store: &Store,
+    out: &Path,
+    requested: &Value,
+    manifest: &mut Value,
+    acquisition: &mut Value,
+) -> Result<(), String> {
     let http = super::http::Http::new().limited(3_125_000);
     let mut records = manifest["records"].as_array().ok_or("invalid content records")?.clone();
     let mut assets = manifest["assets"].as_array().cloned().unwrap_or_default();
@@ -206,13 +360,21 @@ fn media(root: &Path, store: &Store, out: &Path, requested: &Value, manifest: &m
         if metadata["status"] == "missing" {
             continue;
         }
-        if records.iter().any(|pin| {
+        if let Some(existing) = records.iter().find(|pin| {
             pin["kind"] == "file"
                 && pin["key"] == key
                 && pin["revision"] == metadata["file_revision"]
                 && pin["identity"] == metadata["identity"]
         }) {
-            continue;
+            let file = read(&out.join(text(existing, "path")?))?;
+            let description_matches = ["revision_before", "revision_after"].into_iter().all(|field| {
+                file[field]["query"]["pages"].as_object().is_some_and(|pages| {
+                    pages.values().any(|page| page["imageinfo"][0]["description_revision"] == metadata["revision"])
+                })
+            });
+            if file["asset"]["input"] == "original" || description_matches {
+                continue;
+            }
         }
         let checked_at = pin["checked_at"].clone();
         records.retain(|pin| pin["kind"] != "file" || pin["key"] != key);
@@ -222,7 +384,7 @@ fn media(root: &Path, store: &Store, out: &Path, requested: &Value, manifest: &m
     if filenames.is_empty() {
         return Ok(());
     }
-    let before = check_media(root, out, &filenames, &records)?;
+    let before = check_media(root, out, &filenames, &records, acquisition)?;
     let mut downloaded = Vec::new();
     for (key, metadata, checked_at) in pending {
         let url = text(&metadata["imageinfo"], "thumburl")?;
@@ -241,7 +403,10 @@ fn media(root: &Path, store: &Store, out: &Path, requested: &Value, manifest: &m
         }
         downloaded.push((key, metadata, checked_at, asset));
     }
-    let after = check_media(root, out, &filenames, &records)?;
+    let after = check_media(root, out, &filenames, &records, acquisition)?;
+    let (requests, bytes) = http.metrics();
+    acquisition["requests"] = json!(acquisition["requests"].as_u64().map(|old| old + requests));
+    acquisition["media_response_body_bytes"] = json!(bytes);
     for (key, metadata, checked_at, asset) in downloaded {
         let value = json!({"kind":"file","key":key,"status":"present","identity":metadata["identity"],"revision":metadata["file_revision"],"filename":metadata["filename"],"asset":asset,"revision_before":before[&key],"revision_after":after[&key]});
         let data = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
@@ -279,6 +444,7 @@ fn check_media(
     out: &Path,
     filenames: &[Value],
     expected: &[Value],
+    acquisition: &mut Value,
 ) -> Result<BTreeMap<String, Value>, String> {
     let id = format!(
         "media-{}",
@@ -310,6 +476,7 @@ fn check_media(
         return Err("thumbnail revision check failed".into());
     }
     let fresh = read(&result.join("manifest.json"))?;
+    count_api(acquisition, &fresh);
     if fresh["complete"] != true {
         return Err("thumbnail revision check incomplete".into());
     }
@@ -512,6 +679,63 @@ mod tests {
     }
 
     #[test]
+    fn expired_adopted_inputs_are_checked_before_shared_admission() {
+        let scratch = crate::store::tests::Scratch::new("shared-expired-adoption");
+        let store = Store::at(scratch.0.join("store"));
+        let root = scratch.0.join("repository");
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = crate::sources::embedded("wikidata");
+        for name in super::super::owner_code(source)
+            .code
+            .paths
+            .into_iter()
+            .chain([".python-version", "pyproject.toml", "uv.lock", "data/sources.toml"].map(str::to_owned))
+        {
+            let target = root.join(&name);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(repository.join(&name), target).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git").args(["add", "."]).current_dir(&root).status().unwrap().success());
+        let (out, manifest) = staged(&store, "expired-input");
+        admit(&store, &out, &manifest, &[("content".into(), "old-query".into())], "2026-01-01", "wikidata").unwrap();
+        let old = store.partial("capture-retained/out");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("manifest.json"), b"{}").unwrap();
+        fs::write(
+            root.join("tools/wikimedia_acquire.py"),
+            r#"import argparse,json,pathlib,hashlib,datetime
+p=argparse.ArgumentParser()
+for k in ('work','out','requests','inputs'): p.add_argument('--'+k,required=True)
+p.add_argument('--adopt',action='append',default=[])
+a=p.parse_args(); request=json.load(open(a.requests)); inputs=json.load(open(a.inputs))
+pin=next(x for x in inputs if x['kind']=='entity' and x['key']=='Q1')
+if a.adopt:
+ assert request['refresh'] is True
+ assert pin['checked_at']=='2026-01-01T00:00:00Z'
+else:
+ assert request['refresh'] is False
+ assert pin['checked_at']!='2026-01-01T00:00:00Z'
+data=pathlib.Path(pin['path']).read_bytes(); digest=hashlib.sha256(data).hexdigest()
+out=pathlib.Path(a.out); relative='content/entity/'+digest+'.json'
+(out/relative).parent.mkdir(parents=True,exist_ok=True); (out/relative).write_bytes(data)
+pin['path']=relative; pin['checked_at']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+(out/'manifest.json').write_text(json.dumps({'schema':1,'complete':True,'failures':[],'records':[pin]}))
+"#,
+        )
+        .unwrap();
+        let params = vec![("content".into(), "{\"entities\":[\"Q1\"]}".into())];
+        let snapshot = run(&root, &store, &Request { refresh: false, source, version: None, params }, None).unwrap();
+        assert!(snapshot.files.iter().any(|file| file.sha256 == manifest["records"][0]["sha256"]));
+        assert_ne!(inputs(&store).unwrap()[0]["checked_at"], "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
     fn pinned_shared_fetch_is_offline_and_overlapping_requests_reuse_the_fact() {
         let scratch = crate::store::tests::Scratch::new("shared-wikimedia-reuse");
         let store = Store::at(scratch.0.join("store"));
@@ -520,9 +744,13 @@ mod tests {
         let version = date::format(date::today());
         admit(&store, &out, &manifest, &params, &version, "wikidata").unwrap();
         let source = crate::sources::embedded("wikidata");
-        let snapshot =
-            run(&scratch.0.join("missing-checkout"), &store, &Request { source, version: Some(version), params }, None)
-                .unwrap();
+        let snapshot = run(
+            &scratch.0.join("missing-checkout"),
+            &store,
+            &Request { refresh: false, source, version: Some(version), params },
+            None,
+        )
+        .unwrap();
         assert_eq!(snapshot.files.len(), 2);
         let pins = inputs(&store).unwrap();
         assert_eq!(pins.len(), 1);

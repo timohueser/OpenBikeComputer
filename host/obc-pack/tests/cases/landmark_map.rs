@@ -61,6 +61,7 @@ fn source_join_content_pool_and_independent_photo_readback() {
     };
     let mut content = Content {
         aliases: Default::default(),
+        wikipedia_aliases: Default::default(),
         schema: 2,
         input_sha256: "input".into(),
         policy_sha256: "policy".into(),
@@ -190,6 +191,7 @@ fn overlapping_artifacts_merge_by_qid() {
         std::fs::create_dir_all(&dir).unwrap();
         let content = Content {
             aliases: Default::default(),
+            wikipedia_aliases: Default::default(),
             schema: 2,
             input_sha256: region.into(),
             policy_sha256: "policy".into(),

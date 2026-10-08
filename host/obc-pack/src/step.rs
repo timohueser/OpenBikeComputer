@@ -60,9 +60,7 @@ pub fn landmark_content(request: &Request) -> Result<(), String> {
             serde_json::from_slice(&std::fs::read(view.join("candidates.json")).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         let files = shared_files(request);
-        let facts = crate::landmarks::shared::facts(&files)?;
-        let ids = crate::landmarks::shared::selected(&facts, &candidates.qids).into_iter().collect::<Vec<_>>();
-        crate::landmarks::shared::view(&files, &view, &ids)?;
+        crate::landmarks::shared::landmark_view(&files, &view, &candidates.qids)?;
     }
     crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)?;
     crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))

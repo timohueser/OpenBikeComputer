@@ -342,6 +342,7 @@ impl Fixture {
         };
         let content = obc_pack::landmarks::Content {
             aliases: Default::default(),
+            wikipedia_aliases: Default::default(),
             schema: 2,
             input_sha256: sources.into(),
             policy_sha256: "policy".into(),

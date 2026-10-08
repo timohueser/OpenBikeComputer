@@ -576,7 +576,7 @@ mod tests {
             &fresh,
             &Http::new(),
             Some(&Restore { remote: &remote, live: &old }),
-            &Request { source: &source, version: Some("2026-10-01".into()), params: small.clone() },
+            &Request { refresh: false, source: &source, version: Some("2026-10-01".into()), params: small.clone() },
             &[],
         )
         .unwrap();
@@ -591,7 +591,7 @@ mod tests {
             &fresh,
             &Http::new(),
             Some(&Restore { remote: &remote, live: &old }),
-            &Request { source: &source, version: Some("2026-10-01".into()), params: small.clone() },
+            &Request { refresh: false, source: &source, version: Some("2026-10-01".into()), params: small.clone() },
             &[]
         )
         .unwrap_err()
@@ -643,7 +643,8 @@ mod tests {
             file: Some(fixture.scratch.0.join("absent-credential").display().to_string()),
         });
         assert!(!source.credential.as_ref().unwrap().present());
-        let request = Request { source: &source, version: Some("2026-10-01".into()), params: params.clone() };
+        let request =
+            Request { refresh: false, source: &source, version: Some("2026-10-01".into()), params: params.clone() };
         assert!(fetch(&fixture.root(), &fresh, &Http::new(), Some(&copies), &request, &[]).unwrap().files.is_empty());
         assert_eq!(
             crate::engine::snapshot_files(&fresh, "wikipedia", "2026-10-01", &params, &[]).unwrap(),
@@ -657,7 +658,12 @@ mod tests {
                 &fresh,
                 &Http::new(),
                 Some(&copies),
-                &Request { source: &source, version: Some("2026-10-01".into()), params: params.clone() },
+                &Request {
+                    refresh: false,
+                    source: &source,
+                    version: Some("2026-10-01".into()),
+                    params: params.clone()
+                },
                 &[]
             )
             .unwrap()
@@ -693,7 +699,8 @@ mod tests {
         let source = crate::sources::parse_sources(crate::live::tests::LAND).unwrap().remove(0);
         let remote = Remote::Bucket(Bucket::local(&dir));
         let copies = Restore { remote: &remote, live: &live };
-        let request = Request { source: &source, version: Some("2026-10-01".into()), params: Vec::new() };
+        let request =
+            Request { refresh: false, source: &source, version: Some("2026-10-01".into()), params: Vec::new() };
         let fresh = Store::at(fixture.scratch.0.join("fresh"));
         let old = FileRecord {
             name: "land.zip".into(),

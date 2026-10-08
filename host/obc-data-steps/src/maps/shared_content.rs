@@ -44,8 +44,19 @@ pub(super) fn captures(
         serde_json::json!({"entities":qids,"links":links,"articles":[],"commons":[],"files":[],"categories":[]});
     let mut inputs = Vec::new();
     let mut phase = 0;
+    let mut subjects = BTreeSet::new();
     loop {
+        if qids.is_empty() && links.is_empty() {
+            break;
+        }
         let params = vec![("content".into(), query.to_string())];
+        if let Some((_, error)) = env
+            .fetch_failures
+            .iter()
+            .find(|(request, _)| CAPTURES.contains(&request.source.as_str()) && request.params == params)
+        {
+            return Err(Unplanned::Invalid(format!("Wikimedia acquisition failed: {error}; prepare again to retry")));
+        }
         inputs.clear();
         let mut missing = Vec::new();
         let mut files = BTreeMap::new();
@@ -71,7 +82,7 @@ pub(super) fn captures(
         }
         let facts = obc_pack::landmarks::shared::facts(&files).map_err(fail)?;
         if phase == 0 {
-            let subjects = if collection == "landmarks" {
+            subjects = if collection == "landmarks" {
                 obc_pack::landmarks::shared::selected(&facts, &qids)
             } else {
                 facts
@@ -81,8 +92,7 @@ pub(super) fn captures(
                     .collect()
             };
             let mut articles = Vec::new();
-            query["subjects"] = serde_json::json!(subjects);
-            for id in subjects {
+            for id in &subjects {
                 if let Some(entity) = obc_pack::landmarks::shared::subject(&facts, &id) {
                     for (wiki, link) in entity["sitelinks"].as_object().into_iter().flatten() {
                         if let Some(language) = wiki.strip_suffix("wiki") {
@@ -94,8 +104,7 @@ pub(super) fn captures(
             query["articles"] = serde_json::json!(articles);
             let mut categories = BTreeSet::new();
             for fact in facts.values().filter(|fact| {
-                fact["kind"] == "entity"
-                    && query["subjects"].as_array().is_some_and(|subjects| subjects.contains(&fact["key"]))
+                fact["kind"] == "entity" && fact["key"].as_str().is_some_and(|key| subjects.contains(key))
             }) {
                 categories.extend(obc_pack::landmarks::shared::categories(&fact["entity"]));
             }
@@ -103,8 +112,7 @@ pub(super) fn captures(
         } else if phase == 1 {
             let mut commons = BTreeSet::new();
             for fact in facts.values().filter(|fact| {
-                fact["kind"] == "entity"
-                    && query["subjects"].as_array().is_some_and(|subjects| subjects.contains(&fact["key"]))
+                fact["kind"] == "entity" && fact["key"].as_str().is_some_and(|key| subjects.contains(key))
             }) {
                 for claim in fact["entity"]["claims"]["P18"].as_array().into_iter().flatten() {
                     if let Some(file) = claim["mainsnak"]["datavalue"]["value"].as_str() {
@@ -140,13 +148,7 @@ pub(super) fn captures(
             let polygon = std::fs::read_to_string(store.object(&poly[7..])).map_err(|e| fail(e.to_string()))?;
             std::fs::write(&boundary, obc_pack::catalog::boundary::geojson(&polygon).map_err(fail)?)
                 .map_err(|e| fail(e.to_string()))?;
-            let ids = query["subjects"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
+            let ids = subjects.iter().cloned().collect::<Vec<_>>();
             let output = scratch.join("selection");
             if output.exists() {
                 std::fs::remove_dir_all(&output).map_err(|e| fail(e.to_string()))?;
@@ -194,4 +196,55 @@ pub(super) fn captures(
         },
     ]);
     Ok(vec![(collection, inputs)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_regions_request_the_same_identities_and_failures_stay_visible() {
+        let scratch = super::super::tests::temp("shared-content-identities");
+        let store = Store::at(scratch.0.join("store"));
+        let pbf =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../obc-pack/tests/data/peak-discovery.osm.pbf");
+        let bytes = std::fs::read(pbf).unwrap();
+        let digest = obc_data::store::sha256_hex(&bytes);
+        let file = store.partial("osm");
+        obc_data::store::write_atomic(&file, &bytes).unwrap();
+        store.insert(&file, &digest).unwrap();
+        let osm = format!("sha256:{digest}");
+        let wanted = |env: &Env, area: &str| match captures(
+            env,
+            &store,
+            "landmarks",
+            &osm,
+            &format!("sha256:{}", "0".repeat(64)),
+            "1",
+            &[("area".into(), area.into())],
+        ) {
+            Err(Unplanned::NeedsFetch(wanted)) => wanted,
+            _ => panic!("unprepared identities need source facts"),
+        };
+        let mut env = Env::default();
+        let first = wanted(&env, "one");
+        let second = wanted(&env, "overlap");
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 3);
+        let query: Value = serde_json::from_str(&first[0].params[0].1).unwrap();
+        assert_eq!(query["entities"], serde_json::json!(["Q1"]));
+        assert!(query.get("area").is_none());
+        assert!(query.get("code").is_none());
+        env.fetch_failures.push((first[0].clone(), "server pressure".into()));
+        let failed = captures(
+            &env,
+            &store,
+            "landmarks",
+            &osm,
+            &format!("sha256:{}", "0".repeat(64)),
+            "1",
+            &[("area".into(), "one".into())],
+        );
+        assert!(matches!(failed,Err(Unplanned::Invalid(reason)) if reason.contains("server pressure")));
+    }
 }

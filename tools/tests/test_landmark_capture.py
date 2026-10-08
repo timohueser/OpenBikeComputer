@@ -25,6 +25,10 @@ class LandmarkCaptureTests(unittest.TestCase):
                 first = capture.fetch("raw/entity.json", Response.url)
                 self.assertEqual(capture.fetch("raw/entity.json", Response.url), first)
                 request.assert_called_once()
+                self.assertEqual(capture.metrics, {"requests": 1, "transferred_bytes": len(b'{"ok":true}')})
+                restarted = Capture(Path(directory), interval=0)
+                self.assertEqual(restarted.fetch("raw/entity.json", Response.url), first)
+                self.assertEqual(restarted.metrics, {"requests": 0, "transferred_bytes": 0})
             with self.assertRaisesRegex(ValueError, "request changed"):
                 capture.fetch("raw/entity.json", "https://example.test/changed")
             (Path(directory) / "raw/entity.json").write_bytes(b"changed")

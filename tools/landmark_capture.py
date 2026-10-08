@@ -108,9 +108,7 @@ def batches(items: list, size: int = BATCH):
         yield items[start:start + size]
 
 
-def read_source(response, media: bool) -> bytes:
-    if not media:
-        return response.read(MAX_SOURCE + 1)
+def read_source(response, media: bool, metrics=None) -> bytes:
     data = bytearray()
     start = time.monotonic()
     while len(data) <= MAX_SOURCE:
@@ -118,8 +116,10 @@ def read_source(response, media: bool) -> bytes:
         if not chunk:
             break
         data.extend(chunk)
+        if metrics is not None:
+            metrics["transferred_bytes"] += len(chunk)
         delay = len(data) / MEDIA_BYTES_PER_SECOND - (time.monotonic() - start)
-        if delay > 0:
+        if media and delay > 0:
             time.sleep(delay)
     return bytes(data)
 
@@ -129,6 +129,7 @@ class Capture:
 
     def __init__(self, root: Path, interval: float = 1 / REQUESTS_PER_SECOND):
         self.root = root
+        self.metrics = {"requests": 0, "transferred_bytes": 0}
         self.interval = interval
         self.lock = threading.Lock()
         self.stopped = False
@@ -166,13 +167,14 @@ class Capture:
             backoff = BACKOFF_SECONDS * 2 ** attempt
             outcome = {"path": path, "url": url, "retrieved_at": datetime.now(timezone.utc).isoformat()}
             try:
+                self.metrics["requests"] += 1
                 with urlopen(Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"}), timeout=75) as response:
                     outcome["response_url"] = response.url
                     outcome["http_status"] = response.status
                     outcome["headers"] = {k: response.headers[k] for k in ("ETag", "Last-Modified", "Content-Type", "Retry-After") if k in response.headers}
                     if int(response.headers.get("Content-Length", 0)) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
-                    data = read_source(response, urlparse(url).hostname == "upload.wikimedia.org")
+                    data = read_source(response, urlparse(url).hostname == "upload.wikimedia.org", self.metrics)
                     if len(data) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
                     if response.headers.get("Content-Encoding", "").lower() == "gzip":
