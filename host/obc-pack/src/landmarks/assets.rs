@@ -27,7 +27,10 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
         if raw["kind"] != "article"
             || raw["status"] != "present"
             || raw["revision"] != capture["revision"]
-            || raw["qid"].as_str().is_some_and(|id| entity["id"] != id)
+            || match raw["qid"].as_str() {
+                Some(id) => entity["id"] != id,
+                None => !entity["id"].as_str().is_some_and(|id| id.starts_with("wiki-")),
+            }
             || entity["sitelinks"][format!("{language}wiki")]["title"]
                 != raw["key"]
                     .as_str()

@@ -390,21 +390,31 @@ mod tests {
             .iter()
             .any(|omission| omission.qid == "Q2" && omission.reason == "confirmed_missing_entity"));
         assert!(compiled.records[0].photo.is_none());
-        let mut unrelated = facts(&files).unwrap()[&("article".into(), "en:Old Castle".into())].clone();
-        files.retain(|_, path| {
-            let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-            value["kind"] != "article"
-        });
-        unrelated["qid"] = "Q3".into();
-        pin(&root, &mut files, unrelated);
         let mismatched = root.join("mismatched-view");
-        landmark_view(&files, &mismatched, &["Q9".into()]).unwrap();
-        let rejected = compile(&mismatched.join("manifest.json"), &boundary, &root.join("rejected"), false).unwrap();
-        assert!(rejected.records.is_empty());
-        assert!(rejected.wikipedia_aliases.is_empty());
-        assert!(rejected.omissions.iter().any(|omission| {
-            omission.qid == "Q1" && omission.asset == "article" && omission.reason == "en: article_identity_mismatch"
-        }));
+        for (index, qid) in [serde_json::json!("Q3"), Value::Null].into_iter().enumerate() {
+            let mut unrelated = facts(&files).unwrap()[&("article".into(), "en:Old Castle".into())].clone();
+            files.retain(|_, path| {
+                let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                value["kind"] != "article"
+            });
+            unrelated["qid"] = qid;
+            pin(&root, &mut files, unrelated);
+            landmark_view(&files, &mismatched, &["Q9".into()]).unwrap();
+            let rejected =
+                compile(&mismatched.join("manifest.json"), &boundary, &root.join(format!("rejected-{index}")), false)
+                    .unwrap();
+            assert!(rejected.records.is_empty());
+            assert!(rejected.wikipedia_aliases.is_empty());
+            assert!(rejected.omissions.iter().any(|omission| {
+                omission.qid == "Q1"
+                    && omission.asset == "article"
+                    && omission.reason == "en: article_identity_mismatch"
+            }));
+        }
+        let manifest: Value = serde_json::from_slice(&fs::read(mismatched.join("manifest.json")).unwrap()).unwrap();
+        let sources: Vec<Source> = serde_json::from_value(manifest["sources"].clone()).unwrap();
+        let synthetic = serde_json::json!({"id":"wiki-en-4","sitelinks":{"enwiki":{"title":"Old Castle"}}});
+        assert!(article(&mismatched, &sources, &synthetic, &manifest["places"][0]["articles"][0]).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 
