@@ -1293,7 +1293,9 @@ fn listed_steps(
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
                     env.fetch_failures.push((wanted.clone(), error.message.clone()));
                     // These owners share a capture. A sibling must not restart a failed one.
-                    if matches!(wanted.source.as_str(), "wikidata" | "wikipedia" | "commons") {
+                    if error.code == Code::FetchFailed
+                        && matches!(wanted.source.as_str(), "wikidata" | "wikipedia" | "commons")
+                    {
                         return Err(error);
                     }
                     failure = Some(error);
@@ -1692,7 +1694,10 @@ pub(crate) mod tests {
                 "test"
             }
 
-            fn steps(&self, _: &Path, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+            fn steps(&self, _: &Path, env: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+                if !env.fetch_failures.is_empty() {
+                    return Ok(pipeline().into());
+                }
                 Err(Unplanned::NeedsFetch(
                     ["landmarks", "peaks"]
                         .into_iter()
@@ -1725,6 +1730,17 @@ pub(crate) mod tests {
         assert_eq!(error.code, Code::FetchFailed);
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].source, "wikidata");
+        let available = product_steps(
+            &fixture.root(),
+            &Wiki,
+            &mut env(&[]),
+            &Regions::new(Vec::new()).unwrap(),
+            &fixture.store,
+            &mut |_| Err(Code::Blocked.error("ordinary plans do not fetch bulk data")),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!available.steps.is_empty(), "a plan keeps independent layers when capture is not prepared");
     }
 
     #[test]
