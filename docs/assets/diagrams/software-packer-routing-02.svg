@@ -1,0 +1,40 @@
+<svg viewBox="0 0 720 250" role="img" aria-label="A way's tags, highway=primary and building=yes, are matched against the config rules in document order: highway comes before building, so the highway=primary rule wins and produces a style with id 5, a colour, a z-index, a priority, and a min-LOD." xmlns="http://www.w3.org/2000/svg" width="720" height="250" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aP2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">First matching rule, in document order</text>
+
+  <!-- tags -->
+  <rect class="d-panel-2" x="32" y="78" width="150" height="86" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="48" y="100" fill="#1c1b14" font-size="14px">a way's tags</text>
+  <text class="d-sub" x="48" y="124" font-family="var(--mono)" fill="#5c5a2e" font-size="12px">highway = primary</text>
+  <text class="d-sub" x="48" y="144" font-family="var(--mono)" fill="#5c5a2e" font-size="12px">building = yes</text>
+
+  <line class="d-flow" x1="186" y1="120" x2="232" y2="120" marker-end="url(#aP2)" fill="none" stroke="#a4501e" stroke-width="2" />
+
+  <!-- config rules -->
+  <rect class="d-panel" x="240" y="48" width="244" height="160" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="256" y="68" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">config.json · in order</text>
+  <g font-family="var(--mono)">
+    <rect x="252" y="78" width="220" height="24" rx="5" class="d-hot-fill" fill="#ae4825" />
+    <text class="d-sub" x="262" y="94" style="fill:#fff" fill="#5c5a2e" font-size="12px">highway → { primary ★ … }</text>
+    <text class="d-sub" x="262" y="120" fill="#5c5a2e" font-size="12px">railway → { … }</text>
+    <text class="d-sub" x="262" y="142" fill="#5c5a2e" font-size="12px">natural → { water, land … }</text>
+    <text class="d-sub" x="262" y="164" fill="#5c5a2e" font-size="12px">building → { yes … }</text>
+    <text class="d-sub" x="262" y="186" fill="#5c5a2e" font-size="12px">admin_level → { 2 … }</text>
+  </g>
+  <text class="d-sub" x="362" y="226" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">first key the way carries wins — building is never reached</text>
+
+  <line class="d-flow" x1="488" y1="92" x2="540" y2="92" marker-end="url(#aP2)" fill="none" stroke="#a4501e" stroke-width="2" />
+
+  <!-- style out -->
+  <rect class="d-hot" x="548" y="52" width="150" height="140" rx="10" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-label" x="564" y="72" style="fill:#a9501c" fill="#1c1b14" font-size="14px">style #5</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="564" y="94" fill="#5c5a2e" font-size="12px">color (RGB565)</text>
+    <text class="d-sub" x="564" y="112" fill="#5c5a2e" font-size="12px">z_index · weight</text>
+    <text class="d-sub" x="564" y="130" fill="#5c5a2e" font-size="12px">priority 1–4</text>
+    <text class="d-sub" x="564" y="148" fill="#5c5a2e" font-size="12px">min_lod</text>
+    <text class="d-sub" x="564" y="166" fill="#5c5a2e" font-size="12px">line_style · color2</text>
+  </g>
+</svg>

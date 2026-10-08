@@ -9,7 +9,7 @@ def rust_pack_bin():
 
     Override the path with OBC_PACK_BIN; otherwise prefer the release build
     under the workspace's target/ and fall back to debug. Build it with
-    `cargo build --release -p obc-pack` from the repo root.
+    `cargo build --release -p obc-bake --bin obc-pack` from the repo root.
     """
     override = os.environ.get("OBC_PACK_BIN")
     if override:

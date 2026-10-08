@@ -1,0 +1,53 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="POI extraction. On the left, two OSM sources: a tagged node used as-is, and a closed way whose polygon centroid becomes a point. Both are classified against a fixed table of tag-equals-value rules mapping to a category and subtype. Names are folded to ASCII and capped at 24 bytes. The packer removes repeated source identities and keeps nearby objects separate." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aP6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Nodes + way-centroids → classify → fold names → dedup</text>
+
+  <!-- sources -->
+  <rect class="d-panel-2" x="24" y="44" width="150" height="40" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="40" y="62" style="font-size:12px" fill="#5c5a2e" font-size="12px">a tagged node</text>
+  <text class="d-sub" x="40" y="77" style="font-size:12px" fill="#5c5a2e" font-size="12px">amenity=drinking_water</text>
+  <circle cx="158" cy="64" r="4" class="d-hot-fill" fill="#ae4825" />
+
+  <rect class="d-panel-2" x="24" y="94" width="150" height="52" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="40" y="112" style="font-size:12px" fill="#5c5a2e" font-size="12px">a closed way</text>
+  <text class="d-sub" x="40" y="127" style="font-size:12px" fill="#5c5a2e" font-size="12px">tourism=camp_site</text>
+  <!-- small polygon with centroid dot -->
+  <path d="M120 118 L150 116 L156 136 L126 140 Z" fill="none" stroke="#3c6b39" stroke-width="1.2" />
+  <circle cx="138" cy="127" r="3" class="d-hot-fill" fill="#ae4825" />
+  <text class="d-sub" x="120" y="152" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">→ ring centroid</text>
+
+  <!-- classify -->
+  <line class="d-flow" x1="178" y1="64"  x2="224" y2="86" marker-end="url(#aP6)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="178" y1="120" x2="224" y2="98" marker-end="url(#aP6)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="230" y="56" width="204" height="92" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="246" y="76" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">fixed table · first match</text>
+  <g font-family="var(--mono)">
+    <text class="d-sub" x="246" y="96"  style="font-size:12px" fill="#5c5a2e" font-size="12px">amenity=drinking_water → Water</text>
+    <text class="d-sub" x="246" y="112" style="font-size:12px" fill="#5c5a2e" font-size="12px">natural=spring &#160;&#160;&#160;&#160;&#160;→ Water</text>
+    <text class="d-sub" x="246" y="128" style="font-size:12px" fill="#5c5a2e" font-size="12px">tourism=camp_site &#160;&#160;→ Campsite</text>
+    <text class="d-sub" x="246" y="142" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">… 19 subtypes, 7 categories</text>
+  </g>
+
+  <!-- fold names -->
+  <line class="d-flow" x1="438" y1="102" x2="484" y2="102" marker-end="url(#aP6)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel-2" x="490" y="72" width="206" height="60" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-tag" x="506" y="90" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">fold name → ASCII, ≤ 24 B</text>
+  <text class="d-sub" x="506" y="110" font-family="var(--mono)" style="font-size:12px" fill="#5c5a2e" font-size="12px">"Bäckerei Müller"</text>
+  <text class="d-sub" x="506" y="124" font-family="var(--mono)" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">→ "Baeckerei Mueller"</text>
+
+  <!-- dedup -->
+  <line class="d-flow" x1="360" y1="150" x2="360" y2="196" marker-end="url(#aP6)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-hot" x="120" y="200" width="560" height="76" rx="12" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-tag" x="138" y="220" style="fill:#a9501c" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">dedup — repeated OSM type and ID = one POI</text>
+  <!-- node + centroid merging -->
+  <circle cx="168" cy="248" r="5" class="d-hot-fill" fill="#ae4825" /><text class="d-sub" x="150" y="268" style="font-size:12px" fill="#5c5a2e" font-size="12px">copy 1</text>
+  <circle cx="210" cy="248" r="4" class="d-water" fill="#33575b" /><text class="d-sub" x="196" y="268" style="font-size:12px" fill="#5c5a2e" font-size="12px">copy 2</text>
+  <line x1="176" y1="248" x2="202" y2="248" stroke="#9aa884" stroke-width="1.2" stroke-dasharray="3 2" />
+  <line class="d-flow" x1="250" y1="248" x2="300" y2="248" marker-end="url(#aP6)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <circle cx="330" cy="248" r="5" class="d-hot-fill" fill="#ae4825" /><text class="d-sub" x="346" y="252" style="font-size:12px" fill="#5c5a2e" font-size="12px">one source copy</text>
+  <text class="d-sub" x="470" y="240" style="font-size:12px" fill="#5c5a2e" font-size="12px">keep distinct objects;</text>
+  <text class="d-sub" x="470" y="254" style="font-size:12px" fill="#5c5a2e" font-size="12px">retain mapped approaches;</text>
+  <text class="d-sub" x="470" y="268" style="font-size:12px" fill="#5c5a2e" font-size="12px">keep source order.</text>
+</svg>

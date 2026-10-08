@@ -25,7 +25,7 @@ def attribution(source, **fill):
 
 
 def fetch(source, *params):
-    """The store path of each file of `source` at its live pin: `obc data fetch SOURCE NAME=VALUE… --json`."""
+    """The store path of each file of `source`, as SOURCE or SOURCE@VERSION: `obc data fetch SOURCE NAME=VALUE… --json`."""
     done = subprocess.run([*OBC_DATA, "fetch", source, *params, "--json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
     if done.returncode:
         # With --json, the error document is on standard output.

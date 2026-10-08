@@ -21,6 +21,7 @@ mod summit;
 
 pub(crate) use cache::MAP_CHUNK_SLOTS;
 pub use cache::{CacheStats, MapCache};
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU32, Ordering};
 pub use errors::{CacheError, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, MapReadError};
 pub(crate) use geometry::parse_lod_table;
@@ -228,6 +229,8 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
     Ok(HeaderPrologue { header, map, lod_count, lod_table_offset, total })
 }
 
+type StyleTables = [[Option<Style>; 256]; 2];
+
 /// The session-resident, immutable map tables: header scalars, style table and LOD pyramid. Parsed
 /// once per `.obcm`, then borrowed by a cheap per-frame [`Reader::new`], which is what holds the
 /// deep route-load render path inside the nRF's stack reserve.
@@ -250,7 +253,7 @@ pub struct MapTables {
     /// The parsed routing profiles (1..=8, always present): at most 8 × 56 B resident.
     profiles: heapless::Vec<MapProfile, NAV_MAX_PROFILES>,
     /// Styles indexed by id (0..=255) for O(1) lookup during rendering.
-    styles: [[Option<Style>; 256]; 2],
+    styles: StyleTables,
     /// The backdrop style, resolved at parse so the per-frame lookup is a field read.
     backdrops: [Option<Style>; 2],
     /// Session-unique parse identity, never 0. The cache self-clears when it last served a
@@ -259,9 +262,17 @@ pub struct MapTables {
 }
 
 impl MapTables {
-    /// Parse the header scalars, style table and LOD pyramid. The one expensive, allocating step,
-    /// so do it once per map and hand the result to [`Reader::new`] each frame.
-    pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
+    /// Parse once per map, then borrow the result with [`Reader::new`].
+    pub fn parse(src: &dyn ByteSource) -> Result<Self, Error> {
+        let mut slot = MaybeUninit::uninit();
+        Self::parse_in_place(src, &mut slot)?;
+        // SAFETY: a successful parse initializes every field.
+        Ok(unsafe { slot.assume_init() })
+    }
+
+    /// Parse directly into the caller's slot without a table-sized stack temporary.
+    /// The slot is reusable after an error; only success returns readable tables.
+    pub fn parse_in_place<'a>(src: &dyn ByteSource, slot: &'a mut MaybeUninit<Self>) -> Result<&'a Self, Error> {
         let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
         let MapHeader { version, bbox, marker_colors, scale, terrain } = map;
         let style_offset = resolve(scale.offset(rd_u32(&header, 21)));
@@ -279,7 +290,17 @@ impl MapTables {
             return Err(Error::BadOffset);
         }
 
-        let mut styles = [[None; 256]; 2];
+        let out = slot.as_mut_ptr();
+        // SAFETY: the slot owns this array. Initialize every element before forming a reference;
+        // `None` has no assumed byte pattern.
+        let styles = unsafe {
+            let array = core::ptr::addr_of_mut!((*out).styles);
+            let entries = array.cast::<Option<Style>>();
+            for at in 0..core::mem::size_of::<StyleTables>() / core::mem::size_of::<Option<Style>>() {
+                entries.add(at).write(None);
+            }
+            &mut *array
+        };
         let light_range = parse_styles(src, style_offset, total, &mut styles[0])?;
         let dark_range = parse_styles(src, dark_style_offset, total, &mut styles[1])?;
         if light_range.0 < dark_range.1 && dark_range.0 < light_range.1 {
@@ -304,20 +325,21 @@ impl MapTables {
         // cache always reads as unowned. `Relaxed` suffices: only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(MapTables {
-            version,
-            bbox,
-            marker_colors,
-            scale,
-            terrain,
-            lods,
-            pois,
-            nav,
-            profiles,
-            styles,
-            backdrops,
-            generation,
-        })
+        // SAFETY: `styles` is initialized above. Write every other field before exposing the table.
+        unsafe {
+            core::ptr::addr_of_mut!((*out).version).write(version);
+            core::ptr::addr_of_mut!((*out).bbox).write(bbox);
+            core::ptr::addr_of_mut!((*out).marker_colors).write(marker_colors);
+            core::ptr::addr_of_mut!((*out).scale).write(scale);
+            core::ptr::addr_of_mut!((*out).terrain).write(terrain);
+            core::ptr::addr_of_mut!((*out).lods).write(lods);
+            core::ptr::addr_of_mut!((*out).pois).write(pois);
+            core::ptr::addr_of_mut!((*out).nav).write(nav);
+            core::ptr::addr_of_mut!((*out).profiles).write(profiles);
+            core::ptr::addr_of_mut!((*out).backdrops).write(backdrops);
+            core::ptr::addr_of_mut!((*out).generation).write(generation);
+            Ok(slot.assume_init_ref())
+        }
     }
 
     /// This file's offset unit: the value every scaled field in it resolves against.
@@ -926,6 +948,69 @@ mod tests {
         }
         // Control: the same bytes through a healthy source parse fine.
         assert!(MapTables::parse(&SliceSource(&bytes)).is_ok());
+    }
+
+    #[test]
+    fn in_place_slot_recovers_after_each_failed_read() {
+        use core::cell::Cell;
+        use obcm_testkit::{build_file, pack_line, pad, LodSpec};
+
+        struct FailsRead<'a> {
+            bytes: &'a [u8],
+            calls: Cell<usize>,
+            fail: usize,
+        }
+        impl ByteSource for FailsRead<'_> {
+            fn len(&self) -> u64 {
+                self.bytes.len() as u64
+            }
+            fn read_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), IoError> {
+                let at = self.calls.get();
+                self.calls.set(at + 1);
+                if at == self.fail {
+                    let partial = dst.len() / 2;
+                    SliceSource(self.bytes).read_at(offset, &mut dst[..partial])?;
+                    return Err(IoError::Io);
+                }
+                SliceSource(self.bytes).read_at(offset, dst)
+            }
+        }
+        let bytes = build_file(
+            (0, 0, 1000, 1000),
+            &[(1, 3, 0xF800, 2, 3, false, None)],
+            &[LodSpec {
+                max_mpp: f32::INFINITY,
+                index: vec![0],
+                chunks: vec![pad(pack_line(1, 10, 10, &[(1, 1)]), 64)],
+                chunk_size: 64,
+            }],
+        );
+        let healthy = FailsRead { bytes: &bytes, calls: Cell::new(0), fail: usize::MAX };
+        let mut slot = MaybeUninit::uninit();
+        MapTables::parse_in_place(&healthy, &mut slot).unwrap();
+        let cache = MapCache::new();
+        for fail in 0..healthy.calls.get() {
+            let broken = FailsRead { bytes: &bytes, calls: Cell::new(0), fail };
+            assert!(matches!(MapTables::parse_in_place(&broken, &mut slot), Err(Error::Source(IoError::Io))));
+            assert_eq!(broken.calls.get(), fail + 1);
+            let source = SliceSource(&bytes);
+            let tables = MapTables::parse_in_place(&source, &mut slot).unwrap();
+            assert_eq!(tables.version, VERSION);
+            assert_eq!(tables.bbox, BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 });
+            assert_eq!(tables.styles()[1].unwrap().color, 0xF800);
+            assert_eq!(tables.lods().len(), 1);
+            assert_eq!(tables.nav_profiles().len(), 1);
+            let reader = Reader::new(&source, tables, &cache);
+            let mut points = Vec::<(i32, i32), 8>::new();
+            let mut rings = Vec::<usize, 2>::new();
+            let mut endpoint = None;
+            reader
+                .for_each_feature(0, 0, &tables.bbox, &mut points, &mut rings, |feature| {
+                    endpoint = feature.exterior().last().copied();
+                })
+                .unwrap();
+            assert_eq!(endpoint, Some((11, 11)));
+        }
     }
 
     /// The index-block cache keys a block by its absolute offset, which means nothing across maps,

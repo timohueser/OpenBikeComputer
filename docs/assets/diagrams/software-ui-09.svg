@@ -1,0 +1,31 @@
+<svg viewBox="0 0 720 210" role="img" aria-label="One POI list row, dissected. The row holds a name on the left, a bearing arrow, and a right-aligned distance. Below, the arrow's heading reference has two sources: while moving, the GPS course; while stationary, the electronic compass heading from the ICM-20948; when neither is known, the arrow is hidden rather than pointing wrong." xmlns="http://www.w3.org/2000/svg" width="720" height="210" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">The row, and where the arrow's "up" comes from</text>
+
+  <!-- the row -->
+  <rect class="d-panel" x="24" y="42" width="672" height="40" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="44" y="66" font-family="var(--mono)" style="font-size:12px" fill="#5c5a2e" font-size="12px">Stadtbrunnen</text>
+  <text class="d-sub" x="240" y="60" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">name (or subtype label if unnamed)</text>
+  <!-- arrow -->
+  <path d="M556 54 l8 -8 l8 8 l-5 0 l0 10 l-6 0 l0 -10 z" fill="#cf6a2a" />
+  <text class="d-sub" x="540" y="78" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">bearing</text>
+  <!-- distance -->
+  <text class="d-sub" x="672" y="66" text-anchor="end" font-family="var(--mono)" style="font-size:12px" fill="#5c5a2e" font-size="12px">210m</text>
+  <text class="d-sub" x="672" y="84" text-anchor="end" style="font-size:12px" fill="#5c5a2e" font-size="12px">distance</text>
+
+  <!-- heading sources -->
+  <text class="d-tag" x="20" y="118" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">the arrow's heading reference</text>
+  <rect class="d-panel-2" x="24" y="128" width="216" height="66" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="40" y="150" style="font-size:12px" fill="#1c1b14" font-size="14px">moving</text>
+  <text class="d-sub" x="40" y="170" style="font-size:12px" fill="#5c5a2e" font-size="12px">GPS course over ground</text>
+  <text class="d-sub" x="40" y="185" style="font-size:12px" fill="#5c5a2e" font-size="12px">— the direction you're going</text>
+
+  <rect class="d-panel-2" x="252" y="128" width="216" height="66" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="268" y="150" style="font-size:12px" fill="#1c1b14" font-size="14px">stationary</text>
+  <text class="d-sub" x="268" y="170" style="font-size:12px" fill="#5c5a2e" font-size="12px">ICM-20948 compass</text>
+  <text class="d-sub" x="268" y="185" style="font-size:12px" fill="#5c5a2e" font-size="12px">— which way you're facing</text>
+
+  <rect class="d-hot" x="480" y="128" width="216" height="66" rx="10" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-label" x="496" y="150" style="fill:#a9501c;font-size:12px" fill="#1c1b14" font-size="14px">neither known</text>
+  <text class="d-sub" x="496" y="170" style="font-size:12px" fill="#5c5a2e" font-size="12px">arrow hidden</text>
+  <text class="d-sub" x="496" y="185" style="font-size:12px" fill="#5c5a2e" font-size="12px">— don't point wrong</text>
+</svg>

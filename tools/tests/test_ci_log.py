@@ -22,7 +22,7 @@ LOG = "".join(
         "assertion failed: false",
         "     Summary [   0.5s] 2 tests run: 1 passed, 1 failed",
         "##[error]Process completed with exit code 100.",
-        "##[group]Run python3 -m coverage lcov",
+        "##[group]Run python3 -m xmlrunner",
         "##[error]Process completed with exit code 1.",
     )
 )
@@ -44,7 +44,7 @@ class ExcerptTests(unittest.TestCase):
                 "assertion failed: false",
                 "     Summary [   0.5s] 2 tests run: 1 passed, 1 failed",
                 "##[error]Process completed with exit code 100.",
-                "##[group]Run python3 -m coverage lcov",
+                "##[group]Run python3 -m xmlrunner",
                 "##[error]Process completed with exit code 1.",
             ],
         )

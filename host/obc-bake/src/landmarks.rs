@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use obc_pack::progress::Progress;
+use obc_map_core::progress::Progress;
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::Coverage;

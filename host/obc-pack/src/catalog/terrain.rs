@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use obc_formats::obct;
 
-use crate::grid::CellId;
+use obc_map_core::grid::CellId;
 
 use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
 use super::model::{ReferenceEntry, TerrainCellEntry, TerrainEmptyRun};
@@ -64,7 +64,7 @@ struct TerrainCellSidecar {
 #[serde(deny_unknown_fields)]
 struct TerrainKnownEmptyState {
     terrain_revision: u32,
-    known_empty: Vec<TerrainEmptyRun>,
+    known_empty: Vec<LegacyTerrainEmptyRun>,
 }
 
 /// Everything the tree says about terrain, read once.
@@ -93,6 +93,13 @@ pub(super) fn build_terrain_index<'a>(
 
 /// Walk `terrain.json` + `cells/terrain/` into the terrain store, or `None` when the
 /// tree publishes no terrain at all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyTerrainEmptyRun {
+    start: String,
+    end: String,
+    built_at: String,
+}
+
 pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<TerrainStore>, String> {
     let doc_path = tree.join(TERRAIN_DOC);
     let dir = tree.join(CELLS_DIR).join(TERRAIN_DIR);
@@ -337,7 +344,6 @@ fn read_terrain_row(
             bytes,
             sha256: sha256.clone(),
             url: format!("{base_url}/{published_rel_path}"),
-            built_at: sidecar.built_at,
         });
         sink.pinned_artifacts.push(PinnedArtifact { rel_path, published_rel_path, bytes, sha256 });
     }
@@ -379,7 +385,7 @@ fn read_terrain_known_empty(path: &Path, doc: &TerrainDoc) -> Result<Vec<Terrain
         ));
     }
 
-    let mut previous: Option<(CellId, &TerrainEmptyRun)> = None;
+    let mut previous: Option<(CellId, &LegacyTerrainEmptyRun)> = None;
     for run in &state.known_empty {
         let start = parse_strict_id(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
         let end = parse_strict_id(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -432,22 +438,34 @@ fn read_terrain_known_empty(path: &Path, doc: &TerrainDoc) -> Result<Vec<Terrain
         previous = Some((end, run));
     }
     inclusive_run_count(state.known_empty.iter().map(|r| (r.start.as_str(), r.end.as_str())))?;
-    Ok(state.known_empty)
+    let mut published: Vec<TerrainEmptyRun> = Vec::new();
+    for run in state.known_empty {
+        if let Some(previous) = published.last_mut() {
+            let end = parse_strict_id(&previous.end)?;
+            let start = parse_strict_id(&run.start)?;
+            if end.i == start.i && end.j + 1 == start.j {
+                previous.end = run.end;
+                continue;
+            }
+        }
+        published.push(TerrainEmptyRun { start: run.start, end: run.end });
+    }
+    Ok(published)
 }
 
 /// The container's identity, after validation through the device's terrain reader.
-struct ObctHeader {
-    posting_log2: u8,
-    cell_log2: u8,
-    min_i: u32,
-    min_j: u32,
-    rows: u16,
-    cols: u16,
-    surface: bool,
+pub(super) struct ObctHeader {
+    pub(super) posting_log2: u8,
+    pub(super) cell_log2: u8,
+    pub(super) min_i: u32,
+    pub(super) min_j: u32,
+    pub(super) rows: u16,
+    pub(super) cols: u16,
+    pub(super) surface: bool,
 }
 
-fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
-    let source = crate::terrain::open_obct(path)?;
+pub(super) fn read_obct_header(path: &Path) -> Result<ObctHeader, String> {
+    let source = obc_map_core::terrain::open_obct(path)?;
     let reader = obc_elevation::TerrainReader::parse(&source)
         .map_err(|e| format!("{}: not a usable OBCT artifact ({e:?})", path.display()))?;
     let header = reader.header();

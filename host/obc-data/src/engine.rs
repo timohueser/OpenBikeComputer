@@ -3,9 +3,12 @@
 //! the state of each layer is computed when asked. `specs/obc-data.md` describes steps, keys,
 //! receipts, plans, runs and states.
 
-mod code;
+pub mod changes;
+pub(crate) mod code;
 pub mod plan;
 mod process;
+pub use code::python_executable;
+
 pub mod release;
 pub mod runs;
 pub mod state;
@@ -32,6 +35,47 @@ pub struct Step {
     /// Paths in the output directory: a file, or a directory whose every file is part of the layer.
     pub outputs: Vec<String>,
     pub run: Run,
+    /// The outputs that a client reads. Other files stay in the store.
+    pub client: Client,
+}
+
+/// The published outputs of a layer: none, all, or selected declared paths (including directories).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Client {
+    None,
+    All,
+    Paths(Vec<String>),
+}
+
+impl Client {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    pub fn includes(&self, path: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Paths(paths) => paths.iter().any(|prefix| covers(prefix, path)),
+        }
+    }
+
+    fn sorted(&self) -> Self {
+        match self {
+            Self::Paths(paths) => {
+                let mut paths = paths.clone();
+                paths.sort();
+                paths.dedup();
+                Self::Paths(paths)
+            }
+            other => other.clone(),
+        }
+    }
+}
+
+fn covers(prefix: &str, path: &str) -> bool {
+    path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub enum Input {
@@ -43,24 +87,146 @@ pub enum Input {
         /// Without params: the names of the files the step reads, or none for every file.
         files: Vec<String>,
     },
-    /// The layer of another step.
-    Layer(String),
+    /// The layer of another step. `files` names the paths in the layer that the step reads, or
+    /// none for every file.
+    Layer { name: String, files: Vec<String> },
+}
+
+impl Input {
+    /// Every file of the layer `name`.
+    pub fn layer(name: impl Into<String>) -> Self {
+        Input::Layer { name: name.into(), files: Vec::new() }
+    }
 }
 
 /// The code that makes a layer. When in doubt, declare more: too much costs a rebuild, too little
 /// gives stale data.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Code {
-    /// Files and directories, relative to the repository root. A step whose bytes use
-    /// `obc_data::sources`, such as an attribution, declares `data/sources.toml` here.
+    /// Files and directories, relative to the repository root.
     pub paths: Vec<String>,
-    /// Workspace crates; each brings its path dependencies. The walk stops at `obc-data`.
+    /// Workspace crates and their resolved normal and build dependencies.
     pub crates: Vec<String>,
+    /// Resolve Rust dependencies for this target; None selects the producer host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// None binds the native release build. Prepared builds bind their toolchain in step options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rust: Option<Rust>,
+    /// The content settings of these sources. Freshness and access controls are excluded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    /// The selected Python runtime and its locked package group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python: Option<Python>,
+    /// A locked Python group packaged for another runtime, without selecting its interpreter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub python_packages: Option<String>,
+    /// Native library or executable files bound by the provider before its code runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<Library>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Library {
+    pub name: String,
+    pub path: PathBuf,
+    pub sha256: String,
+    /// Tool version for code identity; absent for content-addressed artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Rust {
+    Native { profile: Profile },
+    Prepared { profile: Profile },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    Dev,
+    Release,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Python {
+    /// None selects the project's base packages, without default groups.
+    pub group: Option<String>,
+}
+
+impl Code {
+    /// File paths and named dependency fingerprints, in byte order, to SHA-256.
+    pub fn files(&self, root: &Path) -> Result<BTreeMap<String, String>, String> {
+        code::files(root, self)
+    }
+
+    /// Start tools with the same checked runtime policy as an engine step.
+    pub fn command(&self, root: &Path, argv: &[String]) -> Result<std::process::Command, String> {
+        let expected = code::hash(&self.files(root)?);
+        process::command(root, argv, Some((self, &expected)))
+    }
+
+    /// Resolve source/config at a recorded target without selecting its execution tools.
+    pub fn source_config(&self, root: &Path, rust: Option<&ResolvedRust>) -> Result<SourceIdentity, String> {
+        code::source_config(root, self, rust)
+    }
+
+    /// Resolve content, execution and commitment inputs in one traversal.
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::identity(root, self)
+    }
+}
+
+/// Native acquisition or planning code, with scoped owner source and its actual dependencies.
+#[derive(Debug, Clone)]
+pub struct OwnerCode {
+    pub crate_name: String,
+    pub code: Code,
+}
+
+impl OwnerCode {
+    pub fn identity(&self, root: &Path) -> Result<CodeIdentity, String> {
+        code::owner_identity(root, self)
+    }
+
+    pub fn source_config(&self, root: &Path, rust: &ResolvedRust) -> Result<SourceIdentity, String> {
+        code::owner_source_config(root, self, rust)
+    }
+}
+
+/// Source compatibility is resolved at the recorded producer target and profile.
+/// It permits consuming existing bytes; it does not prove that another host emits them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeIdentity {
+    pub files: BTreeMap<String, String>,
+    pub source_config: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceIdentity {
+    pub files: BTreeMap<String, String>,
+    pub rust: Option<ResolvedRust>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedRust {
+    pub target: String,
+    pub build: Rust,
 }
 
 pub enum Run {
-    /// A function in this process. Its code must declare the crate of the function.
+    /// A function in this process. Its code must declare the crate of the function. One binary
+    /// links every product, so Cargo unifies their features: a step crate enables every feature
+    /// its bytes depend on itself, or makes its bytes independent of it (structs, or sorted keys
+    /// for JSON objects).
     Rust(fn(&Request) -> Result<(), String>),
     /// A program and its arguments, started in the repository root with the request as JSON on
     /// standard input. No argument names a path outside the repository root.
@@ -75,7 +241,11 @@ pub struct Request {
     pub snapshots: BTreeMap<String, BTreeMap<String, PathBuf>>,
     /// Layer name, then path in the layer, then object path.
     pub layers: BTreeMap<String, BTreeMap<String, PathBuf>>,
+    /// Receipt metadata for exactly the selected files of each layer input.
+    pub layer_files: BTreeMap<String, Vec<LayerFile>>,
     pub options: Value,
+    /// Exact native providers from the checked execution identity.
+    pub libraries: Vec<Library>,
     /// An empty directory: the layer is the files the step writes in it.
     pub output: PathBuf,
     /// Where the step may write a JSON object of metrics.
@@ -114,6 +284,10 @@ pub struct InputRecord {
     /// The source id or the layer name.
     pub name: String,
     pub digest: String,
+    /// Exact resolved snapshot file names, including an empty read. For a layer input, the
+    /// selected paths, or none for every file. The digest names the bytes in the key.
+    #[serde(default)]
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
@@ -178,7 +352,11 @@ pub fn recipe(step: &Step, code: &str) -> String {
                 let params = crate::store::sorted(params);
                 serde_json::json!({"kind": InputKind::Snapshot, "name": source, "version": version, "params": params, "files": files})
             }
-            Input::Layer(name) => serde_json::json!({"kind": InputKind::Layer, "name": name}),
+            Input::Layer { name, files } => {
+                let mut files = files.clone();
+                files.sort();
+                serde_json::json!({"kind": InputKind::Layer, "name": name, "files": files})
+            }
         })
         .collect();
     inputs.sort_by_key(|input| input.to_string());
@@ -189,6 +367,7 @@ pub fn recipe(step: &Step, code: &str) -> String {
         "options": step.options,
         "code": code,
         "outputs": step.sorted_outputs(),
+        "client": step.client.sorted(),
     });
     sha256_hex(&serde_json::to_vec(&sorted(spec)).expect("JSON values serialize"))
 }
@@ -218,6 +397,21 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
         }
     }
     for step in steps {
+        let relative = |path: &String| {
+            !path.contains(['\\', '\r', '\n'])
+                && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+        };
+        if let Some(path) = step.outputs.iter().find(|path| !relative(path)) {
+            return Err(format!("step `{}`: output `{path}` is not a normalized relative path", step.name));
+        }
+        if let Client::Paths(paths) = &step.client {
+            if paths.is_empty() {
+                return Err(format!("step `{}`: client paths is empty; use none", step.name));
+            }
+            if let Some(path) = paths.iter().find(|path| !step.outputs.contains(path)) {
+                return Err(format!("step `{}`: client path `{path}` is not a declared output", step.name));
+            }
+        }
         if let Some(name) = step.layers().find(|name| !names.contains(name)) {
             return Err(format!("step `{}` reads the layer `{name}`, which no step makes", step.name));
         }
@@ -247,9 +441,9 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
 
 impl Step {
     /// The names of the layers it reads.
-    fn layers(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn layers(&self) -> impl Iterator<Item = &str> {
         self.inputs.iter().filter_map(|input| match input {
-            Input::Layer(name) => Some(name.as_str()),
+            Input::Layer { name, .. } => Some(name.as_str()),
             Input::Snapshot { .. } => None,
         })
     }
@@ -270,15 +464,18 @@ impl Step {
 
 /// The code hash and the code files of each `Code`, computed once per value.
 #[derive(Default)]
-struct Codes<'a>(HashMap<&'a Code, (String, BTreeMap<String, String>)>);
+struct Codes<'a> {
+    cached: HashMap<&'a Code, (String, CodeIdentity)>,
+    context: code::Context,
+}
 
 impl<'a> Codes<'a> {
-    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, BTreeMap<String, String>), String> {
-        if !self.0.contains_key(code) {
-            let files = code::files(root, code)?;
-            self.0.insert(code, (code::hash(&files), files));
+    fn get(&mut self, root: &Path, code: &'a Code) -> Result<&(String, CodeIdentity), String> {
+        if !self.cached.contains_key(code) {
+            let identity = self.context.identity(root, code)?;
+            self.cached.insert(code, (code::hash(&identity.files), identity));
         }
-        Ok(&self.0[code])
+        Ok(&self.cached[code])
     }
 }
 
@@ -344,6 +541,19 @@ pub fn snapshot_files(
     })
 }
 
+/// The files of a layer that `selected` names, or all of them when it names none, and the selected
+/// paths that the layer lacks.
+fn select_layer<'a>(files: &'a [LayerFile], selected: &'a [String]) -> (Vec<&'a LayerFile>, Vec<&'a str>) {
+    let chosen = files.iter().filter(|file| selected.is_empty() || selected.contains(&file.path)).collect();
+    let missing = selected.iter().filter(|path| !files.iter().any(|file| &file.path == *path));
+    (chosen, missing.map(String::as_str).collect())
+}
+
+/// The digest of the files of a layer that `selected` names: what a step that reads them keys.
+pub(crate) fn layer_digest(files: &[LayerFile], selected: &[String]) -> String {
+    digest(select_layer(files, selected).0.into_iter().map(|file| (file.path.as_str(), file.sha256.as_str())))
+}
+
 /// Link each file of `files` (a path such as `layer/a.pbf`, and its object) into the new directory
 /// `dir`, for a tool that reads a directory. `dir` must not be in the output of the step; the
 /// directory beside it, `request.output.with_file_name("view")`, goes when the step ends.
@@ -361,6 +571,24 @@ pub fn view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
+/// A step whose layer is the one file of its snapshot or selected layer inputs, at the path of the option
+/// `path`: a layer that other steps read, whatever gives its bytes. It only passes an input on, so,
+/// like the rest of the engine, it is no code of a step. Its step declares the crate `obc-data`,
+/// which adds no file.
+pub fn pass(request: &Request) -> Result<(), String> {
+    let path = request.options["path"].as_str().ok_or("option `path` is not a string")?;
+    let files: Vec<&PathBuf> =
+        request.snapshots.values().chain(request.layers.values()).flat_map(BTreeMap::values).collect();
+    let [file] = files[..] else {
+        return Err(format!("the step reads {} files, not one", files.len()));
+    };
+    let output = request.output.join(path);
+    // The output is the same object as the input, so a link saves a copy.
+    fs::hard_link(file, &output)
+        .or_else(|_| fs::copy(file, &output).map(drop))
+        .map_err(|e| format!("{}: {e}", output.display()))
+}
+
 #[cfg(unix)]
 fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(object, link)
@@ -376,7 +604,7 @@ fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
 fn prepare(
     store: &Store,
     step: &Step,
-    layers: &HashMap<&str, Receipt>,
+    layers: &HashMap<&str, release::Layer>,
     code: &str,
 ) -> Result<(Receipt, Request), String> {
     if !step.options.is_object() {
@@ -386,14 +614,16 @@ fn prepare(
         step: step.name.clone(),
         snapshots: BTreeMap::new(),
         layers: BTreeMap::new(),
+        layer_files: BTreeMap::new(),
         options: step.options.clone(),
+        libraries: step.code.libraries.clone(),
         output: PathBuf::new(),
         metrics: PathBuf::new(),
     };
     let mut inputs = Vec::new();
     let mut bytes_in = 0;
     for input in &step.inputs {
-        let (kind, name, files): (_, _, Vec<(String, String, u64)>) = match input {
+        let (kind, name, selected, files): (_, _, _, Vec<(String, String, u64)>) = match input {
             Input::Snapshot { source, version, params, files: selected } => {
                 let files = match selection(store, source, version, params, selected)? {
                     Selection::Present(files) => files,
@@ -404,20 +634,31 @@ fn prepare(
                         })
                     }
                 };
+                let mut names: Vec<_> = files.iter().map(|file| file.name.clone()).collect();
+                names.sort();
                 let files = files.into_iter().map(|file| (file.name, file.sha256, file.size));
-                (InputKind::Snapshot, source, files.collect())
+                (InputKind::Snapshot, source, names, files.collect())
             }
-            Input::Layer(name) => {
-                let files = layers[name.as_str()].files.iter();
-                (
-                    InputKind::Layer,
-                    name,
-                    files.map(|file| (file.path.clone(), file.sha256.clone(), file.size)).collect(),
-                )
+            Input::Layer { name, files: selected } => {
+                let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
+                if let Some(path) = missing.first() {
+                    return Err(format!("layer `{name}` has no file {path}"));
+                }
+                let files = files.into_iter().map(|file| (file.path.clone(), file.sha256.clone(), file.size));
+                let mut selected = selected.clone();
+                selected.sort();
+                (InputKind::Layer, name, selected, files.collect())
             }
         };
         let digest = digest(files.iter().map(|(name, sha256, _)| (name.as_str(), sha256.as_str())));
-        let record = InputRecord { kind, name: name.clone(), digest };
+        let record = InputRecord { kind, name: name.clone(), digest, files: selected };
+        if kind == InputKind::Layer {
+            let metadata = files
+                .iter()
+                .map(|(path, sha256, size)| LayerFile { path: path.clone(), sha256: sha256.clone(), size: *size })
+                .collect();
+            request.layer_files.insert(name.clone(), metadata);
+        }
         let mut paths = BTreeMap::new();
         for (name, sha256, size) in files {
             let object = store.object(&sha256);
@@ -442,6 +683,13 @@ fn prepare(
     match &step.run {
         Run::Rust(_) if step.code.crates.is_empty() => {
             return Err("a Rust step must declare the crate of its function in its code".into());
+        }
+        Run::Rust(_)
+            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Dev })) =>
+        {
+            return Err(
+                "a Rust function runs in the native release worker; use a command for prepared or dev code".into()
+            );
         }
         Run::Command(argv) => {
             let outside = |arg: &&String| {
@@ -490,16 +738,19 @@ fn build_step(
     step: &Step,
     mut receipt: Receipt,
     mut request: Request,
+    checks: &std::sync::Mutex<code::Context>,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
-    if let Some(stored) = reusable(store, &receipt.key)? {
+    check_code(checks, root, step, &receipt.code)?;
+    if let Some(mut stored) = reusable(store, &receipt.key)? {
+        stored.inputs = receipt.inputs.clone();
         return Ok(Built { receipt: stored, reused: true });
     }
     let work = store.partial(&format!("layer-{}", receipt.key));
     request.output = work.join("output");
     request.metrics = work.join("metrics.json");
     remove_dir(&work)?;
-    let result = execute(store, root, step, &request, &mut receipt);
+    let result = execute(store, root, step, &request, &mut receipt, checks);
     let removed = remove_dir(&work);
     result?;
     removed?;
@@ -508,12 +759,20 @@ fn build_step(
 }
 
 /// Run the step, move its files into the objects, and record them, its metrics and its cost.
-fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: &mut Receipt) -> Result<(), String> {
+fn execute(
+    store: &Store,
+    root: &Path,
+    step: &Step,
+    request: &Request,
+    receipt: &mut Receipt,
+    checks: &std::sync::Mutex<code::Context>,
+) -> Result<(), String> {
     fs::create_dir_all(&request.output).map_err(|e| format!("{}: {e}", request.output.display()))?;
     let usage = match &step.run {
         Run::Rust(function) => process::in_process(|| function(request)),
-        Run::Command(argv) => process::run(root, argv, request),
+        Run::Command(argv) => process::run(root, argv, request, Some((&step.code, receipt.code.as_str()))),
     }?;
+    check_code(checks, root, step, &receipt.code)?;
     receipt.files = collect(store, &request.output, &step.outputs)?;
     receipt.metrics = match fs::read_to_string(&request.metrics) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| format!("the metrics are not a JSON object: {e}"))?,
@@ -526,6 +785,20 @@ fn execute(store: &Store, root: &Path, step: &Step, request: &Request, receipt: 
     receipt.wall_ms = usage.wall_ms;
     receipt.cpu_ms = usage.cpu_ms;
     receipt.peak_rss_bytes = usage.peak_rss_bytes;
+    Ok(())
+}
+
+fn check_code(
+    checks: &std::sync::Mutex<code::Context>,
+    root: &Path,
+    step: &Step,
+    expected: &str,
+) -> Result<(), String> {
+    let mut context = checks.lock().map_err(|_| "code checking failed")?;
+    context.refresh_python();
+    if code::hash(&context.files(root, &step.code)?) != expected {
+        return Err(format!("the code of {} changed; plan again", step.name));
+    }
     Ok(())
 }
 
@@ -543,10 +816,10 @@ impl InputKind {
 fn collect(store: &Store, output: &Path, declared: &[String]) -> Result<Vec<LayerFile>, String> {
     let mut paths = Vec::new();
     walk(output, "", &mut paths)?;
-    let covers = |declared: &str, path: &str| {
-        path == declared || path.strip_prefix(declared).is_some_and(|rest| rest.starts_with('/'))
-    };
-    if let Some(missing) = declared.iter().find(|declared| !paths.iter().any(|path| covers(declared, path))) {
+    if let Some(missing) = declared
+        .iter()
+        .find(|declared| !output.join(declared).is_dir() && !paths.iter().any(|path| covers(declared, path)))
+    {
         return Err(format!("it did not write its output {missing}"));
     }
     if let Some(extra) = paths.iter().find(|path| !declared.iter().any(|declared| covers(declared, path))) {
@@ -614,6 +887,46 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             self.scratch.0.join("repository")
         }
 
+        pub(crate) fn with_acquisition(&self) {
+            let root = self.root();
+            let source = crate::fetch::tests::source("https://example.org/file.bin", "date");
+            for path in crate::fetch::owner_code(&source).code.paths {
+                write(&root.join(path), "// fixture acquisition backend\n");
+            }
+            write(&root.join("host/obc-data/src/lib.rs"), "");
+            write(
+                &root.join("host/obc-data/Cargo.toml"),
+                "[package]\nname = \"obc-data\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            );
+            let manifest = root.join("Cargo.toml");
+            let mut workspace: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+            workspace["workspace"]["members"].as_array_mut().unwrap().push("host/obc-data".into());
+            write(&manifest, &toml::to_string(&workspace).unwrap());
+            let lock =
+                Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(&root).output().unwrap();
+            assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
+        }
+
+        pub(crate) fn with_sources(&self, sources: &[crate::sources::Source]) {
+            let root = self.root();
+            for source in sources {
+                for path in crate::fetch::owner_code(source).code.paths {
+                    write(&root.join(path), "// fixture acquisition backend\n");
+                }
+            }
+            let mut registry = sources.to_vec();
+            for source in &mut registry {
+                // Registry URLs stay HTTPS; requests use the existing loopback transport seam.
+                if let Some(url) = &mut source.fetch.url {
+                    *url = url.replacen("http://", "https://", 1);
+                }
+            }
+            write(
+                &root.join("data/sources.toml"),
+                &toml::to_string(&std::collections::BTreeMap::from([("source", registry)])).unwrap(),
+            );
+        }
+
         pub(crate) fn plan(&self, steps: &[Step]) -> Result<plan::Plan, String> {
             plan::plan(&self.store, &self.root(), steps)
         }
@@ -631,7 +944,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         ) -> Result<Vec<Built>, String> {
             let mut run = runs::Run::create(&self.store, "build test")?;
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
-            let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, limits };
+            let context =
+                runs::Context { store: &self.store, root: &root, sources: &[], http: &http, copies: None, limits };
             let built = run.build(&context, steps, plan);
             run.finish(built.as_ref().err().map(String::as_str))?;
             built
@@ -665,7 +979,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     /// A git repository with a workspace of `crates`; each `(name, dependencies)`.
-    fn repository(root: &Path, crates: &[(&str, &str)]) {
+    pub(crate) fn repository(root: &Path, crates: &[(&str, &str)]) {
         let members: Vec<String> = crates.iter().map(|(name, _)| format!("{name:?}")).collect();
         write(
             &root.join("Cargo.toml"),
@@ -677,10 +991,19 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             write(&root.join(format!("{name}/src/lib.rs")), "");
         }
         assert!(Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
+        let lock = Command::new("cargo").args(["generate-lockfile", "--offline"]).current_dir(root).output().unwrap();
+        assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
     }
 
     /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py` and the
     /// crate `steps`.
+    pub(crate) fn live_settings(fixture: &Fixture, region: &str) {
+        let regions = crate::regions::Regions::load(&fixture.root()).unwrap();
+        let definitions = regions.iter().map(|region| (region.id.clone(), region.definition().unwrap())).collect();
+        let settings = crate::settings::Settings { region: region.into(), definitions, ..Default::default() };
+        crate::settings::save(&fixture.store, &settings).unwrap();
+    }
+
     pub(crate) fn fixture(name: &str) -> Fixture {
         let scratch = Scratch::new(name);
         let store = Store::at(scratch.0.join("store"));
@@ -704,11 +1027,41 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     pub(crate) fn step(name: &str, inputs: Vec<Input>, code: Code, output: &str, run: Run) -> Step {
-        Step { name: name.into(), inputs, options: json!({}), code, outputs: vec![output.into()], run }
+        Step {
+            name: name.into(),
+            inputs,
+            options: json!({}),
+            code,
+            outputs: vec![output.into()],
+            run,
+            client: Client::All,
+        }
+    }
+
+    pub(crate) fn packaged(client: Client) -> Step {
+        fn run(request: &Request) -> Result<(), String> {
+            for dir in ["published", "published-extra"] {
+                fs::create_dir(request.output.join(dir)).map_err(|e| e.to_string())?;
+            }
+            for (path, bytes) in [
+                ("published/a", "payload"),
+                ("published/b", "payload"),
+                ("published-extra/a", "other"),
+                ("index.json", "metadata"),
+            ] {
+                fs::write(request.output.join(path), bytes).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        Step {
+            client,
+            outputs: ["published", "published-extra", "index.json"].map(String::from).into(),
+            ..step("test/package", Vec::new(), steps_crate(), "", Run::Rust(run))
+        }
     }
 
     pub(crate) fn steps_crate() -> Code {
-        Code { paths: Vec::new(), crates: vec!["steps".into()] }
+        Code { paths: Vec::new(), crates: vec!["steps".into()], ..Default::default() }
     }
 
     pub(crate) fn snapshot(source: &str, version: &str, files: &[&str]) -> Input {
@@ -724,17 +1077,11 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     /// first: the engine orders them. `test/upper` selects `head.txt`; `test/join` reads every file
     /// of `tail@1`.
     pub(crate) fn pipeline() -> Vec<Step> {
-        let join = Code { paths: vec!["join.py".into()], crates: Vec::new() };
+        let join = Code { paths: vec!["join.py".into()], crates: Vec::new(), ..Default::default() };
         let python = Run::Command(vec!["python3".into(), "join.py".into()]);
         vec![
-            step("test/count", vec![Input::Layer("test/join".into())], steps_crate(), "count", Run::Rust(count)),
-            step(
-                "test/join",
-                vec![Input::Layer("test/upper".into()), snapshot("tail", "1", &[])],
-                join,
-                "joined.txt",
-                python,
-            ),
+            step("test/count", vec![Input::layer("test/join")], steps_crate(), "count", Run::Rust(count)),
+            step("test/join", vec![Input::layer("test/upper"), snapshot("tail", "1", &[])], join, "joined.txt", python),
             step(
                 "test/upper",
                 vec![snapshot("head", "1", &["head.txt"])],
@@ -778,6 +1125,51 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     #[test]
+    fn an_empty_client_directory_retains_metadata_and_missing_outputs_still_fail() {
+        let fixture = fixture("engine-empty-client");
+        fn sea(request: &Request) -> Result<(), String> {
+            fs::create_dir(request.output.join("terrain")).map_err(|e| e.to_string())?;
+            write_atomic(&request.output.join("metadata/empty.json"), b"[\"13/10000/10000\"]")
+        }
+        let step = Step {
+            name: "test/sea".into(),
+            inputs: Vec::new(),
+            options: json!({}),
+            code: steps_crate(),
+            outputs: vec!["terrain".into(), "metadata".into()],
+            run: Run::Rust(sea),
+            client: Client::Paths(vec!["terrain".into()]),
+        };
+        let built = fixture.build(&[step]).unwrap();
+        assert_eq!(
+            built[0].receipt.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            ["metadata/empty.json"]
+        );
+        let missing = Step {
+            name: "test/missing".into(),
+            inputs: Vec::new(),
+            options: json!({}),
+            code: steps_crate(),
+            outputs: vec!["absent".into()],
+            run: Run::Rust(sea),
+            client: Client::All,
+        };
+        assert!(fixture.build(&[missing]).unwrap_err().contains("did not write its output absent"));
+        let step = Step {
+            name: "test/sea".into(),
+            inputs: Vec::new(),
+            options: json!({}),
+            code: steps_crate(),
+            outputs: vec!["terrain".into(), "metadata".into()],
+            run: Run::Rust(sea),
+            client: Client::Paths(vec!["terrain".into()]),
+        };
+        let release = release::release(&fixture.store, &fixture.root(), "test", "sea", &[], &[step]).unwrap().unwrap();
+        assert!(release.objects().is_empty());
+        assert_eq!(release.layers[0].files.len(), 1);
+    }
+
+    #[test]
     fn a_code_change_rebuilds_its_layer_and_stops_where_the_bytes_are_the_same() {
         let fixture = fixture("engine-code");
         let first = fixture.build(&pipeline()).unwrap();
@@ -797,7 +1189,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     #[test]
     fn a_snapshot_input_keys_only_the_files_it_selects() {
         let fixture = fixture("engine-select");
-        fixture.build(&pipeline()).unwrap();
+        let built = fixture.build(&pipeline()).unwrap();
+        let mut old = built[0].receipt.clone();
+        let resolved = old.inputs[0].files.clone();
+        assert!(!resolved.is_empty());
+        old.inputs[0].files.clear();
+        fixture.store.put_layer(&old).unwrap();
+        let released =
+            release::release(&fixture.store, &fixture.root(), "test", "monaco", &[], &pipeline()).unwrap().unwrap();
+        let restored = released.layers.iter().find(|l| l.key == old.key).unwrap();
+        assert_eq!(
+            restored.inputs[0].files, resolved,
+            "a freshly resolved digest-matching selection repairs provenance without rebuilding bytes"
+        );
+
         fixture.fetched("head", "other.txt", b"other\n");
         assert_eq!(fixture.plan(&pipeline()).unwrap().groups, []);
 
@@ -811,6 +1216,50 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(fetches[0].files, ["x"], "a missing file is a fetch");
         let err = fixture.build(&steps).err().unwrap();
         assert_eq!(err, "fetch head@1: no source `head` in data/sources.toml");
+    }
+
+    #[test]
+    fn a_layer_input_keys_and_passes_only_the_files_it_selects() {
+        fn split(request: &Request) -> Result<(), String> {
+            fs::create_dir(request.output.join("leaves")).map_err(|e| e.to_string())?;
+            for (name, object) in &request.snapshots["head"] {
+                fs::copy(object, request.output.join("leaves").join(name)).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        fn one(request: &Request) -> Result<(), String> {
+            assert_eq!(request.layer_files.keys().collect::<Vec<_>>(), request.layers.keys().collect::<Vec<_>>());
+            let files = &request.layer_files["test/leaves"];
+            assert_eq!(
+                files.iter().map(|file| &file.path).collect::<Vec<_>>(),
+                request.layers["test/leaves"].keys().collect::<Vec<_>>()
+            );
+            assert_eq!((files[0].sha256.as_str(), files[0].size), (sha256_hex(b"head\n").as_str(), 5));
+            let [object] = request.layers["test/leaves"].values().collect::<Vec<_>>()[..] else {
+                return Err("the step reads more than one file".into());
+            };
+            fs::copy(object, request.output.join("one.txt")).map(drop).map_err(|e| e.to_string())
+        }
+        let steps = |file: &str| {
+            vec![
+                step("test/leaves", vec![snapshot("head", "1", &[])], steps_crate(), "leaves", Run::Rust(split)),
+                step(
+                    "test/one",
+                    vec![Input::Layer { name: "test/leaves".into(), files: vec![file.into()] }],
+                    steps_crate(),
+                    "one.txt",
+                    Run::Rust(one),
+                ),
+            ]
+        };
+        let fixture = fixture("engine-layer-files");
+        fixture.build(&steps("leaves/head.txt")).unwrap();
+        fixture.fetched("head", "other.txt", b"other\n");
+        let built = fixture.build(&steps("leaves/head.txt")).unwrap();
+        assert_eq!(summary(&built), [("test/leaves", false), ("test/one", true)]);
+
+        let err = fixture.build(&steps("leaves/x.txt")).err().unwrap();
+        assert!(err.contains("layer `test/leaves` has no file leaves/x.txt"), "{err}");
     }
 
     #[test]
@@ -832,6 +1281,20 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             (Run::Rust(nothing), steps_crate(), "did not write its output upper.txt"),
             (Run::Rust(extra), steps_crate(), "wrote extra.txt, which is not one of its outputs"),
             (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
+            (
+                Run::Rust(upper),
+                Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..steps_crate() },
+                "native release worker",
+            ),
+            (
+                Run::Rust(upper),
+                Code {
+                    rust: Some(Rust::Prepared { profile: Profile::Release }),
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    ..steps_crate()
+                },
+                "native release worker",
+            ),
             (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "argument /usr/bin/true names a path"),
             (Run::Command(vec!["x".into(), "--in=/tmp".into()]), Code::default(), "argument --in=/tmp names a path"),
             (Run::Command(vec!["x".into(), "a/../../b".into()]), Code::default(), "argument a/../../b names a path"),
@@ -849,18 +1312,23 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     }
 
     #[test]
-    fn a_crate_brings_its_path_dependencies_its_included_files_and_cargo_lock_only_when_declared() {
+    fn a_crate_binds_path_sources_and_included_files_without_dev_sources_or_lock_comments() {
         let scratch = Scratch::new("engine-crates");
         let app = "[dependencies]\nlib = { path = \"../lib\" }\n[dev-dependencies]\ncheck = { path = \"../check\" }\n";
         repository(&scratch.0, &[("app", app), ("lib", ""), ("check", "")]);
         let hash = |paths: &[&str]| {
-            let code = Code { paths: paths.iter().map(|path| path.to_string()).collect(), crates: vec!["app".into()] };
+            let code = Code {
+                paths: paths.iter().map(|path| path.to_string()).collect(),
+                crates: vec!["app".into()],
+                ..Default::default()
+            };
             code_hash(&scratch.0, &code).unwrap()
         };
         let before = hash(&[]);
         write(&scratch.0.join("check/src/lib.rs"), "pub fn helper() {}\n");
-        write(&scratch.0.join("Cargo.lock"), "version = 4\n");
-        assert_eq!(hash(&[]), before, "a dev-dependency and an undeclared Cargo.lock are not code");
+        let lock = fs::read_to_string(scratch.0.join("Cargo.lock")).unwrap();
+        write(&scratch.0.join("Cargo.lock"), &(lock + "\n# A lock record comment.\n"));
+        assert_eq!(hash(&[]), before, "dev sources and lock comments do not change the resolved producer identity");
         let lib =
             "pub const TABLE: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/../\", r\"table.txt\"));
 #[path = \"../../gen/x.rs\"]
@@ -881,16 +1349,79 @@ mod x;
     }
 
     #[test]
+    fn rust_content_identity_follows_explicit_targets_for_normal_and_build_dependencies() {
+        let scratch = Scratch::new("engine-target-code");
+        let app = "[target.'cfg(target_os = \"linux\")'.dependencies]\nlinux-normal = { path = \"../linux-normal\" }\n[target.'cfg(target_os = \"linux\")'.build-dependencies]\nlinux-build = { path = \"../linux-build\" }\n[target.'cfg(target_os = \"macos\")'.dependencies]\nmac-normal = { path = \"../mac-normal\" }\n[target.'cfg(target_os = \"macos\")'.build-dependencies]\nmac-build = { path = \"../mac-build\" }\n";
+        repository(
+            &scratch.0,
+            &[("app", app), ("linux-normal", ""), ("linux-build", ""), ("mac-normal", ""), ("mac-build", "")],
+        );
+        write(&scratch.0.join("app/build.rs"), "fn main() {}\n");
+        let mut context = code::Context::default();
+        let selected = |target: &str| Code {
+            crates: vec!["app".into()],
+            target: Some(target.into()),
+            rust: Some(Rust::Prepared { profile: Profile::Release }),
+            ..Default::default()
+        };
+        let linux = context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap();
+        let mac = context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap();
+        for kind in ["normal", "build"] {
+            assert!(
+                linux.contains_key(&format!("linux-{kind}/src/lib.rs")),
+                "Linux {kind} is selected from any probe host"
+            );
+            assert!(!linux.contains_key(&format!("mac-{kind}/src/lib.rs")));
+            assert!(mac.contains_key(&format!("mac-{kind}/src/lib.rs")));
+            assert!(!mac.contains_key(&format!("linux-{kind}/src/lib.rs")));
+        }
+        assert_ne!(linux["rust/target"], mac["rust/target"]);
+        write(&scratch.0.join("linux-build/src/lib.rs"), "pub fn changed() {}\n");
+        assert_ne!(context.files(&scratch.0, &selected("x86_64-unknown-linux-gnu")).unwrap(), linux);
+        assert_eq!(context.files(&scratch.0, &selected("aarch64-apple-darwin")).unwrap(), mac);
+    }
+
+    #[test]
     fn the_engine_is_no_code_of_a_step() {
         let scratch = Scratch::new("engine-not-code");
         repository(
             &scratch.0,
             &[("steps", "[dependencies]\nobc-data = { path = \"../obc-data\" }\n"), ("obc-data", "")],
         );
-        let code = Code { paths: Vec::new(), crates: vec!["steps".into()] };
+        let code = Code { paths: Vec::new(), crates: vec!["steps".into()], ..Default::default() };
+        write(&scratch.0.join("data/sources.toml"), "source = []\n");
         let before = code_hash(&scratch.0, &code).unwrap();
+        let compiled = code::compiled(&scratch.0, &code.crates).unwrap();
         write(&scratch.0.join("obc-data/src/lib.rs"), "pub fn select() {}\n");
         assert_eq!(code_hash(&scratch.0, &code).unwrap(), before);
+        assert_ne!(code::compiled(&scratch.0, &code.crates).unwrap(), compiled, "the worker also binds its engine");
+    }
+
+    #[test]
+    fn a_persistent_code_change_during_a_rust_or_command_step_leaves_no_output_object_or_receipt() {
+        fn edit(request: &Request) -> Result<(), String> {
+            fs::write(request.options["code"].as_str().unwrap(), "// changed during execution\n")
+                .map_err(|e| e.to_string())?;
+            fs::write(request.output.join("result.txt"), b"unaccepted output").map_err(|e| e.to_string())
+        }
+        for rust in [true, false] {
+            let fixture = fixture(if rust { "rust-drift" } else { "command-drift" });
+            let code = if rust {
+                fixture.root().join("steps/src/lib.rs")
+            } else {
+                let code = fixture.root().join("edit.py");
+                write(&code, "import json, pathlib, sys\nr=json.load(sys.stdin)\npathlib.Path(r['options']['code']).write_text('# changed during execution\\n')\n(pathlib.Path(r['output'])/'result.txt').write_bytes(b'unaccepted output')\n");
+                code
+            };
+            let identity = if rust { steps_crate() } else { Code { paths: vec!["edit.py".into()], ..Code::default() } };
+            let run = if rust { Run::Rust(edit) } else { Run::Command(vec!["python3".into(), "edit.py".into()]) };
+            let mut step = step("test/drift", Vec::new(), identity, "result.txt", run);
+            step.options = json!({"code":code});
+            let error = fixture.build(&[step]).err().unwrap();
+            assert!(error.contains("code of test/drift changed"), "{error}");
+            assert!(!fixture.store.root().join("layers").exists());
+            assert!(!fixture.store.object(&sha256_hex(b"unaccepted output")).exists());
+        }
     }
 
     #[test]
@@ -908,7 +1439,7 @@ mod x;
     #[test]
     fn a_code_path_that_git_does_not_list_fails() {
         let scratch = Scratch::new("engine-ignored");
-        let code = Code { paths: vec!["ignored.txt".into()], crates: Vec::new() };
+        let code = Code { paths: vec!["ignored.txt".into()], crates: Vec::new(), ..Default::default() };
         write(&scratch.0.join("ignored.txt"), "");
         let err = code_hash(&scratch.0, &code).unwrap_err();
         assert!(err.contains("obc data runs in a git checkout"), "{err}");

@@ -1,2 +1,5 @@
 name = "Regierungsbezirk Stuttgart"
 kind = "geofabrik"
+areas = ["europe/germany/baden-wuerttemberg/stuttgart-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

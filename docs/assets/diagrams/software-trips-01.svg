@@ -1,0 +1,27 @@
+<svg viewBox="0 0 720 262" role="img" aria-label="A trip line with three days and two day ends. The rider rides all of Day 1 and stops early on Day 2. The next route on the device starts at the early stop, runs through the rest of Day 2 and continues through all of Day 3. It is one ordinary route." xmlns="http://www.w3.org/2000/svg" width="720" height="262" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">After an early stop on Day 2</text>
+  <text class="d-title" x="20" y="62" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">The trip line</text>
+  <text class="d-label" x="145" y="88" text-anchor="middle" fill="#1c1b14" font-size="14px">Day 1</text>
+  <text class="d-label" x="360" y="88" text-anchor="middle" fill="#1c1b14" font-size="14px">Day 2</text>
+  <text class="d-label" x="575" y="88" text-anchor="middle" fill="#1c1b14" font-size="14px">Day 3</text>
+  <path class="d-stroke" d="M40 110 H680" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <path class="d-flow" d="M40 110 H400" style="stroke-width: 6" fill="none" stroke="#a4501e" stroke-width="2" />
+  <circle class="d-forest" cx="40" cy="110" r="5" fill="#a4501e" />
+  <circle class="d-amber" cx="250" cy="110" r="7" fill="#f4a81d" />
+  <circle class="d-amber" cx="470" cy="110" r="7" fill="#f4a81d" />
+  <circle class="d-forest" cx="680" cy="110" r="5" fill="#a4501e" />
+  <circle class="d-hot-fill" cx="400" cy="110" r="6" fill="#ae4825" />
+  <text class="d-sub" x="40" y="136" text-anchor="middle" fill="#5c5a2e" font-size="12px">Start</text>
+  <text class="d-sub" x="250" y="136" text-anchor="middle" fill="#5c5a2e" font-size="12px">Day end</text>
+  <text class="d-sub" x="470" y="136" text-anchor="middle" fill="#5c5a2e" font-size="12px">Day end</text>
+  <text class="d-sub" x="680" y="136" text-anchor="middle" fill="#5c5a2e" font-size="12px">Trip end</text>
+  <text class="d-sub" x="145" y="156" text-anchor="middle" fill="#5c5a2e" font-size="12px">Ridden</text>
+  <text class="d-sub" x="392" y="156" text-anchor="end" fill="#5c5a2e" font-size="12px">Early stop, Finish</text>
+  <path class="d-stroke" d="M400 166 V196" stroke-dasharray="4 4" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <path class="d-stroke" d="M470 146 V196" stroke-dasharray="4 4" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <path class="d-stroke" d="M680 146 V196" stroke-dasharray="4 4" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <text class="d-title" x="20" y="214" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Next route</text>
+  <path class="d-hot" d="M400 210 H680" style="stroke-width: 6" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-sub" x="435" y="238" text-anchor="middle" fill="#5c5a2e" font-size="12px">Rest of Day 2</text>
+  <text class="d-sub" x="575" y="238" text-anchor="middle" fill="#5c5a2e" font-size="12px">Day 3</text>
+</svg>

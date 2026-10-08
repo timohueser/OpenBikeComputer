@@ -9,12 +9,18 @@ from urllib.request import Request, urlopen
 # Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked by `tools/planner_NAME.py` when
 # the region recipe has the field NAME. The value is a metadata key that every complete archive has.
 # The catalogue entry lists each layer in `layers`; the web planner shows it through its module in
-# builder/app/src/lib/planner/layers/registry.ts.
+# builder/web/src/lib/planner/layers/registry.ts.
 DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
 
 
 def encoded(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+
+
+def refuse_applied(catalog):
+    """Once `obc data apply live` wrote the catalogue, only an apply changes live."""
+    if isinstance(catalog, dict) and "release" in catalog:
+        raise ValueError("planner/catalog.json names a release of obc data apply live; apply live instead")
 
 
 def digest(path):

@@ -4,8 +4,8 @@
 //! questions live here, and keeping them separate is the whole design:
 //!
 //! - Which extract is current? The store answers it: `obc_data` fetches the sources
-//!   `geofabrik-extracts` and `geofabrik-poly` at their live pins, or else at the newest day
-//!   Geofabrik has, and keeps each version once.
+//!   `geofabrik-extracts` and `geofabrik-poly` at the newest day Geofabrik has, and keeps
+//!   each version once.
 //! - Did the input change since the last bake? Answered with the file's SHA-256, in the cell
 //!   bakery. That is the idempotency key and it is never a date.
 //!
@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 
-use obc_pack::progress::Progress;
+use obc_map_core::progress::Progress;
 
 use crate::regions::Region;
 

@@ -78,7 +78,7 @@ on:
       - "apps/obc-web-assemble/**"
       - "apps/obc-web-convert/**"
       - "apps/obc-skin-preview/**"
-      - "apps/obc-web-demo/**"
+      - "sim/web-demo/**"
       - "host/obcm-assemble/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -146,14 +146,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: builder/app/package-lock.json
+          cache-dependency-path: builder/web/package-lock.json
 
       # VITE_SITE_BASE makes the builder's links to the docs and the landing relative:
       # they are siblings inside this artifact, so naming them by absolute URL would be
       # the one place a domain move still bit us. Left unset everywhere else (dev
       # server, desktop app), where the site genuinely is somewhere else.
       - name: Build the static map builder
-        working-directory: builder/app
+        working-directory: builder/web
         env:
           VITE_SITE_BASE: "../"
         run: |
@@ -161,7 +161,7 @@ jobs:
           npm run build:web
 
       - name: Build the public route planner
-        working-directory: builder/app
+        working-directory: builder/web
         env:
           VITE_SITE_BASE: "../"
         run: npm run build:planner
@@ -169,9 +169,9 @@ jobs:
       - name: Assemble the site
         run: |
           mkdir -p docs/dist/builder
-          cp -R builder/app/dist/web/. docs/dist/builder/
+          cp -R builder/web/dist/web/. docs/dist/builder/
           mkdir -p docs/dist/plan
-          cp -R builder/app/dist/planner/. docs/dist/plan/
+          cp -R builder/web/dist/planner/. docs/dist/plan/
           mv docs/dist/plan/planner.html docs/dist/plan/index.html
           du -sh docs/dist/* | sort -h
 

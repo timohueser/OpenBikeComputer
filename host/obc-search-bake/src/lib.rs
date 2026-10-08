@@ -8,6 +8,7 @@ mod interpolation;
 mod places;
 mod policy;
 mod postcodes;
+pub mod step;
 
 use enrich::{house_addresses, Index};
 use osmpbfreader::OsmId;
@@ -34,13 +35,15 @@ fn hash(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+/// Write the search dump of `osm` to `output`, which must not exist. Returns the report: the record
+/// count, the time, the OSM digest and the count of incomplete geometries.
 pub fn bake(
     osm: &Path,
     output: &Path,
     country: &str,
     country_grid: Option<&Path>,
     policy_path: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let start = Instant::now();
     if output.exists() {
         return Err("The output file must not exist".into());
@@ -66,14 +69,13 @@ pub fn bake(
     let index = Index::new(&input, &countries, &policy);
     eprintln!("Write address records");
     let count = write_dump(output, |mut stream| {
-        serde_json::to_writer(
+        write_line(
             &mut stream,
-            &json!({"type":"NominatimDumpFile","content":{
+            json!({"type":"NominatimDumpFile","content":{
                 "generator":"obc-search-bake","scope":"all","osm_sha256":osm_hash,"data_timestamp":null,
                 "default_country":country,"country_grid_sha256":grid_hash,"policy_sha256":policy_hash
             }}),
         )?;
-        writeln!(stream)?;
         let mut count = 0;
         for (i, f) in input
             .features
@@ -113,8 +115,7 @@ pub fn bake(
                 "country_code":country,"centroid":[p.x(),p.y()],"bbox":[extent.lower()[0],extent.lower()[1],extent.upper()[0],extent.upper()[1]],
                 "name":if f.road() { json!(name) } else { json!({}) },"address":a,"postcode":a.get("postcode").map(|s| s.as_str()).unwrap_or(""),"importance":0.05});
             if houses.is_empty() {
-                serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[record]}))?;
-                writeln!(stream)?;
+                write_line(&mut stream, json!({"type":"Place","content":[record]}))?;
                 count += 1;
             } else {
                 for (house, street) in houses {
@@ -133,8 +134,7 @@ pub fn bake(
                     if let Some(street) = street {
                         record["address"]["street"] = json!(street);
                     }
-                    serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[&record]}))?;
-                    writeln!(stream)?;
+                    write_line(&mut stream, json!({"type":"Place","content":[&record]}))?;
                     count += 1;
                 }
             }
@@ -144,19 +144,37 @@ pub fn bake(
         for (i, f) in input.features.iter().enumerate() {
             if let Some(record) = places::record(f, i, &index) {
                 if emitted.insert(f.source) {
-                    serde_json::to_writer(&mut stream, &json!({"type":"Place","content":[record]}))?;
-                    writeln!(stream)?;
+                    write_line(&mut stream, json!({"type":"Place","content":[record]}))?;
                     count += 1;
                 }
             }
         }
         Ok(count)
     })?;
-    println!(
-        "{}",
-        json!({"records":count,"seconds":start.elapsed().as_secs_f64(),"osm_sha256":osm_hash,"incomplete_geometries":input.incomplete_geometries})
-    );
+    Ok(
+        json!({"records":count,"seconds":start.elapsed().as_secs_f64(),"osm_sha256":osm_hash,"incomplete_geometries":input.incomplete_geometries}),
+    )
+}
+
+/// Write `value` as one line, with the keys of each object in byte order: the order of the dump also
+/// in a binary in which another crate enables `serde_json/preserve_order`.
+fn write_line(stream: &mut dyn Write, value: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    serde_json::to_writer(&mut *stream, &sort_keys(value))?;
+    writeln!(stream)?;
     Ok(())
+}
+
+fn sort_keys(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().map(|(key, value)| (key, sort_keys(value))).collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_keys).collect()),
+        value => value,
+    }
 }
 
 fn write_dump(

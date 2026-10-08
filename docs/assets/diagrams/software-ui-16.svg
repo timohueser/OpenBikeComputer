@@ -1,0 +1,42 @@
+<svg viewBox="0 0 720 535" role="img" aria-label="Start a ride through Home, the main menu, Routes, and Overview. Start opens Map. Back cycles Map, Statistics, and an enabled active Climb. Select pauses. Select-hold on Map enters Inspect and Back leaves it. Chords open drawers; Back-hold opens the main menu except in blocking states." xmlns="http://www.w3.org/2000/svg" width="720" height="535" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs><marker id="software-ui-18" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Main rider paths</text>
+  <text class="d-title" x="20" y="65" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Start a route</text>
+  <rect class="d-panel" x="20" y="85" width="110" height="58" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="75" y="110" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Home</text>
+  <rect class="d-panel" x="163" y="85" width="120" height="58" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="223" y="110" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Main menu</text>
+  <rect class="d-panel" x="316" y="85" width="105" height="58" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="368.5" y="110" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Routes</text>
+  <rect class="d-panel" x="454" y="85" width="130" height="58" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="519" y="110" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Overview</text>
+  <path class="d-flow" d="M130 114 L160 114" marker-end="url(#software-ui-18)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M283 114 L313 114" marker-end="url(#software-ui-18)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M421 114 L451 114" marker-end="url(#software-ui-18)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M584 114 L624 114" marker-end="url(#software-ui-18)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel d-focus" x="627" y="85" width="73" height="58" rx="8" fill="#f9f0ee" stroke="#ae4825" stroke-width="2" />
+  <text class="d-title" x="663.5" y="110" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Map</text>
+  <text class="d-sub" x="604" y="76" text-anchor="middle" fill="#5c5a2e" font-size="12px">Start</text>
+  <text class="d-title" x="20" y="190" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">During a ride</text>
+  <rect class="d-panel d-focus" x="20" y="211" width="200" height="72" rx="8" fill="#f9f0ee" stroke="#ae4825" stroke-width="2" />
+  <text class="d-title" x="120" y="236" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Map</text>
+  <text class="d-sub" x="120" y="256" text-anchor="middle" fill="#5c5a2e" font-size="12px">Back → Statistics</text>
+  <path class="d-flow" d="M220 247 L258 247" marker-end="url(#software-ui-18)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="260" y="211" width="200" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="236" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Statistics</text>
+  <text class="d-sub" x="360" y="256" text-anchor="middle" fill="#5c5a2e" font-size="12px">Back → Climb or Map</text>
+  <path class="d-flow" d="M460 247 L498 247" marker-end="url(#software-ui-18)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="500" y="211" width="200" height="72" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="600" y="236" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Climb</text>
+  <text class="d-sub" x="600" y="256" text-anchor="middle" fill="#5c5a2e" font-size="12px">Active + enabled · Back → Map</text>
+  <text class="d-label" x="20" y="330" text-anchor="start" fill="#1c1b14" font-size="14px">Select on Map</text>
+  <text class="d-sub" x="255" y="330" text-anchor="start" fill="#5c5a2e" font-size="12px">Pause · Resume returns to the ride</text>
+  <text class="d-label" x="20" y="364" text-anchor="start" fill="#1c1b14" font-size="14px">Select-hold on Map</text>
+  <text class="d-sub" x="255" y="364" text-anchor="start" fill="#5c5a2e" font-size="12px">Inspect · Back returns to Map</text>
+  <text class="d-label" x="20" y="398" text-anchor="start" fill="#1c1b14" font-size="14px">Down + Back</text>
+  <text class="d-sub" x="255" y="398" text-anchor="start" fill="#5c5a2e" font-size="12px">Context drawer · Up ahead, Detour, POIs, Routes</text>
+  <text class="d-label" x="20" y="432" text-anchor="start" fill="#1c1b14" font-size="14px">Up + Select</text>
+  <text class="d-sub" x="255" y="432" text-anchor="start" fill="#5c5a2e" font-size="12px">Quick drawer · device controls</text>
+  <text class="d-label" x="20" y="466" text-anchor="start" fill="#1c1b14" font-size="14px">Back-hold</text>
+  <text class="d-sub" x="255" y="466" text-anchor="start" fill="#5c5a2e" font-size="12px">Main menu · except in blocking states</text>
+<path d="M600 283 V306 H120 V283" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#software-ui-18)"/><text class="d-sub" x="360" y="302" text-anchor="middle" fill="#5c5a2e" font-size="12px">Back returns to Map</text><text class="d-sub" x="20" y="512" text-anchor="start" fill="#5c5a2e" font-size="12px">Back skips Climb when it is inactive or disabled.</text></svg>

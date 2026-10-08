@@ -2,7 +2,7 @@
 """`obc ready` — the gates a change selects, before a push.
 
 The rule table below maps the changed paths to gates, and every gate prints `run` or `skip` with one
-reason. A gate whose work is a declared suite of `testing/suites.toml` is skipped, and its line
+reason. A gate whose work is a declared suite of `tools/testing/suites.toml` is skipped, and its line
 names the suite that does it, so nothing runs twice.
 
 A foundation input or the test policy selects the graph as a whole. That run is CI's, so the plan
@@ -26,8 +26,6 @@ from typing import Iterable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import docs_copy
-import docs_review
 import test_plan
 
 #: Cargo roots beside the root workspace. Each one formats through its own manifest.
@@ -50,7 +48,7 @@ STANDALONE_CLIPPY: dict[str, tuple[str, ...]] = {
         "cargo clippy --locked --lib --tests -- -D warnings",
         "cargo clippy --locked --features device --bin obc-sensor-sim --target thumbv8m.main-none-eabihf -- -D warnings",
     ),
-    "apps/obc-desktop": ("cargo clippy --release --all-targets --locked -- -D warnings",),
+    "builder/desktop": ("cargo clippy --release --all-targets --locked -- -D warnings",),
 }
 
 #: Paths that make `obc suites check` necessary, beside the test policy `test_plan` already names.
@@ -66,7 +64,9 @@ TEST_SOURCE_PATTERNS = (
 
 #: The documentation surface each documentation gate reads.
 DOCS = "docs/"
-DOCS_CONTENT = "docs/content/"
+
+#: This known delegate renders with stdlib Python and does not build a product.
+DOCS_CHECK = "just check-docs"
 
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
@@ -168,12 +168,21 @@ def builds_nothing(command: str) -> bool:
     except ValueError:
         return False
     executables, expect = [], True
-    for word in words:
+    tokens = iter(words)
+    for word in tokens:
         if word in SEPARATORS:
             expect = True
         elif expect and "=" in word and not word.startswith(("./", "/")):
             continue  # an environment prefix, not the executable
         elif expect:
+            if word == "uv":
+                if next(tokens, None) != "run":
+                    return False
+                word = next(tokens, None)
+                while word in {"--locked", "--group"}:
+                    if word == "--group":
+                        next(tokens, None)
+                    word = next(tokens, None)
             executables.append(word)
             expect = False
     return bool(executables) and all(word in FREE_EXECUTABLES for word in executables)
@@ -211,7 +220,6 @@ def plan(
         or any(test_plan.glob_matches(path, pattern) for pattern in TEST_SOURCE_PATTERNS),
     )
     docs = _first_match(changed, lambda path: path.startswith(DOCS))
-    content = _first_match(changed, lambda path: path.startswith(DOCS_CONTENT))
     manifest = _first_match(changed, lambda path: Path(path).name in {"Cargo.toml", "Cargo.lock"})
     frame = _first_match(
         changed, lambda path: any(test_plan.glob_matches(path, trigger) for trigger in rendering)
@@ -227,17 +235,10 @@ def plan(
     )
     gates.append(
         Gate(
-            "python3 docs/build_docs.py --check-links",
+            DOCS_CHECK,
             f"documentation changed: {docs}" if docs else f"nothing under {DOCS} changed",
             bool(docs),
             covered_by="ci.docs",
-        )
-    )
-    gates.append(
-        Gate(
-            "obc docs check",
-            f"a public page changed: {content}" if content else f"no page under {DOCS_CONTENT} changed",
-            bool(content),
         )
     )
     # The licence script is called directly and not through its `obc` task: the task adds no
@@ -293,7 +294,7 @@ def plan(
             spoken.add(gate.covered_by)
             gate = (
                 replace(gate, reason=f"{gate.reason}, and it runs {gate.covered_by}")
-                if builds_nothing(gate.command)
+                if gate.command == DOCS_CHECK or builds_nothing(gate.command)
                 else replace(gate, run=False, reason=f"{gate.covered_by} is left to CI")
             )
         kept.append(gate)
@@ -350,24 +351,7 @@ def surfaces(changed: Iterable[str]) -> list[str]:
     return sorted({path.split("/")[0] if "/" in path else "(repository root)" for path in changed})
 
 
-def human_pages(root: Path, changed: Iterable[str]) -> list[str]:
-    """Public pages with human-owned prose that cite a changed source."""
-
-    content = root / DOCS_CONTENT
-    pages = [path.relative_to(root).as_posix() for path in sorted(content.rglob("*.md"))]
-    queue = docs_review.review_queue(root, set(changed), pages)
-    stale = []
-    for name in sorted(queue):
-        path = root / name
-        if not path.is_relative_to(content):
-            continue
-        page, _errors = docs_copy.parse_page(path, content)
-        if page is not None and (page.copy == "human" or page.human_blocks):
-            stale.append(name)
-    return stale
-
-
-def skeleton(root: Path, changed: Sequence[str]) -> str:
+def skeleton(changed: Sequence[str]) -> str:
     lines = [
         "",
         "pull request skeleton",
@@ -375,8 +359,6 @@ def skeleton(root: Path, changed: Sequence[str]) -> str:
         f"Surfaces: {', '.join(surfaces(changed)) or 'none'}",
         "Requirements: <SYS-nnn, or `none`>",
     ]
-    for name in human_pages(root, changed):
-        lines.append(f"Copy: {name} owns human prose and cites a changed source; it may be stale.")
     return "\n".join(lines)
 
 
@@ -388,10 +370,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     root = test_plan.repository_root().resolve()
     try:
-        graph, _document, units = test_plan.load(root)
+        graph, document, units = test_plan.load(root)
         committed, deleted = test_plan.git_changed_paths(root, args.base, "HEAD")
         changed = sorted(set(committed) | set(test_plan.working_tree_paths(root)))
-        selection = test_plan.select(units, graph, changed, deleted=deleted, base=args.base)
+        deleted.update(path for path in changed if not (root / path).exists())
+        definitions = test_plan.changed_suite_ids(root, args.base, document) if "tools/testing/suites.toml" in changed else ()
+        selection = test_plan.select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base)
         # An unowned path selects nothing, so the plan would otherwise report a quiet all-clear.
         for error in selection.errors:
             print(f"selection error: {error}", file=sys.stderr)
@@ -422,7 +406,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"  {path}", file=sys.stderr)
         print("commit these files, then run obc ready again.", file=sys.stderr)
         return 1
-    print(skeleton(root, changed))
+    print(skeleton(changed))
     return 0
 
 

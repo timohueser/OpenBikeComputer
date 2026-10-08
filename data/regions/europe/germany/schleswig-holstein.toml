@@ -1,2 +1,5 @@
 name = "Schleswig-Holstein"
 kind = "geofabrik"
+areas = ["europe/germany/schleswig-holstein"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

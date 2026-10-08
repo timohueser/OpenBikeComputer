@@ -1,13 +1,8 @@
-//! The `obc data` binary: what a command writes and its exit status. A temporary directory stands
-//! in for the store.
+//! The `obc data` binary: what a command writes and its exit status. Temporary directories stand in
+//! for the store and for R2.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-
-use obc_data::env::Env;
-use obc_data::regions::Regions;
-use obc_data::sources::Registry;
-use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
 
 struct Temp(PathBuf);
 
@@ -26,63 +21,106 @@ impl Drop for Temp {
     }
 }
 
-/// `obc data ARGS` in the repository, with the store in `temp`.
+/// `obc data ARGS` in the repository, with the store in `temp` and an empty bucket: nothing is
+/// live.
 fn obc_data(temp: &Temp, args: &[&str]) -> Output {
+    let bucket = temp.0.join("bucket");
+    std::fs::create_dir_all(&bucket).unwrap();
     Command::new(env!("CARGO_BIN_EXE_obc-data"))
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env("OBC_DATA_STORE", temp.0.join("store"))
+        .env("OBC_R2_LOCAL_DIR", bucket)
+        .env_remove("OBC_R2_BUCKET")
         .stdin(Stdio::null())
         .output()
         .unwrap()
 }
 
-/// Record `text` as the file `name` of `source@version`, as a fetch with `params` gives it.
-fn fetched(store: &Store, source: &str, version: &str, params: Vec<(String, String)>, name: &str, text: &str) {
-    let (file, sha256) = (store.partial(name.rsplit('/').next().unwrap()), sha256_hex(text.as_bytes()));
-    write_atomic(&file, text.as_bytes()).unwrap();
-    store.insert(&file, &sha256).unwrap();
-    let (url, size) = (format!("https://example.org/{name}"), text.len() as u64);
-    let files = vec![FileRecord { name: name.into(), url, size, sha256, retrieved: String::new() }];
-    store.put_snapshot(&Snapshot { source: source.into(), version: version.into(), files }).unwrap();
-    if !params.is_empty() {
-        store.put_requested(source, &Requested { version: version.into(), params, files: vec![name.into()] }).unwrap();
+#[test]
+fn a_private_worker_cannot_dispatch_cli_or_capture_callbacks_without_the_launcher() {
+    for args in [vec!["--help"], vec!["landmark-candidates", "--help"]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_obc-data-worker"))
+            .args(args)
+            .env_remove(obc_data::worker::ROOT)
+            .env_remove(obc_data::worker::CODE)
+            .env_remove(obc_data::worker::EXE)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("start this worker through obc data"));
+    }
+    for binary in [env!("CARGO_BIN_EXE_obc-data"), env!("CARGO_BIN_EXE_obc-data-worker")] {
+        let temp = Temp::new(if binary.ends_with("worker") { "worker-json" } else { "launcher-json" });
+        let out = Command::new(binary)
+            .args(["status", "--json"])
+            .current_dir(&temp.0)
+            .env_remove(obc_data::worker::ROOT)
+            .env_remove(obc_data::worker::CODE)
+            .env_remove(obc_data::worker::EXE)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let response: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(response["error"]["code"], "failed");
     }
 }
 
-/// The store of `temp`, with what the step list of live reads, so the plan needs no network: the
-/// `.poly` of the live region, unpinned, is a box around Freiburg.
-fn with_live_outline(temp: &Temp) {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let (sources, regions) = (Registry::load(&root).unwrap().sources, Regions::load(&root).unwrap());
-    let live = Env::load(&root, "live", &sources, &regions).unwrap();
-    assert_eq!(live.version("geofabrik-poly"), None);
-    let store = Store::at(temp.0.join("store"));
-    let poly = "box\n1\n   7.77 47.97\n   7.93 47.97\n   7.93 48.14\n   7.77 48.14\n   7.77 47.97\nEND\nEND\n";
-    let area = vec![("area".into(), "europe/germany/baden-wuerttemberg".into())];
-    fetched(&store, "geofabrik-poly", "2026-10-05", area, "europe/germany/baden-wuerttemberg.poly", poly);
-    let tiles = "Copernicus_DSM_COG_10_N47_00_E007_00_DEM\nCopernicus_DSM_COG_10_N48_00_E007_00_DEM\n";
-    let version = live.version("copernicus-glo-30-tiles").unwrap();
-    fetched(&store, "copernicus-glo-30-tiles", version, Vec::new(), "tileList.txt", tiles);
-}
-
 #[test]
-fn a_plan_of_live_builds_the_terrain_of_each_leaf_and_a_build_refuses_another_plan() {
-    let temp = Temp::new("plan");
-    with_live_outline(&temp);
+fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
+    let temp = Temp::new("blocked");
+    let store = obc_data::store::Store::at(temp.0.join("store"));
+    let region = "europe/germany/baden-wuerttemberg";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut settings = obc_data::settings::Settings::default();
+    settings.select(&obc_data::regions::Regions::load(&root).unwrap(), region).unwrap();
+    obc_data::settings::save(&store, &settings).unwrap();
+    let index = serde_json::json!({"type":"FeatureCollection","features":[{"type":"Feature",
+        "properties":{"id":"bw","name":"Baden-Württemberg","parent":null,"urls":{"pbf":format!("https://download.geofabrik.de/{region}-latest.osm.pbf")}},
+        "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});
+    for (source, name, body, params) in [
+        (
+            "geofabrik-poly",
+            format!("{region}.poly"),
+            "box\n1\n7.79 47.99\n7.82 47.99\n7.82 48.02\n7.79 48.02\n7.79 47.99\nEND\nEND\n".to_string(),
+            vec![("area".into(), region.into())],
+        ),
+        ("copernicus-glo-30-tiles", "tileList.txt".into(), String::new(), Vec::new()),
+        ("geofabrik-index", "index-v1.json".into(), index.to_string(), Vec::new()),
+    ] {
+        let file = store.partial(&name);
+        obc_data::store::write_atomic(&file, body.as_bytes()).unwrap();
+        let sha256 = obc_data::store::sha256_hex(body.as_bytes());
+        store.insert(&file, &sha256).unwrap();
+        let version = "2026-10-06".to_string();
+        store
+            .put_snapshot(&obc_data::store::Snapshot {
+                source: source.into(),
+                version: version.clone(),
+                files: vec![obc_data::store::FileRecord {
+                    name: name.clone(),
+                    sha256,
+                    size: body.len() as u64,
+                    url: format!("https://example.org/{name}"),
+                    retrieved: String::new(),
+                }],
+            })
+            .unwrap();
+        if !params.is_empty() {
+            store.put_requested(source, &obc_data::store::Requested { version, params, files: vec![name] }).unwrap();
+        }
+    }
     let out = obc_data(&temp, &["plan", "live", "--json"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let mut plan: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(plan["env"], "live");
-    let ids: Vec<&str> = plan["groups"].as_array().unwrap().iter().map(|group| group["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["maps/terrain/0037-0032"]);
-    assert_eq!(plan["groups"][0]["fetches"][0]["source"], "copernicus-glo-30");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let response: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(response["needs_prepare"], true);
+    assert!(response["blocked"].as_array().unwrap().iter().any(|product| {
+        product["product"] == "maps" && product["reason"].as_str().unwrap().contains("do not fetch bulk data")
+    }));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("fetching"));
 
-    plan["groups"] = serde_json::json!([{"id": "planner/routing", "fetches": [], "builds": []}]);
-    let file = temp.0.join("plan.json");
-    std::fs::write(&file, plan.to_string()).unwrap();
-    let out = obc_data(&temp, &["build", "live", "--plan", file.to_str().unwrap(), "--json"]);
-    assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stderr));
-    let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(error["error"]["code"], "plan_outdated");
+    for source in ["geofabrik-extracts", "land-polygons", "copernicus-glo-30"] {
+        assert!(store.snapshot(source, "2026-10-06").unwrap().is_none());
+    }
 }

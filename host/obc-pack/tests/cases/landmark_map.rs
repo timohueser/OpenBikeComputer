@@ -2,11 +2,9 @@ use obc_formats::{
     io::SliceSource,
     obcm::{landmarks::*, PoiApproach, PoiMetadata, SourceId, POI_HOURS_REF_NONE},
 };
-use obc_pack::{
-    landmark_map,
-    landmarks::{Attribution, Content, Photo, Record, TextVariant},
-    poi::LandmarkLink,
-};
+use obc_pack::landmark_map;
+use obc_pack::landmarks::{Attribution, Content, Photo, Record, TextVariant};
+use obc_places::metadata::LandmarkLink;
 use obc_reader::{
     landmarks::{page, LandmarkDirectory},
     photo::{PhotoDecoder, Progress},
@@ -86,7 +84,7 @@ fn source_join_content_pool_and_independent_photo_readback() {
             position: None,
             wikidata: Some("Q1".into()),
             wikipedia: None,
-            hours: obc_pack::hours::parse("Mo-Fr 09:00-17:00"),
+            hours: obc_places::hours::parse("Mo-Fr 09:00-17:00"),
         },
     ];
     let bbox = (7_000_000, 46_000_000, 9_000_000, 48_000_000);

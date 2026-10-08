@@ -9,8 +9,8 @@ from urllib.error import HTTPError
 from urllib.request import Request
 from urllib.parse import urlsplit
 
-from . import planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
-from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url
+from . import planner_geo as geo, planner_maps as maps, planner_offline as offline, planner_prepare, planner_release as releases, r2
+from .planner_runtime import DATA_LAYERS, encoded, open_url, read_url, refuse_applied
 
 RELEASES = "/opt/obc-planner/releases"
 SOURCE = "/opt/obc-planner/source"
@@ -76,6 +76,7 @@ def deploy(args):
     except HTTPError as error:
         if error.code != 404: raise
         current = {"format": 1, "active": None, "previous": None}
+    refuse_applied(current)
     old = current["active"]
     target = 0 if old is None else slot(old)
     # A new release goes into the other slot; the same release restarts in place.
@@ -86,7 +87,7 @@ def deploy(args):
     if not args.apply: return
     install(host, args.data_dir, document, base)
     units = {
-        "routing": service(f"{base}/bin/route-server {base}/routing",
+        "routing": service(f"{base}/bin/planner-service {base}/routing",
                            {"ROUTE_LISTEN": f"127.0.0.1:{route_port}", "ROUTE_WORKERS": "2", "ROUTE_ORIGIN": args.site_origin}, "2048M"),
         "search": service(f"/usr/local/bin/node {base}/search/server.mjs",
                           {"OBC_SEARCH_PORT": str(search_port), "OBC_SEARCH_DATA": base + "/search/data",
@@ -139,19 +140,18 @@ def install(host, data, document, base):
     maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT) + "/", f"{host}:{SOURCE}/", input=tracked)
     for part, destination in [("routing", "routing"), ("search", "search/data"), ("offline", "offline")]:
         maps.run("rsync", "-az", str(runtime / part) + "/", f"{host}:{base}/{destination}/")
-    search_prefix = b"apps/planner-search/"
+    search_prefix = b"planner/search/"
     search_files = b"\0".join(path[len(search_prefix):] for path in tracked.split(b"\0") if path.startswith(search_prefix)) + b"\0"
-    maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT / "apps/planner-search") + "/",
+    maps.run("rsync", "-az", "--from0", "--files-from=-", str(maps.ROOT / "planner/search") + "/",
              f"{host}:{base}/search/", input=search_files)
-    maps.run("rsync", "-az", str(maps.ROOT / "apps/planner-search/node_modules") + "/", f"{host}:{base}/search/node_modules/")
+    maps.run("rsync", "-az", str(maps.ROOT / "planner/search/node_modules") + "/", f"{host}:{base}/search/node_modules/")
     ssh(host, f"""cd {SOURCE}
-/root/.cargo/bin/cargo build --locked --release -p route-server -j 2
+/root/.cargo/bin/cargo build --locked --release -p planner-service -j 2
 mkdir -p {base}/bin
-cp target/release/route-server {base}/bin/.route-server.next
-mv {base}/bin/.route-server.next {base}/bin/route-server
-{base}/bin/route-server {base}/routing --verify
-python3 -m venv {base}/search/.venv
-{base}/search/.venv/bin/pip install -q -r {base}/search/requirements.txt
+cp target/release/planner-service {base}/bin/.planner-service.next
+mv {base}/bin/.planner-service.next {base}/bin/planner-service
+{base}/bin/planner-service {base}/routing --verify
+UV_PROJECT_ENVIRONMENT={base}/search/.venv uv sync --locked --group search-runtime --project {SOURCE}
 id obc-planner-downloads >/dev/null 2>&1 || useradd --system --home-dir {DOWNLOAD_CACHE} --shell /usr/sbin/nologin obc-planner-downloads
 install -d -o obc-planner-downloads -g obc-planner-downloads {DOWNLOAD_CACHE} /var/cache/obc-planner-downloads
 chmod -R a+rX {base}
@@ -162,7 +162,8 @@ def switch_downloads(host, identity, base, public_url):
     """Serve download selections of this release. Their payloads stream from its R2 object pool."""
     unit = service(
         f"/usr/bin/python3 -m tools.planner_downloads --source {base}/offline --cache {DOWNLOAD_CACHE}/selections "
-        f"--max-cache-bytes {256 * 1024 * 1024} --objects-url {public_url}/planner/releases/{identity}/objects",
+        f"--max-cache-bytes {256 * 1024 * 1024} --objects-url {public_url}/planner/objects "
+        "--public-url https://releases.openbikecomputer.com/planner-offline",
         {"PATH": "/usr/local/bin:/usr/bin:/bin"}, "256M")
     unit = unit.replace("DynamicUser=yes", f"User=obc-planner-downloads\nWorkingDirectory={SOURCE}\nStateDirectory=obc-planner-downloads\nCacheDirectory=obc-planner-downloads")
     config = "handle_path /planner-offline/* {\n    reverse_proxy 127.0.0.1:8790\n}\n"
@@ -218,7 +219,7 @@ def verify_services(active, document, origin):
     for layer, url in active["layers"].items():
         if not read_url(url).get(DATA_LAYERS[layer]): raise ValueError(f"Data layer {layer} is absent")
     probe = document["probe"]
-    x, y = map(int, maps.mercator(*probe["points"][0], 12))
+    x, y = map(int, geo.mercator(*probe["points"][0], 12))
     for url in [tilejson["tiles"][0].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["terrain"].replace("{z}", "12").replace("{x}", str(x)).replace("{y}", str(y)),
                 active["sprites"] + "/light@2x.json", active["sprites"] + "/light@2x.png",
@@ -245,6 +246,10 @@ def verify_services(active, document, origin):
 def activate(public_url, catalog):
     remote = r2.bucket_remote()
     with tempfile.TemporaryDirectory(prefix="planner-activate-") as directory:
+        # An apply can switch the catalogue while a deploy runs: read the bucket, not the CDN.
+        current = r2.fetch_optional(remote, "planner/catalog.json", Path(directory) / "current.json")
+        if current:
+            refuse_applied(json.loads(current.read_bytes()))
         path = Path(directory) / "catalog.json"
         path.write_bytes(encoded(catalog))
         r2.run_rclone(["copyto", str(path), f"{remote.path}/planner/catalog.json", "--header-upload", "Content-Type: application/json",

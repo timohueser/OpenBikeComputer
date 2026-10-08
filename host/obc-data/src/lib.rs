@@ -5,14 +5,21 @@
 
 pub mod cli;
 pub mod date;
+pub mod dev;
 pub mod engine;
 pub mod env;
 pub mod fetch;
+pub mod input_copy;
+pub mod live;
+pub mod local;
+pub mod operation;
 pub mod product;
 pub mod r2;
 pub mod regions;
+pub mod settings;
 pub mod sources;
 pub mod store;
+pub mod worker;
 
 use std::path::{Path, PathBuf};
 

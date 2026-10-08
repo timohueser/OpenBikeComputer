@@ -1,7 +1,6 @@
 ---
 title: Hardware
 description: The current OpenBikeComputer hardware platform and its technical references.
-copy: ai
 ---
 
 # Hardware

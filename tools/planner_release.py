@@ -8,21 +8,8 @@ import sqlite3
 import tempfile
 
 from . import data_registry, planner_cleanup as cleanup, planner_maps as maps, r2
+from .planner_grid_search import search_metadata
 from .planner_runtime import DATA_LAYERS, digest, encoded, public_metadata, read_url, release, storage_files
-
-
-def search_metadata(database, full=False):
-    with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
-        metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if metadata.get("schema") != 5:
-            raise ValueError(f"Rebuild search package {database}: incompatible schema.")
-        try:
-            db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
-        except sqlite3.Error as error:
-            raise ValueError(f"Rebuild search package {database}: missing address index.") from error
-        if full and db.execute("PRAGMA quick_check").fetchone() != ("ok",):
-            raise ValueError("Search database failed verification")
-    return metadata
 
 
 def archive_metadata(path):
@@ -38,7 +25,7 @@ def archive_metadata(path):
 
 
 def seal(data, region, device_catalog, provenance):
-    # route-server --verify below checks the package format.
+    # planner-service --verify below checks the package format.
     routing = json.loads((data / "routing/manifest.json").read_bytes())
     if routing["region"] != region:
         raise ValueError("Build the routing package for this region")
@@ -71,9 +58,9 @@ def seal(data, region, device_catalog, provenance):
     if "sun.pmtiles" in map_manifest["files"]:
         if archive_metadata(data / "maps/sun.pmtiles").get("terrain_sha256") != map_manifest["files"]["terrain.pmtiles"]["sha256"]:
             raise ValueError("Sunlight index uses another terrain archive")
-    # A reused routing component does not build route-server, so the seal builds the verifier it runs.
-    maps.run("cargo", "build", "--locked", "--release", "-p", "route-server", cwd=maps.ROOT)
-    maps.run(maps.ROOT / "target/release/route-server", data / "routing", "--verify")
+    # A reused routing component does not build planner-service, so the seal builds the verifier it runs.
+    maps.run("cargo", "build", "--locked", "--release", "-p", "planner-service", cwd=maps.ROOT)
+    maps.run(maps.ROOT / "target/release/planner-service", data / "routing", "--verify")
     device = json.loads((data / "device/catalog.json").read_bytes()) if (data / "device/catalog.json").exists() else read_url(device_catalog)
     # Catalogue file references remain at their original content-addressed URLs.
     from urllib.parse import urljoin
@@ -168,6 +155,16 @@ def publish(args):
                            "--immutable", "--checksum", "--transfers", "2", "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
             r2.run_rclone(["check", str(args.data_dir / "sources"), f"{remote.path}/planner/sources", *options,
                            "--one-way", "--download", "--checkers", "2"], remote.env)
+        objects = {name: item for name, item in files.items() if name.startswith("objects/")}
+        listing = Path(directory) / "objects.txt"
+        listing.write_text("\n".join(name.removeprefix("objects/") for name in objects) + "\n")
+        options = ["--files-from", str(listing)]
+        r2.run_rclone(["copy", str(args.data_dir / "objects"), f"{remote.path}/planner/objects", *options,
+                       "--immutable", "--checksum", "--transfers", "4", "--s3-upload-concurrency", "2",
+                       "--header-upload", "Cache-Control: public,max-age=31536000,immutable"], remote.env)
+        r2.run_rclone(["check", str(args.data_dir / "objects"), f"{remote.path}/planner/objects", *options,
+                       "--one-way", "--download", "--checkers", "2"], remote.env)
+        files = {name: item for name, item in files.items() if name not in objects}
         listing = Path(directory) / "files.txt"
         listing.write_text("\n".join(files) + "\n")
         r2.run_rclone(["copy", str(args.data_dir), f"{remote.path}/{prefix}", "--files-from", str(listing),

@@ -21,15 +21,15 @@
 //! test would call canonical. That is the safe error: `partial` under-claims coverage and the
 //! builder warns, where the opposite would publish a cell with a missing sliver as canonical.
 //!
-//! Every predicate here is integer arithmetic on microdegrees, so two runs agree exactly. The one
-//! float step is the GEOS union of several sources' polygons ([`Coverage::union`]), which runs on
-//! sorted input and is rounded to microdegrees before any decision is taken.
+//! Cell predicates use integer microdegrees. Full-polygon union, intersection and containment use
+//! GEOS on sorted source geometry. Cell decisions use the result rounded to microdegrees.
 
 use std::collections::BTreeSet;
 
+use obc_map_core::grid::{axis_cells, segment_crossing, Axis, CellId, UBox, GRID_ORIGIN};
 use obc_pack::catalog::boundary::poly_rings;
-use obc_pack::geom::{assemble_multipolygon, union_all, Geom};
-use obc_pack::grid::{axis_cells, segment_crossing, Axis, CellId, UBox, GRID_ORIGIN};
+use obc_pbf::area::{assemble_multipolygon, Polygon};
+use obc_pbf::coverage::{covers_polygon, intersect_polygons, union_all};
 
 /// A closed ring in microdegrees, `(lat, lon)`.
 type URing = Vec<(i64, i64)>;
@@ -39,7 +39,7 @@ type URing = Vec<(i64, i64)>;
 pub struct Coverage {
     /// Degrees, `(lon, lat)` — the packer's own order, kept so [`Coverage::union`] can hand them
     /// straight to GEOS.
-    polys: Vec<Geom>,
+    polys: Vec<Polygon>,
     /// The same rings in integer microdegrees, `(lat, lon)`, closed. Every decision below is taken
     /// on these.
     rings: Vec<URing>,
@@ -67,7 +67,7 @@ impl Coverage {
     /// strip of ground co-baking exists to complete as uncovered. Returns `None` if GEOS cannot
     /// union them, which the caller must treat as "nothing is canonical".
     pub fn union(parts: &[&Coverage]) -> Option<Self> {
-        let polys: Vec<&Geom> = parts.iter().flat_map(|c| c.polys.iter()).collect();
+        let polys: Vec<&Polygon> = parts.iter().flat_map(|c| c.polys.iter()).collect();
         match polys.len() {
             0 => None,
             1 => Some(parts[0].clone()),
@@ -75,7 +75,25 @@ impl Coverage {
         }
     }
 
-    fn from_polys(polys: Vec<Geom>) -> Self {
+    /// Whether the source polygons contain the entire requested ground, including holes and edges.
+    pub fn covers_coverage(&self, requested: &Self) -> Result<bool, String> {
+        let polys = self.polys.iter().collect::<Vec<_>>();
+        for polygon in &requested.polys {
+            if !covers_polygon(&polys, polygon)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The common ground. A boundary touch has no ground area.
+    pub fn intersection(&self, other: &Self) -> Result<Option<Self>, String> {
+        let polys =
+            intersect_polygons(&self.polys.iter().collect::<Vec<_>>(), &other.polys.iter().collect::<Vec<_>>())?;
+        Ok((!polys.is_empty()).then(|| Self::from_polys(polys)))
+    }
+
+    fn from_polys(polys: Vec<Polygon>) -> Self {
         let mut rings: Vec<URing> = Vec::new();
         for poly in &polys {
             collect_rings(poly, &mut rings);
@@ -106,14 +124,9 @@ impl Coverage {
     /// area rather than a shoelace scaled by one cosine: Switzerland spans two degrees of latitude
     /// and a single-cosine approximation is already 4 % out over that. Holes subtract.
     pub fn area_km2(&self) -> f64 {
-        fn area_of(geom: &Geom) -> f64 {
-            match geom {
-                Geom::Polygon { exterior, interiors } => {
-                    ring_area_km2(exterior).abs() - interiors.iter().map(|r| ring_area_km2(r).abs()).sum::<f64>()
-                }
-                Geom::Multi(parts) => parts.iter().map(area_of).sum(),
-                Geom::Line(_) | Geom::Empty => 0.0,
-            }
+        fn area_of(polygon: &Polygon) -> f64 {
+            ring_area_km2(&polygon.exterior).abs()
+                - polygon.interiors.iter().map(|r| ring_area_km2(r).abs()).sum::<f64>()
         }
         self.polys.iter().map(area_of).sum::<f64>().max(0.0)
     }
@@ -193,26 +206,7 @@ impl Coverage {
     /// hashed — float noise from a different GEOS build must not invalidate a capture that took
     /// hours.
     pub fn geojson(&self) -> String {
-        use std::fmt::Write;
-        let mut rings = Vec::new();
-        for poly in &self.polys {
-            collect_polygon_rings(poly, &mut rings);
-        }
-        let mut s = String::from("{\n  \"type\": \"MultiPolygon\",\n  \"coordinates\": [");
-        for (p, polygon) in rings.iter().enumerate() {
-            let _ = write!(s, "{}\n    [", if p == 0 { "" } else { "," });
-            for (r, ring) in polygon.iter().enumerate() {
-                let _ = write!(s, "{}\n      [", if r == 0 { "" } else { "," });
-                for (i, &(lat, lon)) in ring.iter().enumerate() {
-                    let deg = |v: i64| format!("{:.6}", v as f64 / 1e6);
-                    let _ = write!(s, "{}[{}, {}]", if i == 0 { "" } else { ", " }, deg(lon), deg(lat));
-                }
-                s.push(']');
-            }
-            s.push_str("\n    ]");
-        }
-        s.push_str("\n  ]\n}\n");
-        s
+        obc_pack::catalog::boundary::polygons_geojson(&self.polys)
     }
 
     /// Whether the coverage contains a cell's whole square — the canonical / `partial` decision.
@@ -229,46 +223,15 @@ impl Coverage {
     }
 }
 
-/// One polygon per entry, exterior ring first — the nesting GeoJSON needs and
-/// [`collect_rings`] deliberately throws away.
-fn collect_polygon_rings(geom: &Geom, out: &mut Vec<Vec<URing>>) {
-    match geom {
-        Geom::Polygon { exterior, interiors } => {
-            let rings: Vec<URing> =
-                std::iter::once(exterior).chain(interiors).filter_map(|ring| to_udeg_ring(ring)).collect();
-            if !rings.is_empty() {
-                out.push(rings);
-            }
-        }
-        Geom::Multi(parts) => {
-            for part in parts {
-                collect_polygon_rings(part, out);
-            }
-        }
-        Geom::Line(_) | Geom::Empty => {}
-    }
-}
-
 /// Flatten a polygon's exterior and interiors into closed microdegree rings.
 ///
 /// A hole is a ring like any other here: even-odd ray casting counts it, so the inside of a hole
 /// comes out outside the coverage, which is what a hole means.
-fn collect_rings(geom: &Geom, out: &mut Vec<URing>) {
-    match geom {
-        Geom::Polygon { exterior, interiors } => {
-            for ring in std::iter::once(exterior).chain(interiors) {
-                if let Some(closed) = to_udeg_ring(ring) {
-                    out.push(closed);
-                }
-            }
+fn collect_rings(polygon: &Polygon, out: &mut Vec<URing>) {
+    for ring in std::iter::once(&polygon.exterior).chain(&polygon.interiors) {
+        if let Some(closed) = to_udeg_ring(ring) {
+            out.push(closed);
         }
-        Geom::Multi(parts) => {
-            for p in parts {
-                collect_rings(p, out);
-            }
-        }
-        // A coverage polygon that GEOS handed back as a line has no inside.
-        Geom::Line(_) | Geom::Empty => {}
     }
 }
 
@@ -540,5 +503,18 @@ mod tests {
     fn a_malformed_poly_is_an_error_not_an_empty_coverage() {
         assert!(Coverage::parse_poly("").is_err());
         assert!(Coverage::parse_poly("region\n1\n   7.0 47.0\nEND\nEND\n").is_err());
+    }
+
+    #[test]
+    fn complete_region_coverage_requires_geometry_not_its_bounds() {
+        let requested = Coverage::parse_poly(&box_poly(7.0, 47.0, 8.0, 48.0)).unwrap();
+        let west = Coverage::parse_poly(&box_poly(7.0, 47.0, 7.5, 48.0)).unwrap();
+        let east = Coverage::parse_poly(&box_poly(7.5, 47.0, 8.0, 48.0)).unwrap();
+        assert!(Coverage::union(&[&west, &east]).unwrap().covers_coverage(&requested).unwrap());
+        let gap = Coverage::parse_poly(&box_poly(7.500001, 47.0, 8.0, 48.0)).unwrap();
+        assert!(!Coverage::union(&[&west, &gap]).unwrap().covers_coverage(&requested).unwrap());
+        let hole = "region\n1\n 7 47\n 8 47\n 8 48\n 7 48\n 7 47\nEND\n!2\n 7.25 47.25\n 7.75 47.25\n 7.75 47.75\n 7.25 47.75\n 7.25 47.25\nEND\nEND\n";
+        assert!(!Coverage::parse_poly(hole).unwrap().covers_coverage(&requested).unwrap());
+        assert!(requested.covers_coverage(&requested).unwrap());
     }
 }

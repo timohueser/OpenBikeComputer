@@ -3,25 +3,154 @@
 //! binary passes each product to `cli::main`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::engine::{snapshot_files, Step};
+use crate::engine::release::Release;
+use crate::engine::{snapshot_files, LayerFile, Step};
 use crate::env::Env;
 use crate::regions::Regions;
-use crate::store::Store;
+use crate::store::{sorted, Store};
 
-pub trait Product {
+pub trait Product: Sync {
     /// Kebab-case. Each of its layer names starts with `<name>/`.
     fn name(&self) -> &'static str;
+
+    /// The folder of its releases on R2.
+    fn prefix(&self) -> &'static str {
+        self.name()
+    }
 
     /// The optional layers that `layers` of an environment can switch on.
     fn optional(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// Its steps for `env`. A step list that reads a snapshot, such as the `.poly` of a region or
+    /// Sources whose credentials a selected layer may need for new acquisition.
+    fn credential_sources(&self, _env: &Env) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
     /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
-    fn steps(&self, env: &Env, regions: &Regions, store: &Store) -> Result<Vec<Step>, Unplanned>;
+    fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
+
+    /// What clients read of a release. `None` while the product has no client document: a plan of
+    /// `live` leaves the product out, because an apply cannot make its release live.
+    fn pointer(&self) -> Option<PointerFn> {
+        None
+    }
+
+    /// The named publication files, from release receipts. Their identity precedes the release id.
+    fn named(&self, _release: &Release) -> Result<Vec<LayerFile>, String> {
+        Ok(Vec::new())
+    }
+
+    /// This owner permits consuming these stored bytes across producer hosts.
+    /// Native service executables are never portable data.
+    fn portable(&self, _step: &Step) -> bool {
+        false
+    }
+
+    /// Current semantic declarations for read-only status, without execution admission.
+    fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        self.steps(root, env, regions, store)
+    }
+
+    /// Remove only this owner's execution bindings when comparing published source/config.
+    fn status_options(&self, _layer: &str, options: &serde_json::Value) -> serde_json::Value {
+        options.clone()
+    }
+
+    /// Read pending Local work without acquiring data or admitting app processes.
+    fn dev_check(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+    ) -> Result<crate::cli::EnvPlan, String> {
+        Err("this product has no Local app plan".into())
+    }
+
+    /// Resolve only missing metadata for a later complete Local review.
+    fn dev_inputs(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+        _run: &mut crate::engine::runs::Run,
+    ) -> Result<crate::cli::EnvPlan, String> {
+        Err("this product has no Local app metadata".into())
+    }
+
+    /// Resolve and verify a Local view under the caller's finite preparation run.
+    fn dev_prepare(
+        &self,
+        _root: &Path,
+        _store: &Store,
+        _request: &crate::dev::Request,
+        _run: &mut crate::engine::runs::Run,
+    ) -> Result<crate::dev::Prepared, String> {
+        Err("this product has no Local app".into())
+    }
+
+    /// Install and probe services before any product pointer switches.
+    fn activate(&self, _root: &Path, _release: &Release, _store: &Store, _commit: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Check stored artifacts before publication. `root` locates the offline verification tools.
+    fn verify(
+        &self,
+        _root: &Path,
+        _previous: Option<&Release>,
+        _release: &Release,
+        _store: &Store,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Usable steps and the layers whose inputs are unavailable. A blocked required layer prevents
+/// a complete release, but does not prevent independent steps from building.
+#[derive(Default)]
+pub struct Steps {
+    pub steps: Vec<Step>,
+    pub blocked: Vec<BlockedLayer>,
+}
+
+impl Steps {
+    /// Remove steps that read a blocked layer, including their dependents.
+    pub fn block_dependents(&mut self) {
+        while let Some((at, reason)) = self.steps.iter().enumerate().find_map(|(at, step)| {
+            let input = step.layers().find_map(|name| self.blocked.iter().find(|b| b.layer == name))?;
+            Some((at, format!("reads blocked layer `{}`: {}", input.layer, input.reason)))
+        }) {
+            let step = self.steps.remove(at);
+            self.blocked.push(BlockedLayer { layer: step.name, reason });
+        }
+    }
+}
+
+impl From<Vec<Step>> for Steps {
+    fn from(steps: Vec<Step>) -> Self {
+        Self { steps, blocked: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BlockedLayer {
+    pub layer: String,
+    pub reason: String,
+}
+
+/// Gives the pointer of a release from the store.
+pub type PointerFn = fn(&Path, &Release, &Store) -> Result<Pointer, String>;
+
+/// What clients read of a release.
+pub struct Pointer {
+    /// The document of `<prefix>/catalog.json`, without `release` and `applied`: an apply adds them.
+    pub document: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Why a product gives no steps.
@@ -29,8 +158,11 @@ pub trait Product {
 pub enum Unplanned {
     /// The step list reads these snapshots. `obc data` fetches them and asks once more.
     NeedsFetch(Vec<Wanted>),
-    /// The environment does not give what the product needs, such as a pin.
+    /// The product does not suit the environment, such as a kind of region that it does not read.
+    /// `obc data` reports the product as blocked and plans the others.
     Invalid(String),
+    /// The store, a file or the data of a fetch failed. The command fails.
+    Failed(String),
 }
 
 /// A fetch that a step list needs.
@@ -42,24 +174,49 @@ pub struct Wanted {
     pub params: Vec<(String, String)>,
 }
 
-/// The files of the fetch of `source` with `params` that a step list reads: at the version of
-/// `env`, or else at the newest version of that fetch in the store. `Err(Wanted)` while the store
-/// lacks them.
+/// The version of the fetch of `source` with `params` that a step list reads: the version that
+/// `env` names (a saved plan, a `--move`, or the version that live reads), or else the newest
+/// version of that fetch in the store. `Err(Wanted)` names a fetch of the newest version upstream:
+/// for a `--move SOURCE`, while the store has no fetch of it, or when a saved plan lacks it. Every
+/// step list gets its versions here, so one function decides where they come from, and `env`
+/// records each version that it gives. `Err` for a fetch that live reads at more versions and
+/// that no `--move` names.
+pub fn version(
+    env: &Env,
+    store: &Store,
+    source: &str,
+    params: &[(String, String)],
+) -> Result<Result<String, Wanted>, String> {
+    env.requests.borrow_mut().insert((source.into(), sorted(params)));
+    let named = env.version(source, params).inspect_err(|_| {
+        env.refused.borrow_mut().insert(source.into());
+    })?;
+    let named = named.map(str::to_string);
+    let version = match &named {
+        Some(version) => Some(version.clone()),
+        None if env.planned.is_some() || env.moves_to_newest(source) => None,
+        None if params.is_empty() => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).max(),
+        None => store.requests(source, params)?.into_iter().map(|request| request.version).max(),
+    };
+    if let Some(version) = &version {
+        env.read.borrow_mut().insert((source.into(), sorted(params)), version.clone());
+    }
+    Ok(version.ok_or(Wanted { source: source.into(), version: named, params: params.to_vec() }))
+}
+
+/// The files of the fetch of `source` with `params` that a step list reads, at its [`version`].
+/// `Err(Wanted)` while the store lacks them.
 pub fn read(
     env: &Env,
     store: &Store,
     source: &str,
     params: &[(String, String)],
 ) -> Result<Result<BTreeMap<String, PathBuf>, Wanted>, String> {
-    let pinned = env.version(source).map(str::to_string);
-    let version = match &pinned {
-        Some(version) => Some(version.clone()),
-        None if params.is_empty() => store.snapshots(source)?.into_iter().map(|snapshot| snapshot.version).max(),
-        None => store.requests(source, params)?.into_iter().map(|request| request.version).max(),
+    let version = match version(env, store, source, params)? {
+        Ok(version) => version,
+        Err(wanted) => return Ok(Err(wanted)),
     };
-    let files = match &version {
-        Some(version) => snapshot_files(store, source, version, params, &[])?,
-        None => None,
-    };
-    Ok(files.ok_or(Wanted { source: source.into(), version: pinned, params: params.to_vec() }))
+    let named = env.version(source, params)?.map(str::to_string);
+    let wanted = || Wanted { source: source.into(), version: named, params: params.to_vec() };
+    Ok(snapshot_files(store, source, &version, params, &[])?.ok_or_else(wanted))
 }

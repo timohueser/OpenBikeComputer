@@ -1,0 +1,39 @@
+<svg viewBox="0 0 720 290" role="img" aria-label="OSM data becomes an OBCM map. GPX data becomes an OBCR route. The device, simulator, and browser use the shared readers and converters." xmlns="http://www.w3.org/2000/svg" width="720" height="290" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aF1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Two binaries, one philosophy</text>
+
+  <!-- MAP lane -->
+  <rect class="d-panel-2" x="32" y="64" width="132" height="50" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="98" y="86" text-anchor="middle" fill="#1c1b14" font-size="14px">OSM extract</text>
+  <text class="d-sub" x="98" y="102" text-anchor="middle" fill="#5c5a2e" font-size="12px">a slice of the planet</text>
+  <line class="d-flow" x1="170" y1="89" x2="298" y2="89" marker-end="url(#aF1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="234" y="80" text-anchor="middle" style="fill:#a9501c" fill="#5c5a2e" font-size="12px">obc-pack · offline</text>
+  <rect class="d-panel" x="304" y="64" width="120" height="50" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="364" y="86" text-anchor="middle" fill="#1c1b14" font-size="14px">.obcm</text>
+  <text class="d-sub" x="364" y="102" text-anchor="middle" fill="#5c5a2e" font-size="12px">map</text>
+
+  <!-- ROUTE lane -->
+  <rect class="d-panel-2" x="32" y="166" width="132" height="50" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="98" y="188" text-anchor="middle" fill="#1c1b14" font-size="14px">GPX upload</text>
+  <text class="d-sub" x="98" y="204" text-anchor="middle" fill="#5c5a2e" font-size="12px">a ride you planned</text>
+  <line class="d-flow" x1="170" y1="191" x2="298" y2="191" marker-end="url(#aF1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="234" y="182" text-anchor="middle" style="fill:#a9501c" fill="#5c5a2e" font-size="12px">obc-route</text>
+  <text class="d-sub" x="234" y="207" text-anchor="middle" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">device · sim · browser</text>
+  <rect class="d-panel" x="304" y="166" width="120" height="50" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="364" y="188" text-anchor="middle" fill="#1c1b14" font-size="14px">.obcr</text>
+  <text class="d-sub" x="364" y="204" text-anchor="middle" fill="#5c5a2e" font-size="12px">route</text>
+
+  <!-- converge to readers -->
+  <line class="d-flow" x1="424" y1="89"  x2="536" y2="134" marker-end="url(#aF1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="424" y1="191" x2="536" y2="152" marker-end="url(#aF1)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-hot" x="540" y="110" width="160" height="66" rx="13" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-title" x="620" y="134" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-weight="650" font-size="14px">the readers</text>
+  <text class="d-sub" x="620" y="151" text-anchor="middle" fill="#5c5a2e" font-size="12px">obc-reader · obc-route</text>
+  <text class="d-sub" x="620" y="167" text-anchor="middle" fill="#5c5a2e" font-size="12px">no_std — sim &amp; device</text>
+
+  <!-- shared DNA strip -->
+  <rect class="d-panel-2" x="32" y="244" width="668" height="34" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="366" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">shared DNA — little-endian · µdeg integers · anchor + delta geometry · explicit offsets · streamed</text>
+</svg>

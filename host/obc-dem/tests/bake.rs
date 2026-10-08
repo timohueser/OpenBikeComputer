@@ -11,7 +11,9 @@ mod common;
 use std::path::Path;
 
 use common::{write_archive, ArchiveTile, Scratch, SyntheticDem, PIXEL_IS_AREA, PIXEL_IS_POINT};
-use obc_dem::bake::{bake_cell, bake_cells, bake_shard, cell_file_name, cell_rect, quantise, BakeParams};
+use obc_dem::bake::{
+    bake_cell, bake_cells, bake_shard, cell_file_name, cell_rect, published_cell, quantise, write_cell_file, BakeParams,
+};
 use obc_dem::container::CellRect;
 use obc_dem::crest::{cell_window, LiftMap};
 use obc_dem::geotiff::{DemMosaic, DemTile};
@@ -351,6 +353,66 @@ fn a_reference_composes_the_same_cell_bytes_in_all_three_bakes() {
         moved += i32::from(baked != &plain[in_shard..in_shard + 512]);
     }
     assert!(moved >= 2, "the cone sits on a seam, so both cells either side of it must carry a lift");
+}
+
+/// The terrain step of `obc data` reads the reference layer of its leaf as the archive that
+/// `obc-bake terrain --reference` reads: the same archive gives the same cell bytes.
+#[test]
+fn the_terrain_step_reads_its_reference_layer_as_the_archive_of_the_old_bake() {
+    let scratch = Scratch::new("terrain-step");
+    let tile = plane_source(PIXEL_IS_POINT).write(scratch.path(), "plane");
+    let mut mosaic = DemMosaic::default();
+    mosaic.push(DemTile::open(&tile).unwrap());
+    let archive_root = Scratch::new("terrain-step-archive");
+    seam_cone_archive(archive_root.path());
+    let archive = ReferenceArchive::open(archive_root.path()).unwrap();
+
+    // The layer of the reference step: the archive below `reference/`, one object per file.
+    let mut layer = std::collections::BTreeMap::new();
+    let mut pending = vec![archive_root.path().to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let relative = path.strip_prefix(archive_root.path()).unwrap().to_str().unwrap();
+                layer.insert(format!("reference/{relative}"), path);
+            }
+        }
+    }
+    let cells: Vec<(u32, u32)> = cell_rect(fixture_bbox(), POSTING_LOG2, CELL_LOG2).unwrap().cells().collect();
+    let output = scratch.join("step/output");
+    std::fs::create_dir_all(&output).unwrap();
+    let request = obc_data::engine::Request {
+        step: "maps/terrain/0000-0000".into(),
+        snapshots: [(obc_dem::step::GLO30.to_string(), [("plane.tif".to_string(), tile)].into())].into(),
+        layers: [("maps/reference/0000-0000".to_string(), layer)].into(),
+        layer_files: Default::default(),
+        libraries: Vec::new(),
+        options: serde_json::json!({"posting_log2": POSTING_LOG2, "cell_log2": CELL_LOG2, "cells": cells}),
+        output: output.clone(),
+        metrics: scratch.join("step/metrics.json"),
+    };
+    obc_dem::step::terrain(&request).unwrap();
+
+    let mut lifted = 0;
+    for (ci, cj) in cells {
+        let old = scratch.join(&cell_file_name(CELL_LOG2, ci, cj));
+        let (block, _) = published_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, Some(&archive)).unwrap();
+        write_cell_file(&old, POSTING_LOG2, CELL_LOG2, ci, cj, &block.unwrap()).unwrap();
+        let width = obc_elevation::grid::id_width(CELL_LOG2);
+        let new = std::fs::read(output.join(format!("terrain/{ci:0width$}/{cj:0width$}.obcd"))).unwrap();
+        assert_eq!(new, std::fs::read(&old).unwrap(), "cell {ci}/{cj}");
+        let (plain, _) = published_cell(&mosaic, ci, cj, POSTING_LOG2, CELL_LOG2, None).unwrap();
+        lifted += i32::from(new[new.len() - 512..] != plain.unwrap()[..]);
+    }
+    assert!(lifted >= 2, "the cone on the seam lifts the cells either side of it");
+    let credits: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(output.join("metadata/credits.json")).unwrap()).unwrap();
+    let keys: Vec<&str> = credits.iter().map(|credit| credit["key"].as_str().unwrap()).collect();
+    let archived: Vec<&str> = archive.credits().iter().map(|credit| credit.key.as_str()).collect();
+    assert_eq!(keys, archived, "the layer credits the model that lifts its cells");
 }
 
 /// The rule itself, over an archive: the tower is lifted to its own height, the steep plane it

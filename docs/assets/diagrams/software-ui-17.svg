@@ -1,0 +1,24 @@
+<svg viewBox="0 0 720 200" role="img" aria-label="A palette swatch strip showing the device-64 colours: parchment white, wood brown, ink black, amber, warning orange, route magenta, and breadcrumb navy. Beside it, a small framed-screen mock with a wood title bar, a parchment body, and an amber-highlighted list row with a pointer bullet." xmlns="http://www.w3.org/2000/svg" width="720" height="200" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">One palette, tuned to the 64-colour panel</text>
+
+  <!-- swatches -->
+  <g>
+    <rect x="36"  y="48" width="54" height="40" rx="6" style="fill:#ffffff;stroke:#9aa884;stroke-width:1" /><text class="d-sub" x="63" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">parchment</text>
+    <rect x="98"  y="48" width="54" height="40" rx="6" style="fill:#aa5500" /><text class="d-sub" x="125" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">wood</text>
+    <rect x="160" y="48" width="54" height="40" rx="6" style="fill:#000000" /><text class="d-sub" x="187" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">ink</text>
+    <rect x="222" y="48" width="54" height="40" rx="6" style="fill:#ffaa00" /><text class="d-sub" x="249" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">amber</text>
+    <rect x="284" y="48" width="54" height="40" rx="6" style="fill:#ff5500" /><text class="d-sub" x="311" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">warning</text>
+    <rect x="346" y="48" width="54" height="40" rx="6" style="fill:#ff00ff" /><text class="d-sub" x="373" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">route</text>
+    <rect x="408" y="48" width="54" height="40" rx="6" style="fill:#0000aa" /><text class="d-sub" x="435" y="104" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">breadcrumb</text>
+  </g>
+  <text class="d-sub" x="36" y="140" style="font-size:12px" fill="#5c5a2e" font-size="12px">authored in RGB565 · resolved through the same color_fn as the map ·</text>
+  <text class="d-sub" x="36" y="156" style="font-size:12px" fill="#5c5a2e" font-size="12px">every value asserted against its device-64 (RGB222) result</text>
+
+  <!-- mini framed screen -->
+  <rect x="556" y="44" width="128" height="138" rx="10" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.5" />
+  <rect x="562" y="50" width="116" height="22" rx="5" style="fill:#aa5500" /><text class="d-sub" x="572" y="65" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">MENU</text>
+  <rect x="566" y="82" width="108" height="26" rx="5" style="fill:#ffaa00" />
+  <path d="M578 88 L578 102 L588 95 z" fill="#000" /><text class="d-sub" x="596" y="99" style="font-size:12px" fill="#5c5a2e" font-size="12px">Routes</text>
+  <text class="d-sub" x="596" y="129" style="font-size:12px" fill="#5c5a2e" font-size="12px">Settings</text>
+  <line x1="566" y1="138" x2="674" y2="138" stroke="#aaaa55" stroke-width="1" />
+</svg>

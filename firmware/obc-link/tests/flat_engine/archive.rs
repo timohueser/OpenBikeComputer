@@ -12,8 +12,9 @@ fn receipt(request: u32, id: u64, revision: u64, bytes: &[u8]) -> Vec<u8> {
 }
 
 fn rows<D: BlockDevice>(device: &Device<D>) -> Vec<metadata::Row> {
-    let mut bytes = [0; metadata::MAX_LEN];
-    metadata::Metadata::new(&device.store).load(&device.store, &mut bytes).unwrap().rows().collect()
+    let mut rows = Vec::new();
+    metadata::census(&device.store, |row| rows.push(row)).unwrap();
+    rows
 }
 
 #[test]
@@ -46,14 +47,27 @@ fn receipt_survives_lost_reply_reopen_and_preserves_the_first_stamp() {
     assert!(!again.is_error());
     assert_eq!(again.u64_at(0), sequence);
     assert_eq!(device.store.sequence(), sequence);
-    // The policy integration is separate; seed its eventual nonzero row through the substrate.
-    let mut owner = metadata::Metadata::new(&device.store);
-    let mut workspace = [0; metadata::MAX_LEN];
-    let mut image = owner.load(&device.store, &mut workspace).unwrap();
-    let mut row = image.rows().next().unwrap();
-    row.timestamp = 12345;
-    image.set(row).unwrap();
-    owner.replace(&device.store, &mut image, None).unwrap();
+    // A pre-existing timestamp survives an idempotent receipt.
+    let store = &device.store;
+    let head = store.entries().find(|entry| entry.kind == obc_storage::flat::ObjectKind::Metadata).unwrap();
+    let mut metadata_bytes = vec![0; head.payload_len as usize];
+    let handle = store.open(head.id, Some(head.revision)).unwrap();
+    assert_eq!(store.read(&handle, 0, &mut metadata_bytes).unwrap(), metadata_bytes.len());
+    store.close(handle);
+    metadata_bytes[metadata::HEADER_LEN + 28..metadata::HEADER_LEN + 32].copy_from_slice(&12345u32.to_le_bytes());
+    let mut allocation = store.allocate(metadata_bytes.len() as u64).unwrap();
+    store.write(&mut allocation, &metadata_bytes).unwrap();
+    let meta = obc_storage::flat::EntryMeta {
+        revision: obc_storage::flat::Revision(head.revision.0 + 1),
+        payload_crc: crc32(&metadata_bytes),
+        ..head
+    };
+    store
+        .commit(&[
+            Mutation::Remove { id: head.id, revision: head.revision },
+            Mutation::Put { meta, source: PutSource::Fresh(allocation) },
+        ])
+        .unwrap();
     let sequence = device.store.sequence();
     let answer = Answer::of(device.control(&receipt(4, id, rev, bytes)).answer());
     assert!(!answer.is_error());

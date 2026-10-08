@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="hand">
+  <node id="1" version="1" lat="46.560000" lon="8.400000"/>
+  <node id="2" version="1" lat="46.560000" lon="8.410000"/>
+  <node id="3" version="1" lat="46.560000" lon="8.420000"/>
+  <node id="4" version="1" lat="46.570000" lon="8.400000"/>
+  <node id="5" version="1" lat="46.570000" lon="8.410000"/>
+  <node id="6" version="1" lat="46.570000" lon="8.420000"/>
+  <node id="7" version="1" lat="46.580000" lon="8.400000"/>
+  <node id="8" version="1" lat="46.580000" lon="8.410000"/>
+  <node id="9" version="1" lat="46.580000" lon="8.420000"/>
+  <node id="10" version="1" lat="46.620000" lon="8.450000"/>
+  <node id="11" version="1" lat="46.585000" lon="8.405000"/>
+  <node id="12" version="1" lat="46.585000" lon="8.430000"/>
+  <node id="13" version="1" lat="46.600000" lon="8.430000"/>
+  <node id="14" version="1" lat="46.600000" lon="8.405000"/>
+  <node id="15" version="1" lat="46.535000" lon="8.410000"/>
+  <node id="16" version="1" lat="46.535000" lon="8.425000"/>
+  <node id="17" version="1" lat="46.545000" lon="8.425000"/>
+  <node id="18" version="1" lat="46.545000" lon="8.410000"/>
+  <node id="19" version="1" lat="46.565000" lon="8.405000"><tag k="amenity" v="cafe"/><tag k="name" v="Cafe Test"/></node>
+  <node id="20" version="1" lat="46.610000" lon="8.440000"><tag k="natural" v="peak"/><tag k="name" v="Testhorn"/><tag k="wikidata" v="Q1"/></node>
+  <way id="101" version="1"><nd ref="1"/><nd ref="2"/><nd ref="3"/><tag k="highway" v="residential"/><tag k="name" v="Strasse 0"/></way>
+  <way id="102" version="1"><nd ref="4"/><nd ref="5"/><nd ref="6"/><tag k="highway" v="residential"/><tag k="name" v="Strasse 1"/></way>
+  <way id="103" version="1"><nd ref="7"/><nd ref="8"/><nd ref="9"/><tag k="highway" v="residential"/><tag k="name" v="Strasse 2"/></way>
+  <way id="104" version="1"><nd ref="1"/><nd ref="4"/><nd ref="7"/><tag k="highway" v="track"/><tag k="tracktype" v="grade2"/><tag k="surface" v="gravel"/></way>
+  <way id="105" version="1"><nd ref="2"/><nd ref="5"/><nd ref="8"/><tag k="highway" v="track"/><tag k="tracktype" v="grade2"/><tag k="surface" v="gravel"/></way>
+  <way id="106" version="1"><nd ref="3"/><nd ref="6"/><nd ref="9"/><tag k="highway" v="track"/><tag k="tracktype" v="grade2"/><tag k="surface" v="gravel"/></way>
+  <way id="107" version="1"><nd ref="9"/><nd ref="10"/><tag k="highway" v="secondary"/><tag k="name" v="Passstrasse"/></way>
+  <way id="108" version="1"><nd ref="11"/><nd ref="12"/><nd ref="13"/><nd ref="14"/><nd ref="11"/><tag k="landuse" v="forest"/></way>
+  <way id="109" version="1"><nd ref="15"/><nd ref="16"/><nd ref="17"/><nd ref="18"/><nd ref="15"/><tag k="natural" v="water"/><tag k="name" v="Testsee"/></way>
+</osm>

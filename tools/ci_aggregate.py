@@ -44,7 +44,11 @@ def _job_result(needs: Mapping[str, Any], job: str) -> str:
     if not isinstance(value, Mapping):
         return "missing"
     result = value.get("result")
-    return str(result) if result else "missing"
+    if not result:
+        return "missing"
+    result = str(result)
+    # Unknown terminal states must fail the gate.
+    return result if result in {"success", "failure", "cancelled", "skipped"} else "failure"
 
 
 def _blocked_upstream(
@@ -137,7 +141,7 @@ def evaluate(
         sorted(
             job
             for job, value in needs.items()
-            if isinstance(value, Mapping) and value.get("result") in {"failure", "cancelled"}
+            if isinstance(value, Mapping) and _job_result(needs, job) in {"failure", "cancelled"}
         )
     )
     return AggregateResult(tuple(suites), global_failures)
@@ -165,9 +169,16 @@ def markdown_summary(result: AggregateResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _json_argument(value: str | None, environment: str) -> Mapping[str, Any]:
+def _json_argument(
+    value: str | None, environment: str, filename: str | None = None
+) -> Mapping[str, Any]:
+    if filename is not None:
+        try:
+            value = Path(filename).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise AggregateError(f"cannot read JSON input ({environment}): {exc}") from exc
     raw = value if value is not None else os.environ.get(environment, "")
-    if not raw:
+    if not raw.strip():
         raise AggregateError(
             f"missing JSON input ({environment}); a failed or cancelled job publishes no output"
         )
@@ -182,8 +193,10 @@ def _json_argument(value: str | None, environment: str) -> Mapping[str, Any]:
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
-    root.add_argument("--plan-json", help="selection-plan JSON; defaults to OBC_SELECTION_PLAN")
-    root.add_argument("--needs-json", help="GitHub needs JSON; defaults to OBC_NEEDS_RESULTS")
+    for name, environment in (("plan", "OBC_SELECTION_PLAN"), ("needs", "OBC_NEEDS_RESULTS")):
+        group = root.add_mutually_exclusive_group()
+        group.add_argument(f"--{name}-json", help=f"JSON input; defaults to {environment}")
+        group.add_argument(f"--{name}-file", help="UTF-8 JSON input file")
     return root
 
 
@@ -197,8 +210,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         result = evaluate(
-            _json_argument(args.plan_json, "OBC_SELECTION_PLAN"),
-            _json_argument(args.needs_json, "OBC_NEEDS_RESULTS"),
+            _json_argument(args.plan_json, "OBC_SELECTION_PLAN", args.plan_file),
+            _json_argument(args.needs_json, "OBC_NEEDS_RESULTS", args.needs_file),
             upstream_jobs(),
         )
         summary = markdown_summary(result)

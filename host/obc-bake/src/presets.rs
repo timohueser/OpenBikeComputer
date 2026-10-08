@@ -21,7 +21,7 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_pack::config::Config;
+use obc_map_core::config::Config;
 
 /// The canonical name of the schema document inside a style directory — the same name it takes in
 /// a bake tree, so the source and the published tree read alike.

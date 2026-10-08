@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate web, desktop and iOS branding from assets/brand/signpost.svg.
+"""Generate web, desktop and iOS branding from tools/brand/signpost.svg.
 
 Run with Python 3 and ImageMagick 7. macOS iconutil also produces the ICNS bundle.
 """
@@ -13,7 +13,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
-BRAND = ROOT / "assets/brand"
+BRAND = ROOT / "tools/brand"
 ET.register_namespace("", "http://www.w3.org/2000/svg")
 
 
@@ -75,8 +75,8 @@ def main():
         ink = scratch / "ink.svg"
         write(paper, svg(shapes, tile=True))
         write(ink, svg(shapes, tile=True, dark=True))
-        for folder in [ROOT / "docs/assets/brand", ROOT / "builder/app/public/brand",
-                       ROOT / "apps/obc-verification/static/brand"]:
+        for folder in [ROOT / "docs/assets/brand", ROOT / "builder/web/public/brand",
+                       ROOT / "tools/verification/static/brand"]:
             write(folder / "signpost.svg", svg(shapes, adaptive=True))
             write(folder / "app-icon.svg", svg(shapes, tile=True))
             png(paper, folder / "apple-touch-icon.png", 180)
@@ -95,7 +95,7 @@ def main():
                    {"idiom": "universal", "filename": "signpost-dark.png",
                     "appearances": [{"appearance": "luminosity", "value": "dark"}]}]
         write(images / "Contents.json", json.dumps({"images": entries, "info": {"author": "xcode", "version": 1}}, indent=2))
-        desktop = ROOT / "apps/obc-desktop/icons"
+        desktop = ROOT / "builder/desktop/icons"
         tile = scratch / "desktop.svg"
         write(tile, svg(shapes, tile=True, rounded=True))
         for filename, size in [("32x32.png", 32), ("128x128.png", 128), ("128x128@2x.png", 256), ("icon.png", 512)]:

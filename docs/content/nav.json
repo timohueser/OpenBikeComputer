@@ -3,15 +3,14 @@
     {
       "title": null,
       "pages": [
-        { "path": "index", "title": "Overview" },
-        { "path": "build", "title": "Build your own" },
-        { "path": "releases", "title": "Public releases" }
+        { "path": "index", "title": "Overview" }
       ]
     },
     {
       "title": "Software",
       "pages": [
         { "path": "software/architecture", "title": "System architecture" },
+        { "path": "software/data", "title": "Data operations" },
         { "path": "software/formats", "title": "Data formats" },
         { "path": "software/rendering", "title": "Rendering pipeline" },
         { "path": "software/ui", "title": "The UI system" },

@@ -1,2 +1,5 @@
 name = "Unterfranken"
 kind = "geofabrik"
+areas = ["europe/germany/bayern/unterfranken"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

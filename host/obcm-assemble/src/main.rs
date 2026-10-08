@@ -19,9 +19,6 @@
 //! byte-for-byte unchanged. `dev/fetch_region.py` fetches a real region from the published catalog
 //! to run it against.
 
-use std::cell::RefCell;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -31,8 +28,8 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore, TerrainCellInput,
-    TerrainJob, TerrainParams,
+    assemble_full, Articles, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore,
+    TerrainCellInput, TerrainJob, TerrainParams,
 };
 
 /// A file this driver reads on demand: an input cell, a terrain cell, or the sealed map the verify
@@ -68,157 +65,76 @@ impl ByteSource for ProfiledSource {
     }
 }
 
-/// The map as one file at a path the caller named: the name is the caller's, and replacing a map
-/// is truncating it.
+/// Native file output with the CLI's I/O attribution.
 struct FileStore {
+    inner: obcm_assemble::native::FileStore,
     path: PathBuf,
-    open: Option<std::io::BufWriter<File>>,
     sealed: Option<ProfiledSource>,
 }
 
 impl FileStore {
-    fn new(path: &Path) -> Result<FileStore> {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).map_err(|_| Error::Io(IoError::Io))?;
-        }
-        Ok(FileStore { path: path.to_path_buf(), open: None, sealed: None })
+    fn new(path: &Path) -> Result<Self> {
+        Ok(Self { inner: obcm_assemble::native::FileStore::new(path)?, path: path.into(), sealed: None })
     }
 }
 
 impl MapStore for FileStore {
     fn begin(&mut self) -> Result<()> {
         self.sealed = None;
-        let file = File::create(&self.path).map_err(|_| Error::Io(IoError::Io))?;
-        self.open = Some(std::io::BufWriter::new(file));
-        Ok(())
+        self.inner.begin()
     }
     fn write(&mut self, buf: &[u8]) -> Result<()> {
         #[cfg(feature = "mem-profile")]
         mem_profile::io(2, buf.len());
-        self.open.as_mut().expect("the map is open").write_all(buf).map_err(|_| Error::Io(IoError::Io))
+        self.inner.write(buf)
     }
     fn seal(&mut self) -> Result<()> {
-        let mut w = self.open.take().expect("the map is open");
-        w.flush().map_err(|_| Error::Io(IoError::Io))?;
-        drop(w);
-        self.sealed = Some(ProfiledSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?);
+        self.inner.seal()?;
+        let source = ProfiledSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?;
         #[cfg(feature = "mem-profile")]
-        {
-            self.sealed.as_mut().unwrap().verification = true;
-        }
+        let source = ProfiledSource { verification: true, ..source };
+        self.sealed = Some(source);
         Ok(())
     }
     fn source(&self) -> Result<&dyn ByteSource> {
-        self.sealed.as_ref().map(|s| s as &dyn ByteSource).ok_or(Error::Io(IoError::BadOffset))
+        self.sealed.as_ref().map(|source| source as &dyn ByteSource).ok_or(Error::Io(IoError::BadOffset))
     }
 }
 
-/// The engine's spill area, as ordinary files under a directory of this run's own.
-///
-/// Anonymous in the sense the seam means: the names are ordinals nothing outside this store knows,
-/// the directory is created per process and per invocation, and it is removed whole when the store
-/// drops — including after a failed assembly, which a bare `remove_file` per file would miss. A
-/// file is also removed as soon as the engine says it is done with it, so a country-scale run's
-/// live scratch is one or two streams rather than all of them.
-struct FileScratch {
-    dir: PathBuf,
-    /// Open handles by [`ScratchId`], with each one's length so an append never has to seek to find
-    /// the end. `None` is a removed file, so an id is never reused.
-    files: RefCell<Vec<Option<(File, u64)>>>,
-}
+struct FileScratch(obcm_assemble::native::FileScratch);
 
 impl FileScratch {
-    fn new() -> std::result::Result<FileScratch, String> {
-        // The pid keeps two concurrent assemblies apart, and every file is opened `truncate`, so a
-        // directory left behind by a crashed run with a recycled pid is overwritten rather than
-        // read.
-        let dir = std::env::temp_dir().join(format!("obcm-assemble-scratch-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("create scratch dir {}: {e}", dir.display()))?;
-        Ok(FileScratch { dir, files: RefCell::new(Vec::new()) })
-    }
-
-    /// Run `f` against the open handle, or refuse — never silently against the wrong file.
-    fn with<T>(&self, id: ScratchId, f: impl FnOnce(&mut (File, u64)) -> Result<T>) -> Result<T> {
-        let mut files = self.files.borrow_mut();
-        match files.get_mut(id.0 as usize).and_then(Option::as_mut) {
-            Some(entry) => f(entry),
-            None => Err(Error::Scratch(format!("{id} is not open"))),
-        }
+    fn new() -> std::result::Result<Self, String> {
+        obcm_assemble::native::FileScratch::new().map(Self).map_err(|e| e.to_string())
     }
 }
 
 impl ScratchStore for FileScratch {
     fn create(&self) -> Result<ScratchId> {
-        let mut files = self.files.borrow_mut();
-        let id = ScratchId(u32::try_from(files.len()).map_err(|_| Error::Scratch("too many scratch files".into()))?);
-        let path = self.dir.join(format!("{}.spill", id.0));
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .map_err(|e| Error::Scratch(format!("create {}: {e}", path.display())))?;
-        files.push(Some((file, 0)));
-        Ok(id)
+        self.0.create()
     }
-
     fn append(&self, id: ScratchId, buf: &[u8]) -> Result<()> {
         #[cfg(feature = "mem-profile")]
         mem_profile::io(3, buf.len());
-        self.with(id, |(file, len)| {
-            file.seek(SeekFrom::Start(*len)).map_err(|e| Error::Scratch(format!("{id}: seek: {e}")))?;
-            file.write_all(buf).map_err(|e| Error::Scratch(format!("{id}: write: {e}")))?;
-            *len += buf.len() as u64;
-            #[cfg(feature = "mem-profile")]
-            mem_profile::scratch_grew(buf.len());
-            Ok(())
-        })
+        self.0.append(id, buf)?;
+        #[cfg(feature = "mem-profile")]
+        mem_profile::scratch_grew(buf.len());
+        Ok(())
     }
-
     fn read_at(&self, id: ScratchId, offset: u64, buf: &mut [u8]) -> Result<()> {
         #[cfg(feature = "mem-profile")]
         mem_profile::io(4, buf.len());
-        self.with(id, |(file, len)| {
-            let end = offset.saturating_add(buf.len() as u64);
-            if end > *len {
-                return Err(Error::Scratch(format!(
-                    "{id}: a read of {} byte(s) at {offset} runs past the {len}-byte end",
-                    buf.len()
-                )));
-            }
-            file.seek(SeekFrom::Start(offset)).map_err(|e| Error::Scratch(format!("{id}: seek: {e}")))?;
-            file.read_exact(buf).map_err(|e| Error::Scratch(format!("{id}: read: {e}")))
-        })
+        self.0.read_at(id, offset, buf)
     }
-
     fn len(&self, id: ScratchId) -> Result<u64> {
-        self.with(id, |(_, len)| Ok(*len))
+        self.0.len(id)
     }
-
     fn remove(&self, id: ScratchId) -> Result<()> {
-        let mut files = self.files.borrow_mut();
-        match files.get_mut(id.0 as usize) {
-            Some(slot) => {
-                #[cfg(feature = "mem-profile")]
-                if let Some((_, len)) = slot {
-                    mem_profile::scratch_removed(*len as usize);
-                }
-                *slot = None; // closes the handle
-                let _ = std::fs::remove_file(self.dir.join(format!("{}.spill", id.0)));
-                Ok(())
-            }
-            None => Err(Error::Scratch(format!("{id} is not open"))),
+        #[cfg(feature = "mem-profile")]
+        if let Ok(len) = self.0.len(id) {
+            mem_profile::scratch_removed(len as usize);
         }
-    }
-}
-
-impl Drop for FileScratch {
-    fn drop(&mut self) {
-        self.files.borrow_mut().clear();
-        // Best effort: the run is over either way, and a temp directory that could not be removed
-        // is not a reason to turn a written map into a failure.
-        let _ = std::fs::remove_dir_all(&self.dir);
+        self.0.remove(id)
     }
 }
 
@@ -525,6 +441,9 @@ OPTIONS:
                             Splices the raster into the map's OBCM §1.3 terrain region. Squares the
                             selection covers but the list omits are canonically void and cost four
                             directory bytes each (OBCC §13.6)
+    --landmarks <path>      a landmark artifact (OBCC §14.3) to merge into the landmark region
+                            (repeatable)
+    --peaks <path>          a peak artifact (OBCC §14.3) to merge into the peak region (repeatable)
     --band <id>             only assemble these bands (repeatable)
     --cell <id>             only assemble these cells (repeatable, `<log2>/<i>/<j>`)
     --merge-budget-bytes <n>  the most memory the §4.6 merge's sorted passes may hold (default 64
@@ -563,6 +482,8 @@ fn run() -> std::result::Result<(), String> {
     }
     let mut cells_path: Option<PathBuf> = None;
     let mut terrain_path: Option<PathBuf> = None;
+    let mut landmark_paths: Vec<PathBuf> = Vec::new();
+    let mut peak_paths: Vec<PathBuf> = Vec::new();
     let mut schema_path: Option<PathBuf> = None;
     let mut light_skin_path: Option<PathBuf> = None;
     let mut dark_skin_path: Option<PathBuf> = None;
@@ -581,6 +502,8 @@ fn run() -> std::result::Result<(), String> {
         match args[i].as_str() {
             "--cells" => cells_path = Some(PathBuf::from(value(&mut i)?)),
             "--terrain" => terrain_path = Some(PathBuf::from(value(&mut i)?)),
+            "--landmarks" => landmark_paths.push(PathBuf::from(value(&mut i)?)),
+            "--peaks" => peak_paths.push(PathBuf::from(value(&mut i)?)),
             "--schema" => schema_path = Some(PathBuf::from(value(&mut i)?)),
             "--light-skin" => light_skin_path = Some(PathBuf::from(value(&mut i)?)),
             "--dark-skin" => dark_skin_path = Some(PathBuf::from(value(&mut i)?)),
@@ -660,6 +583,15 @@ fn run() -> std::result::Result<(), String> {
         }
     }
 
+    let open = |paths: &[PathBuf]| -> std::result::Result<Vec<ProfiledSource>, String> {
+        paths.iter().map(|p| ProfiledSource::open(p).map_err(|e| format!("open {}: {e}", p.display()))).collect()
+    };
+    let (landmark_sources, peak_sources) = (open(&landmark_paths)?, open(&peak_paths)?);
+    let articles = Articles {
+        landmarks: landmark_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+        peaks: peak_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+    };
+
     let mut store = FileStore::new(&out_path).map_err(|e| e.to_string())?;
     let job = terrain_sidecar.as_ref().map(|sidecar| TerrainJob {
         params: sidecar.params,
@@ -678,8 +610,9 @@ fn run() -> std::result::Result<(), String> {
     // The engine's spill area. Real files, so the merge's sorted passes are genuinely off-heap,
     // which is also what makes the `mem-profile` numbers mean anything.
     let scratch = FileScratch::new()?;
-    let summary = assemble_full(inputs, Vec::new(), job, &schema, &map_styles, &opts, &mut store, &clock, &scratch)
-        .map_err(|e| e.to_string())?;
+    let summary =
+        assemble_full(inputs, Vec::new(), job, articles, &schema, &map_styles, &opts, &mut store, &clock, &scratch)
+            .map_err(|e| e.to_string())?;
 
     // The engine returns what a producer reports; the CLI is what has a stderr. Printed before the
     // summary so a long JSON blob cannot bury them.

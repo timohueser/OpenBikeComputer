@@ -6,35 +6,37 @@ publish = false # internal firmware crate — not published to crates.io
 description = "Protocol-v4 codec and transfer engine for the flat card store. no_std, allocation-free, transport-free."
 
 [dependencies]
-obc-crc = { path = "../obc-crc" }
+obc-crc = { workspace = true }
 # The host-only vector producer hashes its manifest entries.
-sha2 = { version = "0.11", default-features = false, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
-sha2 = { version = "0.11", default-features = false }
+sha2 = { workspace = true }
 # The flat store, host-only, for the tests that hold the engine to a real card: the sim-backed
 # `FlatStore` and its deterministic faulting device. It is a **dev**-dependency because the
 # production edge runs the other way — `obc-storage` is a platform adapter and this crate is a
 # foundation crate, so `firmware/tools/dependency_rules.json` forbids `obc-link -> obc-storage` for
 # anything the device image links. The engine declares its own store seam (`flat::store`) and the
 # store binds it (`obc_storage::flat::wire`), which is what lets these tests run the real thing.
-obc-storage = { path = "../obc-storage", features = ["std"] }
+obc-storage = { workspace = true, features = ["std"] }
 # The shared device: the same engine-over-a-real-card assembly the browser tests run on, so a
 # behaviour proved here is proved against the thing the phone and the builder talk to. A
 # **dev**-dependency for the same reason obc-storage is one, and it carries that store edge with it.
-obc-flat-device = { path = "../../host/obc-flat-device" }
+obc-flat-device = { workspace = true }
 # The finished-ride readers and the GPX exporter, for the one test that carries a recovered
 # recording out over the wire and exports it. A **dev**-dependency for the same reason
 # `obc-storage` is one: `obc-route` is a core crate and this crate is a foundation crate, so
 # `firmware/tools/dependency_rules.json` forbids `obc-link -> obc-route` for anything the device
 # image links, and `check_dependencies.py` skips dev edges.
-obc-route = { path = "../obc-route" }
+obc-route = { workspace = true }
 # The byte source and sink those readers take. Foundation, like this crate, so it is an ordinary
 # edge that happens to be needed only by tests.
-obc-formats = { path = "../obc-formats" }
+obc-formats = { workspace = true }
 
 [features]
 default = []
+# Transport-free host client with owned records and catalog results.
+client = []
 # Host-only fixture producer for specs/vectors/flat-store-v4/.
 # Unit tests also enable the producer through cfg(test).
 std = ["dep:sha2"]

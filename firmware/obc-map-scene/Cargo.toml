@@ -6,5 +6,5 @@ publish = false
 description = "Allocation-free semantic map-scene seam shared by map sources and the renderer"
 
 [dependencies]
-heapless = "0.8"
-libm = { version = "0.2", default-features = false }
+heapless = { workspace = true }
+libm = { workspace = true }

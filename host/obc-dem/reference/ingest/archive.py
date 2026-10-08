@@ -103,9 +103,10 @@ def merge_tiles(existing, incoming, held: set[str], key: str):
     return np.where(existing != NODATA, existing, incoming)
 
 
-def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]]):
+def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[str]], keep=None):
     """Pool one raster onto the lattice and fold it into the archive's tiles.
 
+    `keep` is the set of tile ids to write, or `None` for every tile the raster reaches.
     Returns the tiles it wrote, the fraction of the source raster that was void, and the
     number of pixel centres that fell outside the window, which should be none.
     """
@@ -117,6 +118,8 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
     pooled = to_int16(lattice)
     touched = []
     for ti, tj in window.tiles():
+        if keep is not None and tile_id(ti, tj) not in keep:
+            continue
         tile = cut_tile(window, pooled, ti, tj)
         if tile is None or not (tile != NODATA).any():
             continue
@@ -138,6 +141,60 @@ def ingest_raster(path: Path, source: Source, root: Path, held: dict[str, set[st
         contributors.add(source.key)
         touched.append(tile_id(ti, tj))
     return touched, voided, dropped
+
+
+def source_step(path: Path) -> str:
+    """The step one delivered raster is on, in the units of its own CRS."""
+
+    with open_raster(path) as src:
+        step = abs(src.transform.a)
+        unit = "°" if src.crs and src.crs.is_geographic else "m"
+    return f"{step:.3g} {unit}"
+
+
+def ingest_rasters(rasters: list[Path], source, root: Path, fetched: str, attribution: str,
+                   keep=None) -> None:
+    """The shared tail over rasters on disk: pool each one, merge, and write the manifests.
+
+    `fetched` is the day of the data and `attribution` its credit, as the manifest records
+    them. `keep` is as for `ingest_raster`.
+    """
+
+    manifests = load_manifests(root)
+    held = contributors(manifests)
+    touched: set[str] = set()
+    outside = 0
+    for i, path in enumerate(rasters, 1):
+        written, voided, dropped = ingest_raster(path, source, root, held, keep)
+        touched.update(written)
+        outside += dropped
+        # A row that states no step gets the delivered one printed, because the step of
+        # an order is a fact about the delivery and not about the row.
+        step = "" if source.resolution_m else f", {source_step(path)}"
+        print(f"  [{i}/{len(rasters)}] {path.name}: {len(written)} tile(s), "
+              f"{voided:.1%} void{step}")
+
+    mine = sorted(tile for tile, keys in held.items() if source.key in keys)
+    write_manifest(root, {
+        **manifests.get(source.key, {}),
+        "key": source.key,
+        "country": source.country,
+        "product": source.product,
+        "resolution_m": source.resolution_m,
+        "licence": source.licence,
+        "attribution": attribution,
+        "vertical_datum": source.vertical_datum,
+        "fetched": fetched,
+        "tiles": mine,
+    })
+    for key, manifest in manifests.items():
+        if key == source.key:
+            continue
+        kept = [tile for tile in manifest.get("tiles", []) if key in held.get(tile, set())]
+        if kept != manifest.get("tiles", []):
+            write_manifest(root, {**manifest, "tiles": kept})
+    print(f"  {len(touched)} tile(s) written, {outside} source pixel centre(s) fell outside "
+          "their lattice window")
 
 
 def opened_as(archive: Path, directory: Path) -> Path:

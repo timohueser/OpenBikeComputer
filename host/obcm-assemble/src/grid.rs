@@ -1,11 +1,7 @@
 //! The OBCA cell grid as the assembler needs it: cell identity, the alignment arithmetic, and the
 //! assembly-bbox snap.
 //!
-//! The cutter's copy of this arithmetic lives in `host/obc-pack/src/grid.rs`, and that crate
-//! carries libGEOS, a native dependency the engine must not have because it compiles for
-//! `wasm32-unknown-unknown`. So the few dozen lines of integer arithmetic are restated here, and
-//! the drift is tested: the oracle suite asserts cell-for-cell that both copies compute the same
-//! squares, the same containment and the same boundary predicate.
+//! Cell arithmetic lives in `obc-formats::grid`, which has no host dependencies.
 //!
 //! Everything here is integer-only. The grid exists so an OBCM quadtree's floor-midpoint
 //! subdivision lands exactly on cell boundaries, and one rounding step in the wrong direction would
@@ -13,18 +9,10 @@
 
 use core::fmt;
 
-/// Origin of the fixed global cell grid, µdeg, on both axes.
-pub const GRID_ORIGIN: i64 = -(1 << 28);
-
-/// Side of the world box, µdeg: `2^29`. The grid does not wrap and cells may legally overhang
-/// ±90 / ±180.
-pub const WORLD_SIDE: i64 = 1 << 29;
-
-/// Smallest permitted cell size as `log2(µdeg)`.
-pub const MIN_CELL_LOG2: u32 = 10;
-
-/// Largest permitted cell size as `log2(µdeg)`.
-pub const MAX_CELL_LOG2: u32 = 28;
+pub use obc_formats::grid::{
+    axis_cells, id_width, on_grid_boundary, on_grid_line, quad_mid, GRID_ORIGIN, MAX_CELL_LOG2, MIN_CELL_LOG2,
+    WORLD_SIDE,
+};
 
 /// Largest permitted assembly-bbox span as `log2(µdeg)`.
 pub const MAX_SPAN_LOG2: u32 = 29;
@@ -40,26 +28,6 @@ pub struct CellId {
     pub log2: u32,
     pub i: i64,
     pub j: i64,
-}
-
-/// Cells per axis at size `2^log2`.
-#[inline]
-pub fn axis_cells(log2: u32) -> i64 {
-    WORLD_SIDE >> log2
-}
-
-fn decimal_width(mut v: i64) -> usize {
-    let mut w = 1;
-    while v >= 10 {
-        v /= 10;
-        w += 1;
-    }
-    w
-}
-
-/// Zero-padding width of a cell id's indices: `max(4, digits(cells_per_axis − 1))`.
-pub fn id_width(log2: u32) -> usize {
-    decimal_width(axis_cells(log2) - 1).max(4)
 }
 
 impl CellId {
@@ -78,22 +46,20 @@ impl CellId {
     /// Cell size in µdeg.
     #[inline]
     pub fn size(self) -> i64 {
-        1 << self.log2
+        obc_formats::grid::cell_size(self.log2)
     }
 
     /// The cell's square, half-open on both axes, in [`UBox`] order.
     #[inline]
     pub fn square(self) -> UBox {
-        let s = self.size();
-        let min_lat = GRID_ORIGIN + self.i * s;
-        let min_lon = GRID_ORIGIN + self.j * s;
-        (min_lon, min_lat, min_lon + s, min_lat + s)
+        obc_formats::grid::cell_square(self.log2, self.i, self.j)
     }
 
     /// The cell of size `2^log2` whose half-open square contains `(lat, lon)`.
     #[inline]
     pub fn containing(log2: u32, lat: i64, lon: i64) -> Self {
-        CellId { log2, i: (lat - GRID_ORIGIN).div_euclid(1 << log2), j: (lon - GRID_ORIGIN).div_euclid(1 << log2) }
+        let (i, j) = obc_formats::grid::containing_indices(log2, lat, lon);
+        CellId { log2, i, j }
     }
 
     /// Parse a canonical id `<log2>/<i>/<j>`. Lenient about zero padding in, canonical out.
@@ -116,25 +82,6 @@ impl fmt::Display for CellId {
         let w = id_width(self.log2);
         write!(f, "{}/{:0w$}/{:0w$}", self.log2, self.i, self.j, w = w)
     }
-}
-
-/// Whether `v` lies exactly on a grid line of size `2^log2` — the seam predicate the nav merge
-/// admits to unification, and nothing weaker.
-#[inline]
-pub fn on_grid_line(v: i64, log2: u32) -> bool {
-    (v - GRID_ORIGIN) & ((1 << log2) - 1) == 0
-}
-
-/// Whether `(lat, lon)` lies on any boundary line of the `2^log2` grid.
-#[inline]
-pub fn on_grid_boundary(lat: i64, lon: i64, log2: u32) -> bool {
-    on_grid_line(lat, log2) || on_grid_line(lon, log2)
-}
-
-/// The floor-division midpoint the OBCM quadtree splits at.
-#[inline]
-pub fn quad_mid(min: i64, max: i64) -> i64 {
-    (min + max).div_euclid(2)
 }
 
 /// The four children of `b`, in the format's NW, NE, SW, SE order.

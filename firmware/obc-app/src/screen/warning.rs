@@ -12,6 +12,7 @@ use obc_render::{
 };
 
 use crate::alert::{Alert, Alerts};
+use crate::card_scheduler::CardPermit;
 use crate::input::Gesture;
 
 use super::vocab::chrome::{card_triangle, title_frame, TITLE_BAR_H};
@@ -23,7 +24,7 @@ pub struct WarningScreen {
 }
 
 impl WarningScreen {
-    pub fn new(alerts: Alerts) -> Self {
+    pub(crate) fn new(_permit: CardPermit, alerts: Alerts) -> Self {
         WarningScreen { alerts }
     }
 

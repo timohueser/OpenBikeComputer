@@ -3,7 +3,7 @@
 
 An index tells you what rules exist. That is not the question anyone has. The question,
 before changing a file, is which of them reach *it* — and the answer already exists,
-scattered across `testing/suites.toml`, `testing/coverage-policy.toml`,
+scattered across `tools/testing/suites.toml`,
 `firmware/tools/dependency_rules.json`, `firmware/ui-frames.toml` and the guards
 themselves. Nothing had joined them.
 
@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 from test_plan import glob_matches as matches  # noqa: E402 — the selector's own glob rule
 
-GUARDS = ("tools/check_*.py", "firmware/tools/check_*.py", "firmware/tools/*_guard.py")
+GUARDS = ("tools/check_*.py", "firmware/tools/check_*.py", "firmware/tools/*_guard.py", "builder/wasm/*_guard.py")
 
 
 def cargo_package(path: str) -> tuple[str, str] | None:
@@ -61,7 +61,7 @@ def guards(path: str) -> list[tuple[str, str, bool]]:
 
 
 def suites(path: str, package: str | None) -> list[tuple[str, str]]:
-    data = tomllib.loads((ROOT / "testing/suites.toml").read_text())
+    data = tomllib.loads((ROOT / "tools/testing/suites.toml").read_text())
     found = []
     declared = False
     for entry in data.get("package", []):
@@ -86,27 +86,6 @@ def suites(path: str, package: str | None) -> list[tuple[str, str]]:
                 found.append((entry.get("id", "?"), f"triggered by {trigger}"))
                 break
     return found
-
-
-def coverage(path: str) -> list[str]:
-    data = tomllib.loads((ROOT / "testing/coverage-policy.toml").read_text())
-    lines = []
-    for rule in data.get("exclude", []):
-        if matches(path, rule["path"]):
-            lines.append(f"excluded from coverage — {rule['evidence']}")
-    for component in data.get("component", []):
-        if not any(matches(path, g) for g in component.get("include", [])):
-            continue
-        skipped = next(
-            (r for r in component.get("exclude", []) if matches(path, r["path"])), None
-        )
-        if skipped:
-            lines.append(f"component {component['id']}: excluded — {skipped['evidence']}")
-        else:
-            lines.append(
-                f"component {component['id']} ({component.get('enforcement', '?')})"
-            )
-    return lines
 
 
 def layering(package: str | None) -> list[str]:
@@ -139,7 +118,7 @@ def frames(path: str) -> list[str]:
 
 
 def prose(path: str) -> list[str]:
-    baseline = ROOT / "testing/prose-baseline.json"
+    baseline = ROOT / "tools/testing/prose-baseline.json"
     if not path.endswith(".md") or not baseline.exists():
         return []
     recorded = json.loads(baseline.read_text()).get(path)
@@ -151,7 +130,7 @@ def prose(path: str) -> list[str]:
 def specs_for(package: str | None, path: str) -> list[str]:
     if path.startswith("specs/"):
         return ["this file is itself a normative contract; specs/vectors pins its bytes"]
-    data = tomllib.loads((ROOT / "testing/suites.toml").read_text())
+    data = tomllib.loads((ROOT / "tools/testing/suites.toml").read_text())
     for entry in data.get("package", []):
         if entry.get("name") != package:
             continue
@@ -175,7 +154,6 @@ def describe(path: str) -> None:
     sections = [
         ("contracts", specs_for(name, path)),
         ("layering", layering(name)),
-        ("coverage", coverage(path)),
         ("ui frames", frames(path)),
         ("prose", prose(path)),
     ]

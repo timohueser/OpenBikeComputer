@@ -28,14 +28,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = ROOT / "testing" / "prose-baseline.json"
+BASELINE = ROOT / "tools/testing/prose-baseline.json"
 
 # `policy` is capped hardest because an agent loads those files on every turn.
 CAPS = {"guide": 2500, "readme": 800, "guard": 150, "policy": 2000}
 
-POLICY = ("CLAUDE.md", "CONTRIBUTING.md", "docs/testing.md", "docs/README.md")
+POLICY = ("AGENTS.md", ".github/CONTRIBUTING.md", "docs/testing.md", "docs/README.md")
 
-SVG = re.compile(r"<svg.*?</svg>", re.S)
+SVG = re.compile(r"<svg.*?</svg>|<img\b[^>]*\sdata-inline-svg\s*/?>", re.S)
 FENCE = re.compile(r"```.*?```", re.S)
 COMMENT = re.compile(r"<!--.*?-->", re.S)
 FRONT = re.compile(r"\A---\n.*?\n---\n", re.S)
@@ -70,7 +70,7 @@ def corpus() -> dict[str, tuple[str, int]]:
     nav = published()
     for f in tracked():
         path = ROOT / f
-        if f in POLICY:
+        if f in POLICY or os.path.basename(f) == "AGENTS.md":
             found[f] = ("policy", words(path.read_text(encoding="utf-8", errors="ignore")))
         elif f.startswith("docs/content/") and f.endswith(".md"):
             stem = f[len("docs/content/") : -len(".md")]

@@ -53,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError): release.release(root)
 
     def test_seal_accepts_the_routing_format_that_the_engine_writes(self):
-        source = (release.maps.ROOT / "host/route-engine/src/package.rs").read_text()
+        source = (release.maps.ROOT / "planner/router/src/package.rs").read_text()
         engine_format = int(re.search(r"pub const FORMAT: u32 = (\d+);", source)[1])
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
@@ -122,7 +122,7 @@ class ReleaseTests(unittest.TestCase):
             for name in document["files"]:
                 self.assertEqual((root / "runtime" / name).read_bytes(), raw.read_bytes())
             keys = planner_cleanup.referenced_keys(document, "planner/releases/test/")
-            self.assertIn("planner/releases/test/objects/" + entry["transport"]["sha256"], keys)
+            self.assertIn("planner/objects/" + entry["transport"]["sha256"], keys)
             self.assertNotIn("planner/releases/test/search/tiles/9-1-1.sqlite", keys)
             self.assertIn("planner/releases/test/public/grid.json", keys)
             cell = runtime.public_metadata({**document, "files": {"routes/tiles/9-1-1.json": entry}})["public/routes/tiles/9-1-1.json.json"]
@@ -168,6 +168,17 @@ class ReleaseTests(unittest.TestCase):
 
     DOCUMENT = {"region": "engadin", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
                 "grid": {"format": 2, "zoom": 9, "map_zoom": 11}, "files": {}}
+
+    def test_activation_refuses_a_catalogue_that_an_apply_wrote_meanwhile(self):
+        for text in [json.dumps({"format": 1, "active": None, "release": "c" * 64}), "{\"release\": "]:
+            def fetch(_remote, _key, path, text=text):
+                path.write_text(text)
+                return path
+            with patch.object(r2, "bucket_remote", return_value=r2.Remote("test:bucket", {})), \
+                 patch.object(r2, "fetch_optional", side_effect=fetch), \
+                 patch.object(r2, "run_rclone", side_effect=AssertionError("no upload")):
+                with self.assertRaises(ValueError):
+                    planner_deploy.activate("https://maps.example", {"format": 1, "active": None})
 
     def test_failed_service_probe_does_not_activate_a_release(self):
         with patch.object(release, "release", return_value=("a" * 64, self.DOCUMENT)) as verified, \

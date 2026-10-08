@@ -53,7 +53,8 @@ class PlannerDownloads(unittest.TestCase):
                            {"kind": "overlays", "tile": [6,33,22], "bounds": [5.625,45.09,11.25,48.92],
                             "files": ["maps/tiles/overlays/6-33-22.pmtiles"]}], "cells": cells}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
-        self.service = downloads.Downloads(self.source, self.root / "cache", 1000000)
+        self.public = "https://releases.test/planner-api/services/" + "f" * 64 + "/downloads"
+        self.service = downloads.Downloads(self.source, self.root / "cache", 1000000, public_url=self.public)
 
     def request(self, bounds=None):
         return {"bounds": bounds or [7,47,9,49]}
@@ -63,6 +64,7 @@ class PlannerDownloads(unittest.TestCase):
         request = self.request([7.1, 47.1, 7.9, 48.9])
         first = self.service.prepare(request)
         self.assertEqual(first["state"], "ready")
+        self.assertEqual(first["source"], self.public + "/bundles/" + first["id"])
         self.assertEqual(first, self.service.prepare(request))
         directory = self.service.cache / first["id"]
         manifest = json.loads((directory / "release.json").read_bytes())
@@ -84,7 +86,7 @@ class PlannerDownloads(unittest.TestCase):
         static = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         self.assertFalse((directory / "objects" / static).exists())
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.source / "objects").iterdir()})
-        restarted = downloads.Downloads(self.source, self.service.cache, 1000000)
+        restarted = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertEqual(first, restarted.prepare(request))
 
     def test_new_selection_has_no_reservation_and_is_immediate(self):
@@ -121,11 +123,24 @@ class PlannerDownloads(unittest.TestCase):
         publication = json.loads(path.read_bytes())
         publication["map_zoom"] = 12
         path.write_bytes(runtime.encoded(publication))
-        newer = downloads.Downloads(self.source, self.service.cache, 1000000)
+        newer = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertNotEqual(first["id"], newer.prepare(self.request())["id"])
         (self.source / "routing-cells/left.json").write_bytes(b"{}")
         with self.assertRaisesRegex(ValueError, "checksum"):
             newer.prepare(self.request([7.1,47.1,7.9,48]))
+
+    def test_a_pool_change_keeps_the_old_quote_and_uses_a_new_cache_entry(self):
+        old = self.service.prepare(self.request())
+        old_directory = self.service.cache / old["id"]
+        before = {path.name: path.read_bytes() for path in old_directory.iterdir() if path.is_file()}
+        newer = downloads.Downloads(self.source, self.service.cache, 1000000,
+                                    objects_url="https://new-pool.test/planner/objects", public_url=self.public)
+        current = newer.prepare(self.request())
+        self.assertNotEqual(old["id"], current["id"])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in old_directory.iterdir() if path.is_file()})
+        self.assertIsNotNone(self.service.selection(old["id"]))
+        origin = json.loads((newer.cache / current["id"] / "origin.json").read_bytes())
+        self.assertEqual(origin["objects_url"], newer.objects_url)
 
     def test_metadata_cache_evicts_the_oldest_selection_and_keeps_origin(self):
         first = self.service.prepare(self.request([7.1,47.1,7.9,48]))
@@ -163,9 +178,37 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (entry["bytes"], entry["sha256"]))
         self.assertEqual(json.loads(data)["archives"], ["c" * 64])
 
-    def test_http_supports_exact_ranges_and_rejects_traversal(self):
+    def test_published_payload_redirects_to_the_shared_pool_and_keeps_its_identity(self):
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+        pool = self.root / 'pool'
+        objects = pool / 'planner/objects'
+        objects.mkdir(parents=True)
+        for path in (self.source / 'objects').iterdir():
+            os.link(path, objects / path.name)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=pool))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def close():
+            server.shutdown(); server.server_close(); thread.join()
+        self.addCleanup(close)
+        self.service.objects_url = f'http://127.0.0.1:{server.server_port}/planner/objects'
         job = self.service.prepare(self.request())
+        bundle = json.loads((self.service.cache / job['id'] / 'bundle.json').read_bytes())
+        entry = bundle['files']['routing/packs/' + 'c' * 64 + '/pages.bin']['transport']
+        url = f"{self.serve()}/bundles/{job['id']}/objects/{entry['sha256']}"
+        with urlopen(url) as response:
+            self.assertEqual(response.url, self.service.objects_url + '/' + entry['sha256'])
+            payload = response.read()
+        self.assertEqual((len(payload), hashlib.sha256(payload).hexdigest()), (entry['bytes'], entry['sha256']))
+
+    def test_http_supports_exact_ranges_and_rejects_traversal(self):
         base = self.serve()
+        with urlopen(Request(base + '/jobs', data=runtime.encoded(self.request()), headers={"Content-Type": "application/json"})) as response:
+            job = json.load(response)
+        self.assertEqual(job["source"], self.public + "/bundles/" + job["id"])
+        with urlopen(base + '/catalog') as response:
+            self.assertEqual(json.load(response)['sha256'], runtime.digest(self.source / 'catalog.json'))
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
         digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"

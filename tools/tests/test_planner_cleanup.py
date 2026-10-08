@@ -44,6 +44,22 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual({item.key for item in stale}, {"planner/sources/unused.pbf", "planner/sources/current.pbf ",
                          "planner/releases/" + "b" * 64 + "/routing/pages.bin"})
 
+    def test_grid_cleanup_keeps_referenced_shared_objects_and_removes_unused_objects(self):
+        self.document = {'format': 1, 'region': 'test', 'grid': {'format': 2, 'map_zoom': 11},
+                         'files': {'maps/tiles/basemap/0-0-0.pmtiles': {'bytes': 8, 'sha256': 'a' * 64, 'transport': {'bytes': 8, 'sha256': 'a' * 64}}}}
+        self.raw = release.encoded(self.document).decode()
+        self.identity = hashlib.sha256(self.raw.encode()).hexdigest()
+        self.active['id'] = self.identity
+        self.prefix = 'releases/' + self.identity + '/'
+        self.rows = [{'Path': path, 'Size': size, 'ModTime': '2000-01-01T00:00:00Z'} for path, size in [
+            (self.prefix + 'release.json', len(self.raw)),
+            ('objects/' + 'a' * 64, 8), ('objects/' + 'b' * 64, 10)]]
+        self.rows.extend({'Path': self.prefix + name, 'Size': len(data), 'ModTime': '2000-01-01T00:00:00Z'}
+                         for name, data in release.public_metadata(self.document).items())
+        with patch.object(r2, 'run_rclone', side_effect=self.transfer):
+            _, stale = cleanup.plan(self.remote, self.current)
+        self.assertEqual([item.key for item in stale], ['planner/objects/' + 'b' * 64])
+
     def test_an_abandoned_newer_release_is_removed_but_unknown_uploads_block(self):
         previous_document = {**self.document, "files": {"routing/pages.bin": {"bytes": 100}},
                              "source_files": {**self.document["source_files"], "sources/unused.pbf": {"bytes": 4}}}
@@ -91,6 +107,17 @@ class CleanupTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "does not serve the active release"):
                         cleanup.verify_public_catalogue(self.active, "https://maps.example")
                 read.assert_called_once_with("https://maps.example/planner/catalog.json")
+
+    def test_a_catalogue_that_an_apply_wrote_refuses_publish_and_cleanup(self):
+        applied = {**self.current, "release": "c" * 64}
+        def fetch(_remote, _key, path):
+            path.write_text(json.dumps(applied))
+            return path
+        with patch.object(r2, "run_rclone", side_effect=AssertionError("no transfer")):
+            with self.assertRaisesRegex(ValueError, "apply live"):
+                cleanup.plan(self.remote, applied)
+            with patch.object(r2, "fetch_optional", side_effect=fetch), self.assertRaisesRegex(ValueError, "apply live"):
+                cleanup.before_publish(self.remote, self.identity)
 
     def test_apply_rechecks_catalog_and_deletes_only_planned_objects(self):
         stale = [r2.Target(key, 100, "2000-01-01T00:00:00Z") for key in [

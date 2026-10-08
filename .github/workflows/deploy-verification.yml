@@ -3,7 +3,7 @@ on:
   push:
     branches: [develop]
     paths:
-      - 'apps/obc-verification/**'
+      - 'tools/verification/**'
       - '.github/workflows/deploy-verification.yml'
   workflow_dispatch:
 permissions:
@@ -24,9 +24,9 @@ jobs:
         with:
           node-version: '24.21.0'
           cache: npm
-          cache-dependency-path: apps/obc-verification/package-lock.json
+          cache-dependency-path: tools/verification/package-lock.json
       - name: Check, test, and build
-        working-directory: apps/obc-verification
+        working-directory: tools/verification
         run: |
           npm ci
           npm run check
@@ -34,7 +34,7 @@ jobs:
           npm run build
           npm prune --omit=dev --ignore-scripts
       - name: Package application without persistent data
-        working-directory: apps/obc-verification
+        working-directory: tools/verification
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: |

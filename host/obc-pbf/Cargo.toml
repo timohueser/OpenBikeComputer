@@ -1,0 +1,15 @@
+[package]
+name = "obc-pbf"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "Shared PBF scans, source ordering and relation areas"
+
+[dependencies]
+obc-map-core = { workspace = true }
+osmpbf = "0.3.8"
+rayon = "1"
+geos = { version = "11.1.1", features = ["v3_14_0"] }
+libc = "0.2"
+sha2 = { workspace = true, default-features = true }

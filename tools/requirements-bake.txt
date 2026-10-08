@@ -1,5 +1,0 @@
-# The reference archive ingest tool (`host/obc-dem/reference/ingest.py`). rasterio brings its
-# own GDAL wheel, so a bake box needs no system GDAL.
-rasterio>=1.3,<2
-pyproj>=3.6,<4
-numpy>=1.26,<3

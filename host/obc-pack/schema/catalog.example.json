@@ -1,6 +1,5 @@
 {
   "schema_version": 3,
-  "generated_at": "2026-07-30T09:00:00Z",
   "source": {
     "dataset_id": "openstreetmap",
     "attribution": "© OpenStreetMap contributors",
@@ -9,7 +8,7 @@
   },
   "schema": {
     "id": "bikepacking",
-    "revision": 7,
+    "sha256": "80c632a3a0d8cc7185df9070dc234025a34d93cb5f663d79d7f2c4211777b11e",
     "name": "Bikepacking",
     "description": "Three LOD rungs over four bands — the shape of the shipped bikepacking ladder at example scale.",
     "obcm_version": 19,
@@ -270,9 +269,9 @@
         "known_empty_count": 1,
         "bytes": 1096
       },
-      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.69b51a5d5ce1afa6ba15a2de643d01c787a321a4a3b2990799a99d9c1fc42231.json",
-      "cells_bytes": 427,
-      "cells_sha256": "69b51a5d5ce1afa6ba15a2de643d01c787a321a4a3b2990799a99d9c1fc42231"
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/cells.a827ca0bb8a084a9fcc876c9d4bb03496c60401318151f8f6733ac4b34920fed.json",
+      "cells_bytes": 490,
+      "cells_sha256": "a827ca0bb8a084a9fcc876c9d4bb03496c60401318151f8f6733ac4b34920fed"
     },
     {
       "id": "europe/switzerland/basel-stadt",
@@ -329,9 +328,9 @@
         "known_empty_count": 0,
         "bytes": 548
       },
-      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.2b00d7d213dfd7d2ecf36e4389aebf9fa1b86dea2423eb06fd952c1d9125657f.json",
-      "cells_bytes": 329,
-      "cells_sha256": "2b00d7d213dfd7d2ecf36e4389aebf9fa1b86dea2423eb06fd952c1d9125657f"
+      "cells_url": "https://maps.example.org/catalog/regions/europe/switzerland/basel-stadt/cells.f916ccd5d2b61503f8096da63dff999a52fa0268c7dc581176313809ccf688fe.json",
+      "cells_bytes": 392,
+      "cells_sha256": "f916ccd5d2b61503f8096da63dff999a52fa0268c7dc581176313809ccf688fe"
     }
   ],
   "cell_index": [
@@ -340,36 +339,36 @@
       "cell_log2": 20,
       "cell_count": 1,
       "known_empty_count": 0,
-      "bytes": 590,
-      "sha256": "7680da0bb439fe4d15ca1cafb75c292622d6c90a2f3eb96fbdc9d9bd76674ddf",
-      "url": "https://maps.example.org/catalog/cells/coarse/index.7680da0bb439fe4d15ca1cafb75c292622d6c90a2f3eb96fbdc9d9bd76674ddf.json"
+      "bytes": 611,
+      "sha256": "0b7252a794e305deeab39b9213789c2b53f49bb0f788b22439efdf240f7711af",
+      "url": "https://maps.example.org/catalog/cells/coarse/index.0b7252a794e305deeab39b9213789c2b53f49bb0f788b22439efdf240f7711af.json"
     },
     {
       "band": "mid",
       "cell_log2": 19,
       "cell_count": 1,
       "known_empty_count": 0,
-      "bytes": 584,
-      "sha256": "559c36adf16bc490b4c314db1f549f2981657cd0eedbbf66cc8c9d542de4c4ce",
-      "url": "https://maps.example.org/catalog/cells/mid/index.559c36adf16bc490b4c314db1f549f2981657cd0eedbbf66cc8c9d542de4c4ce.json"
+      "bytes": 605,
+      "sha256": "a208ffc8b4277dc198233a3e08f647a44a8a27782d6c82c881b13826c992f009",
+      "url": "https://maps.example.org/catalog/cells/mid/index.a208ffc8b4277dc198233a3e08f647a44a8a27782d6c82c881b13826c992f009.json"
     },
     {
       "band": "fine",
       "cell_log2": 18,
       "cell_count": 2,
       "known_empty_count": 1,
-      "bytes": 1414,
-      "sha256": "ba0ee7a0ba186c457e22bf2b5ac4efd181a86ca334ed1404647b8776c2e428e4",
-      "url": "https://maps.example.org/catalog/cells/fine/index.ba0ee7a0ba186c457e22bf2b5ac4efd181a86ca334ed1404647b8776c2e428e4.json"
+      "bytes": 1351,
+      "sha256": "144f37bc2d5268443e85928cb1a9a1d58a28bcff42ab45f3b3240d912505564f",
+      "url": "https://maps.example.org/catalog/cells/fine/index.144f37bc2d5268443e85928cb1a9a1d58a28bcff42ab45f3b3240d912505564f.json"
     },
     {
       "band": "network",
       "cell_log2": 18,
       "cell_count": 2,
       "known_empty_count": 0,
-      "bytes": 1072,
-      "sha256": "d7ec5aacb29e9ae751d1035b1b3723f7c71da17bbc3a4bf0ce1b45d69f774af6",
-      "url": "https://maps.example.org/catalog/cells/network/index.d7ec5aacb29e9ae751d1035b1b3723f7c71da17bbc3a4bf0ce1b45d69f774af6.json"
+      "bytes": 1051,
+      "sha256": "92ae70a355f9206767fd06fbd3b41407a51bf92a0b512547744be4b32ee1fa79",
+      "url": "https://maps.example.org/catalog/cells/network/index.92ae70a355f9206767fd06fbd3b41407a51bf92a0b512547744be4b32ee1fa79.json"
     }
   ],
   "terrain": {
@@ -377,7 +376,6 @@
     "dataset_version": "2021-1",
     "posting_log2": 9,
     "cell_log2": 13,
-    "terrain_revision": 3,
     "attribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
     "references": [
       {
@@ -390,10 +388,9 @@
     "cell_index": {
       "cell_count": 2,
       "known_empty_count": 1,
-      "bytes": 983,
-      "sha256": "68947f233e505e6c7573acb814a560899eed5fdf78d4e38b13cfa1ecaffd53b2",
-      "url": "https://maps.example.org/catalog/cells/terrain/index.68947f233e505e6c7573acb814a560899eed5fdf78d4e38b13cfa1ecaffd53b2.json"
+      "bytes": 832,
+      "sha256": "dee5e2631ac32825453c2225982b09013edd9db565ef63fbe0ac4a998afa8495",
+      "url": "https://maps.example.org/catalog/cells/terrain/index.dee5e2631ac32825453c2225982b09013edd9db565ef63fbe0ac4a998afa8495.json"
     }
-  },
-  "network_terrain_revision": 3
+  }
 }

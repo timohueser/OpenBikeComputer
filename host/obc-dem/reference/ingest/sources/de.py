@@ -15,7 +15,6 @@ NRW's coverage is `x`/`y` and the two INSPIRE coverages are `E`/`N`. A server re
 subset whose label it does not know, so the row carries the labels its capabilities state.
 """
 
-from .base import registry_credit
 from .grid import GridTiles
 from .protocols import Wcs10Source, Wcs20Source
 from .stac import StacSearchSource
@@ -29,7 +28,7 @@ DHHN = "DHHN2016"
 
 NW = Wcs20Source(
     "de-nw", "Germany, North Rhine-Westphalia", "DGM1 1 m", 1.0,
-    "dl-de/zero-2-0", registry_credit("dtm-de-nw"), DHHN, (5.8, 50.3, 9.5, 52.6),
+    "dl-de/zero-2-0", DHHN,
     url="https://www.wcs.nrw.de/geobasis/wcs_nw_dgm",
     coverage="nw_dgm",
     epsg=25832,
@@ -38,7 +37,7 @@ NW = Wcs20Source(
 
 HE = Wcs20Source(
     "de-he", "Germany, Hesse", "DGM1 1 m", 1.0,
-    "dl-de/zero-2-0", registry_credit("dtm-de-he"), DHHN, (7.7, 49.3, 10.3, 51.7),
+    "dl-de/zero-2-0", DHHN,
     url="https://inspire-hessen.de/raster/dgm1/ows",
     coverage="he_dgm1",
     epsg=25832,
@@ -51,8 +50,7 @@ HE = Wcs20Source(
 # files are the row. GDAL reads an XYZ grid but no CRS beside it; `grid_epsg` places it.
 BW = GridTiles(
     "de-bw", "Germany, Baden-Württemberg", "DGM1 1 m", 1.0,
-    "dl-de/by-2-0", registry_credit("dtm-de-bw"), DHHN,
-    (7.5, 47.5, 10.5, 49.8),
+    "dl-de/by-2-0", DHHN,
     base="https://opengeodata.lgl-bw.de/data/dgm/",
     name="dgm1_32_{east}_{north}_2_bw.zip",
     epsg=25832,
@@ -63,8 +61,7 @@ BW = GridTiles(
 
 BY = GridTiles(
     "de-by", "Germany, Bavaria", "DGM1 1 m", 1.0,
-    "CC BY 4.0", registry_credit("dtm-de-by"), DHHN,
-    (8.9, 47.2, 13.9, 50.6),
+    "CC BY 4.0", DHHN,
     base="https://download1.bayernwolke.de/a/dgm/dgm1/",
     name="{east}_{north}.tif",
     epsg=25832,
@@ -73,7 +70,7 @@ BY = GridTiles(
 
 SN = GridTiles(
     "de-sn", "Germany, Saxony", "DGM1 1 m", 1.0,
-    "dl-de/by-2-0", registry_credit("dtm-de-sn"), DHHN, (11.8, 50.1, 15.1, 51.7),
+    "dl-de/by-2-0", DHHN,
     base="https://geocloud.landesvermessung.sachsen.de/public.php/dav/files/JCcXyifaNdLDnxZ/",
     name="dgm1_33{east}_{north}_2_sn_tiff.zip",
     epsg=25833,
@@ -82,7 +79,7 @@ SN = GridTiles(
 
 TH = GridTiles(
     "de-th", "Germany, Thuringia", "DGM1 1 m", 1.0,
-    "dl-de/by-2-0", registry_credit("dtm-de-th"), DHHN, (9.8, 50.2, 12.7, 51.7),
+    "dl-de/by-2-0", DHHN,
     base="https://geoportal.geoportal-th.de/hoehendaten/DGM/dgm_2020-2025/",
     name="dgm1_32_{east}_{north}_1_th_2020-2025.zip",
     epsg=25832,
@@ -91,7 +88,7 @@ TH = GridTiles(
 
 MV = Wcs20Source(
     "de-mv", "Germany, Mecklenburg-Vorpommern", "DGM1 1 m", 1.0,
-    "Open data, attribution required", registry_credit("dtm-de-mv"), DHHN, (10.5, 53.0, 14.5, 54.8),
+    "Open data, attribution required", DHHN,
     url="https://www.geodaten-mv.de/dienste/dgm_wcs",
     coverage="mv_dgm",
     epsg=25833,
@@ -102,7 +99,7 @@ MV = Wcs20Source(
 # kilobytes into the body, so this one takes the 1.0.0 request. Its coverage is named `1`.
 ST = Wcs10Source(
     "de-st", "Germany, Saxony-Anhalt", "DGM1 1 m", 1.0,
-    "dl-de/by-2-0", registry_credit("dtm-de-st"), DHHN, (10.5, 50.9, 13.2, 53.1),
+    "dl-de/by-2-0", DHHN,
     url="https://geodatenportal.sachsen-anhalt.de/ows_INSPIRE_LVermGeo_ATKIS_EL_DGM_WCS",
     coverage="1",
     epsg=25832,
@@ -110,7 +107,7 @@ ST = Wcs10Source(
 
 NI = StacSearchSource(
     "de-ni", "Germany, Lower Saxony", "DGM1 1 m", 1.0,
-    "CC BY 4.0", registry_credit("dtm-de-ni"), DHHN, (6.5, 51.2, 11.7, 54.0),
+    "CC BY 4.0", DHHN,
     search="https://dgm.stac.lgln.niedersachsen.de/search",
     asset="dgm1-tif",
 )

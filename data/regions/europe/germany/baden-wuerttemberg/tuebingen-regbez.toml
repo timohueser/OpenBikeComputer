@@ -1,2 +1,5 @@
 name = "Regierungsbezirk Tübingen"
 kind = "geofabrik"
+areas = ["europe/germany/baden-wuerttemberg/tuebingen-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

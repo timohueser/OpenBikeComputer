@@ -21,23 +21,24 @@ use std::path::{Path, PathBuf};
 use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::Rgb565;
 use obc_app::{App, AppState};
+use obc_bake::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
+use obc_bake::serialize::serialize_lods;
 use obc_display::Framebuffer565;
+use obc_draw::geom::Geom;
+use obc_draw::ingest::{IngestFeature, Ingested};
+use obc_draw::quadtree::build_lod_with;
+use obc_draw::serialize::LodLayer;
 use obc_formats::io::{ByteSink, ByteSource, SliceSource};
 use obc_host_core::flat_map::FlatMap;
 use obc_host_core::flat_store::HostStore;
 use obc_host_core::frame::{self, Scene};
 use obc_host_core::test_support::CountedSource;
 use obc_host_core::RgbaFrame;
-use obc_pack::config::{Config, LineStyle as PackLineStyle};
-use obc_pack::cut::{cut_ingested, CutOptions, CutSummary, SourceExtent};
-use obc_pack::geom::Geom;
-use obc_pack::grid::BandTable;
-use obc_pack::ingest::{IngestFeature, Ingested};
-use obc_pack::nav::RoutableWay;
-use obc_pack::poi::Poi;
-use obc_pack::progress::Progress;
-use obc_pack::quadtree::build_lod_with;
-use obc_pack::{serialize_lods, LodLayer};
+use obc_map_core::config::{Config, LineStyle as PackLineStyle};
+use obc_map_core::grid::BandTable;
+use obc_map_core::progress::Progress;
+use obc_places::metadata::Poi;
+use obc_places::routing::RoutableWay;
 use obc_reader::{MapCache, MapTables, NavTileCache, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
 use obc_route::nav::{plan_route, NavScratch};
@@ -190,7 +191,7 @@ fn poi(subtype: u8, lat: i64, lon: i64, name: &str) -> Poi {
 /// hours leaves the whole remap untested.
 fn poi_with_hours(subtype: u8, lat: i64, lon: i64, name: &str, hours: &str) -> Poi {
     Poi {
-        hours: Some(obc_pack::hours::parse(hours).expect("the fixture's opening_hours parses")),
+        hours: Some(obc_places::hours::parse(hours).expect("the fixture's opening_hours parses")),
         ..poi(subtype, lat, lon, name)
     }
 }
@@ -275,10 +276,7 @@ fn fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
         Poi { elevation_m: Some(-25), ..poi(19, LAT + 22_345, SEAM + 23_456, "Below sea level") },
         poi(19, LAT + 23_456, SEAM_E + 12_345, "Unknown summit"),
     ];
-    (
-        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
-        ways,
-    )
+    (Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois }, ways)
 }
 
 /// The uncut fixture: the same kinds of feature, placed so that nothing crosses a cell edge and no
@@ -299,10 +297,7 @@ fn uncut_fixture(cfg: &Config) -> (Ingested, Vec<RoutableWay>) {
     ];
     let ways = vec![way(7, &[(1, (LAT, SEAM + 70_000)), (2, (LAT + 20_000, SEAM + 120_000))])];
     let pois = vec![poi(1, LAT, SEAM - 160_000, "West water"), poi(5, LAT, SEAM + 100_000, "East camp")];
-    (
-        Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois, nav_graph: Default::default() },
-        ways,
-    )
+    (Ingested { landmark_links: Vec::new(), features, coastlines: Vec::new(), pois }, ways)
 }
 
 /// Viewports over the uncut fixture: both cells, north-up and rotated, at every ladder level.
@@ -338,10 +333,10 @@ fn cut_with(dir: &Path, cfg: &Config, ing: &Ingested, ways: &[RoutableWay], band
 }
 
 /// `pack(X)`: the monolithic path over an explicit global bbox — the same stages
-/// [`obc_pack::pipeline`] runs, minus the `.pbf` ingest and minus land, neither of which this
+/// [`obc_bake::pipeline`] runs, minus the `.pbf` ingest and minus land, neither of which this
 /// fixture has.
 fn monolithic(cfg: &Config, ing: &Ingested, ways: &[RoutableWay], bbox: (i64, i64, i64, i64)) -> Vec<u8> {
-    let (graph, _) = obc_pack::nav::build_graph_with(ways, cfg.routing.min_component_edges);
+    let (graph, _) = obc_network::nav::build_graph_with(ways, cfg.routing.min_component_edges);
     let lods: Vec<LodLayer> = cfg
         .lods
         .iter()
@@ -381,7 +376,6 @@ fn schema_with(cfg: &Config, band_json: &str) -> Schema {
             .expect("bands parse into the engine's own table");
     Schema {
         id: "fixture".into(),
-        revision: 1,
         obcm_version: obc_formats::obcm::VERSION,
         lods: cfg
             .lods
@@ -480,7 +474,7 @@ fn assemble_bands(
 
 /// The packer's `CellId` and the engine's are two spellings of one normative id. Converting through
 /// the canonical text is also the cheapest proof they agree.
-fn to_engine_cell(id: obc_pack::grid::CellId) -> CellId {
+fn to_engine_cell(id: obc_map_core::grid::CellId) -> CellId {
     CellId::parse(&id.to_string()).expect("the two CellId spellings round-trip through the canonical id")
 }
 
@@ -914,6 +908,7 @@ fn an_assembly_hands_its_whole_scratch_back() {
         inputs,
         Vec::new(),
         None,
+        Default::default(),
         &schema_with(&cfg, BANDS),
         &map_styles(&cfg),
         &opts,
@@ -1022,8 +1017,8 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
 
     // Every permitted cell size, not the three the fixture happens to use: the drift this guards
     // against is a rounding step, which is most likely to show up at the ends of the range.
-    assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_pack::grid::MIN_CELL_LOG2, obc_pack::grid::MAX_CELL_LOG2));
-    assert_eq!(GRID_ORIGIN, obc_pack::grid::GRID_ORIGIN);
+    assert_eq!((MIN_CELL_LOG2, MAX_CELL_LOG2), (obc_map_core::grid::MIN_CELL_LOG2, obc_map_core::grid::MAX_CELL_LOG2));
+    assert_eq!(GRID_ORIGIN, obc_map_core::grid::GRID_ORIGIN);
     // …and the third copy: the OBCT terrain raster sits on this same grid but is read by a no_std
     // crate that cannot depend on either host copy, so `obc-formats` restates the origin and the
     // cell-size range.
@@ -1034,14 +1029,14 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
         (obc_formats::obct::MIN_CELL_LOG2 as u32, obc_formats::obct::MAX_CELL_LOG2 as u32)
     );
     for log2 in MIN_CELL_LOG2..=MAX_CELL_LOG2 {
-        let last = obc_pack::grid::axis_cells(log2) - 1;
-        assert_eq!(obc_pack::grid::axis_cells(log2), obcm_assemble::grid::axis_cells(log2));
-        assert_eq!(obc_pack::grid::id_width(log2), obcm_assemble::grid::id_width(log2), "zero padding at 2^{log2}");
+        let last = obc_map_core::grid::axis_cells(log2) - 1;
+        assert_eq!(obc_map_core::grid::axis_cells(log2), obcm_assemble::grid::axis_cells(log2));
+        assert_eq!(obc_map_core::grid::id_width(log2), obcm_assemble::grid::id_width(log2), "zero padding at 2^{log2}");
         // The corners, the neighbours of the corners, and the middle of the axis — the indices where
         // a `div_euclid` and a truncating `/` disagree, and the ones either side of them.
         for i in [0i64, 1, last / 2, last / 2 + 1, last - 1, last] {
             for j in [0i64, 1, last / 2, last / 2 + 1, last - 1, last] {
-                let p = obc_pack::grid::CellId::new(log2, i, j).expect("valid");
+                let p = obc_map_core::grid::CellId::new(log2, i, j).expect("valid");
                 let e = CellId::new(log2, i, j).expect("valid");
                 assert_eq!(p.square(), e.square(), "cell {p} squares differ");
                 assert_eq!(p.to_string(), e.to_string(), "canonical ids differ");
@@ -1049,14 +1044,14 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
                 let (min_lon, min_lat, max_lon, max_lat) = e.square();
                 for (lat, lon) in [(min_lat, min_lon), (max_lat - 1, max_lon - 1), (min_lat, max_lon - 1)] {
                     let (pc, ec) =
-                        (obc_pack::grid::CellId::containing(log2, lat, lon), CellId::containing(log2, lat, lon));
+                        (obc_map_core::grid::CellId::containing(log2, lat, lon), CellId::containing(log2, lat, lon));
                     assert_eq!((pc.i, pc.j), (ec.i, ec.j), "containing({lat}, {lon}) at 2^{log2} differs");
                     assert_eq!((ec.i, ec.j), (i, j), "…and must be the cell the square came from");
                 }
                 // The boundary predicate, on and just off every edge of this square.
                 for v in [min_lat, min_lat + 1, min_lat - 1, max_lat, min_lon, max_lon, max_lon - 1] {
                     assert_eq!(
-                        obc_pack::grid::on_grid_line(v, log2),
+                        obc_map_core::grid::on_grid_line(v, log2),
                         obcm_assemble::grid::on_grid_line(v, log2),
                         "the boundary predicate differs at {v} (2^{log2})"
                     );
@@ -1078,7 +1073,7 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
         (SEAM - 1, SEAM_N),
         (-7, -2),
     ] {
-        assert_eq!(obc_pack::grid::quad_mid(min, max), quad_mid(min, max), "quad_mid({min}, {max}) differs");
+        assert_eq!(obc_map_core::grid::quad_mid(min, max), quad_mid(min, max), "quad_mid({min}, {max}) differs");
     }
     // …and the four child boxes the midpoint produces, in the format's NW/NE/SW/SE order, for a box
     // at the origin and one at the negative corner.
@@ -1089,7 +1084,7 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
     ] {
         let (min_lon, min_lat, max_lon, max_lat) = b;
         let (mid_lon, mid_lat) =
-            (obc_pack::grid::quad_mid(min_lon, max_lon), obc_pack::grid::quad_mid(min_lat, max_lat));
+            (obc_map_core::grid::quad_mid(min_lon, max_lon), obc_map_core::grid::quad_mid(min_lat, max_lat));
         let want = [
             (min_lon, mid_lat, mid_lon, max_lat),
             (mid_lon, mid_lat, max_lon, max_lat),
@@ -1143,6 +1138,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
             inputs,
             Vec::new(),
             terrain,
+            Default::default(),
             &schema_with(&cfg, BANDS),
             &map_styles(&cfg),
             &opts,
@@ -1766,7 +1762,7 @@ fn peak_articles_follow_summit_ids_through_regional_cut_and_assembly() {
     summary.cells.reverse();
     assert_eq!(assembled(&dir.join("cells"), &cfg, &summary).0, bytes);
     // Clipping out the west summit retains the shared article for each remaining linked summit.
-    opts.select = vec![obc_pack::grid::CellId::new(18, 1204, 1053).unwrap()];
+    opts.select = vec![obc_map_core::grid::CellId::new(18, 1204, 1053).unwrap()];
     opts.only_bands = vec!["network".into()];
     let clipped = cut_ingested(&ing, &ways, &cfg, &dir.join("clipped"), &opts, &Progress::silent()).unwrap();
     let bytes = std::fs::read(dir.join("clipped").join(&clipped.cells[0].path)).unwrap();
@@ -1871,4 +1867,99 @@ fn settlements_survive_assembly_with_their_payload() {
         vec![(SettlementClass::Village, "Grüßau", None), (SettlementClass::City, "Weststadt", Some(250_000))],
         "three records, two identities: the stored name and population survive the merge"
     );
+}
+
+/// The map cells carry no landmarks or peaks: their artifacts, one per network cell, join them at
+/// assembly, and the reader finds both sections in the map. Each landmark artifact has its own
+/// hours pool, and each record still names its own schedule in the map's one pool.
+#[test]
+fn a_map_assembled_from_landmark_and_peak_artifacts_has_both_sections() {
+    use obc_formats::obcm::{PoiMetadata, SourceId, POI_HOURS_REF_NONE, SUMMIT_SUBTYPE_ID};
+    use obcm_assemble::{assemble_full, Articles, MemoryScratch};
+    use serde_json::json;
+    let cfg = config();
+    let (mut ing, ways) = fixture(&cfg);
+    let mut summit = poi(SUMMIT_SUBTYPE_ID, LAT, SEAM + 100_000, "Massif");
+    summit.metadata.source = SourceId::osm(1, 101);
+    ing.pois.push(summit);
+    let hours = ["Mo-Su 08:00-18:00", "Mo-Fr 09:00-17:00"];
+    for (qid, hours) in (1..).zip(hours) {
+        ing.landmark_links.push(obc_places::metadata::LandmarkLink {
+            metadata: PoiMetadata { source: SourceId::osm(1, 500 + qid), approach: None },
+            position: None,
+            wikidata: Some(format!("Q{qid}")),
+            wikipedia: None,
+            hours: obc_places::hours::parse(hours),
+        });
+    }
+    let dir = scratch("articles");
+    let summary = cut(&dir.join("cells"), &cfg, &ing, &ways);
+
+    let credit = json!({"source_url":"https://en.wikipedia.org/w/index.php?title=Castle&oldid=1","revision":"1","license_url":"https://creativecommons.org/licenses/by-sa/4.0/","original_notices":"Authors"});
+    let counts = serde_json::to_value(obc_pack::landmarks::Counts::default()).unwrap();
+    let landmarks = dir.join("content.json");
+    let records = [(1, SEAM + 1_000), (2, SEAM - 1_000)].map(|(qid, lon)| {
+        json!({"qid":format!("Q{qid}"),"name":"Castle","category":1,"latitude":deg(LAT),"longitude":deg(lon),
+            "default_language":"en","fallback_sources":[],"photo":null,
+            "variants":[{"language":"en","text_pages":["A castle."],"attribution":credit}]})
+    });
+    let content = json!({"schema":2,"input_sha256":"input","policy_sha256":"policy","category_policy_sha256":"categories",
+        "languages":["en","de","fr","es"],"source_coverage":{},"counts":counts,"candidate_qids":[],"omissions":[],
+        "records":records});
+    std::fs::write(&landmarks, serde_json::to_vec(&content).unwrap()).unwrap();
+    let peaks = dir.join("peaks.json");
+    let catalogue = json!({"schema":1,"collection":"peaks","input_sha256":"input","policy_sha256":"policy",
+        "languages":["en","de","fr","es"],"source_coverage":{},"counts":counts,"omissions":[],
+        "records":[{"id":"Q7","name":"Massif","default_language":"en","fallback_sources":[],"photo":null,
+            "variants":[{"language":"en","text_pages":["A mountain."],"attribution":credit}]}],
+        "associations":[{"node_id":101,"article_id":"Q7","latitude":deg(LAT),"longitude":deg(SEAM + 100_000)}]});
+    std::fs::write(&peaks, serde_json::to_vec(&catalogue).unwrap()).unwrap();
+    let network: Vec<_> = summary.cells.iter().filter(|c| c.band == "network").map(|c| c.id).collect();
+    let landmark_artifacts = obc_pack::landmark_map::artifacts(&[landmarks], &ing.landmark_links, &network).unwrap();
+    let peak_artifacts = obc_pack::peak_map::artifacts(&[peaks], &network).unwrap();
+    assert_eq!((landmark_artifacts.len(), peak_artifacts.len()), (2, 1), "the seam parts the landmarks");
+
+    let sources: Vec<MemorySource> =
+        summary.cells.iter().map(|c| MemorySource(std::fs::read(dir.join("cells").join(&c.path)).unwrap())).collect();
+    let inputs: Vec<CellInput<'_>> = summary
+        .cells
+        .iter()
+        .zip(&sources)
+        .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
+        .collect();
+    let artifacts = |bytes: &std::collections::BTreeMap<_, Vec<u8>>| -> Vec<MemorySource> {
+        bytes.values().map(|bytes| MemorySource(bytes.clone())).collect()
+    };
+    let (landmark_sources, peak_sources) = (artifacts(&landmark_artifacts), artifacts(&peak_artifacts));
+    let articles = Articles {
+        landmarks: landmark_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+        peaks: peak_sources.iter().map(|src| src as &dyn ByteSource).collect(),
+    };
+    let mut store = MemoryStore::default();
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let (schema, styles) = (schema_with(&cfg, BANDS), map_styles(&cfg));
+    let scratch = MemoryScratch::new();
+    assemble_full(inputs, Vec::new(), None, articles, &schema, &styles, &opts, &mut store, &NoClock, &scratch)
+        .expect("the assembly runs");
+
+    let src = SliceSource(&store.map.0);
+    let section = obc_reader::landmarks::map_section(&src).unwrap().expect("a landmark section");
+    let directory = obc_reader::landmarks::LandmarkDirectory::read(&section).unwrap();
+    assert_eq!(directory.count, 2);
+    let tables = MapTables::parse(&src).unwrap();
+    let cache = MapCache::new_boxed();
+    let reader = Reader::new(&src, &tables, &cache);
+    let pool = reader.poi_directory().hours_pool_offset + 2;
+    for index in 0..directory.count {
+        let record = directory.record(&section, index).unwrap();
+        assert_ne!(record.hours_ref, POI_HOURS_REF_NONE, "the hours of the artifact join the map's pool");
+        let mut blob = [0; obc_formats::obcm::POI_HOURS_BLOB_LEN];
+        src.read_at(pool + u64::from(record.hours_ref) * blob.len() as u64, &mut blob).unwrap();
+        let expected = obc_places::hours::parse(hours[record.qid as usize - 1]).unwrap().encode();
+        assert_eq!(blob, expected, "Q{}", record.qid);
+    }
+    let section = obc_reader::peaks::map_section(&src).unwrap().expect("a peak section");
+    let directory = obc_reader::peaks::Directory::read(&section).unwrap();
+    assert_eq!((directory.records, directory.associations), (1, 1));
+    assert!(reader.peak_article(SourceId::osm(1, 101)).unwrap().is_some());
 }

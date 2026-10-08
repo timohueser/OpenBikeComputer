@@ -1,6 +1,6 @@
-//! `data/sources.toml`, the pins of `data/env/live.toml`, and the state of each source.
+//! `data/sources.toml` and the state of each source.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -44,16 +44,16 @@ pub struct Fetch {
     pub kind: FetchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Only for `osm`: the source whose pin is the base day, `from=`.
+    /// Only for `osm`: the source whose version is the base day, `from=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
 }
 
-/// How upstream names a version, and so what a pin of the source looks like.
+/// How upstream names a version, and so what a version of the source looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum VersionScheme {
-    /// `YYYY-MM-DD`: the only scheme that gives a pin an age.
+    /// `YYYY-MM-DD`: the only scheme that gives a version an age.
     Date,
     Release,
     Commit,
@@ -61,17 +61,18 @@ pub enum VersionScheme {
     Digest,
 }
 
-/// How old a pin may get before the source is stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+/// How old the live version may get before the source is stale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
 pub enum Refresh {
     Days(u16),
-    /// Never stale: a person moves the pin.
+    /// Never stale: only `--move` moves the source.
+    #[default]
     Manual,
 }
 
 impl Refresh {
-    /// Every policy that `refresh` allows.
+    /// Common policies offered as shortcuts.
     pub const ALL: [Refresh; 5] =
         [Refresh::Days(7), Refresh::Days(30), Refresh::Days(90), Refresh::Days(365), Refresh::Manual];
 }
@@ -91,12 +92,12 @@ impl TryFrom<RefreshRepr> for Refresh {
             RefreshRepr::Word(word) => (word == "manual").then_some(Refresh::Manual),
         };
         refresh
-            .filter(|refresh| Refresh::ALL.contains(refresh))
-            .ok_or("`refresh` is 7, 30, 90 or 365 days, or \"manual\"".into())
+            .filter(|refresh| !matches!(refresh, Refresh::Days(0)))
+            .ok_or("`refresh` is 1..65535 whole days, or \"manual\"".into())
     }
 }
 
-/// `7`, `30`, `90`, `365` or `manual`, as a command takes it.
+/// Positive whole days or `manual`, as a command takes it.
 impl std::str::FromStr for Refresh {
     type Err = String;
     fn from_str(text: &str) -> Result<Self, String> {
@@ -119,11 +120,9 @@ impl JsonSchema for Refresh {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        let values: Vec<serde_json::Value> =
-            Refresh::ALL.iter().map(|refresh| serde_json::to_value(refresh).expect("a policy serializes")).collect();
         schemars::json_schema!({
-            "description": "How old a pin may get, in days, before the source is stale; `manual` is never stale.",
-            "enum": values
+            "description": "How old the live version may get, in days, before the source is stale; `manual` is never stale.",
+            "anyOf": [{"type":"integer", "minimum":1, "maximum":65535}, {"const":"manual"}]
         })
     }
 }
@@ -166,7 +165,7 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub id: String,
@@ -181,10 +180,22 @@ pub struct Source {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obligations: Option<String>,
     pub fetch: Fetch,
+    /// The box outside which the source has no data: west, south, east and north in degrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<[f64; 4]>,
+    /// The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None
+    /// means all of `extent`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<String>,
     /// Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
     pub version: VersionScheme,
+    /// The version that a plan reads while no live release reads the source. `--move` overrides
+    /// it. Without it, the first fetch takes the newest version upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(default)]
     pub refresh: Refresh,
     pub redistribute: bool,
     /// R2 keeps a copy, because upstream cannot give a version again.
@@ -195,6 +206,12 @@ pub struct Source {
 }
 
 impl Source {
+    /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
+    /// the two boxes overlap. Boxes that only touch do not: their overlap has no area.
+    pub fn meets(&self, [west, south, east, north]: [f64; 4]) -> bool {
+        self.extent.is_some_and(|[w, s, e, n]| west < e && w < east && south < n && s < north)
+    }
+
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
         if !crate::is_kebab(&self.id) {
@@ -222,7 +239,20 @@ impl Source {
             return fail(&format!("`{bad}` in `hosts` is not a host name"));
         }
         if matches!(self.refresh, Refresh::Days(_)) && self.version != VersionScheme::Date {
-            return fail("a refresh in days needs `version = \"date\"`: only a date pin has an age");
+            return fail("a refresh in days needs `version = \"date\"`: only a date version has an age");
+        }
+        if let Some([west, south, east, north]) = self.extent {
+            let (lon, lat) = (-180.0..=180.0, -90.0..=90.0);
+            let inside = lon.contains(&west) && lon.contains(&east) && lat.contains(&south) && lat.contains(&north);
+            if !(inside && west < east && south < north) {
+                return fail("`extent` is [west, south, east, north] in degrees, west < east, south < north");
+            }
+        }
+        if let Some(start) = &self.start {
+            crate::fetch::check_version(self, start)?;
+        }
+        if !self.areas.is_empty() && self.extent.is_none() {
+            return fail("`areas` narrow an `extent`");
         }
         if self.r2_copy && !self.redistribute {
             return fail("`r2_copy` needs `redistribute`: R2 is public");
@@ -306,47 +336,22 @@ pub fn parse_sources(text: &str) -> Result<Vec<Source>, String> {
     Ok(file.source)
 }
 
-/// An environment file. `crate::env` checks `region` and `layers`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EnvFile {
-    pub(crate) region: Option<String>,
-    #[serde(default)]
-    pub(crate) layers: Vec<String>,
-    #[serde(default)]
-    pub(crate) pins: BTreeMap<String, String>,
-}
-
-/// Parse an environment file and check its `[pins]`.
-pub(crate) fn parse_env(text: &str, sources: &[Source]) -> Result<EnvFile, String> {
-    let file: EnvFile = toml::from_str(text).map_err(|e| e.to_string())?;
-    for (id, pin) in &file.pins {
-        let source = sources.iter().find(|s| &s.id == id).ok_or_else(|| format!("pin `{id}` names no source"))?;
-        if source.version == VersionScheme::Date && date::parse(pin).is_none() {
-            return Err(format!("pin `{id}` = `{pin}` is not a YYYY-MM-DD date"));
-        }
-    }
-    Ok(file)
-}
-
-/// Parse the `[pins]` of an environment file: source id to version.
-pub fn parse_pins(text: &str, sources: &[Source]) -> Result<BTreeMap<String, String>, String> {
-    parse_env(text, sources).map(|file| file.pins)
-}
-
-/// The sources and the live pins of the repository at `root`.
+/// The sources of the repository at `root`.
 pub struct Registry {
     pub sources: Vec<Source>,
-    pub pins: BTreeMap<String, String>,
 }
 
 impl Registry {
     pub fn load(root: &Path) -> Result<Self, String> {
         let read = |path: &Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
-        let sources = parse_sources(&read(&root.join("data/sources.toml"))?)?;
-        let pins = parse_pins(&read(&root.join("data/env/live.toml"))?, &sources)
-            .map_err(|e| format!("data/env/live.toml: {e}"))?;
-        Ok(Self { sources, pins })
+        Ok(Self { sources: parse_sources(&read(&root.join("data/sources.toml"))?)? })
+    }
+
+    /// Source declarations with this store's effective refresh policies.
+    pub fn effective(root: &Path, store: &crate::store::Store) -> Result<Self, String> {
+        let mut registry = Self::load(root)?;
+        crate::settings::current(store)?.policies(&mut registry.sources)?;
+        Ok(registry)
     }
 
     /// The registry of the repository above the current directory, or else above the running
@@ -361,10 +366,15 @@ impl Registry {
 /// A source of the `data/sources.toml` that this build embeds. A product that carries a credit
 /// takes it here, so the text has one home. Ids are constants in code: an unknown id panics.
 pub fn embedded(id: &str) -> &'static Source {
+    all().iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no source `{id}` in data/sources.toml"))
+}
+
+/// Every source of the `data/sources.toml` that this build embeds.
+pub fn all() -> &'static [Source] {
     static SOURCES: LazyLock<Vec<Source>> = LazyLock::new(|| {
         parse_sources(include_str!("../../../data/sources.toml")).expect("data/sources.toml is valid")
     });
-    SOURCES.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no source `{id}` in data/sources.toml"))
+    &SOURCES
 }
 
 /// The credit of an embedded source, as the product must show it.
@@ -372,22 +382,27 @@ pub fn attribution(id: &str) -> &'static str {
     embedded(id).attribution.as_deref().unwrap_or_else(|| panic!("source `{id}` has no attribution"))
 }
 
-/// The state of a source or a layer. A source is only ok, stale or blocked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+/// The state of a source or a layer. A source is only ok, stale or blocked. When more than one
+/// state applies to a layer, the first in this order is its state, so the least of several states
+/// is the one to show for all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
-    Ok,
-    Stale,
+    NotApplied,
     CodeChanged,
     InputChanged,
-    NotApplied,
+    Stale,
     Blocked,
+    Ok,
+    /// A source that no live layer and no active request reads. Only sources have it.
+    Unused,
 }
 
 impl std::fmt::Display for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             State::Ok => "ok",
+            State::Unused => "unused",
             State::Stale => "stale",
             State::CodeChanged => "code changed",
             State::InputChanged => "input changed",
@@ -401,97 +416,49 @@ impl std::fmt::Display for State {
 pub struct Status {
     pub state: State,
     pub reason: Option<String>,
-    /// Days since the pin's date; only a date pin has one.
+    /// Days since the date of the live version; only a date version has one.
     pub age_days: Option<i64>,
 }
 
-/// `text`, an environment file, with `id = "version"` in its `[pins]`: the pin replaced, or added
-/// after the last pin. Comments and the order of the other lines stay.
-pub fn set_pin(text: &str, id: &str, version: &str) -> String {
-    let pin = format!("{id} = \"{version}\"");
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let header = |line: &str| {
-        line.trim().strip_prefix("[pins]").is_some_and(|rest| rest.trim().is_empty() || rest.trim().starts_with('#'))
-    };
-    match lines.iter().position(|line| header(line)) {
-        None => lines.extend([String::new(), "[pins]".into(), pin]),
-        Some(table) => {
-            let end = lines[table + 1..]
-                .iter()
-                .position(|l| l.trim_start().starts_with('['))
-                .map_or(lines.len(), |i| table + 1 + i);
-            let key = |line: &str| line.split_once('=').map(|(key, _)| key.trim().to_string());
-            match (table + 1..end).find(|&i| key(&lines[i]).as_deref() == Some(id)) {
-                Some(i) => lines[i] = pin,
-                None => {
-                    let last = (table + 1..end).rev().find(|&i| key(&lines[i]).is_some()).unwrap_or(table);
-                    lines.insert(last + 1, pin);
-                }
-            }
-        }
-    }
-    join(text, lines)
-}
-
-/// `text`, `data/sources.toml`, with the `refresh` of source `id` replaced. Comments and the other
-/// lines stay.
-pub fn set_refresh(text: &str, id: &str, refresh: Refresh) -> Result<String, String> {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let header = |line: &String| line.trim_start().starts_with('[');
-    let names = |line: &String| {
-        toml::from_str::<toml::Table>(line).is_ok_and(|table| table.get("id").and_then(|v| v.as_str()) == Some(id))
-    };
-    let at = lines.iter().position(names).ok_or_else(|| format!("no source `{id}`"))?;
-    let start = lines[..at].iter().rposition(header).map_or(0, |i| i + 1);
-    let end = lines[at..].iter().position(header).map_or(lines.len(), |i| at + i);
-    let key = |line: &String| line.split_once('=').is_some_and(|(key, _)| key.trim() == "refresh");
-    let line = (start..end).find(|&i| key(&lines[i])).ok_or_else(|| format!("source `{id}` has no `refresh`"))?;
-    let (key, old) = lines[line].split_once('=').expect("a key line has `=`");
-    // The value is a number or "manual", so a `#` starts the comment.
-    let value = old.split('#').next().unwrap_or_default();
-    let (space, tail) = (&value[..value.len() - value.trim_start().len()], &old[value.trim_end().len()..]);
-    let refresh = toml::Value::try_from(refresh).map_err(|e| e.to_string())?;
-    lines[line] = format!("{key}={space}{refresh}{tail}");
-    Ok(join(text, lines))
-}
-
 /// `lines` with the line end of `text`.
-fn join(text: &str, lines: Vec<String>) -> String {
+pub(crate) fn join(text: &str, lines: Vec<String>) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     lines.join(newline) + newline
 }
 
-/// The state of `source` at `today`, from its pin, the newest upstream version, its policy, its
-/// licence and its credential. A pin is stale when upstream has a newer version, or when it is
-/// before `base`, the pin of the source that `fetch.from` names.
-pub fn status(
-    source: &Source,
-    pin: Option<&str>,
-    base: Option<&str>,
-    upstream: &Upstream,
-    today: i64,
-    credential_present: bool,
-) -> Status {
-    let age_days = pin.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
+/// Whether the date of an active request exceeds its maximum data age.
+/// A successful check of unchanged upstream bytes does not change this age.
+pub fn due(source: &Source, version: Option<&str>, today: i64) -> bool {
+    match (source.refresh, version.and_then(date::parse)) {
+        (Refresh::Days(max), Some(day)) => today - day > i64::from(max),
+        _ => false,
+    }
+}
+
+/// The state of `source` at `today`, from `live`, the version that live reads, the newest upstream
+/// version, its policy and its licence. Credentials gate selected fetches. The live version is stale when upstream has
+/// a newer version, or when it is before `base`, the live version of the source that `fetch.from`
+/// names.
+pub fn status(source: &Source, live: Option<&str>, base: Option<&str>, upstream: &Upstream, today: i64) -> Status {
+    let age_days = live.filter(|_| source.version == VersionScheme::Date).and_then(date::parse).map(|day| today - day);
     let (state, reason) = if source.kind != Kind::Tool && source.licence.is_none() {
         (State::Blocked, Some("no licence recorded".to_string()))
-    } else if let Some(credential) = source.credential.as_ref().filter(|_| !credential_present) {
-        (State::Blocked, Some(format!("credential missing: {}", credential.describe())))
-    } else if let Some(base) = base.filter(|&base| pin.is_some_and(|pin| pin < base)) {
+    } else if let Some(base) = base.filter(|&base| live.is_some_and(|live| live < base)) {
         let from = source.fetch.from.as_deref().unwrap_or_default();
-        (State::Stale, Some(format!("before the `{from}` pin {base}")))
+        (State::Stale, Some(format!("before `{from}` {base} of live")))
     } else {
         match (source.refresh, age_days) {
             (Refresh::Days(max), Some(age)) if age > i64::from(max) => match upstream {
-                Upstream::Newest(newest) if Some(newest.as_str()) > pin => {
+                Upstream::Newest(newest) if Some(newest.as_str()) > live => {
                     (State::Stale, Some(format!("{age} d > {max} d, upstream {newest}")))
                 }
                 Upstream::Newest(_) => (State::Ok, None),
+                Upstream::Capture => (State::Stale, Some(format!("{age} d > {max} d, capture due"))),
                 Upstream::CannotCheck => {
-                    (State::Ok, Some(format!("{age} d > {max} d, upstream unknown: it cannot be checked")))
+                    (State::Blocked, Some(format!("{age} d > {max} d, upstream unknown: it cannot be checked")))
                 }
                 Upstream::Failed(_) => {
-                    (State::Ok, Some(format!("{age} d > {max} d, upstream unknown: the check failed")))
+                    (State::Blocked, Some(format!("{age} d > {max} d, upstream unknown: the check failed")))
                 }
             },
             _ => (State::Ok, None),
@@ -526,10 +493,10 @@ mod tests {
     }
 
     #[test]
-    fn a_refresh_in_days_needs_a_date_version_and_a_known_policy() {
+    fn a_refresh_in_days_needs_a_date_version_and_positive_whole_days() {
         let release = OSM.replace("version = \"date\"", "version = \"release\"");
         assert!(parse_sources(&release).unwrap_err().contains("needs `version = \"date\"`"));
-        assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = 14")).is_err());
+        assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = 14")).is_ok());
         assert!(parse_sources(&OSM.replace("refresh = 7", "refresh = \"manual\"")).is_ok());
     }
 
@@ -555,30 +522,44 @@ mod tests {
     }
 
     #[test]
-    fn a_pin_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
+    fn a_source_meets_a_box_that_overlaps_its_extent() {
+        let source = embedded("hr-wsi");
+        assert!(source.meets([7.5, 47.5, 10.5, 49.8]));
+        assert!(source.meets([40.0, 20.0, 50.0, 30.0]), "a box that overlaps a corner");
+        assert!(!source.meets([-110.0, 37.0, -104.0, 41.0]));
+        assert!(!source.meets([46.0, 40.0, 50.0, 42.0]), "a box that only touches the edge");
+        assert!(!osm().meets([7.5, 47.5, 10.5, 49.8]), "a source without an extent meets no box");
+    }
+
+    #[test]
+    fn a_live_version_is_stale_when_older_than_its_policy_and_upstream_is_newer() {
         let today = date::parse("2024-01-10").unwrap();
         let newer = Upstream::Newest("2024-01-09".into());
-        let fresh = status(&osm(), Some("2024-01-03"), None, &newer, today, true);
+        let fresh = status(&osm(), Some("2024-01-03"), None, &newer, today);
         assert_eq!((fresh.state, fresh.age_days), (State::Ok, Some(7)));
-        let old = status(&osm(), Some("2024-01-02"), None, &newer, today, true);
+        let old = status(&osm(), Some("2024-01-02"), None, &newer, today);
         assert_eq!((old.state, old.reason.as_deref()), (State::Stale, Some("8 d > 7 d, upstream 2024-01-09")));
-        let failed = status(&osm(), Some("2024-01-02"), None, &Upstream::Failed("offline".into()), today, true);
+        let failed = status(&osm(), Some("2024-01-02"), None, &Upstream::Failed("offline".into()), today);
         assert_eq!(
             (failed.state, failed.reason.as_deref()),
-            (State::Ok, Some("8 d > 7 d, upstream unknown: the check failed"))
+            (State::Blocked, Some("8 d > 7 d, upstream unknown: the check failed"))
         );
         let same = Upstream::Newest("2024-01-02".into());
-        assert_eq!(status(&osm(), Some("2024-01-02"), None, &same, today, true).state, State::Ok);
+        assert_eq!(status(&osm(), Some("2024-01-02"), None, &same, today).state, State::Ok);
+        assert!(!due(&osm(), Some("2024-01-03"), today));
+        assert!(due(&osm(), Some("2024-01-02"), today), "unchanged upstream keeps the data age due");
+        assert_eq!(status(&osm(), Some("2024-01-02"), None, &Upstream::Capture, today).state, State::Stale);
         let manual = Source { refresh: Refresh::Manual, ..osm() };
-        assert_eq!(status(&manual, Some("2020-01-01"), None, &newer, today, true).state, State::Ok);
-        assert_eq!(status(&osm(), None, None, &newer, today, true).state, State::Ok);
+        assert!(!due(&manual, Some("2020-01-01"), today));
+        assert_eq!(status(&manual, Some("2020-01-01"), None, &newer, today).state, State::Ok);
+        assert_eq!(status(&osm(), None, None, &newer, today).state, State::Ok);
         let replication = Source { fetch: Fetch { from: Some("osm-planet".into()), ..osm().fetch }, ..osm() };
-        let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today, true);
+        let behind = status(&replication, Some("2024-01-08"), Some("2024-01-09"), &same, today);
         assert_eq!(
             (behind.state, behind.reason.as_deref()),
-            (State::Stale, Some("before the `osm-planet` pin 2024-01-09"))
+            (State::Stale, Some("before `osm-planet` 2024-01-09 of live"))
         );
-        assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today, true).state, State::Ok);
+        assert_eq!(status(&replication, Some("2024-01-09"), Some("2024-01-09"), &same, today).state, State::Ok);
     }
 
     #[test]
@@ -602,51 +583,26 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_licence_or_credential_blocks() {
+    fn a_missing_licence_blocks_but_credentials_only_gate_selected_fetches() {
         let today = date::parse("2024-01-10").unwrap();
         let unlicensed = Source { licence: None, ..osm() };
-        assert_eq!(
-            status(&unlicensed, Some("2024-01-09"), None, &Upstream::CannotCheck, today, true).state,
-            State::Blocked
-        );
+        assert_eq!(status(&unlicensed, Some("2024-01-09"), None, &Upstream::CannotCheck, today).state, State::Blocked);
         let tool = Source { kind: Kind::Tool, ..unlicensed };
-        assert_eq!(status(&tool, None, None, &Upstream::CannotCheck, today, true).state, State::Ok);
+        assert_eq!(status(&tool, None, None, &Upstream::CannotCheck, today).state, State::Ok);
         let keyed = Source { credential: Some(Credential { env: vec!["KEY".into()], file: None }), ..osm() };
-        let blocked = status(&keyed, None, None, &Upstream::CannotCheck, today, false);
-        assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Blocked, Some("credential missing: KEY")));
+        let blocked = status(&keyed, None, None, &Upstream::CannotCheck, today);
+        assert_eq!((blocked.state, blocked.reason.as_deref()), (State::Ok, None));
     }
 
     #[test]
-    fn a_pin_names_a_source_and_a_date_source_pins_a_date() {
-        let sources = [osm()];
-        assert!(parse_pins("[pins]\nosm = \"2024-01-01\"\n", &sources).is_ok());
-        assert!(parse_pins("[pins]\nosm = \"latest\"\n", &sources).unwrap_err().contains("not a YYYY-MM-DD"));
-        assert!(parse_pins("[pins]\nland = \"2024-01-01\"\n", &sources).unwrap_err().contains("names no source"));
-    }
-
-    #[test]
-    fn a_pin_is_replaced_or_added_to_the_pins_table() {
-        let text = "# live\n[pins]\nosm = \"2024-01-01\"\nland = \"2024-01-01\"\n\n[other]\nx = 1\n";
-        let replaced = set_pin(text, "osm", "2024-02-01");
-        assert_eq!(replaced, text.replace("osm = \"2024-01-01\"", "osm = \"2024-02-01\""));
-        let added = set_pin(text, "qrank", "2024-02-01");
-        assert!(added.contains("land = \"2024-01-01\"\nqrank = \"2024-02-01\"\n\n[other]"), "{added}");
-        assert_eq!(set_pin("# empty\n", "osm", "2024-02-01"), "# empty\n\n[pins]\nosm = \"2024-02-01\"\n");
-        let windows = "[pins] # live\r\nosm = \"2024-01-01\"\r\n";
-        assert_eq!(set_pin(windows, "osm", "2024-02-01"), "[pins] # live\r\nosm = \"2024-02-01\"\r\n");
-    }
-
-    #[test]
-    fn a_policy_is_replaced_in_its_source_only() {
-        let land = OSM.replace("\"osm\"", "\"land\"").replace("refresh = 7", "refresh = 7  # weekly");
-        let text = format!("# sources\n{OSM}{land}");
-        let edited = set_refresh(&text, "land", Refresh::Manual).unwrap();
-        let manual = land.replace("refresh = 7  # weekly", "refresh = \"manual\"  # weekly");
-        assert_eq!(edited, format!("# sources\n{OSM}{manual}\n"));
-        assert_eq!(parse_sources(&edited).unwrap()[1].refresh, Refresh::Manual);
-        assert_eq!(set_refresh(&text, "qrank", Refresh::Manual).unwrap_err(), "no source `qrank`");
+    fn refresh_days_are_positive_whole_numbers() {
         assert_eq!("30".parse(), Ok(Refresh::Days(30)));
-        assert!("14".parse::<Refresh>().is_err());
+        for days in [1, 14, 65535] {
+            assert_eq!(days.to_string().parse(), Ok(Refresh::Days(days)));
+        }
+        for invalid in ["0", "-1", "65536", "1.5"] {
+            assert!(invalid.parse::<Refresh>().is_err());
+        }
     }
 
     #[test]

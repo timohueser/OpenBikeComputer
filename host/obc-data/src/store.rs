@@ -3,7 +3,6 @@
 //! and the events of each run. `specs/obc-data.md` describes the layout.
 
 pub mod gc;
-pub mod import;
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
@@ -116,7 +115,21 @@ impl Store {
         }
     }
 
-    /// The shared lock that a fetch, a build or an import holds while it adds objects and their
+    /// Inspect an existing owner lock without creating a file or a directory.
+    pub fn is_locked(&self, key: &str) -> Result<bool, String> {
+        let file = match File::open(self.lock_path(key)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.to_string()),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(false),
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(e)) => Err(e.to_string()),
+        }
+    }
+
+    /// The shared lock that a mutating run, fetch or import holds while it uses objects and their
     /// records. A collection waits for no holder: it refuses to start.
     pub fn using(&self) -> Result<Lock, String> {
         let (file, path) = self.lock_file(STORE_LOCK)?;
@@ -124,18 +137,22 @@ impl Store {
         Ok(Lock(file))
     }
 
-    /// The store alone, for a collection, or `None` while a fetch, a build or an import runs.
+    /// The store alone, for a collection, or `None` while a mutating run, fetch or import runs.
     pub fn try_alone(&self) -> Result<Option<Lock>, String> {
         self.try_lock(STORE_LOCK)
     }
 
     fn lock_file(&self, key: &str) -> Result<(File, PathBuf), String> {
-        let name: String =
-            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
-        let path = self.root.join("locks").join(format!("{name}.lock"));
+        let path = self.lock_path(key);
         create_parent(&path)?;
         let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path);
         Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
+    }
+
+    pub(crate) fn lock_path(&self, key: &str) -> PathBuf {
+        let name: String =
+            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
+        self.root.join("locks").join(format!("{name}.lock"))
     }
 
     pub(crate) fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
@@ -174,7 +191,7 @@ impl Store {
 
     /// The receipt of the layer with this key.
     pub fn layer(&self, key: &str) -> Result<Option<Receipt>, String> {
-        read_record(&self.layer_path(key))
+        read_receipt(&self.layer_path(key))
     }
 
     pub fn put_layer(&self, receipt: &Receipt) -> Result<(), String> {
@@ -183,7 +200,7 @@ impl Store {
 
     /// Every receipt in the store.
     pub fn layers(&self) -> Result<Vec<Receipt>, String> {
-        read_records(&self.root.join("layers"))
+        read_records(&self.root.join("layers"), read_receipt)
     }
 
     fn code_path(&self, hash: &str) -> PathBuf {
@@ -201,6 +218,26 @@ impl Store {
             return Ok(());
         }
         write_record(&path, files)
+    }
+
+    pub fn producer(&self, code: &str) -> Result<Option<crate::engine::release::Producer>, String> {
+        if code.len() != 64 || !code.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Ok(None);
+        }
+        read_record(&self.root.join("producers").join(format!("{code}.json")))
+    }
+
+    pub fn put_producer(&self, code: &str, producer: &crate::engine::release::Producer) -> Result<(), String> {
+        producer.check(code)?;
+        write_record(&self.root.join("producers").join(format!("{code}.json")), producer)
+    }
+
+    pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
+        read_records(&self.root.join("local"), read_record)
+    }
+
+    pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
+        write_record(&self.root.join("local").join(format!("{}.json", adoption.plan.product)), adoption)
     }
 
     /// The manifest of a release.
@@ -232,8 +269,13 @@ impl Store {
 
     /// Every record of a fetch of `source` with `params`, in any version.
     pub fn requests(&self, source: &str, params: &[(String, String)]) -> Result<Vec<Requested>, String> {
-        let records: Vec<Requested> = read_records(&self.root.join("requests").join(source))?;
+        let records = self.requests_of(source)?;
         Ok(records.into_iter().filter(|record| sorted(&record.params) == sorted(params)).collect())
+    }
+
+    /// Every record of a fetch of `source`, in any version and with any params.
+    pub fn requests_of(&self, source: &str) -> Result<Vec<Requested>, String> {
+        read_records(&self.root.join("requests").join(source), read_record)
     }
 
     pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
@@ -257,16 +299,63 @@ pub struct Requested {
     pub files: Vec<String>,
 }
 
-fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+/// The space that fetches and builds leave free on a disk. Chosen, not measured: room for the
+/// system and the other programs of a laptop.
+const RESERVE: u64 = 4 << 30;
+
+/// Fail when the disk of `path` cannot take `needed` more bytes and keep [`RESERVE`] free.
+pub fn check_free(path: &Path, needed: u64) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let existing = path.ancestors().find(|path| path.exists()).ok_or("the store has no existing directory")?;
+        let name = std::ffi::CString::new(existing.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+        let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: the NUL-terminated path and the writable output stay valid for this call.
+        if unsafe { libc::statvfs(name.as_ptr(), status.as_mut_ptr()) } != 0 {
+            return Err(format!("{}: {}", existing.display(), std::io::Error::last_os_error()));
+        }
+        // SAFETY: statvfs initialized the output on success.
+        let status = unsafe { status.assume_init() };
+        #[allow(clippy::unnecessary_cast)]
+        let free = (status.f_bavail as u64).saturating_mul(status.f_frsize as u64);
+        if free < needed.saturating_add(RESERVE) {
+            let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+            return Err(format!(
+                "{} has {:.1} GiB free; this needs {:.1} GiB and keeps {:.0} GiB free. Release space with `obc data clean`, then retry",
+                existing.display(),
+                gib(free),
+                gib(needed),
+                gib(RESERVE)
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, needed);
+    Ok(())
+}
+
+fn read_text(path: &Path) -> Result<Option<String>, String> {
     match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).map(Some).map_err(|e| format!("{}: {e}", path.display())),
+        Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
 
+fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    let text = read_text(path)?;
+    text.map(|text| serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))).transpose()
+}
+
+/// For reuse, a receipt that this build cannot parse, such as one of an older format, is absent:
+/// its step builds again. The collection reads receipts strictly.
+fn read_receipt(path: &Path) -> Result<Option<Receipt>, String> {
+    Ok(read_text(path)?.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
 /// The records in `dir`, or none when it does not exist.
-fn read_records<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, String> {
+fn read_records<T>(dir: &Path, read: fn(&Path) -> Result<Option<T>, String>) -> Result<Vec<T>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -276,7 +365,7 @@ fn read_records<T: DeserializeOwned>(dir: &Path) -> Result<Vec<T>, String> {
     for entry in entries {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
         if path.extension() == Some("json".as_ref()) {
-            records.extend(read_record(&path)?);
+            records.extend(read(&path)?);
         }
     }
     Ok(records)
@@ -301,6 +390,24 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let _ = fs::remove_file(&temporary);
         format!("{}: {e}", path.display())
     })
+}
+
+/// [`write_atomic`], and the directory entries too: the file survives a power loss.
+pub fn durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("durable file has no directory")?;
+    durable_directory(parent)?;
+    write_atomic(path, bytes)?;
+    File::open(parent).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())
+}
+
+/// Create `path` and persist its entry and the entries of its ancestors.
+pub fn durable_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    for directory in path.ancestors() {
+        File::open(directory).and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// The SHA-256 of a file, in lowercase hex, and its size.

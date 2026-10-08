@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_data::regions::{Area, Regions};
+use obc_data::regions::Regions;
 
 /// One Geofabrik region.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,8 +37,7 @@ impl Region {
 }
 
 /// The Geofabrik regions in `dir`, a directory laid out like `data/regions/`, or in the
-/// `data/regions/` of the repository above the current directory. A box, polygon or union region
-/// has no Geofabrik extract, so the bakery leaves it out.
+/// `data/regions/` of the repository above the current directory. The legacy bakery reads only a single source area whose path equals the saved id.
 pub fn load(dir: Option<&Path>) -> Result<Vec<Region>, String> {
     let dir = match dir {
         Some(dir) => dir.to_path_buf(),
@@ -47,7 +46,7 @@ pub fn load(dir: Option<&Path>) -> Result<Vec<Region>, String> {
     let regions = Regions::load_dir(&dir)?;
     let list: Vec<Region> = regions
         .iter()
-        .filter(|r| r.area == Area::Geofabrik)
+        .filter(|r| r.source_area() == Some(r.id.as_str()))
         .map(|r| Region { id: r.id.clone(), name: r.name.clone() })
         .collect();
     if list.is_empty() {
