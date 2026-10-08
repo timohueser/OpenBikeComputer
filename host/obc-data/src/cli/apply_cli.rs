@@ -1,8 +1,9 @@
-//! `obc data apply live`: build the plan of live and check its releases, upload what R2 lacks,
-//! switch the pointer of each product that the plan changes, and then remove from R2 what no live
-//! release uses. Until the pointers switch, live does not change.
+//! `obc data apply live`: build the plan of live and verify its releases, upload what R2 lacks,
+//! check that no pointer changed since the review, switch the pointer of each product that the
+//! plan changes, and after the wait remove the keys of earlier releases that the plan listed.
+//! Service installation can cause a short outage before the pointers switch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -11,36 +12,37 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::build_cli::{self, Applying, BuildArgs, Built, BuiltRelease, EnvPlan};
-use super::{bytes, confirm, registry, Code, Error};
+use super::build_cli::{self, BuildArgs, Built, BuiltRelease, EnvPlan};
+use super::{bytes, confirm, Code, Error};
 use crate::date;
 use crate::engine::runs::{Event, Phase, Publication, Run};
 use crate::fetch::http::Http;
-use crate::live::{Live, Remote, INPUTS};
+use crate::live::{removal_pass, Live, Remote, INPUTS};
 use crate::product::Product;
 use crate::r2::{Bucket, Object, Scratch, Upload};
-use crate::sources::Source;
-use crate::store::{hash_file, write_atomic, Store};
+use crate::store::{hash_file, sha256_hex, write_atomic, Store};
 
 /// How long the files of the releases before a switch stay on R2: a client that read an old
 /// pointer finishes its downloads.
 #[derive(Clone, Copy)]
 pub(super) struct Wait {
-    /// After the switch of this apply, and after the time of the newest pointer on R2.
+    /// After the newest switch.
     pub(super) pointer: Duration,
-    /// More after the time of a pointer on R2, whose clock is not the clock of this machine.
+    /// More after the `applied` time of a pointer, which another clock wrote.
     pub(super) clock: Duration,
 }
 
 pub(super) const WAIT: Wait = Wait { pointer: Duration::from_secs(600), clock: Duration::from_secs(120) };
 
-/// Seconds before the start of an apply in which a key can be one of another apply.
-const YOUNG: u64 = 300;
+/// One delete call and one line batch in `removed.jsonl` per this many keys.
+const BATCH: usize = 1000;
 
-/// A pointer is at most this old in a cache, so a switch reaches every client soon.
 const JSON: &str = "application/json";
 const IMMUTABLE: Upload<'static> =
     Upload { cache_control: Some("public, max-age=31536000, immutable"), content_type: None, immutable: true };
+/// A pointer is at most this old in a cache, so a switch reaches every client soon.
+const POINTER: Upload<'static> =
+    Upload { cache_control: Some("public, max-age=60, must-revalidate"), content_type: Some(JSON), immutable: false };
 
 #[derive(Args)]
 pub struct ApplyArgs {
@@ -65,9 +67,8 @@ pub struct Applied {
     pub uploaded: Vec<String>,
     /// The release of each product whose pointer it switched.
     pub switched: Vec<BuiltRelease>,
-    /// The keys that it removed: no live release used them.
+    /// The keys of earlier releases that it removed.
     pub removed: Vec<Object>,
-    pub approval: crate::approval::Outcome,
 }
 
 pub fn apply(root: &Path, products: &[&dyn Product], args: ApplyArgs, json: bool) -> Result<(), Error> {
@@ -87,8 +88,7 @@ pub fn apply(root: &Path, products: &[&dyn Product], args: ApplyArgs, json: bool
     if json {
         return super::print_json(&applied);
     }
-    println!("{}", applied.approval.summary());
-    if applied.built.is_none() {
+    if applied.built.is_none() && applied.removed.is_empty() {
         println!("Live has every change.");
         return Ok(());
     }
@@ -112,12 +112,12 @@ pub(super) fn consent(args: &ApplyArgs, terminal: bool) -> Result<bool, Error> {
 
 /// The one question before an apply.
 pub(super) fn question(plan: &EnvPlan) -> String {
-    let removes = bytes(plan.remove.iter().filter_map(|removal| removal.bytes).sum());
+    let removes = bytes(plan.remove.iter().map(|removal| removal.bytes).sum());
     let changes = match plan.groups.len() {
         1 => "1 change".into(),
         n => format!("{n} changes"),
     };
-    format!("Apply {changes} to live? removes {removes} from R2; review auto approval")
+    format!("Apply {changes} to live and remove {} keys, {removes}, from R2?", plan.remove.len())
 }
 
 /// Apply `saved`, or else the plan of now. `ask` gets the plan before anything changes. The
@@ -133,10 +133,10 @@ fn apply_live(
     ask: impl FnOnce(&EnvPlan) -> Result<(), Error>,
     wait: Wait,
 ) -> Result<Applied, Error> {
-    let Remote::Bucket(_) = remote else {
+    let Remote::Bucket(bucket) = remote else {
         return Err(Code::Blocked.error("an apply writes R2: the OBC_R2_* variables are not set"));
     };
-    committed(root)?;
+    let commit = pushed_commit(root)?;
     let _lock = store.try_lock("apply-live")?.ok_or_else(|| {
         Code::Usage.error("another apply of live runs on this machine").fix("Wait for it to end, then plan again.")
     })?;
@@ -150,11 +150,6 @@ fn apply_live(
     };
     build_cli::complete(Some(plan))?;
     build_cli::suits(products, plan)?;
-    plan.approval
-        .as_ref()
-        .ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?
-        .check()
-        .map_err(|reason| Code::Blocked.error(reason))?;
     if let Some(blocked) = plan.blocked.iter().find(|blocked| !blocked.layers.is_empty()) {
         let reasons =
             blocked.layers.iter().map(|layer| format!("{}: {}", layer.layer, layer.reason)).collect::<Vec<_>>();
@@ -164,144 +159,155 @@ fn apply_live(
             reasons.join("; ")
         )));
     }
-
     let noop = plan.groups.is_empty() && plan.remove.is_empty();
     ask(plan)?;
     let mut run = super::api::start_run(store, "apply live")?;
-    run.require_committed_code();
-    let preparation = (|| {
-        let (built, next) = stage(root, store, http, remote, products, plan, &mut run)?;
-        let pending = publication(root, store, http, remote, products, plan, next, &mut run)?;
-        Ok((built, pending))
-    })();
-    let (built, pending) = match preparation {
-        Ok(prepared) => prepared,
-        Err(error) => return super::api::finish_run(run, Err(error), None),
-    };
-    let id = run.id().to_string();
-    drop(run);
-    #[cfg(test)]
-    let committed = super::commit_cli::execute_for_test(&pending.directory, &pending.digest, store, remote, wait)?;
-    #[cfg(not(test))]
-    let committed = {
-        let _ = wait;
-        super::commit_cli::submit(&pending.directory, &pending.digest, &id, store).map_err(|mut error| {
-            error.run = Some(id.clone());
-            error
-        })?
-    };
-    let mut applied = Applied { run: id, built: (!noop).then_some(built), ..Applied::default() };
-    committed.apply(&mut applied);
+    let mut applied = Applied { run: run.id().into(), ..Applied::default() };
+    let result = publish(root, store, http, (remote, bucket), products, (plan, &commit), wait, &mut run, &mut applied);
+    super::api::finish_run(run, result, None)?;
+    if noop {
+        applied.built = None;
+    }
     Ok(applied)
 }
 
-pub(super) struct Pending {
-    pub(super) _scratch: Scratch,
-    pub(super) directory: PathBuf,
-    pub(super) digest: String,
-}
-
-/// Seal the verified desired graph for the existing installed publication owner.
+/// Build, verify, upload, switch and remove, into `applied` as each acknowledges.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn publication(
+fn publish(
     root: &Path,
     store: &Store,
     http: &Http,
-    remote: &Remote,
+    (remote, bucket): (&Remote, &Bucket),
     products: &[&dyn Product],
-    plan: &EnvPlan,
-    next: Live,
-    run: &mut Run,
-) -> Result<Pending, Error> {
-    let expected = super::commit_cli::expected(plan, products)?;
-    let scratch = Scratch::new()?;
-    crate::worker::check(root)?;
-    let directory = scratch.0.join("bundle");
-    let sources = registry(root)?.sources;
-    let previous = Live::read(remote, products, &sources, store).map_err(r2_failed)?;
-    if previous.products.iter().any(|product| {
-        expected.get(&format!("{}/catalog.json", product.prefix)).is_some_and(|observed| observed != &product.observed)
-    }) {
-        return Err(Code::PlanOutdated.error("live changed while preparing service metadata"));
-    }
-    previous.restore_named(remote, store).map_err(r2_failed)?;
-    let views = |live: &Live, folder: &str| -> Result<Vec<crate::vps::Candidate>, Error> {
-        let mut services = Vec::new();
-        for product in products {
-            let Some(now) = live.products.iter().find(|now| now.product == product.name()) else { continue };
-            let Some((_, release)) = &now.release else { continue };
-            let mut candidates = product.services(root, release, store, &directory.join(folder))?;
-            if !candidates.is_empty() {
-                let origins: crate::vps::Origins = serde_json::from_value(
-                    now.document
-                        .as_ref()
-                        .and_then(|document| document.get("origins"))
-                        .cloned()
-                        .ok_or_else(|| Code::VerifyFailed.error("service view has no pointer origins"))?,
-                )
-                .map_err(|e| e.to_string())?;
-                origins.check()?;
-                for candidate in &mut candidates {
-                    candidate.site_origin = origins.site_origin.clone();
-                    candidate.api_origin = origins.api_origin.clone();
-                    candidate.objects_url = origins.objects_url();
-                }
-            }
-            services.extend(candidates);
-        }
-        Ok(services)
-    };
-    let services = (views(&next, "services")?, views(&previous, "previous-services")?);
-    build_cli::recheck_approval(root, store, http, remote, products, plan, run)?;
-    let approval =
-        plan.approval.clone().ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?;
-    let digest = super::commit_cli::pack(&directory, store, run, expected, next, sources, remote, services, approval)?;
-    run.sync()?;
-
-    Ok(Pending { _scratch: scratch, directory, digest })
-}
-
-/// Remove what no live release uses once no client can still read an older pointer: `wait` after
-/// the newest pointer on R2, and after `switch`, the switch of this apply. Each round reads live
-/// and lists R2 again, and the removal takes the leftovers of the last round only: another apply
-/// can switch during the wait.
-pub(super) fn remove(
-    bucket: &Bucket,
-    reader: (&Remote, &[(&str, &str)], &[Source], &Store),
-    start: u64,
-    switch: Option<Instant>,
+    (plan, commit): (&EnvPlan, &str),
     wait: Wait,
     run: &mut Run,
-    owner: &mut crate::commit::Owner,
-) -> Result<Vec<Object>, Error> {
-    let since = |instant: Instant| wait.pointer.saturating_sub(instant.elapsed());
-    let mut unknown = None;
-    loop {
-        let (leftovers, newest) = leftovers(reader, start)?;
-        if leftovers.is_empty() {
-            return Ok(leftovers);
-        }
-        let by_clock = match newest {
-            Some(newest) => {
-                let until = newest + (wait.pointer + wait.clock).as_secs();
-                Duration::from_secs(until.saturating_sub(date::now()))
-            }
-            // No time of a pointer reads: the whole wait, from the first round.
-            None => since(*unknown.get_or_insert_with(Instant::now)),
-        };
-        let left = by_clock.max(switch.map_or(Duration::ZERO, since));
-        if left.is_zero() {
-            run.record(&Event::Phase { phase: Phase::Cleanup })?;
-            delete(bucket, &leftovers, "obc data apply live: no live release uses it", run, owner)?;
-            return Ok(leftovers);
-        }
-        eprintln!("obc data: the old releases stay {} s more for clients that read an old pointer", left.as_secs());
-        run.record(&Event::Phase { phase: Phase::Wait })?;
-        std::thread::sleep(left);
+    applied: &mut Applied,
+) -> Result<(), Error> {
+    let (built, next) = stage(root, store, http, remote, products, plan, run)?;
+    applied.built = Some(built);
+    if pushed_commit(root)? != commit {
+        return Err(Code::PlanOutdated
+            .error("the checkout moved to another commit during the build; nothing changed")
+            .fix("Apply again from the commit that you want to publish."));
     }
+    let previous = Live::read(remote, products, &[], store).map_err(r2_failed)?;
+    let changed: Vec<usize> =
+        (0..next.products.len()).filter(|&at| build_cli::changed(&previous.products[at], &next.products[at])).collect();
+
+    run.check_stop(store)?;
+    run.record(&Event::Phase { phase: Phase::Upload })?;
+    let scratch = Scratch::new()?;
+    applied.uploaded = upload(bucket, &next.list(remote).map_err(r2_failed)?, &files(store, &scratch, &next)?, run)?;
+
+    run.check_stop(store)?;
+    run.record(&Event::Phase { phase: Phase::Switch })?;
+    let check_pointers = || -> Result<(), Error> {
+        for &at in &changed {
+            let observed =
+                remote.get(&format!("{}/catalog.json", next.products[at].prefix))?.as_deref().map(sha256_hex);
+            let reviewed = plan.live.iter().find(|live| live.product == next.products[at].product);
+            if reviewed.is_none_or(|reviewed| reviewed.observed != observed) {
+                return Err(Code::PlanOutdated
+                    .error(format!(
+                        "the pointer of `{}` changed since the review; nothing switched",
+                        next.products[at].product
+                    ))
+                    .fix("Plan again, review, then apply."));
+            }
+        }
+        Ok(())
+    };
+    check_pointers()?;
+    for &at in &changed {
+        let product = &next.products[at];
+        let (_, release) = product.release.as_ref().expect("a changed product has a release");
+        let owner = products.iter().find(|owner| owner.name() == product.product).expect("planned product");
+        owner.activate(root, release, store, commit).map_err(|error| Code::VerifyFailed.error(error))?;
+    }
+    run.check_stop(store)?;
+    check_pointers()?;
+    let mut switched = BTreeMap::new();
+    for &at in &changed {
+        let product = &next.products[at];
+        let (id, _) = product.release.as_ref().expect("a changed product has a release");
+        let mut document =
+            product.document.clone().ok_or_else(|| Code::VerifyFailed.error("missing desired pointer"))?;
+        document.insert("release".into(), id.clone().into());
+        document.insert("applied".into(), date::timestamp(date::now()).into());
+        document.insert("commit".into(), commit.into());
+        let key = format!("{}/catalog.json", product.prefix);
+        if let Some(bytes) = remote.get(&key)? {
+            // A rollback copies this file back to the key.
+            crate::store::durable(&store.root().join("runs").join(run.id()).join("previous").join(&key), &bytes)?;
+        }
+        let body = serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?;
+        let file = write(&scratch, &key, &body)?;
+        bucket.put(&file, &key, &POINTER).map_err(r2_failed)?;
+        bucket.verify(&file, &key).map_err(|e| Code::VerifyFailed.error(e))?;
+        run.record(&Event::Published {
+            mutation: Publication::Switched { product: product.product.clone(), release: id.clone() },
+        })?;
+        run.sync()?;
+        applied.switched.push(BuiltRelease { product: product.product.clone(), id: id.clone() });
+        switched.insert(key, sha256_hex(&body));
+    }
+
+    if let Some(settings) = &plan.settings {
+        crate::settings::applied(store, settings)?;
+    }
+    if plan.remove.is_empty() {
+        return Ok(());
+    }
+    let products: Vec<_> =
+        next.products.iter().map(|product| (product.product.as_str(), product.prefix.as_str())).collect();
+    let newest =
+        previous.products.iter().filter_map(|product| product.applied.as_deref()).filter_map(date::seconds).max();
+    let start = Instant::now();
+    let until = |clock: Option<u64>| {
+        let after_switch =
+            if switched.is_empty() { Duration::ZERO } else { wait.pointer.saturating_sub(start.elapsed()) };
+        let after_newest = clock.map_or(Duration::ZERO, |newest| {
+            Duration::from_secs((newest + (wait.pointer + wait.clock).as_secs()).saturating_sub(date::now()))
+        });
+        after_switch.max(after_newest)
+    };
+    run.record(&Event::Phase { phase: Phase::Wait })?;
+    loop {
+        let left = until(newest);
+        if left.is_zero() {
+            break;
+        }
+        run.check_stop(store)?;
+        std::thread::sleep(left.min(Duration::from_secs(1)));
+    }
+    run.check_stop(store)?;
+    let live = Live::read_products(remote, &products, &[], store).map_err(r2_failed)?;
+    for product in &live.products {
+        let key = format!("{}/catalog.json", product.prefix);
+        let expected = switched.get(&key).cloned().or_else(|| {
+            plan.live.iter().find(|live| live.product == product.product).and_then(|live| live.observed.clone())
+        });
+        if product.observed != expected {
+            return Err(Code::PlanOutdated
+                .error(format!("{key} changed during the wait; nothing was removed"))
+                .fix("Plan again: the next apply lists what it removes."));
+        }
+    }
+    let reviewed: BTreeSet<&str> = plan.remove.iter().map(|removal| removal.key.as_str()).collect();
+    let removable = live.removable(remote, store, &live.list(remote).map_err(r2_failed)?).map_err(r2_failed)?;
+    let removals: Vec<Object> = removable.into_iter().filter(|object| reviewed.contains(object.key.as_str())).collect();
+    run.record(&Event::Phase { phase: Phase::Cleanup })?;
+    // A key goes only after every key that its manifest or record names: a failed pass leaves
+    // the names that the next apply finds the rest with.
+    for pass in 0..3 {
+        let keys: Vec<Object> = removals.iter().filter(|object| removal_pass(&object.key) == pass).cloned().collect();
+        delete(bucket, &keys, "obc data apply live: no live release uses it", run, &mut applied.removed)?;
+    }
+    Ok(())
 }
 
-/// Build `plan`, check its releases and upload what R2 lacks. Live does not change.
+/// Build `plan` and verify its releases. Live does not change.
 #[allow(clippy::too_many_arguments)]
 fn stage(
     root: &Path,
@@ -313,8 +319,8 @@ fn stage(
     run: &mut Run,
 ) -> Result<(Built, Live), Error> {
     let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
-    let (built, applying) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan), run)?;
-    let Applying { next, .. } = applying.expect("a build of live gives what an apply changes");
+    let (built, next) = build_cli::build_env(root, store, http, Some(remote), products, &args, Some(plan), run)?;
+    let next = next.expect("a build of live gives live after the apply");
     run.record(&Event::Phase { phase: Phase::Verify })?;
     verify_products(root, products, store, &next)?;
     Ok((built, next))
@@ -331,26 +337,43 @@ pub(super) fn write(scratch: &Scratch, key: &str, bytes: &[u8]) -> Result<PathBu
     Ok(path)
 }
 
-/// Refuse an apply while `data/` has changes that git does not have: live builds from a committed
-/// `data/`. `data/env/local.toml` is never in git.
-pub(super) fn committed(root: &Path) -> Result<(), Error> {
-    let args = ["status", "--porcelain", "--untracked-files=all", "--", "data", ":(exclude)data/env/local.toml"];
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| Code::Failed.error(format!("git: {e}")))?;
-    if !out.status.success() {
-        return Err(Code::Failed.error(format!("git status: {}", String::from_utf8_lossy(&out.stderr).trim())));
+/// The commit that Live publishes from: the checkout has no change that git lacks, and a branch
+/// on `origin` holds `HEAD`. Pending settings live in the data store.
+pub(crate) fn pushed_commit(root: &Path) -> Result<String, Error> {
+    let git = |args: &[&str]| -> Result<String, Error> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map_err(|e| Code::Failed.error(format!("git: {e}")))?;
+        if !out.status.success() {
+            return Err(Code::Failed.error(format!(
+                "git {}: {}",
+                args[0],
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let status = ["status", "--porcelain", "--untracked-files=all", "--", "."];
+    let changed: Vec<String> = git(&status)?.lines().map(|line| line.get(3..).unwrap_or(line).to_string()).collect();
+    if !changed.is_empty() {
+        let mut shown = changed.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        if changed.len() > 5 {
+            shown += ", …";
+        }
+        return Err(Code::Usage
+            .error(format!("Live publishes from a pushed commit: {} files are uncommitted ({shown})", changed.len()))
+            .fix("Commit and push them, then apply again."));
     }
-    let changed = String::from_utf8_lossy(&out.stdout);
-    if changed.trim().is_empty() {
-        return Ok(());
+    let commit = git(&["rev-parse", "HEAD"])?.trim().to_string();
+    let branches = git(&["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])?;
+    if !branches.lines().any(|branch| branch.starts_with("origin/")) {
+        return Err(Code::Usage
+            .error(format!("Live publishes from a pushed commit: commit {} is not on GitHub", &commit[..7]))
+            .fix("Push it, or `git fetch` when it is pushed, then apply again."));
     }
-    let paths: Vec<&str> = changed.lines().map(|line| line.get(3..).unwrap_or(line)).collect();
-    Err(Code::Usage
-        .error(format!("data/ has changes that are not committed: {}", paths.join(", ")))
-        .fix("Commit data/ first: an apply builds live from the committed data/."))
+    Ok(commit)
 }
 
 /// Verify each complete product before publication, including unchanged releases.
@@ -377,10 +400,8 @@ pub(super) fn verify_products(root: &Path, products: &[&dyn Product], store: &St
 pub(super) struct File {
     pub(super) key: String,
     pub(super) path: PathBuf,
-    /// The size of the key on R2; `None` when any object at the key serves.
-    pub(super) size: Option<u64>,
-    /// The SHA-256 of the file, when the key names it.
-    pub(super) sha256: Option<String>,
+    pub(super) size: u64,
+    pub(super) sha256: String,
     pub(super) upload: Upload<'static>,
 }
 
@@ -392,22 +413,22 @@ pub(super) fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec
         files.push(File {
             key: format!("{prefix}/releases/{id}.json"),
             path: store.release(&release.product, id),
-            size: Some(release.canonical().len() as u64),
-            sha256: Some(id.into()),
+            size: release.canonical().len() as u64,
+            sha256: id.into(),
             upload: Upload { content_type: Some(JSON), ..IMMUTABLE },
         });
         files.extend(release.named.iter().map(|file| File {
             key: format!("{prefix}/releases/{id}/{}", file.path),
             path: store.object(&file.sha256),
-            size: Some(file.size),
-            sha256: Some(file.sha256.clone()),
+            size: file.size,
+            sha256: file.sha256.clone(),
             upload: IMMUTABLE,
         }));
         files.extend(release.objects().into_iter().map(|(sha256, size)| File {
             key: format!("{prefix}/objects/{sha256}"),
             path: store.object(sha256),
-            size: Some(size),
-            sha256: Some(sha256.into()),
+            size,
+            sha256: sha256.into(),
             upload: IMMUTABLE,
         }));
     }
@@ -420,19 +441,18 @@ pub(super) fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec
         })?;
         let key = read.path();
         let bytes = record.canonical();
-        let upload = Upload { content_type: Some(JSON), ..IMMUTABLE };
         files.push(File {
             path: write(scratch, &key, &bytes)?,
             key,
-            size: Some(bytes.len() as u64),
-            sha256: Some(crate::store::sha256_hex(&bytes)),
-            upload,
+            size: bytes.len() as u64,
+            sha256: sha256_hex(&bytes),
+            upload: Upload { content_type: Some(JSON), ..IMMUTABLE },
         });
         files.extend(record.files.iter().map(|file| File {
             key: format!("{INPUTS}/objects/{}", file.sha256),
             path: store.object(&file.sha256),
-            size: Some(file.size),
-            sha256: Some(file.sha256.clone()),
+            size: file.size,
+            sha256: file.sha256.clone(),
             upload: IMMUTABLE,
         }));
     }
@@ -440,15 +460,9 @@ pub(super) fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec
 }
 
 /// Upload each of `files` that `listed` lacks or holds with another size, and give their keys. A
-/// key with another size goes first: an immutable upload never replaces. Each file is checked
-/// against its SHA-256 before R2 changes, and each key after its upload.
-pub(super) fn upload(
-    bucket: &Bucket,
-    listed: &[Object],
-    files: &[File],
-    run: &mut Run,
-    owner: &mut crate::commit::Owner,
-) -> Result<Vec<String>, Error> {
+/// key with another size goes first: an immutable key is never replaced in place. Each file is
+/// checked against its SHA-256 before R2 changes, and each key after the upload.
+pub(super) fn upload(bucket: &Bucket, listed: &[Object], files: &[File], run: &mut Run) -> Result<Vec<String>, Error> {
     for file in files.iter().filter(|f| {
         let named = f.key.split_once("/releases/").is_some_and(|(_, path)| path.contains('/'));
         (f.key.starts_with(&format!("{INPUTS}/records/")) || named) && listed.iter().any(|object| object.key == f.key)
@@ -457,7 +471,7 @@ pub(super) fn upload(
             .read(&file.key)
             .map_err(r2_failed)?
             .ok_or_else(|| Code::R2Failed.error(format!("{} disappeared", file.key)))?;
-        if file.sha256.as_deref() != Some(crate::store::sha256_hex(&bytes).as_str()) {
+        if file.sha256 != sha256_hex(&bytes) {
             return Err(Code::VerifyFailed
                 .error(format!("{} already holds different immutable metadata; nothing changed", file.key)));
         }
@@ -466,7 +480,7 @@ pub(super) fn upload(
     let (mut missing, mut wrong) = (BTreeMap::new(), Vec::new());
     for file in files {
         match listed.get(file.key.as_str()) {
-            Some(object) if file.size.is_none_or(|size| size == object.bytes) => continue,
+            Some(object) if object.bytes == file.size => continue,
             Some(object) => wrong.push((*object).clone()),
             None => {}
         }
@@ -476,93 +490,60 @@ pub(super) fn upload(
         return Ok(Vec::new());
     }
     for file in missing.values() {
-        let Some(sha256) = &file.sha256 else { continue };
         let (found, size) = hash_file(&file.path).map_err(|e| Code::Failed.error(format!("{}: {e}", file.key)))?;
-        if (&found, Some(size)) != (sha256, file.size) {
+        if (&found, size) != (&file.sha256, file.size) {
             let message = format!("{} holds other bytes than {}; nothing changed", file.path.display(), file.key);
             return Err(Code::VerifyFailed.error(message).fix("Remove that file from the store, then plan again."));
         }
     }
-    if !wrong.is_empty() {
-        delete(bucket, &wrong, "obc data apply live: the key holds another size than live needs", run, owner)?;
-    }
+    delete(bucket, &wrong, "obc data apply live: the key holds another size than live needs", run, &mut Vec::new())?;
+    type Headers<'a> = (Option<&'a str>, Option<&'a str>);
+    let mut groups: BTreeMap<Headers, Vec<(PathBuf, String)>> = BTreeMap::new();
     for file in missing.values() {
-        owner
-            .mutate(
-                run,
-                crate::commit::Intent {
-                    mutation: Publication::Uploaded { key: file.key.clone() },
-                    expected: None,
-                    desired: file.sha256.clone(),
-                },
-                || bucket.put(&file.path, &file.key, &file.upload),
-            )
-            .map_err(r2_failed)?;
+        let headers = (file.upload.cache_control, file.upload.content_type);
+        groups.entry(headers).or_default().push((file.path.clone(), file.key.clone()));
+    }
+    for ((cache_control, content_type), group) in &groups {
+        let upload = Upload { cache_control: *cache_control, content_type: *content_type, immutable: false };
+        bucket.put_many(group, &upload).map_err(r2_failed)?;
     }
     let keys: Vec<String> = missing.keys().map(|key| key.to_string()).collect();
     let found = bucket.stat(&keys).map_err(r2_failed)?;
     for file in missing.values() {
-        let size = found.get(&file.key).map(|object| object.bytes);
-        if size.is_none() || file.size.is_some_and(|expected| Some(expected) != size) {
+        if found.get(&file.key).map(|object| object.bytes) != Some(file.size) {
             return Err(Code::VerifyFailed.error(format!("{}: R2 does not hold the uploaded file", file.key)));
         }
+        run.record(&Event::Published { mutation: Publication::Uploaded { key: file.key.clone() } })?;
     }
+    run.sync()?;
     Ok(keys)
 }
 
-/// What an apply removes, from one read of live and one listing: the keys under the prefixes of
-/// live that no live release uses and that R2 had [`YOUNG`] before `start`, and the time of the
-/// newest pointer, when one reads. Drift is an error: a listing that lacks a key of live is no
-/// ground for a removal.
+/// Delete `objects` in batches of [`BATCH`]: one delete call and one write of `removed.jsonl`
+/// each. `done` gets each batch once R2 acknowledges it.
 fn delete(
     bucket: &Bucket,
     objects: &[Object],
     reason: &str,
     run: &mut Run,
-    owner: &mut crate::commit::Owner,
+    done: &mut Vec<Object>,
 ) -> Result<(), Error> {
-    for object in objects {
-        owner
-            .mutate(
-                run,
-                crate::commit::Intent {
-                    mutation: Publication::Removed { key: object.key.clone(), bytes: object.bytes },
-                    expected: Some(format!("{}:{}", object.modified, object.bytes)),
-                    desired: None,
-                },
-                || bucket.delete(std::slice::from_ref(object), reason),
-            )
-            .map_err(r2_failed)?;
+    for batch in objects.chunks(BATCH) {
+        bucket.delete(batch, reason).map_err(r2_failed)?;
+        for object in batch {
+            run.record(&Event::Published {
+                mutation: Publication::Removed { key: object.key.clone(), bytes: object.bytes },
+            })?;
+        }
+        run.sync()?;
+        done.extend_from_slice(batch);
     }
     Ok(())
-}
-
-pub(super) fn leftovers(
-    (remote, products, sources, store): (&Remote, &[(&str, &str)], &[Source], &Store),
-    start: u64,
-) -> Result<(Vec<Object>, Option<u64>), Error> {
-    let live = Live::read_products(remote, products, sources, store).map_err(r2_failed)?;
-    let mut listed = Vec::new();
-    for prefix in live.swept() {
-        listed.extend(remote.list(&prefix).map_err(r2_failed)?);
-    }
-    let check = live.check(&listed);
-    if let Some(drift) = check.drift.first() {
-        let message = format!("R2 lacks `{}` of live, so nothing was removed", drift.key);
-        return Err(Code::R2Failed.error(message).fix("Run `obc data apply live` again: it uploads what R2 lacks."));
-    }
-    let pointers: Vec<String> = live.releases().map(|(prefix, _, _)| format!("{prefix}/catalog.json")).collect();
-    let switched = listed.iter().filter(|object| pointers.contains(&object.key));
-    let newest = switched.filter_map(|object| date::seconds(&object.modified)).max();
-    // A key that another apply uploads now, but has not switched to yet, is young.
-    let older = |object: &Object| date::seconds(&object.modified).is_some_and(|modified| modified + YOUNG < start);
-    Ok((check.leftovers.into_iter().filter(older).collect(), newest))
 }
 
 #[cfg(test)]
 mod tests {
     use std::process::Command;
-    use std::time::SystemTime;
 
     use super::*;
     use crate::cli::build_cli::tests::{upstream, Versioned, SOURCES};
@@ -585,7 +566,7 @@ mod tests {
             &root.join("data/regions/monaco.toml"),
             "name = \"Monaco\"\nkind = \"geofabrik\"\nareas = [\"monaco\"]\n",
         );
-        write(&root.join("data/env/live.toml"), "region = \"monaco\"\n");
+        crate::engine::tests::live_settings(&fixture, "monaco");
         commit(&fixture);
         fixture.fetched_version("head", "2020-01-01", "head.txt", b"head\n");
         upstream(&fixture, "head", "2020-01-01");
@@ -601,9 +582,17 @@ mod tests {
         apply_live(&root, &fixture.store, &http, remote, products, None, |_| Ok(()), NO_WAIT)
     }
 
+    /// Commit the checkout and push it to its `origin`.
     fn commit(fixture: &Fixture) {
+        let origin = fixture.scratch.0.join("origin.git");
+        if !origin.exists() {
+            assert!(Command::new("git").args(["init", "-q", "--bare"]).arg(&origin).status().unwrap().success());
+            let remote = ["remote", "add", "origin", origin.to_str().unwrap()];
+            assert!(Command::new("git").args(remote).current_dir(fixture.root()).status().unwrap().success());
+            write(&fixture.root().join(".gitignore"), "__pycache__/\n");
+        }
         let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
-        for args in [&["add", "."][..], &["commit", "-q", "-m", "fixture"]] {
+        for args in [&["add", "."][..], &["commit", "-q", "-m", "fixture"], &["push", "-q", "origin", "HEAD:main"]] {
             assert!(Command::new("git").args(git).args(args).current_dir(fixture.root()).status().unwrap().success());
         }
     }
@@ -631,48 +620,96 @@ mod tests {
         files(fixture).iter().map(|path| (key(path), std::fs::read(path).unwrap())).collect()
     }
 
-    /// Make every key an hour old: an apply removes only keys from before it started.
-    fn age(fixture: &Fixture) {
-        let hour_ago = SystemTime::now() - Duration::from_secs(3600);
-        for path in files(fixture) {
-            std::fs::File::options().write(true).open(path).unwrap().set_modified(hour_ago).unwrap();
-        }
-    }
-
     /// The id of the live release, once R2 holds exactly what live uses.
     fn checked(fixture: &Fixture, remote: &Remote) -> Option<String> {
         let sources = parse_sources(SOURCES).unwrap();
         let live = Live::read(remote, &[&Versioned], &sources, &fixture.store).unwrap();
-        let listed: Vec<Object> = live.swept().iter().flat_map(|prefix| remote.list(prefix).unwrap()).collect();
-        let check = live.check(&listed);
+        let check = live.check(remote, &fixture.store).unwrap();
         assert!(check.drift.is_empty() && check.leftovers.is_empty(), "R2 holds what live uses: {check:?}");
         live.products[0].release.as_ref().map(|(id, _)| id.clone())
     }
 
     #[test]
-    fn a_first_apply_makes_live_and_removes_what_no_release_uses() {
+    fn failed_service_activation_keeps_the_pointer_and_can_retry() {
+        struct Service(bool);
+        impl Product for Service {
+            fn name(&self) -> &'static str {
+                Versioned.name()
+            }
+            fn pointer(&self) -> Option<PointerFn> {
+                Versioned.pointer()
+            }
+            fn named(
+                &self,
+                release: &crate::engine::release::Release,
+            ) -> Result<Vec<crate::engine::LayerFile>, String> {
+                Versioned.named(release)
+            }
+            fn steps(
+                &self,
+                root: &Path,
+                env: &Env,
+                regions: &Regions,
+                store: &Store,
+            ) -> Result<crate::product::Steps, Unplanned> {
+                Versioned.steps(root, env, regions, store)
+            }
+            fn activate(
+                &self,
+                _root: &Path,
+                _release: &crate::engine::release::Release,
+                _store: &Store,
+                commit: &str,
+            ) -> Result<(), String> {
+                assert_eq!(commit.len(), 40);
+                if self.0 {
+                    Err("service probe failed".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let (fixture, remote) = repository("service-failure");
+        let before = b"{\"format\": 0}";
+        std::fs::create_dir_all(fixture.scratch.0.join("bucket/test")).unwrap();
+        std::fs::write(fixture.scratch.0.join("bucket/test/catalog.json"), before).unwrap();
+        let error = apply(&fixture, &remote, &[&Service(true)]).unwrap_err();
+        assert!(error.message.contains("service probe failed"));
+        assert_eq!(remote.get("test/catalog.json").unwrap().unwrap(), before);
+        let retried = apply(&fixture, &remote, &[&Service(false)]).unwrap();
+        assert_eq!(retried.switched.len(), 1);
+        assert!(retried.uploaded.is_empty());
+    }
+
+    #[test]
+    fn a_first_apply_makes_live_and_never_removes_a_key_of_an_older_publisher() {
         let (fixture, remote) = repository("apply-first");
         let dir = fixture.scratch.0.join("bucket");
         write(&dir.join("test/catalog.json"), "{\"schema_version\": 3}");
-        write(&dir.join("test/cells/old.obcm"), "old");
-        write(&dir.join("reference/v1/16/1.tif"), "reference");
-        write(&dir.join("inputs/objects/stray"), "stray");
-        age(&fixture);
-        write(&dir.join("inputs/objects/fresh"), "another apply uploads it now");
+        let older = ["test/cells/old.obcm", "test/releases/old.json", "reference/v1/16/1.tif", "inputs/objects/stray"];
+        for key in older {
+            write(&dir.join(key), "older publisher");
+        }
 
+        let plan =
+            build_cli::plan_live(&fixture.root(), &fixture.store, &Http::new(), &remote, &[&Versioned], &[], true)
+                .unwrap();
+        assert_eq!(build_cli::replaced(&plan), ["REPLACES test/catalog.json of an older publisher"]);
         let applied = apply(&fixture, &remote, &[&Versioned]).unwrap();
-        let mut removed: Vec<&str> = applied.removed.iter().map(|object| object.key.as_str()).collect();
-        removed.sort();
-        assert_eq!(removed, ["inputs/objects/stray", "test/cells/old.obcm"]);
+        assert!(applied.removed.is_empty(), "no earlier release of this command: {:?}", applied.removed);
+        let previous = fixture.store.root().join("runs").join(&applied.run).join("previous/test/catalog.json");
+        assert_eq!(std::fs::read(previous).unwrap(), b"{\"schema_version\": 3}", "a rollback copies it back");
         let keys = keys(&fixture);
-        assert!(keys.contains_key("inputs/objects/fresh"), "a key newer than the apply stays");
-        assert!(keys.contains_key("reference/v1/16/1.tif"), "no live release reads a `dtm-*` source");
-        std::fs::remove_file(dir.join("inputs/objects/fresh")).unwrap();
+        for key in older {
+            assert_eq!(keys[key], b"older publisher", "{key} stays");
+        }
         let id = checked(&fixture, &remote).unwrap();
         assert_eq!(applied.switched.iter().map(|s| &s.id).collect::<Vec<_>>(), [&id]);
         let mut pointer: serde_json::Value = serde_json::from_slice(&keys["test/catalog.json"]).unwrap();
         let applied = pointer.as_object_mut().unwrap().remove("applied").unwrap().as_str().unwrap().to_string();
         assert!(date::seconds(&applied).unwrap().abs_diff(date::now()) < 600, "the time of the switch: {applied}");
+        let commit = pointer.as_object_mut().unwrap().remove("commit").unwrap();
+        assert_eq!(commit.as_str().map(str::len), Some(40), "the pushed commit");
         assert_eq!(pointer, serde_json::json!({"schema": 1, "release": id}));
         let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
         assert_eq!(live.products[0].applied.as_ref(), Some(&applied), "status reads it");
@@ -682,15 +719,12 @@ mod tests {
         );
         assert_eq!(keys[&format!("inputs/objects/{}", sha256_hex(b"head\n"))], b"head\n", "the input copy");
         assert_eq!(keys["firmware/v1/app.bin"], b"firmware", "an apply never touches another prefix");
-        let log = String::from_utf8(keys["removed.jsonl"].clone()).unwrap();
-        assert_eq!(log.lines().count(), 2, "{log}");
 
         assert!(apply(&fixture, &remote, &[&Versioned]).unwrap().built.is_none(), "live has every change");
 
         // R2 lost the record of an input copy: the store gives it, and its objects stay.
         let record = keys.keys().find(|key| key.starts_with("inputs/records/head/2020-01-01/")).unwrap().clone();
         std::fs::remove_file(dir.join(&record)).unwrap();
-        age(&fixture);
         let repaired = apply(&fixture, &remote, &[&Versioned]).unwrap();
         assert_eq!(repaired.uploaded, [record]);
         assert!(repaired.switched.is_empty() && repaired.removed.is_empty(), "{repaired:?}");
@@ -704,7 +738,6 @@ mod tests {
         let object = files(&fixture).into_iter().find(|path| path.to_string_lossy().contains("test/objects/")).unwrap();
         let bytes = std::fs::read(&object).unwrap();
         std::fs::write(&object, "torn").unwrap();
-        age(&fixture);
 
         let repaired = apply(&fixture, &remote, &[&Versioned]).unwrap();
         let key = object.strip_prefix(fixture.scratch.0.join("bucket")).unwrap().to_string_lossy().replace('\\', "/");
@@ -715,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn named_metadata_repairs_without_builds_and_extra_active_release_files_are_removed() {
+    fn named_metadata_repairs_without_builds_and_a_file_that_no_manifest_names_stays() {
         let (fixture, remote) = repository("apply-named");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let dir = fixture.scratch.0.join("bucket");
@@ -725,7 +758,6 @@ mod tests {
         std::fs::remove_file(dir.join(&key)).unwrap();
         let extra = format!("test/releases/{id}/extra.json");
         write(&dir.join(&extra), "{}");
-        age(&fixture);
         let repaired = apply(&fixture, &remote, &[&Versioned]).unwrap();
         assert!(repaired.built.as_ref().unwrap().layers.is_empty(), "local receipt bytes repair without a build");
         let run = &repaired.run;
@@ -737,8 +769,9 @@ mod tests {
             .iter()
             .any(|event| matches!(event, Event::Published { mutation: Publication::Uploaded { .. } })));
         assert_eq!(repaired.uploaded, std::slice::from_ref(&key));
-        assert!(repaired.switched.is_empty());
-        assert_eq!(repaired.removed.iter().map(|object| object.key.as_str()).collect::<Vec<_>>(), [extra]);
+        assert!(repaired.switched.is_empty() && repaired.removed.is_empty());
+        assert!(keys(&fixture).contains_key(&extra));
+        std::fs::remove_file(dir.join(&extra)).unwrap();
         assert_eq!(std::fs::read(dir.join(&key)).unwrap(), bytes);
         checked(&fixture, &remote);
 
@@ -837,7 +870,6 @@ mod tests {
                 .same_work(&crate::engine::plan::Plan { groups: other.groups }),
             "a saved plan fixes the desired named identity too"
         );
-        age(&fixture);
         let applied = apply(&fixture, &remote, &[&Named("TOTAL.txt")]).unwrap();
         assert!(applied.built.as_ref().unwrap().layers.is_empty());
         assert_eq!(&applied.switched[0].id, release);
@@ -905,6 +937,50 @@ mod tests {
     }
 
     #[test]
+    fn policy_edits_are_reviewed_and_published_without_a_rebuild() {
+        let (fixture, remote) = repository("apply-policy");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let old = checked(&fixture, &remote).unwrap();
+        let mut settings = crate::settings::current(&fixture.store).unwrap();
+        settings.refresh.insert("head".into(), crate::sources::Refresh::Manual);
+        crate::settings::save(&fixture.store, &settings).unwrap();
+        let plan =
+            build_cli::plan_live(&fixture.root(), &fixture.store, &Http::new(), &remote, &[&Versioned], &[], false)
+                .unwrap();
+        assert_eq!(plan.settings.as_ref(), Some(&settings));
+        assert_eq!(plan.edits, [build_cli::Edit::Settings { product: "test".into() }]);
+        assert_eq!(plan.groups.len(), 1);
+        assert!(plan.groups[0].builds.is_empty());
+        let mut newer = settings.clone();
+        newer.refresh.insert("head".into(), crate::sources::Refresh::Days(30));
+        crate::settings::save(&fixture.store, &newer).unwrap();
+        let before = keys(&fixture);
+        let stale = apply_live(
+            &fixture.root(),
+            &fixture.store,
+            &Http::new(),
+            &remote,
+            &[&Versioned],
+            Some(&plan),
+            |_| Ok(()),
+            NO_WAIT,
+        )
+        .unwrap_err();
+        assert_eq!(stale.code, Code::PlanOutdated);
+        assert_eq!(keys(&fixture), before);
+        crate::settings::save(&fixture.store, &settings).unwrap();
+        let published = apply(&fixture, &remote, &[&Versioned]).unwrap();
+        assert!(published.built.as_ref().unwrap().layers.is_empty());
+        assert_ne!(checked(&fixture, &remote).unwrap(), old);
+        let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        assert_eq!(live.products[0].release.as_ref().unwrap().1.settings.as_ref(), Some(&settings));
+        assert!(!crate::settings::edited(&fixture.store).unwrap());
+        let fresh = Store::at(fixture.scratch.0.join("fresh-store"));
+        crate::settings::observe(&fresh, &live).unwrap();
+        assert_eq!(crate::settings::current(&fresh).unwrap(), settings);
+    }
+
+    #[test]
     fn an_apply_that_moves_a_source_removes_unread_input_files_and_the_old_record() {
         let (fixture, remote) = repository("apply-move");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
@@ -913,7 +989,6 @@ mod tests {
         upstream(&fixture, "head", "2020-02-01");
         fixture.fetched_version("head", "2020-02-01", "head.txt", b"newer\n");
         fixture.fetched_version("head", "2020-02-01", "kept.txt", b"head\n");
-        age(&fixture);
         let applied = apply(&fixture, &remote, &[&Versioned]).unwrap();
         assert_ne!(checked(&fixture, &remote).unwrap(), old);
         let removed: Vec<&str> = applied.removed.iter().map(|object| object.key.as_str()).collect();
@@ -975,7 +1050,6 @@ mod tests {
         let (fixture, remote) = repository("apply-verify");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         write(&fixture.scratch.0.join("bucket/test/objects/old"), "old");
-        age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         commit(&fixture);
         let before = keys(&fixture);
@@ -990,13 +1064,12 @@ mod tests {
 
     #[test]
     fn a_no_change_apply_still_needs_consent_and_checks_the_complete_product() {
-        let (fixture, remote) = repository("approval-no-change-verify");
+        let (fixture, remote) = repository("apply-no-change-verify");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let root = fixture.root();
         let plan = build_cli::plan_live(&root, &fixture.store, &Http::new(), &remote, &[&Failing], &[], false).unwrap();
         assert!(plan.groups.is_empty() && plan.remove.is_empty());
         let original = keys(&fixture);
-        let approval = crate::approval::read(&fixture.store).unwrap();
         let asked = std::cell::Cell::new(false);
         let error = apply_live(
             &root,
@@ -1013,10 +1086,9 @@ mod tests {
             NO_WAIT,
         )
         .unwrap_err();
-        assert!(asked.get(), "no-op publication cannot silently establish approval");
+        assert!(asked.get(), "a no-change apply asks too");
         assert_eq!(error.code, Code::VerifyFailed);
         assert_eq!(keys(&fixture), original);
-        assert_eq!(crate::approval::read(&fixture.store).unwrap(), approval);
         assert!(!crate::engine::runs::events(&fixture.store, error.run.as_ref().unwrap())
             .unwrap()
             .iter()
@@ -1028,7 +1100,6 @@ mod tests {
         let (fixture, remote) = repository("apply-cleanup-journal");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let old = checked(&fixture, &remote).unwrap();
-        age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         commit(&fixture);
         let root = fixture.root();
@@ -1092,7 +1163,6 @@ mod tests {
         use crate::engine::Client;
         let (fixture, remote) = repository("apply-selection");
         apply(&fixture, &remote, &[&Selected(Client::All)]).unwrap();
-        age(&fixture);
         let product = Selected(Client::Paths(vec!["published".into()]));
         let applied = apply(&fixture, &remote, &[&product]).unwrap();
         assert!(applied.built.as_ref().unwrap().layers.is_empty(), "the bytes are reused");
@@ -1107,7 +1177,6 @@ mod tests {
         assert!(live.owners(&[selected]).contains("test/package"));
         let private = format!("test/objects/{}", sha256_hex(b"metadata"));
         assert!(live.owners(std::slice::from_ref(&private)).is_empty());
-        age(&fixture);
         let expanded = apply(&fixture, &remote, &[&Selected(Client::All)]).unwrap();
         assert!(expanded.built.as_ref().unwrap().layers.is_empty());
         assert!(expanded.uploaded.contains(&private), "the store retains private bytes");
@@ -1117,7 +1186,6 @@ mod tests {
     fn blocked_required_layers_refuse_apply_and_preserve_the_complete_live_release() {
         let (fixture, remote) = repository("apply-partial");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
-        age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         commit(&fixture);
         let before = keys(&fixture);
@@ -1142,8 +1210,7 @@ mod tests {
         )
         .unwrap();
         assert!(built.releases.is_empty());
-        let applying = applying.unwrap();
-        assert_eq!(applying.next.products[0].release, previous.products[0].release);
+        assert_eq!(applying.unwrap().products[0].release, previous.products[0].release);
         assert_eq!(keys(&fixture), before);
     }
 
@@ -1172,7 +1239,6 @@ mod tests {
         let dir = fixture.scratch.0.join("bucket");
         write(&dir.join("other/catalog.json"), "{\"schema_version\": 3}");
         write(&dir.join("other/cells/a.obcm"), "cell");
-        age(&fixture);
 
         let applied = apply(&fixture, &remote, &[&Versioned, &Other]).unwrap();
         let blocked = &applied.built.as_ref().unwrap().blocked;
@@ -1194,30 +1260,8 @@ mod tests {
         let scratch = Scratch::new().unwrap();
         let mut run = Run::create(&fixture.store, "stage only").unwrap();
         let (_, next) = stage(&root, &fixture.store, &http, &remote, &products, &plan, &mut run).unwrap();
-        let expected = super::super::commit_cli::expected(&plan, &products).unwrap();
-        let directory = scratch.0.join("prepared");
-        let digest = super::super::commit_cli::pack(
-            &directory,
-            &fixture.store,
-            &run,
-            expected,
-            next,
-            parse_sources(SOURCES).unwrap(),
-            &remote,
-            (Vec::new(), Vec::new()),
-            plan.approval.clone().unwrap(),
-        )
-        .unwrap();
-        let payload = Store::at(&directory);
-        let (_, next) = stage(&root, &fixture.store, &http, &remote, &products, &plan, &mut run).unwrap();
-        for (_, _, release) in next.releases() {
-            release.write(&payload).unwrap();
-        }
-        let files = super::files(&payload, &scratch, &next).unwrap();
-        let mut owner =
-            crate::commit::Owner::open(&fixture.store.root().join("commits"), run.id(), digest.as_bytes()).unwrap();
-        let staged = super::upload(bucket, &next.list(&remote).unwrap(), &files, &mut run, &mut owner).unwrap();
-        drop(owner);
+        let files = super::files(&fixture.store, &scratch, &next).unwrap();
+        let staged = super::upload(bucket, &next.list(&remote).unwrap(), &files, &mut run).unwrap();
         drop(run);
         // The process stops here.
         let sources = parse_sources(SOURCES).unwrap();
@@ -1251,7 +1295,6 @@ mod tests {
         let (fixture, remote) = repository("apply-exact-consent");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let original = checked(&fixture, &remote).unwrap();
-        age(&fixture);
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         commit(&fixture);
         let pointer = fixture.scratch.0.join("bucket/test/catalog.json");
@@ -1275,48 +1318,106 @@ mod tests {
         assert_eq!(value["release"], original);
     }
 
-    #[test]
-    fn the_owner_rechecks_absence_after_preparation_before_any_upload() {
-        let (fixture, remote) = repository("commit-stale-absence");
-        let root = fixture.root();
-        let products = [&Versioned as &dyn Product];
-        let plan = build_cli::plan_live(&root, &fixture.store, &Http::new(), &remote, &products, &[], true).unwrap();
-        let mut run = Run::create(&fixture.store, "prepare commit").unwrap();
-        let (_, next) = stage(&root, &fixture.store, &Http::new(), &remote, &products, &plan, &mut run).unwrap();
-        let scratch = Scratch::new().unwrap();
-        let directory = scratch.0.join("bundle");
-        let digest = super::super::commit_cli::pack(
-            &directory,
-            &fixture.store,
-            &run,
-            super::super::commit_cli::expected(&plan, &products).unwrap(),
-            next,
-            parse_sources(SOURCES).unwrap(),
-            &remote,
-            (Vec::new(), Vec::new()),
-            plan.approval.clone().unwrap(),
-        )
-        .unwrap();
-        drop(run);
-        write(&fixture.scratch.0.join("bucket/test/catalog.json"), "{\"schema\":99}");
-        let before = keys(&fixture);
-        let error = super::super::commit_cli::execute_for_test(&directory, &digest, &fixture.store, &remote, NO_WAIT)
-            .unwrap_err();
-        assert_eq!(error.code, Code::PlanOutdated);
-        assert_eq!(keys(&fixture), before);
+    /// The test product, whose verification writes the pointer as another publisher would.
+    struct Racing;
+
+    impl Product for Racing {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn steps(
+            &self,
+            root: &std::path::Path,
+            env: &Env,
+            regions: &Regions,
+            store: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Versioned.steps(root, env, regions, store)
+        }
+        fn pointer(&self) -> Option<PointerFn> {
+            Versioned.pointer()
+        }
+        fn named(&self, release: &crate::engine::release::Release) -> Result<Vec<crate::engine::LayerFile>, String> {
+            Versioned.named(release)
+        }
+        fn verify(
+            &self,
+            root: &Path,
+            _: Option<&crate::engine::release::Release>,
+            _: &crate::engine::release::Release,
+            _: &Store,
+        ) -> Result<(), String> {
+            write(&root.join("../bucket/test/catalog.json"), "{\"schema\": 99}");
+            Ok(())
+        }
     }
 
     #[test]
-    fn an_apply_refuses_data_that_git_does_not_have() {
-        let (fixture, remote) = repository("apply-uncommitted");
+    fn a_pointer_that_changed_after_the_review_is_never_replaced() {
+        let (fixture, remote) = repository("apply-pointer-race");
+        let error = apply(&fixture, &remote, &[&Racing]).unwrap_err();
+        assert_eq!(error.code, Code::PlanOutdated, "{}", error.message);
+        assert_eq!(keys(&fixture)["test/catalog.json"], b"{\"schema\": 99}");
+    }
+
+    #[test]
+    fn an_apply_removes_only_the_keys_that_the_reviewed_plan_listed() {
+        let (fixture, remote) = repository("apply-reviewed-removal");
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let old = checked(&fixture, &remote).unwrap();
+        write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        commit(&fixture);
+        let (root, http) = (fixture.root(), Http::new());
+        let mut plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &[&Versioned], &[], true).unwrap();
+        let manifest = format!("test/releases/{old}.json");
+        assert!(plan.remove.iter().any(|removal| removal.key == manifest), "{:?}", plan.remove);
+        assert_eq!(plan.remove.last().map(|removal| removal.key.as_str()), Some(manifest.as_str()), "manifests last");
+        plan.remove.retain(|removal| removal.key != manifest);
+        let applied =
+            apply_live(&root, &fixture.store, &http, &remote, &[&Versioned], Some(&plan), |_| Ok(()), NO_WAIT).unwrap();
+        let removed: Vec<_> = applied.removed.iter().map(|object| object.key.as_str()).collect();
+        assert!(!removed.is_empty() && removed.iter().all(|key| plan.remove.iter().any(|removal| removal.key == *key)));
+        assert!(keys(&fixture).contains_key(&manifest), "a key that the review did not list stays");
+        let log = String::from_utf8(keys(&fixture)["removed.jsonl"].clone()).unwrap();
+        assert_eq!(log.lines().count(), removed.len(), "{log}");
+
+        let next = build_cli::plan_live(&root, &fixture.store, &http, &remote, &[&Versioned], &[], true).unwrap();
+        assert_eq!(next.remove.iter().map(|removal| removal.key.as_str()).collect::<Vec<_>>(), [manifest.as_str()]);
+        assert_eq!(apply(&fixture, &remote, &[&Versioned]).unwrap().removed.len(), 1, "the next apply removes it");
+    }
+
+    #[test]
+    fn live_publishes_only_from_a_pushed_commit_and_records_it() {
+        let (fixture, remote) = repository("apply-pushed");
         let root = fixture.root();
-        write(&root.join("data/env/local.toml"), "region = \"monaco\"\n");
-        assert!(committed(&root).is_ok(), "local.toml is never in git");
-        write(&root.join("data/env/live.toml"), "region = \"andorra\"\n");
+        let mut settings = crate::settings::current(&fixture.store).unwrap();
+        settings.refresh.insert("head".into(), crate::sources::Refresh::Manual);
+        crate::settings::save(&fixture.store, &settings).unwrap();
+        assert_eq!(pushed_commit(&root).unwrap().len(), 40, "stored settings need no commit");
+        write(&root.join("data/regions/new.toml"), "name = \"New\"\nkind = \"geofabrik\"\nareas = [\"new\"]\n");
+        assert!(pushed_commit(&root).is_err(), "tracked presets are code");
+        std::fs::remove_file(root.join("data/regions/new.toml")).unwrap();
+        write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
-        let message = "data/ has changes that are not committed: data/env/live.toml";
+        let message = "Live publishes from a pushed commit: 1 files are uncommitted (join.py)";
         assert_eq!((err.code, err.message.as_str()), (Code::Usage, message));
+        let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
+        let committed = Command::new("git").args(git).args(["commit", "-qam", "local"]).current_dir(&root).status();
+        assert!(committed.unwrap().success());
+        let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
+        assert!(err.message.ends_with("is not on GitHub"), "{}", err.message);
         assert_eq!(keys(&fixture), before);
+
+        assert!(Command::new("git")
+            .args(["push", "-q", "origin", "HEAD:main"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+        apply(&fixture, &remote, &[&Versioned]).unwrap();
+        let pushed = pushed_commit(&root).unwrap();
+        let live = Live::read(&remote, &[&Versioned], &[], &fixture.store).unwrap();
+        assert_eq!(live.products[0].commit.as_ref(), Some(&pushed), "the pointer records the commit");
     }
 }

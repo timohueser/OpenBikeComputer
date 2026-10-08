@@ -100,10 +100,7 @@ time_zone = "Europe/Berlin"
     // Reuse the real places archive for basemap tiles; small local files replace external assets and the model.
     let steps = |python: bool, env: &Env| {
         let planned = Planner.steps(&root, env, &regions, &store).unwrap();
-        assert_eq!(
-            planned.blocked.iter().map(|blocked| blocked.layer.as_str()).collect::<Vec<_>>(),
-            ["planner/runtime/routing", "planner/runtime/search", "planner/runtime/downloads", "planner/runtime"]
-        );
+        assert!(planned.blocked.is_empty());
         let mut steps = planned.steps;
         let rust = ["planner/source/europe/test", "planner/osm", "planner/terrain", "planner/routing"];
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
@@ -332,7 +329,11 @@ for name, entry in catalog['files'].items():
     let pointer = Planner.pointer().unwrap()(&publication, &release, &store).unwrap();
     assert_eq!(pointer.document["active"]["id"], release.id());
     assert_eq!(pointer.document["active"]["name"], "Test");
-    assert!(pointer.document["active"].get("routing").is_none(), "runtime endpoints need real code receipts");
+    assert_eq!(pointer.document["active"]["device_catalog"], "https://objects.example/cell-catalog/catalog.json");
+    assert_eq!(
+        pointer.document["active"]["routing"],
+        format!("https://api.example/planner-api/releases/{}/routing", release.id())
+    );
     Planner.verify(&root, None, &release, &store).unwrap();
     // A fresh machine restores only published objects and named metadata, not producer bytes.
     let restored = Store::at(temp.0.join("restored"));

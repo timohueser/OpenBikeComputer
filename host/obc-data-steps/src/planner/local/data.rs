@@ -37,7 +37,7 @@ impl Kind {
         tool: Result<Option<obc_data::engine::Library>, String>,
     ) -> Result<Steps, Unplanned> {
         match self {
-            Self::Planner => super::super::Planner.declarations(root, env, regions, store, tool, false),
+            Self::Planner => super::super::Planner.declarations(root, env, regions, store, tool),
             Self::Maps => crate::maps::Maps.declarations(env, regions, store, tool),
         }
     }
@@ -172,6 +172,7 @@ impl Inputs<'_> {
                     prefix: kind.product().prefix().into(),
                     release: Some((original.id(), original)),
                     applied: None,
+                    commit: None,
                     document: None,
                     observed: None,
                 }],

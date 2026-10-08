@@ -58,12 +58,8 @@ pub(super) fn environment(root: &Path, regions: &Regions, request: &Request) -> 
 }
 
 fn read_environment(root: &Path, regions: &Regions, request: &Request) -> Result<(Env, String), String> {
-    let (mut env, text) = Env::local(root, regions)?;
-    if let Some(region) = &request.region {
-        env.region = region.clone();
-    }
+    let (env, text) = Env::local(root, regions, request.region.as_deref())?;
     let text = env.edit(&text);
-    let env = Env::parse("local", &text, regions)?;
     Ok((env, text))
 }
 
@@ -99,8 +95,8 @@ fn selected_kinds(apps: &std::collections::BTreeSet<obc_data::dev::App>) -> Vec<
 
 pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc_data::cli::EnvPlan, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let regions = Regions::load(&root)?;
-    let registry = Registry::load(&root)?;
+    let regions = obc_data::settings::regions(&root, store)?;
+    let registry = Registry::effective(&root, store)?;
     let (env, _) = read_environment(&root, &regions, request)?;
     let remote = request.refresh_live.then(Remote::from_env).transpose()?;
     let mut checked = obc_data::cli::EnvPlan {
@@ -165,6 +161,7 @@ pub(super) fn check(root: &Path, store: &Store, request: &Request) -> Result<obc
                 release: prior.map(|release| release.id()),
                 pointer: None,
                 observed: None,
+                key: format!("{}/catalog.json", product.prefix()),
             });
             Ok(())
         })();
@@ -220,8 +217,8 @@ pub(super) fn inputs(
     request: &Request,
     run: &mut runs::Run,
 ) -> Result<obc_data::cli::EnvPlan, String> {
-    let regions = Regions::load(root)?;
-    let registry = Registry::load(root)?;
+    let regions = obc_data::settings::regions(root, store)?;
+    let registry = Registry::effective(root, store)?;
     let env = environment(root, &regions, request)?;
     let remote = Remote::from_env()?;
     let mut pinned = obc_data::cli::EnvPlan {
@@ -253,6 +250,7 @@ pub(super) fn inputs(
             release: product.release.as_ref().map(|(id, _)| id.clone()),
             pointer: None,
             observed: product.observed.clone(),
+            key: format!("{}/catalog.json", product.prefix),
         }));
     }
     let mut request = request.clone();
@@ -288,8 +286,8 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
         }
     }
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let regions = Regions::load(&root)?;
-    let registry = Registry::load(&root)?;
+    let regions = obc_data::settings::regions(&root, store)?;
+    let registry = Registry::effective(&root, store)?;
     let env = environment(&root, &regions, request)?;
     let configuration = obc_data::dev::configuration_for(&env, &regions)?;
     let apps = selected_apps(store, request)?;
@@ -347,6 +345,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
                 .clone();
             let mut code = step.code;
             code.libraries.push(obc_data::engine::Library {
+                version: None,
                 name: format!("local-{child}"),
                 path: store.object(&file.sha256).canonicalize().map_err(|e| e.to_string())?,
                 sha256: file.sha256.clone(),
@@ -430,23 +429,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
         std::fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
         for (name, original) in &releases {
             let prefix = if name == "maps" { "cell-catalog" } else { "planner" };
-            let selection = obc_data::local::saved(store)?
-                .into_iter()
-                .find(|saved| saved.original.id() == original.id())
-                .ok_or("Local adoption disappeared")?
-                .plan;
-            for selected in &selection.layers {
-                for file in &selected.files {
-                    let relative = if file.path.starts_with("objects/") {
-                        format!("{prefix}/{}", file.path)
-                    } else if name == "planner" && file.path == "release.json" {
-                        "planner/release.json".into()
-                    } else {
-                        format!("{prefix}/releases/{}/{}", original.id(), file.path)
-                    };
-                    link(store, file, &partial.join(relative))?;
-                }
-            }
+            link_release(store, original, &partial.join(prefix))?;
         }
         for (package, file) in &executables {
             let source = store.object(&file.sha256);
@@ -486,19 +469,43 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
         if let Some(map) = &simulator_map {
             std::fs::copy(map.path().join("map.obcm"), partial.join("map.obcm")).map_err(|e| e.to_string())?;
         }
-        obc_data::commit::durable(&partial.join("service.json"), &descriptor)?;
+        obc_data::store::durable(&partial.join("service.json"), &descriptor)?;
         std::fs::rename(&partial, &view).map_err(|e| e.to_string())?;
-        obc_data::commit::durable_directory(view.parent().expect("view directory"))?;
+        obc_data::store::durable_directory(view.parent().expect("view directory"))?;
     }
     let prepared = Prepared { descriptor: hash_file(&view.join("service.json"))?.0, view, supervisor, children, apps };
     prepared.check(&root)?;
     Ok(prepared)
 }
 
+fn link_release(store: &Store, release: &release::Release, directory: &Path) -> Result<(), String> {
+    for file in &release.named {
+        let relative = if release.product == "planner" && file.path == "release.json" {
+            file.path.clone()
+        } else {
+            format!("releases/{}/{}", release.id(), file.path)
+        };
+        link(store, file, &directory.join(relative))?;
+    }
+    for file in
+        release.layers.iter().flat_map(|layer| layer.client_files()).filter(|file| file.path.starts_with("objects/"))
+    {
+        link(store, file, &directory.join(&file.path))?;
+    }
+    Ok(())
+}
+
 fn link(store: &Store, file: &obc_data::engine::LayerFile, destination: &Path) -> Result<(), String> {
     let original = store.object(&file.sha256);
     if hash_file(&original)? != (file.sha256.clone(), file.size) {
         return Err("Local view object differs from its recorded bytes".into());
+    }
+    if destination.exists() {
+        return if hash_file(destination)? == (file.sha256.clone(), file.size) {
+            Ok(())
+        } else {
+            Err("Local view path has different recorded bytes".into())
+        };
     }
     std::fs::create_dir_all(destination.parent().expect("view path")).map_err(|e| e.to_string())?;
     std::fs::hard_link(original, destination).map_err(|e| e.to_string())
@@ -522,8 +529,12 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
     {
         return Err("Local planner services need prepared Node 24 or newer".into());
     }
-    let executable =
-        obc_data::engine::Library { name: "local-node".into(), path: node.clone(), sha256: hash_file(&node)?.0 };
+    let executable = obc_data::engine::Library {
+        version: Some(String::from_utf8(version.stdout).map_err(|e| e.to_string())?),
+        name: "local-node".into(),
+        path: node.clone(),
+        sha256: hash_file(&node)?.0,
+    };
     let mut children = BTreeMap::new();
     for (name, app) in [("search", "planner/search"), ("tiles", "planner/tiles"), ("frontend", "builder/web")] {
         if name == "search" && !web {
@@ -544,6 +555,7 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
                     .canonicalize()
                     .map_err(|e| format!("Prepare the builder bridge/Wasm with the builder README first: {e}"))?;
                 code.libraries.push(obc_data::engine::Library {
+                    version: None,
                     name: format!("local-frontend-{role}"),
                     sha256: hash_file(&path)?.0,
                     path,
@@ -567,6 +579,7 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
                         return Err("Local npm dependencies must be self-contained regular files".into());
                     }
                     code.libraries.push(obc_data::engine::Library {
+                        version: None,
                         name: format!(
                             "local-{name}-{}",
                             sha256_hex(path.strip_prefix(&modules).unwrap().as_os_str().as_encoded_bytes())
@@ -578,6 +591,7 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
                     pending.push(path);
                 } else if kind.is_file() {
                     code.libraries.push(obc_data::engine::Library {
+                        version: None,
                         name: format!(
                             "local-{name}-{}",
                             sha256_hex(path.strip_prefix(&modules).unwrap().as_os_str().as_encoded_bytes())
@@ -597,6 +611,51 @@ fn providers(root: &Path, web: bool) -> Result<(BTreeMap<String, Binding>, std::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_view_uses_published_names_for_distinct_grid_indexes() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Store::at(scratch.path().join("store"));
+        let mut release = release::Release::compose("planner", "ride", &[], None, Vec::new(), &Default::default());
+        for name in ["indexes/places/grid/index.json", "indexes/basemap/grid/index.json", "release.json"] {
+            let source = scratch.path().join("source");
+            std::fs::write(&source, name).unwrap();
+            let (sha256, size) = hash_file(&source).unwrap();
+            store.insert(&source, &sha256).unwrap();
+            release.named.push(obc_data::engine::LayerFile { path: name.into(), sha256, size });
+        }
+        let view = scratch.path().join("planner");
+        link_release(&store, &release, &view).unwrap();
+        for file in &release.named {
+            let path = if file.path == "release.json" {
+                view.join(&file.path)
+            } else {
+                view.join("releases").join(release.id()).join(&file.path)
+            };
+            assert_eq!(std::fs::read_to_string(path).unwrap(), file.path);
+        }
+    }
+
+    #[test]
+    fn view_layers_share_identical_objects_but_reject_path_conflicts() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Store::at(scratch.path().join("store"));
+        let source = scratch.path().join("source");
+        let destination = scratch.path().join("view/object");
+        for bytes in [b"one", b"two"] {
+            std::fs::write(&source, bytes).unwrap();
+            let (sha256, size) = hash_file(&source).unwrap();
+            store.insert(&source, &sha256).unwrap();
+            let file = obc_data::engine::LayerFile { path: "object".into(), sha256, size };
+            if bytes == b"one" {
+                link(&store, &file, &destination).unwrap();
+                link(&store, &file, &destination).unwrap();
+            } else {
+                assert!(link(&store, &file, &destination).unwrap_err().contains("different recorded bytes"));
+            }
+        }
+        assert_eq!(std::fs::read(destination).unwrap(), b"one");
+    }
 
     #[test]
     fn equivalent_product_bytes_get_a_new_view_for_changed_captured_configuration() {

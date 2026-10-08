@@ -20,6 +20,7 @@ pub fn geos_libraries() -> Result<Vec<obc_data::engine::Library>, String> {
     Ok(obc_pbf::geos_identity::libraries()?
         .iter()
         .map(|library| obc_data::engine::Library {
+            version: Some(library.version.clone()),
             name: library.name.into(),
             path: library.path.clone(),
             sha256: library.sha256.clone(),
@@ -30,10 +31,7 @@ pub fn geos_libraries() -> Result<Vec<obc_data::engine::Library>, String> {
 /// The digest of the code that makes the boundary and the candidates or the summits, which a
 /// capture pins: the param `code=` of a capture, so a capture with other code is another request.
 pub fn capture_code() -> Result<String, String> {
-    Ok(capture_hash(&geos_libraries()?))
-}
-
-fn capture_hash(libraries: &[obc_data::engine::Library]) -> String {
+    geos_libraries()?;
     let code = [
         include_str!("catalog/boundary.rs"),
         include_str!("../../obc-pbf/src/area.rs"),
@@ -46,11 +44,7 @@ fn capture_hash(libraries: &[obc_data::engine::Library]) -> String {
     ];
     let mut hash = Sha256::new();
     hash.update(code.concat());
-    for library in libraries {
-        hash.update(&library.name);
-        hash.update(&library.sha256);
-    }
-    hash.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+    Ok(hash.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the capture
@@ -208,7 +202,7 @@ fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec
 
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
-pub fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
     for (path, object) in files {
         if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a relative path"));
@@ -228,17 +222,6 @@ mod tests {
     use super::*;
     use crate::landmarks::peaks::{discover, PeakContent};
 
-    #[test]
-    fn a_capture_binds_both_loaded_geos_implementations() {
-        let libraries = geos_libraries().unwrap();
-        let before = capture_code().unwrap();
-        assert_eq!(capture_hash(&libraries), before);
-        for role in 0..2 {
-            let mut changed = libraries.clone();
-            changed[role].sha256 = "0".repeat(64);
-            assert_ne!(capture_hash(&changed), before);
-        }
-    }
     #[test]
     fn area_content_with_the_same_relative_path_preserves_unique_and_overlapping_articles() {
         use obc_formats::io::SliceSource;

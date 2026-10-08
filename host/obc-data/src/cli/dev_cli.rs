@@ -13,7 +13,7 @@ use clap::Args;
 #[derive(Args)]
 #[command(group(clap::ArgGroup::new("action").args(["prepare", "start", "stop", "open", "logs", "status", "check", "inputs"]).multiple(false)))]
 pub(super) struct Dev {
-    /// The saved region; defaults to the prior Local selection, then live.
+    /// The saved region; defaults to the prior Local selection.
     pub region: Option<String>,
     /// Take the current published versions instead of the saved Local versions.
     #[arg(long)]
@@ -89,7 +89,6 @@ pub(super) fn run(root: &Path, products: &[&dyn Product], args: Dev, json: bool)
                 only: Vec::new(),
                 moves: Vec::new(),
                 plan: None,
-                fixture: None,
                 dev: Some(Request {
                     region: args.region,
                     refresh_live: args.refresh_live,
@@ -155,7 +154,7 @@ pub(super) fn prepare(
         }
         let prepared = product.dev_prepare(root, store, request, &mut run)?;
         run.check_stop(store)?;
-        crate::commit::durable(
+        crate::store::durable(
             &store.root().join("dev/local/prepared.json"),
             &serde_json::to_vec(&prepared).map_err(|e| e.to_string())?,
         )?;

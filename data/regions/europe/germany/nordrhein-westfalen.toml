@@ -1,3 +1,5 @@
 name = "Nordrhein-Westfalen"
 kind = "geofabrik"
 areas = ["europe/germany/nordrhein-westfalen"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

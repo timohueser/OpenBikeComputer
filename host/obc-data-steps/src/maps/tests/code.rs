@@ -223,7 +223,7 @@ fn catalog_credit_identity_is_scoped_to_catalog_not_cells_or_osm() {
         .iter_mut()
         .filter(|source| ["osm-planet", "copernicus-glo-30"].contains(&source["id"].as_str().unwrap()))
     {
-        source["refresh"] = toml::Value::Integer(14);
+        source.as_table_mut().unwrap().insert("refresh".into(), toml::Value::Integer(14));
         source["redistribute"] = toml::Value::Boolean(false);
         source.as_table_mut().unwrap().insert("r2_copy".into(), toml::Value::Boolean(false));
     }

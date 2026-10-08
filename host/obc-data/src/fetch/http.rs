@@ -4,6 +4,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::date;
@@ -47,6 +48,20 @@ pub fn unreachable(error: &str) -> bool {
 }
 
 const UNREACHABLE: &str = ": unreachable: ";
+
+/// Set when the run of this process stops: a download ends within one read and keeps its part.
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
+pub fn stop() {
+    STOPPED.store(true, Ordering::Relaxed);
+}
+
+fn stopped(url: &str) -> Result<(), Failure> {
+    match STOPPED.load(Ordering::Relaxed) {
+        true => Err(Failure::Final(format!("GET {url}: the run stopped; the next fetch resumes the download"))),
+        false => Ok(()),
+    }
+}
 
 /// The error of a request that got no answer, marked when no connection was made or it timed out.
 fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
@@ -182,6 +197,7 @@ impl Http {
     }
 
     fn attempt(&self, url: &str, part: &Path, validator: &Path, expect: &Expect) -> Result<(), Failure> {
+        stopped(url)?;
         let have = fs::metadata(part).map_or(0, |metadata| metadata.len());
         let saved = fs::read_to_string(validator).ok();
         // Without a validator or a digest, nothing would tell a changed file from the rest of the old one.
@@ -230,6 +246,8 @@ impl Http {
             408 | 429 | 500..=599 => return Err(Failure::Retry(format!("GET {url}: HTTP {status}"))),
             _ => return Err(Failure::Final(format!("GET {url}: HTTP {status}"))),
         };
+        let needed = total.map_or(0, |total| total.saturating_sub(if append { have } else { 0 }));
+        store::check_free(part, needed).map_err(Failure::Final)?;
         let file = OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(part);
         let mut file = file.map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
         if !append {
@@ -243,6 +261,7 @@ impl Http {
         let mut grew = false;
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
+            stopped(url)?;
             let read = reader.read(&mut buffer).map_err(|e| retry(grew, format!("GET {url}: {e}")))?;
             if read == 0 {
                 break;

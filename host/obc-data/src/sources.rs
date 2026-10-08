@@ -62,11 +62,12 @@ pub enum VersionScheme {
 }
 
 /// How old the live version may get before the source is stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RefreshRepr", into = "RefreshRepr")]
 pub enum Refresh {
     Days(u16),
     /// Never stale: only `--move` moves the source.
+    #[default]
     Manual,
 }
 
@@ -182,10 +183,19 @@ pub struct Source {
     /// The box outside which the source has no data: west, south, east and north in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<[f64; 4]>,
+    /// The Geofabrik areas (`geofabrik-poly`) whose polygons hold the data inside `extent`. None
+    /// means all of `extent`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<String>,
     /// Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<String>,
     pub version: VersionScheme,
+    /// The version that a plan reads while no live release reads the source. `--move` overrides
+    /// it. Without it, the first fetch takes the newest version upstream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(default)]
     pub refresh: Refresh,
     pub redistribute: bool,
     /// R2 keeps a copy, because upstream cannot give a version again.
@@ -237,6 +247,12 @@ impl Source {
             if !(inside && west < east && south < north) {
                 return fail("`extent` is [west, south, east, north] in degrees, west < east, south < north");
             }
+        }
+        if let Some(start) = &self.start {
+            crate::fetch::check_version(self, start)?;
+        }
+        if !self.areas.is_empty() && self.extent.is_none() {
+            return fail("`areas` narrow an `extent`");
         }
         if self.r2_copy && !self.redistribute {
             return fail("`r2_copy` needs `redistribute`: R2 is public");
@@ -331,6 +347,13 @@ impl Registry {
         Ok(Self { sources: parse_sources(&read(&root.join("data/sources.toml"))?)? })
     }
 
+    /// Source declarations with this store's effective refresh policies.
+    pub fn effective(root: &Path, store: &crate::store::Store) -> Result<Self, String> {
+        let mut registry = Self::load(root)?;
+        crate::settings::current(store)?.policies(&mut registry.sources)?;
+        Ok(registry)
+    }
+
     /// The registry of the repository above the current directory, or else above the running
     /// program.
     pub fn live() -> Result<Self, String> {
@@ -371,12 +394,15 @@ pub enum State {
     Stale,
     Blocked,
     Ok,
+    /// A source that no live layer and no active request reads. Only sources have it.
+    Unused,
 }
 
 impl std::fmt::Display for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             State::Ok => "ok",
+            State::Unused => "unused",
             State::Stale => "stale",
             State::CodeChanged => "code changed",
             State::InputChanged => "input changed",
@@ -392,28 +418,6 @@ pub struct Status {
     pub reason: Option<String>,
     /// Days since the date of the live version; only a date version has one.
     pub age_days: Option<i64>,
-}
-
-/// `text`, `data/sources.toml`, with the `refresh` of source `id` replaced. Comments and the other
-/// lines stay.
-pub fn set_refresh(text: &str, id: &str, refresh: Refresh) -> Result<String, String> {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let header = |line: &String| line.trim_start().starts_with('[');
-    let names = |line: &String| {
-        toml::from_str::<toml::Table>(line).is_ok_and(|table| table.get("id").and_then(|v| v.as_str()) == Some(id))
-    };
-    let at = lines.iter().position(names).ok_or_else(|| format!("no source `{id}`"))?;
-    let start = lines[..at].iter().rposition(header).map_or(0, |i| i + 1);
-    let end = lines[at..].iter().position(header).map_or(lines.len(), |i| at + i);
-    let key = |line: &String| line.split_once('=').is_some_and(|(key, _)| key.trim() == "refresh");
-    let line = (start..end).find(|&i| key(&lines[i])).ok_or_else(|| format!("source `{id}` has no `refresh`"))?;
-    let (key, old) = lines[line].split_once('=').expect("a key line has `=`");
-    // The value is a number or "manual", so a `#` starts the comment.
-    let value = old.split('#').next().unwrap_or_default();
-    let (space, tail) = (&value[..value.len() - value.trim_start().len()], &old[value.trim_end().len()..]);
-    let refresh = toml::Value::try_from(refresh).map_err(|e| e.to_string())?;
-    lines[line] = format!("{key}={space}{refresh}{tail}");
-    Ok(join(text, lines))
 }
 
 /// `lines` with the line end of `text`.
@@ -591,14 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn a_policy_is_replaced_in_its_source_only() {
-        let land = OSM.replace("\"osm\"", "\"land\"").replace("refresh = 7", "refresh = 7  # weekly");
-        let text = format!("# sources\n{OSM}{land}");
-        let edited = set_refresh(&text, "land", Refresh::Manual).unwrap();
-        let manual = land.replace("refresh = 7  # weekly", "refresh = \"manual\"  # weekly");
-        assert_eq!(edited, format!("# sources\n{OSM}{manual}\n"));
-        assert_eq!(parse_sources(&edited).unwrap()[1].refresh, Refresh::Manual);
-        assert_eq!(set_refresh(&text, "qrank", Refresh::Manual).unwrap_err(), "no source `qrank`");
+    fn refresh_days_are_positive_whole_numbers() {
         assert_eq!("30".parse(), Ok(Refresh::Days(30)));
         for days in [1, 14, 65535] {
             assert_eq!(days.to_string().parse(), Ok(Refresh::Days(days)));

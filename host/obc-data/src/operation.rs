@@ -1,4 +1,4 @@
-//! Detached preparation and build ownership, followed by an irreversible publication handoff.
+//! Detached preparation, build and apply: one worker per environment, which a stop drains.
 
 use std::path::PathBuf;
 
@@ -9,7 +9,6 @@ use crate::engine::runs::check_id;
 use crate::engine::LayerFile;
 use crate::store::{sha256_hex, Store};
 
-pub mod budget;
 pub mod launch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -18,7 +17,6 @@ pub enum Kind {
     Prepare,
     Build,
     Apply,
-    Auto,
     DevPrepare,
 }
 
@@ -33,36 +31,12 @@ pub struct Request {
     pub plan: Option<LayerFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev: Option<crate::dev::Request>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixture: Option<Box<crate::fixtures::Plan>>,
 }
 
 impl Request {
     pub fn check(&self) -> Result<(), String> {
         if !crate::is_kebab(&self.env) {
             return Err("operation environment is not a normalized name".into());
-        }
-        if self.env == "fixtures"
-            && self.fixture.is_none()
-            && (self.kind != Kind::Prepare
-                || self.dev.is_some()
-                || self.plan.is_some()
-                || !self.moves.is_empty()
-                || self.only.iter().any(|id| !crate::is_kebab(id)))
-        {
-            return Err("fixture operations need exact package preparation or a typed reviewed apply plan".into());
-        }
-        if let Some(fixture) = &self.fixture {
-            if self.kind != Kind::Apply
-                || self.env != "fixtures"
-                || self.dev.is_some()
-                || self.plan.is_some()
-                || !self.only.is_empty()
-                || !self.moves.is_empty()
-            {
-                return Err("fixture apply takes only its reviewed collection plan".into());
-            }
-            return fixture.check();
         }
         if (self.kind == Kind::DevPrepare) != self.dev.is_some()
             || self.dev.is_some()
@@ -74,14 +48,6 @@ impl Request {
             && (self.env != "live" || self.plan.is_none() || !self.only.is_empty() || !self.moves.is_empty())
         {
             return Err("apply takes only the reviewed plan of live".into());
-        }
-        if self.kind == Kind::Auto
-            && (self.env == "fixture" || self.env == "fixtures" || self.env.starts_with("fixture-"))
-        {
-            return Err("fixture environments do not support automation".into());
-        }
-        if self.kind == Kind::Auto && (self.plan.is_some() || !self.only.is_empty() || !self.moves.is_empty()) {
-            return Err("auto owns its used stale requests and takes no saved plan or selections".into());
         }
         if self.kind == Kind::Prepare && self.plan.is_some() {
             return Err("prepare resolves inputs before a saved plan exists".into());
@@ -108,21 +74,7 @@ pub enum State {
     Running,
     Stopping,
     Stopped,
-    /// A dispatch can still arrive after its initiating transport is lost.
-    Owner {
-        host: String,
-        bundle: String,
-    },
-    Finished {
-        ok: bool,
-        result: LayerFile,
-    },
-    Resolved {
-        host: String,
-        bundle: String,
-        ok: bool,
-        result: LayerFile,
-    },
+    Finished { ok: bool, result: LayerFile },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -133,19 +85,7 @@ pub enum Status {
     Stopping,
     Stopped,
     Interrupted,
-    /// Remote absence or a transport error does not resolve a dispatched operation.
-    AwaitingOwner {
-        host: String,
-        bundle: String,
-    },
-    Finished {
-        ok: bool,
-    },
-    UnknownOwner {
-        host: String,
-        bundle: String,
-        reason: String,
-    },
+    Finished { ok: bool },
 }
 
 /// This observation never creates locks, edits control, or rewrites the original journal.
@@ -159,14 +99,13 @@ pub fn status(store: &Store, run: &str) -> Result<Option<Status>, String> {
         State::Stopping if active()? => Status::Stopping,
         State::Stopping => Status::Stopped,
         State::Stopped => Status::Stopped,
-        State::Owner { host, bundle } => Status::AwaitingOwner { host, bundle },
-        State::Finished { ok, .. } | State::Resolved { ok, .. } => Status::Finished { ok },
+        State::Finished { ok, .. } => Status::Finished { ok },
     }))
 }
 
 impl State {
     pub(crate) fn terminal(&self) -> bool {
-        matches!(self, Self::Stopped | Self::Finished { .. } | Self::Resolved { .. })
+        matches!(self, Self::Stopped | Self::Finished { .. })
     }
 }
 
@@ -205,7 +144,6 @@ pub fn read(store: &Store, run: &str) -> Result<Option<Control>, String> {
         || !digest(&control.worker.sha256)
         || !digest(&control.code)
         || matches!(&control.state, State::Finished { result, .. } if result.path != "result.json" || !digest(&result.sha256))
-        || matches!(&control.state, State::Resolved { result, .. } if result.path != "owner-result.json" || !digest(&result.sha256))
     {
         return Err("operation control differs from its run or immutable request".into());
     }
@@ -213,7 +151,7 @@ pub fn read(store: &Store, run: &str) -> Result<Option<Control>, String> {
 }
 
 fn save(store: &Store, control: &Control) -> Result<(), String> {
-    crate::commit::durable(&path(store, &control.run)?, &serde_json::to_vec(control).map_err(|e| e.to_string())?)
+    crate::store::durable(&path(store, &control.run)?, &serde_json::to_vec(control).map_err(|e| e.to_string())?)
 }
 
 pub(crate) fn active_path(store: &Store, env: &str) -> PathBuf {
@@ -240,8 +178,9 @@ pub fn reserve(store: &Store, control: &Control) -> Result<Reservation, String> 
     let active = active_path(store, &control.request.env);
     match std::fs::read_to_string(&active) {
         Ok(id) => {
-            let previous = read(store, &id)?.ok_or("active operation has no control")?;
-            if !previous.state.terminal() {
+            // No worker holds the environment lock, so a control that this build cannot read,
+            // such as one of an older format, has ended.
+            if read(store, &id).ok().flatten().is_some_and(|previous| !previous.state.terminal()) {
                 return Ok(Reservation::Busy(format!(
                     "operation {} already owns {}; inspect or stop it",
                     id, control.request.env
@@ -255,7 +194,7 @@ pub fn reserve(store: &Store, control: &Control) -> Result<Reservation, String> 
         return Err("an operation id cannot be rebound to another request".into());
     }
     save(store, control)?;
-    crate::commit::durable(&active, control.run.as_bytes())?;
+    crate::store::durable(&active, control.run.as_bytes())?;
     Ok(Reservation::Reserved)
 }
 
@@ -281,9 +220,6 @@ pub fn stop(store: &Store, run: &str) -> Result<State, String> {
                 } else {
                     State::Stopped
                 }
-            }
-            State::Owner { .. } => {
-                return Err("publication has started; it cannot stop safely; reconcile the owner result".into())
             }
             other => other.clone(),
         };
@@ -314,7 +250,6 @@ pub fn claim(store: &Store, run: &str, request: &str) -> Result<crate::store::Lo
     Ok(using)
 }
 
-/// Local completion cannot resolve a handed-off publication outcome.
 pub fn finish(store: &Store, run: &str, ok: bool, result: Option<LayerFile>) -> Result<(), String> {
     change(store, run, |control| {
         control.state = match &control.state {
@@ -327,40 +262,9 @@ pub fn finish(store: &Store, run: &str, ok: bool, result: Option<LayerFile>) -> 
             }
             State::Stopping => State::Stopped,
             State::Stopped => State::Stopped,
-            State::Finished { .. } | State::Resolved { .. } => return Ok(()),
-            State::Owner { .. } => return Ok(()),
+            State::Finished { .. } => return Ok(()),
             _ => return Err("operation has no running worker to finish".into()),
         };
-        Ok(())
-    })
-}
-
-/// Only a checked owner response may durably resolve the local handoff.
-pub fn resolve(store: &Store, run: &str, host: &str, bundle: &str, ok: bool, result: LayerFile) -> Result<(), String> {
-    if result.path != "owner-result.json" || !digest(&result.sha256) {
-        return Err("owner result is not a pinned owner-result.json".into());
-    }
-    change(store, run, |control| {
-        if control.state != (State::Owner { host: host.into(), bundle: bundle.into() }) {
-            return Err("owner result names another run or bundle".into());
-        }
-        control.state = State::Resolved { host: host.into(), bundle: bundle.into(), ok, result };
-        Ok(())
-    })
-}
-
-pub fn handoff(store: &Store, run: &str, host: &str, bundle: &str) -> Result<(), String> {
-    if !digest(bundle) || host.is_empty() {
-        return Err("publication handoff needs its exact owner and bundle".into());
-    }
-    change(store, run, |control| {
-        if control.state != State::Running {
-            return Err("operation stopped before publication handoff".into());
-        }
-        if !matches!(control.request.kind, Kind::Apply | Kind::Auto) || control.request.env != "live" {
-            return Err("only live apply or auto can hand off publication".into());
-        }
-        control.state = State::Owner { host: host.into(), bundle: bundle.into() };
         Ok(())
     })
 }
@@ -382,7 +286,6 @@ mod tests {
             moves: Vec::new(),
             plan: None,
             dev: None,
-            fixture: None,
         };
         Control {
             run: run.into(),
@@ -393,22 +296,6 @@ mod tests {
             code: "b".repeat(64),
             state: State::Reserved,
         }
-    }
-
-    #[test]
-    fn fixture_requests_accept_only_exact_preparation_or_reviewed_apply() {
-        let mut request = control("2026-10-07-120000").request;
-        request.env = "fixtures".into();
-        request.kind = Kind::Prepare;
-        request.only = vec!["sim-monaco".into()];
-        request.check().unwrap();
-        for kind in [Kind::Build, Kind::Auto, Kind::Apply, Kind::DevPrepare] {
-            request.kind = kind;
-            assert!(request.check().unwrap_err().contains("fixture"));
-        }
-        request.kind = Kind::Prepare;
-        request.moves.push("land-polygons@2026-06-19".into());
-        assert!(request.check().is_err(), "preparation cannot introduce an upstream move");
     }
 
     #[test]
@@ -461,7 +348,13 @@ mod tests {
         let using = claim(&fixture.store, &id, &first.request_sha256).unwrap();
         let mut steps = vec![
             step("test/first", Vec::new(), steps_crate(), "first.txt", Producer::Rust(stop_after_output)),
-            step("test/next", Vec::new(), steps_crate(), "next.txt", Producer::Rust(next)),
+            step(
+                "test/next",
+                vec![crate::engine::Input::layer("test/first")],
+                steps_crate(),
+                "next.txt",
+                Producer::Rust(next),
+            ),
         ];
         steps[0].options = serde_json::json!({"store":fixture.store.root(), "run":id});
         let plan = fixture.plan(&steps).unwrap();
@@ -484,49 +377,9 @@ mod tests {
             std::fs::read(fixture.store.object(&receipts[0].files[0].sha256)).unwrap(),
             b"finished current work"
         );
-        assert!(handoff(&fixture.store, &id, "publisher", &"c".repeat(64)).is_err());
         run.finish(Some(&error)).unwrap();
         finish(&fixture.store, &id, false, None).unwrap();
         drop(using);
         assert_eq!(status(&fixture.store, &id).unwrap(), Some(Status::Stopped));
-    }
-
-    #[test]
-    fn handoff_is_bound_and_stays_irreversible_after_the_local_worker_exits() {
-        let temporary = Scratch::new("operation-handoff");
-        let store = Store::at(temporary.0.clone());
-        let mut first = control("2026-10-06-120000");
-        first.request.kind = Kind::Apply;
-        first.request.env = "live".into();
-        first.request.plan = Some(LayerFile { path: "plan.json".into(), size: 1, sha256: "d".repeat(64) });
-        first.request_sha256 = first.request.digest().unwrap();
-        reserve(&store, &first).unwrap();
-        assert!(claim(&store, &first.run, &"b".repeat(64)).is_err());
-        let using = claim(&store, &first.run, &first.request_sha256).unwrap();
-        handoff(&store, &first.run, "publisher", &"c".repeat(64)).unwrap();
-        drop(using);
-        assert!(stop(&store, &first.run).unwrap_err().contains("cannot stop safely"));
-        finish(&store, &first.run, false, None).unwrap();
-        assert_eq!(
-            read(&store, &first.run).unwrap().unwrap().state,
-            State::Owner { host: "publisher".into(), bundle: "c".repeat(64) }
-        );
-        let owner = read(&store, &first.run).unwrap().unwrap();
-        assert!(matches!(
-            reserve(&store, &first).unwrap(),
-            Reservation::Busy(reason) if reason.contains("already owns live")
-        ));
-        assert_eq!(read(&store, &first.run).unwrap().unwrap(), owner);
-        let mut local = control("2026-10-06-120001");
-        local.request.kind = Kind::Auto;
-        local.request_sha256 = local.request.digest().unwrap();
-        reserve(&store, &local).unwrap();
-        let local_using = claim(&store, &local.run, &local.request_sha256).unwrap();
-        assert!(handoff(&store, &local.run, "publisher", &"e".repeat(64)).unwrap_err().contains("only live"));
-        assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Running);
-        assert_eq!(stop(&store, &local.run).unwrap(), State::Stopping);
-        finish(&store, &local.run, false, None).unwrap();
-        drop(local_using);
-        assert_eq!(read(&store, &local.run).unwrap().unwrap().state, State::Stopped);
     }
 }

@@ -12,7 +12,7 @@ use std::path::Path;
 
 use obc_data::engine::{snapshot_files, Client, Code, Input, Run, Step};
 use obc_data::env::Env;
-use obc_data::product::{version, Product, Unplanned, Wanted};
+use obc_data::product::{version, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::Regions;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
@@ -81,9 +81,8 @@ struct Routing {
 }
 
 mod catalog;
-pub mod install;
 mod local;
-mod runtime;
+mod publish;
 
 pub struct Planner;
 
@@ -92,49 +91,12 @@ impl Product for Planner {
         "planner"
     }
 
-    fn approval_config(&self, root: &std::path::Path) -> Result<serde_json::Value, String> {
-        runtime::approval_config(root)
-    }
-
-    fn runtime_binding(&self, step: &Step) -> Result<Option<obc_data::approval::RuntimeBinding>, String> {
-        runtime::binding(step)
-    }
-
-    fn planning_code(&self, _env: &Env) -> Result<Option<obc_data::engine::OwnerCode>, String> {
-        Ok(Some(obc_data::engine::OwnerCode {
-            crate_name: "obc-data-steps".into(),
-            code: Code {
-                paths: [
-                    "host/obc-data-steps/src/planner.rs",
-                    "host/obc-data-steps/src/planner",
-                    "host/obc-data-steps/src/maps.rs",
-                    "host/obc-data-steps/src/maps",
-                    "host/obc-data-steps/src/region_sources.rs",
-                    "host/obc-data-steps/src/lib.rs",
-                ]
-                .map(String::from)
-                .into(),
-                libraries: obc_pack::step::geos_libraries()?,
-                ..Default::default()
-            },
-        }))
-    }
-
     fn portable(&self, step: &Step) -> bool {
-        step.name.starts_with("planner/") && !step.name.starts_with("planner/runtime/") && !step.client.is_none()
+        step.name.starts_with("planner/") && !step.client.is_none()
     }
 
-    fn local_plan(
-        &self,
-        root: &std::path::Path,
-        env: &Env,
-        regions: &Regions,
-        store: &Store,
-        release: &obc_data::engine::release::Release,
-        required: &std::collections::BTreeMap<String, Vec<String>>,
-    ) -> Result<obc_data::local::Plan, Unplanned> {
-        let declarations = self.declarations(root, env, regions, store, Ok(None), false)?;
-        obc_data::local::plan(root, store, self, release, &declarations.steps, required).map_err(Unplanned::Failed)
+    fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        self.declarations(root, env, regions, store, Ok(None))
     }
 
     fn dev_check(
@@ -170,21 +132,8 @@ impl Product for Planner {
         Some(catalog::pointer)
     }
 
-    fn services(
-        &self,
-        root: &std::path::Path,
-        release: &obc_data::engine::release::Release,
-        store: &Store,
-        destination: &std::path::Path,
-    ) -> Result<Vec<obc_data::vps::Candidate>, String> {
-        let origins = runtime::publication(root)?;
-        install::prepare_into(release, store, &origins, destination)
-    }
-
     fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
-        let mut files = catalog::named(release)?;
-        files.extend(runtime::named(release)?);
-        Ok(files)
+        catalog::named(release)
     }
 
     fn verify(
@@ -195,6 +144,24 @@ impl Product for Planner {
         store: &Store,
     ) -> Result<(), String> {
         catalog::verify(root, previous, release, store)
+    }
+
+    fn activate(
+        &self,
+        root: &Path,
+        release: &obc_data::engine::release::Release,
+        store: &Store,
+        commit: &str,
+    ) -> Result<(), String> {
+        publish::activate(root, release, store, commit)
+    }
+
+    fn credential_sources(&self, env: &Env) -> Vec<&'static str> {
+        [("climate", "era5-land"), ("snow", "hr-wsi")]
+            .into_iter()
+            .filter(|(layer, _)| env.layers.iter().any(|selected| selected == layer))
+            .map(|(_, source)| source)
+            .collect()
     }
 
     fn optional(&self) -> &'static [&'static str] {
@@ -222,17 +189,16 @@ impl Planner {
         store: &Store,
         tool: Result<obc_data::engine::Library, String>,
     ) -> Result<obc_data::product::Steps, Unplanned> {
-        self.declarations(root, env, regions, store, tool.map(Some), true)
+        self.declarations(root, env, regions, store, tool.map(Some))
     }
 
     fn declarations(
         &self,
-        root: &std::path::Path,
+        _root: &std::path::Path,
         env: &Env,
         regions: &Regions,
         store: &Store,
         tool: Result<Option<obc_data::engine::Library>, String>,
-        execution: bool,
     ) -> Result<obc_data::product::Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
@@ -571,9 +537,8 @@ impl Planner {
         });
         match wanted.is_empty() {
             true => {
-                let mut runtime = if execution { runtime::steps(root) } else { Default::default() };
-                steps.append(&mut runtime.steps);
-                Ok(obc_data::product::Steps { steps, blocked: runtime.blocked })
+                publish::bind(steps.last_mut().unwrap());
+                Ok(steps.into())
             }
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
@@ -716,11 +681,6 @@ fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
     [west, south, east, north]
 }
 
-/// Resolve only the native routing providers for the checked runtime adapter.
-pub fn native_routing(args: &[String]) -> Option<Result<serde_json::Value, String>> {
-    runtime::native_routing(args)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -828,14 +788,10 @@ mod tests {
         assert_eq!(configured.layers, ["sun"]);
         assert_eq!(configured, Env::load(&temp.0, "local", &definitions).unwrap());
         assert!(!std::fs::read_to_string(Env::path(&temp.0, "local")).unwrap().contains("pins"));
-        let first = Planner
-            .declarations(&root(), &env, &region("7.79, 47.99, 7.82, 48.02"), &store, Ok(None), false)
-            .unwrap()
-            .steps;
-        let changed = Planner
-            .declarations(&root(), &env, &region("7.79, 47.99, 7.81, 48.01"), &store, Ok(None), false)
-            .unwrap()
-            .steps;
+        let first =
+            Planner.declarations(&root(), &env, &region("7.79, 47.99, 7.82, 48.02"), &store, Ok(None)).unwrap().steps;
+        let changed =
+            Planner.declarations(&root(), &env, &region("7.79, 47.99, 7.81, 48.01"), &store, Ok(None)).unwrap().steps;
         for steps in [&first, &changed] {
             assert!(steps.iter().all(|step| !step.name.starts_with("planner/runtime/")));
             let extract = steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
@@ -881,6 +837,7 @@ mod tests {
                 &Regions::new(vec![region]).unwrap(),
                 &store,
                 Ok(obc_data::engine::Library {
+                    version: None,
                     name: "osmium".into(),
                     path: std::path::PathBuf::from("/authored-copy-osmium"),
                     sha256: "0".repeat(64),

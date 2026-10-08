@@ -1,3 +1,5 @@
 name = "Regierungsbezirk Düsseldorf"
 kind = "geofabrik"
 areas = ["europe/germany/nordrhein-westfalen/duesseldorf-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

@@ -435,47 +435,45 @@ class BoxService(ingest.Source):
 
 
 class Fetch(ArchiveCase):
-    def test_fetch_moves_the_rasters_and_their_crs_and_keeps_the_downloads(self):
-        """`obc data fetch` stores what `fetch` leaves in `--out`, and nothing else."""
+    """`ingest.py fetch`: one archive tile of a model, pooled, and nothing of the raw rasters."""
 
-        class Delivered(ingest.Source):
-            def fetch(self, bbox, workdir):
-                (workdir / "a.d").mkdir(parents=True)
-                (workdir / "a.zip").write_bytes(b"download")
-                (workdir / "a.d/a.prj").write_text(LV95.to_wkt())
-                raster = workdir / "a.d/a.asc"
-                raster.write_text(f"ncols 1\nnrows 1\nxllcorner {EAST}\nyllcorner {NORTH}\ncellsize 1\n1000\n")
-                return [raster]
-
-        real = ingest.SOURCES["ch"]
-        ingest.SOURCES["ch"] = Delivered("ch", "Testland", "test", 1.0, "CC0", "EGM2008")
-        self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
-        work, out = self.root / "work", self.root / "out"
-        code = ingest.main(["fetch", "ch", "--bbox", "8,46,9,47", "--work", str(work), "--out", str(out)])
-        self.assertEqual(code, 0)
-        moved = sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
-        self.assertEqual(moved, ["a.d/a.asc", "a.d/a.prj"])
-        self.assertTrue((work / "a.zip").is_file())
-
-    def fetch(self, key, bbox):
-        """`ingest.py fetch` of `key` and `bbox`: its exit code and the files it wrote."""
+    def fetch(self, key, tile):
+        """`ingest.py fetch` of `key` and `tile`: its exit code and the files it wrote."""
 
         out = self.root / "out"
         shutil.rmtree(out, ignore_errors=True)
-        code = ingest.main(["fetch", key, "--bbox", bbox, "--work", str(self.root / "work"), "--out", str(out)])
+        code = ingest.main(["fetch", key, "--tile", tile, "--work", str(self.root / "work"), "--out", str(out)])
         return code, sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
 
-    def test_a_box_without_data_is_a_fetch_without_files(self):
-        """A STAC search that finds no item, as Lower Saxony answers a box where it has no tile."""
+    def serve(self, service):
+        real = ingest.SOURCES["ch"]
+        ingest.SOURCES["ch"] = service
+        self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
+        return service
 
-        empty = json.dumps({"type": "FeatureCollection", "features": [], "links": []}).encode()
-        with unittest.mock.patch.object(ingest.sources.stac, "http_get", return_value=empty) as search:
-            self.assertEqual(self.fetch("de-ni", "9,53.9,9.1,54"), (0, []))
-        self.assertIn("bbox=9.0,53.9,9.1,54.0", search.call_args.args[0])
+    def test_a_tile_is_what_the_per_tile_ingest_writes_and_the_raw_rasters_are_removed(self):
+        # A 128 µdeg source that straddles two tiles, with a tower in each.
+        transform, _, _ = wgs84_grid(128, col=ingest.TILE_PX - 50)
+        values = np.full((100, 100), 1000.0, dtype="float32")
+        values[50, 10] = values[50, 60] = TOWER
+        raster = source_raster(self.inputs / "wide.tif", values, transform=transform)
+        with rasterio.open(raster, "r+") as dst:
+            dst.crs = ingest.WGS84
+        service = self.serve(BoxService(raster))
+        self.assertEqual(ingest.main(["ingest", "ch", "--bbox", bbox_of(raster), "--archive", str(self.archive),
+                                      "--work", str(self.root / "ingest"), "--per-tile"]), 0)
+        tiles = self.index()["sha256"]
+        self.assertEqual(len(tiles), 2)
+        for tile, digest in tiles.items():
+            ti, tj = (int(part) for part in tile.split("/"))
+            name = f"{ti:04}-{tj:04}"
+            self.assertEqual(self.fetch("ch", name), (0, [f"{name}.tif"]))
+            self.assertEqual(service.boxes[-1], ingest.tile_bounds(ti, tj))
+            self.assertEqual(ingest.tile_digest(self.root / "out" / f"{name}.tif"), digest)
+            self.assertEqual(ingest.tile_problems(self.root / "out" / f"{name}.tif", ti, tj), [])
+            self.assertFalse((self.root / "work").exists())
 
-    def test_a_raster_without_a_height_is_no_data_and_a_box_asks_only_inside_the_extent(self):
-        """A service answers a box outside its model with a raster of voids."""
-
+    def test_a_tile_without_a_height_is_a_none_file_and_a_failure_keeps_no_raw_raster(self):
         class Service(ingest.Source):
             boxes = []
 
@@ -483,32 +481,36 @@ class Fetch(ArchiveCase):
                 self.boxes.append(bbox)
                 workdir.mkdir(parents=True, exist_ok=True)
                 void = np.full((SIDE, SIDE), -9999.0, dtype="float32")
-                return [source_raster(workdir / "void.tif", void, nodata=-9999.0),
-                        source_raster(workdir / "data.tif", plateau_with_tower())]
+                path = source_raster(workdir / "void.tif", void, nodata=-9999.0)
+                if len(self.boxes) > 1:
+                    raise ingest.Refuse("the service dropped the connection")
+                return [path]
 
-        real = ingest.SOURCES["ch"]
-        ingest.SOURCES["ch"] = Service("ch", "Testland", "test", 1.0, "CC0", "EGM2008")
-        self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
-        # The row `dtm-ch` has the extent [5.9, 45.8, 10.5, 47.9].
-        self.assertEqual(self.fetch("ch", "10,47,11,48"), (0, ["data.tif"]))
-        self.assertEqual(self.fetch("ch", "11,47,12,48"), (0, []))
-        self.assertEqual(Service.boxes, [(10.0, 47.0, 10.5, 47.9)])
+        self.serve(Service("ch", "Testland", "test", 1.0, "CC0", "EGM2008"))
+        # The row `dtm-ch` has the extent [5.9, 45.8, 10.5, 47.9], and tile 4823-4256 straddles 10.5°.
+        self.assertEqual(self.fetch("ch", "4823-4256"), (0, ["4823-4256.none"]))
+        west, south, _, north = ingest.tile_bounds(4823, 4256)
+        self.assertEqual(Service.boxes, [(west, south, 10.5, north)])
+        self.assertEqual(self.fetch("ch", "4823-4300"), (0, ["4823-4300.none"]))
+        self.assertEqual(len(Service.boxes), 1, "a tile outside the extent asks nothing")
+        self.assertEqual(self.fetch("ch", "4823-4255"), (1, []))
+        self.assertFalse((self.root / "work").exists())
+        self.assertEqual(self.fetch("ch", "48230-4255")[0], 1)
 
     def test_a_delivery_is_fetched_from_the_directory_that_the_environment_names(self):
         """A row without a service reads its delivery like a credential, and leaves it as it is."""
 
         (self.inputs / "order").mkdir()
         raster = source_raster(self.inputs / "order" / "dem.tif", plateau_with_tower())
-        out = self.root / "out"
-        fetch = ["fetch", "au", "--bbox", bbox_of(raster), "--work", str(self.root / "work"), "--out", str(out)]
+        ti, tj, _, _ = archive_pixel(grid(), TOWER_ROW, TOWER_COL)
+        name = f"{ti:04}-{tj:04}"
         with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_AU_INPUT": str(self.inputs)}):
-            self.assertEqual(ingest.main(fetch), 1, "the datum of the order is not confirmed")
+            self.assertEqual(self.fetch("au", name)[0], 1, "the datum of the order is not confirmed")
             os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
-            self.assertEqual(ingest.main(fetch), 0)
+            self.assertEqual(self.fetch("au", name), (0, [f"{name}.tif"]))
             os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
-            self.assertEqual(ingest.main(fetch), 1, "a relative path names another directory in the step")
-        self.assertEqual([path.relative_to(out) for path in out.rglob("*.tif")], [Path("order/dem.tif")])
-        self.assertTrue(raster.is_file())
+            self.assertEqual(self.fetch("au", name)[0], 1, "a relative path names another directory in the step")
+        self.assertEqual(sorted(path.name for path in self.inputs.rglob("*")), ["dem.tif", "order"])
 
 
 class MergeStep(ArchiveCase):
@@ -519,7 +521,7 @@ class MergeStep(ArchiveCase):
         directory of its own, as the engine gives it."""
 
         output.mkdir(parents=True)
-        snapshots = {source: {f"#bbox=1,2,3,4/{path.name}": str(path) for path in paths}
+        snapshots = {source: {f"#tile={path.stem}/{path.name}": str(path) for path in paths}
                      for source, _, paths in models}
         options = {"models": [{"source": source, "version": version, "credit": f"credit of {source}"}
                               for source, version, _ in models],
@@ -538,9 +540,21 @@ class MergeStep(ArchiveCase):
         with rasterio.open(path) as src:
             expected = src.read(1)
 
-        # The request names the worse model first, and a model whose box has no data.
-        models = [("dtm-es", "2026-01-02", [coarse]), ("dtm-nl", "2026-02-03", [corner]),
-                  ("dtm-dk", "2026-05-06", [])]
+        # The pooled tile of each model, as `ingest.py fetch` stores it.
+        name = tile.replace("/", "-")
+        pooled = []
+        for key, raster in (("es", coarse), ("nl", corner)):
+            alone = self.root / key
+            self.assertEqual(ingest.main(["ingest", key, "--bbox", bbox_of(raster), "--archive", str(alone),
+                                          "--input", str(raster.parent)]), 0)
+            pooled.append(alone / f"{name}.tif")
+            ingest.tile_path(alone, *map(int, tile.split("/"))).rename(pooled[-1])
+        none = self.root / f"{name}.none"
+        none.touch()
+
+        # The request names the worse model first, and a model without a height in the tile.
+        models = [("dtm-es", "2026-01-02", [pooled[0]]), ("dtm-nl", "2026-02-03", [pooled[1]]),
+                  ("dtm-dk", "2026-05-06", [none])]
         output = self.root / "step" / "output"
         metrics = merge.merge(self.request(output, models, [tile, "0000/0000"]))
         layer = output / "reference"

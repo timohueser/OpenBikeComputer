@@ -17,10 +17,8 @@ use crate::store::{hash_file, Store};
 use super::{api::Error, build_cli::EnvPlan, Code};
 
 mod observe;
-#[cfg(not(test))]
-pub(super) use observe::checked_owner;
 pub(crate) use observe::tail;
-pub use observe::{reconcile, view, View};
+pub use observe::{view, View};
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -46,30 +44,14 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     if SESSION.get().is_some() {
         return Err(Code::Usage.error("an operation worker cannot start a second operation"));
     }
-    let environment = operation::launch::preflight().map_err(|e| Code::Blocked.error(e))?;
-    let budget = environment
-        .as_ref()
-        .map(|_| {
-            let budget = operation::budget::Budget::environment()?;
-            crate::schedule::budget_ready(&budget)?;
-            budget.disk(root, 0)?;
-            budget.disk(store.root(), 0)?;
-            Ok::<_, String>(budget)
-        })
-        .transpose()
-        .map_err(|e| Code::Blocked.error(e))?;
+    if request.kind == Kind::Apply {
+        super::apply_cli::pushed_commit(root)?;
+    }
     let code = crate::worker::bound_code(root).map_err(|e| Code::Blocked.error(e))?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let plan_bytes = plan
         .map(|plan| {
             super::build_cli::complete(Some(plan))?;
-            if request.kind == Kind::Apply {
-                plan.approval
-                    .as_ref()
-                    .ok_or_else(|| Code::PlanOutdated.error("saved Live plan has no approval review"))?
-                    .check()
-                    .map_err(|reason| Code::Blocked.error(reason))?;
-            }
             if plan.env != request.env {
                 return Err(Code::Usage.error("the saved plan names another environment"));
             }
@@ -82,17 +64,7 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         sha256: crate::store::sha256_hex(bytes),
     });
     request.check().map_err(|e| Code::Usage.error(e))?;
-    let command = format!(
-        "{} {}",
-        match request.kind {
-            Kind::Prepare => "prepare",
-            Kind::Build => "build",
-            Kind::Apply => "apply",
-            Kind::Auto => "auto",
-            Kind::DevPrepare => "dev",
-        },
-        request.env
-    );
+    let command = command(&request);
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     if root.to_str().is_none() || store.root().to_str().is_none() {
         return Err(Code::Usage.error("operation root and store paths must be UTF-8"));
@@ -126,11 +98,11 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         }
         if let Some(bytes) = &plan_bytes {
-            crate::commit::durable(&directory.join("plan.json"), bytes)?;
+            crate::store::durable(&directory.join("plan.json"), bytes)?;
         }
         std::fs::copy(&executable, &worker).map_err(|e| e.to_string())?;
         File::open(&worker).and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
-        crate::commit::durable_directory(&directory)?;
+        crate::store::durable_directory(&directory)?;
         if file(&worker, "worker")? != control.worker {
             return Err(Code::Blocked.error("producer executable changed during retention"));
         }
@@ -158,30 +130,7 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
     }
     let handle = Handle { run: id.clone(), request: control.request_sha256.clone() };
     drop(run);
-    let mut child = match environment {
-        Some(environment) => {
-            let mut command = operation::launch::bake(
-                &format!("obc-data-run-{}", crate::store::sha256_hex(directory.as_os_str().as_encoded_bytes())),
-                &control.root,
-                &directory,
-                &environment,
-                budget.as_ref().expect("Linux setup checked the bake budget"),
-            );
-            for (key, value) in [
-                (
-                    crate::worker::ROOT,
-                    control.root.to_str().ok_or_else(|| Code::Usage.error("root path is not UTF-8"))?,
-                ),
-                (crate::worker::CODE, &control.code),
-                (crate::worker::EXE, &control.worker.sha256),
-            ] {
-                command.arg(format!("--setenv={key}={value}"));
-            }
-            command.arg(&worker);
-            command
-        }
-        None => Command::new(&worker),
-    };
+    let mut child = Command::new(&worker);
     child
         .args([
             "--json",
@@ -198,8 +147,7 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
         .env(crate::worker::CODE, &control.code)
         .env(crate::worker::EXE, &control.worker.sha256)
         .env("OBC_DATA_STORE", store.root());
-    #[cfg(target_os = "macos")]
-    if let Err(message) = operation::launch::mac(&mut child, &directory) {
+    if let Err(message) = operation::launch::detach(&mut child, &directory) {
         return Err(unlaunched(store, &id, Code::Failed.error(message)));
     }
     let mut spawned = match child.spawn() {
@@ -208,22 +156,20 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
             return Err(unlaunched(store, &id, Code::Failed.error(format!("detached launch failed: {error}"))));
         }
     };
-    #[cfg(target_os = "linux")]
-    if !spawned
-        .wait()
-        .map_err(|e| Code::Blocked.error(format!("detached service admission is uncertain: {e}")).with_run(&id))?
-        .success()
-    {
-        return Err(Code::Blocked
-            .error("detached service admission failed or is uncertain")
-            .fix("Inspect or stop the reserved run. A delayed child cannot claim a stopped request.")
-            .with_run(&id));
-    }
-    #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
         let _ = spawned.wait();
     });
     Ok(handle)
+}
+
+fn command(request: &Request) -> String {
+    let kind = match request.kind {
+        Kind::Prepare => "prepare",
+        Kind::Build => "build",
+        Kind::Apply => "apply",
+        Kind::DevPrepare => "dev",
+    };
+    format!("{kind} {}", request.env)
 }
 
 fn unlaunched(store: &Store, run: &str, mut error: Error) -> Error {
@@ -255,8 +201,13 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
     }
     let using = operation::claim(store, run, request)?;
     std::env::set_var("OBC_DATA_STORE", store.root());
-    #[cfg(target_os = "linux")]
-    std::env::set_var("OBC_BAKE_BUDGETED", "1");
+    let (watched, id) = (Store::at(store.root()), run.to_string());
+    std::thread::spawn(move || loop {
+        if operation::stopped(&watched, &id).unwrap_or(false) {
+            return crate::fetch::http::stop();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    });
     SESSION
         .set(Session { store: Store::at(store.root()), control })
         .map_err(|_| Code::Usage.error("this worker already owns an operation"))?;
@@ -265,34 +216,10 @@ pub(super) fn enter(store: &Store, run: &str, request: &str) -> Result<crate::st
 
 pub(super) fn resume(store: &Store, command: &str) -> Result<Option<Run>, String> {
     let Some(session) = SESSION.get() else { return Ok(None) };
-    if session.store.root() != store.root()
-        || command
-            != format!(
-                "{} {}",
-                match session.control.request.kind {
-                    Kind::Prepare => "prepare",
-                    Kind::Build => "build",
-                    Kind::Apply => "apply",
-                    Kind::Auto => "auto",
-                    Kind::DevPrepare => "dev",
-                },
-                session.control.request.env
-            )
-    {
+    if session.store.root() != store.root() || command != self::command(&session.control.request) {
         return Err("operation child cannot start another run or environment".into());
     }
-    let run = Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?;
-    #[cfg(target_os = "linux")]
-    let run = {
-        let mut run = run;
-        let budget = operation::budget::Budget::environment()?;
-        crate::schedule::budget_ready(&budget)?;
-        budget.disk(&session.control.root, 0)?;
-        budget.disk(store.root(), 0)?;
-        run.host_budget(&session.control.root, budget);
-        run
-    };
-    Ok(Some(run))
+    Ok(Some(Run::attach(store, &session.control.run, &runs::events(store, &session.control.run)?)?))
 }
 
 fn finish_result(store: &Store, run: &str, mut result: Result<(), Error>) -> Result<(), Error> {
@@ -314,7 +241,7 @@ fn finish_result(store: &Store, run: &str, mut result: Result<(), Error>) -> Res
                 }
             };
             let path = directory.join("result.json");
-            crate::commit::durable(&path, &bytes)?;
+            crate::store::durable(&path, &bytes)?;
             Some(file(&path, "result.json")?)
         } else {
             None
@@ -354,57 +281,45 @@ pub(super) fn perform(
     run: &str,
     digest: &str,
     products: &[&dyn crate::product::Product],
-    fixtures: Option<&crate::fixtures::FixtureCollection>,
 ) -> Result<(), Error> {
     let _using = enter(store, run, digest)?;
     let request = request()?;
     let root = super::root()?;
-    let result = if request.env == "fixtures" {
-        super::fixture_cli::perform(&root, store, request, fixtures)
-    } else {
-        match request.kind {
-            Kind::Auto => super::auto_cli::perform(&root, products, &request.env),
-            Kind::DevPrepare => super::dev_cli::prepare(
-                &root,
-                store,
-                products,
-                run,
-                request.dev.as_ref().expect("checked Local request"),
-            ),
-            Kind::Prepare => super::build_cli::prepare(
-                &root,
-                products,
-                super::build_cli::PlanArgs {
-                    env: request.env.clone(),
-                    only: request.only.clone(),
-                    moves: request.moves.clone(),
-                },
-                true,
-            ),
-            Kind::Build => super::build_cli::build(
-                &root,
-                products,
-                super::build_cli::BuildArgs {
-                    env: request.env.clone(),
-                    only: request.only.clone(),
-                    moves: request.moves.clone(),
-                    plan: plan_path()?,
-                },
-                true,
-            ),
-            Kind::Apply => super::apply_cli::apply(
-                &root,
-                products,
-                super::apply_cli::ApplyArgs { env: request.env.clone(), plan: plan_path()?, yes: true },
-                true,
-            ),
+    let result = match request.kind {
+        Kind::DevPrepare => {
+            super::dev_cli::prepare(&root, store, products, run, request.dev.as_ref().expect("checked Local request"))
         }
+        Kind::Prepare => super::build_cli::prepare(
+            &root,
+            products,
+            super::build_cli::PlanArgs {
+                env: request.env.clone(),
+                only: request.only.clone(),
+                moves: request.moves.clone(),
+            },
+            true,
+        ),
+        Kind::Build => super::build_cli::build(
+            &root,
+            products,
+            super::build_cli::BuildArgs {
+                env: request.env.clone(),
+                only: request.only.clone(),
+                moves: request.moves.clone(),
+                plan: plan_path()?,
+            },
+            true,
+        ),
+        Kind::Apply => super::apply_cli::apply(
+            &root,
+            products,
+            super::apply_cli::ApplyArgs { env: request.env.clone(), plan: plan_path()?, yes: true },
+            true,
+        ),
     };
     let result = finish_result(store, run, result);
-    // All admitted producers and publication transport have drained before dropping the binary.
-    if operation::read(store, run)?.is_some_and(|control| {
-        matches!(control.state, State::Stopped | State::Finished { .. } | State::Resolved { .. })
-    }) {
+    // Every admitted producer has drained before the binary goes.
+    if operation::read(store, run)?.is_some_and(|control| control.state.terminal()) {
         remove_worker(store, run);
     }
     result
@@ -434,29 +349,15 @@ pub(super) fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
 }
 
 pub(super) fn prepare(root: &Path, args: super::build_cli::PlanArgs, json: bool) -> Result<(), Error> {
-    let request = Request {
-        kind: Kind::Prepare,
-        env: args.env,
-        only: args.only,
-        moves: args.moves,
-        plan: None,
-        dev: None,
-        fixture: None,
-    };
+    let request =
+        Request { kind: Kind::Prepare, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
     print_handle(&start(root, &Store::open()?, request, None)?, json)
 }
 
 pub(super) fn build(root: &Path, args: super::build_cli::BuildArgs, json: bool) -> Result<(), Error> {
     let plan = args.plan.as_deref().map(super::build_cli::read_plan).transpose()?;
-    let request = Request {
-        kind: Kind::Build,
-        env: args.env,
-        only: args.only,
-        moves: args.moves,
-        plan: None,
-        dev: None,
-        fixture: None,
-    };
+    let request =
+        Request { kind: Kind::Build, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
     print_handle(&start(root, &Store::open()?, request, plan.as_ref())?, json)
 }
 
@@ -488,62 +389,7 @@ pub(super) fn apply(
         super::build_cli::print_plan(&plan);
     }
     super::api::confirm(&super::apply_cli::question(&plan), consent)?;
-    let request = Request {
-        kind: Kind::Apply,
-        env: args.env,
-        only: Vec::new(),
-        moves: Vec::new(),
-        plan: None,
-        dev: None,
-        fixture: None,
-    };
+    let request =
+        Request { kind: Kind::Apply, env: args.env, only: Vec::new(), moves: Vec::new(), plan: None, dev: None };
     print_handle(&start(root, &store, request, Some(&plan))?, json)
-}
-
-#[cfg(not(test))]
-pub(super) fn handoff(store: &Store, run: &str, host: &str, bundle: &str) -> Result<(), Error> {
-    if SESSION.get().is_some() {
-        operation::handoff(store, run, host, bundle)?;
-    }
-    Ok(())
-}
-
-pub(super) fn resolved(
-    store: &Store,
-    run: &str,
-    host: &str,
-    bundle: &str,
-    ok: bool,
-    reply: &super::commit_cli::Reply,
-) -> Result<(), Error> {
-    let _resolving = store.lock(&format!("operation-result-{run}"))?;
-    if let Some(control) = operation::read(store, run)? {
-        let mut result = serde_json::to_value(reply).map_err(|e| e.to_string())?;
-        result.as_object_mut().expect("tagged owner reply").remove("journal");
-        let bytes = serde_json::to_vec(&result).map_err(|e| e.to_string())?;
-        let identity = LayerFile {
-            path: "owner-result.json".into(),
-            size: bytes.len() as u64,
-            sha256: crate::store::sha256_hex(&bytes),
-        };
-        let path = operation::directory(store, run)?.join("owner-result.json");
-        if let State::Resolved { host: original_host, bundle: original_bundle, ok: original_ok, result } = control.state
-        {
-            if original_host != host
-                || original_bundle != bundle
-                || original_ok != ok
-                || result != identity
-                || file(&path, "owner-result.json")? != result
-            {
-                return Err(Code::VerifyFailed.error("sealed owner result differs from repeated reconciliation"));
-            }
-            return Ok(());
-        }
-        if control.state != (State::Owner { host: host.into(), bundle: bundle.into() }) {
-            return Err(Code::VerifyFailed.error("owner result names another handoff"));
-        }
-        crate::commit::durable(&path, &bytes)?;
-        operation::resolve(store, run, host, bundle, ok, identity)?;
-    }
-    Ok(())
 }

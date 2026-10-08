@@ -13,18 +13,16 @@ uv sync --locked --group search-runtime
 
 Simulator needs Rust, Python and its native system libraries. It does not need the browser
 or search tools. The commands do not install dependencies. Start from a current checkout.
-On Linux, prepare the systemd user manager, linger and private `OBC_RUN_ENV_FILE`
-as in the [data setup](../../../obc-data/README.md#operation).
 
 ```sh
-obc data dev
 obc data dev REGION
+obc data dev
 obc data dev --refresh-live
 obc data dev --start
 ```
 
-`data/env/local.toml` holds the region and optional layers. The first preparation
-copies the Live settings. An explicit region updates Local. Preparation keeps the
+`data/env/local.toml` holds the region and optional layers. Name a region the first
+time; later, `obc data dev` uses the saved one. Preparation keeps the
 saved Local versions. `--refresh-live` takes the current published versions.
 The working tree supplies current producer code, region geometry and options.
 Compatible portable layers keep their original provenance. Only changed layers build.

@@ -2,3 +2,5 @@ name = "Grimsel Pass"
 kind = "box"
 # west, south, east, north
 box = [8.15034, 46.48261, 8.46007, 46.7207]
+countries = ["CH"]
+time_zone = "Europe/Zurich"

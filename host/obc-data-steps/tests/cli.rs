@@ -72,6 +72,10 @@ fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
     let temp = Temp::new("blocked");
     let store = obc_data::store::Store::at(temp.0.join("store"));
     let region = "europe/germany/baden-wuerttemberg";
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut settings = obc_data::settings::Settings::default();
+    settings.select(&obc_data::regions::Regions::load(&root).unwrap(), region).unwrap();
+    obc_data::settings::save(&store, &settings).unwrap();
     let index = serde_json::json!({"type":"FeatureCollection","features":[{"type":"Feature",
         "properties":{"id":"bw","name":"Baden-Württemberg","parent":null,"urls":{"pbf":format!("https://download.geofabrik.de/{region}-latest.osm.pbf")}},
         "geometry":{"type":"Polygon","coordinates":[[[7.79,47.99],[7.82,47.99],[7.82,48.02],[7.79,48.02],[7.79,47.99]]]}}]});

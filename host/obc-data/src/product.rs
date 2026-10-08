@@ -25,19 +25,9 @@ pub trait Product: Sync {
         &[]
     }
 
-    /// The native owner that selects requests and constructs this product's recipes.
-    fn planning_code(&self, _env: &Env) -> Result<Option<crate::engine::OwnerCode>, String> {
-        Ok(None)
-    }
-
-    /// Publication settings beyond the region and selected layers. Source versions are not settings.
-    fn approval_config(&self, _root: &Path) -> Result<serde_json::Value, String> {
-        Ok(serde_json::Value::Null)
-    }
-
-    /// Prepared execution is declared by its actual runtime owner, separately from source code.
-    fn runtime_binding(&self, _step: &Step) -> Result<Option<crate::approval::RuntimeBinding>, String> {
-        Ok(None)
+    /// Sources whose credentials a selected layer may need for new acquisition.
+    fn credential_sources(&self, _env: &Env) -> Vec<&'static str> {
+        Vec::new()
     }
 
     /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
@@ -61,17 +51,14 @@ pub trait Product: Sync {
         false
     }
 
-    /// Compare current semantic declarations without admitting their execution tools.
-    fn local_plan(
-        &self,
-        _root: &Path,
-        _env: &Env,
-        _regions: &Regions,
-        _store: &Store,
-        _release: &Release,
-        _required: &BTreeMap<String, Vec<String>>,
-    ) -> Result<crate::local::Plan, Unplanned> {
-        Err(Unplanned::Invalid("this product has no Local declarations".into()))
+    /// Current semantic declarations for read-only status, without execution admission.
+    fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        self.steps(root, env, regions, store)
+    }
+
+    /// Remove only this owner's execution bindings when comparing published source/config.
+    fn status_options(&self, _layer: &str, options: &serde_json::Value) -> serde_json::Value {
+        options.clone()
     }
 
     /// Read pending Local work without acquiring data or admitting app processes.
@@ -106,15 +93,9 @@ pub trait Product: Sync {
         Err("this product has no Local app".into())
     }
 
-    /// Prepare the three planner service views in caller-owned storage, before handoff.
-    fn services(
-        &self,
-        _root: &Path,
-        _release: &Release,
-        _store: &Store,
-        _destination: &Path,
-    ) -> Result<Vec<crate::vps::Candidate>, String> {
-        Ok(Vec::new())
+    /// Install and probe services before any product pointer switches.
+    fn activate(&self, _root: &Path, _release: &Release, _store: &Store, _commit: &str) -> Result<(), String> {
+        Ok(())
     }
 
     /// Check stored artifacts before publication. `root` locates the offline verification tools.

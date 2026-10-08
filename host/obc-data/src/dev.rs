@@ -67,7 +67,7 @@ impl Prepared {
         {
             return Err("Prepared Local service view belongs to another root".into());
         }
-        let (env, _) = crate::env::Env::local(root, &crate::regions::Regions::load(root)?)?;
+        let (env, _) = crate::env::Env::local(root, &crate::settings::regions(root, &Store::open()?)?, None)?;
         if value["region"] != env.region
             || value["layers"] != serde_json::json!(env.layers)
             || value["configuration"] != configuration(root)?
@@ -102,8 +102,8 @@ pub struct State {
 
 /// Bind the selected region definition and layers, including edits under an unchanged region id.
 pub fn configuration(root: &Path) -> Result<String, String> {
-    let regions = crate::regions::Regions::load(root)?;
-    let (env, _) = crate::env::Env::local(root, &regions)?;
+    let regions = crate::settings::regions(root, &Store::open()?)?;
+    let (env, _) = crate::env::Env::local(root, &regions, None)?;
     configuration_for(&env, &regions)
 }
 
@@ -149,7 +149,7 @@ pub fn stop(store: &Store) -> Result<Option<State>, String> {
 
 fn stop_owner(store: &Store) -> Result<Option<State>, String> {
     if let Some(state) = state(store)? {
-        crate::commit::durable(
+        crate::store::durable(
             &directory(store).join("stop.json"),
             &serde_json::to_vec(&serde_json::json!({
                 "token": state.token
@@ -208,7 +208,6 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start: Option<App>) -
         return Ok(None);
     }
     crate::worker::check(root)?;
-    let environment = crate::operation::launch::preflight()?;
     if !prepared
         .view
         .canonicalize()
@@ -221,7 +220,7 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start: Option<App>) -
     let code =
         crate::engine::digest(prepared.supervisor.files.iter().map(|(key, value)| (key.as_str(), value.as_str())));
     let directory = directory(store);
-    crate::commit::durable_directory(&directory)?;
+    crate::store::durable_directory(&directory)?;
     if !start_stopped && !same_ready_owner(store, updating.expect("checked above"))? {
         return Ok(None);
     }
@@ -280,7 +279,7 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start: Option<App>) -
             SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos().to_string(),
         );
     }
-    crate::commit::durable(
+    crate::store::durable(
         &directory.join("desired.json"),
         &serde_json::to_vec(&serde_json::json!({
             "token": token, "view": prepared.view, "sha256": digest, "code": code, "apps": intent
@@ -291,7 +290,7 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start: Option<App>) -
         if !start_stopped && !replaced {
             return Ok(None);
         }
-        crate::commit::durable(
+        crate::store::durable(
             &directory.join("state.json"),
             &serde_json::to_vec(&State {
                 token: token.clone(),
@@ -341,32 +340,8 @@ fn change(root: &Path, store: &Store, prepared: &Prepared, start: Option<App>) -
                     .get("python/runtime")
                     .ok_or("Local supervisor has no interpreter identity")?,
             );
-        #[cfg(target_os = "macos")]
-        {
-            crate::operation::launch::mac(&mut command, &directory)?;
-            command.spawn().map_err(|error| error.to_string())?;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let file = environment.ok_or("Local services need the configured private environment")?;
-            let mut launch =
-                crate::operation::launch::serving(&format!("obc-data-dev-{token}"), root, &directory, &file, true);
-            launch.arg("env");
-            for (key, value) in command.get_envs() {
-                if let Some(value) = value {
-                    let mut assignment = key.to_os_string();
-                    assignment.push("=");
-                    assignment.push(value);
-                    launch.arg(assignment);
-                }
-            }
-            launch.arg(command.get_program()).args(command.get_args());
-            if !launch.status().map_err(|error| error.to_string())?.success() {
-                return Err("Local service admission failed".into());
-            }
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = environment;
+        crate::operation::launch::detach(&mut command, &directory)?;
+        command.spawn().map_err(|error| error.to_string())?;
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(100);
     loop {
@@ -447,7 +422,7 @@ fn clean_views(store: &Store) -> Result<(), String> {
         }
         std::fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
     }
-    crate::commit::durable_directory(&views)
+    crate::store::durable_directory(&views)
 }
 
 pub fn open(store: &Store, app: App) -> Result<(), String> {
@@ -511,7 +486,7 @@ pub fn stop_app(store: &Store, app: App) -> Result<Option<State>, String> {
         return Ok(stopped);
     }
     desired["apps"] = serde_json::to_value(apps).map_err(|e| e.to_string())?;
-    crate::commit::durable(&file, &serde_json::to_vec(&desired).map_err(|e| e.to_string())?)?;
+    crate::store::durable(&file, &serde_json::to_vec(&desired).map_err(|e| e.to_string())?)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let current = state(store)?;
@@ -564,12 +539,17 @@ mod tests {
         }
         assert!(Command::new("git").args(["init", "-q"]).current_dir(&root).status().unwrap().success());
         let region = root.join("data/regions/ride.toml");
-        std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,8,48]\n").unwrap();
+        std::fs::write(
+            &region,
+            "name='Ride'\nkind='box'\nbox=[7,47,8,48]\ncountries=['DE']\ntime_zone='Europe/Berlin'\n",
+        )
+        .unwrap();
         std::fs::write(crate::env::Env::path(&root, "local"), "region='ride'\nlayers=[]\n").unwrap();
         let binary = root.join("view/obc-sim");
         std::fs::write(&binary, b"retained Simulator").unwrap();
         let code = Code {
             libraries: vec![crate::engine::Library {
+                version: None,
                 name: "simulator".into(),
                 path: binary.clone(),
                 sha256: hash_file(&binary).unwrap().0,
@@ -582,6 +562,7 @@ mod tests {
         let missing = Binding {
             code: Code {
                 libraries: vec![crate::engine::Library {
+                    version: None,
                     name: "node".into(),
                     path: root.join("absent-node"),
                     sha256: "0".repeat(64),
@@ -605,9 +586,13 @@ mod tests {
             "an absent Web provider cannot admit Web"
         );
         let captured_regions = crate::regions::Regions::load(&root).unwrap();
-        let (captured_env, _) = crate::env::Env::local(&root, &captured_regions).unwrap();
+        let (captured_env, _) = crate::env::Env::local(&root, &captured_regions, None).unwrap();
         let captured = configuration_for(&captured_env, &captured_regions).unwrap();
-        std::fs::write(&region, "name='Ride'\nkind='box'\nbox=[7,47,7.5,48]\n").unwrap();
+        std::fs::write(
+            &region,
+            "name='Ride'\nkind='box'\nbox=[7,47,7.5,48]\ncountries=['DE']\ntime_zone='Europe/Berlin'\n",
+        )
+        .unwrap();
         assert_eq!(
             captured,
             configuration_for(&captured_env, &captured_regions).unwrap(),
@@ -628,7 +613,7 @@ mod tests {
         let current = views.join("a".repeat(64));
         let obsolete = views.join("b".repeat(64));
         for view in [&current, &obsolete] {
-            crate::commit::durable(
+            crate::store::durable(
                 &view.join("service.json"),
                 &serde_json::to_vec(&serde_json::json!({"view":view})).unwrap(),
             )
@@ -643,7 +628,7 @@ mod tests {
             children: Default::default(),
             apps: Default::default(),
         };
-        crate::commit::durable(&directory(&store).join("prepared.json"), &serde_json::to_vec(&prepared).unwrap())
+        crate::store::durable(&directory(&store).join("prepared.json"), &serde_json::to_vec(&prepared).unwrap())
             .unwrap();
         assert!(replace(Path::new("/absent-checkout"), &store, &prepared).unwrap().is_none());
         assert!(state(&store).unwrap().is_none(), "preparation does not admit a stopped app owner");
@@ -658,7 +643,7 @@ mod tests {
             url: None,
             message: None,
         };
-        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&stopped).unwrap()).unwrap();
+        crate::store::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&stopped).unwrap()).unwrap();
         let preparing = store.lock("operation-active-local").unwrap();
         stop(&store).unwrap();
         assert!(obsolete.join("planner-service").exists(), "an active preparation prevents view cleanup");
@@ -666,7 +651,7 @@ mod tests {
         stop(&store).unwrap();
         assert!(!obsolete.exists());
         assert!(current.join("planner-service").exists());
-        crate::commit::durable(
+        crate::store::durable(
             &obsolete.join("service.json"),
             &serde_json::to_vec(&serde_json::json!({"view":obsolete})).unwrap(),
         )
@@ -674,28 +659,25 @@ mod tests {
         std::fs::write(obsolete.join("planner-service"), b"retained native bytes").unwrap();
         let mut uncertain = stopped;
         uncertain.status = "starting".into();
-        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
-            .unwrap();
+        crate::store::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap()).unwrap();
         stop(&store).unwrap();
         assert!(obsolete.exists(), "a delayed or uncertain owner is not a cleanup proof");
         uncertain.status = "failed".into();
         uncertain.message = Some("service failure".into());
-        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
-            .unwrap();
+        crate::store::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap()).unwrap();
         stop(&store).unwrap();
         assert!(obsolete.exists(), "failure alone does not prove that children drained");
-        crate::commit::durable(&directory(&store).join("drained.json"), br#"{"token":"another-owner"}"#).unwrap();
+        crate::store::durable(&directory(&store).join("drained.json"), br#"{"token":"another-owner"}"#).unwrap();
         stop(&store).unwrap();
         assert!(obsolete.exists(), "a different owner's drain proof is insufficient");
-        crate::commit::durable(&directory(&store).join("drained.json"), br#"{"token":"owner"}"#).unwrap();
+        crate::store::durable(&directory(&store).join("drained.json"), br#"{"token":"owner"}"#).unwrap();
         let failed = stop(&store).unwrap().unwrap();
         assert_eq!(failed.status, "failed");
         assert_eq!(failed.message.as_deref(), Some("service failure"));
         assert!(!obsolete.exists());
         let owner = store.lock("dev-local").unwrap();
         uncertain.status = "ready".into();
-        crate::commit::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap())
-            .unwrap();
+        crate::store::durable(&directory(&store).join("state.json"), &serde_json::to_vec(&uncertain).unwrap()).unwrap();
         assert!(same_ready_owner(&store, &uncertain).unwrap());
         drop(owner);
         assert!(!same_ready_owner(&store, &uncertain).unwrap(), "a lost ready owner cannot be replaced");

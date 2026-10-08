@@ -10,7 +10,7 @@ pub mod upstream;
 
 pub use tools::basemap_jar;
 
-pub(crate) type Checks<'a> = (&'a mut crate::engine::code::Context, bool);
+pub(crate) type Checks<'a> = &'a mut crate::engine::code::Context;
 
 pub fn owner_code(source: &Source) -> crate::engine::OwnerCode {
     code::owner(source)
@@ -45,12 +45,9 @@ pub(crate) fn check_owner(
     source: &Source,
     checks: Option<crate::fetch::Checks<'_>>,
 ) -> Result<(), String> {
-    if let Some((checks, committed)) = checks {
+    if let Some(checks) = checks {
         checks.refresh_python();
-        let identity = checks.owner_identity(root, &owner_code(source))?;
-        if committed {
-            identity.committed(root)?;
-        }
+        checks.owner_identity(root, &owner_code(source))?;
     }
     Ok(())
 }
@@ -117,10 +114,10 @@ fn fetch_files(
 pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> Result<Fetched, LiveError> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let root = crate::find_root(&cwd).ok_or("no data/sources.toml above the current directory")?;
-    let registry = Registry::load(&root)?;
+    let store = Store::open()?;
+    let registry = Registry::effective(&root, &store)?;
     let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
     let version = version.map(str::to_string);
-    let store = Store::open()?;
     let newest = version.is_none();
     let snapshot = match fetch(&root, &store, &Http::new(), &Request { source, version, params: params.clone() }) {
         Ok(snapshot) => snapshot,
@@ -401,8 +398,11 @@ fn placeholders(template: &str) -> Vec<&str> {
     names
 }
 
-/// The names of the `NAME=VALUE`s that a fetch of `source` needs.
+/// The URL arguments of a source. Capture programs validate their own arguments.
 pub(crate) fn params(source: &Source) -> Vec<&str> {
+    if source.fetch.kind == FetchKind::Capture {
+        return Vec::new();
+    }
     let names = placeholders(source.fetch.url.as_deref().unwrap_or_default());
     names.into_iter().filter(|name| !fixed(name)).collect()
 }
@@ -1120,32 +1120,41 @@ pub(crate) mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_manual_capture_never_resumes_a_failed_run() {
+    fn a_manual_capture_never_resumes_a_failed_run_and_joins_only_a_started_version() {
         let scratch = Scratch::new("manual-capture");
         let store = Store::at(&scratch.0);
         let model = located(FetchKind::Dtm, "https://example.org/model");
         let tooling = capture_fixture("capture-manual-owner", std::slice::from_ref(&model));
-        let request = Request { source: &model, version: None, params: vec![] };
-        let run = |script: &'static str| {
+        let run = |query: &str, version: Option<&str>, script: &'static str| {
+            let request = Request { source: &model, version: version.map(Into::into), params: vec![] };
             capture::capture(
                 &tooling.root(),
                 &store,
                 &request,
                 None,
-                "q=1",
+                query,
                 &[&model],
                 |_| &[0],
                 true,
-                move |work, out| {
+                |work, out| {
                     let mut command = std::process::Command::new("sh");
                     command.args(["-c", script, "sh"]).arg(work).arg(out);
                     Ok(command)
                 },
             )
         };
-        assert!(run("echo half > \"$2/a.tif\"; exit 1").is_err());
-        let names: Vec<_> = run("echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
+        assert!(run("q=1", None, "echo raw > \"$1/raw.xyz\"; echo half > \"$2/a.tif\"; exit 1").is_err());
+        let partial = std::fs::read_dir(scratch.0.join("partial")).map_or(0, Iterator::count);
+        assert_eq!(partial, 0, "a failed manual run keeps no raw download");
+        let names: Vec<_> =
+            run("q=1", None, "echo whole > \"$2/b.tif\"").unwrap().files.into_iter().map(|file| file.name).collect();
         assert_eq!(names, ["#q=1/b.tif"], "the half of the failed run is no data");
+
+        let started = Snapshot { source: model.id.clone(), version: "2026-01-01".into(), files: Vec::new() };
+        store.put_snapshot(&started).unwrap();
+        assert_eq!(run("q=2", Some("2026-01-01"), "echo tile > \"$2/c.tif\"").unwrap().files.len(), 1);
+        let err = run("q=2", Some("2019-01-01"), "echo tile > \"$2/c.tif\"").unwrap_err();
+        assert!(err.contains("today's data"), "{err}");
     }
 
     #[test]

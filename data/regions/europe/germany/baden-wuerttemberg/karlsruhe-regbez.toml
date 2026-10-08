@@ -1,3 +1,5 @@
 name = "Regierungsbezirk Karlsruhe"
 kind = "geofabrik"
 areas = ["europe/germany/baden-wuerttemberg/karlsruhe-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

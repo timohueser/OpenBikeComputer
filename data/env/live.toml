@@ -1,7 +1,0 @@
-# The live environment: what live contains. It names no versions: the live release manifests record
-# the version of each source, and `obc data plan live --move SOURCE[@VERSION]` moves one.
-
-# Both products build this region: a file in data/regions/.
-region = "europe/germany/baden-wuerttemberg"
-# The optional planner layers that are on.
-layers = []

@@ -4,14 +4,10 @@
 
 mod api;
 mod apply_cli;
-mod auto_cli;
 mod build_cli;
 pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
-pub mod commit_cli;
-mod config_cli;
 mod dev_cli;
 mod edit_cli;
-mod fixture_cli;
 mod freshness;
 pub mod operation_cli;
 mod r2_cli;
@@ -36,8 +32,8 @@ use crate::fetch::Request;
 use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::sources::{self, Kind, Refresh, Registry, Source, State, VersionScheme};
-use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
+use crate::sources::{Kind, Refresh, Registry, Source, State, VersionScheme};
+use crate::store::{gc, FileRecord, Snapshot, Store};
 use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
@@ -83,7 +79,7 @@ enum Command {
     /// Set how old the live version of a source may get before it is stale: 7, 30, 90, 365 or
     /// manual. A manual source moves only with `--move`.
     Policy { source: String, refresh: Refresh },
-    /// The regions in data/regions/. With ENV ID: set the region of data/env/ENV.toml.
+    /// Saved regions and shipped presets. With ENV ID: select the environment region.
     #[command(args_conflicts_with_subcommands = true)]
     Region {
         #[command(subcommand)]
@@ -94,45 +90,25 @@ enum Command {
         /// The region id.
         id: Option<String>,
     },
-    /// Switch an optional layer of data/env/ENV.toml on or off.
+    /// Switch an optional layer of the environment on or off.
     Layer { env: String, layer: String, switch: edit_cli::Switch },
-    /// Restore data/env/ENV.toml to its committed version: the edits that are not applied go.
+    /// Restore applied Live settings, or a committed environment file.
     Undo { env: String },
-    /// Review and commit only working bake configuration. Nothing pushes.
-    Config {
-        #[command(subcommand)]
-        action: config_cli::Action,
-    },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
     /// Start durable input preparation and return its run handle. Nothing builds or uploads.
     Prepare(build_cli::PlanArgs),
     /// Start a durable build into the store and return its run handle. Nothing uploads.
     Build(build_cli::BuildArgs),
-    /// Review live, start its durable build/publication, and return a run handle.
+    /// Review live, start its durable build and publication, and return a run handle.
     /// Asks once; without a terminal, `--yes` or `--plan` is required.
     Apply(apply_cli::ApplyArgs),
-    /// Start a durable refresh of used stale sources, then build and verify.
-    Auto { env: String },
-    /// Inspect, enable or disable the operator's live timer.
-    Schedule {
-        env: String,
-        #[arg(long, conflicts_with_all = ["disable", "setup_budget"], requires = "time_zone")]
-        calendar: Option<String>,
-        #[arg(long, requires = "calendar")]
-        time_zone: Option<String>,
-        #[arg(long, conflicts_with = "setup_budget")]
-        disable: bool,
-        /// Install and verify bake limits without enabling a timer.
-        #[arg(long)]
-        setup_budget: bool,
-    },
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
     /// Prepare and open the Local Web planner; serving does not hold the bake lock.
     Dev(dev_cli::Dev),
-    /// Clean the local store: delete what no live release or fixture reaches, and move the
-    /// cache directories of the older bake tools in. Shows the plan; `--apply` asks, then cleans.
+    /// Clean the local store: delete what no live release reaches, and empty `partial/`.
+    /// Shows the plan; `--apply` asks, then cleans.
     Clean {
         #[arg(long)]
         apply: bool,
@@ -146,13 +122,6 @@ enum Command {
 
 /// Run `obc data` with the products whose steps this binary links.
 pub fn main(products: &[&dyn Product]) -> ExitCode {
-    main_with_fixtures(products, None)
-}
-
-pub fn main_with_fixtures(
-    products: &[&dyn Product],
-    fixtures: Option<&crate::fixtures::FixtureCollection>,
-) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -165,7 +134,7 @@ pub fn main_with_fixtures(
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli, products, fixtures) {
+    match run(cli, products) {
         Ok(code) => code,
         Err(error) => error.report(json),
     }
@@ -176,11 +145,7 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(
-    cli: Cli,
-    products: &[&dyn Product],
-    fixtures: Option<&crate::fixtures::FixtureCollection>,
-) -> Result<ExitCode, Error> {
+fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
     crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -189,12 +154,9 @@ fn run(
         None => return status_cli::status(&root()?, products, false, json),
         Some(command) => command,
     };
-    let command = fixture_cli::dispatch(&root()?, command, fixtures, json)?;
-    let Some(command) = command else { return Ok(ExitCode::SUCCESS) };
     let done = match command {
         Command::Perform { store, run, request } => {
-            return operation_cli::perform(&Store::at(store), &run, &request, products, fixtures)
-                .map(|()| ExitCode::SUCCESS);
+            return operation_cli::perform(&Store::at(store), &run, &request, products).map(|()| ExitCode::SUCCESS);
         }
         Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
         Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
@@ -246,79 +208,25 @@ fn run(
             )
         }
         Command::Policy { source, refresh } => {
-            let source = policy(&root()?, &source, refresh)?;
-            eprintln!("obc data: the policy of {} is {refresh} in data/sources.toml", source.id);
+            let source = policy(&root()?, &Store::open()?, &source, refresh)?;
+            eprintln!("obc data: the policy of {} is {refresh} in pending Live settings", source.id);
             if json {
                 print_json(&source)?;
             }
             Ok(())
         }
         Command::Region { env: Some(env), id: Some(id), .. } => {
-            edit_cli::print(edit_cli::region(&root()?, products, &env, &id)?, json)
+            edit_cli::print(edit_cli::region(&root()?, &Store::open()?, products, &env, &id)?, json)
         }
         Command::Region { action, .. } => regions_cli::run(&root()?, action, json),
         Command::Layer { env, layer, switch } => {
-            edit_cli::print(edit_cli::layer(&root()?, products, &env, &layer, switch)?, json)
+            edit_cli::print(edit_cli::layer(&root()?, &Store::open()?, products, &env, &layer, switch)?, json)
         }
-        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &env)?, json),
-        Command::Config { action } => config_cli::run(&root()?, action, json),
+        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &Store::open()?, &env)?, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
         Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
         Command::Build(args) => operation_cli::build(&root()?, args, json),
         Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
-        Command::Auto { env } => auto_cli::start(&root()?, env, json),
-        Command::Schedule { env, calendar, time_zone, disable, setup_budget } => {
-            let (root, store) = (root()?, Store::open()?);
-            if setup_budget {
-                let budget =
-                    crate::schedule::setup_budget(&root, &store, &env).map_err(|reason| Code::Blocked.error(reason))?;
-                return if json {
-                    print_json(&budget).map(|()| ExitCode::SUCCESS)
-                } else {
-                    println!("bake CPU/memory limits and disk reserve configured; live timer unchanged");
-                    Ok(ExitCode::SUCCESS)
-                };
-            }
-            let state = if disable {
-                crate::schedule::disable(&root, &store, &env)
-            } else if let Some(calendar) = calendar {
-                crate::schedule::install(
-                    &root,
-                    &store,
-                    &env,
-                    &calendar,
-                    time_zone.as_deref().expect("clap requires a time zone"),
-                )
-            } else {
-                crate::schedule::state(&root, &store, &env)
-            }
-            .map_err(|reason| Code::Blocked.error(reason))?;
-            if json {
-                print_json(&state)
-            } else {
-                println!("live timer: {}", if state.enabled { "enabled" } else { "disabled" });
-                if let Some(reason) = &state.blocked {
-                    println!("not runnable: {reason}");
-                } else if state.enabled && !state.active {
-                    println!("not runnable: the installed timer is inactive");
-                }
-                if let (Some(calendar), Some(zone)) = (&state.calendar, &state.time_zone) {
-                    println!("{calendar} {zone}");
-                }
-                println!(
-                    "next: {}; last trigger: {}",
-                    state.next.as_deref().unwrap_or("none"),
-                    state.last_trigger.as_deref().unwrap_or("none")
-                );
-                if let Some(run) = &state.last_run {
-                    println!("last run: {} {:?}", run.run.summary.id, run.run.summary.outcome);
-                    if let Some(error) = &run.observation_error {
-                        println!("observation: {error}");
-                    }
-                }
-                Ok(())
-            }
-        }
         Command::Dev(args) => dev_cli::run(&root()?, products, args, json),
 
         Command::Runs(runs) => runs_cli::run(runs, json),
@@ -328,39 +236,26 @@ fn run(
     done.map(|()| ExitCode::SUCCESS)
 }
 
-/// What `clean` removes from the store and moves into it, or removed and moved.
+/// What `clean` removes from the store, or removed.
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 struct CleanPlan {
     /// The snapshot records and the objects that nothing reaches, and what stays.
     store: gc::Plan,
-    /// The cache directories of the older bake tools.
-    import: import::Plan,
 }
 
 impl CleanPlan {
     fn is_empty(&self) -> bool {
-        let moves = self.import.dirs.iter().any(|dir| dir.files > 0);
-        self.store.snapshots.is_empty() && self.store.objects.is_empty() && !moves
+        self.store.snapshots.is_empty() && self.store.objects.is_empty() && self.store.partial_bytes == 0
     }
 
     /// The one question before a clean.
     fn question(&self) -> String {
-        let removes = match (self.store.objects.len(), self.store.snapshots.len()) {
-            (0, 0) => None,
-            (0, 1) => Some("1 record".into()),
-            (0, records) => Some(format!("{records} records")),
-            _ => Some(bytes(self.store.remove_bytes)),
-        };
-        let moves = self.import.dirs.iter().any(|dir| dir.files > 0).then(|| bytes(self.import.bytes));
-        // A process that writes an old cache while it moves can change an object.
-        const STOP: &str = "Stop the bakes, the planner and every fetch first.";
-        match (removes, moves) {
-            (Some(removes), Some(moves)) => {
-                format!("Remove {removes} from the local store and move {moves} of old caches into it? {STOP}")
-            }
-            (Some(removes), None) => format!("Remove {removes} from the local store?"),
-            (None, Some(moves)) => format!("Move {moves} of old caches into the local store? {STOP}"),
-            (None, None) => "Nothing to clean.".into(),
+        let gc = &self.store;
+        match (gc.objects.len(), gc.snapshots.len(), gc.partial_bytes) {
+            (0, 0, 0) => "Nothing to clean.".into(),
+            (0, 1, 0) => "Remove 1 record from the local store?".into(),
+            (0, records, 0) => format!("Remove {records} records from the local store?"),
+            _ => format!("Remove {} from the local store?", bytes(gc.remove_bytes + gc.partial_bytes)),
         }
     }
 }
@@ -386,27 +281,21 @@ fn roots(root: &Path, products: &[&dyn Product], store: &Store) -> Result<gc::Ro
     Ok(roots)
 }
 
-fn old_dirs() -> Result<Vec<std::path::PathBuf>, Error> {
-    let home = std::env::var_os("HOME").ok_or_else(|| Code::Usage.error("HOME is not set"))?;
-    Ok(import::old_dirs(Path::new(&home)))
-}
-
 /// The plan of `clean`.
 fn clean_plan(root: &Path, products: &[&dyn Product], store: &Store) -> Result<CleanPlan, Error> {
     let roots = roots(root, products, store)?;
-    Ok(CleanPlan { store: gc::plan(store, &roots)?, import: import::plan(store, &old_dirs()?)? })
+    Ok(CleanPlan { store: gc::plan(store, &roots)? })
 }
 
-/// Delete what nothing reaches, only when that is still `confirmed`; then move the old cache
-/// directories in.
+/// Delete what nothing reaches, only when that is still `confirmed`.
 fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::Plan) -> Result<CleanPlan, Error> {
     let roots = roots(root, products, store)?;
     let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
-            .error("a run, fetch or import uses the store; nothing was deleted")
-            .fix("Run `obc data clean --apply` again when the run, fetch or import ends.")
+            .error("a run or fetch uses the store; nothing was deleted")
+            .fix("Run `obc data clean --apply` again when the run or fetch ends.")
     })?;
-    Ok(CleanPlan { store: removed, import: import::apply(store, &old_dirs()?)? })
+    Ok(CleanPlan { store: removed })
 }
 
 fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool, json: bool) -> Result<(), Error> {
@@ -436,12 +325,7 @@ fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool,
     if json {
         return print_json(&done);
     }
-    let left: Vec<_> = done.import.dirs.iter().flat_map(|dir| &dir.left).collect();
-    println!("Removed {} from the store; moved {} into it.", bytes(done.store.remove_bytes), bytes(done.import.bytes));
-    if !left.is_empty() {
-        println!("THESE STAY:");
-        left.iter().for_each(|path| println!("  {}", path.display()));
-    }
+    println!("Removed {} from the store.", bytes(done.store.remove_bytes + done.store.partial_bytes));
     Ok(())
 }
 
@@ -455,18 +339,13 @@ fn clean_text(store: &Store, plan: &CleanPlan) -> String {
     gc.objects.iter().for_each(|(sha256, size)| text += &format!("  object {sha256}  {}\n", bytes(*size)));
     text +=
         &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(gc.remove_bytes));
+    if gc.partial_bytes > 0 {
+        text += &format!("  partial/: unfinished downloads and stopped steps, {}\n", bytes(gc.partial_bytes));
+    }
     text += &format!("KEEP {}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
     let kept =
         gc.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
     text += &table(&kept.collect::<Vec<_>>());
-    let moved: Vec<_> = plan.import.dirs.iter().filter(|dir| dir.files > 0).collect();
-    if !moved.is_empty() {
-        text += &format!("MOVE INTO {}\n", store.root().display());
-        let rows = moved
-            .iter()
-            .map(|dir| vec![format!("  {}", dir.dir.display()), format!("{} files", dir.files), bytes(dir.bytes)]);
-        text += &table(&rows.collect::<Vec<_>>());
-    }
     text
 }
 
@@ -483,7 +362,7 @@ fn root() -> Result<std::path::PathBuf, Error> {
 }
 
 fn registry(root: &Path) -> Result<Registry, Error> {
-    Registry::load(root).map_err(|e| Code::InvalidData.error(e))
+    Registry::effective(root, &Store::open()?).map_err(|e| Code::InvalidData.error(e))
 }
 
 fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Error> {
@@ -506,16 +385,14 @@ fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot
     result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
 }
 
-/// Set the `refresh` of `id` in `data/sources.toml`.
-fn policy(root: &Path, id: &str, refresh: Refresh) -> Result<Source, Error> {
-    find(&registry(root)?, id)?;
-    let path = root.join("data/sources.toml");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = sources::set_refresh(&text, id, refresh).map_err(|e| Code::Usage.error(e))?;
-    let edited = sources::parse_sources(&text)
-        .map_err(|e| Code::Usage.error(e).fix(format!("Choose `manual`: `obc data policy {id} manual`.")))?;
-    store::write_atomic(&path, text.as_bytes())?;
-    Ok(edited.into_iter().find(|s| s.id == id).expect("the edit keeps the source"))
+/// Save a pending refresh policy in the data store.
+fn policy(root: &Path, store: &Store, id: &str, refresh: Refresh) -> Result<Source, Error> {
+    let mut source = find(&Registry::load(root)?, id)?.clone();
+    let mut settings = crate::settings::current(store)?;
+    settings.refresh.insert(id.into(), refresh);
+    settings.policies(std::slice::from_mut(&mut source)).map_err(|e| Code::Usage.error(e))?;
+    crate::settings::save(store, &settings)?;
+    Ok(source)
 }
 
 /// The requested files of a snapshot.
@@ -621,11 +498,14 @@ fn source_rows(
         .map(|source| {
             let requests =
                 inventory.map(|env| freshness::requests(&store, &http, source, env, check_now)).unwrap_or_default();
+            let read = live.is_none_or(|live| live.get(&source.id).is_some_and(|versions| !versions.is_empty()));
             let state = requests.iter().map(|r| r.state).min().unwrap_or_else(|| {
                 if source.kind != Kind::Tool && source.licence.is_none() {
                     State::Blocked
-                } else {
+                } else if read {
                     State::Ok
+                } else {
+                    State::Unused
                 }
             });
             let reason = requests
@@ -659,14 +539,19 @@ fn source_rows(
 type SourceListing = (Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>);
 
 fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Result<SourceListing, Error> {
-    let (store, mut loaded) = (Store::open()?, build_cli::load(root, "live")?);
-    let registry = Registry { sources: loaded.sources.clone() };
+    let store = Store::open()?;
+    let mut registry = registry(root)?;
     let remote = remote();
     let live = match &remote {
         Ok(remote) => read_live(remote, &registry, products, &store),
         Err(error) => Err(Code::Blocked.error(error.message.clone())),
     };
-    let inventory = if let Ok(live) = &live {
+    if let Ok(live) = &live {
+        crate::settings::observe(&store, live)?;
+    }
+    let loaded = build_cli::load(root, "live", &store);
+    let inventory = if let (Ok(live), Ok(mut loaded)) = (&live, loaded) {
+        registry.sources = loaded.sources.clone();
         loaded.env.live = live.versions();
         loaded.env.retained = crate::input_copy::retained(live, &store)?;
         let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
@@ -682,7 +567,9 @@ fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Re
             None,
         )?)
     } else {
-        eprintln!("obc data: {}", live_unknown(live.as_ref().unwrap_err()));
+        if let Err(error) = &live {
+            eprintln!("obc data: {}", live_unknown(error));
+        }
         None
     };
     let versions = live.as_ref().ok().map(Live::by_source);
@@ -830,17 +717,19 @@ redistribute = true
 "#;
 
     #[test]
-    fn a_policy_edits_its_source_in_place() {
+    fn a_policy_edits_pending_settings_and_leaves_the_source_declaration_unchanged() {
         let scratch = Scratch::new("cli-policy");
         let root = scratch.0.join("repository");
+        let store = Store::at(scratch.0.join("store"));
         write(&root.join("data/sources.toml"), SOURCES);
         let sources = || std::fs::read_to_string(root.join("data/sources.toml")).unwrap();
-        let refused = policy(&root, "planetiler", Refresh::Days(30)).unwrap_err();
-        assert!(refused.message.contains("needs `version = \"date\"`"), "{}", refused.message);
-        assert_eq!(policy(&root, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
+        let refused = policy(&root, &store, "planetiler", Refresh::Days(30)).unwrap_err();
+        assert!(refused.message.contains("needs a date version"), "{}", refused.message);
+        assert_eq!(policy(&root, &store, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
         assert_eq!(sources(), SOURCES, "a refused policy changes nothing");
 
-        assert_eq!(policy(&root, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
-        assert_eq!(sources(), SOURCES.replacen("refresh = 90", "refresh = \"manual\"", 1));
+        assert_eq!(policy(&root, &store, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
+        assert_eq!(sources(), SOURCES);
+        assert_eq!(crate::settings::current(&store).unwrap().refresh["osm-planet"], Refresh::Manual);
     }
 }

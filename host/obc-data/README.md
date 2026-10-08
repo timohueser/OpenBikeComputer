@@ -12,44 +12,32 @@ Discovery does not install them. Unsupported compiler settings or missing provid
 new work. Follow the [Local app setup](../obc-data-steps/src/planner/README.md) for browser
 assets, search dependencies and matching-host apps.
 
-For retained Linux work, prepare systemd user services, linger and a private environment file
-as in the [Linux bake setup](src/operation/README.md). macOS workers detach from the terminal.
-
-For publication, prepare one Linux VPS owner with rclone, rsync and SSH. Install its matching
-MIT `obc-data-plumbing` at `/opt/obc-data/bin/obc-data-plumbing`. Put its private environment
-in `/etc/obc-data/owner.env`. Give it the same publication bucket as the initiating machine.
-Only that owner account may change `/var/lib/obc-data/incoming` and `/var/lib/obc-data/store`,
-and it must admit the fixed system service through systemd. Set `OBC_COMMIT_HOST=local` there.
-On the laptop, select that owner with its configured SSH host.
-
-Planner publication also needs the configured Linux CPython and Node versions, their host
-libraries, systemd and Caddy. Add its API virtual host to `/etc/caddy/Caddyfile`. The owner
-controls `/opt/obc-planner/services`, `/etc/systemd/system`, `/etc/caddy/planner/data` and
-the downloads state directories. Set limits through the Linux setup before automatic work.
+Retained workers detach from the terminal. Publication runs on the machine that applies: it
+needs rclone and the bucket credentials below. Live publishes from a pushed commit; Live
+settings stay in the store and need no commit. One machine applies at a time. An apply builds services on the VPS,
+stops them, installs the data and probes the new services. Allow a short outage. Before it replaces
+a pointer, it keeps the old bytes at `runs/RUN/previous/KEY` in the store for a rollback.
 
 | Configuration or credential | Purpose |
 | --- | --- |
-| `data/env/live.toml` | Published region and optional layers |
-| `data/env/fixtures.toml` | Exact fixture package selection and source versions |
+| `STORE/settings/pending.json` | Pending Live region definition, layers and refresh policy |
 | `data/env/local.toml` | Local region and layers; ignored by Git |
-| `data/regions/` | Saved Box or area selections |
-| `data/sources.toml` | Source declarations and refresh policy |
+| `STORE/regions/` | Saved Box or area selections; `data/regions/` supplies presets |
+| `data/sources.toml` | Source declarations |
 | `data/planner.toml` | Planner producer options |
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key |
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
-| `OBC_COMMIT_HOST` | Fixed publication owner: configured SSH host, or `local` on that owner |
-| `OBC_DATA_STORE` | Initiating build cache; not the fixed owner state |
-| `OBC_RUN_ENV_FILE` | Absolute private Linux worker environment file |
+| `OBC_DATA_STORE` | Build store |
+| `OBC_PLANNER_HOST` | VPS SSH address, `USER@HOST`; needs service and Caddy administration |
 | `UV_PYTHON` | Selected prepared Python interpreter |
 | `~/.cdsapirc` | CDS credential for a selected climate fetch |
 | `~/.config/openbikecomputer/cdse-s3.env` | CDSE S3 credentials for a selected snow fetch |
 
 Keep secrets in the private host environment or ignored `tools/obc.local`, never tracked config.
-Missing source credentials block only a selected new fetch; verified retained inputs remain usable.
-Publication also requires its own bucket credentials and owner admission.
-Follow the [fixture setup](../../fixtures/README.md) for its isolated bucket and exact source packages.
+Plan names missing credentials before input preparation. Verified retained inputs remain usable.
+Publication also requires its own bucket credentials.
 
 ## Daily commands
 
@@ -61,16 +49,16 @@ Follow the [fixture setup](../../fixtures/README.md) for its isolated bucket and
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data runs RUN --result` | Read the final output; preparation includes `.plan` |
 | `obc data apply live --plan PLAN --yes` | Execute the exact owner-approved plan |
-| `obc data runs RUN --stop` | Drain admitted local work before handoff |
-| `obc data runs RUN --reconcile` | Record a verified final owner reply |
+| `obc data runs RUN --stop` | Drain admitted work; an apply stops before its next phase |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data dev` | Prepare Local from working-tree code and saved source versions |
 
+Preparation fetches missing Wikimedia captures and refreshes stale requests by policy.
 Preparation leaves stopped apps stopped. Use the Local app commands to start one.
 An incomplete plan needs preparation and a new review. Apply does not commit configuration.
-After a disconnect, observe the original Run. A missing owner record does not permit a retry
-or timeout takeover. Inspect `/var/lib/obc-data/store/runs/RUN.jsonl` for acknowledged writes.
-An unresolved intent blocks another commit; do not delete it.
+A failed or stopped apply leaves live as it was until its pointer switch. Apply the plan again:
+it uploads only what R2 lacks. `obc data status --check` compares R2 with live and lists the
+keys of earlier releases that the next apply removes.
 
 ## Terminal controls
 
@@ -89,30 +77,22 @@ the terminal. Run controls remain usable after checkout edits.
 | Sources | `f` changes scope; `/` filters; Enter shows details; `R` checks upstream |
 | Source versions | `v` lists requests; Enter selects a source-wide move |
 | Source policy | `e` opens presets; `c` enters 1..65535 whole days |
-| Automation | `s` details; `e` edits Daily/Weekly/Monthly/Custom; arrows select; Tab field; Enter reviews; `y` confirms |
-| Automation host | `d` disables future runs; `b` reviews limits; the Live row shows cadence, next run and last result |
 | Plan | `p` opens it; Space changes source moves; `d` shows steps; `f` prepares inputs; `b` builds |
-| Configuration | `C` reviews Git changes; `e` edits the message; Enter reviews the commit; `y` commits; `R` refreshes |
-| Config CLI | `config review --json > REVIEW`; `config commit --review REVIEW -m MESSAGE --yes`; no push |
-| Apply | `a` reviews the machine, live changes and removals; `y` starts the exact reviewed plan |
-| Run | Enter opens progress; `R` observes; `x` stops admitted local work; `c` reconciles an owner result |
+| Apply | `a` reviews the machine, live changes and removals by prefix; `y` starts the exact reviewed plan |
+| Run | Enter opens progress; `R` observes; `x` asks to stop admitted work; `y` stops |
 | Prepared run | `p` reviews its returned plan before build or apply |
 | Error | `!` opens the full message and fix; `x` dismisses it outside an input or Run |
 | Current Rust code | F6 drains the check, restores the terminal and launches a fresh worker |
 
 
-Region and policy edits save files for review. `u` resets only Live settings, not regions or
-source policies. First entry into Regions or Local does not fetch or build. Required Plan
+Live edits stay pending until apply records them in each release. `u` restores the applied
+region, layers and policies. Saved region definitions stay. First entry into Regions or Local does not fetch or build. Required Plan
 rows always apply; only source moves have checkboxes. Esc hides a Run and `q` quits its viewer;
-neither stops the retained operation. Stop refuses after publication handoff.
-Manual laptop apply does not need the Linux schedule controller.
+neither stops the retained operation.
 
 ## Agents
 
 Use the same plan and retained-operation APIs as the interface. Report the executing host,
-selected environment, exact source moves, build work and publication outcome.
-Inspect `plan.approval` even for a no-change apply; `applied.approval` is separate from publication.
-Unsupported automatic approval does not disable manual publication.
-Keep original provenance when adopting portable data; do not create a foreign build receipt.
-See [portable Local data](../../specs/obc-data.md#local-portable-data) and
-[automatic approval](../../specs/obc-data.md#manual-automatic-approval).
+selected environment, exact source moves, build work, `plan.remove` by prefix and publication
+outcome. Keep original provenance when adopting portable data; do not create a foreign build
+receipt. See [portable Local data](../../specs/obc-data.md#local-portable-data).

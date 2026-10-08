@@ -4,7 +4,6 @@ use super::{list_runs, App, Effect, Error, PlanView, Screen, Tui, LIVE, NO_PLAN,
 use crate::cli::Code;
 use crate::cli::{build_cli::plan_live_moves, clean, clean_plan, edit_cli, policy, regions_cli};
 use crate::fetch::http::Http;
-use crate::regions::Regions;
 use crate::{product::Product, store::Store};
 use ratatui::{
     crossterm::{
@@ -31,9 +30,9 @@ type ViewContext = (
 
 fn context(root: &Path, store: &Store) -> ViewContext {
     (
-        crate::cli::edit_cli::current(root, super::LIVE).map_err(|error| error.message),
+        crate::cli::edit_cli::current(root, store, super::LIVE).map_err(|error| error.message),
         crate::cli::registry(root).map(|registry| registry.sources).map_err(|error| error.message),
-        crate::regions::Regions::load(root).map(|regions| regions.iter().cloned().collect()),
+        crate::settings::regions(root, store).map(|regions| regions.iter().cloned().collect()),
         match std::fs::read_to_string(crate::env::Env::path(root, "local")) {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -96,8 +95,7 @@ pub(super) fn run_loop(
                     task = Some(scope.spawn(move || {
                         let observes = matches!(
                             next,
-                            Effect::Initial
-                                | Effect::CheckNow
+                            Effect::CheckNow
                                 | Effect::Status { .. }
                                 | Effect::Areas
                                 | Effect::LoadAreas
@@ -153,14 +151,7 @@ pub(super) fn run_loop(
                 let selected = app.runs.get(app.run).map(|run| run.summary.id.clone());
                 app.runs = list_runs(store)?;
                 for view in app.execution.active.iter().chain(app.execution.view.iter()) {
-                    if !matches!(
-                        view.operation,
-                        Some(
-                            crate::operation::Status::AwaitingOwner { .. }
-                                | crate::operation::Status::UnknownOwner { .. }
-                                | crate::operation::Status::Finished { .. }
-                        )
-                    ) {
+                    if !matches!(view.operation, Some(crate::operation::Status::Finished { .. })) {
                         continue;
                     }
                     if let Some(run) = app.runs.iter_mut().find(|run| run.summary.id == view.run.summary.id) {
@@ -179,14 +170,6 @@ pub(super) fn run_loop(
                     }
                 }
                 read = Instant::now();
-            }
-            if app.screen == Screen::Live
-                && app.overlay.is_none()
-                && app.schedule.state.is_none()
-                && !app.busy
-                && effect == Effect::None
-            {
-                effect = Effect::ScheduleRead;
             }
             if app.screen == Screen::Local
                 && app.overlay.is_none()
@@ -217,11 +200,10 @@ impl App {
     /// Completion changes data, never the user's focus, filters or draft inputs.
     pub(super) fn complete(&mut self, effect: Effect, updated: App) {
         let selected = self.sources.get(self.source).map(|row| row.source.id.clone());
-        let live_row = self.live_rows().get(self.row).cloned();
-        let schedule_result = matches!(effect, Effect::ScheduleRead | Effect::ScheduleChange(_));
         self.saved = updated.saved.clone();
         match effect {
             Effect::Initial => {
+                self.regions = updated.regions;
                 self.sources = updated.sources;
                 self.live = updated.live;
                 self.status = updated.status;
@@ -229,8 +211,10 @@ impl App {
                 self.edited = updated.edited;
             }
             Effect::Policy(_, _) | Effect::CheckNow => {
+                self.regions = updated.regions;
                 self.sources = updated.sources;
                 self.live = updated.live;
+                self.edited = updated.edited;
                 if matches!(effect, Effect::CheckNow)
                     && self.overlay == Some(super::Overlay::Version)
                     && updated.versions.as_ref().is_some_and(|versions| Some(&versions.source) == selected.as_ref())
@@ -258,12 +242,6 @@ impl App {
                 self.env = updated.env;
                 self.edited = updated.edited;
                 self.row = self.row.min(self.live_rows().len().saturating_sub(1));
-            }
-            Effect::ConfigRead => self.config.review = updated.config.review,
-            Effect::ConfigCommit(_, _) => {
-                self.config.review = updated.config.review;
-                self.edited = updated.edited;
-                self.asking = false;
             }
             Effect::PlanClean | Effect::Clean => self.store = updated.store,
             Effect::Plan => self.plan = updated.plan,
@@ -302,7 +280,7 @@ impl App {
                     }
                 }
             }
-            Effect::ObserveRun(id) | Effect::StopRun(id) | Effect::ReconcileRun(id) => {
+            Effect::ObserveRun(id) | Effect::StopRun(id) => {
                 if let Some(view) = updated.execution.view.filter(|view| view.run.summary.id == id) {
                     if self.execution.selected.as_ref() == Some(&id) {
                         self.execution.dev_request = updated.execution.dev_request.clone();
@@ -390,28 +368,7 @@ impl App {
                     }
                 }
             }
-            Effect::ScheduleRead => {
-                self.schedule.state = updated.schedule.state;
-                if self.schedule.calendar.is_empty() {
-                    self.schedule.calendar = updated.schedule.calendar;
-                }
-                if self.schedule.zone.is_empty() {
-                    self.schedule.zone = updated.schedule.zone;
-                }
-            }
-            Effect::ScheduleChange(_) => {
-                self.schedule.state = updated.schedule.state;
-                if updated.schedule.pending.is_none() {
-                    self.schedule.pending = None;
-                    self.asking = false;
-                }
-            }
             Effect::None | Effect::Quit | Effect::Reload => {}
-        }
-        if schedule_result {
-            if let Some(at) = live_row.and_then(|row| self.live_rows().iter().position(|shown| *shown == row)) {
-                self.row = at;
-            }
         }
     }
 }
@@ -429,13 +386,8 @@ pub(super) fn perform(
     }
     if !matches!(
         effect,
-        Effect::ConfigRead
-            | Effect::ConfigCommit(_, _)
-            | Effect::ScheduleRead
-            | Effect::ScheduleChange(super::schedule::Change::Disable)
-            | Effect::ObserveRun(_)
+        Effect::ObserveRun(_)
             | Effect::StopRun(_)
-            | Effect::ReconcileRun(_)
             | Effect::LocalState
             | Effect::LocalControl(
                 super::local::Control::Stop | super::local::Control::Open | super::local::Control::Logs,
@@ -459,44 +411,6 @@ pub(super) fn perform(
             app.versions = Some(super::super::versions::read(store, row)?);
             Ok(())
         }
-        Effect::ConfigRead => {
-            app.config.review = Some(super::super::config_cli::review(root)?);
-            Ok(())
-        }
-        Effect::ConfigCommit(review, message) => {
-            let committed = super::super::config_cli::commit(root, &review, &message)?;
-            app.saved = Some(format!("Committed bake configuration {} · nothing pushed", committed.commit));
-            app.config.review = None;
-            app.edited = edit_cli::edited(root, LIVE);
-            Ok(())
-        }
-        Effect::ScheduleRead => {
-            app.schedule.state = Some(crate::schedule::state(root, store, LIVE).map(std::sync::Arc::new));
-            if app.schedule.calendar.is_empty() {
-                if let Some(Ok(state)) = &app.schedule.state {
-                    app.schedule.calendar = state.calendar.clone().unwrap_or_else(|| "daily".into());
-                    app.schedule.zone = state.time_zone.clone().unwrap_or_else(|| "UTC".into());
-                }
-            }
-            Ok(())
-        }
-        Effect::ScheduleChange(change) => {
-            match change {
-                super::schedule::Change::Install { calendar, zone } => {
-                    app.schedule.state =
-                        Some(Ok(std::sync::Arc::new(crate::schedule::install(root, store, LIVE, &calendar, &zone)?)));
-                }
-                super::schedule::Change::Disable => {
-                    app.schedule.state = Some(Ok(std::sync::Arc::new(crate::schedule::disable(root, store, LIVE)?)));
-                }
-                super::schedule::Change::Budget => {
-                    crate::schedule::setup_budget(root, store, LIVE)?;
-                    app.schedule.state = Some(crate::schedule::state(root, store, LIVE).map(std::sync::Arc::new));
-                }
-            }
-            app.schedule.pending = None;
-            Ok(())
-        }
         Effect::Initial => app.reload(root, products, false).and(app.read_live(root, products, false)),
         Effect::Areas => regions_cli::suggestions(store, "")
             .map(|areas| app.region_editor.areas = Some(areas))
@@ -506,24 +420,25 @@ pub(super) fn perform(
             let id = args.id.clone();
             let areas = args.bbox.is_none();
             regions_cli::create(root, store, args).map_err(|error| super::regions::creation_error(error, areas))?;
-            app.saved = Some(format!("Saved data/regions/{id}.toml · review and commit before apply"));
-            app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+            app.saved = Some(format!("Saved region {id} in the store"));
+            app.regions = crate::settings::regions(root, store).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;
             Ok(())
         }
         Effect::ReviewRegionDeletion(id) => {
-            regions_cli::deletion(root, &id).map(|deletion| app.region_editor.deletion = Some(deletion))
+            regions_cli::deletion(root, store, &id).map(|deletion| app.region_editor.deletion = Some(deletion))
         }
         Effect::DeleteRegion(deletion) => {
-            regions_cli::remove(root, &deletion)?;
-            app.saved = Some(format!("Deleted data/regions/{}.toml · review and commit before apply", deletion.region));
-            app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+            regions_cli::remove(root, store, &deletion)?;
+            app.saved = Some(format!("Deleted saved region {}", deletion.region));
+            app.regions = crate::settings::regions(root, store).map(|regions| regions.iter().cloned().collect());
             app.region_editor.mode = None;
             Ok(())
         }
         Effect::Policy(id, refresh) => {
-            let result = policy(root, &id, refresh)
-                .map(|_| app.saved = Some("Saved data/sources.toml · review and commit before apply".into()));
+            let result =
+                policy(root, store, &id, refresh).map(|_| app.saved = Some("Saved pending Live policy".into()));
+            app.edited = edit_cli::edited(root, store, LIVE);
             let reloaded = app.reload(root, products, false);
             result.and(reloaded)
         }
@@ -554,16 +469,16 @@ pub(super) fn perform(
         }
         Effect::Status { check } => app.read_live(root, products, check),
         Effect::Region(id) => {
-            let result = edit_cli::region(root, products, LIVE, &id).map(drop);
+            let result = edit_cli::region(root, store, products, LIVE, &id).map(drop);
             result.and(app.read_live(root, products, false)).and(app.reload(root, products, false))
         }
         Effect::Layer(layer, switch) => {
-            let result = edit_cli::layer(root, products, LIVE, &layer, switch).map(drop);
+            let result = edit_cli::layer(root, store, products, LIVE, &layer, switch).map(drop);
             result.and(app.read_live(root, products, false))
         }
-        Effect::Undo => {
-            edit_cli::undo(root, LIVE).and(app.read_live(root, products, false)).and(app.reload(root, products, false))
-        }
+        Effect::Undo => edit_cli::undo(root, store, LIVE)
+            .and(app.read_live(root, products, false))
+            .and(app.reload(root, products, false)),
         Effect::Plan => {
             let plan = plan_live_moves(
                 root,
@@ -581,14 +496,12 @@ pub(super) fn perform(
         }
         Effect::LocalCheck(request) | Effect::LocalReview(request) => app.read_local(root, products, store, &request),
         Effect::LocalRegion(region) => {
-            super::local::ensure_environment(root)?;
-            edit_cli::region(root, products, "local", &region)?;
+            edit_cli::region(root, store, products, "local", &region)?;
             app.local.request = None;
             app.read_local(root, products, store, &app.local.request(false))
         }
         Effect::LocalLayer(layer, switch) => {
-            super::local::ensure_environment(root)?;
-            edit_cli::layer(root, products, "local", &layer, switch)?;
+            edit_cli::layer(root, store, products, "local", &layer, switch)?;
             app.local.request = None;
             app.read_local(root, products, store, &app.local.request(false))
         }
@@ -638,13 +551,12 @@ pub(super) fn perform(
             app.execution.handle = Some(handle);
             Ok(())
         }
-        next @ (Effect::ObserveRun(_) | Effect::ReconcileRun(_) | Effect::StopRun(_)) => {
+        next @ (Effect::ObserveRun(_) | Effect::StopRun(_)) => {
             let id = match &next {
-                Effect::ObserveRun(id) | Effect::ReconcileRun(id) | Effect::StopRun(id) => id,
+                Effect::ObserveRun(id) | Effect::StopRun(id) => id,
                 _ => unreachable!(),
             };
             let view = match &next {
-                Effect::ReconcileRun(_) => crate::cli::operation_cli::reconcile(store, id)?,
                 Effect::StopRun(_) => {
                     crate::operation::stop(store, id).map_err(|message| crate::cli::Code::Blocked.error(message))?;
                     crate::cli::operation_cli::view(store, id)?

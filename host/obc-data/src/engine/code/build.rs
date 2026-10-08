@@ -13,7 +13,6 @@ use crate::store::{hash_file, sha256_hex};
 #[derive(Default)]
 pub(super) struct Context {
     native: Option<(PathBuf, Native)>,
-    runtime: bool,
     tools: BTreeMap<PathBuf, (String, String)>,
     used: BTreeMap<PathBuf, Option<String>>,
     #[cfg(test)]
@@ -33,7 +32,6 @@ struct Native {
     profiles: BTreeMap<String, String>,
     environment: BTreeMap<OsString, OsString>,
     inputs: BTreeMap<PathBuf, Option<String>>,
-    executables: BTreeMap<String, PathBuf>,
 }
 
 impl Context {
@@ -47,7 +45,7 @@ impl Context {
 
     pub fn identity(&mut self, root: &Path, code: &Code, packages: &super::rust::Packages) -> Result<Identity, String> {
         let profile = match code.rust {
-            None | Some(Rust::Native { profile: Profile::Dev }) => Profile::Dev,
+            None => Profile::Release,
             Some(Rust::Native { profile }) | Some(Rust::Prepared { profile }) => profile,
         };
         let mut hashes = BTreeMap::new();
@@ -77,51 +75,8 @@ impl Context {
         Ok(Identity { files: hashes, source_config, rust: ResolvedRust { target: target.into(), build } })
     }
 
-    pub(super) fn runtime(&mut self) {
-        if !self.runtime {
-            self.native = None;
-        }
-        self.runtime = true;
-    }
-
-    pub(super) fn executables(&self) -> BTreeMap<String, PathBuf> {
-        self.native.as_ref().expect("resolved native tools").1.executables.clone()
-    }
-
-    pub(super) fn cargo(&mut self, root: &Path) -> Result<Option<Command>, String> {
-        if !self.runtime {
-            return Ok(None);
-        }
-        let native = self.native(root)?;
-        let mut command = Command::new(&native.executables["cargo"]);
-        command.env_clear().envs(&native.environment);
-        Ok(Some(command))
-    }
-
-    pub(super) fn configuration(&mut self, root: &Path) -> Result<BTreeMap<PathBuf, Option<String>>, String> {
-        let paths = configs(root, &self.native.as_ref().expect("resolved native tools").1.environment);
-        paths
-            .into_iter()
-            .map(|path| {
-                let hash = if path.is_file() { Some(self.tool_hash(&path)?) } else { None };
-                Ok((path, hash))
-            })
-            .collect()
-    }
-
-    pub(super) fn providers(&self) -> BTreeMap<PathBuf, String> {
-        let native = &self.native.as_ref().expect("resolved native tools").1;
-        self.tools
-            .iter()
-            .filter(|(path, (_, hash))| {
-                native.inputs.contains_key(*path) && native.hashes.values().any(|value| value == hash)
-            })
-            .map(|(path, (_, hash))| (path.clone(), hash.clone()))
-            .collect()
-    }
-
     fn native(&mut self, root: &Path) -> Result<&Native, String> {
-        let env = native_environment(self.runtime, std::env::vars_os().collect());
+        let env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
         let output = |root: &Path, program: &Path, args: &[&str]| output_in(root, program, args, &env);
         let executable =
             |root: &Path, selected: Option<&OsString>, name: &str| executable_in(root, selected, name, &env);
@@ -206,58 +161,20 @@ impl Context {
             if rustc != installed {
                 return Err("RUSTC must select the actual sysroot compiler; remove the compiler wrapper".into());
             }
-            // The rustc executable loads its compiler driver and LLVM from the selected toolchain.
-            self.watch(&sysroot.join("lib"))?;
-            let libraries = fs::read_dir(sysroot.join("lib")).map_err(|e| format!("compiler libraries: {e}"))?;
-            for entry in libraries {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with("librustc_driver") || name.starts_with("libLLVM") {
-                    hashes.insert(format!("rust/compiler-library/{name}"), self.tool_hash(&entry.path())?);
-                }
-            }
-            let lld = sysroot.join("lib/rustlib").join(target).join("bin/rust-lld");
-            if lld.is_file() {
-                hashes.insert("rust/bundled-linker".into(), self.tool_hash(&lld)?);
-            }
-            self.watch(&lld)?;
-            hashes.extend(self.library_hashes(&sysroot.join("lib/rustlib").join(target).join("lib"))?);
-            let mut executables = BTreeMap::from([("rustc".into(), rustc.clone()), ("cargo".into(), cargo.clone())]);
-            for (name, path, version) in
-                [("compiler", rustc, version.clone()), ("cargo", cargo.clone(), output(root, &cargo, &["-vV"])?)]
-            {
-                hashes.insert(format!("rust/{name}"), self.tool_hash(&path)?);
-                hashes.insert(format!("rust/{name}-version"), sha256_hex(version.as_bytes()));
-            }
+            hashes.insert("rust/compiler-version".into(), sha256_hex(version.as_bytes()));
+            hashes.insert("rust/cargo-version".into(), sha256_hex(output(root, &cargo, &["-vV"])?.as_bytes()));
             let cc = executable(root, env.get(OsStr::new("CC")), "cc")?;
             self.watch(&cc)?;
             native_binary(&cc)?;
-            hashes.insert("rust/cc".into(), self.tool_hash(&cc)?);
             hashes.insert("rust/cc-version".into(), sha256_hex(output(root, &cc, &["--version"])?.as_bytes()));
             let link_driver = executable(root, None, "cc")?;
             self.watch(&link_driver)?;
             native_binary(&link_driver)?;
-            executables.insert("cc".into(), link_driver.clone());
-            hashes.insert("rust/link-driver".into(), self.tool_hash(&link_driver)?);
             hashes.insert(
                 "rust/link-driver-version".into(),
                 sha256_hex(output(root, &link_driver, &["--version"])?.as_bytes()),
             );
-            let linker = output(root, &link_driver, &["-print-prog-name=ld"])?;
-            let linker = locate_in(root, &OsString::from(linker.trim()), &env)?;
-            hashes.insert("rust/linker".into(), self.tool_hash(&linker)?);
-            hashes.insert(
-                "rust/flags".into(),
-                if self.runtime {
-                    digest(&[
-                        "--remap-path-prefix=source=/src",
-                        "--remap-path-prefix=work=/build",
-                        "-Clinker=selected-cc",
-                    ])
-                } else {
-                    digest(&flags(&env)?)
-                },
-            );
+            hashes.insert("rust/flags".into(), digest(&flags(&env)?));
             let mut inputs = selection;
             for (path, stamp) in &self.used {
                 inputs.entry(path.clone()).or_insert_with(|| stamp.clone());
@@ -267,10 +184,8 @@ impl Context {
                     return Err("Rust build tools changed during discovery; retry the plan".into());
                 }
             }
-            self.native = Some((
-                root.to_path_buf(),
-                Native { target: target.into(), hashes, profiles, environment, inputs, executables },
-            ));
+            self.native =
+                Some((root.to_path_buf(), Native { target: target.into(), hashes, profiles, environment, inputs }));
         }
         Ok(&self.native.as_ref().unwrap().1)
     }
@@ -294,32 +209,6 @@ impl Context {
         }
         Ok(())
     }
-
-    fn library_hashes(&mut self, dir: &Path) -> Result<BTreeMap<String, String>, String> {
-        self.watch(dir)?;
-        let mut hashes = BTreeMap::new();
-        for entry in fs::read_dir(dir).map_err(|e| format!("selected Rust sysroot libraries: {e}"))? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            if entry.path().is_file() {
-                let name = entry.file_name().to_str().ok_or("Rust library name is not UTF-8")?.to_string();
-                hashes.insert(format!("rust/sysroot-library/{name}"), self.tool_hash(&entry.path())?);
-            }
-        }
-        Ok(hashes)
-    }
-}
-
-fn native_environment(runtime: bool, mut env: BTreeMap<OsString, OsString>) -> BTreeMap<OsString, OsString> {
-    if runtime {
-        env.retain(|name, _| {
-            matches!(
-                name.to_str(),
-                Some("PATH" | "HOME" | "TMPDIR" | "CARGO_HOME" | "CARGO_BUILD_JOBS" | "RUSTUP_HOME")
-            )
-        });
-        env.insert("LC_ALL".into(), "C".into());
-    }
-    env
 }
 
 fn stamp(path: &Path) -> Result<Option<String>, String> {

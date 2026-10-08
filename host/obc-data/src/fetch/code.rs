@@ -43,21 +43,11 @@ pub(super) fn owner(source: &Source) -> OwnerCode {
                     None
                 }
                 "modis-snow" | "hr-wsi" | "osm-trails" => {
-                    paths.extend([
-                        "tools/__init__.py",
-                        "tools/planner_snow.py",
-                        "tools/planner_geo.py",
-                        "tools/step_request.py",
-                    ]);
+                    paths.extend(["tools/planner_snow.py", "tools/planner_geo.py", "tools/step_request.py"]);
                     Some("planner-snow")
                 }
                 "era5-land" => {
-                    paths.extend([
-                        "tools/__init__.py",
-                        "tools/planner_climate.py",
-                        "tools/planner_geo.py",
-                        "tools/step_request.py",
-                    ]);
+                    paths.extend(["tools/planner_climate.py", "tools/planner_geo.py", "tools/step_request.py"]);
                     Some("planner-climate")
                 }
                 _ => {
@@ -78,5 +68,18 @@ pub(super) fn owner(source: &Source) -> OwnerCode {
     OwnerCode {
         crate_name: "obc-data".into(),
         code: Code { paths: paths.into_iter().map(String::from).collect(), sources, python, ..Default::default() },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn acquisition_owners_name_existing_code() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for source in crate::sources::Registry::load(&root).unwrap().sources {
+            for path in super::owner(&source).code.paths {
+                assert!(root.join(&path).exists(), "{} names missing {path}", source.id);
+            }
+        }
     }
 }

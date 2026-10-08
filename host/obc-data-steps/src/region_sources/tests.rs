@@ -85,6 +85,34 @@ fn a_box_descends_into_both_countries_and_rejects_uncovered_ground() {
 }
 
 #[test]
+fn a_box_skips_an_aggregate_that_overlaps_its_sibling_countries() {
+    let feature = |id: &str, parent: Option<&str>, west: f64, east: f64| {
+        json!({
+            "type":"Feature", "properties":{"id":id, "name":id, "parent":parent,
+                "urls":{"pbf":format!("https://download.geofabrik.de/europe/{id}-latest.osm.pbf")}},
+            "geometry":{"type":"Polygon", "coordinates":[[[west,47.0],[east,47.0],[east,48.0],[west,48.0],[west,47.0]]]}
+        })
+    };
+    let body = json!({"type":"FeatureCollection", "features":[
+        feature("parent", None, 7.0, 9.0),
+        feature("west", Some("parent"), 7.0, 8.0),
+        feature("east", Some("parent"), 8.0, 9.0),
+        feature("dach", Some("parent"), 7.0, 9.0)
+    ]});
+    let index = geofabrik::parse(body.to_string().as_bytes()).unwrap();
+    let shapes = index
+        .iter()
+        .map(|(id, area)| (id.clone(), Coverage::parse_poly(&crate::maps::catalog::poly(area)).unwrap()))
+        .collect();
+    let selected = |west: f64, east: f64| {
+        let requested = Coverage::parse_poly(&poly(west, east)).unwrap();
+        select_box(&index, &shapes, &requested).unwrap().into_iter().collect::<Vec<_>>()
+    };
+    assert_eq!(selected(7.25, 7.75), ["europe/west"]);
+    assert_eq!(selected(7.5, 8.5), ["europe/east", "europe/west"]);
+}
+
+#[test]
 fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_provenance() {
     let temporary = temp("multi-source-provenance");
     let store = Store::at(temporary.0.join("store"));
@@ -118,6 +146,7 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
             prefix: "cell-catalog".into(),
             release: Some((release.id(), release)),
             applied: None,
+            commit: None,
             document: None,
             observed: None,
         }],

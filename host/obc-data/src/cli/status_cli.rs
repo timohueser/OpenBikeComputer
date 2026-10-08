@@ -1,5 +1,5 @@
 //! `obc data status`: what is live, the state of its layers, and what needs attention. `--check`
-//! also lists the prefixes that live owns on R2.
+//! also compares R2 with live.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
@@ -9,8 +9,8 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::build_cli::{check_layers, fetcher, load, product_steps};
-use super::{bytes, cells, old_dirs, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
+use super::build_cli::{check_layers, fetcher, load, status_steps};
+use super::{bytes, cells, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
 use crate::engine::state::{self, Environment};
 use crate::engine::Step;
 use crate::env::Env;
@@ -19,12 +19,11 @@ use crate::live::{Check, Remote};
 use crate::product::{Product, Wanted};
 use crate::regions::Regions;
 use crate::sources::{self, State};
-use crate::store::{import, Store};
+use crate::store::Store;
 
 #[derive(Args)]
 pub struct StatusArgs {
-    /// Also list the prefixes that live owns on R2, for drift and leftovers. Exit status 1 when
-    /// it finds either.
+    /// Also compare R2 with live. Exit status 1 for R2 drift or leftovers.
     #[arg(long)]
     pub check: bool,
 }
@@ -48,6 +47,8 @@ pub struct ProductStatus {
     /// When an apply made the release live, `YYYY-MM-DDTHH:MM:SSZ`; `None` when nothing is live or
     /// the pointer has no time.
     pub applied: Option<String>,
+    /// The commit that the apply of the release ran; `None` when nothing is live.
+    pub commit: Option<String>,
     /// The size of the objects of the live release.
     pub bytes: Option<u64>,
     /// The optional layers of the product, which `layer live NAME on|off` switches.
@@ -80,11 +81,11 @@ pub enum AttentionKind {
     Stale,
     /// A source that is blocked.
     Blocked,
-    /// A cache directory of the older bake tools that `clean` moves into the store.
-    OldCache,
+    /// The checkout is not a pushed commit; an apply refuses it.
+    Unpushed,
     /// Keys that live uses and R2 lacks, or holds with another size.
     Drift,
-    /// Keys under the owned prefixes that no live release uses.
+    /// Keys of earlier releases that no live release uses.
     Leftovers,
     /// A fetch that the step list of a product needs failed, so its layer states are unknown.
     Unreachable,
@@ -95,7 +96,7 @@ impl AttentionKind {
         match self {
             AttentionKind::Stale => "stale",
             AttentionKind::Blocked => "blocked",
-            AttentionKind::OldCache => "old cache",
+            AttentionKind::Unpushed => "not pushed",
             AttentionKind::Drift => "drift",
             AttentionKind::Leftovers => "leftovers",
             AttentionKind::Unreachable => "unreachable",
@@ -116,13 +117,16 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
 
 /// What `status` writes; with `check`, what `status --check` writes.
 pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, Error> {
-    let (store, registry, mut loaded) = (Store::open()?, registry(root)?, load(root, "live")?);
+    let (store, mut registry) = (Store::open()?, registry(root)?);
     let remote = remote()?;
     if check && matches!(remote, Remote::Public(_)) {
         let error = Code::Blocked.error("`--check` lists R2, and a listing needs `OBC_R2_BUCKET` and its key");
         return Err(error);
     }
     let live = read_live(&remote, &registry, products, &store)?;
+    crate::settings::observe(&store, &live)?;
+    let mut loaded = load(root, "live", &store)?;
+    registry.sources = loaded.sources.clone();
     loaded.env.live = live.versions();
     let http = Http::new();
     let copies = crate::input_copy::Restore { remote: &remote, live: &live };
@@ -148,8 +152,27 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let fetch = discovery_fetch(fetcher(root, &store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
-    let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
+    let producers = live
+        .products
+        .iter()
+        .filter_map(|product| product.release.as_ref())
+        .flat_map(|(_, release)| release.producers.clone())
+        .collect();
+    let mut layers = layer_states_published(
+        root,
+        &store,
+        products,
+        &mut loaded.env,
+        &loaded.regions,
+        &environment,
+        fetch,
+        Some(&producers),
+    )?;
     let mut attention = Vec::new();
+    if let Err(error) = super::apply_cli::pushed_commit(root) {
+        let reason = format!("{} {}", error.message, error.fix);
+        attention.push(Attention { kind: AttentionKind::Unpushed, about: "checkout".into(), reason });
+    }
     // `Live::read` gives one live product per product, in their order.
     let products = live.products.iter().zip(products).map(|(product, offered)| {
         let release = product.release.as_ref().map(|(id, _)| id.clone());
@@ -163,8 +186,8 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
                 None
             }
         };
-        let applied = product.applied.clone();
-        ProductStatus { product: product.product.clone(), release, applied, bytes, optional, layers }
+        let (applied, commit) = (product.applied.clone(), product.commit.clone());
+        ProductStatus { product: product.product.clone(), release, applied, commit, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
     for layer in
@@ -191,15 +214,7 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         let reason = format!("live reads it at {}: plan with `--move {source}@VERSION`", versions.join(" and "));
         attention.push(Attention { kind: AttentionKind::Blocked, about: source.clone(), reason });
     }
-    for dir in import::plan(&store, &old_dirs()?)?.dirs.into_iter().filter(|dir| dir.files > 0) {
-        let reason =
-            format!("{} files, {}; `obc data clean --apply` moves them into the store", dir.files, bytes(dir.bytes));
-        attention.push(Attention { kind: AttentionKind::OldCache, about: dir.dir.display().to_string(), reason });
-    }
-    let check = check
-        .then(|| live.list(&remote).map(|listed| live.check(&listed)))
-        .transpose()
-        .map_err(|e| Code::R2Failed.error(e))?;
+    let check = check.then(|| live.check(&remote, &store)).transpose().map_err(|e| Code::R2Failed.error(e))?;
     if let Some(check) = &check {
         let about = "R2".to_string();
         if !check.drift.is_empty() {
@@ -208,7 +223,8 @@ pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Statu
         }
         if !check.leftovers.is_empty() {
             let size = bytes(check.leftovers.iter().map(|object| object.bytes).sum());
-            let reason = format!("{}, {size}, that no live release uses", keys(check.leftovers.len()));
+            let reason =
+                format!("{}, {size}, of earlier releases that no live release uses", keys(check.leftovers.len()));
             attention.push(Attention { kind: AttentionKind::Leftovers, about, reason });
         }
     }
@@ -229,7 +245,7 @@ pub(super) fn discovery_fetch(
                     "source `{}` is not prepared; status and ordinary plans do not fetch bulk data",
                     wanted.source
                 ))
-                .fix("Use `obc data prepare ENV --move SOURCE` or a build to prepare this source."));
+                .fix("Run `obc data prepare ENV` or a build to fetch it."));
         }
         fetch(wanted)
     }
@@ -238,6 +254,7 @@ pub(super) fn discovery_fetch(
 /// The state of each layer of `live`, by product. `Err` with the reason for a product that is
 /// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
 /// rest of `status` does not need its steps.
+#[cfg(test)]
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -245,7 +262,21 @@ fn layer_states(
     env: &mut Env,
     regions: &Regions,
     environment: &Environment,
+    fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
+    layer_states_published(root, store, products, env, regions, environment, fetch, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layer_states_published(
+    root: &Path,
+    store: &Store,
+    products: &[&dyn Product],
+    env: &mut Env,
+    regions: &Regions,
+    environment: &Environment,
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
+    producers: Option<&BTreeMap<String, crate::engine::release::Producer>>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
     check_layers(products, env)?;
     env.fetch_failures.clear();
@@ -257,7 +288,7 @@ fn layer_states(
     );
     let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
     for product in products {
-        let steps = product_steps(root, *product, env, regions, store, &mut fetch);
+        let steps = status_steps(root, *product, env, regions, store, &mut fetch);
         refused.extend(env.refused.borrow().iter().cloned());
         match steps {
             Ok(Ok(steps)) => {
@@ -285,8 +316,25 @@ fn layer_states(
         listed.retain(|(product, _)| *product != name);
         found.insert(name, Err(reason));
     }
-    let steps: Vec<Step> = listed.into_iter().flat_map(|(_, steps)| steps).collect();
-    for layer in state::state(store, root, &steps, environment)? {
+    let mut environment = Environment { sources: environment.sources.clone(), live: environment.live.clone() };
+    let steps: Vec<Step> = listed
+        .into_iter()
+        .flat_map(|(name, mut steps)| {
+            let product = products.iter().find(|product| product.name() == name).expect("listed product");
+            for step in &mut steps {
+                step.options = product.status_options(&step.name, &step.options);
+                if let Some(layer) = environment.live.get_mut(&step.name) {
+                    layer.options = product.status_options(&step.name, &layer.options);
+                }
+            }
+            steps
+        })
+        .collect();
+    let states = match producers {
+        Some(producers) => state::published(store, root, &steps, &environment, producers)?,
+        None => state::state(store, root, &steps, &environment)?,
+    };
+    for layer in states {
         let product = layer.layer.split('/').next().unwrap_or_default().to_string();
         if let Some(Ok(layers)) = found.get_mut(&product) {
             layers.push(LayerStatus { layer: layer.layer, state: layer.state, reason: layer.reason });
@@ -350,14 +398,13 @@ fn print_status(status: &Status) {
         let what = if drift.found.is_none() { "missing" } else { "size" };
         table.push(vec![format!("  {what}"), drift.key.clone(), size(drift.found), size(drift.expected)]);
     }
-    let mut leftovers = BTreeMap::<&str, (usize, u64)>::new();
-    for object in &check.leftovers {
-        let prefix = object.key.split('/').next().unwrap_or_default();
-        let (count, size) = leftovers.entry(prefix).or_default();
-        (*count, *size) = (*count + 1, *size + object.bytes);
-    }
-    for (prefix, (count, size)) in leftovers {
-        table.push(vec!["  leftovers".into(), format!("{prefix}/"), keys(count), bytes(size)]);
+    let leftovers: Vec<_> = check
+        .leftovers
+        .iter()
+        .map(|object| crate::live::Removal { key: object.key.clone(), bytes: object.bytes })
+        .collect();
+    for (prefix, (count, size)) in crate::live::by_prefix(&leftovers) {
+        table.push(vec!["  leftovers".into(), prefix.into(), keys(count), bytes(size)]);
     }
     if table.is_empty() {
         println!("  live and R2 agree");

@@ -15,8 +15,8 @@ use obc_data::engine::runs::{Context, Limits, Run as RunLog};
 use obc_data::engine::{view, Receipt, Request, Run};
 use obc_data::env::Env;
 use obc_data::fetch::http::Http;
-use obc_data::product::{Product, Unplanned};
-use obc_data::regions::{parse_region, Area, Regions};
+use obc_data::product::Product;
+use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
@@ -63,25 +63,13 @@ fn fetched(store: &Store, source: &str, params: &[(&str, &str)], name: &str, pat
     }
 }
 
-/// Record a fetch without files of each national model that the step list asks for: the store has
-/// no national data of the Grimsel, so the terrain reads GLO-30 alone.
-fn without_models(store: &Store, env: &Env, regions: &Regions) {
-    let Err(Unplanned::NeedsFetch(wanted)) = Maps.steps_with_tool(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        env,
-        regions,
-        store,
-        Ok(obc_data::engine::Library {
-            name: "osmium".into(),
-            path: std::path::PathBuf::from("/authored-copy-osmium"),
-            sha256: "0".repeat(64),
-        }),
-    ) else {
-        return;
-    };
-    for fetch in wanted.iter().filter(|fetch| fetch.source.starts_with("dtm-")) {
-        let requested = Requested { version: VERSION.into(), params: fetch.params.clone(), files: Vec::new() };
-        store.put_requested(&fetch.source, &requested).unwrap();
+/// Record the polygon of each area of a national model as a speck at 0° 0°: the store has no
+/// national data of the Grimsel, so the terrain reads GLO-30 alone.
+fn without_models(store: &Store, dir: &Path) {
+    let speck = dir.join("speck.poly");
+    std::fs::write(&speck, box_poly(&Bbox { west: 0.0, south: 0.0, east: 0.001, north: 0.001 })).unwrap();
+    for area in obc_data::sources::all().iter().flat_map(|source| &source.areas) {
+        fetched(store, "geofabrik-poly", &[("area", area)], &format!("{area}.poly"), &speck);
     }
 }
 
@@ -182,7 +170,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     ]);
     let env = Env { name: "test".into(), region: "grimsel-box".into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
-    without_models(&store, &env, &regions);
+    without_models(&store, &temp.0);
     let listed = Maps
         .steps_with_tool(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
@@ -190,6 +178,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             &regions,
             &store,
             Ok(obc_data::engine::Library {
+                version: None,
                 name: "osmium".into(),
                 path: std::path::PathBuf::from("/authored-copy-osmium"),
                 sha256: "0".repeat(64),

@@ -2,14 +2,12 @@
 //! through the shared command API. Preparation, build and apply retain their worker after exit.
 
 mod background;
-mod config;
 mod execution;
 mod host;
 mod live;
 mod local;
 mod plan;
 mod regions;
-mod schedule;
 mod sources;
 
 use std::io::Stdout;
@@ -28,9 +26,8 @@ use ratatui::{Frame, Terminal};
 
 use crate::engine::runs::{self, Details, Outcome, Summary};
 use crate::product::Product;
-use crate::regions::Regions;
 use crate::sources::{Kind, Refresh, State, VersionScheme};
-use crate::store::{gc, import, Store};
+use crate::store::{gc, Store};
 
 use super::edit_cli::{self, Edited, Switch};
 use super::runs_cli::{bytes, duration, mark, step_cells};
@@ -73,8 +70,6 @@ enum Overlay {
     Run,
     AppLogs,
     Version,
-    Schedule,
-    Config,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,19 +105,12 @@ enum Action {
     OpenRun,
     ObserveRun,
     StopRun,
-    ReconcileRun,
+    ConfirmStop,
     ReviewPrepared,
     Undo,
     Dismiss,
     SourceScope,
     SourceFilter,
-    ConfigRead,
-    ConfigEdit,
-    ConfigConfirm,
-    ScheduleRead,
-    ScheduleEdit,
-    ScheduleDisable,
-    ScheduleBudget,
     Reload,
     CustomPolicy,
     InputKey(KeyCode),
@@ -153,7 +141,7 @@ enum Effect {
     PlanClean,
     /// `obc data clean --apply` of the plan that Clean shows.
     Clean,
-    /// `obc data status [--check]`, and `data/env/live.toml`, for Live.
+    /// `obc data status [--check]`, and the stored Live settings, for Live.
     Status {
         check: bool,
     },
@@ -177,12 +165,7 @@ enum Effect {
     LocalState,
     ObserveRun(String),
     StopRun(String),
-    ReconcileRun(String),
     Versions(String),
-    ConfigRead,
-    ConfigCommit(Box<super::config_cli::Review>, String),
-    ScheduleRead,
-    ScheduleChange(schedule::Change),
     Reload,
 }
 
@@ -200,7 +183,6 @@ fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'st
             (KeyCode::Char('r'), Action::Open(Overlay::Region), "r", "region"),
             (KeyCode::Char(' '), Action::Toggle, "space", "toggle"),
             (KeyCode::Char('R'), Action::CheckNow, "R", "check R2"),
-            (KeyCode::Char('s'), Action::Open(Overlay::Schedule), "s", "schedule"),
         ],
         Screen::Local => &[
             (KeyCode::Char('r'), Action::Open(Overlay::Region), "r", "region"),
@@ -250,9 +232,9 @@ struct App {
     runs: Vec<Details>,
     /// What `status` wrote; `None` until it is read, or when it failed.
     status: Option<Status>,
-    /// `data/env/live.toml`.
+    /// the stored Live settings.
     env: Option<Edited>,
-    /// `data/env/live.toml` differs from its committed version: `undo` takes the edits back.
+    /// Pending settings differ from the applied settings: `undo` discards them.
     edited: bool,
     /// The id of each region, or why `data/regions/` could not be read.
     regions: Result<Vec<crate::regions::Region>, String>,
@@ -264,8 +246,6 @@ struct App {
     policy_days: Option<String>,
     versions: Option<super::versions::Versions>,
     moves: std::collections::BTreeMap<String, Option<String>>,
-    schedule: schedule::View,
-    config: config::View,
     reload: bool,
     /// The plan of Plan, once it is made.
     plan: Option<PlanView>,
@@ -303,8 +283,8 @@ static NO_PLAN: CleanPlan = CleanPlan {
         remove_bytes: 0,
         keep_objects: 0,
         keep_bytes: 0,
+        partial_bytes: 0,
     },
-    import: import::Plan { dirs: Vec::new(), bytes: 0 },
 };
 
 pub fn run(root: &Path, products: &[&dyn Product]) -> Result<std::process::ExitCode, Error> {
@@ -315,7 +295,7 @@ pub fn run(root: &Path, products: &[&dyn Product]) -> Result<std::process::ExitC
             app.screen = *selected;
         }
     }
-    app.regions = Regions::load(root).map(|regions| regions.iter().cloned().collect());
+    app.regions = crate::settings::regions(root, &store).map(|regions| regions.iter().cloned().collect());
     app.notice = app.regions.clone().err().map(|message| super::Code::InvalidData.error(message));
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -358,7 +338,6 @@ fn list_runs(store: &Store) -> Result<Vec<Details>, Error> {
                 crate::operation::Status::Starting
                     | crate::operation::Status::Running
                     | crate::operation::Status::Stopping
-                    | crate::operation::Status::AwaitingOwner { .. }
             )
         ) {
             run.summary.outcome = Outcome::Running;
@@ -390,8 +369,6 @@ impl App {
             policy_days: None,
             versions: None,
             moves: Default::default(),
-            schedule: schedule::View::default(),
-            config: config::View::default(),
             reload: false,
             plan: None,
             execution: execution::Execution::default(),
@@ -412,13 +389,14 @@ impl App {
     /// Read the sources again; with `check_now`, after a check of upstream now.
     fn reload(&mut self, root: &Path, products: &[&dyn Product], check_now: bool) -> Result<(), Error> {
         (self.sources, self.live) = source_listing(root, products, check_now)?;
+        self.regions = crate::settings::regions(root, &Store::open()?).map(|regions| regions.iter().cloned().collect());
         Ok(())
     }
 
-    /// Read `data/env/live.toml` and `status [--check]` again.
+    /// Read the stored Live settings and `status [--check]` again.
     fn read_live(&mut self, root: &Path, products: &[&dyn Product], check: bool) -> Result<(), Error> {
-        self.edited = edit_cli::edited(root, LIVE);
-        let env = edit_cli::current(root, LIVE);
+        self.edited = edit_cli::edited(root, &Store::open()?, LIVE);
+        let env = edit_cli::current(root, &Store::open()?, LIVE);
         self.env = env.as_ref().ok().cloned();
         let status = status_cli::read(root, products, check);
         self.status = status.as_ref().ok().cloned();
@@ -482,8 +460,6 @@ impl App {
         self.overlay == Some(Overlay::Region) && (self.filtering || self.region_editor.mode.is_some())
             || self.overlay.is_none() && self.screen == Screen::Sources && self.source_view.typing
             || self.overlay == Some(Overlay::Policy) && self.policy_days.is_some()
-            || self.overlay == Some(Overlay::Config) && self.config.editing
-            || self.overlay == Some(Overlay::Schedule) && self.schedule.editing
     }
 
     /// Whether `enter` in Policy or Region chooses another policy or region.
@@ -522,34 +498,20 @@ impl App {
                     | Action::Apply
                     | Action::ObserveRun
                     | Action::StopRun
-                    | Action::ReconcileRun
+                    | Action::ConfirmStop
                     | Action::ReviewPrepared
                     | Action::LocalRefresh
                     | Action::LocalApp
                     | Action::LocalOpen
                     | Action::LocalLogs
-                    | Action::ConfigRead
-                    | Action::ConfigEdit
-                    | Action::ConfigConfirm
-                    | Action::ScheduleRead
-                    | Action::ScheduleEdit
-                    | Action::ScheduleDisable
-                    | Action::ScheduleBudget
-                    | Action::Open(
-                        Overlay::Clean | Overlay::Plan | Overlay::Version | Overlay::Schedule | Overlay::Config
-                    )
+                    | Action::Open(Overlay::Clean | Overlay::Plan | Overlay::Version)
             )
         {
             return false;
         }
         match action {
             Action::Open(Overlay::Source | Overlay::Version) => self.source_visible(),
-            Action::ConfigConfirm => {
-                self.config.review.as_ref().is_some_and(|review| !review.files.is_empty())
-                    && !self.config.message.trim().is_empty()
-            }
             Action::Reload => crate::worker::can_reload(),
-            Action::ScheduleEdit | Action::ScheduleDisable | Action::ScheduleBudget => cfg!(target_os = "linux"),
             Action::Open(Overlay::Policy) => {
                 self.source_visible()
                     && self.sources.get(self.source).is_some_and(|row| row.source.version == VersionScheme::Date)
@@ -590,8 +552,8 @@ impl App {
             Action::Apply => self.asking && self.overlay == Some(Overlay::Plan),
             Action::OpenRun => self.runs.get(self.run).is_some(),
             Action::ObserveRun => self.execution.selected.is_some(),
-            Action::StopRun => self.execution.can_stop(),
-            Action::ReconcileRun => self.execution.can_reconcile(),
+            Action::StopRun => !self.asking && self.execution.can_stop(),
+            Action::ConfirmStop => self.asking && self.overlay == Some(Overlay::Run) && self.execution.can_stop(),
             Action::ReviewPrepared => self.execution.prepared().is_some(),
             Action::Undo => self.edited,
             _ => true,
@@ -627,40 +589,6 @@ impl App {
             }
             return keys;
         }
-        if self.overlay == Some(Overlay::Config) && (self.config.editing || self.asking) {
-            let mut keys = vec![input(KeyCode::Esc, "esc", "cancel")];
-            if !self.busy {
-                keys.insert(
-                    0,
-                    if self.asking {
-                        input(KeyCode::Char('y'), "y", "commit reviewed files")
-                    } else {
-                        input(KeyCode::Enter, "enter", "review commit")
-                    },
-                );
-            }
-            return keys;
-        }
-        if self.overlay == Some(Overlay::Schedule) && (self.schedule.editing || self.asking) {
-            let mut keys = vec![input(KeyCode::Esc, "esc", if self.asking { "cancel" } else { "back" })];
-            if !self.busy {
-                if self.asking {
-                    keys.insert(0, input(KeyCode::Char('y'), "y", "confirm schedule change"));
-                } else {
-                    keys.insert(0, input(KeyCode::Tab, "tab", "field"));
-                    if self.schedule.field == 0
-                        || self.schedule.field == 2
-                            && self.schedule.form.as_ref().is_some_and(|form| {
-                                matches!(form.preset, schedule::Preset::Weekly | schedule::Preset::Monthly)
-                            })
-                    {
-                        keys.insert(1, input(KeyCode::Up, "↑ ↓", "select"));
-                    }
-                    keys.push(input(KeyCode::Enter, "enter", "review"));
-                }
-            }
-            return keys;
-        }
         if self.overlay == Some(Overlay::Policy) && self.policy_days.is_some() {
             let mut keys = vec![input(KeyCode::Esc, "esc", "keep policy")];
             if !self.busy {
@@ -688,17 +616,6 @@ impl App {
                     }
                 };
                 match overlay {
-                    Overlay::Config => {
-                        offer(KeyCode::Char('R'), Action::ConfigRead, "R", "refresh review");
-                        offer(KeyCode::Char('e'), Action::ConfigEdit, "e", "message");
-                        offer(KeyCode::Enter, Action::ConfigConfirm, "enter", "review commit");
-                    }
-                    Overlay::Schedule => {
-                        offer(KeyCode::Char('R'), Action::ScheduleRead, "R", "observe");
-                        offer(KeyCode::Char('e'), Action::ScheduleEdit, "e", "edit calendar");
-                        offer(KeyCode::Char('d'), Action::ScheduleDisable, "d", "disable");
-                        offer(KeyCode::Char('b'), Action::ScheduleBudget, "b", "setup budget");
-                    }
                     Overlay::Version => offer(KeyCode::Char('R'), Action::CheckNow, "R", "check upstream"),
                     Overlay::Policy if !typing => offer(KeyCode::Char('c'), Action::CustomPolicy, "c", "custom days"),
                     Overlay::Region if !typing => {
@@ -742,10 +659,10 @@ impl App {
                             offer(KeyCode::Char('a'), Action::ReviewApply, "a", "review apply");
                         }
                     }
+                    Overlay::Run if self.asking => offer(KeyCode::Char('y'), Action::ConfirmStop, "y", "stop run"),
                     Overlay::Run => {
                         offer(KeyCode::Char('R'), Action::ObserveRun, "R", "observe");
                         offer(KeyCode::Char('x'), Action::StopRun, "x", "stop");
-                        offer(KeyCode::Char('c'), Action::ReconcileRun, "c", "reconcile");
                         offer(KeyCode::Char('p'), Action::ReviewPrepared, "p", "review prepared plan");
                     }
                     _ => {}
@@ -771,7 +688,6 @@ impl App {
                 }
                 if self.screen == Screen::Live {
                     match self.live_rows().get(self.row) {
-                        Some(LiveRow::Schedule) => keys.push(hidden(KeyCode::Enter, Action::Open(Overlay::Schedule))),
                         Some(LiveRow::Region) => keys.push(hidden(KeyCode::Enter, Action::Open(Overlay::Region))),
                         Some(LiveRow::Attention(_)) if self.works(Action::Fix) => {
                             keys.push(bar(KeyCode::Enter, Action::Fix, "enter", "fix"))
@@ -784,9 +700,6 @@ impl App {
                 }
                 if self.screen != Screen::Local && self.works(Action::Undo) {
                     keys.push(bar(KeyCode::Char('u'), Action::Undo, "u", "undo environment"));
-                }
-                if self.works(Action::Open(Overlay::Config)) {
-                    keys.push(bar(KeyCode::Char('C'), Action::Open(Overlay::Config), "C", "review config"));
                 }
                 keys.push(bar(KeyCode::Char('?'), Action::Open(Overlay::Help), "?", "help"));
             }
@@ -811,12 +724,6 @@ impl App {
     }
 
     fn key(&mut self, key: KeyCode) -> Effect {
-        if self.overlay == Some(Overlay::Config) {
-            return self.config_key(key);
-        }
-        if self.overlay == Some(Overlay::Schedule) {
-            return self.schedule_key(key);
-        }
         if self.overlay == Some(Overlay::Policy) && self.policy_days.is_some() {
             match key {
                 KeyCode::Esc => self.policy_days = None,
@@ -887,20 +794,13 @@ impl App {
                 | Action::Apply
                 | Action::ObserveRun
                 | Action::StopRun
-                | Action::ReconcileRun
+                | Action::ConfirmStop
                 | Action::ReviewPrepared
                 | Action::LocalRefresh
                 | Action::LocalApp
                 | Action::LocalOpen
                 | Action::LocalLogs
-                | Action::ConfigRead
-                | Action::ConfigEdit
-                | Action::ConfigConfirm
-                | Action::ScheduleRead
-                | Action::ScheduleEdit
-                | Action::ScheduleDisable
-                | Action::ScheduleBudget
-                | Action::Open(Overlay::Version | Overlay::Schedule | Overlay::Config)
+                | Action::Open(Overlay::Version)
         ) && !self.works(action)
         {
             return Effect::None;
@@ -910,25 +810,6 @@ impl App {
             None => self.rows().saturating_sub(1),
         };
         match action {
-            Action::ConfigRead => return Effect::ConfigRead,
-            Action::ConfigEdit => {
-                self.scroll = 0;
-                self.config.editing = true;
-            }
-            Action::ConfigConfirm if self.works(action) => {
-                self.scroll = 0;
-                self.asking = true;
-            }
-            Action::ConfigConfirm => {
-                self.notice = Some(
-                    super::Code::Usage
-                        .error("A commit needs changed configuration and a message.")
-                        .fix("Refresh the configuration review or enter a commit message."),
-                );
-            }
-            Action::ScheduleRead | Action::ScheduleEdit | Action::ScheduleDisable | Action::ScheduleBudget => {
-                return self.schedule_action(action)
-            }
             Action::Reload if self.works(Action::Reload) => {
                 self.reload = true;
                 return Effect::Reload;
@@ -980,15 +861,6 @@ impl App {
                         self.choice = 0;
                         self.versions = None;
                         return Effect::Versions(self.sources[self.source].source.id.clone());
-                    }
-                    Overlay::Config => {
-                        self.config.editing = false;
-                        return Effect::ConfigRead;
-                    }
-                    Overlay::Schedule => {
-                        self.schedule.editing = false;
-                        self.schedule.pending = None;
-                        return Effect::ScheduleRead;
                     }
                     Overlay::Clean => return Effect::PlanClean,
                     Overlay::Plan if self.screen == Screen::Local => {
@@ -1054,7 +926,6 @@ impl App {
             Action::Toggle => return self.toggle(),
             Action::Fix => match self.fix() {
                 Some(Fix::Source(source)) => (self.screen, self.source) = (Screen::Sources, source),
-                Some(Fix::Store) => self.screen = Screen::Store,
                 Some(Fix::Plan) => return self.act(Action::Open(Overlay::Plan)),
                 None => {}
             },
@@ -1098,13 +969,11 @@ impl App {
                     return Effect::ObserveRun(id);
                 }
             }
-            Action::ObserveRun | Action::StopRun | Action::ReconcileRun => {
+            Action::StopRun => self.asking = true,
+            Action::ObserveRun | Action::ConfirmStop => {
+                self.asking = false;
                 if let Some(id) = self.execution.selected.clone() {
-                    return match action {
-                        Action::StopRun => Effect::StopRun(id),
-                        Action::ReconcileRun => Effect::ReconcileRun(id),
-                        _ => Effect::ObserveRun(id),
-                    };
+                    return if action == Action::ConfirmStop { Effect::StopRun(id) } else { Effect::ObserveRun(id) };
                 }
             }
             Action::ReviewPrepared => {
@@ -1380,18 +1249,6 @@ impl App {
             Overlay::Attribution => (" ATTRIBUTION ".into(), attribution(&self.sources), Vec::new(), None),
             Overlay::Source => (format!(" SOURCE · {id} "), self.source_lines(), Vec::new(), None),
             Overlay::Version => (format!(" VERSION · {id} "), self.version_lines(), Vec::new(), Some(self.choice + 2)),
-            Overlay::Config => (
-                " CONFIGURATION REVIEW ".into(),
-                self.config_lines(),
-                Vec::new(),
-                if self.asking { Some(4) } else { self.config.editing.then_some(2) },
-            ),
-            Overlay::Schedule => (
-                " LIVE SCHEDULE ".into(),
-                self.schedule_lines(),
-                Vec::new(),
-                if self.asking { Some(2) } else { self.schedule.editing.then_some(self.schedule.field + 2) },
-            ),
             Overlay::Error => (
                 " ERROR ".into(),
                 self.notice
@@ -1437,16 +1294,14 @@ impl App {
                     (" CONFIRM LOCAL PREPARATION ".into(), lines, Vec::new(), None)
                 } else if self.asking {
                     let plan = &self.plan.as_ref().expect("confirmation has a plan").taken;
-                    let owner = std::env::var("OBC_COMMIT_HOST").unwrap_or_else(|_| "not configured".into());
                     let mut lines = vec![
                         Line::from(super::apply_cli::question(plan)).bold(),
                         Line::from(format!("Execution: {} · environment: {}", self.host, plan.env)),
-                        Line::from(format!("Publication owner: {owner}")),
                         Line::from("The exact reviewed plan is retained. Apply never commits configuration."),
+                        Line::default(),
                     ];
-                    if let Some(approval) = &plan.approval {
-                        lines.push(Line::from(approval.summary()));
-                    }
+                    lines.extend(super::build_cli::replaced(plan).into_iter().map(Line::from));
+                    lines.extend(super::build_cli::removals(plan).into_iter().map(Line::from));
                     (" CONFIRM APPLY ".into(), lines, Vec::new(), None)
                 } else {
                     let (lines, footer, focus) = self.plan_lines();
@@ -1457,6 +1312,14 @@ impl App {
                         focus,
                     )
                 }
+            }
+            Overlay::Run if self.asking => {
+                let id = self.execution.selected.clone().unwrap_or_default();
+                let lines = vec![
+                    Line::from(format!("Stop run {id}?")).bold(),
+                    Line::from("Admitted work finishes; no new step starts. An apply stops before its next phase."),
+                ];
+                (" STOP RUN ".into(), lines, Vec::new(), None)
             }
             Overlay::Run => (" RUN ".into(), self.run_lines(), Vec::new(), None),
             Overlay::AppLogs => {
@@ -1519,9 +1382,6 @@ impl App {
             gc.snapshots.iter().map(|snapshot| Line::from(format!("snapshot {snapshot}"))).collect();
         let objects = gc::objects_text(gc.objects.len() as u64);
         lines.push(Line::from(format!("{objects}  {}", bytes(gc.remove_bytes))));
-        for dir in plan.import.dirs.iter().filter(|dir| dir.files > 0) {
-            lines.push(Line::from(format!("move {}  {} files  {}", dir.dir.display(), dir.files, bytes(dir.bytes))));
-        }
         if self.asking {
             lines.extend([Line::default(), Line::from(plan.question()).bold()]);
         }
@@ -1534,6 +1394,7 @@ fn state_style(state: State) -> Style {
         State::Ok => Color::Green,
         State::Blocked => Color::Red,
         State::NotApplied => Color::Cyan,
+        State::Unused => Color::DarkGray,
         State::Stale | State::CodeChanged | State::InputChanged => Color::Yellow,
     })
 }
@@ -1614,8 +1475,7 @@ fn help() -> Vec<Line<'static>> {
         line(&format!("{} tab", numbers.join(" ")), "screens".into()),
         line("↑ ↓ j k", "move".into()),
         line("p", "plan".into()),
-        line("C", "review and commit bake configuration; no push".into()),
-        line("u", format!("undo the edits of data/env/{LIVE}.toml")),
+        line("u", "restore applied Live region, layers and policies".into()),
         line("esc", "close".into()),
         line("q", "quit".into()),
         line("?", "help".into()),
@@ -1630,13 +1490,12 @@ fn help() -> Vec<Line<'static>> {
     lines.push(line("Region", "/ filter · enter choose".into()));
     lines.push(line("Plan", "space take or leave a move · d steps".into()));
     lines.push(line("", "f prepare inputs · b build only · a review apply · y confirm".into()));
-    lines.push(line("Run", "R observe · x stop · c reconcile · p review prepared plan".into()));
+    lines.push(line("Run", "R observe · x stop, then y · p review prepared plan".into()));
     lines.push(line("", "esc hides the run; q quits the view without stopping work".into()));
     if crate::worker::can_reload() {
         lines.push(line("F6", "finish the check, restore terminal and launch current Rust code".into()));
     }
     lines.push(line("Version", "enter chooses a pending move for ALL active requests; p reviews it".into()));
-    lines.push(line("Schedule", "R observe; e calendar; d disable; b budget; y confirms machine/live scope".into()));
     lines.push(line("Policy", "enter choose".into()));
     lines.push(line("Clean", "a clean, then y".into()));
     lines

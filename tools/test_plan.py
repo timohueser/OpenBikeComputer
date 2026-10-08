@@ -135,7 +135,7 @@ TEST_POLICY_PATTERNS = (
     "tools/obc",
     "tools/obc-dev.sh",
 )
-# These workflows publish data or sites; they do not select or execute product tests.
+# These workflows publish reports, data or sites; they do not select or execute product tests.
 # Their workflow checks still run through python.repository-tools. Unknown workflows
 # stay on the full policy route.
 PUBLICATION_WORKFLOWS = {

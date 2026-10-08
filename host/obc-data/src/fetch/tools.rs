@@ -120,7 +120,7 @@ mod tests {
                 &store,
                 &Http::new(),
                 &request,
-                Some((&mut crate::engine::code::Context::default(), true))
+                Some(&mut crate::engine::code::Context::default())
             )
             .unwrap(),
             snapshot
@@ -136,38 +136,5 @@ mod tests {
         )
         .unwrap_err()
         .contains("full commit SHA"));
-    }
-
-    #[test]
-    fn cold_tool_admission_precedes_archive_download_and_snapshot_writes() {
-        use crate::engine::tests::{fixture, repository, write};
-        use crate::fetch::tests::{quick, serve, whole};
-        let fixture = fixture("basemap-admission");
-        let root = fixture.root();
-        repository(&root, &[("obc-data", "")]);
-        let (url, asked) = serve(|_, _| whole(b"archive"));
-        let mut source = embedded("protomaps-basemaps").clone();
-        source.fetch.url = Some(url.replace("file.bin", "{version}.tar.gz"));
-        for path in super::super::owner_code(&source).code.paths {
-            write(&root.join(path), "// fixture acquisition owner\n");
-        }
-        fixture.with_sources(std::slice::from_ref(&source));
-        write(&root.join(".python-version"), "3.12\n");
-        write(&root.join("pyproject.toml"), "[project]\nname = \"capture-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n[tool.uv]\npackage = false\ndefault-groups = []\n");
-        write(&root.join("uv.lock"), "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n[[package]]\nname = \"capture-fixture\"\nversion = \"0\"\nsource = { virtual = \".\" }\n");
-        let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git").args(args).current_dir(&root).status().unwrap().success());
-        };
-        git(&["add", "."]);
-        git(&["-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture"]);
-        write(&root.join("tools/basemap_tool.py"), "# uncommitted preparation\n");
-        let version = "42ffaaa4a85a41bfcb23e43cc0f5b492a5eca123";
-        let request = Request { source: &source, version: Some(version.into()), params: Vec::new() };
-        let mut checks = crate::engine::code::Context::default();
-        let error = basemap(&root, &fixture.store, &quick(), &request, Some((&mut checks, true))).unwrap_err();
-        assert!(error.contains("not committed"), "{error}");
-        assert!(asked.lock().unwrap().is_empty(), "admission precedes the archive request");
-        assert!(fixture.store.snapshot(&source.id, version).unwrap().is_none());
-        assert!(!fixture.store.object(&sha256_hex(b"archive")).exists());
     }
 }

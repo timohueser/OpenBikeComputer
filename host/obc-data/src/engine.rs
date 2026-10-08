@@ -7,7 +7,7 @@ pub mod changes;
 pub(crate) mod code;
 pub mod plan;
 mod process;
-pub use code::{python_executable, runtime_rust, RuntimeRust};
+pub use code::python_executable;
 
 pub mod release;
 pub mod runs;
@@ -25,7 +25,6 @@ use crate::date;
 use crate::store::{hash_file, sha256_hex, FileRecord, Snapshot, Store};
 
 /// What a step reads, the code that makes its layer, and how it runs.
-#[derive(Clone)]
 pub struct Step {
     /// The layer name: kebab-case segments joined by `/`.
     pub name: String,
@@ -79,7 +78,6 @@ fn covers(prefix: &str, path: &str) -> bool {
     path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
 }
 
-#[derive(Clone)]
 pub enum Input {
     Snapshot {
         source: String,
@@ -113,7 +111,7 @@ pub struct Code {
     /// Resolve Rust dependencies for this target; None selects the producer host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// None binds the native dev build. Prepared builds bind their toolchain in step options.
+    /// None binds the native release build. Prepared builds bind their toolchain in step options.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust: Option<Rust>,
     /// The content settings of these sources. Freshness and access controls are excluded.
@@ -136,6 +134,9 @@ pub struct Library {
     pub name: String,
     pub path: PathBuf,
     pub sha256: String,
+    /// Tool version for code identity; absent for content-addressed artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -206,15 +207,12 @@ pub struct CodeIdentity {
     pub files: BTreeMap<String, String>,
     pub source_config: BTreeMap<String, String>,
     pub rust: Option<ResolvedRust>,
-    /// Repository-relative physical inputs, before manifest or source projection.
-    pub git_inputs: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceIdentity {
     pub files: BTreeMap<String, String>,
     pub rust: Option<ResolvedRust>,
-    pub git_inputs: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -224,20 +222,6 @@ pub struct ResolvedRust {
     pub build: Rust,
 }
 
-impl CodeIdentity {
-    /// Commitment checks the selected physical inputs, including projected build metadata.
-    pub fn committed(&self, root: &Path) -> Result<(), String> {
-        code::committed(root, &self.git_inputs)
-    }
-}
-
-impl SourceIdentity {
-    pub fn committed(&self, root: &Path) -> Result<(), String> {
-        code::committed(root, &self.git_inputs)
-    }
-}
-
-#[derive(Clone)]
 pub enum Run {
     /// A function in this process. Its code must declare the crate of the function. One binary
     /// links every product, so Cargo unifies their features: a step crate enables every feature
@@ -701,10 +685,10 @@ fn prepare(
             return Err("a Rust step must declare the crate of its function in its code".into());
         }
         Run::Rust(_)
-            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Release })) =>
+            if matches!(step.code.rust, Some(Rust::Prepared { .. } | Rust::Native { profile: Profile::Dev })) =>
         {
             return Err(
-                "a Rust function runs in the native dev worker; use a command for prepared or release code".into()
+                "a Rust function runs in the native release worker; use a command for prepared or dev code".into()
             );
         }
         Run::Command(argv) => {
@@ -1013,6 +997,13 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
 
     /// A store with the snapshots `head@1` and `tail@1`, and a repository with `join.py` and the
     /// crate `steps`.
+    pub(crate) fn live_settings(fixture: &Fixture, region: &str) {
+        let regions = crate::regions::Regions::load(&fixture.root()).unwrap();
+        let definitions = regions.iter().map(|region| (region.id.clone(), region.definition().unwrap())).collect();
+        let settings = crate::settings::Settings { region: region.into(), definitions, ..Default::default() };
+        crate::settings::save(&fixture.store, &settings).unwrap();
+    }
+
     pub(crate) fn fixture(name: &str) -> Fixture {
         let scratch = Scratch::new(name);
         let store = Store::at(scratch.0.join("store"));
@@ -1292,8 +1283,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             (Run::Rust(upper), Code::default(), "a Rust step must declare the crate"),
             (
                 Run::Rust(upper),
-                Code { rust: Some(Rust::Native { profile: Profile::Release }), ..steps_crate() },
-                "native dev worker",
+                Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..steps_crate() },
+                "native release worker",
             ),
             (
                 Run::Rust(upper),
@@ -1302,7 +1293,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
                     target: Some("x86_64-unknown-linux-gnu".into()),
                     ..steps_crate()
                 },
-                "native dev worker",
+                "native release worker",
             ),
             (Run::Command(vec!["/usr/bin/true".into()]), Code::default(), "argument /usr/bin/true names a path"),
             (Run::Command(vec!["x".into(), "--in=/tmp".into()]), Code::default(), "argument --in=/tmp names a path"),

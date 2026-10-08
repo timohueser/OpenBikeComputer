@@ -137,10 +137,9 @@ prepared from their locks. A fresh store can restore the named
 indexes and client objects without the producer files. Verification does not
 install tools, download data or build runtimes.
 
-The required `planner/runtime` layer blocks publication while routing and search
-have no stored code receipts and verified readiness. Independent data steps can
-build. Service identity must bind the runtime code and its data inputs. Optional
-map layers do not change service identity.
+The planner release binds service source and locked dependencies in its final index.
+The VPS builds services from the pushed commit. Publication requires successful local
+and public probes against the release's routing, search, model and offline catalog hashes.
 
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
 TileJSON, route catalog cell, and device catalog has a small pointer at

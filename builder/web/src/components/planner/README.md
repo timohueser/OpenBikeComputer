@@ -105,14 +105,11 @@ Each kind of change goes out in one way:
 
 ## Local preview
 
-For `obc data`, commit the [runtime target](../../../../../specs/obc-data.md#service-runtimes)
+For `obc data`, configure the [runtime target](../../../../../specs/obc-data.md#service-runtimes)
 in [`data/planner-runtime.toml`](../../../../../data/planner-runtime.toml).
-Set `OBC_PLANNER_RUNTIME_BUILDER=native` or `docker:sha256:IMAGE_DIGEST`.
-Container caches use `OBC_PLANNER_RUNTIME_CARGO_HOME`,
-`OBC_PLANNER_RUNTIME_UV_CACHE_DIR`, and `OBC_PLANNER_RUNTIME_NPM_CONFIG_CACHE`.
-The Cargo cache has no config file. `OBC_PLANNER_RUNTIME_PYTHON` selects CPython.
-`CARGO_BUILD_JOBS` limits routing builds. Prepare tools and dependencies offline.
-Publication needs verified installation readiness.
+Set `OBC_PLANNER_HOST=USER@HOST`. Live apply builds services on that VPS from the pushed
+commit and probes the new data before it switches the catalog. Allow an outage.
+Local apps need the [Local setup](../../../../../host/obc-data-steps/src/planner/README.md).
 
 ```sh
 obc planner setup

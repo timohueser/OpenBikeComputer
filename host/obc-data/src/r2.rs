@@ -18,9 +18,6 @@ pub const REMOVAL_LOG: &str = "removed.jsonl";
 
 const REMOTE: &str = "obcr2";
 
-mod fixture_target;
-pub use fixture_target::fixture_destination;
-
 /// rclone's exit status for a directory that does not exist.
 const DIRECTORY_NOT_FOUND: i32 = 3;
 
@@ -199,6 +196,40 @@ impl Bucket {
         Ok(Put::Uploaded)
     }
 
+    /// Upload each `(file, key)` with one rclone call and the same headers. A key that already
+    /// holds the same checksum is skipped, so a repeated call uploads only what is missing. It
+    /// does not check immutability: a key with other bytes is replaced.
+    pub fn put_many(&self, files: &[(PathBuf, String)], upload: &Upload) -> Result<(), String> {
+        if upload.immutable {
+            return Err("a batch upload does not check immutable keys; upload only keys that the bucket lacks".into());
+        }
+        if files.is_empty() {
+            return Ok(());
+        }
+        let scratch = Scratch::new()?;
+        let staged = scratch.0.join("files");
+        let mut keys = String::new();
+        for (file, key) in files {
+            check_key(key)?;
+            let link = staged.join(key);
+            let parent = link.parent().expect("a key has a parent folder in the staging folder");
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(absolute(file)?, &link).map_err(|e| format!("{}: {e}", link.display()))?;
+            #[cfg(not(unix))]
+            std::fs::copy(file, &link).map_err(|e| format!("{}: {e}", link.display()))?;
+            keys += &format!("{key}\n");
+        }
+        let list = scratch.0.join("keys.txt");
+        std::fs::write(&list, keys).map_err(|e| format!("{}: {e}", list.display()))?;
+        let mut args: Vec<String> =
+            ["copy", "--checksum", "--copy-links", "--no-traverse", "--files-from-raw"].map(String::from).into();
+        args.push(list.display().to_string());
+        args.extend(headers(upload));
+        args.extend([staged.display().to_string(), self.root.clone()]);
+        self.checked(&args).map(drop)
+    }
+
     /// Prove that `key` holds the bytes of `file`: the same size, and the same MD5 when both
     /// sides know it.
     pub fn verify(&self, file: &Path, key: &str) -> Result<(), String> {
@@ -370,12 +401,18 @@ fn check_key(key: &str) -> Result<(), String> {
 
 fn put_args(file: &Path, target: &str, upload: &Upload) -> Vec<String> {
     let mut args = vec!["copyto".to_string(), "--checksum".to_string()];
+    args.extend(headers(upload));
+    args.extend([file.display().to_string(), target.to_string()]);
+    args
+}
+
+fn headers(upload: &Upload) -> Vec<String> {
+    let mut args = Vec::new();
     for (header, value) in [("Cache-Control", upload.cache_control), ("Content-Type", upload.content_type)] {
         if let Some(value) = value {
             args.extend(["--header-upload".to_string(), format!("{header}: {value}")]);
         }
     }
-    args.extend([file.display().to_string(), target.to_string()]);
     args
 }
 

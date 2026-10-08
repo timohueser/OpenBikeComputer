@@ -8,7 +8,6 @@ use ratatui::text::Line;
 
 use super::{bytes, duration, row_text, widths, App};
 use crate::cli::build_cli::{change, Cost, EnvPlan, NONE};
-use crate::cli::status_cli::keys;
 use crate::engine::plan::{Cause, Group, Plan};
 
 #[derive(Clone)]
@@ -109,9 +108,6 @@ impl App {
         let (all, taken) = (&view.all, &view.taken);
         let estimate = |value: Option<u64>, text: fn(u64) -> String| value.map_or("—".into(), text);
         let mut lines = Vec::new();
-        if let Some(approval) = &taken.approval {
-            lines.push(Line::from(approval.summary()));
-        }
         let mut focus = None;
         if all.groups.is_empty() {
             lines.push(Line::from(if all.env == "local" {
@@ -172,13 +168,18 @@ impl App {
             lines.extend(view.versions());
         }
 
-        let removed = taken.remove.iter().map(|removal| removal.bytes).sum::<Option<u64>>();
         let mut footer = vec![Line::default()];
+        footer.extend(taken.missing_credentials.iter().map(|notice| Line::styled(notice.clone(), Color::Yellow)));
         if taken.env == "live" {
-            footer.push(
-                Line::from(format!("REMOVE FROM R2  {}, {}", keys(taken.remove.len()), estimate(removed, bytes)))
-                    .bold(),
-            );
+            let removals = crate::cli::build_cli::removals(taken);
+            footer.extend(removals.into_iter().enumerate().map(|(at, line)| {
+                let line = Line::from(line);
+                if at == 0 {
+                    line.bold()
+                } else {
+                    line
+                }
+            }));
         }
         if taken.env == "local" {
             footer.extend(taken.live.iter().map(|product| {
@@ -194,9 +195,7 @@ impl App {
                 .push(Line::styled("Inputs are unresolved. Prepare inputs, then review the new plan.", Color::Yellow));
         }
         let blocked = taken.blocked.iter().map(|blocked| format!("blocked {}: {}", blocked.product, blocked.reason));
-        let unlisted =
-            (taken.env == "live" && !taken.listed).then(|| "R2 was not listed, so leftovers are unknown".to_string());
-        footer.extend(blocked.chain(unlisted).map(|warning| Line::styled(format!("⚠ {warning}"), Color::Yellow)));
+        footer.extend(blocked.map(|warning| Line::styled(format!("⚠ {warning}"), Color::Yellow)));
         if !taken.groups.is_empty() {
             let cost = Cost::of(&taken.groups);
             let builds = taken.groups.iter().flat_map(|group| &group.builds).map(|build| &build.step);

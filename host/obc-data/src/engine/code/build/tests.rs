@@ -3,7 +3,7 @@ use crate::engine::code::rust::Packages;
 use crate::engine::tests::{fixture, repository, write};
 
 #[test]
-fn native_library_bindings_keep_original_bytes_and_recheck_the_current_files() {
+fn native_versions_ignore_rebuilt_bytes_but_execution_checks_the_binding() {
     use crate::engine::Library;
     let fixture = fixture("code-libraries");
     let root = fixture.root();
@@ -16,6 +16,7 @@ fn native_library_bindings_keep_original_bytes_and_recheck_the_current_files() {
             .into_iter()
             .zip(&files)
             .map(|(name, file)| Library {
+                version: Some("1.0".into()),
                 name: name.into(),
                 path: file.canonicalize().unwrap(),
                 sha256: hash_file(file).unwrap().0,
@@ -33,7 +34,10 @@ fn native_library_bindings_keep_original_bytes_and_recheck_the_current_files() {
     assert_eq!(context.files(&root, &code).unwrap(), before, "installation paths do not enter byte identity");
     write(&copy, "changed implementation");
     assert!(context.files(&root, &code).unwrap_err().contains("changed; start a fresh worker"));
-    write(&copy, "initial implementation");
+    code.libraries[0].sha256 = hash_file(&copy).unwrap().0;
+    assert_eq!(context.files(&root, &code).unwrap(), before, "a rebuild with the same version reuses layers");
+    code.libraries[0].version = Some("2.0".into());
+    assert_ne!(context.files(&root, &code).unwrap(), before, "a new version changes layers");
     std::fs::remove_file(&files[1]).unwrap();
     assert!(context.files(&root, &code).unwrap_err().contains("start a fresh worker"));
 }
@@ -184,7 +188,7 @@ fn existing_ci_profile_and_lint_settings_are_bound_to_the_selected_build() {
 }
 
 #[test]
-fn native_dev_alias_profile_changes_and_plan_use_the_same_identity() {
+fn native_release_alias_profile_changes_and_plan_use_the_same_identity() {
     let fixture = fixture("native-build-code");
     let root = fixture.root();
     repository(&root, &[("steps", ""), ("other", "")]);
@@ -192,10 +196,10 @@ fn native_dev_alias_profile_changes_and_plan_use_the_same_identity() {
     let mut context = Context::default();
     let packages = Packages { names: ["steps".into()].into(), non_workspace: false };
     let implicit = context.identity(&root, &code, &packages).unwrap();
-    let explicit = Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..code.clone() };
+    let explicit = Code { rust: Some(Rust::Native { profile: Profile::Release }), ..code.clone() };
     assert_eq!(context.identity(&root, &explicit, &packages).unwrap(), implicit);
-    assert!(implicit.files.contains_key("rust/compiler") && implicit.files.contains_key("rust/target"));
-    assert!(implicit.files.keys().any(|name| name.starts_with("rust/sysroot-library/libstd")));
+    assert!(implicit.files.contains_key("rust/compiler-version") && implicit.files.contains_key("rust/target"));
+    assert!(!implicit.files.keys().any(|name| name.contains("library") || name == "rust/compiler"));
     assert!(context.native.is_some());
     let tools = context.tools.len();
     context.identity(&root, &code, &packages).unwrap();
@@ -208,15 +212,15 @@ fn native_dev_alias_profile_changes_and_plan_use_the_same_identity() {
     let original = fs::read_to_string(&manifest).unwrap();
     write(
         &manifest,
-        &(original.clone() + "\n[profile.release]\ndebug = 2\n[profile.dev.package.other]\nopt-level = 2\n"),
+        &(original.clone() + "\n[profile.dev]\ndebug = 2\n[profile.release.package.other]\nopt-level = 2\n"),
     );
     assert_eq!(context.identity(&root, &code, &packages).unwrap(), implicit);
     assert!(fixture.plan(&steps).unwrap().groups.is_empty());
-    write(&manifest, &(original + "\n[profile.dev.package.steps]\nopt-level = 2\n"));
+    write(&manifest, &(original + "\n[profile.release.package.steps]\nopt-level = 2\n"));
     assert_ne!(context.identity(&root, &code, &packages).unwrap(), implicit);
     assert!(!fixture.plan(&steps).unwrap().groups.is_empty());
-    let release = Code { rust: Some(Rust::Native { profile: Profile::Release }), ..code };
-    assert_ne!(context.identity(&root, &release, &packages).unwrap(), implicit);
+    let dev = Code { rust: Some(Rust::Native { profile: Profile::Dev }), ..code };
+    assert_ne!(context.identity(&root, &dev, &packages).unwrap(), implicit);
 
     let mut checks = crate::engine::code::Context::default();
     let files = checks.files(&root, &explicit).unwrap();
@@ -241,13 +245,6 @@ fn tool_cache_detects_replaced_bytes_at_the_check_boundary() {
     assert_eq!(context.tool_hash(&compiler).unwrap(), first);
     write(&compiler, "other executable");
     assert_ne!(context.tool_hash(&compiler).unwrap(), first);
-    let lib = fixture.root().join("libstd-fixture.rlib");
-    write(&lib, "standard library first");
-    let first = context.library_hashes(&fixture.root()).unwrap();
-    write(&lib, "standard library other");
-    let second = context.library_hashes(&fixture.root()).unwrap();
-    assert_ne!(first["rust/sysroot-library/libstd-fixture.rlib"], second["rust/sysroot-library/libstd-fixture.rlib"]);
-    assert_eq!(first["rust/sysroot-library/compiler"], second["rust/sysroot-library/compiler"]);
 }
 
 #[cfg(unix)]
@@ -317,29 +314,4 @@ fn rustup_proxy_resolves_the_selected_executable_in_the_explicit_root() {
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o700)).unwrap();
     fs::hard_link(&rustup, &rustc).unwrap();
     assert_eq!(executable(&root, Some(&rustc.into_os_string()), "rustc").unwrap(), selected.canonicalize().unwrap());
-}
-
-#[test]
-fn runtime_tools_use_the_builds_fixed_environment_instead_of_operator_overrides() {
-    let env = BTreeMap::from([
-        ("PATH".into(), "/prepared/bin".into()),
-        ("CARGO_HOME".into(), "/cache".into()),
-        ("RUSTFLAGS".into(), "-Ctarget-cpu=native".into()),
-        ("CC".into(), "/other/cc".into()),
-        ("CARGO_PROFILE_RELEASE_OPT_LEVEL".into(), "1".into()),
-        ("LD_LIBRARY_PATH".into(), "/runtime".into()),
-        ("CARGO_BUILD_JOBS".into(), "2".into()),
-    ]);
-    assert_eq!(native_environment(false, env.clone()), env);
-    let selected = native_environment(true, env);
-    assert_eq!(
-        selected,
-        BTreeMap::from([
-            ("PATH".into(), "/prepared/bin".into()),
-            ("CARGO_HOME".into(), "/cache".into()),
-            ("CARGO_BUILD_JOBS".into(), "2".into()),
-            ("LC_ALL".into(), "C".into()),
-        ])
-    );
-    validate_environment(&selected).unwrap();
 }
