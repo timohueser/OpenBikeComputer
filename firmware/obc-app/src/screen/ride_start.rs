@@ -64,7 +64,7 @@ const ROWS: [Row; 4] = [Row::Bike, Row::Start, Row::Day, Row::Back];
 pub struct RideStartScreen {
     selected: Row,
     /// The route loaded before the day row loaded its day, for the day's detail to restore.
-    prev_active: Option<usize>,
+    prev_active: Option<crate::CatalogObjectId>,
 }
 
 impl Default for RideStartScreen {
@@ -78,7 +78,7 @@ impl RideStartScreen {
         RideStartScreen { selected: Row::Start, prev_active: None }
     }
 
-    pub(crate) fn prev_active(&self) -> Option<usize> {
+    pub(crate) fn prev_active(&self) -> Option<crate::CatalogObjectId> {
         self.prev_active
     }
 
@@ -103,7 +103,10 @@ impl RideStartScreen {
                 Row::Start => super::start_ride_routeless(cx),
                 Row::Day => match next {
                     Some((trip, day, route)) => {
-                        let route = usize::from(route);
+                        let Some(&route) = cx.route_ids.get(usize::from(route)) else { return Transition::None };
+                        if !cx.route_available(route) {
+                            return Transition::None;
+                        }
                         let prev = cx.navigator.replace_active_route(route);
                         match trip.load_day(day, trip.progress_in(cx.trip_progress), cx.day_join.as_ref()) {
                             DayLoad::AsIs => {
@@ -113,7 +116,7 @@ impl RideStartScreen {
                                 self.prev_active = prev;
                                 let request = crate::DetourRequest::rest(route, from_m, to_m, join_m);
                                 cx.navigator.admit_intent(crate::navigator::NavigatorIntent::PlanDetour(request));
-                                let name = cx.routes.get(route).map_or("", |r| r.name.as_str());
+                                let name = cx.route(route).map_or("", |r| r.name.as_str());
                                 Transition::Push(Screen::NavPlanning(super::NavPlanningScreen::day(name)))
                             }
                         }

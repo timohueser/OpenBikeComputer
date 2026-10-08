@@ -774,6 +774,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let after = list.cursor.map(|cursor| (cursor.id, cursor.revision));
         let mut more = false;
         for meta in store.entries() {
+            let meta = match meta {
+                Ok(meta) => meta,
+                Err(error) => {
+                    return self.emit_error(out, Opcode::List, request, media_refusal(error, detail::media_io::READ))
+                }
+            };
             if after.is_some_and(|cursor| meta.key() <= cursor) {
                 continue;
             }
@@ -785,10 +791,6 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 break;
             }
         }
-        if !store.entries_ok() {
-            let refusal = media_refusal(StoreError::Media, detail::media_io::READ);
-            return self.emit_error(out, Opcode::List, request, refusal);
-        }
         match writer.finish(out, request, more) {
             Some(len) => Reaction::Send { channel: Channel::Control, len },
             None => self.emit_error(out, Opcode::List, request, Refusal::plain(ErrorCode::Internal)),
@@ -799,11 +801,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if let Some(refusal) = read_refusal(store.mode()) {
             return self.emit_error(out, Opcode::Status, request, refusal);
         }
-        let found = lookup(store, status.id);
-        if !store.entries_ok() {
-            let refusal = media_refusal(StoreError::Media, detail::media_io::READ);
-            return self.emit_error(out, Opcode::Status, request, refusal);
-        }
+        let found = match lookup(store, status.id) {
+            Ok(found) => found,
+            Err(error) => {
+                return self.emit_error(out, Opcode::Status, request, media_refusal(error, detail::media_io::READ))
+            }
+        };
         let answer = match found.head {
             None => StatusResponse::absent(),
             Some(head) => StatusResponse {
@@ -834,11 +837,12 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if let Some(refusal) = read_refusal(store.mode()) {
             return self.emit_error(out, Opcode::Get, request, refusal);
         }
-        let found = lookup(store, get.id);
-        if !store.entries_ok() {
-            let refusal = media_refusal(StoreError::Media, detail::media_io::READ);
-            return self.emit_error(out, Opcode::Get, request, refusal);
-        }
+        let found = match lookup(store, get.id) {
+            Ok(found) => found,
+            Err(error) => {
+                return self.emit_error(out, Opcode::Get, request, media_refusal(error, detail::media_io::READ))
+            }
+        };
         let wanted = match get.revision {
             Revision::HEAD => found.head,
             revision => [found.retained, found.head].into_iter().flatten().find(|meta| meta.revision == revision),
@@ -919,10 +923,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             return Err(bad_combination());
         }
         let (id, revision, displaced) = if put.id.is_some() {
-            let found = lookup(store, put.id);
-            if !store.entries_ok() {
-                return Err(media_refusal(StoreError::Media, detail::media_io::READ));
-            }
+            let found = lookup(store, put.id).map_err(|error| media_refusal(error, detail::media_io::READ))?;
             let Some(head) = found.head else {
                 return Err(Refusal::new(ErrorCode::RevisionConflict, detail::revision_conflict::HEAD_ABSENT));
             };
@@ -984,10 +985,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if let Some(refusal) = write_refusal(store.mode()) {
             return Err(refusal);
         }
-        let found = lookup(store, remove.id);
-        if !store.entries_ok() {
-            return Err(media_refusal(StoreError::Media, detail::media_io::READ));
-        }
+        let found = lookup(store, remove.id).map_err(|error| media_refusal(error, detail::media_io::READ))?;
         let Some(head) = found.head else {
             return Err(Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT));
         };
@@ -1068,10 +1066,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if let Some(refusal) = write_refusal(store.mode()) {
             return Err(refusal);
         }
-        let found = lookup(store, arm.package);
-        if !store.entries_ok() {
-            return Err(media_refusal(StoreError::Media, detail::media_io::READ));
-        }
+        let found = lookup(store, arm.package).map_err(|error| media_refusal(error, detail::media_io::READ))?;
         let Some(head) = found.head else {
             return Err(Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT));
         };
@@ -1237,10 +1232,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let id = if upload.id.is_some() { upload.id } else { store.next_object_id() };
         // The expected `Revision` is checked at admission and again immediately before the commit.
         // For a create the expectation is that nothing names this id at all.
-        let found = lookup(store, id);
-        if !store.entries_ok() {
-            return Err(media_refusal(StoreError::Media, detail::media_io::READ));
-        }
+        let found = lookup(store, id).map_err(|error| media_refusal(error, detail::media_io::READ))?;
         if found.head.map(|meta| meta.revision) != upload.displaced {
             return Err(Refusal::with_context(
                 ErrorCode::RevisionConflict,
@@ -1322,12 +1314,11 @@ struct Found {
     retained: Option<EntryMeta>,
 }
 
-/// Resolves one `ObjectId` out of the catalog view. The caller must check
-/// [`entries_ok`](Store::entries_ok) afterwards: a listing that stopped early would make an absent
-/// object out of a media failure.
-fn lookup<S: Store>(store: &S, id: ObjectId) -> Found {
+/// Resolve one object without treating a failed catalog read as an absent object.
+fn lookup<S: Store>(store: &S, id: ObjectId) -> Result<Found, StoreError> {
     let mut found = Found { head: None, retained: None };
     for meta in store.entries() {
+        let meta = meta?;
         if meta.id != id {
             // The catalog is sorted by `(ObjectId, Revision)`.
             if meta.id > id {
@@ -1341,7 +1332,7 @@ fn lookup<S: Store>(store: &S, id: ObjectId) -> Found {
             found.head = Some(meta);
         }
     }
-    found
+    Ok(found)
 }
 
 fn bad_combination() -> Refusal {

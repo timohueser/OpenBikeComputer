@@ -29,9 +29,11 @@ pub fn scan<D: BlockDevice>(
     }
     let capacity = heads.len();
     let mut len = 0;
-    for entry in
-        store.entries().filter(|entry| entry.kind == kind && (kind != ObjectKind::Route || entry.flags.is_route_head()))
-    {
+    for entry in store.entries() {
+        let entry = entry?;
+        if entry.kind != kind || (kind == ObjectKind::Route && !entry.flags.is_route_head()) {
+            continue;
+        }
         let at = heads[..len].iter().position(|head| entry.id > head.id).unwrap_or(len);
         if at < capacity {
             heads.copy_within(at..len.min(capacity - 1), at + 1);
@@ -39,19 +41,17 @@ pub fn scan<D: BlockDevice>(
             len = (len + 1).min(capacity);
         }
     }
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
-    }
     let heads = &heads[..len];
     let mut accepted = 0u64;
     if kind == ObjectKind::Route {
-        for meta in store.entries().filter(|meta| meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED)) {
+        for meta in store.entries() {
+            let meta = meta?;
+            if !meta.flags.has(EntryFlags::ASSISTANT_ACCEPTED) {
+                continue;
+            }
             if let Some(index) = heads.iter().position(|head| head.id == meta.id && head.revision == meta.revision) {
                 accepted |= 1 << index;
             }
-        }
-        if !store.entries_ok() {
-            return Err(StoreError::Media);
         }
     }
     for (index, head) in heads.iter().copied().enumerate() {

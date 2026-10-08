@@ -6,8 +6,7 @@
 //! [`App::set_routes_with_ids`](crate::App::set_routes_with_ids); the app owns a copy and the
 //! screens read it through [`Ctx`](crate::screen::Ctx) / [`Render`](crate::screen::Render). The
 //! heavy route geometry stays host-owned and is streamed on demand through an
-//! [`obc_route::RouteReader`], one active route at a time. Navigator's active route indexes into
-//! the catalog.
+//! [`obc_route::RouteReader`], one active route at a time. Navigator holds the route's durable id.
 
 use obc_render::{OverlayChunk, RouteOverlaySource};
 use obc_route::RouteReader;
@@ -17,8 +16,7 @@ pub use obc_route::RouteSummary;
 /// Maximum routes in the resident menu catalog and its parallel object-ID and metadata columns.
 pub const MAX_ROUTES: usize = 64;
 
-/// The app's resident route catalog: the summaries the Route menu lists and
-/// Navigator's active route indexes.
+/// The resident summaries, paired with the catalog's durable route ids.
 pub type Catalog = heapless::Vec<RouteSummary, MAX_ROUTES>;
 
 /// The route-overlay seam adapter: presents a [`RouteReader`] to the renderer as

@@ -156,12 +156,12 @@ impl armer::ArmIo for BoardArmIo<'_> {
 /// A listing that stopped early is a media failure, never an absent package: answering "nothing is
 /// staged" out of a failed read would send the rider to upload a package that is already there.
 fn staged_package(store: &Flat) -> Result<EntryMeta, ScanError> {
-    let found = store
-        .entries()
-        .filter(|entry| entry.kind == ObjectKind::UpdatePackage && entry.flags == EntryFlags::NONE)
-        .last();
-    if !store.entries_ok() {
-        return Err(ScanError::Io);
+    let mut found = None;
+    for entry in store.entries() {
+        let entry = entry.map_err(|_| ScanError::Io)?;
+        if entry.kind == ObjectKind::UpdatePackage && entry.flags == EntryFlags::NONE {
+            found = Some(entry);
+        }
     }
     found.ok_or(ScanError::Missing)
 }
@@ -277,12 +277,20 @@ async fn write_rollback(
     };
 
     let mut batch: heapless::Vec<Mutation, { obc_storage::flat::store::MAX_BATCH }> = heapless::Vec::new();
-    for stale in store.entries().filter(|entry| entry.kind == ObjectKind::RollbackReserve) {
+    let mut listing_failed = false;
+    for stale in store.entries() {
+        let Ok(stale) = stale else {
+            listing_failed = true;
+            break;
+        };
+        if stale.kind != ObjectKind::RollbackReserve {
+            continue;
+        }
         if batch.push(Mutation::Remove { id: stale.id, revision: stale.revision }).is_err() {
             break;
         }
     }
-    if !store.entries_ok() {
+    if listing_failed {
         let _ = writer.call(Request::Cancel { allocation }, &ARM_REPLY).await;
         return Err(ScanError::Io);
     }

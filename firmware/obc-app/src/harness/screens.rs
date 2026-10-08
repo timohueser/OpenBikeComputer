@@ -454,7 +454,7 @@ fn route_menu_with_no_routes_ignores_press() {
 fn tracking(r: usize, rec: &mut RecorderMachine) -> (Activity, crate::navigator::NavigatorMachine) {
     let act = Activity::new(Mode::Riding);
     let mut navigator = crate::navigator::NavigatorMachine::new();
-    navigator.set_active_route(Some(r));
+    navigator.set_active_route(Some(r as crate::CatalogObjectId));
     rec.test_open();
     (act, navigator)
 }
@@ -637,9 +637,6 @@ fn the_catalog_feed_replaces_the_previous_catalog() {
     assert!(app.routes().is_empty(), "a rescan replaces the catalog rather than appending");
 }
 
-// The catalog carries durable object ids: every held index — `active_route`, an open Route-menu
-// highlight, a pending swap — is remapped by id on every `set_routes_with_ids`.
-
 /// Ids for [`test_routes`] — deliberately non-positional, so an index-as-id shortcut can't pass.
 const IDS3: [crate::CatalogObjectId; 3] = [10, 20, 30];
 
@@ -672,6 +669,51 @@ fn rescan_unloads_a_vanished_active_route() {
     let keep = [routes[0].clone(), routes[2].clone()]; // Beta deleted
     app.set_routes_with_ids(&keep, &[IDS3[0], IDS3[2]]);
     assert_eq!(app.active_route_index(), None, "the deleted route unloads; Gamma is not aliased in");
+}
+
+#[test]
+fn start_away_keeps_its_durable_subject_across_catalog_changes() {
+    let ids = [0x1_0000_000A, 0x2_0000_000A, 0x3_0000_000A];
+    for removed in [false, true] {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.test_mount_store();
+        let routes = test_routes();
+        app.set_routes_with_ids(&routes, &ids);
+        app.state.has_nav_graph = true;
+        app.state.user_fix = Some(obc_ports::Fix::at(50_000_000, 12_000_000));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Step(1));
+        app.apply_gesture(Gesture::Press);
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::StartAway(_)));
+
+        if removed {
+            app.set_routes_with_ids(&[routes[0].clone(), routes[2].clone()], &[ids[0], ids[2]]);
+        } else {
+            app.set_routes_with_ids(&routes[1..], &ids[1..]);
+        }
+        app.apply_gesture(Gesture::Press);
+        if removed {
+            assert!(app.navigator.pending_detour_request().is_none());
+            assert!(app.active_route_index().is_none());
+            assert!(!matches!(app.top_screen(), Screen::StartAway(_) | Screen::NavPlanning(_)));
+        } else {
+            assert_eq!(app.navigator.pending_detour_request().unwrap().route, ids[1]);
+            assert_eq!(app.active_route_index(), Some(0));
+        }
+    }
+}
+
+#[test]
+fn a_route_delete_keeps_its_subject_until_the_pass_consumes_it() {
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    app.test_mount_store();
+    let routes = test_routes();
+    app.set_routes_with_ids(&routes, &IDS3);
+    app.activity.request_route_delete(IDS3[1]);
+    app.set_routes_with_ids(&routes[1..], &IDS3[1..]);
+    assert_eq!(took_route_delete(&mut app), Some(IDS3[1]));
 }
 
 #[test]

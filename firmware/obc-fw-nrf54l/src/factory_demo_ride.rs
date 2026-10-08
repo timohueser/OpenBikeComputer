@@ -36,6 +36,7 @@ pub fn seed<D: BlockDevice>(store: &FlatStore<D>, bytes: &[u8]) -> Result<Object
     let mut rides = 0;
     let mut existing = None;
     for entry in store.entries() {
+        let entry = entry?;
         if entry.flags == EntryFlags::RECORDING {
             return Err(StoreError::Busy);
         }
@@ -48,9 +49,6 @@ pub fn seed<D: BlockDevice>(store: &FlatStore<D>, bytes: &[u8]) -> Result<Object
                 existing = Some(entry);
             }
         }
-    }
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
     }
     if let Some(entry) = existing {
         return if payload_matches(store, entry.id, bytes)? { Ok(entry.id) } else { Err(StoreError::Invalid) };

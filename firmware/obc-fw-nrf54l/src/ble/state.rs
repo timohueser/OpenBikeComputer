@@ -6,11 +6,12 @@
 //! identity blobs — lives in [`crate::link`] instead.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
+use obc_ble::radio_policy::{RadioPolicy, SensorActivity};
 
 #[derive(Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub(crate) enum LinkState {
@@ -109,19 +110,14 @@ pub fn app_ble_status() -> obc_app::BleStatus {
     obc_app::BleStatus { link, passkey: s.passkey, paired: s.paired }
 }
 
-/// The rider's Bluetooth switch, mirrored across the plane boundary: the ride loop pushes the
-/// persisted value here each pass, and the lifecycle loop in [`super::run`] parks the radio while
-/// off. Defaults on, so a BLE build without the ride loop's seed still advertises; `run` re-seeds it
-/// from the persisted settings at boot, before the first advertise.
-static RADIO_ENABLED: AtomicBool = AtomicBool::new(true);
-
 /// Cable-level radio interlock. Active BLE radio work and the nRF54L sEMMC card engine have been
 /// seen to corrupt card commands when they overlap, so USB map transfers own the radio for the whole
 /// time J3 has VBUS. Starts inhibited, so a cable present at boot cannot race the first
 /// advertisement; the USB task releases it once it has sampled VBUS low.
-static USB_RADIO_INHIBITED: AtomicBool = AtomicBool::new(true);
+static RADIO_POLICY: BlockingMutex<CriticalSectionRawMutex, Cell<RadioPolicy>> =
+    BlockingMutex::new(Cell::new(RadioPolicy::new(true, true)));
 
-/// Edge for the lifecycle loop, signalled whenever [`RADIO_ENABLED`] changes, so the advertise and
+/// Edge for the lifecycle loop, signalled whenever effective radio permission changes, so advertise and
 /// serve phases can wake, re-check the level, and wind the radio up or down. The level is the
 /// authority, so a toggle bounced off and on between polls degrades to a harmless re-advertise,
 /// never a stuck state.
@@ -138,30 +134,52 @@ pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new
 /// central role winds sensor links up and down with the phone link and never contends on
 /// `RADIO_EDGE`'s single waiter.
 pub fn set_radio_enabled(enabled: bool) {
-    if RADIO_ENABLED.swap(enabled, Ordering::Relaxed) != enabled && !USB_RADIO_INHIBITED.load(Ordering::Relaxed) {
-        RADIO_EDGE.signal(());
-        super::sensors::wake_work();
-    }
+    update_radio(|policy| policy.set_enabled(enabled));
 }
 
-/// Boot seed for [`RADIO_ENABLED`] from the persisted settings. No edge: the lifecycle loop has not
+/// Boot seed from the persisted settings. No edge: the lifecycle loop has not
 /// started, and it reads the level at its first pass.
 pub(crate) fn seed_radio_enabled(enabled: bool) {
-    RADIO_ENABLED.store(enabled, Ordering::Relaxed);
+    RADIO_POLICY.lock(|c| {
+        let mut policy = c.get();
+        policy.set_enabled(enabled);
+        c.set(policy);
+    });
 }
 
 /// Inhibit active phone advertising/connections and sensor scanning while USB has VBUS. This does
 /// not overwrite the rider's persisted switch: removing the cable restores its effective level.
 pub(crate) fn set_usb_radio_inhibited(inhibited: bool) {
-    if USB_RADIO_INHIBITED.swap(inhibited, Ordering::Relaxed) != inhibited && RADIO_ENABLED.load(Ordering::Relaxed) {
-        RADIO_EDGE.signal(());
-        super::sensors::wake_work();
-    }
+    update_radio(|policy| policy.set_usb_inhibited(inhibited));
 }
 
 /// The effective radio level after applying the rider switch and USB interlock.
 pub(crate) fn radio_enabled() -> bool {
-    RADIO_ENABLED.load(Ordering::Relaxed) && !USB_RADIO_INHIBITED.load(Ordering::Relaxed)
+    RADIO_POLICY.lock(|c| c.get().enabled())
+}
+
+pub fn set_sensor_discovery(requested: bool) {
+    update_radio(|policy| policy.set_discovery(requested));
+}
+
+pub(crate) fn sensor_activity() -> SensorActivity {
+    RADIO_POLICY.lock(|c| c.get().sensor_activity())
+}
+
+fn update_radio(update: impl FnOnce(&mut RadioPolicy)) {
+    let (radio_changed, sensors_changed) = RADIO_POLICY.lock(|c| {
+        let before = c.get();
+        let mut after = before;
+        update(&mut after);
+        c.set(after);
+        (before.enabled() != after.enabled(), before.sensor_activity() != after.sensor_activity())
+    });
+    if radio_changed {
+        RADIO_EDGE.signal(());
+    }
+    if sensors_changed {
+        super::sensors::wake_work();
+    }
 }
 
 /// Resolve once the radio switch reads off — the advertise and serve phases' wind-down arm. It

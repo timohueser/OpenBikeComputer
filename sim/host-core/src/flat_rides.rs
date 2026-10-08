@@ -54,7 +54,11 @@ impl RideRepository for FlatRideStore {
         let mut catalog = Vec::new();
         let mut infos = Vec::new();
         let mut heads = Vec::new();
-        for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
+        for entry in store.entries() {
+            let entry = entry.map_err(|_| MetadataError::WriteFailed)?;
+            if entry.kind != ObjectKind::Ride || entry.flags != EntryFlags::NONE {
+                continue;
+            }
             let info = store
                 .with_source(entry.id, Some(entry.revision), |source| RideInfo::read(source))
                 .map_err(|_| MetadataError::WriteFailed)?
@@ -69,9 +73,6 @@ impl RideRepository for FlatRideStore {
                 catalog
                     .insert(position, RideEntry { id: entry.id.0, summary: RideSummary::from_info(&info, false, 0) });
             }
-        }
-        if !store.entries_ok() {
-            return Err(MetadataError::WriteFailed);
         }
         let mut trips = RideTrips::new();
         for ride in &catalog {

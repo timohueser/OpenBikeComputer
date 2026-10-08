@@ -948,13 +948,10 @@ fn remove_head(
         CatalogObjectKind::Ride => ObjectKind::Ride,
         CatalogObjectKind::Trip => ObjectKind::Trip,
     };
-    let found = store.entries().find(|entry| {
+    let found = store.find_entry(|entry| {
         entry.id == id
             && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
-    });
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
-    }
+    })?;
     let Some(meta) = found else {
         return Ok(false);
     };
@@ -1387,7 +1384,12 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     let mut routes = 0u16;
     let mut rides = 0u16;
     let mut other = 0u16;
+    let mut listing_complete = true;
     for entry in store.entries() {
+        let Ok(entry) = entry else {
+            listing_complete = false;
+            break;
+        };
         match entry.kind {
             ObjectKind::MapShard | ObjectKind::MapSetManifest => maps += 1,
             ObjectKind::Route => routes += 1,
@@ -1395,9 +1397,6 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
             _ => other += 1,
         }
     }
-    // Read once, after the walk: `entries_ok` reports whether the listing just taken crossed a
-    // commit, so reading it before the loop would answer about the previous one.
-    let listing_complete = store.entries_ok();
     defmt::info!(
         "flat: catalog holds {=u16} map object(s), {=u16} route(s), {=u16} ride(s), {=u16} other — listing complete: {=bool}",
         maps,
@@ -1409,10 +1408,6 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     Catalog { maps: usize::from(maps), listing_complete }
 }
 
-pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
-    store.entries().find(|entry| entry.kind == kind)
-}
-
 /// `debug-uart` only: print the whole catalog, one line per entry, plus the entry count, whether
 /// the listing ran to the end, the free extents, the commit sequence and every durable archive
 /// proof. Comparing two of these proves a repair removed exactly one object and left every other
@@ -1420,7 +1415,12 @@ pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<
 /// against the receipt a client got proves the same identity and stamp survived a remount.
 #[cfg(feature = "debug-uart")]
 pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
+    let mut listing_complete = true;
     for entry in store.entries() {
+        let Ok(entry) = entry else {
+            listing_complete = false;
+            break;
+        };
         defmt::info!(
             "store census: id={=u64} rev={=u64} kind={=u16} flags={=u16} len={=u64} crc={=u32} name={=str}",
             entry.id.0,
@@ -1435,7 +1435,7 @@ pub(crate) fn debug_census(store: &FlatStore<FlatCard>) {
     defmt::info!(
         "store census: entry_count={=u16} listing_ok={=bool} free_extents={=u32} sequence={=u64}",
         store.entry_count(),
-        store.entries_ok(),
+        listing_complete,
         store.free_extents(),
         store.sequence()
     );
@@ -1493,26 +1493,28 @@ fn check_route_change(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<(), S
 pub(crate) fn route_heads(
     store: &FlatStore<FlatCard>,
     ids: impl Iterator<Item = u64>,
-) -> heapless::Vec<(ObjectId, Revision), MAX_BATCH> {
+) -> Result<heapless::Vec<(ObjectId, Revision), MAX_BATCH>, StoreError> {
     let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = ids.collect();
     let mut heads = heapless::Vec::new();
-    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+    for meta in store.entries() {
+        let meta = meta?;
+        if meta.kind != ObjectKind::Route || !meta.flags.is_route_head() {
+            continue;
+        }
         if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
             break;
         }
     }
-    heads
+    Ok(heads)
 }
 
 pub(crate) fn route_fingerprint(
     store: &FlatStore<FlatCard>,
     id: u64,
 ) -> Option<obc_formats::assistant::PayloadFingerprint> {
-    let meta =
-        store.entries().find(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id && meta.flags.is_route_head());
-    if !store.entries_ok() {
-        return None;
-    }
+    let meta = store
+        .find_entry(|meta| meta.kind == ObjectKind::Route && meta.id.0 == id && meta.flags.is_route_head())
+        .ok()?;
     meta.map(obc_storage::flat::metadata::fingerprint)
 }
 
@@ -1534,7 +1536,7 @@ pub(crate) fn map_name() -> &'static str {
 /// catalog from an unreadable map or an incomplete listing.
 ///
 /// The active map is the lowest-`ObjectId` `MapShard`. Catalog iteration is ordered by
-/// `(ObjectId, Revision)` and `first_of` resolves that object's head, so selection is deterministic
+/// `(ObjectId, Revision)`, so selection is deterministic
 /// even on a card that holds several maps. Companion map sends follow the same rule: replace this
 /// object using its listed revision, and create only when no map exists.
 ///
@@ -1549,9 +1551,10 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
     #[cfg(not(feature = "peak-view-demo"))]
     let requested: Option<ObjectId> = None;
     let meta = match requested {
-        Some(id) => store.entries().find(|entry| entry.id == id && entry.kind == ObjectKind::MapShard),
-        None => first_of(store, ObjectKind::MapShard),
-    }?;
+        Some(id) => store.find_entry(|entry| entry.id == id && entry.kind == ObjectKind::MapShard),
+        None => store.find_entry(|entry| entry.kind == ObjectKind::MapShard),
+    }
+    .ok()??;
     match store.source(meta.id, None) {
         Ok(source) => {
             defmt::info!(
@@ -1616,13 +1619,25 @@ pub(crate) fn reconcile_route(
     store: &'static FlatStore<FlatCard>,
     wanted: Option<u64>,
 ) -> Option<&'static dyn obc_formats::io::ByteSource> {
-    let wanted = wanted.and_then(|id| {
-        store
-            .entries()
-            .find(|entry| entry.id == ObjectId(id) && entry.kind == ObjectKind::Route)
-            .map(|entry| (entry.id, entry.revision))
-    });
     let slot = core::ptr::addr_of_mut!(ROUTE_SOURCE);
+    let wanted = match wanted {
+        Some(id) => match store.find_entry(|entry| {
+            entry.id == ObjectId(id) && entry.kind == ObjectKind::Route && entry.flags.is_route_head()
+        }) {
+            Ok(meta) => meta.map(|entry| (entry.id, entry.revision)),
+            Err(error) => {
+                defmt::warn!("flat: route catalog read failed: {}", defmt::Debug2Format(&error));
+                // SAFETY: the ride loop owns the slot and this path preserves its pinned source.
+                return unsafe {
+                    (*slot)
+                        .as_ref()
+                        .filter(|source| source.id() == ObjectId(id))
+                        .map(|source| source as &dyn obc_formats::io::ByteSource)
+                };
+            }
+        },
+        None => None,
+    };
     // SAFETY: the ride loop is the only caller and executes synchronously on thread mode. The
     // returned shared source is consumed only until the next loop pass; reconciliation never runs
     // while a reader from the previous pass is live.
@@ -1777,11 +1792,14 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     // The newest ids win, and only their footers are read, newest first, so the first trip name
     // noted for a trip is its newest ride's.
     let mut heads: heapless::Vec<CatalogHead, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
-    for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Ride && entry.flags == EntryFlags::NONE) {
+    for entry in store.entries() {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        if entry.kind != ObjectKind::Ride || entry.flags != EntryFlags::NONE {
+            continue;
+        }
         retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
-    }
-    if !store.entries_ok() {
-        return false;
     }
     let mut rides = obc_app::RideCatalog::new();
     let mut trips = obc_app::RideTrips::new();
@@ -1900,19 +1918,14 @@ fn load_archive_proofs(
 
 /// The built trip day the card holds, if any.
 fn built_day_head(store: &FlatStore<FlatCard>) -> Result<Option<(ObjectId, Revision)>, StoreError> {
-    let head = store
-        .entries()
-        .filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head())
-        .find(|entry| {
-            store
+    let head = store.find_entry(|entry| {
+        entry.kind == ObjectKind::Route
+            && entry.flags.is_route_head()
+            && store
                 .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read_with_flags(source))
                 .is_ok_and(|read| read.is_ok_and(|(_, flags)| flags & obc_formats::obcr::FLAG_BUILT_DAY != 0))
-        })
-        .map(|entry| (entry.id, entry.revision));
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
-    }
-    Ok(head)
+    })?;
+    Ok(head.map(|entry| (entry.id, entry.revision)))
 }
 
 /// Where the active trip's next day meets the day before: the day before's leave point, clamped to

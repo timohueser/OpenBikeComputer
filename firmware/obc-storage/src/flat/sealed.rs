@@ -48,7 +48,7 @@ fn sealing_revokes_every_writable_copy_without_publishing_or_spending_a_hold() {
     let other = store.allocate(2048).unwrap();
     assert!(matches!(store.allocate(1), Err(StoreError::Invalid)));
     assert_eq!(store.sequence(), seq);
-    assert_eq!(store.entries().count(), 0);
+    assert_eq!(store.entries().map(Result::unwrap).count(), 0);
     source.read_at(0, &mut actual).unwrap();
     assert_eq!(actual, expected);
     store.release_sealed(sealed).unwrap();

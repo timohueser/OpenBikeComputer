@@ -44,6 +44,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::{String, Vec};
 use nrf_sdc::{self as sdc};
+use obc_ble::radio_policy::SensorActivity;
 use obc_ble::SensorKind;
 use obc_platform::sensor_hub::SampleInjector;
 use trouble_host::prelude::*;
@@ -59,7 +60,7 @@ const LINK_SERVICES: usize = 2;
 /// Deduped scan snapshot cap — enough discovered sensors to fill a scan list without unbounded RAM.
 const MAX_SCAN_HITS: usize = 8;
 
-/// One user-initiated scan window (active legacy scan). Reports drain into [`SCAN_HITS`] meanwhile.
+/// One discovery window. The manager repeats it while discovery remains requested and permitted.
 const SCAN_SECS: u64 = 10;
 /// Active-scan timing while connecting/scanning: ~60 ms interval, ~30 ms window (a 50 % duty).
 const SCAN_INTERVAL: Duration = Duration::from_millis(60);
@@ -163,10 +164,9 @@ static SCAN_ARMED: AtomicBool = AtomicBool::new(false);
 /// The wake edges, pulsed together by every request below and by the radio switch, so the manager
 /// reacts without polling. [`WORK_EDGE`] wakes [`initiate`] and [`LINK_EDGE`] wakes each link
 /// future. A burst coalesces into one wake, and each future then re-reads the level it cares about:
-/// the scan latch, the saved table and the radio switch.
+/// discovery intent, the saved table and radio permission.
 static WORK_EDGE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static LINK_EDGE: [Signal<CriticalSectionRawMutex, ()>; QUANTITIES] = [const { Signal::new() }; QUANTITIES];
-static SCAN_REQUEST: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// The manager's resident statics: the scan snapshot, the slot-status table, the saved table, every
 /// request and wake `Signal`, and the scan-armed flag. The SDC and host central and scan buffers are
@@ -178,7 +178,7 @@ pub const RESIDENT_BYTES: usize = core::mem::size_of::<ScanHitsCell>()
     + core::mem::size_of::<SlotStatusCell>()
     + core::mem::size_of::<SavedCell>()
     + core::mem::size_of::<AtomicBool>() // SCAN_ARMED
-    + (2 + QUANTITIES) * core::mem::size_of::<Signal<CriticalSectionRawMutex, ()>>(); // WORK_EDGE, SCAN_REQUEST, LINK_EDGE
+    + (1 + QUANTITIES) * core::mem::size_of::<Signal<CriticalSectionRawMutex, ()>>(); // WORK_EDGE, LINK_EDGE
 
 pub fn sensor_scan_hits<R>(f: impl FnOnce(&[SensorScanHit]) -> R) -> R {
     SCAN_HITS.lock(|c| f(c.borrow().as_slice()))
@@ -187,24 +187,6 @@ pub fn sensor_scan_hits<R>(f: impl FnOnce(&[SensorScanHit]) -> R) -> R {
 /// The per-quantity status snapshot for the app seam. `quantity` is 0=HR, 1=power, 2=cadence.
 pub fn sensor_slot_status(quantity: usize) -> SensorSlotStatus {
     SLOT_STATUS.lock(|c| c.get()[quantity.min(QUANTITIES - 1)])
-}
-
-/// Ring a one-shot scan request. The manager runs a ~10 s active scan and publishes the results
-/// into [`sensor_scan_hits`].
-pub fn request_scan() {
-    SCAN_REQUEST.signal(());
-    wake_work();
-}
-
-/// Drop a pending scan request that has not started yet. Rung by the ride loop on the falling edge
-/// of the Sensors screen's scan mode. Without it, the latched request survives the pick and wins
-/// over the fresh save at the initiator's loop top, so the save-from-scan-list flow sits through a
-/// useless 10 s scan before it connects.
-///
-/// No [`wake_work`] pulse: a pick's save brings its own wake, and a Back lets a running window
-/// finish quietly.
-pub fn cancel_scan() {
-    SCAN_REQUEST.reset();
 }
 
 /// Save a sensor address to a quantity slot and (re)connect it. `quantity` is 0=HR, 1=power,
@@ -317,6 +299,9 @@ impl EventHandler for ScanEventHandler {
 
 /// Classify one advertisement and fold it into the deduped snapshot (replace-in-place by address).
 fn observe_report(addr: [u8; 6], random: bool, data: &[u8], rssi: i8) {
+    if super::state::sensor_activity() != SensorActivity::Discover {
+        return;
+    }
     let Some(m) = obc_ble::classify_advertisement(data) else { return };
     let mut name = String::<16>::new();
     if let Some(n) = m.name {
@@ -382,8 +367,8 @@ pub async fn run(
     .0
 }
 
-/// The one initiator: scan xor connect, never both at once. A scan request wins, because discovery
-/// is brief and interactive. Otherwise it connects every saved sensor that has no link, all in one
+/// The one initiator: scan xor connect, never both at once. Discovery owns the initiator while its
+/// list is open and the radio is permitted. Otherwise it connects saved sensors with no link in one
 /// filter accept list, so the controller takes whichever sensor advertises first and an absent
 /// sensor never holds up a present one. Live links stay up through both.
 async fn initiate(stack: &'static SensorStack, slots: &[Slot; QUANTITIES]) -> ! {
@@ -393,17 +378,22 @@ async fn initiate(stack: &'static SensorStack, slots: &[Slot; QUANTITIES]) -> ! 
         // requested, through the selects below.
         WORK_EDGE.reset();
 
-        if SCAN_REQUEST.try_take().is_some() {
-            run_scan(stack).await;
-            continue;
+        match super::state::sensor_activity() {
+            SensorActivity::Park => {
+                WORK_EDGE.wait().await;
+                continue;
+            }
+            SensorActivity::Discover => {
+                run_scan(stack).await;
+                continue;
+            }
+            SensorActivity::Connect => {}
         }
 
         let mut wanted: Vec<(usize, SavedSensor), QUANTITIES> = Vec::new();
-        if super::state::radio_enabled() {
-            for (quantity, slot) in slots.iter().enumerate() {
-                if let (false, Some(saved)) = (slot.busy.get(), saved_sensor(quantity)) {
-                    let _ = wanted.push((quantity, saved));
-                }
+        for (quantity, slot) in slots.iter().enumerate() {
+            if let (false, Some(saved)) = (slot.busy.get(), saved_sensor(quantity)) {
+                let _ = wanted.push((quantity, saved));
             }
         }
         if wanted.is_empty() {
@@ -493,6 +483,9 @@ async fn connect(
 
     // The accept list admits only `wanted`, but a save or forget can land while the connect runs;
     // a peer no longer wanted drops here, and its wake is already pending.
+    if super::state::sensor_activity() != SensorActivity::Connect {
+        return None;
+    }
     let peer = conn.peer_address();
     let &(quantity, saved) = wanted
         .iter()
@@ -564,15 +557,15 @@ async fn run_scan(stack: &'static SensorStack) {
         timeout: Duration::from_secs(SCAN_SECS),
         ..Default::default()
     };
-    match scanner.scan_ext(&config).await {
-        Ok(_session) => {
-            // The session keeps the scan enabled; reports flow through the handler. End the window
-            // early if the radio switches off or a new request lands.
-            let _ = select(Timer::after_secs(SCAN_SECS), WORK_EDGE.wait()).await;
-            // `_session` drops here → the scan is cancelled.
+    let scan = async {
+        match scanner.scan_ext(&config).await {
+            Ok(_session) => Timer::after_secs(SCAN_SECS).await,
+            Err(e) => warn!("ble: [sensor] scan start failed: {:?}", defmt::Debug2Format(&e)),
         }
-        Err(e) => warn!("ble: [sensor] scan start failed: {:?}", defmt::Debug2Format(&e)),
-    }
+    };
+    // Check permission before polling the controller, then cover both its start and active window.
+    // Dropping the scan future also drops its session and requests controller cancellation.
+    let _ = select(discovery_withdrawn(), scan).await;
 
     SCAN_ARMED.store(false, Ordering::Relaxed);
     // Let the scan-disable land before the loop moves on: the session's `Drop` above only queues the
@@ -581,6 +574,12 @@ async fn run_scan(stack: &'static SensorStack) {
     Timer::after_millis(200).await;
     let count = SCAN_HITS.lock(|c| c.borrow().len());
     info!("ble: [sensor] scan done — {} sensor(s) found", count);
+}
+
+async fn discovery_withdrawn() {
+    while super::state::sensor_activity() == SensorActivity::Discover {
+        WORK_EDGE.wait().await;
+    }
 }
 
 /// Discover the service + measurement characteristic, read the battery once, subscribe, and pump

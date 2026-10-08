@@ -68,7 +68,7 @@ struct PreparedDetour {
 /// request context into the preview screen without a back-channel.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourScreen {
-    route: Option<usize>,
+    route: Option<crate::CatalogObjectId>,
     start_m: u32,
     total_m: u32,
     steps: u16,
@@ -101,10 +101,7 @@ impl DetourScreen {
         }
     }
 
-    /// Re-point the chooser's held catalog slot after a live route rescan. A surviving route keeps
-    /// the selection; a vanished one becomes unavailable and cannot start a plan.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.route = self.route.and_then(remap);
+    pub(crate) fn invalidate_geometry(&mut self) {
         self.prepared = None;
     }
 
@@ -137,7 +134,7 @@ impl DetourScreen {
     }
 
     /// Whether this chooser can act: the shared entry conditions ([`reachable`]) plus the two facts
-    /// only an open chooser has, that its own route slot is still the active one and that a span
+    /// only an open chooser has, that its own route is still the active one and that a span
     /// has resolved.
     fn available(&self, navigation: &RouteState, recording: bool, has_nav_graph: bool) -> bool {
         reachable(navigation, recording, has_nav_graph)
@@ -309,7 +306,7 @@ impl DetourScreen {
 /// the anchor is deliberately not re-derived here.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourPreviewScreen {
-    route: Option<usize>,
+    route: Option<crate::CatalogObjectId>,
     /// The frozen anchor, which is the chooser's `start_m` at Press: the splice seam the commit
     /// handler re-anchors the matcher at.
     anchor_m: u32,
@@ -355,6 +352,11 @@ impl DetourPreviewScreen {
         }
     }
 
+    pub(crate) fn invalidate_geometry(&mut self) {
+        self.prepared = None;
+        self.route_has_elevation = false;
+    }
+
     /// The frozen splice-seam anchor the commit handler queues the matcher re-anchor at.
     pub(crate) fn anchor_m(&self) -> u32 {
         self.anchor_m
@@ -364,13 +366,6 @@ impl DetourPreviewScreen {
     pub(crate) fn set_commit_failed(&mut self) {
         self.committing = false;
         self.error = true;
-    }
-
-    /// Re-point the held catalog slot after a live route rescan. A vanished route makes the
-    /// staleness guard in [`handle`](Self::handle) cancel out.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.route = self.route.and_then(remap);
-        self.prepared = None;
     }
 
     /// The plan went stale under the preview: its route vanished or swapped, or the rider rode past
@@ -881,7 +876,7 @@ mod tests {
 
         let mut b = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&b);
-        p.remap_routes(&|_| None); // the planned route vanished in a rescan
+        b.active_route = None; // the planned route vanished from the catalog
         let t = with_state_ctx(&mut b, &mut rec, &mut nav_b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
         assert!(matches!(t, Transition::Pop));
         assert!(nav_b.cancel_pending(PlanFamily::Detour));
@@ -899,16 +894,95 @@ mod tests {
 
     /// Convert [`HILL_GPX`] and run `f` with the route and its profile, as the App holds them.
     fn with_hill_route<R>(f: impl FnOnce(&obc_route::RouteReader, &obc_route::Profile) -> R) -> R {
+        with_gpx_route(HILL_GPX, f)
+    }
+
+    fn with_gpx_route<R>(gpx: &str, f: impl FnOnce(&obc_route::RouteReader, &obc_route::Profile) -> R) -> R {
         use crate::harness::support::VecSink;
         use obc_formats::io::SliceSource;
 
         let mut sink = VecSink::default();
-        obc_route::gpx_to_obcr(&SliceSource(HILL_GPX.as_bytes()), "Hill", &mut sink).unwrap();
+        obc_route::gpx_to_obcr(&SliceSource(gpx.as_bytes()), "Hill", &mut sink).unwrap();
         let src = SliceSource(&sink.0);
         let idx = obc_route::RouteIndex::read(&src).unwrap();
         let route = obc_route::RouteReader::new(&idx, &src);
         let profile = route.elevation_profile();
         f(&route, &profile)
+    }
+
+    #[test]
+    fn same_id_route_replacement_refreshes_detour_geometry() {
+        fn prepare(app: &mut crate::App, route: &obc_route::RouteReader) {
+            let nav = *app.navigator.route_state();
+            let mut px = Prepare {
+                place_local: None,
+                reader: None,
+                route: Some(route),
+                poi_scratch: &mut app.ui.poi_scratch,
+                user_fix: None,
+                active_route: nav.active_route,
+                progress_m: nav.progress_m,
+                route_total_m: nav.route_total_m,
+                detour_preview: &[],
+            };
+            for screen in &mut app.ui.stack {
+                screen.prepare(&mut px);
+            }
+        }
+        fn screens(app: &crate::App) -> (&DetourScreen, &DetourPreviewScreen) {
+            match app.ui.stack.as_slice() {
+                [_, Screen::Detour(chooser), Screen::DetourPreview(preview), ..] => (chooser, preview),
+                _ => panic!("the chooser and its preview stay on the stack"),
+            }
+        }
+        let replacement = HILL_GPX
+            .replace("lon=\"8.", "lon=\"9.")
+            .replace("<ele>500</ele>", "")
+            .replace("<ele>600</ele>", "")
+            .replace("<ele>700</ele>", "");
+        with_hill_route(|old, _| {
+            with_gpx_route(&replacement, |new, _| {
+                assert_eq!(old.total_distance_m, new.total_distance_m);
+                for upload in [false, true] {
+                    let mut app = crate::App::new_idle(AppState::new(0, 0, 1.0));
+                    app.set_routes_with_ids(&[old.summary()], &[7]);
+                    app.activate_route(0);
+                    app.navigator.route_state_mut().route_total_m = old.total_distance_m;
+                    let chooser = DetourScreen::new(app.navigator.route_state());
+                    let preview = DetourPreviewScreen::new(
+                        &chooser,
+                        DetourPreview { cost_delta_m: 0, total_distance_m: 1_000, rejoin_m: 600, ascent_m: Some(40) },
+                    );
+                    assert!(app.ui.stack.push(Screen::Detour(chooser)).is_ok());
+                    assert!(app.ui.stack.push(Screen::DetourPreview(preview)).is_ok());
+                    prepare(&mut app, old);
+                    let (chooser, preview) = screens(&app);
+                    let before = chooser.prepared.unwrap();
+                    assert_eq!(preview.prepared.unwrap().candidate, before.candidate);
+                    assert!(preview.route_has_elevation);
+
+                    if upload {
+                        app.on_route_uploaded(7, true, None);
+                    } else {
+                        app.set_routes_with_ids(&[new.summary()], &[7]);
+                    }
+                    let (chooser, preview) = screens(&app);
+                    assert_eq!((chooser.route, preview.route), (Some(7), Some(7)));
+                    assert!(chooser.prepared.is_none() && preview.prepared.is_none());
+                    assert!(!preview.route_has_elevation);
+
+                    prepare(&mut app, new);
+                    let (chooser, preview) = screens(&app);
+                    let after = chooser.prepared.unwrap();
+                    assert_eq!(after.target_m, before.target_m);
+                    assert_ne!(after.candidate, before.candidate);
+                    assert_ne!(after.bounds, before.bounds);
+                    assert_eq!(preview.prepared.unwrap().candidate, after.candidate);
+                    assert_eq!(preview.prepared.unwrap().bounds, after.bounds);
+                    assert!(!preview.route_has_elevation);
+                }
+            })
+        });
     }
 
     fn hill_preview(detour_ascent_m: Option<u32>, anchor_m: u32, rejoin_m: u32) -> DetourPreviewScreen {

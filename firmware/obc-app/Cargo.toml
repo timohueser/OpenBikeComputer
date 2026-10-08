@@ -11,6 +11,7 @@ obc-ports = { workspace = true }
 # The persistent-format authority: OBCM/ride format constants, the POI category/subtype table, and
 # its lookups (`poi_label_of` / `poi_category_of`). no_std foundation crate — a downward edge.
 obc-formats = { workspace = true }
+obc-crc = { workspace = true }
 # Elevation: the shared ascent dead-band the ride ledger integrates barometric climb through, and
 # (from EL7) the OBCT terrain source the app mounts. no_std leaf — a downward edge like obc-formats.
 obc-elevation = { workspace = true }

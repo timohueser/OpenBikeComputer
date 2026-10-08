@@ -156,7 +156,10 @@ pub fn rest_ready(
     routes: &dyn crate::RouteRepository,
 ) -> Option<DetourReady> {
     let obc_route::Leg::Rest { from_m, to_m } = request.leg else { return None };
-    let route = *app.route_ids().get(request.route)?;
+    let route = request.route;
+    if !app.route_ids().contains(&route) {
+        return None;
+    }
     let day = obc_app::trip::trip_day(app.trips(), route)?;
     let trip = app.trips().iter().find(|trip| trip.key == day.key())?;
     let before = *trip.stage_ids.get(usize::from(day.day_index()).checked_sub(1)?)?;
