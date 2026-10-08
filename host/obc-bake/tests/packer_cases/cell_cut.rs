@@ -21,7 +21,7 @@ use obc_map_scene::BBox;
 use obc_network::nav::integrate_edge_ascent;
 use obc_places::metadata::Poi;
 use obc_places::routing::RoutableWay;
-use obc_reader::{MapCache, MapTables, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
+use obc_reader::{MapCache, MapTables, PoiCategory, Reader, SliceSource, MAX_FEAT_PTS, MAX_FEAT_RINGS};
 
 /// The band-`2^18` lon line between cells `j = 1052` and `j = 1053`: the worked-example seam.
 const SEAM: i64 = 7_602_176;
@@ -524,7 +524,12 @@ fn sections_live_only_in_the_band_that_carries_them() {
         }
         // The POI directory and the profile table are present either way — the sections exist and
         // are merely empty — which is what keeps every cell an openable map.
-        assert_eq!(poi.entries.len(), 7, "{}: all seven POI categories have a directory entry", artifact.path);
+        assert_eq!(
+            poi.entries.len(),
+            PoiCategory::ALL.len(),
+            "{}: every service category has a directory entry",
+            artifact.path
+        );
         assert!(nav.profile_count >= 1, "{}: the schema's profile table travels with every cell", artifact.path);
     }
     assert_eq!(network_pois, 3, "every POI landed in exactly one network cell");

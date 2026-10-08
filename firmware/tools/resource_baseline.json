@@ -26,15 +26,16 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 58568,
+        "app": 63304,
         "map_cache": 37084,
-        "map_tables": 7528,
+        "map_tables": 7600,
         "route_cache": 5396,
         "route_index": 12400,
         "arena_total": 131072,
         "arena_usb": 131072,
         "arena_render": 126888,
         "arena_nav": 97448,
+        "arena_places": 129148,
         "terrain": 2152,
         "terrain_window": 24,
         "stack_reserve": 65536,
@@ -59,6 +60,11 @@
         "flat_route_read": 48,
         "flat_engine": 768,
         "ble_v4_adapter": 763
+      },
+      "_route_service_line_allocation_measurement": {
+        "source_commit": "76d5852a8",
+        "build": "cargo build --release --locked --features resource-report --bin obc-fw-nrf54l on aarch64-apple-darwin",
+        "changes": "App 63,304 B; map tables 7,600 B; place cache 129,148 B inside the existing 131,072 B shared arena. RAM, stack and flash limits stay unchanged."
       },
       "_route_walk_allocation_measurement": {
         "source_commit": "c5dbd82a",

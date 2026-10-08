@@ -202,14 +202,9 @@ fn serialize_lods_header_single_empty_leaf() {
 
     // Every structure a header or directory offset reaches begins on a unit boundary, so each
     // region start is rounded up and the gap is `0xFF`-filled.
-    //   header 49 -> style table at 64 (the `49..64` gap is filler)
-    //   style count byte 1 -> LOD table at 80
-    //   one 18-byte LOD entry -> LOD 0's index at 112
-    //   index 4 plus the chunkless LOD's one-entry offset table 4 -> the region ends at 128
-    // then the empty POI directory — count(1) + chunk_size(2) + 7 entries x 13 + the pool fields
-    // (offset u32 + count u16) = 100 bytes, rounded to 112 — the empty hours pool, and the empty nav
-    // section at the tail.
-    let poi_dir_len = 1 + 2 + 7 * 13 + 6;
+    // The empty POI directory has one entry per service category, then the hours-pool fields.
+    let category_count = obc_formats::obcm::PoiCategory::ALL.len();
+    let poi_dir_len = 1 + 2 + category_count * 13 + 6;
     let hours_pool_len = align_up(2); // an empty pool is just its count, padded to a boundary
                                       // Empty graph: the 40-byte directory, the filler that carries
                                       // it to the profile table's boundary, and the four default
@@ -231,12 +226,12 @@ fn serialize_lods_header_single_empty_leaf() {
     // The POI section offset (header byte 32) points just past the LOD payload.
     let poi_off = scaled_at(&bin, 32);
     assert_eq!(poi_off, 144);
-    assert_eq!(bin[poi_off], 7, "empty POI directory still declares 7 categories");
+    assert_eq!(bin[poi_off] as usize, category_count, "empty POI directory still declares every service category");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
 
-    // The hours-pool fields trail the seven 13-byte entries: offset u32 + count u16. Count is 0, and
+    // The hours-pool fields trail the 13-byte entries: offset u32 + count u16. Count is 0, and
     // the pool region (its bare `count u16`) begins right after the directory.
-    let pool_fields_off = poi_off + 3 + 7 * 13;
+    let pool_fields_off = poi_off + 3 + category_count * 13;
     let hours_pool_off = scaled_at(&bin, pool_fields_off);
     let hours_pool_count = u16::from_le_bytes(bin[pool_fields_off + 4..pool_fields_off + 6].try_into().unwrap());
     assert_eq!(hours_pool_count, 0, "no hours in this map");
