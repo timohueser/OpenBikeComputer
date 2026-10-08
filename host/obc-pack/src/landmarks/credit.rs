@@ -97,8 +97,9 @@ pub(super) fn permission(markup: &str, license_url: &str, source_url: &str) -> R
         };
         let node = *element;
         let ancestors: Vec<_> = std::iter::once(element).chain(node.ancestors().filter_map(ElementRef::wrap)).collect();
-        ancestors.iter().any(|element| matching.contains(&element.id()))
-            && !ancestors.iter().any(|element| element.value().classes().any(|class| class == "licensetpl_attr"))
+        ancestors.iter().any(|element| matches!(element.value().name(), "style" | "script"))
+            || (ancestors.iter().any(|element| matching.contains(&element.id()))
+                && !ancestors.iter().any(|element| element.value().classes().any(|class| class == "licensetpl_attr")))
     };
     let mut parts = Vec::new();
     for node in document.tree.root().descendants() {
@@ -302,9 +303,12 @@ mod tests {
         let markup = r#"<div class="licensetpl">Standard terms
             <span class="licensetpl_link">https://creativecommons.org/licenses/by/4.0/</span>
             <span class="licensetpl_attr">Credit Example and <a href="https://example.test/author">website</a></span></div>
-            <p>Also credit Publisher <a href="/wiki/User:Publisher">profile</a>.</p>"#;
+            <p>Also credit Publisher <a href="/wiki/User:Publisher">profile</a>.</p>
+            <style>.panoramioreview{color:inherit}</style><script>hiddenCode()</script>"#;
         let notice = permission(markup, license, source).unwrap();
         assert!(!notice.contains("Standard terms"));
+        assert!(!notice.contains("color:inherit"));
+        assert!(!notice.contains("hiddenCode"));
         assert!(notice.contains("Credit Example and website"));
         assert!(notice.contains("Also credit Publisher profile"));
         assert!(notice.contains("https://example.test/author"));
