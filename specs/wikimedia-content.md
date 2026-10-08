@@ -82,6 +82,60 @@ failure, incomplete required identity, language-link or dependency pagination,
 and server pressure are unresolved work, never confirmed missing content. An
 interrupted or failed operation cannot publish a complete capture. The next run reuses its successful responses.
 
+### Acquisition adapter bytes
+
+`tools/wikimedia_acquire.py` is an adapter for a retained Store operation. Its
+caller supplies `--work`, `--out`, `--requests` and `--inputs` paths. It does not
+write Store objects or maintain a separate permanent index.
+
+The request object has `check_id`, a stable operation token, and `refresh`, a
+boolean. Optional arrays name `entities` by QID, `links` by
+`wikidata:<QID>` or `wikipedia:<language>:<title>`, `articles` by objects with
+`language`, `title` and optional expected `qid`, and `commons`, `categories`
+and retained `files` by exact filename or category title. Entity acquisition
+includes the shared class closure and bounded locale dependencies.
+
+The input array contains admitted pin records. Each record has `kind`, `key`,
+`status`, `checked_at`, `path` and `sha256`. Present versioned facts also have
+`identity` and `revision`. `path` is the resolved Store object path. File inputs
+also have `asset_path`, the resolved image object path. The adapter verifies
+input digests before acquisition.
+
+The output `manifest.json` has `schema: 1`, `complete`, `records`, `assets` and
+`failures`. Output pin paths are relative to `--out`. Each compact JSON object
+repeats its kind, key, status, identity and revision where present. Check times
+stay in the manifest. A check without changed content keeps the content digest.
+
+| Kind | Compact fact |
+| --- | --- |
+| `entity` | Supported labels, relevant ranked claims and supported sitelinks |
+| `link` | Canonical subject and exact normalization, redirect and language-link proof |
+| `article` | Wiki, page id, title, revision, lead HTML, licence and original notices |
+| `commons` | File identity, description revision, file revision, categories and image metadata |
+| `mediainfo` | MediaInfo identity, revision and ranked P180 statements |
+| `category` | One bounded nonrecursive member response, limit and continuation proof |
+| `file` | File identity and revision, plus a separately retained image asset pin |
+
+A category response has no invented page revision. Its digest pins the bounded
+membership observation. `bounded`, `limit`, `limit_reached` and `truncated`
+describe its scope. Required metadata pagination must finish; a bounded category
+response may retain continuation without following it.
+
+An image asset has relative `path`, `sha256`, `bytes`, `url` and `input` fields.
+`input` is `thumbnail500` or a validated retained `original`. Source snapshots
+own the JSON facts and every asset they reference. Temporary request envelopes
+stay under `--work`. They are not source snapshot or publication outputs.
+
+The adapter returns a nonzero exit status for unresolved work. It retains each
+successful compact fact before another request. A retry with the same `check_id`
+reuses those successes. A new freshness check uses a new token. Compilation
+uses admitted pins and makes no Wikimedia requests.
+
+`--adopt` accepts a retained capture root. It validates source digests and article
+and image revision evidence without changing the capture. A response without a
+source revision remains capture evidence. It does not become a versioned shared
+pin. Missing revision information requires a bounded acquisition check.
+
 ## Selection and projections
 
 Selection retains a reason for each selected subject and omitted asset. The
