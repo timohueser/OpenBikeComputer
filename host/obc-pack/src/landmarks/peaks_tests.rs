@@ -364,6 +364,19 @@ fn a_photo_alone_is_a_peak_record_and_never_a_landmark() {
     assert!(sites.records.is_empty() && sites.counts.candidates == 1);
     assert!(sites.omissions.iter().any(|o| o.qid == "Q4" && o.reason == "no_usable_captured_language"));
     assert_eq!(fs::read_dir(f.root.join("sites")).unwrap().count(), 1, "a refused landmark writes no photo");
+
+    let mut entity: Value = serde_json::from_slice(&fs::read(f.root.join("entities/Q4.json")).unwrap()).unwrap();
+    entity["entities"]["Q4"]["labels"] = json!({});
+    f.sources.retain(|source| source["path"] != "entities/Q4.json");
+    f.json("entities/Q4.json", entity);
+    snapshot["sources"] = json!(f.sources);
+    snapshot["places"][0].as_object_mut().unwrap().remove("name");
+    fs::write(&manifest, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    let summits = fs::read(f.root.join("summits.json")).unwrap();
+    let unnamed = peaks::compile(&manifest, &boundary, &f.root.join("unnamed"), false).unwrap();
+    assert!(unnamed.records.is_empty() && unnamed.associations.is_empty());
+    assert!(unnamed.omissions.iter().any(|o| o.qid == "Q4" && o.asset == "site" && o.reason == "name_missing"));
+    assert_eq!(fs::read(f.root.join("summits.json")).unwrap(), summits);
     fs::remove_dir_all(f.root).unwrap();
 }
 

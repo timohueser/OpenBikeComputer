@@ -143,6 +143,9 @@ pub(super) fn captures(
                 &obc_data::store::sha256_hex(query.to_string().as_bytes())[..32]
             ));
             let view = scratch.join("view");
+            if view.exists() {
+                std::fs::remove_dir_all(&view).map_err(|e| fail(e.to_string()))?;
+            }
             std::fs::create_dir_all(&view).map_err(|e| fail(e.to_string()))?;
             let boundary = scratch.join("boundary.json");
             let polygon = std::fs::read_to_string(store.object(&poly[7..])).map_err(|e| fail(e.to_string()))?;

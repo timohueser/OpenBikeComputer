@@ -315,7 +315,7 @@ fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, Str
         Ok(serde_json::json!({"entities":{string(&value,"key")?:{"statements":value["statements"]}}}))
     } else if value["kind"] == "category" {
         let mut raw = serde_json::json!({"query":{"categorymembers":value["members"]}});
-        if value["continuation"].is_object() {
+        if value["continuation"].as_object().is_some_and(|continuation| !continuation.is_empty()) {
             raw["continue"] = value["continuation"].clone();
         }
         Ok(raw)
@@ -796,12 +796,15 @@ fn prepare_article(
     // A record with no text has no default language, so it takes the first label in UI order. A
     // record that has text keeps the name rule it always had.
     let ui_label = || locale::languages().into_iter().find_map(|(code, _)| entity["labels"][&code]["value"].as_str());
-    let name = entity["labels"][&default_language]["value"]
+    let Some(name) = entity["labels"][&default_language]["value"]
         .as_str()
         .or_else(|| entity["labels"]["en"]["value"].as_str())
         .or_else(|| variants.is_empty().then(ui_label).flatten())
         .or_else(|| place["name"].as_str())
-        .ok_or("site name missing")?;
+    else {
+        omit("site", "name_missing".into());
+        return Ok(None);
+    };
     let name = obc_places::name::to_repertoire(&text::normalize(name));
     if !text::supported(&name) {
         omit("site", "name_glyph".into());
