@@ -199,10 +199,12 @@ export function servesCuisine(p,cuisine) {
 }
 
 export function distinct(results) {
-  const seen=new Set(), nearby=new Map();
+  const seen=new Set(), nearby=new Map(), landmarks=new Set();
   return results.filter(p=>{
-    if(seen.has(p.source))return false;
+    if(seen.has(p.source) || p.landmark_id && landmarks.has(p.landmark_id))return false;
+    if(p.landmark_id)landmarks.add(p.landmark_id);
     seen.add(p.source);
+    if(p.kind==='summit' && p.content)return true;
     const key=compact(p.kind==='street'?streetNorm(p.name):p.name)+'|'+p.kind, others=nearby.get(key)||[];
     // One street can have separate address groups across postcodes and municipal borders.
     const radius=p.kind==='street'?1:.02;

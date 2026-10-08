@@ -41,6 +41,7 @@ export type Place = RoutePoint & {
     openingHours?: string;
     website?: string;
     phone?: string;
+    content?: import('./place-content').PlaceContent;
     detailsLoaded?: boolean;
     hoursStatus?: import('./search/types').HoursStatus;
 };

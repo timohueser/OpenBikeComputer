@@ -237,7 +237,7 @@ public struct PlannerPreviewView: View {
         .task(id: "\(selectedPlace?.id ?? "")-\(selectionRevision)") {
             detailsError = nil
             guard let place = selectedPlace, !place.detailsLoaded,
-                  place.id.range(of: #"^[nwr][1-9][0-9]*$"#, options: .regularExpression) != nil else { return }
+                  place.id.range(of: #"^(?:[nwr]|Q)[1-9][0-9]*$"#, options: .regularExpression) != nil else { return }
             let coordinate = place.coordinate
             var query = PlannerSearchQuery(text: "Place", view: [coordinate.longitude - 0.01, coordinate.latitude - 0.01,
                                                                   coordinate.longitude + 0.01, coordinate.latitude + 0.01])
@@ -248,7 +248,7 @@ public struct PlannerPreviewView: View {
                 guard selectedPlace?.id == place.id, let details else { return }
                 selectedPlace = .init(id: place.id, name: place.name, coordinate: coordinate, kind: place.kind,
                     alongRouteMeters: place.alongRouteMeters, offRouteMeters: place.offRouteMeters,
-                    hours: details.hours, note: details.note, website: details.website, phone: details.phone, description: details.description, detailsLoaded: true)
+                    hours: details.hours, note: details.note, website: details.website, phone: details.phone, description: details.description, content: details.content, detailsLoaded: true)
             } catch {
                 if !Task.isCancelled { detailsError = "Place details are unavailable. Try selecting the place again." }
             }
@@ -488,6 +488,7 @@ public struct PlannerPreviewView: View {
                         .font(.system(.subheadline).monospacedDigit()).foregroundStyle(OBCTheme.secondary)
                 }
             }
+            if let content = place.content { PlannerPlaceContent(content: content, name: place.name) }
             if let description = place.description, !description.isEmpty {
                 Text(verbatim: description).font(.subheadline).fixedSize(horizontal: false, vertical: true)
             }

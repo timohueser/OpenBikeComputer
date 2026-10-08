@@ -256,12 +256,12 @@
     $effect(() => {
         const id = selectedId, place = mapPlace;
         detailsError = '';
-        if (!id || !/^[nwr][1-9]\d*$/.test(id) || place?.id !== id || place.detailsLoaded) return;
+        if (!id || !/^(?:[nwr]|Q)[1-9]\d*$/.test(id) || place?.id !== id || place.detailsLoaded) return;
         const abort = new AbortController();
         placeDetails(id, place.coordinate, abort.signal).then(details => {
             if (abort.signal.aborted) return;
             mapPlace = { ...place, detailsLoaded: true, ...(details ? { website: details.website, phone: details.phone,
-                description: details.description || place.description, openingHours: details.opening_hours,
+                content: details.content, description: details.description || place.description, openingHours: details.opening_hours,
                 hoursStatus: details.hoursStatus, locality: details.city } : {}) };
         }).catch(() => { if (!abort.signal.aborted) detailsError = 'Place details are unavailable. Try selecting the place again.'; });
         return () => abort.abort();

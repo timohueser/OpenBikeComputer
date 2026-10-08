@@ -1,18 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { corridorTiles, osmSource, poiPlace } from './place-index';
+import { corridorTiles, placeSource, poiPlace } from './place-index';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
-describe('OSM place identities', () => {
-    it('keeps node, way and relation identities distinct for detail lookup', () => {
-        for (const [type, letter] of [[1,'n'],[2,'w'],[3,'r']] as const) {
+describe('place identities', () => {
+    it('keeps OSM elements and curated Wikidata identities distinct for detail lookup', () => {
+        for (const [type, letter] of [[1,'n'],[2,'w'],[3,'r'],[4,'Q']] as const) {
             const id = type * 2 ** 44 + 123;
-            expect(osmSource(id)).toBe(`${letter}123`);
+            expect(placeSource(id)).toBe(`${letter}123`);
             expect(poiPlace(id, 'campsite', 'Camp', [8,48])?.id).toBe(`${letter}123`);
         }
-        expect(osmSource('n123')).toBe('n123');
-        expect(osmSource(123)).toBeUndefined();
-        expect(osmSource(undefined)).toBeUndefined();
+        expect(placeSource('n123')).toBe('n123');
+        expect(placeSource(123)).toBeUndefined();
+        expect(placeSource(undefined)).toBeUndefined();
     });
 });
 describe('hosted corridor places', () => {

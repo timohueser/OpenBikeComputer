@@ -21,15 +21,16 @@ class PlacesArchive(unittest.TestCase):
                     'component':'pois', 'bounds':[7,47,9,49], 'osm_sha256':'a'*64, 'attribution':'OSM'}.items()])
                 db.executemany('INSERT INTO places VALUES (?,?,?,?,?)', [
                     ('n1','campsite','Camp',7.9,47.9), ('w2','parking','Car park',7.9,47.9),
-                    ('r3','drinking_water','Water',7.900001,47.900001), ('n4','hotel','Outside',10,50)])
-            self.assertEqual(places.derive(source,target), {'places':2,'tiles':1})
+                    ('r3','drinking_water','Water',7.900001,47.900001), ('n4','hotel','Outside',10,50), ('Q5','pass','Curated pass',7.900002,47.900002)])
+            self.assertEqual(places.derive(source,target), {'places':3,'tiles':1})
             with target.open('rb') as stream:
                 data=MmapSource(stream)
                 self.assertEqual(Reader(data).metadata()['osm_sha256'],'a'*64)
                 tiles=list(all_tiles(data))
             records=list(places.pois(gzip.decompress(tiles[0][1])))
-            self.assertEqual([r[0] for r in records], [2**44+1,3*2**44+3])
+            self.assertEqual([r[0] for r in records], [4*2**44+5,2**44+1,3*2**44+3])
             self.assertEqual([r[1] for r in records], [
+                {'kind':'pass','name':'Curated pass','lon':'7.900002','lat':'47.900002'},
                 {'kind':'campsite','name':'Camp','lon':'7.9','lat':'47.9'},
                 {'kind':'drinking_water','name':'Water','lon':'7.900001','lat':'47.900001'}])
             with sqlite3.connect(source) as db:

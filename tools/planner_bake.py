@@ -188,7 +188,7 @@ def specifications(config, prepared=None):
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json"]] + [maps.ROOT / "uv.lock"]
     for component in ["pois", "addresses"]:
         add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
-            "time_zone": config["time_zone"], "component": component, "schema": 5},
+            "time_zone": config["time_zone"], "component": component, "schema": 6},
             ["source-records"], [*common, SEARCH / f"{component}.py"])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "uv.lock"

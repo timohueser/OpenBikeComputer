@@ -21,8 +21,8 @@ export function federate({groups, run}) {
     cell.metadata = Object.fromEntries(run(cell.group, `SELECT key,value FROM ${cell.name}.metadata`, [])
       .map(row => [row.key, JSON.parse(row.value)]));
   const first = cells[0].metadata;
-  if (cells.some(({metadata}) => metadata.schema !== 5 || metadata.osm_sha256 !== first.osm_sha256))
-    throw new Error('Search cells need schema 5 and one OSM source.');
+  if (cells.some(({metadata}) => metadata.schema !== 6 || metadata.osm_sha256 !== first.osm_sha256))
+    throw new Error('Search cells need schema 6 and one OSM source.');
   // The region metadata is what every cell shares.
   const metadata = Object.fromEntries(Object.entries(first).filter(([key, value]) =>
     cells.every(cell => JSON.stringify(cell.metadata[key]) === JSON.stringify(value))));

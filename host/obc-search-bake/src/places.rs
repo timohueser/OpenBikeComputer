@@ -103,7 +103,11 @@ pub fn record(f: &Feature, i: usize, index: &Index<'_>) -> Option<Value> {
         .filter(|(k, _)| {
             k.starts_with("contact:")
                 || k.starts_with("description")
-                || matches!(k.as_str(), "opening_hours" | "website" | "phone" | "cuisine" | "population" | "ele")
+                || k.starts_with("wikipedia:")
+                || matches!(
+                    k.as_str(),
+                    "opening_hours" | "website" | "phone" | "cuisine" | "population" | "ele" | "wikidata" | "wikipedia"
+                )
         })
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();

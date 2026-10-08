@@ -91,6 +91,8 @@ public struct PlannerPlace: Decodable, Identifiable, Sendable {
     public let website: String?
     public let phone: String?
     public let description: String?
+    public let content: PlaceContent?
+    public let landmark_id: String?
     public struct Position: Decodable, Sendable { public let along: Double; public let distance: Double }
     public let position: Position?
     public let lon: Double
