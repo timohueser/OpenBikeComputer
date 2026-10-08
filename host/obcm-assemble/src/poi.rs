@@ -249,7 +249,8 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> Result<PoiSection> {
     }
     category_ids.sort_unstable();
     let category_count = category_ids.len();
-    let mut by_cat: Vec<Vec<&MergedPoi>> = (0..=SETTLEMENT_CATEGORY_ID).map(|_| Vec::new()).collect();
+    let mut by_cat: Vec<Vec<&MergedPoi>> =
+        (0..=category_ids.last().copied().unwrap_or(0)).map(|_| Vec::new()).collect();
     for p in &merged.pois {
         // Validated at merge time, so the category is known.
         let cat = poi_directory_category_of(p.subtype).expect("subtype validated at merge") as usize;
@@ -373,7 +374,7 @@ fn pack_record(p: &MergedPoi) -> [u8; POI_RECORD_LEN] {
     rec
 }
 
-/// The section a shard with no POIs writes: seven empty categories and an empty pool.
+/// The section a shard with no POIs writes: empty service categories and an empty pool.
 pub fn empty_layout(global_bbox: UBox) -> Result<PoiSection> {
     layout(&MergedPois { pois: Vec::new(), pool: Vec::new(), duplicates: 0 }, global_bbox)
 }
@@ -454,7 +455,7 @@ mod tests {
         assert_eq!(services.summit_bytes(), 0);
     }
 
-    /// The section a shard with no POIs writes, at a unit-aligned offset: the seven empty entries
+    /// The section a shard with no POIs writes, at a unit-aligned offset: the empty service entries
     /// and the filler.
     ///
     /// The gap assertions are the point of the second half. Every directory field here would read
@@ -482,15 +483,15 @@ mod tests {
         assert_eq!(pool_off, dir_end);
         assert_eq!(u16::from_le_bytes(bytes[POI_DIR_LEN - 2..POI_DIR_LEN].try_into().unwrap()), 0);
 
-        // 87 bytes of directory, then filler to the boundary the offsets above name.
-        assert_eq!(POI_DIR_LEN, 100, "the §7.1 directory is the width every gap here is measured from");
+        // The directory has ten 13-byte entries, a 3-byte header and 6-byte pool reference.
+        assert_eq!(POI_DIR_LEN, 139, "the §7.1 directory is the width every gap here is measured from");
         let dir_gap = dir_end - AT - POI_DIR_LEN;
-        assert_eq!(dir_gap, 12, "87 → 96 at U = 16");
-        assert_eq!(&bytes[POI_DIR_LEN..POI_DIR_LEN + dir_gap], &[obc_formats::obcm::FILLER; 12], "§1.2's fill byte");
+        assert_eq!(dir_gap, 5, "139 → 144 at U = 16");
+        assert_eq!(&bytes[POI_DIR_LEN..POI_DIR_LEN + dir_gap], &[obc_formats::obcm::FILLER; 5], "§1.2's fill byte");
         // The pool's own two `count` bytes, then the run that leaves the nav directory nameable.
         assert_eq!(&bytes[dir_gap + POI_DIR_LEN..][..2], &0u16.to_le_bytes(), "an empty pool is a bare count");
         assert_eq!(&bytes[dir_gap + POI_DIR_LEN + 2..], &[obc_formats::obcm::FILLER; 14], "the tail run");
-        assert_eq!(bytes.len(), 128, "96 (directory + filler) + 16 (the pool, rounded up)");
+        assert_eq!(bytes.len(), 160, "144 (directory + filler) + 16 (the pool, rounded up)");
         assert_eq!(
             bytes.len() as u64,
             empty_layout((0, 0, 1_000_000, 1_000_000)).expect("an empty section lays out").section_len()
