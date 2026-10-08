@@ -37,23 +37,85 @@ class LandmarkCaptureTests(unittest.TestCase):
                 capture = Capture(Path(directory), interval=0)
                 filename = "Example.jpg"
                 key = digest(filename.encode())
-                info = {"mime":"image/jpeg", "url":"https://example.test/original.jpg", "thumburl":"https://example.test/500.jpg"}
-                metadata = json.dumps({"query":{"pages":{"1":{"imageinfo":[info]}}}}).encode()
+                info = {"mime":"image/jpeg", "url":"https://example.test/original.jpg", "thumburl":"https://example.test/500.jpg", "timestamp":"2026-01-01T00:00:00Z", "sha1":"a" * 40}
+                metadata = json.dumps({"query":{"pages":{"1":{"title":"File:Example.jpg", "imageinfo":[info]}}}}).encode()
                 old_url = image_metadata_url(filename).replace("&iiurlwidth=500", "")
                 with patch("tools.landmark_capture.urlopen", return_value=Response(metadata)):
                     capture.fetch(f"images/{key}.json", old_url)
                 if retained:
                     with patch("tools.landmark_capture.urlopen", return_value=Response(b"original")):
                         capture.fetch(f"images/{key}.jpg", info["url"])
-                with patch("tools.landmark_capture.urlopen", return_value=Response(b"thumbnail")) as request:
-                    path, status = photo_bytes(capture, filename)
+                with patch("tools.landmark_capture.urlopen", side_effect=[Response(metadata), Response(b"thumbnail"), Response(metadata)]) as request:
+                    image = {}
+                    path, status = photo_bytes(capture, filename, image)
                 self.assertEqual(status, "captured")
-                self.assertEqual(path, f"images/{key}{'.jpg' if retained else '-500.jpg'}")
+                self.assertEqual(path, f"images/{key}{'.jpg' if retained else '-500-1.jpg'}")
                 if retained:
                     request.assert_not_called()
                 else:
-                    self.assertEqual(request.call_args.args[0].full_url, info["thumburl"])
+                    self.assertEqual(request.call_args_list[1].args[0].full_url, info["thumburl"])
+                    self.assertEqual(request.call_count, 3)
+                    self.assertIn("revision_before_path", image)
+                    self.assertIn("revision_after_path", image)
                 self.assertIn("iiurlwidth=500", image_metadata_url(filename))
+
+    def test_resumed_thumbnail_rechecks_revision_and_never_reuses_an_orphan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            capture = Capture(Path(directory), interval=0)
+            filename, key = "Example.jpg", digest(b"Example.jpg")
+            def metadata(sha):
+                return json.dumps({"query":{"pages":{"1":{"title":"File:Example.jpg", "imageinfo":[{
+                    "mime":"image/jpeg", "url":"https://example.test/original.jpg", "thumburl":"https://example.test/500.jpg",
+                    "timestamp":"2026-01-01T00:00:00Z", "sha1":sha}]}}}}).encode()
+            original, changed = metadata("a" * 40), metadata("b" * 40)
+            with patch("tools.landmark_capture.urlopen", side_effect=[Response(original), Response(original), Response(b"orphan")]):
+                capture.fetch(f"images/{key}.json", image_metadata_url(filename))
+                capture.fetch(f"images/{key}-500-1-before.json", image_metadata_url(filename))
+                capture.fetch(f"images/{key}-500-1.jpg", "https://example.test/500.jpg")
+            image = {"metadata_path":f"images/{key}.json"}
+            with patch("tools.landmark_capture.urlopen", return_value=Response(changed)) as request:
+                self.assertEqual(photo_bytes(capture, filename, image), (None, "metadata-changed"))
+                request.assert_called_once()
+            self.assertNotIn("revision_after_path", image)
+            self.assertEqual((Path(directory) / f"images/{key}.json").read_bytes(), original)
+            with patch("tools.landmark_capture.urlopen", side_effect=[Response(changed), Response(b"current"), Response(changed)]) as request:
+                path, status = photo_bytes(capture, filename, image)
+                self.assertEqual(request.call_count, 3)
+            self.assertEqual(status, "captured")
+            self.assertEqual(path, f"images/{key}-500-3.jpg")
+            self.assertEqual((Path(directory) / path).read_bytes(), b"current")
+            self.assertEqual((Path(directory) / f"images/{key}-500-1.jpg").read_bytes(), b"orphan")
+            self.assertIn("revision_after_path", image)
+
+    def test_post_download_failure_or_overwrite_never_admits_thumbnail_bytes(self):
+        for state in ("overwrite", "failure", "maxlag"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                capture = Capture(Path(directory), interval=0)
+                filename, key = "Example.jpg", digest(b"Example.jpg")
+                info = {"mime":"image/jpeg", "url":"https://example.test/original.jpg", "thumburl":"https://example.test/500.jpg",
+                        "timestamp":"2026-01-01T00:00:00Z", "sha1":"a" * 40}
+                metadata = {"query":{"pages":{"1":{"title":"File:Example.jpg", "imageinfo":[info]}}}}
+                raw = json.dumps(metadata).encode()
+                with patch("tools.landmark_capture.urlopen", return_value=Response(raw)):
+                    capture.fetch(f"images/{key}.json", image_metadata_url(filename))
+                info["sha1"] = "b" * 40
+                if state == "overwrite":
+                    post = [Response(json.dumps(metadata).encode())]
+                elif state == "failure":
+                    post = [HTTPError(Response.url, 404, "Not found", {}, None)]
+                else:
+                    post = [Response(b'{"error":{"code":"maxlag"}}') for _ in range(BACKOFF_ATTEMPTS)]
+                image = {"metadata_path":f"images/{key}.json"}
+                with patch("tools.landmark_capture.urlopen", side_effect=[Response(raw), Response(b"thumbnail"), *post]), patch("tools.landmark_capture.time.sleep"):
+                    if state == "maxlag":
+                        with self.assertRaisesRegex(RuntimeError, "capture stopped"):
+                            photo_bytes(capture, filename, image)
+                    else:
+                        path, status = photo_bytes(capture, filename, image)
+                        self.assertIsNone(path)
+                        self.assertIn(status, ("metadata-changed", "revision-check-acquisition-failed"))
+                self.assertNotIn("revision_before_path", image)
+                self.assertNotIn("revision_after_path", image)
 
     def test_shared_photo_is_downloaded_once(self):
         with tempfile.TemporaryDirectory() as directory:

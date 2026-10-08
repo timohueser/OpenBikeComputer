@@ -145,6 +145,7 @@ fn degrees(value: &Value) -> Option<f64> {
 pub(super) fn described(metadata: &Value) -> Result<(&Value, String), String> {
     let page = metadata["query"]["pages"]
         .as_object()
+        .filter(|pages| pages.len() == 1)
         .and_then(|pages| pages.values().next())
         .ok_or("photo_metadata_missing")?;
     let filename = string(page, "title")?.strip_prefix("File:").ok_or("photo_identity_mismatch")?.replace('_', " ");
@@ -205,6 +206,17 @@ pub(super) fn photo(
     let bytes = read_pinned(root, sources, input_path, photo::MAX_SOURCE_BYTES as u64)?;
     let sha1 =
         <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    if thumbnail {
+        for field in ["revision_before_path", "revision_after_path"] {
+            let path = capture[field].as_str().ok_or("photo_thumbnail_revision_unverified")?;
+            let witness = json_pinned(root, sources, path)?;
+            let (witness_page, witness_file) = described(&witness)?;
+            let current = &witness_page["imageinfo"][0];
+            if witness_file != filename || !revision_matches(info, current) {
+                return Err("photo_revision_mismatch".into());
+            }
+        }
+    }
     if !thumbnail && info["sha1"].as_str() != Some(&sha1) {
         return Err("photo_revision_mismatch".into());
     }
@@ -213,27 +225,57 @@ pub(super) fn photo(
     Ok((Photo { path, sha256: hash(&pixels), bytes: pixels.len(), attribution }, pixels))
 }
 
+fn revision_matches(expected: &Value, current: &Value) -> bool {
+    if !["timestamp", "sha1"].iter().all(|field| {
+        expected[field].as_str().is_some_and(|value| !value.is_empty()) && expected[field] == current[field]
+    }) {
+        return false;
+    }
+    if let Some(revision) = expected["description_revision"].as_u64() {
+        return current["description_revision"].as_u64() == Some(revision);
+    }
+    [
+        "Artist",
+        "Attribution",
+        "Permission",
+        "License",
+        "LicenseUrl",
+        "Copyrighted",
+        "AttributionRequired",
+        "Categories",
+        "ObjectName",
+        "Credit",
+        "LicenseShortName",
+        "UsageTerms",
+    ]
+    .iter()
+    .all(|field| expected["extmetadata"][field]["value"] == current["extmetadata"][field]["value"])
+}
+
 pub(super) fn photo_attribution(info: &Value) -> Result<Attribution, String> {
     let ext = &info["extmetadata"];
     let license = ext["LicenseUrl"]["value"].as_str().unwrap_or_default().to_owned();
+    let source_url = string(info, "descriptionurl")?.to_owned();
     // Metadata provenance and HTML decoration are retained in the pinned response. The credit
-    // notices preserve every value; Permission's markup can dominate the notice budget.
+    // notices keep requested attribution and residual Permission text; licence boilerplate is
+    // represented by its matching URI.
     let mut notices = serde_json::Map::new();
     for (key, field) in ext.as_object().ok_or("photo_notices")? {
         let value = if key == "Permission" {
-            Value::String(text::normalize(
-                &Html::parse_fragment(field["value"].as_str().unwrap_or_default())
-                    .root_element()
-                    .text()
-                    .collect::<String>(),
-            ))
+            Value::String(credit::permission(field["value"].as_str().unwrap_or_default(), &license, &source_url)?)
         } else {
             field["value"].clone()
         };
-        notices.insert(key.clone(), serde_json::json!({"value": value}));
+        notices.insert(
+            key.clone(),
+            if key == "Permission" {
+                serde_json::json!({"value":value,"format":"plain"})
+            } else {
+                serde_json::json!({"value":value})
+            },
+        );
     }
     let original = serde_json::to_string(&notices).map_err(|e| e.to_string())?;
-    let source_url = string(info, "descriptionurl")?.to_owned();
     let attribution = attribution(source_url, string(info, "timestamp")?.to_owned(), license, original)?;
     credit::photo(&attribution)?;
     Ok(attribution)

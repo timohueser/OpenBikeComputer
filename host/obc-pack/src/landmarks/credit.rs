@@ -2,7 +2,7 @@
 //! from the retained source notices, so the compiler and the map serializer cannot disagree.
 use super::{text, Attribution};
 use obc_formats::obcm::landmarks::{CREDIT_FIELDS, MAX_ATTRIBUTION_BYTES};
-use scraper::Html;
+use scraper::{ElementRef, Html, Node, Selector};
 use serde_json::Value;
 
 pub type Credit = [String; CREDIT_FIELDS as usize];
@@ -33,13 +33,85 @@ pub fn photo(attribution: &Attribution) -> Result<Credit, &'static str> {
         let markup = metadata[key]["value"].as_str().unwrap_or_default();
         text::normalize(&Html::parse_fragment(markup).root_element().text().collect::<String>())
     };
-    let creator = Some(plain("Attribution")).filter(|value| !value.is_empty()).unwrap_or_else(|| plain("Artist"));
+    let mut creator = Some(plain("Attribution")).filter(|value| !value.is_empty()).unwrap_or_else(|| plain("Artist"));
     let licence = photo_licence(&attribution.license_url, &metadata)?;
     if creator.is_empty() && !licence.starts_with("CC0") && !licence.starts_with("Public domain") {
         return Err("photo_creator_missing");
     }
+    let residual = if metadata["Permission"]["format"] == "plain" {
+        metadata["Permission"]["value"].as_str().unwrap_or_default().to_owned()
+    } else {
+        permission(
+            metadata["Permission"]["value"].as_str().unwrap_or_default(),
+            &attribution.license_url,
+            &attribution.source_url,
+        )?
+    };
+    if !residual.is_empty() {
+        if !creator.is_empty() {
+            creator.push_str("; ");
+        }
+        creator.push_str(&residual);
+    }
     let title = Some(plain("ObjectName")).filter(|value| !value.is_empty()).unwrap_or_else(|| file.replace('_', " "));
-    checked([attribution.source_url.clone(), title, creator, format!("{licence}; resized/dithered")])
+    checked([attribution.source_url.clone(), title, creator, format!("{licence}; resized/dithered")]).map_err(
+        |reason| {
+            if !residual.is_empty() && matches!(reason, "attribution_bytes" | "attribution_glyph") {
+                "photo_permission_unsupported"
+            } else {
+                reason
+            }
+        },
+    )
+}
+
+/// Commons identifies a single licence block and its requested attribution with documented
+/// classes. Only a matching supported block is redundant with the encoded licence URI.
+/// Text and links outside it, and every requested-attribution node, remain uninterpreted.
+pub(super) fn permission(markup: &str, license_url: &str, source_url: &str) -> Result<String, &'static str> {
+    let document = Html::parse_fragment(markup);
+    let blocks = Selector::parse(".licensetpl").expect("fixed selector");
+    let links = Selector::parse(".licensetpl_link").expect("fixed selector");
+    let nonfree = Selector::parse(".licensetpl_nonfree").expect("fixed selector");
+    let matching: Vec<_> = document
+        .select(&blocks)
+        .filter_map(|block| {
+            let names: Vec<_> =
+                block.select(&links).map(|node| text::normalize(&node.text().collect::<String>())).collect();
+            let matches =
+                names.len() == 1 && licence(license_url).is_ok_and(|expected| licence(&names[0]) == Ok(expected));
+            (matches && !block.select(&nonfree).any(|node| text::normalize(&node.text().collect::<String>()) == "true"))
+                .then_some(block.id())
+        })
+        .collect();
+    let omitted = |element: Option<ElementRef<'_>>| {
+        let Some(element) = element else {
+            return false;
+        };
+        let node = *element;
+        let ancestors: Vec<_> = std::iter::once(element).chain(node.ancestors().filter_map(ElementRef::wrap)).collect();
+        ancestors.iter().any(|element| matching.contains(&element.id()))
+            && !ancestors.iter().any(|element| element.value().classes().any(|class| class == "licensetpl_attr"))
+    };
+    let mut parts = Vec::new();
+    for node in document.tree.root().descendants() {
+        if let Node::Text(value) = node.value() {
+            if !omitted(node.parent().and_then(ElementRef::wrap)) {
+                parts.push(value.to_string());
+            }
+        }
+    }
+    let base = url::Url::parse(source_url).map_err(|_| "photo_source_url")?;
+    for link in document.select(&Selector::parse("a[href]").expect("fixed selector")) {
+        if !omitted(Some(link)) {
+            let href = link.value().attr("href").unwrap_or_default();
+            let resolved = base.join(href).map_err(|_| "photo_permission_unsupported")?.to_string();
+            if !parts.contains(&resolved) {
+                parts.push(resolved);
+            }
+        }
+    }
+    Ok(text::normalize(&parts.join(" ")))
 }
 
 /// The short name and canonical URI of a supported licence. Older CC licences and FAL require
@@ -186,5 +258,49 @@ mod tests {
         let metadata = serde_json::json!({"License":{"value":"pd"}, "Copyrighted":{"value":"False"},
             "AttributionRequired":{"value":"false"}, "Categories":{"value":"PD other reasons"}});
         assert_eq!(photo_licence("", &metadata), Err("unsupported_public_domain_basis"));
+    }
+    #[test]
+    fn retained_custom_permissions_are_preserved_or_rejected_without_truncation() {
+        for (url, license, notices) in [
+            (
+                "https://commons.wikimedia.org/wiki/File:Konstanz_Schloss_Seeheim_asv2022-10.jpg",
+                "http://artlibre.org/licence/lal/en",
+                r###"{"Artist":{"value":"<b><span class=\"plainlinks\"><a class=\"external text\" href=\"https://commons.wikimedia.org/wiki/User:A.Savin\">A.Savin</a></span></b>"},"Permission":{"value":"Free Art License. Correct attribution is «A.Savin, Wikipedia». Free usage of the photo, no need to ask for approval. Лицензия Свободное искусство. Корректное указание авторства - «А.Савин, Википедия». Использование фотографии бесплатно, согласование не требуется. Lizenz Freie Kunst. Korrekte Autorenkennzeichnung ist «A.Savin, Wikipedia». Nutzung des Fotos kostenlos, Anfrage nicht erforderlich."}}"###,
+            ),
+            (
+                "https://commons.wikimedia.org/wiki/File:Weil_am_Rhein_-_Vitra_Slide_Tower16.jpg",
+                "http://artlibre.org/licence/lal/en",
+                r###"{"Artist":{"value":"<a href=\"//commons.wikimedia.org/wiki/User:Taxiarchos228\" title=\"User:Taxiarchos228\">Taxiarchos228</a>"},"Permission":{"value":"Copyleft: This work of art is free; you can redistribute it and/or modify it according to terms of the Free Art License. You will find a specimen of this license on the Copyleft Attitude site as well as on other sites. http://artlibre.org/licence/lal/enFALFree Art Licensefalsetrue Bilder des zentralen Medienarchivs Wikimedia Commons, unterstehen einer Freien Lizenz. Diese Freiheit bedeutet nicht, dass dadurch das Urheberrecht entfällt. Ganz im Gegenteil: Als Gegenleistung für die kostenlose (nichtgewerbliche) Nutzung muss der Weiternutzer nur die Lizenzbedingungen einhalten und den Fotografen (meinen vollständigen Klarnamen Wladyslaw Sojka sowie die verlinkte Website www.sojka.photo) als Urheber nennen. Juristisch ist die unterlassene Namensnennung eine Urheberrechtsverletzung bzw. eine Verletzung der Urheberpersönlichkeitsrechte. Als Urheber kann ich mich gegen Bilderklau wehren, in dem ich einen Strafantrag stelle oder unmittelbar einen Rechtsanwalt beauftrage. Die Folge ist eine Abmahnung und die Aufforderung, eine strafbewehrte Unterlassungserklärung abzugeben. So weit sollte es nicht kommen. Bitte achten Sie auf diese Regeln oder kontaktieren Sie mich im Zweifelsfall. Sollten Abweichungen von den hier angegebenen Regeln erwünscht sein, dann bedarf es auf jeden Fall einer ausdrücklichen Genehmigung von mir als Urheber des jeweiligen Bildes. Kontaktmöglichkeiten: über Wikimedia Commons oder über www.sojka.photo."}}"###,
+            ),
+        ] {
+            let source = attribution(url, "t", license, notices);
+            assert_eq!(photo(&source), Err("photo_permission_unsupported"));
+        }
+        let source = attribution(
+            "https://commons.wikimedia.org/wiki/File:Example.jpg",
+            "t",
+            "http://artlibre.org/licence/lal/en",
+            r#"{"Artist":{"value":"A.Savin"},"Permission":{"value":"Correct attribution is A.Savin, Wikipedia."}}"#,
+        );
+        assert_eq!(photo(&source).unwrap()[2], "A.Savin; Correct attribution is A.Savin, Wikipedia.");
+    }
+
+    #[test]
+    fn matching_licence_blocks_keep_requested_credit_and_every_residual_link() {
+        let source = "https://commons.wikimedia.org/wiki/File:Example.jpg";
+        let license = "https://creativecommons.org/licenses/by/4.0/";
+        let markup = r#"<div class="licensetpl">Standard terms
+            <span class="licensetpl_link">https://creativecommons.org/licenses/by/4.0/</span>
+            <span class="licensetpl_attr">Credit Example and <a href="https://example.test/author">website</a></span></div>
+            <p>Also credit Publisher <a href="/wiki/User:Publisher">profile</a>.</p>"#;
+        let notice = permission(markup, license, source).unwrap();
+        assert!(!notice.contains("Standard terms"));
+        assert!(notice.contains("Credit Example and website"));
+        assert!(notice.contains("Also credit Publisher profile"));
+        assert!(notice.contains("https://example.test/author"));
+        assert!(notice.contains("https://commons.wikimedia.org/wiki/User:Publisher"));
+        assert!(permission(markup, "https://creativecommons.org/licenses/by-sa/4.0/", source)
+            .unwrap()
+            .contains("Standard terms"));
     }
 }
