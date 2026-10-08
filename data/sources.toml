@@ -459,7 +459,7 @@ fetch = { kind = "capture", url = "https://www.wikidata.org/w/api.php" }
 hosts = ["query.wikidata.org"]
 version = "date"
 redistribute = true
-r2_copy = true
+r2_copy = false
 
 [[source]]
 id = "wikipedia"
@@ -471,7 +471,7 @@ obligations = "Each record states the licence and the notices of its own text"
 fetch = { kind = "capture", url = "https://{language}.wikipedia.org/w/api.php" }
 version = "date"
 redistribute = true
-r2_copy = true
+r2_copy = false
 
 [[source]]
 id = "commons"
@@ -483,7 +483,7 @@ fetch = { kind = "capture", url = "https://commons.wikimedia.org/w/api.php" }
 hosts = ["upload.wikimedia.org"]
 version = "date"
 redistribute = true
-r2_copy = true
+r2_copy = false
 
 # ── Climate and snow ─────────────────────────────────────────────────────────
 

@@ -365,6 +365,7 @@ fn credit() -> serde_json::Value {
 }
 
 fn write_content(request: &Request, path: &str, content: serde_json::Value) -> Result<(), String> {
+    std::fs::create_dir_all(request.output.join("shared-content")).map_err(|e| e.to_string())?;
     let path = request.output.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(path, serde_json::to_vec(&content).unwrap()).map_err(|e| e.to_string())

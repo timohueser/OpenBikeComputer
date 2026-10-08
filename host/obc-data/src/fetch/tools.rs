@@ -113,7 +113,7 @@ mod tests {
         }
         let snapshot = Snapshot { source: source.id.clone(), version: version.into(), files };
         store.put_snapshot(&snapshot).unwrap();
-        let request = Request { source, version: Some(version.into()), params: Vec::new() };
+        let request = Request { refresh: false, source, version: Some(version.into()), params: Vec::new() };
         assert_eq!(
             basemap(
                 &scratch.0.join("absent-checkout"),
@@ -126,7 +126,7 @@ mod tests {
             snapshot
         );
         assert!(!scratch.0.join("absent-checkout").exists());
-        let request = Request { version: Some("main".into()), ..request };
+        let request = Request { refresh: false, version: Some("main".into()), ..request };
         assert!(basemap(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").as_path(),
             &store,

@@ -178,7 +178,7 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
                 Event::FetchStarted { source, version, params } => {
                     format!("{} fetch started", fetched(source, version, params))
                 }
-                Event::FetchFinished { source, version, params, resolved, bytes: size, wall_ms } => {
+                Event::FetchFinished { source, version, params, resolved, bytes: size, wall_ms, .. } => {
                     format!(
                         "{} fetched {resolved} in {}, {}",
                         fetched(source, version, params),
@@ -186,7 +186,7 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
                         bytes(*size)
                     )
                 }
-                Event::FetchFailed { source, version, params, error } => {
+                Event::FetchFailed { source, version, params, error, .. } => {
                     format!("{} fetch failed: {error}", fetched(source, version, params))
                 }
                 Event::Finished { ok: true, wall_ms, .. } => format!("finished in {}", duration(*wall_ms)),

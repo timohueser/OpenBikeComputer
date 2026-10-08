@@ -20,6 +20,41 @@ fn attribution(
 }
 
 pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: &Value) -> Result<Article, String> {
+    if capture["compact"] == true {
+        let raw = json_pinned(root, sources, string(capture, "path")?)?;
+        let language = string(&raw, "language")?;
+        let title = string(&raw, "title")?;
+        if raw["kind"] != "article"
+            || raw["status"] != "present"
+            || raw["revision"] != capture["revision"]
+            || raw["qid"].as_str().is_some_and(|id| entity["id"] != id)
+            || entity["sitelinks"][format!("{language}wiki")]["title"]
+                != raw["key"]
+                    .as_str()
+                    .and_then(|key| key.split_once(':'))
+                    .map(|(_, title)| Value::String(title.into()))
+                    .unwrap_or(Value::Null)
+        {
+            return Err("article_identity_mismatch".into());
+        }
+        let markup = string(&raw, "lead_html")?;
+        let pages = text::article_pages(markup).map_err(str::to_owned)?;
+        let attribution = attribution(
+            string(&raw, "url")?.into(),
+            raw["revision"].to_string(),
+            raw["license"].as_str().or_else(|| raw["license"]["url"].as_str()).ok_or("article_license_missing")?.into(),
+            string(&raw, "original_notices")?.into(),
+        )?;
+        if credit::article(&attribution)?[1] != text::normalize(title) {
+            return Err("article_identity_mismatch".into());
+        }
+        return Ok(Article {
+            language: language.into(),
+            pages,
+            attribution,
+            lead_image: commons_lead_image(&Html::parse_fragment(markup)),
+        });
+    }
     let language = string(capture, "language")?;
     let title = string(capture, "title")?;
     let expected =
@@ -80,7 +115,7 @@ pub(super) fn article(root: &Path, sources: &[Source], entity: &Value, capture: 
     Ok(Article { language: language.to_owned(), pages, attribution, lead_image })
 }
 
-fn commons_lead_image(body: &Html) -> Option<String> {
+pub(super) fn commons_lead_image(body: &Html) -> Option<String> {
     body.select(&Selector::parse("a.mw-file-description[href], h2").expect("fixed selector"))
         .next()
         .filter(|element| {
@@ -94,8 +129,8 @@ fn commons_lead_image(body: &Html) -> Option<String> {
                 })
         })
         .and_then(|element| element.value().attr("href"))
-        .and_then(|href| href.split_once("/wiki/File:"))
-        .and_then(|(_, file)| percent_encoding::percent_decode_str(file).decode_utf8().ok())
+        .and_then(|href| href.split_once("/wiki/File:").map(|(_, file)| file).or_else(|| href.strip_prefix("./File:")))
+        .and_then(|file| percent_encoding::percent_decode_str(file).decode_utf8().ok())
         .map(|file| file.replace('_', " "))
 }
 
@@ -222,7 +257,23 @@ pub(super) fn photo(
     }
     let pixels = photo::prepare(&bytes).map_err(str::to_owned)?;
     let path = format!("{qid}.rgb222");
-    Ok((Photo { path, sha256: hash(&pixels), bytes: pixels.len(), attribution }, pixels))
+    Ok((
+        Photo {
+            credit: credit::online_photo(&attribution)?,
+            file_identity: page["pageid"].as_u64().map(|page_id| PhotoIdentity { filename: filename.clone(), page_id }),
+            page_revision: page["revisions"][0]["revid"].as_u64(),
+            file_revision: Some(FileRevision {
+                timestamp: string(info, "timestamp")?.into(),
+                sha1: string(info, "sha1")?.into(),
+            }),
+            online_url: info["thumburl"].as_str().map(str::to_owned),
+            path,
+            sha256: hash(&pixels),
+            bytes: pixels.len(),
+            attribution,
+        },
+        pixels,
+    ))
 }
 
 fn revision_matches(expected: &Value, current: &Value) -> bool {

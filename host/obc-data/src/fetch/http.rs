@@ -4,7 +4,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::date;
@@ -77,10 +77,14 @@ fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
 pub struct Http {
     agent: ureq::Agent,
     backoff: Duration,
+    bytes_per_second: Option<u64>,
+    requests: AtomicU64,
+    transferred: AtomicU64,
 }
 
 enum Failure {
     Retry(String),
+    Wait(String, Duration),
     /// Retry, after a try that added bytes to a resumed part.
     Grew(String),
     Final(String),
@@ -103,7 +107,17 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), backoff: Duration::ZERO }
+        Self {
+            agent: config.into(),
+            backoff: Duration::ZERO,
+            bytes_per_second: None,
+            requests: AtomicU64::new(0),
+            transferred: AtomicU64::new(0),
+        }
+    }
+
+    pub(super) fn metrics(&self) -> (u64, u64) {
+        (self.requests.load(Ordering::Relaxed), self.transferred.load(Ordering::Relaxed))
     }
 
     pub fn new() -> Self {
@@ -119,7 +133,19 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), backoff }
+        Self {
+            agent: config.into(),
+            backoff,
+            bytes_per_second: None,
+            requests: AtomicU64::new(0),
+            transferred: AtomicU64::new(0),
+        }
+    }
+
+    /// Bound the transfer rate of this serial downloader.
+    pub fn limited(mut self, bytes_per_second: u64) -> Self {
+        self.bytes_per_second = Some(bytes_per_second);
+        self
     }
 
     /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
@@ -159,6 +185,18 @@ impl Http {
         store.lock(&format!("download-{}", key(url)))
     }
 
+    /// A revision bracket cannot prove bytes read before its first witness.
+    pub(super) fn fresh_download(&self, store: &Store, url: &str) -> Result<Downloaded, String> {
+        for suffix in ["part", "validator"] {
+            match fs::remove_file(store.partial(&format!("{}.{suffix}", key(url)))) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        self.download(store, url, &Expect::default())
+    }
+
     /// Download `url` into the store; the caller holds [`Http::lock`]. A failed try keeps its
     /// `.part` file, so the next try, or the next run, asks only for the rest. A digest mismatch
     /// removes it.
@@ -173,18 +211,19 @@ impl Http {
         fs::create_dir_all(partial).map_err(|e| format!("{}: {e}", partial.display()))?;
         let mut failures = 0;
         loop {
-            let (why, grew) = match self.attempt(url, &part, &validator, expect) {
+            let (why, grew, delay) = match self.attempt(url, &part, &validator, expect) {
                 Ok(()) => break,
                 Err(Failure::Final(why)) => return Err(why),
-                Err(Failure::Retry(why)) => (why, false),
-                Err(Failure::Grew(why)) => (why, true),
+                Err(Failure::Retry(why)) => (why, false, Duration::ZERO),
+                Err(Failure::Wait(why, delay)) => (why, false, delay),
+                Err(Failure::Grew(why)) => (why, true, Duration::ZERO),
             };
             failures = if grew { 1 } else { failures + 1 };
             if failures == ATTEMPTS {
                 return Err(why);
             }
             eprintln!("obc data: {why} — retrying");
-            std::thread::sleep(self.backoff * 2u32.pow(failures - 1));
+            std::thread::sleep(delay.max(self.backoff * 2u32.pow(failures - 1)));
         }
         let _ = fs::remove_file(&validator);
         let (sha256, size) = store::hash_file(&part)?;
@@ -210,6 +249,7 @@ impl Http {
                 request = request.header("if-range", saved);
             }
         }
+        self.requests.fetch_add(1, Ordering::Relaxed);
         let mut response = request.call().map_err(|e| Failure::Retry(format!("GET {url}: {e}")))?;
         let status = response.status().as_u16();
         let modified_by = |response: &ureq::http::Response<_>| {
@@ -243,7 +283,13 @@ impl Http {
                 let _ = fs::remove_file(part);
                 return Err(Failure::Retry(format!("GET {url}: HTTP 416 to a resume at {have}")));
             }
-            408 | 429 | 500..=599 => return Err(Failure::Retry(format!("GET {url}: HTTP {status}"))),
+            408 | 429 | 500..=599 => {
+                let why = format!("GET {url}: HTTP {status}");
+                return Err(match header(&response, "retry-after").and_then(|value| retry_after(&value)) {
+                    Some(delay) => Failure::Wait(why, delay),
+                    None => Failure::Retry(why),
+                });
+            }
             _ => return Err(Failure::Final(format!("GET {url}: HTTP {status}"))),
         };
         let needed = total.map_or(0, |total| total.saturating_sub(if append { have } else { 0 }));
@@ -259,6 +305,8 @@ impl Http {
         let mut reader = response.body_mut().as_reader();
         let mut buffer = vec![0; 1 << 16];
         let mut grew = false;
+        let started = std::time::Instant::now();
+        let mut received = 0u64;
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
             stopped(url)?;
@@ -268,6 +316,14 @@ impl Http {
             }
             file.write_all(&buffer[..read]).map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
             grew = true;
+            self.transferred.fetch_add(read as u64, Ordering::Relaxed);
+            received += read as u64;
+            if let Some(rate) = self.bytes_per_second {
+                let required = Duration::from_secs_f64(received as f64 / rate.max(1) as f64);
+                if let Some(delay) = required.checked_sub(started.elapsed()) {
+                    std::thread::sleep(delay);
+                }
+            }
         }
         file.sync_all().map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
         let length = fs::metadata(part).map_or(0, |metadata| metadata.len());
@@ -284,6 +340,16 @@ impl Default for Http {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn retry_after(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.trim().parse() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let day = date::from_http(value)?;
+    let time = value.split_whitespace().nth(4)?;
+    let seconds = date::seconds(&format!("{day}T{time}Z"))?;
+    Some(Duration::from_secs(seconds.saturating_sub(date::now())))
 }
 
 /// The name of the files that a download of `url` keeps in `partial/`.

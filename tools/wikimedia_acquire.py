@@ -189,7 +189,11 @@ class Acquisition:
             record = json.loads(path.read_bytes())
             value = verified(work / record["path"], record["sha256"])
             self.validate(record, value)
-            self.records[(record["kind"], record["key"])] = record
+            pair = (record["kind"], record["key"])
+            incoming = self.inputs.get(pair)
+            if incoming and datetime.fromisoformat(incoming[0]["checked_at"].replace("Z", "+00:00")) >= datetime.fromisoformat(record["checked_at"].replace("Z", "+00:00")):
+                continue
+            self.records[pair] = record
             if record["kind"] == "article" and record["status"] == "present":
                 self.articles_by_revision[(record["identity"], record["revision"])] = value
 
@@ -672,6 +676,8 @@ class Acquisition:
                     os.link(asset_source, asset_target)
                 assets.append(asset)
         manifest = dict(schema=1, complete=not self.failures, records=records, assets=assets, failures=self.failures)
+        if isinstance(getattr(self.transport, "metrics", None), dict):
+            manifest["acquisition"] = dict(self.transport.metrics)
         write_json(self.out / "manifest.json", manifest)
         return manifest
 

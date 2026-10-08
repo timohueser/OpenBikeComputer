@@ -393,7 +393,7 @@ no fetcher yet; the fetch fails.
 | `modis-snow`, `hr-wsi` | `bbox`, `seasons=FIRST-LAST` | `tools/planner_snow.py --fetch` | group `planner-snow` | `bbox=W,S,E,N&seasons=FIRST-LAST` |
 | `osm-trails` | `bbox` | `tools/planner_snow.py --fetch-trails` | group `planner-snow` | `bbox=W,S,E,N` |
 | `era5-land` | `bbox`, `first-year` | `tools/planner_climate.py --fetch` | group `planner-climate` | `bbox=W,S,E,N&first-year=YEAR` |
-| `wikidata`, `wikipedia`, `commons` | `collection`, `area`, `osm`, `poly` | `tools/landmark_capture.py --retry-failed` | none (`python3`) | `<collection>=` and 16 hex digits of the SHA-256 of `<collection> <area> <osm> <poly> ` and the joined hex SHA-256 of `host/obc-pack/src/landmarks/policy.json`, `specs/content-languages.json`, `tools/landmark_capture.py` and `tools/peak_capture.py` |
+| `wikidata`, `wikipedia`, `commons` | `content=<JSON exact identities>` | `tools/wikimedia_acquire.py` | none (`python3`) | SHA-256 of the identity request |
 
 - `bbox` is `WEST,SOUTH,EAST,NORTH` in degrees.
 - A `dtm-*` fetch is one archive tile `(ti, tj)` of the reference archive
@@ -416,17 +416,11 @@ no fetcher yet; the fetch fails.
 - The `osm-trails` file is `trails.json`: the JSON answer of Overpass, as it is, to the query of
   the ways with `highway=path` or `highway=track` that `bbox` touches.
 - An `era5-land` file is a source chunk of the ten years from `first-year`, or the orography.
-- `collection` is `landmarks` or `peaks`, and `area` is the region id. `osm` and `poly` are
-  `sha256:<hex>`: the extract and the `.poly` of the region, files of the store. The program makes the boundary from the `.poly`
-  and finds the landmark candidates or the summits in the extract. It selects the places with
-  the `obc data` binary that runs the fetch, which answers the commands of
-  `obc_pack::landmarks::select`; `obc-data-plumbing` cannot run this fetch. One run captures the
-  three sources, and each record takes the files of its licence: `wikipedia` takes `articles/`
-  and `links/wikipedia-*`, `commons` takes `images/` and `categories/`, and `wikidata` takes the
-  other files. Every record takes `recipe.json`, which links the three. No record takes the
-  copies of the inputs, which are OSM data or the policy (`boundary.geojson`, `candidates.json`,
-  `summits.json`, `policy.json`), or `attempts/`. The program exits with status 2 when the
-  capture is not complete; then the fetch fails and the next run asks again for what failed.
+- `content` names entities, explicit links, articles, Commons files and bounded categories.
+  A request has no region, OSM digest or transform hash. The Store owns compact fact records,
+  their provenance manifests and local conversion inputs. Admission verifies each digest and
+  size. A failed operation keeps successful work for resume. Complete work is removed after
+  admission. Existing regional captures are read-only inputs for adoption.
 - The version is the day of the fetch, because the service answers with current data. Another
   day comes only from the store.
 - A source with a `credential` that is not on this machine fails before the program runs, and
@@ -995,7 +989,7 @@ terrain are blocked too. Other leaves and bands keep their steps.
 | `maps/<band>/<i>-<j>` | `maps/osm`, the file of the leaf; `land-polygons`; `maps/terrain/<i>-<j>` when the cells of the band read heights: contours in their levels, or a nav graph or POIs | `band`: `coarse`, `mid`, `fine` or `network` of the recommended band table (`OBCA_Spec.md`); `leaf`: `[23, i, j]`; `cells`: `[ci, cj]` of each cell of the band in the leaf that the outline touches | `cells/<band>/<ci>/<cj>.obcm` for each cell with content; `cells/<band>/empty.json`: the ids of the other cells. A cell has the bytes that one cut of the whole leaf with all bands writes, with `builder/presets/schema.json` and without landmarks or peaks |
 | `maps/reference/<i>-<j>` | Each `dtm-*` source of the leaf with a height, without params, the files of its tiles | `models`: `source`, `version` and `credit` (its `attribution`) of each model; `tiles`: the ids `<ti:04>/<tj:04>` of the archive tiles that the terrain cells of the leaf read | `reference/`: the reference archive (`host/obc-dem/reference/README.md`) of the models, which `ingest.py ingest` of the pooled tiles of each model writes into an empty archive, best first by `PRIORITY`, cut to `tiles`. The `fetched` day of a model is its version. A Python step with the group `terrain-reference` |
 | `maps/terrain/<i>-<j>` | `copernicus-glo-30`, `tile=` of each tile that the square of a cell reaches and that `copernicus-glo-30-tiles` names. A square without a tile is sea. A leaf without a tile reads no snapshot. `maps/reference/<i>-<j>` when the leaf has one | `posting_log2` and `cell_log2` of OBCT v1; `cells`: `[ci, cj]` of each terrain cell in the leaf that the outline touches | `terrain/<ci>/<cj>.obcd` for each cell with a height (`OBCC_Spec.md` §13), the bytes that `obc-bake terrain --reference` writes from the same tiles and archive; `terrain/empty.json`: the ids of the cells without a height; `terrain/credits.json`, when a cell reads a national model: `key`, `product`, `attribution` and `licence` of each model that a cell reads, as the reference archive states them |
-| `maps/landmark-content[/<area>]`, `maps/peak-content[/<area>]` | `wikidata`, `wikipedia` and `commons`, `collection=landmarks` or `collection=peaks`, `area=<source path>`, `osm=`, `poly=` and `code=`; the file of `geofabrik-extracts` and of `geofabrik-poly` that `osm=` and `poly=` name, by its name and without params | None | `landmarks/content.json` or `peaks/peaks.json`, and the photos: the compile of the capture. The step makes the boundary, and the candidates or the summits, again from the `.poly` and the extract. When they differ from those that the recipe of the capture pinned, the code that makes them changed: the step fails, and the fix is `--move wikidata` |
+| `maps/landmark-content[/<area>]`, `maps/peak-content[/<area>]` | Shared `wikidata`, `wikipedia` and `commons` facts requested by exact identity; regional `geofabrik-extracts` and `geofabrik-poly` | None | `landmarks/content.json` or `peaks/peaks.json`, device photos, and bounded `shared-content/` fact bundles. Only the bundles are selected publication outputs of this intermediate layer. Final device assets are published by the device cell layers |
 | `maps/landmarks/<i>-<j>`, `maps/peaks/<i>-<j>` | Every area's landmark content and `maps/osm`, the file of the leaf; or every area's peak content | `cell_log2`: 18; `cells`: `[ci, cj]` of each network cell of the leaf, as for `maps/network/<i>-<j>` | `landmarks/<ci>/<cj>.bin` or `peaks/<ci>/<cj>.bin` for each cell that owns content (`OBCC_Spec.md` §14.3). A landmark joins the OSM objects of the leaf that name it |
 
 `<i>`, `<j>`, `<ci>` and `<cj>` have four digits or more, as in a cell id.
@@ -2561,6 +2555,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "additionalProperties": false,
           "properties": {
+            "acquisition": true,
             "bytes": {
               "description": "The size of the files that the fetch gave, downloaded or found in the store.",
               "format": "uint64",
@@ -2616,6 +2611,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         {
           "additionalProperties": false,
           "properties": {
+            "acquisition": true,
             "error": {
               "type": "string"
             },
@@ -2954,7 +2950,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "array"
         },
         "partial_bytes": {
-          "description": "The size of `partial/`: unfinished downloads and the work of steps that stopped. A\ncollection empties it.",
+          "description": "The size of `partial/`: unfinished downloads and the work of steps that stopped. A\ncollection removes work that has no retained acquisition journal.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -4277,6 +4273,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RunFetch": {
       "additionalProperties": false,
       "properties": {
+        "acquisition": true,
         "bytes": {
           "description": "`None` while it runs, and when it failed.",
           "format": "uint64",

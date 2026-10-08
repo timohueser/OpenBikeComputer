@@ -1100,6 +1100,7 @@ pub(super) fn fetcher_recorded<'a>(
     mut run: Option<&'a mut Run>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
+    let refresh: BTreeSet<String> = moved.iter().filter(|source| !env.stale.contains(*source)).cloned().collect();
     let reads = env.live.iter().flat_map(|((source, _), read)| read.iter().map(move |version| (source, version)));
     let live: BTreeSet<(String, String)> = reads.map(|(source, version)| (source.clone(), version.clone())).collect();
     move |wanted| {
@@ -1113,7 +1114,12 @@ pub(super) fn fetcher_recorded<'a>(
             let message = format!("source `{}` is fetched per `{name}=`: it has no one newest version", source.id);
             return Err(Code::Usage.error(message).fix(pick));
         }
-        let request = Request { source, version: wanted.version.clone(), params: wanted.params.clone() };
+        let request = Request {
+            refresh: refresh.contains(&source.id),
+            source,
+            version: wanted.version.clone(),
+            params: wanted.params.clone(),
+        };
         let of_live =
             |version: &String| !moved.contains(&source.id) && live.contains(&(source.id.clone(), version.clone()));
         let snapshot = match run.as_deref_mut() {
@@ -1758,19 +1764,11 @@ pub(crate) mod tests {
         let error = fetch(&Wanted {
             source: "wikipedia".into(),
             version: None,
-            params: [
-                ("collection", "landmarks"),
-                ("area", "europe/test"),
-                ("osm", "invalid-digest"),
-                ("poly", "invalid-digest"),
-                ("code", "capture-code"),
-            ]
-            .map(|(name, value)| (name.into(), value.into()))
-            .into(),
+            params: vec![("content".into(), "invalid-json".into())],
         })
         .unwrap_err();
         assert_eq!(error.code, Code::FetchFailed);
-        assert!(error.message.contains("is not sha256:"), "the capture validates its own arguments: {error:?}");
+        assert!(error.message.contains("content request:"), "the capture validates its own arguments: {error:?}");
     }
 
     #[test]

@@ -72,17 +72,17 @@ fn store_with_tile(dir: &Path, tile: &Path) -> Store {
     let inputs = [
         ("geofabrik-index", "index.json".into(), Vec::new(), index.to_string()),
         ("geofabrik-poly", format!("{AREA}.poly"), vec![("area".into(), AREA.into())], box_poly(&bbox)),
-        (
-            "geofabrik-extracts",
-            format!("{AREA}.osm.pbf"),
-            vec![("area".into(), AREA.into())],
-            "unused OSM input".into(),
-        ),
+        ("geofabrik-extracts", format!("{AREA}.osm.pbf"), vec![("area".into(), AREA.into())], String::new()),
         ("land-polygons", "land.zip".into(), Vec::new(), "unused land input".into()),
     ];
     for (source, name, params, bytes) in inputs.into_iter().chain(models) {
         let file = store.partial(source);
-        write_atomic(&file, bytes.as_bytes()).unwrap();
+        let bytes = if source == "geofabrik-extracts" {
+            std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cells.osm.pbf")).unwrap()
+        } else {
+            bytes.into_bytes()
+        };
+        write_atomic(&file, &bytes).unwrap();
         let (sha256, size) = hash_file(&file).unwrap();
         store.insert(&file, &sha256).unwrap();
         let record = FileRecord {

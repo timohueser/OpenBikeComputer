@@ -156,7 +156,7 @@ pub(super) fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Err
 pub(super) fn load_areas(root: &Path, store: &Store) -> Result<Suggestions, Error> {
     let registry = super::registry(root)?;
     let source = super::find(&registry, "geofabrik-index")?;
-    let request = crate::fetch::Request { source, version: None, params: Vec::new() };
+    let request = crate::fetch::Request { refresh: false, source, version: None, params: Vec::new() };
     super::fetched(
         source,
         crate::input_copy::fetch(root, store, &crate::fetch::http::Http::new(), None, &request, &[]),

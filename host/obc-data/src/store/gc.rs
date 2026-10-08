@@ -105,7 +105,7 @@ pub struct Plan {
     pub keep_objects: u64,
     pub keep_bytes: u64,
     /// The size of `partial/`: unfinished downloads and the work of steps that stopped. A
-    /// collection empties it.
+    /// collection removes work that has no retained acquisition journal.
     pub partial_bytes: u64,
 }
 
@@ -131,6 +131,15 @@ pub struct Kept {
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut roots = roots.clone();
     roots.add_local(store)?;
+    for name in names(&store.root().join("partial"), "")? {
+        let operation = store.partial(&name);
+        if resumable(&operation) {
+            let inputs = operation.join("inputs.json");
+            if let Ok(text) = fs::read_to_string(inputs) {
+                roots.name(sha256s(&text), "resumable operation");
+            }
+        }
+    }
     let named = &roots.sha256s;
     // The objects of the kept records and layers.
     let mut reached = HashSet::new();
@@ -245,7 +254,19 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     }
     plan.objects.sort();
     plan.snapshots.sort();
-    plan.partial_bytes = size(&store.root().join("partial"))?;
+    for name in names(&store.root().join("partial"), "")? {
+        let path = store.partial(&name);
+        let bytes = size(&path)?;
+        if resumable(&path) {
+            plan.kept.push(Kept {
+                entry: format!("partial/{name}"),
+                bytes,
+                because: vec!["resumable operation".into()],
+            });
+        } else {
+            plan.partial_bytes += bytes;
+        }
+    }
     Ok(plan)
 }
 
@@ -287,12 +308,20 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
     // No fetch or step writes there while the collection holds the store alone.
     for name in names(&store.root().join("partial"), "")? {
         let path = store.partial(&name);
+        if resumable(&path) {
+            continue;
+        }
         match fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?.is_dir() {
             true => fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?,
             false => remove(&path)?,
         }
     }
     Ok(Some(plan))
+}
+
+fn resumable(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("wikimedia-"))
+        && ["work/records", "refresh/records"].into_iter().any(|records| path.join(records).is_dir())
 }
 
 /// `1 object`, `2 objects`.
@@ -391,6 +420,25 @@ mod tests {
     use crate::engine::{InputRecord, LayerFile, Receipt};
     use crate::store::tests::Scratch;
     use crate::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot};
+
+    #[test]
+    fn resumable_content_owns_its_inputs_and_completed_work_is_collectable() {
+        let scratch = Scratch::new("content-resume-roots");
+        let store = Store::at(&scratch.0);
+        let digest = object(&store, b"pinned conversion input");
+        let operation = store.partial("wikimedia-operation");
+        fs::create_dir_all(operation.join("refresh/records")).unwrap();
+        fs::write(operation.join("inputs.json"), format!("[{{\"sha256\":\"{digest}\"}}]")).unwrap();
+        fs::write(operation.join("refresh/records/completed.json"), b"{}").unwrap();
+        let active = plan(&store, &Roots::default()).unwrap();
+        assert!(active.objects.is_empty());
+        assert_eq!(active.partial_bytes, 0);
+        assert!(active.kept.iter().any(|entry| entry.because.contains(&"resumable operation".into())));
+        fs::remove_dir_all(operation.join("refresh/records")).unwrap();
+        let complete = plan(&store, &Roots::default()).unwrap();
+        assert!(complete.objects.iter().any(|(sha, _)| sha == &digest));
+        assert!(complete.partial_bytes > 0);
+    }
 
     fn object(store: &Store, bytes: &[u8]) -> String {
         let sha256 = sha256_hex(bytes);

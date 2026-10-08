@@ -51,6 +51,24 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(manifest["records"][0]["sha256"], inputs[1]["sha256"])
             second.transport.json.assert_not_called()
 
+    def test_newer_revision_inputs_replace_old_journal_but_unchanged_successes_resume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = self.operation(root / "operation", responses=[{"entities": {"Q1": entity("Q1", 7), "Q2": entity("Q2", 7)}}])
+            original.entities(["Q1", "Q2"])
+            original_inputs = self.inputs(original)
+            newer = self.operation(root / "refresh", responses=[{"entities": {"Q1": entity("Q1", 8)}}])
+            newer.entities(["Q1"])
+            incoming = self.inputs(newer)
+            incoming.append(original_inputs[1])
+            for pin in incoming: pin["checked_at"] = "2099-01-01T00:00:00Z"
+            resumed = self.operation(root / "operation", inputs=incoming)
+            resumed.entities(["Q1", "Q2"])
+            result = resumed.finish()
+            self.assertEqual({pin["key"]: pin["revision"] for pin in result["records"]}, {"Q1": 8, "Q2": 7})
+            self.assertTrue(all(pin["checked_at"] == "2099-01-01T00:00:00Z" for pin in result["records"]))
+            resumed.transport.json.assert_not_called()
+
     def test_refresh_checks_revision_and_only_fetches_changed_facts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

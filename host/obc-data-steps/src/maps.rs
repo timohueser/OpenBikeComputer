@@ -25,6 +25,7 @@ use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
 
 pub(crate) mod catalog;
+mod shared_content;
 
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_osm::SOURCE_LEAF_LOG2;
@@ -154,38 +155,18 @@ impl Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let mut content_steps = Vec::new();
+        let content = content_declarations(env, store, &selection, &libraries)?;
+        blocked.extend(content.blocked);
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for source in &selection.sources {
-            let area = vec![("area".to_string(), source.id.clone())];
             for collection in ["landmarks", "peaks"] {
                 let name = if selection.direct {
                     content_layer(collection)
                 } else {
                     format!("{}/{}", content_layer(collection), source.id)
                 };
-                content_names.entry(collection).or_default().push(name.clone());
-                if let Err(reason) = &libraries {
-                    blocked.push(BlockedLayer { layer: name, reason: reason.clone() });
-                    continue;
-                }
-                let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
-                    Ok(capture) => capture,
-                    Err(Unplanned::NeedsFetch(fetches)) => {
-                        wanted.extend(fetches);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                };
-                for (_, inputs) in capture {
-                    let mut step = content(collection, inputs);
-                    step.name = name.clone();
-                    add_geos(step, &libraries, &mut content_steps, &mut blocked);
-                }
+                content_names.entry(collection).or_default().push(name);
             }
-        }
-        if !wanted.is_empty() {
-            return Err(Unplanned::NeedsFetch(wanted));
         }
         let source_coverage = &selection.coverage;
         let mut osm_leaves = BTreeSet::new();
@@ -213,7 +194,7 @@ impl Maps {
                 }
             }
         }
-        steps.extend(content_steps);
+        steps.extend(content.steps);
         for collection in ["landmarks", "peaks"] {
             for (&leaf, cells) in &network {
                 let mut step = artifacts(collection, leaf, cells);
@@ -284,6 +265,53 @@ impl Maps {
     }
 }
 
+pub(crate) fn content_declarations(
+    env: &Env,
+    store: &Store,
+    selection: &crate::region_sources::Selection,
+    libraries: &Result<Vec<obc_data::engine::Library>, String>,
+) -> Result<Steps, Unplanned> {
+    let mut content_steps = Vec::new();
+    let mut wanted = Vec::new();
+    let mut blocked = Vec::new();
+    for source in &selection.sources {
+        let area = vec![("area".to_string(), source.id.clone())];
+        for collection in ["landmarks", "peaks"] {
+            let name = if selection.direct {
+                content_layer(collection)
+            } else {
+                format!("{}/{}", content_layer(collection), source.id)
+            };
+
+            if let Err(reason) = libraries {
+                blocked.push(BlockedLayer { layer: name, reason: reason.clone() });
+                continue;
+            }
+            let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
+                Ok(capture) => capture,
+                Err(Unplanned::NeedsFetch(fetches)) => {
+                    wanted.extend(fetches);
+                    continue;
+                }
+                Err(Unplanned::Invalid(reason)) => {
+                    blocked.push(BlockedLayer { layer: name.clone(), reason });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            for (_, inputs) in capture {
+                let mut step = content(collection, inputs);
+                step.name = name.clone();
+                add_geos(step, libraries, &mut content_steps, &mut blocked);
+            }
+        }
+    }
+    if !wanted.is_empty() {
+        return Err(Unplanned::NeedsFetch(wanted));
+    }
+    Ok(Steps { steps: content_steps, blocked })
+}
+
 fn add_geos(
     mut step: Step,
     libraries: &Result<Vec<obc_data::engine::Library>, String>,
@@ -316,6 +344,18 @@ fn captures_at(
     let (osm, poly) = (osm?, poly?);
     let (collection, layer) = selected;
     let layer = layer.to_string();
+    let legacy = store.requests_of(CAPTURES[0]).map_err(Unplanned::Failed)?.iter().any(|request| {
+        request.params.iter().any(|(key, value)| key == "area" && value == &area[0].1)
+            && request.params.iter().any(|(key, value)| key == "collection" && value == collection)
+    });
+    if CAPTURES.iter().any(|source| env.moves.contains_key(*source))
+        || !legacy
+            && !env.live.keys().chain(env.planned.iter().flat_map(|planned| planned.keys())).any(|(source, params)| {
+                CAPTURES.contains(&source.as_str()) && params.iter().any(|(key, _)| key == "area")
+            })
+    {
+        return shared_content::captures(env, store, collection, &osm, &poly, extract, area);
+    }
     let (params, read) = match capture_params_at(env, store, collection, area, (&osm, &poly), &layer) {
         Ok(params) => params,
         Err(Unplanned::Invalid(reason)) => {
@@ -362,7 +402,7 @@ fn captures_at(
         }
     }
     if !missing.is_empty() {
-        return Err(Unplanned::NeedsFetch(missing));
+        return shared_content::captures(env, store, collection, &osm, &poly, extract, area);
     }
     inputs.extend(read);
     Ok(vec![(collection, inputs)])
@@ -595,9 +635,9 @@ fn content(collection: &str, inputs: Vec<Input>) -> Step {
         inputs,
         options: serde_json::json!({}),
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()], ..Default::default() },
-        outputs: vec![collection.into()],
+        outputs: vec![collection.into(), "shared-content".into()],
         run: Run::Rust(run),
-        client: Client::None,
+        client: Client::Paths(vec!["shared-content".into()]),
     }
 }
 
@@ -1241,24 +1281,6 @@ pub(crate) mod tests {
         );
         assert!(catalog.options["picks"].as_array().unwrap().iter().any(|pick| pick["id"] == env.region));
         assert!(env.read.borrow().contains_key(&(EXTRACTS.into(), obc_data::store::sorted(&second))));
-        env.moves.extend(CAPTURES.map(|source| (source.into(), Some("3".into()))));
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
-            panic!("explicit capture moves prepare every area's two collections")
-        };
-        let groups = wanted
-            .iter()
-            .map(|fetch| {
-                let param = |name| fetch.params.iter().find(|(key, _)| key == name).unwrap().1.clone();
-                (param("area"), param("collection"), fetch.source.clone())
-            })
-            .collect::<BTreeSet<_>>();
-        assert_eq!(wanted.len(), 12);
-        assert_eq!(groups.len(), 12, "each selected request appears once");
-        assert!(groups
-            .iter()
-            .all(|(area, collection, source)| ["europe/test", "europe/second"].contains(&area.as_str())
-                && ["landmarks", "peaks"].contains(&collection.as_str())
-                && CAPTURES.contains(&source.as_str())));
     }
 
     #[test]
@@ -1338,8 +1360,12 @@ pub(crate) mod tests {
         let intermediate =
             |name: &str| name == "maps/osm" || name.ends_with("-content") || name.starts_with("maps/source/");
         assert!(
-            steps.iter().all(|step| step.client.is_none() == intermediate(&step.name)),
-            "no client reads an intermediate"
+            steps.iter().all(|step| if step.name.ends_with("-content") {
+                step.client == Client::Paths(vec!["shared-content".into()])
+            } else {
+                step.client.is_none() == intermediate(&step.name)
+            }),
+            "content publishes compact source bundles only"
         );
         assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
         for band in ["mid", "fine"] {
@@ -1392,23 +1418,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn missing_or_failed_capture_blocks_only_its_content_and_artifacts() {
+    fn failed_retained_capture_blocks_only_its_content_and_artifacts() {
         let temp = temp("capture-blocked");
         let store = Store::at(temp.0.join("store"));
         let (mut env, regions) = freiburg(&store);
         with_osm(&store);
         without_models(&store, &env, &regions);
-        let params = capture_params("peaks", "europe/test", "osm", FREIBURG);
-        for source in CAPTURES {
-            fetched(&store, source, "1", &params, &[("#peaks=0/recipe.json".into(), "1".into())]);
-        }
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
-            panic!("ordinary preparation must fetch missing landmark captures")
-        };
-        assert_eq!(wanted.len(), 3);
-        assert!(wanted
-            .iter()
-            .all(|fetch| fetch.params.iter().any(|(name, value)| name == "collection" && value == "landmarks")));
+        with_captures(&store, "1");
         let failed = Wanted {
             source: "wikidata".into(),
             version: None,
@@ -1421,7 +1437,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stale_capture_refreshes_its_request_and_explicit_intent_overrides_related_staleness() {
+    fn retained_capture_keeps_exact_inputs_without_acquisition() {
         let temp = temp("capture-code");
         let store = Store::at(temp.0.join("store"));
         let (mut env, regions) = freiburg(&store);
@@ -1459,56 +1475,6 @@ pub(crate) mod tests {
             );
         }
         assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"));
-        env.stale.insert("wikidata".into());
-        env.moves.insert("wikidata".into(), None);
-        env.stale_requests.insert(("wikidata".into(), obc_data::store::sorted(&params)));
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
-            panic!("the policy refreshes the stale request without a manual move")
-        };
-        assert_eq!(wanted.len(), 3, "all siblings refresh; unrelated collections keep their versions");
-        assert_eq!(wanted[0].source, "wikidata");
-        assert_eq!(obc_data::store::sorted(&wanted[0].params), obc_data::store::sorted(&params));
-        assert_eq!(wanted[0].version, None);
-        let mut refreshed = env.clone();
-        for source in CAPTURES {
-            fetched(&store, source, "2", &params, &[("#landmarks=0/recipe.json".into(), "updated".into())]);
-        }
-        refreshed.resolve(&wanted[0], "2".into());
-        let steps = map_steps(&root(), &refreshed, &regions, &store).unwrap().steps;
-        for (layer, expected) in [("maps/landmark-content", "2"), ("maps/peak-content", "1")] {
-            let content = steps.iter().find(|step| step.name == layer).unwrap();
-            for source in CAPTURES {
-                assert!(content.inputs.iter().any(|input| matches!(input,
-                    Input::Snapshot { source: found, version, .. } if found == source && version == expected)));
-            }
-        }
-        let mut replay = env.clone();
-        replay.stale.clear();
-        replay.stale_requests.clear();
-        replay.planned =
-            Some(CAPTURES.map(|source| ((source.into(), obc_data::store::sorted(&params)), "2".into())).into());
-        let (saved, _) = super::capture_params(
-            &replay,
-            &store,
-            "landmarks",
-            &[("area".into(), "europe/test".into())],
-            ("changed osm", "changed poly"),
-        )
-        .unwrap();
-        assert_eq!(saved, obc_data::store::sorted(&params), "replay keeps the exact reviewed capture params");
-        env.stale = ["wikipedia".into(), "commons".into()].into();
-        env.moves.insert("wikidata".into(), None);
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
-            panic!("an explicit move overrides stale sibling capture blocking")
-        };
-        assert_eq!(wanted.len(), 6, "an explicit source move refreshes both complete bundles");
-        env.stale.clear();
-        env.moves = CAPTURES.map(|source| (source.into(), None)).into();
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
-            panic!("an explicit move prepares captures")
-        };
-        assert_eq!(wanted.len(), 6);
-        assert!(wanted.iter().any(|fetch| fetch.source == "wikidata"));
     }
 
     #[test]
@@ -1518,18 +1484,6 @@ pub(crate) mod tests {
         let (mut env, regions) = freiburg(&store);
         with_osm(&store);
         without_models(&store, &env, &regions);
-        env.moves.insert("wikidata".into(), None);
-        let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), &env, &regions, &store) else {
-            panic!("no capture")
-        };
-        let fetch = |collection, source: &str| Wanted {
-            source: source.into(),
-            version: None,
-            params: capture_params(collection, "europe/test", "osm", FREIBURG),
-        };
-        let captures =
-            ["landmarks", "peaks"].into_iter().flat_map(|collection| CAPTURES.map(|source| fetch(collection, source)));
-        assert_eq!(wanted, captures.collect::<Vec<_>>());
         with_captures(&store, "1");
         env.moves.clear();
         let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
@@ -1582,16 +1536,6 @@ pub(crate) mod tests {
             assert_eq!(extract(content), Some(("1".into(), vec!["europe/test.osm.pbf".into()])), "{content}");
         }
 
-        let moved = capture_params("landmarks", "europe/test", "osm 2", FREIBURG);
-        let asks_for_a_new_capture = |env: &Env| {
-            let Err(Unplanned::NeedsFetch(wanted)) = map_steps(&root(), env, &regions, &store) else {
-                panic!("a capture")
-            };
-            assert!(wanted.iter().any(|fetch| fetch.source == "wikidata" && fetch.params == moved), "{wanted:?}");
-        };
-        env.moves.insert("wikidata".into(), None);
-        asks_for_a_new_capture(&env);
-        env.moves.clear();
         clean("1").unwrap();
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
