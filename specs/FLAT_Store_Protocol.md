@@ -64,12 +64,9 @@ pub trait Store {
 
     /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
     /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
-    fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
-
-    /// True when the last `entries` listing reached the end of the array. A listing that hit a
-    /// media failure stops early with nowhere to report it, so anything that treats one as the
-    /// catalog asks here first.
-    fn entries_ok(&self) -> bool;
+    /// A media failure or catalog change returns one error, then ends the traversal.
+    /// Each traversal owns its result. Starting another traversal cannot change that result.
+    fn entries(&self) -> impl Iterator<Item = Result<EntryMeta, StoreError>> + '_;
 
     /// Why this store refuses writes, if it does — the `readOnly` details of §3.9 come from here.
     fn mode(&self) -> Mode;
@@ -190,7 +187,7 @@ a ride journals. An implementation carries whatever interior mutability that nee
 
 1. **Granularity is per card command for the state a reader needs.** The catalog, the free map and
    whatever table records open objects must be unheld at every card command a write path issues, so
-   that `open`, `read`, `entries`, `entries_ok` and the free-space answer are all serviceable
+   that `open`, `read`, `entries` and the free-space answer are all serviceable
    throughout a `commit`.
 
    Writer-private state — a reservation's staging buffer, which no read operation names — may be held
