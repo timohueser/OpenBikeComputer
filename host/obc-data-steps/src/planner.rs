@@ -362,7 +362,7 @@ impl Planner {
         // One search database per component: the POIs and the addresses.
         let search = |component: &str| {
             // writer.py imports pois.py or addresses.py by the component.
-            let files = ["build.py", "writer.py", "storage.py", "index.py", "pois.py", "addresses.py"];
+            let files = ["build.py", "writer.py", "storage.py", "index.py", "content.py", "pois.py", "addresses.py"];
             let data = ["schema.sql", "indexes.sql", "web/address-terms.json"];
             let files: Vec<String> = files.iter().chain(&data).map(|file| format!("{SEARCH}/{file}")).collect();
             let files: Vec<&str> = files.iter().map(String::as_str).chain(RECORDS).collect();
