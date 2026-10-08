@@ -93,7 +93,7 @@ fn oneway_value(value: &str) -> Oneway {
 
 /// The road's own one-way rule; a roundabout implies one.
 fn road_oneway<'a>(get: &impl Fn(&str) -> Option<&'a str>) -> Oneway {
-    let implied = matches!(get("junction"), Some("roundabout" | "circular"));
+    let implied = get("junction") == Some("roundabout");
     oneway_value(get("oneway").unwrap_or(if implied { "yes" } else { "no" }))
 }
 
@@ -351,7 +351,11 @@ mod tests {
             |tags: &[(&str, &str)], mode| oneway(|key| tags.iter().find(|(k, _)| *k == key).map(|(_, v)| *v), mode);
         assert_eq!(rule(&[("oneway", "yes")], "bicycle"), Oneway::Forward);
         assert_eq!(rule(&[("oneway", "yes")], "foot"), Oneway::Both);
-        assert_eq!(rule(&[("junction", "circular")], "bicycle"), Oneway::Forward);
+        assert_eq!(rule(&[("junction", "roundabout")], "bicycle"), Oneway::Forward);
+        assert_eq!(rule(&[("junction", "roundabout"), ("oneway", "no")], "bicycle"), Oneway::Both);
+        assert_eq!(rule(&[("junction", "circular")], "bicycle"), Oneway::Both);
+        assert_eq!(rule(&[("junction", "circular"), ("oneway", "yes")], "bicycle"), Oneway::Forward);
+        assert_eq!(rule(&[("junction", "circular"), ("oneway", "no")], "bicycle"), Oneway::Both);
         assert_eq!(rule(&[("oneway", "alternating")], "bicycle"), Oneway::Both);
         assert_eq!(rule(&[("oneway", "-1"), ("oneway:bicycle", "no")], "bicycle"), Oneway::Both);
         assert_eq!(rule(&[("oneway", "yes"), ("cycleway:left", "opposite_lane")], "bicycle"), Oneway::Both);
