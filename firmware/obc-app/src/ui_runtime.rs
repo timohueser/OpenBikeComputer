@@ -276,6 +276,7 @@ impl UiRuntime {
         let Some(scr) = self.stack.get(base) else { return false };
         match scr.caps().reader {
             ReaderNeed::Always => true,
+            ReaderNeed::Help => matches!(scr, Screen::Help(s) if s.needs_reader()),
             ReaderNeed::PoiSnapshot => matches!(scr, Screen::PoiList(s) if self.poi_snapshot_pending(s)),
             // The detail's hours read runs in `prepare` off the `Reader`; keep it built until it lands.
             ReaderNeed::PoiHours => matches!(scr, Screen::PoiDetail(s) if s.hours_pending(&self.poi_scratch)),

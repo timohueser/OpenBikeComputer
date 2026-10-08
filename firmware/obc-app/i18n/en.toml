@@ -937,3 +937,15 @@ saved_route = "Saved route"
 [find_context]
 hide_closed = "Hide closed\nplaces"
 results = "Results"
+
+[help]
+title = "Help"
+emergency = "Emergency"
+phone = "Call with a phone"
+current = "Current"
+last_known = "Last known"
+acquiring = "Finding GPS..."
+no_position = "No position yet"
+signal = "Distress signal"
+stop = "Stop signal"
+no_sound = "Sound unavailable"

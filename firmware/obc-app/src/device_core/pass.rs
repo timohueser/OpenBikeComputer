@@ -99,9 +99,13 @@ pub struct SourceNeeds {
 
 /// The cue a pass raised and the level to play it at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Sound {
-    pub cue: Cue,
-    pub volume: Volume,
+pub enum Sound {
+    Play {
+        cue: Cue,
+        volume: Volume,
+    },
+    /// Cancel the sound already playing, including a distress beep.
+    Stop,
 }
 
 /// What one pass decided: the render work, when to come back, what to read, and the bounded
@@ -1638,12 +1642,19 @@ mod tests {
         assert_eq!(play(&mut app, 10, &[Gesture::Step(1)]), None, "key tones are off by default");
 
         app.set_settings(crate::Settings { key_tones: true, ..crate::Settings::default() });
-        assert_eq!(play(&mut app, 20, &[Gesture::Step(1)]), Some(Sound { cue: Cue::KeyClick, volume: Volume::Loud }));
+        assert_eq!(
+            play(&mut app, 20, &[Gesture::Step(1)]),
+            Some(Sound::Play { cue: Cue::KeyClick, volume: Volume::Loud })
+        );
 
         let page = crate::screen::SettingsPage::new(&crate::screen::settings::page::SOUND);
         crate::screen::apply(&mut app.ui.stack, crate::screen::Transition::Push(Screen::Sound(page)));
         let quiet = play(&mut app, 30, &[Gesture::Press, Gesture::Step(-1), Gesture::Press]);
-        assert_eq!(quiet, Some(Sound { cue: Cue::SoundPreview, volume: Volume::Quiet }), "Loud to Quiet previews");
+        assert_eq!(
+            quiet,
+            Some(Sound::Play { cue: Cue::SoundPreview, volume: Volume::Quiet }),
+            "Loud to Quiet previews"
+        );
         assert_eq!(play(&mut app, 40, &[Gesture::Press, Gesture::Step(-1), Gesture::Press]), None, "Off is silent");
         assert_eq!(app.settings().sound, SoundLevel::Off);
 
@@ -1667,7 +1678,7 @@ mod tests {
         assert_eq!(play(&mut app, 10, Alert::RideRecoveredIncomplete), None);
         assert!(matches!(app.top_screen(), Screen::Warning(_)), "the card tells the rider");
         let failed = play(&mut app, 20, Alert::RecordingFailed);
-        assert_eq!(failed, Some(Sound { cue: Cue::RecordingError, volume: Volume::Loud }));
+        assert_eq!(failed, Some(Sound::Play { cue: Cue::RecordingError, volume: Volume::Loud }));
     }
 
     /// The pass's routing: every level lands with its owner, every one-shot is taken from the batch,

@@ -275,9 +275,9 @@ fn a_raised_cue_is_taken_once_as_its_rendered_pattern() {
 
     let (card, directory) = card("sound");
     let mut host = open(&card, &directory);
-    let sound = Sound { cue: Cue::OffRoute, volume: Volume::Quiet };
+    let sound = Sound::Play { cue: Cue::OffRoute, volume: Volume::Quiet };
     host.sound = Some(sound);
-    let expected = obc_host_core::tone::render(obc_platform::sound::pattern(sound.cue), sound.volume, 48_000);
+    let expected = obc_host_core::tone::render(obc_platform::sound::pattern(Cue::OffRoute), Volume::Quiet, 48_000);
 
     let mut len = 0;
     // SAFETY: the host is this test's own and open, and `len` is a local.
@@ -286,6 +286,9 @@ fn a_raised_cue_is_taken_once_as_its_rendered_pattern() {
         assert!(!samples.is_null());
         assert_eq!(std::slice::from_raw_parts(samples, len as usize), expected);
         assert!(obc_ios_take_sound(&mut *host, 48_000, &mut len).is_null(), "a cue plays once");
+        host.sound = Some(Sound::Stop);
+        assert!(!obc_ios_take_sound(&mut *host, 48_000, &mut len).is_null(), "stop is distinct from no command");
+        assert_eq!(len, 0);
         assert_eq!(len, 0);
     }
     drop(host);

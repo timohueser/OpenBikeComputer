@@ -39,6 +39,7 @@ bool obc_ios_tick(ObcHost *host, double now_ms);                /* true when the
 const uint8_t *obc_ios_frame(const ObcHost *host);             /* width*height*4 RGBA, opaque alpha; valid until the next call on this host */
 /* The newest cue once, as *len mono float samples at sample_rate; NULL and *len 0 until a pass raises
    the next cue. Valid until the next call on this host. */
+// A non-NULL pointer with zero samples stops the current sound.
 const float *obc_ios_take_sound(ObcHost *host, uint32_t sample_rate, uint32_t *len);
 uint32_t obc_ios_frame_width(void);
 uint32_t obc_ios_frame_height(void);

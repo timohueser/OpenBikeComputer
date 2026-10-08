@@ -120,6 +120,7 @@ pub(crate) struct Cues {
     /// Whether `BatteryLow` and `BatteryCritical` may play.
     battery_armed: [bool; 2],
     arrived: bool,
+    distress: crate::distress::Distress,
     /// When `RecordingFailed` or `StorageLost` was last raised.
     failure_at: Option<u32>,
 }
@@ -134,6 +135,7 @@ impl Cues {
             sensors_seen: 0,
             battery_armed: [true; 2],
             arrived: false,
+            distress: crate::distress::Distress::new(),
             failure_at: None,
         }
     }
@@ -227,7 +229,7 @@ impl Cues {
     /// so a cue never plays late when the rider turns sound on.
     pub(crate) fn take(&mut self, volume: Option<Volume>) -> Option<Sound> {
         let cue = self.raised.take()?;
-        Some(Sound { cue, volume: volume? })
+        Some(Sound::Play { cue, volume: volume? })
     }
 }
 
@@ -248,14 +250,29 @@ impl App {
         cues.battery(self.state.device.battery_pct);
         cues.arrived(arrived);
         let volume = self.state.sound_available.then(|| self.settings().sound.volume()).flatten();
-        self.cues.take(volume)
+        let ordinary = self.cues.take(volume);
+        if !matches!(self.top_screen(), crate::screen::Screen::Help(_)) {
+            for screen in &mut self.ui.stack {
+                if let crate::screen::Screen::Help(help) = screen {
+                    help.signal = false;
+                }
+            }
+        }
+        let active =
+            self.state.sound_available && matches!(self.top_screen(), crate::screen::Screen::Help(s) if s.signal);
+        let distress = self.cues.distress.update(active, now);
+        if active || distress.is_some() {
+            distress
+        } else {
+            ordinary
+        }
     }
 
     /// Millis until a cue level can change without an input: a pending level settles, or, while
     /// riding, the live fix goes stale and the `GpsLost` settle time starts.
     pub(crate) fn cue_wake_in(&self, now_ms: u32) -> Option<u32> {
         let fix_stale = (self.activity.mode == Mode::Riding).then(|| self.live_fix_left_ms(now_ms)).flatten();
-        [self.cues.wake_in(now_ms), fix_stale].into_iter().flatten().min()
+        [self.cues.wake_in(now_ms), fix_stale, self.cues.distress.wake_in(now_ms)].into_iter().flatten().min()
     }
 
     /// Raise the key click, when the rider turned key tones on.
@@ -271,7 +288,10 @@ mod tests {
     use super::*;
 
     fn played(cues: &mut Cues) -> Option<Cue> {
-        cues.take(Some(Volume::Loud)).map(|s| s.cue)
+        cues.take(Some(Volume::Loud)).map(|s| match s {
+            Sound::Play { cue, .. } => cue,
+            Sound::Stop => panic!("ordinary cue cannot stop playback"),
+        })
     }
 
     /// Off route every 6 s for three minutes: one loss and one recovery cue in each minute.

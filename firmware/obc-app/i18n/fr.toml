@@ -886,3 +886,15 @@ saved_route = "Itinéraire enregistré"
 [find_context]
 hide_closed = "Masquer\nles fermés"
 results = "Résultats"
+
+[help]
+title = "Aide"
+emergency = "Urgences"
+phone = "Appelez par téléphone"
+current = "Actuelle"
+last_known = "Dernier point"
+acquiring = "Recherche GPS..."
+no_position = "Position inconnue"
+signal = "Signal de détresse"
+stop = "Arrêter le signal"
+no_sound = "Son indisponible"

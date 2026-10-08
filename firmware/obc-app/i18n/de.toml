@@ -887,3 +887,15 @@ saved_route = "Gespeicherte Route"
 [find_context]
 hide_closed = "Geschlossen\nausblenden"
 results = "Ergebnisse"
+
+[help]
+title = "Hilfe"
+emergency = "Notruf"
+phone = "Mit Telefon anrufen"
+current = "Aktuell"
+last_known = "Letzte Position"
+acquiring = "GPS-Suche..."
+no_position = "Noch keine Position"
+signal = "Notsignal"
+stop = "Signal stoppen"
+no_sound = "Kein Signalton"
