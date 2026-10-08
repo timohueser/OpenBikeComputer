@@ -5,12 +5,12 @@ as a pull request against `develop`.
 
 ## Setup
 
-Start with [simulator setup](README.md#try-the-simulator) to clone the repository, install the
+Start with [simulator setup](../README.md#try-the-simulator) to clone the repository, install the
 shared tools, and run the application without hardware. Run the commands below from the checkout
 root. `./tools/obc` works without an installed alias; `./tools/obc help TASK` describes a task.
 
-Use each surface's README for its extra setup and checks: [simulator](sim/desktop/README.md),
-[board firmware](firmware/obc-fw-nrf54l/README.md), or [web demo](sim/web-demo/README.md).
+Use each surface's README for its extra setup and checks: [simulator](../sim/desktop/README.md),
+[board firmware](../firmware/obc-fw-nrf54l/README.md), or [web demo](../sim/web-demo/README.md).
 
 ## Check your change
 
@@ -23,7 +23,7 @@ cargo fmt --all
 ```
 
 Replace `obc-app` with the crate you change. For a standalone Cargo root or a non-Rust surface,
-use its README's checks. [The test guide](docs/testing.md) explains suites and fixtures.
+use its README's checks. [The test guide](../docs/testing.md) explains suites and fixtures.
 
 Before a push:
 

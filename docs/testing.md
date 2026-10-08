@@ -2,7 +2,7 @@
 
 `tools/test_plan.py` decides what a change must test. Cargo's graph supplies every Rust package,
 every dependency edge and the split between the fast and the captured-fixture tier.
-`testing/suites.toml` holds only what Cargo cannot see. `obc suites check` validates the test
+`tools/testing/suites.toml` holds only what Cargo cannot see. `obc suites check` validates the test
 plan and runs on every pull request.
 
 ## Commands
@@ -27,7 +27,7 @@ The Python suites need `pip install -r tools/requirements-test.txt --group plann
 
 ## Routes
 
-`route` in `testing/suites.toml` says when a unit runs:
+`route` in `tools/testing/suites.toml` says when a unit runs:
 
 | Route | Meaning |
 | --- | --- |

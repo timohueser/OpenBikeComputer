@@ -494,7 +494,7 @@ class ShippedPlanTests(unittest.TestCase):
     def test_a_foundation_change_selects_the_whole_relevant_graph(self) -> None:
         whole = self.jobs_for(".github/workflows/ci.yml")
         for path in (
-            "tools/test_plan.py", "tools/ci/test.sh", "testing/suites.toml",
+            "tools/test_plan.py", "tools/ci/test.sh", "tools/testing/suites.toml",
             ".github/workflows/release.yml", ".github/workflows/test-weekly.yml",
             ".github/workflows/verification-candidate.yml", ".github/workflows/new-check.yml",
         ):
@@ -510,8 +510,8 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_ios_suites_require_their_own_inputs(self) -> None:
         unrelated = [
-            "docs/testing.md", "CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", ".rustfmt.toml",
-            ".config/nextest.toml", "testing/suites.toml", "testing/coverage-policy.toml",
+            "docs/testing.md", ".github/CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", ".rustfmt.toml",
+            ".config/nextest.toml", "tools/testing/suites.toml", "tools/testing/coverage-policy.toml",
             ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
             "planner/router-build/src/lib.rs", "planner/service/src/main.rs", "planner/service/src/http.rs",
             "planner/service/tests/http.rs", "planner/router/README.md",
@@ -561,6 +561,8 @@ class ShippedPlanTests(unittest.TestCase):
             (root / "testing/suites.toml").write_text('schema = 2\n[[suite]]\nid = "swift.obckit-host"\ncommand = "before"\n')
             for args in [("init", "-q"), ("add", "."), ("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base")]:
                 subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            (root / "tools/testing").mkdir(parents=True)
+            subprocess.run(["git", "mv", "testing/suites.toml", "tools/testing/suites.toml"], cwd=root, check=True)
             previous = plan.load_document(root)
             documents = [
                 ({"suite": previous["suite"] + [{"id": "non-ios", "command": "new"}]}, set()),
@@ -568,7 +570,7 @@ class ShippedPlanTests(unittest.TestCase):
             ]
             for document, expected in documents:
                 definitions = plan.changed_suite_ids(root, "HEAD", document)
-                chosen = plan.select(self.units, self.graph, ["testing/suites.toml"], changed_suites=definitions)
+                chosen = plan.select(self.units, self.graph, ["tools/testing/suites.toml"], changed_suites=definitions)
                 self.assertEqual({u.id for u in chosen.selected if u.scoped}, expected)
 
     def test_ios_unit_steps_follow_the_selected_suite(self) -> None:

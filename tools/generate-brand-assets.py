@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate web, desktop and iOS branding from assets/brand/signpost.svg.
+"""Generate web, desktop and iOS branding from tools/brand/signpost.svg.
 
 Run with Python 3 and ImageMagick 7. macOS iconutil also produces the ICNS bundle.
 """
@@ -13,7 +13,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
-BRAND = ROOT / "assets/brand"
+BRAND = ROOT / "tools/brand"
 ET.register_namespace("", "http://www.w3.org/2000/svg")
 
 

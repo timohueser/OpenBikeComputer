@@ -3,7 +3,7 @@
 
 Cargo's own graph decides Rust selection: every root-workspace package, its reverse
 dependencies and its test targets come from `cargo metadata`.  Only the facts Cargo
-cannot see live here — the job table below, and `testing/suites.toml`, which holds the
+cannot see live here — the job table below, and `tools/testing/suites.toml`, which holds the
 suites no Cargo package owns plus the per-package path triggers and platform limits.
 
 Selection is standard library only.  The structural workflow check in `validate-filters`
@@ -124,12 +124,12 @@ TEST_POLICY_PATTERNS = (
     ".config/nextest.toml",
     ".github/workflows/**",
     ".github/actions/**",
-    "testing/**",
+    "tools/testing/**",
     "tools/ci/**",
     "tools/test_plan.py",
     "tools/ci_aggregate.py",
     "docs/testing.md",
-    "CONTRIBUTING.md",
+    ".github/CONTRIBUTING.md",
     "justfile",
     "tools/justfile",
     "tools/obc",
@@ -328,9 +328,9 @@ def read_toml(path: Path) -> dict[str, Any]:
         raise PlanError(f"cannot parse {path}: {exc}") from exc
 
 def load_document(root: Path) -> dict[str, Any]:
-    document = read_toml(root / "testing/suites.toml")
+    document = read_toml(root / "tools/testing/suites.toml")
     if document.get("schema") != 2:
-        raise PlanError("testing/suites.toml: schema must be 2")
+        raise PlanError("tools/testing/suites.toml: schema must be 2")
     return document
 
 def carved_targets(document: Mapping[str, Any]) -> set[tuple[str, str]]:
@@ -445,7 +445,10 @@ def working_tree_paths(root: Path) -> list[str]:
 
 def changed_suite_ids(root: Path, base: str, document: Mapping[str, Any], head: str = "HEAD") -> set[str]:
     ancestor = _git(root, "merge-base", base, head).strip()
-    before = tomllib.loads(_git(root, "show", f"{ancestor}:testing/suites.toml"))
+    paths = _git(root, "ls-tree", "--name-only", ancestor, "--", "tools/testing/suites.toml", "testing/suites.toml").splitlines()
+    if not paths:
+        raise PlanError("the base revision has no suite document")
+    before = tomllib.loads(_git(root, "show", f"{ancestor}:{paths[-1]}"))
     previous = {suite["id"]: suite for suite in before.get("suite", [])}
     return {suite["id"] for suite in document.get("suite", []) if suite != previous.get(suite["id"])}
 
@@ -568,7 +571,7 @@ def select(
         elif looks_like_production(path):
             errors.append(
                 f"changed production path has no owner: {path}; "
-                "add a trigger in testing/suites.toml or a Cargo package that contains it"
+                "add a trigger in tools/testing/suites.toml or a Cargo package that contains it"
             )
 
     # The owner may have been deleted with these paths, and the base tree's Cargo graph is
@@ -950,7 +953,7 @@ AUDITED_PATHS = (
     "builder/server/nested/handler.py",
     "fixtures/catalog.toml",
     ".github/workflows/bake.yml",
-    "testing/suites.toml",
+    "tools/testing/suites.toml",
     "builder/web/src/lib/example.ts",
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
     "builder/desktop/src/main.rs",
@@ -967,7 +970,7 @@ def command_select(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     graph, document, units = load(root)
     changed, deleted = git_changed_paths(root, args.base, args.head)
-    definitions = changed_suite_ids(root, args.base, document, args.head) if "testing/suites.toml" in changed else ()
+    definitions = changed_suite_ids(root, args.base, document, args.head) if "tools/testing/suites.toml" in changed else ()
     plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     if args.release:
         plan = select_release(plan)
@@ -985,7 +988,8 @@ def command_run(args: argparse.Namespace) -> int:
     changed, deleted = git_changed_paths(root, args.base, args.head)
     if args.head == "HEAD":
         changed = sorted(set(changed) | set(working_tree_paths(root)))
-    definitions = changed_suite_ids(root, args.base, document, args.head) if "testing/suites.toml" in changed else ()
+        deleted.update(path for path in changed if not (root / path).exists())
+    definitions = changed_suite_ids(root, args.base, document, args.head) if "tools/testing/suites.toml" in changed else ()
     plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     return run_plan(plan, graph, root, carved_targets(document), dry_run=args.dry_run)
 

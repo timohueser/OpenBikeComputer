@@ -272,7 +272,7 @@ triggers = [
   # The footers that test_data_registry.py compares with the registry.
   "docs/templates/*.html",
   "builder/web/src/App.svelte",
-  "testing/*.toml",
+  "tools/testing/*.toml",
   "docs/testing.md",
   ".github/workflows/**",
   "builder/build-wasm-bridges.sh",
@@ -507,7 +507,7 @@ route = "ordinary"
 command = "tools/licenses/gen-third-party.sh --check"
 jobs = ["deny"]
 foundation = true
-triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/web/package-lock.json", "tools/licenses/about.toml", "THIRD-PARTY.md", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
+triggers = ["Cargo.lock", "planner/service/Cargo.toml", "planner/router/Cargo.toml", "builder/web/package-lock.json", "tools/licenses/about.toml", "tools/licenses/**", "data/sources.toml", "tools/data_registry.py"]
 
 [[suite]]
 id = "ci.obc-data-licence"
@@ -535,7 +535,7 @@ id = "ci.prose"
 route = "required"
 command = "python3 tools/prose.py --check"
 jobs = ["guards"]
-triggers = ["tools/prose.py", "testing/prose-baseline.json"]
+triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
 
 [[suite]]
 id = "ci.ios-host-portability"

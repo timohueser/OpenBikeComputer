@@ -3,7 +3,7 @@
 
 An index tells you what rules exist. That is not the question anyone has. The question,
 before changing a file, is which of them reach *it* — and the answer already exists,
-scattered across `testing/suites.toml`,
+scattered across `tools/testing/suites.toml`,
 `firmware/tools/dependency_rules.json`, `firmware/ui-frames.toml` and the guards
 themselves. Nothing had joined them.
 
@@ -61,7 +61,7 @@ def guards(path: str) -> list[tuple[str, str, bool]]:
 
 
 def suites(path: str, package: str | None) -> list[tuple[str, str]]:
-    data = tomllib.loads((ROOT / "testing/suites.toml").read_text())
+    data = tomllib.loads((ROOT / "tools/testing/suites.toml").read_text())
     found = []
     declared = False
     for entry in data.get("package", []):
@@ -118,7 +118,7 @@ def frames(path: str) -> list[str]:
 
 
 def prose(path: str) -> list[str]:
-    baseline = ROOT / "testing/prose-baseline.json"
+    baseline = ROOT / "tools/testing/prose-baseline.json"
     if not path.endswith(".md") or not baseline.exists():
         return []
     recorded = json.loads(baseline.read_text()).get(path)
@@ -130,7 +130,7 @@ def prose(path: str) -> list[str]:
 def specs_for(package: str | None, path: str) -> list[str]:
     if path.startswith("specs/"):
         return ["this file is itself a normative contract; specs/vectors pins its bytes"]
-    data = tomllib.loads((ROOT / "testing/suites.toml").read_text())
+    data = tomllib.loads((ROOT / "tools/testing/suites.toml").read_text())
     for entry in data.get("package", []):
         if entry.get("name") != package:
             continue

@@ -43,7 +43,7 @@ def release_notes(candidate, repo):
         f"{outcome} `{candidate['id']}` at `{source}`.\n\n" + notice +
         f"**Source and licences.** Firmware is licensed under [GPL-3.0](https://github.com/{repo}/blob/{version}/LICENSE). "
         f"[Complete corresponding source](https://github.com/{repo}/tree/{version}) and "
-        f"[third-party licences](https://github.com/{repo}/blob/{version}/THIRD-PARTY.md) apply to these files and their copies at updates.openbikecomputer.com.\n"
+        f"[third-party licences](https://github.com/{repo}/blob/{version}/tools/licenses/THIRD-PARTY.md) apply to these files and their copies at updates.openbikecomputer.com.\n"
     )
 
 
