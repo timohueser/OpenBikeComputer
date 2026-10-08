@@ -1897,9 +1897,6 @@ impl App {
         if changed && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
-        if status.paired {
-            self.close_pairing_code();
-        }
         self.ui.cards.set_passkey(status.passkey);
         self.sweep_cards();
     }
@@ -1975,8 +1972,11 @@ impl App {
     /// it needs. Called once per pass, and again after any host fact is posted, so an arriving
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
-        if self.ui.stack.iter().any(|s| matches!(s, Screen::Help(_))) {
+        if self.help_is_open() {
             return;
+        }
+        if self.state.device.ble_paired {
+            self.close_pairing_code();
         }
         let arrival = self.arrival_view();
         let in_setup = self.settings.in_setup() || self.factory_reset_pending();
@@ -2017,10 +2017,17 @@ impl App {
             return;
         }
         let utc = self.clock_trusted().then(|| self.wall_unix_now());
-        screen::apply(
-            &mut self.ui.stack,
-            screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
-        );
+        let cleanup = Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store));
+        if self.help_is_open() {
+            // Keep Help and any drawer visible; the cleanup becomes its return target.
+            if self.ui.stack.is_full() {
+                self.ui.stack.remove(1);
+            }
+            let at = screen::base_index(&self.ui.stack);
+            let _ = self.ui.stack.insert(at, cleanup);
+            return;
+        }
+        screen::apply(&mut self.ui.stack, screen::Transition::Push(cleanup));
         self.ui.cancel_holds();
         self.ui.map_dirty = true;
     }
@@ -2305,7 +2312,7 @@ impl App {
 
     /// Help keeps GPS awake while the rider reads their position.
     pub fn help_is_open(&self) -> bool {
-        self.ui.stack.iter().any(|s| matches!(s, Screen::Help(_)))
+        matches!(screen::base_screen(&self.ui.stack), Some(Screen::Help(_)))
     }
 
     fn open_help(&mut self) -> bool {
@@ -4052,7 +4059,6 @@ mod tests {
         assert!(app.sheet_only(), "…owes it nothing");
     }
 
-    /// The default 1 s fix interval gives the 5 s floor window.
     #[test]
     fn help_enters_from_menu_and_modal_and_defers_automatic_cards() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4072,6 +4078,71 @@ mod tests {
         assert!(!app.apply_chord(Chord::Help), "the shortcut never nests Help");
         app.apply_gesture(Gesture::Back);
         assert!(matches!(app.top_screen(), Screen::Passkey(_)), "Back restores the interrupted modal");
+    }
+
+    #[test]
+    fn help_defers_pairing_completion_until_dismissed() {
+        use crate::ble::{BleLink, BleStatus};
+        use crate::device_core::Sound;
+        use crate::settings::SetupStep;
+        use obc_ports::{Cue, Volume};
+        for setup in [false, true] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            if setup {
+                app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
+            } else {
+                let page = crate::screen::SettingsPage::new(&crate::screen::settings::page::CONNECTIONS);
+                let _ = app.ui.stack.push(Screen::Connections(page));
+                for g in [Gesture::Step(1), Gesture::Step(1), Gesture::Press] {
+                    app.apply_gesture(g);
+                }
+                assert!(matches!(app.top_screen(), Screen::PairPhone(_)));
+            }
+            app.set_sound_available(true);
+            app.apply_chord(Chord::Help);
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.plan_sound(), Some(Sound::Play { cue: Cue::Distress, volume: Volume::Loud }));
+            app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
+            app.advance_animations(InputClock(10_000));
+            assert!(matches!(app.top_screen(), Screen::Help(_)));
+            assert_eq!(app.plan_sound(), Some(Sound::Play { cue: Cue::Distress, volume: Volume::Loud }));
+            app.apply_gesture(Gesture::Back);
+            app.advance_animations(InputClock(10_001));
+            assert_eq!(app.plan_sound(), Some(Sound::Stop));
+            assert!(if setup {
+                app.settings().setup == SetupStep::Sensors && matches!(app.top_screen(), Screen::SetupPaired(_))
+            } else {
+                matches!(app.top_screen(), Screen::Connections(_))
+            });
+        }
+    }
+
+    #[test]
+    fn help_defers_cleanup_and_releases_overrides_on_menu_escape() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_chord(Chord::Help);
+        app.offer_route_cleanup(crate::device_core::StoreIdentity::new(1));
+        assert!(matches!(app.top_screen(), Screen::Help(_)));
+        app.apply_chord(Chord::Quick);
+        app.advance_animations(InputClock(300));
+        assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+        assert!(app.help_is_open(), "a drawer keeps Help as the visible base");
+        app.apply_chord(Chord::Quick);
+        app.apply_gesture(Gesture::Back);
+        app.advance_animations(InputClock(600));
+        assert!(matches!(app.top_screen(), Screen::RouteCleanup(_)), "cleanup waits for dismissal");
+
+        app.apply_gesture(Gesture::Back);
+        app.apply_chord(Chord::Help);
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)));
+        assert!(!app.help_is_open(), "a hidden Help page does not demand GPS");
+        app.set_ble_status(crate::ble::BleStatus {
+            link: crate::ble::BleLink::Connected,
+            passkey: Some(123_456),
+            paired: false,
+        });
+        assert!(matches!(app.top_screen(), Screen::Passkey(_)), "normal cards resume on Menu");
     }
 
     #[test]
