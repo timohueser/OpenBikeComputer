@@ -416,7 +416,7 @@ fn media(
                 return Err("Commons conversion input is not a standard 500 px thumbnail".into());
             }
             let _download_lock = super::http::Http::lock(store, url)?;
-            let download = http.download(store, url, &super::http::Expect::default())?;
+            let download = http.fresh_download(store, url)?;
             let asset = json!({"path":format!("assets/{}",download.sha256),"sha256":download.sha256,"bytes":download.size,"url":url,"input":"thumbnail500"});
             let target = out.join(text(&asset, "path")?);
             fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;

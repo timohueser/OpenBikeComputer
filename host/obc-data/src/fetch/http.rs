@@ -185,6 +185,18 @@ impl Http {
         store.lock(&format!("download-{}", key(url)))
     }
 
+    /// A revision bracket cannot prove bytes read before its first witness.
+    pub(super) fn fresh_download(&self, store: &Store, url: &str) -> Result<Downloaded, String> {
+        for suffix in ["part", "validator"] {
+            match fs::remove_file(store.partial(&format!("{}.{suffix}", key(url)))) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        self.download(store, url, &Expect::default())
+    }
+
     /// Download `url` into the store; the caller holds [`Http::lock`]. A failed try keeps its
     /// `.part` file, so the next try, or the next run, asks only for the rest. A digest mismatch
     /// removes it.
