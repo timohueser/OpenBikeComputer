@@ -362,7 +362,7 @@ mod tests {
         pin(
             &root,
             &mut files,
-            json!({"kind":"entity","key":"Q9","identity":"Q1","revision":7,"status":"present","entity":{"id":"Q1","lastrevid":7,"redirects":{"from":"Q9","to":"Q1"},"labels":{"en":{"value":"Castle"}},"sitelinks":{"enwiki":{"title":"Old Castle"}},"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}],"P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]}}}),
+            json!({"kind":"entity","key":"Q9","identity":"Q1","revision":7,"status":"present","entity":{"id":"Q1","lastrevid":7,"redirects":{"from":"Q9","to":"Q1"},"labels":{"en":{"value":"Castle"}},"sitelinks":{"enwiki":{"title":"Old Castle"}},"claims":{"P31":[{"mainsnak":{"datavalue":{"value":{"id":"Q23413"}}}}],"P373":[{"mainsnak":{"datavalue":{"value":"Castle"}}}],"P625":[{"mainsnak":{"datavalue":{"value":{"latitude":0.0,"longitude":0.0,"globe":"http://www.wikidata.org/entity/Q2"}}}}]}}}),
         );
         pin(
             &root,
@@ -370,6 +370,11 @@ mod tests {
             json!({"kind":"entity","key":"Q23413","identity":"Q23413","revision":2,"status":"present","entity":{"id":"Q23413","claims":{}}}),
         );
         pin(&root, &mut files, json!({"kind":"entity","key":"Q2","status":"missing"}));
+        pin(
+            &root,
+            &mut files,
+            json!({"kind":"category","key":"Category:Castle","identity":"Category:Castle","status":"present","members":[],"bounded":true,"limit":photo_policy()["fallback"]["files"],"limit_reached":false,"truncated":false,"continuation":{}}),
+        );
         pin(
             &root,
             &mut files,
