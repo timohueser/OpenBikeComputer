@@ -4,6 +4,10 @@
 the environments. It fetches sources into the store. The crate is `host/obc-data`.
 All files under `data/` are TOML. A file with an unknown key is refused.
 
+The shared acquisition boundary for landmarks and peaks is defined in
+[Shared Wikimedia content](wikimedia-content.md). Regional capture paths below
+describe the current integration until it consumes those shared source pins.
+
 ## Files
 
 ### `data/sources.toml`
