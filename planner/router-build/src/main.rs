@@ -12,8 +12,6 @@ struct Args {
     output: PathBuf,
     #[arg(long)]
     region: String,
-    #[arg(long)]
-    country: String,
     /// West,south,east,north in degrees. Routes are exact within this clipped graph.
     #[arg(long, allow_hyphen_values = true)]
     bounds: String,
@@ -50,14 +48,8 @@ fn run(args: Args) -> Result<(), String> {
             Some(Terrain::open(&glo30, reference.as_deref(), bounds)?)
         }
     };
-    let build_args = Build {
-        inputs: args.inputs,
-        region: args.region,
-        country: args.country,
-        bounds,
-        profiles: args.profiles,
-        countries: args.countries,
-    };
+    let build_args =
+        Build { inputs: args.inputs, region: args.region, bounds, profiles: args.profiles, countries: args.countries };
     let temp = args.output.with_extension(format!("building-{}", std::process::id()));
     fs::create_dir(&temp).map_err(|e| e.to_string())?;
     let result = (|| {

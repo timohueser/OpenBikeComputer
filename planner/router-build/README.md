@@ -7,8 +7,7 @@ The importer clips the graph at those bounds. It does not fetch missing data.
 ```sh
 cargo run --release -p planner-router-build -- \
   /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
-  --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all \
-  --countries DE
+  --region freiburg --bounds 7.5,47.7,8.5,48.4 --profiles all --countries DE
 ```
 
 The output directory must not exist. The builder writes objects to a temporary
@@ -51,7 +50,7 @@ OBC bare-earth archive and local Copernicus GeoTIFFs through `obc-dem`:
 ```sh
 cargo run --release -p planner-router-build -- \
   /data/freiburg-regbez.osm.pbf --output /data/routes/freiburg \
-  --region freiburg --country DE --bounds 7.5,47.7,8.5,48.4 --profiles all \
+  --region freiburg --bounds 7.5,47.7,8.5,48.4 --profiles all \
   --reference /data/obc-reference --dem /data/copernicus
 ```
 
@@ -64,7 +63,9 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 
 | Input | Policy |
 | --- | --- |
-| Country defaults | Germany only; other country codes fail |
+| Country defaults | Worldwide defaults, with the differences in the [OSM wiki country tables](https://wiki.openstreetmap.org/wiki/OSM_tags_for_routing/Access_restrictions) (`planner_router_build::country`); a way takes the country of its first known node |
+| Side of the road | A cycle lane without a direction runs with the traffic of the country |
+| One-way | Binds riding only; `oneway:bicycle=no` or a contraflow lane opens it; roundabouts and `junction=circular` imply it; `alternating` is two-way; `reversible` keeps both directions and the route reports a possible closure |
 | Access and direction | Separate cycling, walking and pushing; pushing follows foot access unless `bicycle:pushing` restricts it |
 | Node identity | Shared OSM node IDs create junctions; geometry crossings do not |
 | Via-node turn restrictions | Mode-specific forbidden transitions |
@@ -80,9 +81,9 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 | Road suitability | Highway, surface, smoothness, tracktype and difficulty remain distinct |
 
 Read the manifest warnings before publishing. The importer does not yet model
-all OSM semantics. It has no ferry schedule, opening-time evaluator, general
-via-way automaton or country-default catalogue. Do not use
-this German regional importer as a worldwide release pipeline.
+all OSM semantics. It has no ferry schedule, opening-time evaluator or general
+via-way automaton. Defaults stop at the country: state and local rules need
+explicit tags.
 
 ## Profiles
 
@@ -109,7 +110,7 @@ profiles. Preserve [the licence notice](LICENSE.brouter) when redistributing the
 | Elevation | Filtered fractional heights; 1.5% slope threshold; additive costs |
 | BRouter elevation buffer | Not reproduced; no path-dependent state in the graph |
 | Estimated traffic, forest and noise | Not inferred from BRouter's derived data |
-| Access | German importer rules; restricted access is not a soft penalty |
+| Access | Importer rules; restricted access is not a soft penalty |
 | Pushing | Allowed where permitted, with distance and entry costs; no cycling permission implied |
 
 Touring, gravel, MTB and hiking use separate surface and road-class tables.

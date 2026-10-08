@@ -96,7 +96,7 @@ closure adds no cost:
 | `limited` | Access value for another group: `destination`, `customers`, `delivery`, `residents`, `military`, or a motor group such as `psv` | The value |
 | `seasonal` | A conditional restriction that names only months, days or seasons | The OSM condition, such as `Nov-May` |
 | `conditional` | Any other conditional restriction | The OSM condition, such as `wet` |
-| `unclear` | An access value or a barrier that the router does not know | The value, or `barrier=VALUE` |
+| `unclear` | An access value or a barrier that the router does not know, or a reversible one-way | The value, `barrier=VALUE`, or `oneway=reversible` |
 
 ### Legs and totals
 

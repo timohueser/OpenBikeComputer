@@ -137,13 +137,6 @@ class ReleaseTests(unittest.TestCase):
         active = release.endpoints("a" * 64, document, "Test region", "https://maps.example", "https://tiles.example", "https://api.example")
         self.assertEqual(active["layers"], {"snow": "https://tiles.example/releases/" + "a" * 64 + "/snow.json"})
 
-    def test_region_recipe_refuses_unsupported_country_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "region.json"
-            path.write_text(json.dumps({"format": 1, "region": "test", "access": "FR"}))
-            with self.assertRaisesRegex(ValueError, "German access defaults"):
-                planner_prepare.recipe(path)
-
     def test_each_region_recipe_is_valid_and_named_by_its_file(self):
         for path in (release.maps.ROOT / "tools/planner-regions").glob("*.json"):
             self.assertEqual(planner_prepare.recipe(path)["region"], path.stem)

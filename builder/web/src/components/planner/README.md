@@ -89,8 +89,6 @@ POI transforms reuse addresses and unrelated grid objects. Search enrichment and
 routing construction remain regional. Remote releases can upload identical objects
 under distinct prefixes.
 
-Preparation accepts only `DE` access defaults. Add and verify other rules first.
-
 Each kind of change goes out in one way:
 
 - **Code only.** For a route server or planner-search change, deploy the same

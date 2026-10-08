@@ -123,9 +123,8 @@ def build_routing(stage, osm, args, config):
     reference = terrain_inputs(args, config)
     routing = stage / "routing"
     maps.run(maps.ROOT / "target/release/planner-router-build", osm(), "--output", routing, "--region", config["region"],
-             "--country", config["access"], "--bounds", ",".join(map(str, config["bounds"])),
-             "--profiles", ",".join(config["profiles"]), "--countries", ",".join(config["countries"]),
-             "--dem", args.dem_dir, *reference)
+             "--bounds", ",".join(map(str, config["bounds"])), "--profiles", ",".join(config["profiles"]),
+             "--countries", ",".join(config["countries"]), "--dem", args.dem_dir, *reference)
     for path in routing.iterdir(): path.rename(stage / path.name)
     routing.rmdir()
 
@@ -202,7 +201,7 @@ def specifications(config, prepared=None):
     add("terrain", build_terrain, {"elevation": elevation, **credits("copernicus-glo-30")}, {"terrain_bounds": terrain_coverage(config)}, paths=terrain_paths,
         functions=[terrain_inputs, terrain_coverage, maps.compact_archive, maps.verify_archive])
     routing_paths = components.rust_sources("planner/router-build")
-    add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "access": config["access"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
+    add("routing", build_routing, {"osm": osm, "elevation": elevation, **credits("osm-planet", "copernicus-glo-30")}, {"region": config["region"], "countries": config["countries"], "profiles": config["profiles"]}, paths=routing_paths,
         functions=[terrain_inputs])
     add("overlays", build_overlays, credits("osm-planet"), dependencies=["routing"], paths=[maps.ROOT / path for path in
         ("tools/planner_overlays.py", "tools/planner_geo.py", "tools/planner_mvt.py", "tools/step_request.py", "tools/data_registry.py", "uv.lock")])
