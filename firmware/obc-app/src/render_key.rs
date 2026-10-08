@@ -338,7 +338,7 @@ impl App {
             course_rad: self.state.course_rad().to_bits(),
             pan: self.state.pan.map(|p| (p.basis, p.tool, p.route_progress_m)),
             fix: FixKey::of(self.state.user_fix),
-            active_route: navigation.active_route.map(|i| i as u32),
+            active_route: self.active_route_index().map(|i| i as u32),
             progress_m: navigation.progress_m,
             off_route: navigation.off_route,
             dist_to_route_m: navigation.dist_to_route_m,
@@ -397,7 +397,7 @@ impl App {
         UpAheadKey {
             progress_m: navigation.progress_m,
             route_total_m: navigation.route_total_m,
-            active_route: navigation.active_route.map(|i| i as u32),
+            active_route: self.active_route_index().map(|i| i as u32),
             corridor: (self.ui.corridor_scratch.len(), !self.ui.corridor_scratch.pending()),
         }
     }

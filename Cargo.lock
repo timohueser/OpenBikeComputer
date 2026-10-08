@@ -3462,6 +3462,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-crc",
  "obc-data",
  "obc-elevation",
  "obc-fixtures",

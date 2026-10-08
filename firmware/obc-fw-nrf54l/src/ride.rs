@@ -802,10 +802,6 @@ pub(crate) async fn run_app(
     // save or forget only on an actual change and a steady state never interrupts a live link. It
     // starts empty, so the first pass seeds the manager from the persisted settings.
     let mut pushed_sensors: [Option<([u8; 6], bool)>; obc_app::SENSOR_SLOTS] = [None; obc_app::SENSOR_SLOTS];
-    // The next re-arm deadline (loop ms) for the discovery scan while the scan list is up. `0` means
-    // not scanning. It re-arms just under the manager's 10 s window, so the scan stays live without
-    // pulsing the manager's work edge every pass.
-    let mut sensor_scan_rearm_ms: u32 = 0;
 
     // Seed the app from the persistent RRAM store at boot; a blank or corrupt page boots a
     // factory-fresh device. One brief lock, released at once.
@@ -1169,16 +1165,16 @@ pub(crate) async fn run_app(
                         }
                     }
                     CatalogEffect::RemoveOrphanRoutes { token } => {
-                        let heads = crate::flat_store::route_heads(flat, app.orphan_routes());
-                        let result = if heads.is_empty() {
-                            Ok(())
-                        } else if let Some(writer) = crate::flat_store::writer() {
-                            writer
-                                .call(crate::flat_store::Request::RemoveRoutes { heads }, &CATALOG_STORE_REPLY)
-                                .await
-                                .map(|_| ())
-                        } else {
-                            Err(obc_storage::flat::StoreError::ReadOnly)
+                        let result = match crate::flat_store::route_heads(flat, app.orphan_routes()) {
+                            Err(error) => Err(error),
+                            Ok(heads) if heads.is_empty() => Ok(()),
+                            Ok(heads) => match crate::flat_store::writer() {
+                                Some(writer) => writer
+                                    .call(crate::flat_store::Request::RemoveRoutes { heads }, &CATALOG_STORE_REPLY)
+                                    .await
+                                    .map(|_| ()),
+                                None => Err(obc_storage::flat::StoreError::ReadOnly),
+                            },
                         };
                         let outcome = match result {
                             Ok(()) => CatalogOutcome::OrphanRoutesRemoved { token },
@@ -2320,11 +2316,11 @@ pub(crate) async fn run_app(
             if let Some(expected) = app.requested_assistant_resume() {
                 use obc_storage::flat::Store;
                 let exact = flat
-                    .entries()
-                    .find(|entry| entry.id.0 == expected.object)
+                    .find_entry(|entry| entry.id.0 == expected.object)
+                    .ok()
+                    .flatten()
                     .map(obc_storage::flat::metadata::fingerprint)
-                    == Some(expected)
-                    && flat.entries_ok();
+                    == Some(expected);
                 let source = crate::flat_store::reconcile_route(flat, exact.then_some(expected.object));
                 let reader = source
                     .filter(|source| route_index.read_into(*source).is_ok())
@@ -2642,27 +2638,7 @@ pub(crate) async fn run_app(
             // The BLE acting half: what the pass just decided, out to the radio plane. Both of these
             // key on state this frame's gestures produced, so they read the app after the pass.
             {
-                // While the Sensors screen's scan list is up, keep a discovery scan running.
-                // `request_scan` must not be rung every pass: it pulses the manager's work edge,
-                // which the manager's own scan window selects on, so a per-pass ring would collapse
-                // that window. Ring once on the rising edge, then re-arm every 9 s.
-                if app.sensor_scan_active() {
-                    // `now >= rearm` in wrapping-monotonic terms; `0` is the "not scanning yet"
-                    // sentinel that fires on the rising edge.
-                    let due = sensor_scan_rearm_ms == 0 || now.wrapping_sub(sensor_scan_rearm_ms) as i32 >= 0;
-                    if due {
-                        crate::ble::request_scan();
-                        sensor_scan_rearm_ms = now.wrapping_add(9_000).max(1); // never 0 (the "off" sentinel)
-                    }
-                } else {
-                    // Falling edge: the scan list closed. Cancel discovery, because the re-arm may
-                    // have left a stale scan request latched that would outrank the fresh save and
-                    // hold the connect hostage for a whole window.
-                    if sensor_scan_rearm_ms != 0 {
-                        crate::ble::cancel_scan();
-                    }
-                    sensor_scan_rearm_ms = 0; // reset so the next entry rings on its rising edge
-                }
+                crate::ble::set_sensor_discovery(app.sensor_scan_active());
                 // Saved-sensor reconcile: the persisted `Settings.saved_sensors` is the source of
                 // truth. Diff each slot against what was last pushed and drive the change through the
                 // save and forget latches, fired once per change.

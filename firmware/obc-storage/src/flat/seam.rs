@@ -284,8 +284,22 @@ pub trait Store {
     /// Random access inside an open object. Returns bytes read, short only at end of payload.
     fn read(&self, handle: &Self::Handle, offset: u64, buf: &mut [u8]) -> core::result::Result<usize, StoreError>;
 
-    /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
-    fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
+    /// Read-only catalog view. A media fault or changed catalog returns one error, then ends.
+    fn entries(&self) -> impl Iterator<Item = core::result::Result<EntryMeta, StoreError>> + '_;
+
+    /// Find the first matching entry without turning a failed read into an absent object.
+    fn find_entry(
+        &self,
+        mut matches: impl FnMut(&EntryMeta) -> bool,
+    ) -> core::result::Result<Option<EntryMeta>, StoreError> {
+        for entry in self.entries() {
+            let entry = entry?;
+            if matches(&entry) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
 
     /// The ride exception, and the only way bytes become durable without a commit. It gates each
     /// whole 16 KiB prefix in a tail slot before copying it to the recording entry's extents.

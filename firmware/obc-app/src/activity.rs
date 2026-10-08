@@ -31,8 +31,8 @@ pub enum Mode {
 /// takes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetourRequest {
-    /// The active catalog slot the request is keyed to (durable-remapped across rescans).
-    pub route: usize,
+    /// The durable route object the request uses.
+    pub route: crate::CatalogObjectId,
     /// The rider's fix at Press, `(lon, lat)` µdeg — the detour's start.
     pub from: (i32, i32),
     /// The rider's along-route projection at Press — the corridor's frozen start anchor and the
@@ -47,13 +47,13 @@ pub struct DetourRequest {
 
 impl DetourRequest {
     /// Connect `from` to `target_m` on the stored route.
-    pub fn approach(route: usize, from: (i32, i32), target_m: u32) -> Self {
+    pub fn approach(route: crate::CatalogObjectId, from: (i32, i32), target_m: u32) -> Self {
         DetourRequest { route, from, progress_m: target_m, target_m, leg: obc_route::Leg::Approach }
     }
 
     /// The rest of the day before `route`, `[from_m, to_m]` on that day's route, then `route` from
     /// `join_m`.
-    pub fn rest(route: usize, from_m: u32, to_m: u32, join_m: u32) -> Self {
+    pub fn rest(route: crate::CatalogObjectId, from_m: u32, to_m: u32, join_m: u32) -> Self {
         DetourRequest {
             route,
             from: (0, 0),
@@ -130,11 +130,8 @@ pub struct Activity {
     /// cleared on exit, and the key the host's one-shot track-profile fill hangs off.
     pub(crate) viewed_ride: Option<usize>,
 
-    /// A one-shot route-delete request: the catalog index of a route the Route menu's
-    /// hold-to-delete footer asked to remove, drained through the pass, which translates it to the
-    /// route's durable object id. An index, not the id, because the screen holds indices; the lookup
-    /// is `App`'s, which owns the parallel [`route_ids`](crate::App::route_ids) table.
-    delete_route: Option<usize>,
+    /// The durable subject of the pending route removal.
+    delete_route: Option<crate::CatalogObjectId>,
     /// A one-shot ride-delete request: the twin of [`delete_route`](Activity::delete_route),
     /// resolved through the parallel [`ride_ids`](crate::App::ride_ids) table.
     delete_ride: Option<usize>,
@@ -152,16 +149,11 @@ impl Activity {
         Activity { mode, ..Default::default() }
     }
 
-    /// Record a one-shot request to delete the catalog route at `index`. The index is resolved to
-    /// the route's durable object id at drain, so a rescan racing between the hold and the drain
-    /// cannot delete the wrong route.
-    pub(crate) fn request_route_delete(&mut self, index: usize) {
-        self.delete_route = Some(index);
+    pub(crate) fn request_route_delete(&mut self, id: crate::CatalogObjectId) {
+        self.delete_route = Some(id);
     }
 
-    /// Take the pending route-delete request's catalog index. `App` maps it to a durable object id
-    /// for the host to delete.
-    pub(crate) fn take_route_delete(&mut self) -> Option<usize> {
+    pub(crate) fn take_route_delete(&mut self) -> Option<crate::CatalogObjectId> {
         self.delete_route.take()
     }
 

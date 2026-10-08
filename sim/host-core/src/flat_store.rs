@@ -276,12 +276,15 @@ impl ObjectSource {
     pub fn fingerprint(&self) -> Option<obc_formats::assistant::PayloadFingerprint> {
         let owner = self.0.owner.lock().ok()?;
         let card = owner.ready().ok()?;
-        let entry = card.entries().find(|entry| {
-            entry.id == self.id()
-                && entry.revision == self.revision()
-                && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
-        })?;
-        card.entries_ok().then(|| obc_storage::flat::metadata::fingerprint(entry))
+        let entry = card
+            .find_entry(|entry| {
+                entry.id == self.id()
+                    && entry.revision == self.revision()
+                    && (entry.flags == EntryFlags::NONE
+                        || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
+            })
+            .ok()??;
+        Some(obc_storage::flat::metadata::fingerprint(entry))
     }
 
     pub fn store_id(&self) -> StoreId {
@@ -408,14 +411,12 @@ impl HostStore {
     pub(crate) fn entries(&self) -> Result<Vec<EntryMeta>, StoreError> {
         let store = self.0.lock().map_err(|_| StoreError::Media)?;
         let card = store.ready()?;
-        let entries = card
-            .entries()
-            .filter(|entry| {
-                entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head())
-            })
-            .collect();
-        if !card.entries_ok() {
-            return Err(StoreError::Media);
+        let mut entries = Vec::new();
+        for entry in card.entries() {
+            let entry = entry?;
+            if entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
+                entries.push(entry);
+            }
         }
         Ok(entries)
     }
@@ -438,13 +439,10 @@ impl HostStore {
     pub(crate) fn remove(&self, kind: ObjectKind, id: ObjectId, revision: Revision) -> Result<(), StoreError> {
         let mut owner = self.0.lock().map_err(|_| StoreError::Media)?;
         let store = owner.ready()?;
-        let head = store.entries().find(|entry| {
+        let head = store.find_entry(|entry| {
             entry.id == id
                 && (entry.flags == EntryFlags::NONE || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
-        });
-        if !store.entries_ok() {
-            return Err(StoreError::Media);
-        }
+        })?;
         let head = head.ok_or(StoreError::NotFound)?;
         if head.kind != kind {
             return Err(StoreError::Invalid);
@@ -520,17 +518,16 @@ impl HostStore {
             return Err(StoreError::ReadOnly.into());
         }
         if matches!(kind, ObjectKind::Route | ObjectKind::Ride) && previous.is_none() {
-            let count = store
-                .entries()
-                .filter(|entry| {
-                    entry.kind == kind
-                        && ((entry.flags == EntryFlags::NONE
-                            || (entry.kind == ObjectKind::Route && entry.flags.is_route_head()))
-                            || entry.flags == EntryFlags::RECORDING)
-                })
-                .count();
-            if !store.entries_ok() {
-                return Err(StoreError::Media.into());
+            let mut count = 0;
+            for entry in store.entries() {
+                let entry = entry?;
+                if entry.kind == kind
+                    && (entry.flags == EntryFlags::NONE
+                        || (entry.kind == ObjectKind::Route && entry.flags.is_route_head())
+                        || entry.flags == EntryFlags::RECORDING)
+                {
+                    count += 1;
+                }
             }
             let capacity = if kind == ObjectKind::Route { obc_app::MAX_ROUTES } else { obc_app::MAX_RIDES };
             if count >= capacity {

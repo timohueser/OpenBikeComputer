@@ -85,11 +85,11 @@ fn file_seed_survives_remount_and_preserves_existing_objects() {
     let store = FlatStore::mount(&disk);
     assert_eq!(factory_demo_ride::seed(&store, &bytes), Ok(id));
     assert_eq!(store.sequence(), sequence);
-    assert_eq!(store.entries().find(|entry| entry.id == existing.id), Some(existing));
+    assert_eq!(store.entries().map(Result::unwrap).find(|entry| entry.id == existing.id), Some(existing));
     let mut preserved = [0; 4];
     store.read(&store.open(existing.id, None).unwrap(), 0, &mut preserved).unwrap();
     assert_eq!(&preserved, b"keep");
-    let entry = store.entries().find(|entry| entry.id == id).unwrap();
+    let entry = store.entries().map(Result::unwrap).find(|entry| entry.id == id).unwrap();
     assert_eq!(entry.payload_crc, obc_crc::crc32(&bytes));
     let mut stored = vec![0; bytes.len()];
     store.read(&store.open(id, None).unwrap(), 0, &mut stored).unwrap();

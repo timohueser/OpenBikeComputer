@@ -10,12 +10,12 @@ pub(crate) fn original_allowed<D: BlockDevice>(
     let Some(expected) = context.original else {
         return context.accepts_original(active, None, false);
     };
-    let current = store.entries().find(|entry| {
+    let current = store.find_entry(|entry| {
         entry.id.0 == expected.object
             && entry.kind == obc_storage::flat::ObjectKind::Route
             && entry.flags.is_route_head()
     });
-    if !store.entries_ok() || current.map(obc_storage::flat::metadata::fingerprint) != Some(expected) {
+    if current.ok().flatten().map(obc_storage::flat::metadata::fingerprint) != Some(expected) {
         return false;
     }
     store

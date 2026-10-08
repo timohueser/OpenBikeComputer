@@ -300,13 +300,13 @@ fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample(
                 let discard = app_pass(&mut app, now + 1_002, None, None);
                 let outcome = complete(recorder.execute(store, &app, &mut opened, discard, now + 1_002));
                 assert!(matches!(outcome, Some(RecorderOutcome::Discarded { .. })));
-                assert_eq!(store.entries().count(), 0);
+                assert_eq!(store.entries().map(Result::unwrap).count(), 0);
                 // App has not consumed the close yet. It must not reopen this session.
                 assert!(complete(recorder.execute(store, &app, &mut opened, None, now + 1_003)).is_none());
-                assert_eq!(store.entries().count(), 0);
+                assert_eq!(store.entries().map(Result::unwrap).count(), 0);
                 assert!(app_pass(&mut app, now + 1_003, None, outcome).is_none());
             } else {
-                assert_eq!(store.entries().count(), 1);
+                assert_eq!(store.entries().map(Result::unwrap).count(), 1);
                 assert_eq!(
                     complete(recorder.checkpoint(20_000, &app.ride_stats(), app.recorder.checkpoint_context())),
                     Ok(CheckpointStatus::Durable)
@@ -317,4 +317,32 @@ fn start_after_discard_opens_before_the_first_append_and_preserves_every_sample(
             }
         }
     }
+}
+
+#[test]
+fn finish_repairs_the_failed_checkpoint_before_publishing_one_footer() {
+    use obc_app::recorder::RideClose;
+    use obc_storage::flat::{EntryFlags, ObjectKind, Store};
+    let _owner = RECORDER.lock().unwrap();
+    let (media, store, writer, mut recorder) = setup();
+    let sample = point(1);
+    assert_eq!(recorder.append(&[sample], context(1)), AppendResult::Accepted);
+    store.device().fault_next(sim::MediaOp::Sync);
+    assert_eq!(complete(recorder.checkpoint(2_000, &stats(), None)), Err(RecorderError::Write));
+    let closing = obc_route::RideStats { clock_trusted: true, unix_at_anchor: 1_000_000, anchor_ms: 2_000, ..stats() };
+    let RideClose::Committed(id) = complete(recorder.finalize(&closing)) else { panic!("finish failed") };
+    let attempts = writer.attempts.borrow();
+    assert_eq!(attempts.len(), 3);
+    assert_eq!(attempts[0], attempts[1], "finish must first replay the exact failed checkpoint");
+    assert_eq!(attempts[2].append.len(), obc_formats::ride::FOOTER_LEN);
+    let footer = obc_formats::ride::decode_footer(attempts[2].append.as_slice().try_into().unwrap()).unwrap();
+    assert_eq!((footer.point_count, footer.start_time), (1, 999_999));
+    drop(attempts);
+    let (reopened, mut recorder) = recover(media, store.device());
+    assert!(!recorder.is_recording());
+    complete(recorder.settle());
+    let entries: Vec<_> = reopened.entries().collect::<Result<_, _>>().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!((entries[0].id.0, entries[0].kind, entries[0].flags), (id, ObjectKind::Ride, EntryFlags::NONE));
+    assert_eq!(entries[0].payload_len, (SAMPLE_LEN + obc_formats::ride::FOOTER_LEN) as u64);
 }

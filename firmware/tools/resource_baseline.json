@@ -26,7 +26,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 58448,
+        "app": 58568,
         "map_cache": 37084,
         "map_tables": 7528,
         "route_cache": 5396,
@@ -38,7 +38,7 @@
         "terrain": 2152,
         "terrain_window": 24,
         "stack_reserve": 65536,
-        "ble_total": 24977,
+        "ble_total": 24965,
         "ble_mpsl": 0,
         "ble_sdc_memory": 11336,
         "ble_host_resources": 6120,
@@ -47,7 +47,7 @@
         "ble_object_store": 132,
         "ble_server": 2168,
         "ble_gap_name": 52,
-        "ble_sensor_manager": 370,
+        "ble_sensor_manager": 358,
         "usb_named": 35973,
         "sd_bounce": 2048,
         "semmc_driver": 52,
@@ -160,6 +160,11 @@
         "toolchain": "rustc 1.96.0; LLVM 22.1.2; riscv64-elf-gcc 16.1.0; binutils 2.46.1",
         "changes": "App +384 B for up to six results, twelve candidate costs/reviews, and hours-filter identity. BLE settings cache +4 B, also counted in ble_total. All other named allocations and resource ceilings are unchanged.",
         "verification": "One diagnostic head build compared with the recorded baseline. Board guards passed on that ELF; shipping ELF verification remains in CI. No base rebuild or device flash."
+      },
+      "_firmware_architecture_allocation_measurement": {
+        "source_commit": "codex/firmware-architecture worktree based on f45f9b43a",
+        "build": "cargo build --release --locked --features resource-report; rustc 1.96.0; aarch64-apple-darwin",
+        "changes": "Measured App 58,568 B with durable route identities; BLE sensor manager 358 B and BLE total 24,965 B after removing the scan request signal. The shared ride writer keeps the 570 B buffer. Resource limits stay unchanged."
       }
     }
   },

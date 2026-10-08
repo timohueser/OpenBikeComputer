@@ -257,6 +257,7 @@ pub struct Ctx<'a> {
     /// save.
     pub settings: &'a mut Settings,
     pub routes: &'a [RouteSummary],
+    pub route_ids: &'a [crate::CatalogObjectId],
     pub rides: &'a [RideEntry],
     pub trips: &'a [crate::trip::TripSummary],
     /// The device's trip progress records, at most one per trip key. A trip without one reads as
@@ -292,6 +293,19 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    pub(crate) fn route_index(&self, id: crate::CatalogObjectId) -> Option<usize> {
+        self.route_ids.iter().position(|&candidate| candidate == id)
+    }
+
+    pub(crate) fn route(&self, id: crate::CatalogObjectId) -> Option<&RouteSummary> {
+        self.routes.get(self.route_index(id)?)
+    }
+
+    pub(crate) fn route_available(&self, id: crate::CatalogObjectId) -> bool {
+        self.route_index(id)
+            .is_some_and(|index| self.routes.get(index).is_some() && !self.navigator.route_unaccepted(index))
+    }
+
     /// The base facts a context row's availability and value read, from an input context. The same
     /// answer [`Render::context_facts`] gives the frame that drew the row.
     pub(crate) fn context_facts(&self) -> context_drawer::ContextFacts<'_> {
@@ -303,6 +317,17 @@ impl Ctx<'_> {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) const TEST_ROUTE_IDS: [crate::CatalogObjectId; crate::MAX_ROUTES] = {
+    let mut ids = [0; crate::MAX_ROUTES];
+    let mut i = 0;
+    while i < ids.len() {
+        ids[i] = i as crate::CatalogObjectId;
+        i += 1;
+    }
+    ids
+};
 
 #[cfg(test)]
 pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, settings: &'a mut Settings) -> Ctx<'a> {
@@ -318,6 +343,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         activity,
         settings,
         routes: &[],
+        route_ids: &TEST_ROUTE_IDS,
         rides: &[],
         trips: &[],
         trip_progress: &[],
@@ -373,6 +399,7 @@ pub struct Render<'a> {
     pub recorder: &'a crate::recorder::RecorderMachine,
     pub settings: &'a Settings,
     pub routes: &'a [RouteSummary],
+    pub route_ids: &'a [crate::CatalogObjectId],
     pub unaccepted_routes: u64,
     pub internal_routes: u64,
     pub rides: &'a [RideEntry],
@@ -486,6 +513,14 @@ pub struct Render<'a> {
 }
 
 impl Render<'_> {
+    pub(crate) fn route_index(&self, id: crate::CatalogObjectId) -> Option<usize> {
+        self.route_ids.iter().position(|&candidate| candidate == id)
+    }
+
+    pub(crate) fn route(&self, id: crate::CatalogObjectId) -> Option<&RouteSummary> {
+        self.routes.get(self.route_index(id)?)
+    }
+
     /// The base facts a context row's availability and value read, from a draw context.
     pub(crate) fn context_facts(&self) -> context_drawer::ContextFacts<'_> {
         context_drawer::ContextFacts {
@@ -567,9 +602,9 @@ pub struct Prepare<'a, 'd> {
     pub poi_scratch: &'a mut PoiScratch,
     /// The rider's current fix, `(lon, lat)` µdeg: the POI list's nearest-16 query origin.
     pub user_fix: Option<Fix>,
-    /// Copy of the active route slot and live matched progress at this frame's prepare boundary.
+    /// Copy of the active route identity and live matched progress at this frame's prepare boundary.
     /// The Detour chooser advances its selection anchor with the rider before resolving geometry.
-    pub active_route: Option<usize>,
+    pub active_route: Option<crate::CatalogObjectId>,
     pub progress_m: u32,
     pub route_total_m: u32,
     /// The planned detour's decimated polyline, which the Detour preview folds into its fitted
@@ -1166,14 +1201,14 @@ impl Screen {
         state: &crate::AppState,
         navigation: &crate::navigator::RouteState,
         recording: bool,
-        routes: &[RouteSummary],
+        route_ids: &[crate::CatalogObjectId],
         rides: &[RideEntry],
     ) -> bool {
         match self {
             Screen::RideControl(s) => s.selection_is_guarded(),
             Screen::RideRecovery(s) => s.selection_is_guarded(),
             Screen::RouteSwap(s) => s.selection_is_guarded(),
-            Screen::Arrival(s) => s.selection_is_guarded(),
+            Screen::Arrival(s) => s.selection_is_guarded(route_ids),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Connections(s) => {
@@ -1181,7 +1216,7 @@ impl Screen {
             }
             Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
-            Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, routes),
+            Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, route_ids),
             Screen::RideDetail(s) => s.selection_is_guarded(recording, rides.len()),
             Screen::RouteCleanup(s) => s.selection_is_guarded(),
             Screen::TripDelete(s) => s.selection_is_guarded(),
@@ -1270,9 +1305,12 @@ pub const UPLOAD_POPUP_TIMEOUT_MS: u32 = 30_000;
 /// Start riding catalog route `i` from a non-tracking state: the camera seeded on the route's
 /// start, [`Mode::Riding`], `active_route` pointed at it, a fresh tracking session, and a clean
 /// `[Home, Map]` stack. Shared by the Route overview's START RIDE press and the route-received
-/// popup's *Start navigation*, so the two cannot drift. An out-of-range `i` pops instead.
-pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
-    let Some(route) = cx.routes.get(i) else {
+/// popup's *Start navigation*, so the two cannot drift. A missing route pops instead.
+pub(crate) fn start_ride(cx: &mut Ctx, i: crate::CatalogObjectId) -> Transition {
+    if !cx.route_available(i) {
+        return Transition::Pop;
+    }
+    let Some(route) = cx.route(i) else {
         return Transition::Pop;
     };
     let (lon, lat) = (route.start_lon, route.start_lat);

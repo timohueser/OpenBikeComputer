@@ -972,10 +972,10 @@ impl App {
     }
 
     /// Replace the resident route catalog from the host's store, carrying each route's durable
-    /// object id (`ids` parallel to `summaries`), then remap every held catalog index by id.
+    /// object id (`ids` parallel to `summaries`). Long-lived subjects retain that id.
     /// Clones up to [`MAX_ROUTES`](crate::MAX_ROUTES) entries; any beyond that are ignored.
     ///
-    /// The remap is the live-catalog contract: a rescan that inserts or removes a route
+    /// The live-catalog contract: a rescan that inserts or removes a route
     /// re-points the active route, the caches keyed on it, an open chooser, a menu selection and
     /// a pending swap at the same route by id. A vanished route unloads navigation, clamps a
     /// menu selection, and turns a preview subject into its screen's missing-route path.
@@ -984,9 +984,9 @@ impl App {
         if self.catalogs.routes() == &summaries[..len] && self.catalogs.route_ids() == &ids[..len] {
             return;
         }
-        // The old-id snapshot drives the remap of everything held outside `CatalogState`.
+        // Positional catalog flags follow their objects through the replacement.
         let old_ids = self.catalogs.replace_routes(summaries, ids);
-        self.remap_route_indices(&old_ids);
+        self.refresh_route_subjects(&old_ids);
         self.ui.map_dirty = true;
     }
     /// Mark unaccepted immutable candidates in the current complete catalog projection.
@@ -1000,7 +1000,12 @@ impl App {
             self.navigator.set_internal_routes(mask);
             for screen in self.ui.stack.iter_mut() {
                 if let Screen::RouteMenu(menu) = screen {
-                    menu.remap_routes(&Some, self.catalogs.trips(), self.catalogs.route_len(), mask);
+                    menu.refresh_rows(
+                        self.catalogs.route_ids(),
+                        self.catalogs.trips(),
+                        self.catalogs.route_len(),
+                        mask,
+                    );
                 }
             }
             self.ui.map_dirty = true;
@@ -1016,31 +1021,21 @@ impl App {
             self.ui.map_dirty = true;
         }
     }
-    /// Re-point every held catalog index after the catalog was replaced: old index, to its id in
-    /// `old_ids`, to that id's new index, or `None` if the route vanished.
-    fn remap_route_indices(&mut self, old_ids: &[crate::CatalogObjectId]) {
+    /// Drop vanished navigation subjects and refresh positional catalog flags and menu rows.
+    fn refresh_route_subjects(&mut self, old_ids: &[crate::CatalogObjectId]) {
         let App { catalogs, ui, navigator, .. } = self;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_route(old_ids, i) };
 
-        navigator.remap_route_keys(&remap);
-        navigator.remap_detour_route(&remap);
-        navigator.remap_review_keys(&remap);
+        navigator.retain_routes(catalogs.route_ids());
+        navigator.remap_route_flags(&remap);
 
         // The Route menu also takes the re-resolved trips and the new route count, so it can
         // follow its highlight into the regrouped list.
         let new_len = catalogs.route_len();
         let trips = catalogs.trips();
         for s in ui.stack.iter_mut() {
-            match s {
-                Screen::RouteMenu(m) => m.remap_routes(&remap, trips, new_len, navigator.internal_routes()),
-                Screen::RouteOverview(o) => o.remap_routes(&remap),
-                Screen::RouteSwap(sw) => sw.remap_routes(&remap),
-                Screen::Arrival(a) => a.remap_routes(&remap),
-                Screen::RouteReceived(rc) => rc.remap_routes(&remap),
-                Screen::RouteUpdated(ru) => ru.remap_routes(&remap),
-                Screen::Detour(d) => d.remap_routes(&remap),
-                Screen::DetourPreview(p) => p.remap_routes(&remap),
-                _ => {}
+            if let Screen::RouteMenu(menu) = s {
+                menu.refresh_rows(catalogs.route_ids(), trips, new_len, navigator.internal_routes());
             }
         }
     }
@@ -1070,7 +1065,7 @@ impl App {
     }
 
     pub fn active_route_index(&self) -> Option<usize> {
-        self.navigator.route_state().active_route
+        self.catalogs.route_index_of(self.navigator.route_state().active_route?)
     }
 
     /// The rider's matched along-route progress, in meters. It freezes while off-route.
@@ -1086,7 +1081,9 @@ impl App {
     /// Activate the route at catalog index `idx`, bounds-checked against the resident catalog, so
     /// a host never writes Navigator's active route directly. An out-of-range index clears it.
     pub fn activate_route(&mut self, idx: usize) {
-        self.navigator.set_active_route((idx < self.catalogs.route_len()).then_some(idx));
+        if !self.route_unaccepted(idx) {
+            self.navigator.set_active_route(self.catalogs.route_id_at(idx));
+        }
         self.ui.map_dirty = true;
     }
 
@@ -1169,7 +1166,11 @@ impl App {
                     <= crate::trip::TRANSFER_MIN_M as f32
             })
         });
-        Some(screen::ArrivalView { route, day: this, next })
+        Some(screen::ArrivalView {
+            route: self.catalogs.route_id_at(usize::from(route))?,
+            day: this,
+            next: next.and_then(|i| self.catalogs.route_id_at(usize::from(i))),
+        })
     }
 
     /// The device's trip progress records, at most one per trip key.
@@ -1239,7 +1240,7 @@ impl App {
         let day = u16::from(ridden.day_index());
         let Some(&route) = trip.stage_ids.get(usize::from(day)) else { return };
         let old = trip.progress_in(self.metadata.progress());
-        let active_index = end.map_or(self.active_route_index(), |end| Some(end.route));
+        let active_index = end.map_or(self.active_route_index(), |end| self.catalogs.route_index_of(end.route));
         let progress_m = end.map_or(self.progress_m(), |end| end.progress_m);
         let arrived = end.map_or(self.navigator.route_state().arrival.arrived(), |end| end.arrived);
         let rode_on =
@@ -1558,8 +1559,8 @@ impl App {
             }
             NavigatorOutcome::ReviewReady { .. } => {
                 let Some(preview) = self.assistant_preview() else { return };
-                let index = self.route_ids().iter().position(|&id| id == preview.source.object);
-                self.navigator.review_index(index);
+                let route = self.route_ids().contains(&preview.source.object).then_some(preview.source.object);
+                self.navigator.review_route(route);
                 self.navigator.reviewed(preview);
                 self.end_plan(PlanFamily::Route, PlanPhase::PreviewReady);
             }
@@ -1658,11 +1659,14 @@ impl App {
                 // from the old geometry and let the matcher re-lock.
                 self.drop_route_derived_state();
                 // Activate for the preview; `prev` restores whatever was loaded on cancel.
-                let prev = self.navigator.replace_active_route(idx);
+                let prev = self.navigator.replace_active_route(self.catalogs.route_ids()[idx]);
                 // Every plan starts preview-less: a re-route commits new bytes under the same
                 // id, so an old shape must never survive into the new overview.
                 self.catalogs.invalidate_nav_preview();
-                Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(idx, prev))
+                Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(
+                    self.catalogs.route_ids()[idx],
+                    prev,
+                ))
             }
             // Exhaustion is the device's honest "too far"; everything else is the generic tier.
             Err(NavError::Exhausted) => Screen::NavFail(crate::screen::NavFailScreen::too_far()),
@@ -1750,8 +1754,8 @@ impl App {
                 // The splice commits new geometry under the same route identity, so the derived
                 // keys must move with the bytes.
                 self.catalogs.note_commit();
-                self.navigator.set_active_route(Some(idx));
-                self.navigator.request_seam(idx, anchor.unwrap_or(0));
+                self.navigator.set_active_route(self.catalogs.route_id_at(idx));
+                self.navigator.request_seam(self.catalogs.route_ids()[idx], anchor.unwrap_or(0));
                 self.catalogs.clear_detour_preview();
                 if let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::Detour(_))) {
                     self.ui.stack.truncate(i.max(1)); // never below the Home root
@@ -1781,7 +1785,7 @@ impl App {
     /// Ride to start is spliced: start the ride on the approach and the route, as START RIDE does.
     fn ride_approach(&mut self, idx: usize) {
         let origin = self.ui.stack.iter().find_map(|s| match s {
-            Screen::StartAway(prompt) => self.catalogs.route_ids().get(prompt.route()).copied(),
+            Screen::StartAway(prompt) => Some(prompt.route()),
             _ => None,
         });
         if let (Some(origin), Some(&splice)) = (origin, self.catalogs.route_ids().get(idx)) {
@@ -1792,7 +1796,7 @@ impl App {
         self.catalogs.clear_detour_preview();
         // The spliced route starts at the fix the leg was planned from.
         let Some((lon, lat)) = self.catalogs.routes().get(idx).map(|r| (r.start_lon, r.start_lat)) else { return };
-        self.navigator.load_route(idx);
+        self.navigator.load_route(self.catalogs.route_ids()[idx]);
         let ride = screen::begin_riding_session(&mut self.state, &mut self.activity, &mut self.recorder, lon, lat);
         screen::apply(&mut self.ui.stack, ride);
         self.ui.map_dirty = true;
@@ -1802,9 +1806,7 @@ impl App {
     /// spliced route's detail, as the day's own detail would be.
     fn land_day(&mut self, slot: usize, idx: usize) {
         let day = self.navigator.route_state().active_route;
-        if let (Some(route), Some(&splice)) =
-            (day.and_then(|i| self.catalogs.route_ids().get(i).copied()), self.catalogs.route_ids().get(idx))
-        {
+        if let (Some(route), Some(&splice)) = (day, self.catalogs.route_ids().get(idx)) {
             self.navigator.adopt_lead_in(splice, route);
         }
         self.drop_route_derived_state();
@@ -1813,8 +1815,11 @@ impl App {
             Screen::RideStart(start) => Some(start.prev_active()),
             _ => None,
         });
-        self.navigator.set_active_route(Some(idx));
-        self.ui.stack[slot] = Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(idx, prev.flatten()));
+        self.navigator.set_active_route(self.catalogs.route_id_at(idx));
+        self.ui.stack[slot] = Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(
+            self.catalogs.route_ids()[idx],
+            prev.flatten(),
+        ));
         self.ui.map_dirty = true;
     }
 
@@ -1836,7 +1841,7 @@ impl App {
     /// Hand in the planned detour's decimated polyline, keyed to the active route the detour was
     /// planned against.
     pub fn set_detour_preview(&mut self, pts: &[(i32, i32)]) {
-        self.catalogs.set_detour_preview(pts, self.active_route_index());
+        self.catalogs.set_detour_preview(pts, self.navigator.route_state().active_route);
         self.ui.map_dirty = true;
     }
 
@@ -2061,7 +2066,7 @@ impl App {
             self.catalogs.note_commit();
         }
         if active_replace {
-            // Same index and id, but new bytes. The remap preserves same-id state, and a
+            // Same identity, but new bytes. Identity keeps navigation on the route, and a
             // replace is the one case where that would carry stale state onto new geometry.
             self.drop_route_derived_state();
             self.navigator.owe_bike_type();
@@ -2586,7 +2591,7 @@ impl App {
                 &self.state,
                 self.navigator.route_state(),
                 self.recorder.recording(),
-                self.catalogs.routes(),
+                self.catalogs.route_ids(),
                 self.catalogs.rides(),
             )
         })
@@ -2815,6 +2820,7 @@ impl App {
             cues,
 
             routes: catalogs.routes(),
+            route_ids: catalogs.route_ids(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             trip_progress: metadata.progress(),
@@ -3198,7 +3204,7 @@ impl App {
         let preview_index = if let Some(source) = assistant_preview {
             source.and_then(|id| catalogs.route_ids().iter().position(|value| *value == id))
         } else {
-            navigation.active_route
+            navigation.active_route.and_then(|id| catalogs.route_index_of(id))
         };
         let nav_key = catalogs.nav_preview_key(preview_index, assistant_preview.is_some());
         let ride_key = catalogs.ride_track_key(activity.viewed_ride);
@@ -3226,6 +3232,7 @@ impl App {
             recorder,
             settings,
             routes: catalogs.routes(),
+            route_ids: catalogs.route_ids(),
             unaccepted_routes: navigator.unaccepted_routes(),
             internal_routes: navigator.internal_routes(),
             rides: catalogs.rides(),
@@ -4966,7 +4973,7 @@ mod tests {
     }
 
     /// A same-index, new-bytes route replace invalidates the `Next: <category>` cache. The cache
-    /// keys its identity on the catalog index, and a replace leaves the index and the id exactly
+    /// keys its identity on the durable id, and a replace leaves that id exactly
     /// where they were, so nothing inside `NextAhead` can see the swap. Progress is pinned at 0,
     /// the one case the progress-rewind trigger cannot cover.
     #[test]
@@ -5372,7 +5379,7 @@ mod tests {
         app.state.has_nav_graph = true;
         app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta"), summary("Gamma")], &[10, 20, 30]);
-        app.navigator.route_state_mut().active_route = Some(1);
+        app.navigator.route_state_mut().active_route = Some(20);
         app.navigator.route_state_mut().progress_m = 1_000;
         app.navigator.route_state_mut().route_total_m = 5_000;
         app.test_start_ride();
@@ -5385,15 +5392,15 @@ mod tests {
     fn detour_chooser_and_queued_plan_follow_route_identity_across_rescans() {
         let mut app = app_with_detour_chooser_on_beta(); // Beta id 20 at index 1
         app.set_routes_with_ids(&[summary("Gamma"), summary("Alpha"), summary("Beta")], &[30, 10, 20]);
-        assert_eq!(app.navigator.route_state_mut().active_route, Some(2), "active navigation followed Beta to index 2");
+        assert_eq!(app.navigator.route_state_mut().active_route, Some(20), "active navigation keeps Beta's identity");
 
         app.apply_gesture(Gesture::Press);
-        assert_eq!(app.navigator.pending_detour_request().unwrap().route, 2, "the open chooser followed Beta too");
+        assert_eq!(app.navigator.pending_detour_request().unwrap().route, 20, "the open chooser keeps Beta too");
 
         // Before the host drains the request, another rescan moves Beta again.
         app.set_routes_with_ids(&[summary("Beta"), summary("Gamma"), summary("Alpha")], &[20, 30, 10]);
-        assert_eq!(app.navigator.route_state_mut().active_route, Some(0));
-        assert_eq!(app.navigator.pending_detour_request().unwrap().route, 0, "the queued plan request follows Beta");
+        assert_eq!(app.navigator.route_state_mut().active_route, Some(20));
+        assert_eq!(app.navigator.pending_detour_request().unwrap().route, 20, "the queued plan request keeps Beta");
     }
 
     #[test]
@@ -5545,7 +5552,7 @@ mod tests {
             app.set_routes_with_ids(&[summary("Road")], &[7]);
             app.state.has_nav_graph = true;
             app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
-            app.navigator.route_state_mut().active_route = Some(0);
+            app.navigator.route_state_mut().active_route = Some(7);
             app.navigator.route_state_mut().progress_m = 1_000;
             app.navigator.route_state_mut().route_total_m = 20_000;
             app.test_start_ride();
@@ -5558,7 +5565,7 @@ mod tests {
                 ascent_m: None,
             };
             app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
-                route: 0,
+                route: 7,
                 from: (7_800_000, 48_000_000),
                 progress_m: 1_000,
                 target_m: 1_800,
@@ -5567,21 +5574,21 @@ mod tests {
             let _ = app.ui.stack.push(Screen::Detour(chooser));
             let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));
             app.set_detour_preview(&[(7_812_000, 48_001_000), (7_816_000, 48_001_000)]);
-            assert!(!app.catalogs.detour_preview_for(Some(0)).is_empty(), "the host's shape is cached");
+            assert!(!app.catalogs.detour_preview_for(Some(7)).is_empty(), "the host's shape is cached");
             app
         }
 
         let mut app = previewing();
         app.apply_gesture(Gesture::Back); // the rider drops the detour
         assert!(
-            app.catalogs.detour_preview_for(Some(0)).is_empty(),
+            app.catalogs.detour_preview_for(Some(7)).is_empty(),
             "and the shape goes with the plan, not one frame later"
         );
 
         let mut app = previewing();
         assert!(app.apply_chord(Chord::Assistant));
         assert!(!app.navigator.detour_planned(), "the chord took the plan with the screens that answer for it");
-        assert!(app.catalogs.detour_preview_for(Some(0)).is_empty(), "…and its shape off the map");
+        assert!(app.catalogs.detour_preview_for(Some(7)).is_empty(), "…and its shape off the map");
 
         let mut app = previewing();
         app.set_backlight_available(true);
@@ -6691,8 +6698,8 @@ mod tests {
     fn an_answer_that_lands_after_the_overview_closed_is_refused() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[summary("Col")], &[10]);
-        app.navigator.route_state_mut().active_route = Some(0);
-        let overview = || Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None));
+        app.navigator.route_state_mut().active_route = Some(10);
+        let overview = || Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(10, None));
         let _ = app.ui.stack.push(overview());
         let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");
 
@@ -6711,12 +6718,12 @@ mod tests {
     fn a_ride_on_the_rest_of_the_day_before_counts_for_the_day() {
         use crate::navigator::NavigatorIntent;
         let mut app = rest_ride_app();
-        app.navigator.admit_intent(NavigatorIntent::PlanDetour(crate::DetourRequest::rest(1, 54_000, 74_000, 3_000)));
+        app.navigator.admit_intent(NavigatorIntent::PlanDetour(crate::DetourRequest::rest(30, 54_000, 74_000, 3_000)));
         let preview =
             crate::host::DetourPreview { cost_delta_m: 0, total_distance_m: 20_000, rejoin_m: 3_000, ascent_m: None };
         app.navigator.note_lead_preview(&preview);
         app.navigator.adopt_lead_in(99, 30);
-        app.navigator.route_state_mut().active_route = Some(2);
+        app.navigator.route_state_mut().active_route = Some(99);
         assert_eq!(app.ride_origin().trip, obc_formats::ride::TripRef::new(42, 2, 3), "Day 3 is the ride's day");
         app.recorder.set_origin(app.ride_origin());
 
@@ -6732,7 +6739,7 @@ mod tests {
     fn a_rest_ride_continued_after_a_reset_finishes_where_it_ended() {
         let mut app = rest_ride_app();
         app.set_internal_routes(1 << 2);
-        app.navigator.route_state_mut().active_route = Some(2);
+        app.navigator.route_state_mut().active_route = Some(99);
         app.recorder.set_origin(crate::RideOrigin {
             bike: obc_formats::bike::BikeType::Road,
             trip: obc_formats::ride::TripRef::new(42, 2, 3),
@@ -6746,7 +6753,7 @@ mod tests {
     fn a_built_day_continued_after_a_reset_stays_its_trip_day() {
         let mut app = rest_ride_app();
         app.set_internal_routes(1 << 2);
-        app.navigator.route_state_mut().active_route = Some(2);
+        app.navigator.route_state_mut().active_route = Some(99);
         assert_eq!(app.loaded_trip_day(), None, "without a ride, an internal route is no trip day");
         app.test_start_ride();
         let day3 = obc_formats::ride::TripRef::new(42, 2, 3);
@@ -6763,7 +6770,7 @@ mod tests {
     #[test]
     fn a_day_route_replaced_during_the_ride_voids_the_metres() {
         let mut app = rest_ride_app();
-        app.navigator.route_state_mut().active_route = Some(1);
+        app.navigator.route_state_mut().active_route = Some(30);
         app.recorder.set_origin(app.ride_origin());
         app.metadata.begin_ride();
         app.on_route_uploaded(30, true, None);
@@ -6827,7 +6834,7 @@ mod tests {
             after: Some(crate::trip::Join { leave_m: 74_000, join_m: 3_000, gap_m: 0 }),
         };
         app.set_day_join(Some(join));
-        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(20);
         app.recorder.set_origin(crate::RideOrigin {
             bike: obc_formats::bike::BikeType::Road,
             trip: obc_formats::ride::TripRef::new(42, 1, 3),
@@ -6902,7 +6909,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[summary("Visit"), summary("Saved")], &[10, 20]);
         app.set_internal_routes(1);
-        app.navigator.route_state_mut().active_route = Some(0);
+        app.navigator.route_state_mut().active_route = Some(10);
         app.take_dirty();
         app.set_internal_routes(1);
         assert!(!app.take_dirty().map);
@@ -6964,22 +6971,22 @@ mod tests {
         let loads: [(&str, Load); 5] = [
             ("Ride to start", |app| app.ride_approach(1)),
             ("start from the overview", |app| {
-                app.navigator.route_state_mut().active_route = Some(0);
-                let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
+                app.navigator.route_state_mut().active_route = Some(10);
+                let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(10, None)));
                 app.apply_gesture(Gesture::Press);
             }),
             ("swap mid-ride", |app| {
                 app.test_start_ride();
-                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::new(1)));
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::new(20)));
                 app.apply_gesture(Gesture::Press);
             }),
             ("received mid-ride", |app| {
                 app.test_start_ride();
-                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::received(PERMIT, 1, 0)));
+                let _ = app.ui.stack.push(Screen::RouteSwap(crate::screen::RouteSwapScreen::received(PERMIT, 20, 0)));
                 app.apply_gesture(Gesture::Press);
             }),
             ("phone replace of the active route", |app| {
-                app.navigator.route_state_mut().active_route = Some(0);
+                app.navigator.route_state_mut().active_route = Some(10);
                 app.on_route_uploaded(10, true, None);
             }),
         ];
@@ -7000,8 +7007,8 @@ mod tests {
         use crate::harness::support::tick_typed_route;
         use crate::settings::BikeType::{Gravel, Mtb};
         let mut app = gravel_rider();
-        app.navigator.route_state_mut().active_route = Some(1); // browsing B over the loaded A
-        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(1, Some(0))));
+        app.navigator.route_state_mut().active_route = Some(20); // browsing B over the loaded A
+        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(20, Some(10))));
         assert_eq!(tick_typed_route(&mut app, Mtb), Gravel, "a browse preview is not a load");
         app.apply_gesture(Gesture::Back);
         assert_eq!(app.active_route_index(), Some(0));
@@ -7017,8 +7024,8 @@ mod tests {
     fn a_replacing_upload_stales_the_nav_preview_under_the_same_route_id() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[summary("Col")], &[10]);
-        app.navigator.route_state_mut().active_route = Some(0);
-        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
+        app.navigator.route_state_mut().active_route = Some(10);
+        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(10, None)));
 
         let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");
         assert_eq!(key.route, 10);

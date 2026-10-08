@@ -163,7 +163,7 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "Press starts the plan flow");
     let req = detour_req(&mut app, &mut host).expect("Press hands the executor a detour search");
-    assert_eq!(req.route, 0);
+    assert_eq!(req.route, 7);
     assert_eq!(req.progress_m, progress, "the corridor anchor freezes at Press");
     assert_eq!(req.target_m, progress + 800, "600 m minimum + two steps");
 
@@ -667,7 +667,7 @@ fn ride_to_start_splices_the_leg_and_starts_the_ride_on_it() {
 
     app.apply_gesture(Gesture::Press); // Ride to start
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "the shared planning spinner");
-    assert_eq!(detour_req(&mut app, &mut host), Some(DetourRequest::approach(0, (fix.lon, fix.lat), 0)));
+    assert_eq!(detour_req(&mut app, &mut host), Some(DetourRequest::approach(7, (fix.lon, fix.lat), 0)));
     answer_plan(
         &mut app,
         &mut host,
@@ -708,7 +708,7 @@ fn join_nearest_plans_a_connection_and_starts_on_the_splice() {
     let request = detour_req(&mut app, &mut host).unwrap();
     let target = route.total_distance_m * 6 / 10;
     assert!(request.target_m.abs_diff(target) < 30);
-    assert_eq!(request, DetourRequest::approach(0, (fix.lon, fix.lat), request.target_m));
+    assert_eq!(request, DetourRequest::approach(7, (fix.lon, fix.lat), request.target_m));
     assert_eq!(request.progress_m, request.target_m, "a connection excludes no route corridor");
     assert!(!app.recording());
     answer_plan(

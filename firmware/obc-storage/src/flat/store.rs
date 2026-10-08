@@ -262,9 +262,6 @@ pub struct FlatStore<D> {
     nonce: Cell<u32>,
     ride: Cell<Option<RideState>>,
     recovered: Cell<Option<RideRecovery>>,
-    /// Set when the [`Store::entries`] iterator hit a media failure. The listing has nowhere to put
-    /// an error, so [`entries_ok`](Self::entries_ok) is how a caller finds out its listing was short.
-    listing_failed: Cell<bool>,
     route_added_at: Cell<u32>,
 }
 
@@ -646,7 +643,6 @@ impl<D: BlockDevice> FlatStore<D> {
             nonce: Cell::new(0),
             ride: Cell::new(None),
             recovered: Cell::new(None),
-            listing_failed: Cell::new(false),
             route_added_at: Cell::new(0),
         }
     }
@@ -774,12 +770,6 @@ impl<D: BlockDevice> FlatStore<D> {
 
     pub fn entry_count(&self) -> u16 {
         self.served.get().entry_count
-    }
-
-    /// True when the last [`Store::entries`] listing ran to the end of the array. Anything reporting
-    /// a complete list asks here before it treats the list as the catalog.
-    pub fn entries_ok(&self) -> bool {
-        self.mode().readable() && !self.listing_failed.get()
     }
 
     /// The copy the store is serving. A card-layout fact with no caller above the seam.
@@ -1762,12 +1752,9 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     /// The listing snapshots the copy, the count and the commit sequence it was built against, and
     /// holds no cell borrow, which is what lets it coexist with a commit.
     ///
-    /// It stops if the store moves off that sequence: two commits later the snapshotted copy has been
-    /// rewritten under the cursor, and the walk would serve the new generation's entries mid-listing
-    /// with [`entries_ok`](Self::entries_ok) still answering `true`.
-    fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
+    /// A changed sequence fails the traversal before the old copy can be read as a new catalog.
+    fn entries(&self) -> impl Iterator<Item = Result<EntryMeta, StoreError>> + '_ {
         let served = self.served.get();
-        self.listing_failed.set(!served.mode.readable());
         Entries {
             dev: &self.dev,
             cursor: EntryCursor::new(served.copy as usize, self.extents, served.entry_count),
@@ -1776,7 +1763,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             count: served.entry_count,
             sequence: served.sequence,
             served: &self.served,
-            failed: &self.listing_failed,
+            finished: false,
         }
     }
 
@@ -2148,33 +2135,34 @@ struct Entries<'a, D> {
     /// that outlives it has to stop.
     sequence: u64,
     served: &'a Cell<Served>,
-    failed: &'a Cell<bool>,
+    finished: bool,
 }
 
 impl<D: BlockDevice> Iterator for Entries<'_, D> {
-    type Item = EntryMeta;
+    type Item = Result<EntryMeta, StoreError>;
 
-    fn next(&mut self) -> Option<EntryMeta> {
-        // A commit has landed since this listing was made, so the copy under the cursor is no longer
-        // the one the store is serving and will be rewritten by the next commit. Reported through the
-        // same channel a media failure is: this list is not the catalog.
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
         let served = self.served.get();
         if !served.mode.readable() || served.sequence != self.sequence {
-            self.failed.set(true);
-            self.index = self.count;
-            return None;
+            self.finished = true;
+            return Some(Err(StoreError::Media));
         }
         if self.index >= self.count {
+            self.finished = true;
             return None;
         }
-        // A read failure ends the listing, because the signature has nowhere to put an error — but not
-        // silently: `entries_ok` is how the caller learns the list is short.
-        let Ok(entry) = self.cursor.get(self.dev, &mut self.buf, self.index) else {
-            self.failed.set(true);
-            self.index = self.count;
-            return None;
-        };
-        self.index += 1;
-        Some(entry.meta)
+        match self.cursor.get(self.dev, &mut self.buf, self.index) {
+            Ok(entry) => {
+                self.index += 1;
+                Some(Ok(entry.meta))
+            }
+            Err(_) => {
+                self.finished = true;
+                Some(Err(StoreError::Media))
+            }
+        }
     }
 }

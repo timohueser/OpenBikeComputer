@@ -562,7 +562,7 @@ mod tests {
     }
     fn app() -> crate::App {
         let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
-        app.navigator.following.active_route = Some(0);
+        app.navigator.following.active_route = Some(8);
         app.navigator.review.checkpoint = Some(NavigatorCheckpoint {
             route: PayloadFingerprint { object: 8, revision: 1, length: 1, crc: 1 },
             original: Some(PayloadFingerprint { object: 7, revision: 1, length: 1, crc: 1 }),
@@ -619,7 +619,7 @@ mod tests {
         let route = RouteReader::new(&index, &source);
         let mut app = crate::App::new_idle(crate::AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[route.summary()], &[7]);
-        app.navigator.following.active_route = Some(0);
+        app.navigator.following.active_route = Some(7);
         let store = StoreIdentity::from_bytes([1; 16]);
         let scope = StoreRevision { store, revision: Revision::new(1) };
         app.catalogs.loaded_scope = Some(scope);
@@ -654,7 +654,7 @@ mod tests {
         for departed in [false, true] {
             let mut app = app();
             app.set_routes_with_ids(&[route.summary(), route.summary()], &[8, 7]);
-            app.navigator.following.active_route = Some(0);
+            app.navigator.following.active_route = Some(8);
             app.catalogs.loaded_scope =
                 Some(StoreRevision { store: StoreIdentity::from_bytes([1; 16]), revision: Revision::new(1) });
             app.bind_place_map(Some(RouteSourceKey { store: [1; 16], object: 1, revision: 1 }));
@@ -942,7 +942,7 @@ mod tests {
                 }
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Accepted);
                 assert_eq!(app.assistant_checkpoint(), old);
-                assert_eq!(app.active_route_index(), Some(0));
+                assert_eq!(app.navigator.following.active_route, Some(8));
                 assert_eq!(app.navigator.visit.latest_fix, latest);
                 assert!(app.navigator.review.change.is_none());
                 app.navigator.reconcile_visit(&route);
@@ -983,7 +983,7 @@ mod tests {
                 app.apply_gesture(Gesture::Press);
                 app.prepare_assistant_resume(Some(&route));
             } else {
-                app.navigator.following.active_route = Some(0);
+                app.navigator.following.active_route = Some(8);
                 live_fix(&mut app, Some(&route), 0, 0);
                 open_current(&mut app, &route);
                 app.apply_gesture(Gesture::Step(1));
@@ -1035,7 +1035,7 @@ mod tests {
         let route = RouteReader::new(&index, &source);
         let mut app = app();
         app.set_routes_with_ids(&[route.summary()], &[8]);
-        app.navigator.following.active_route = Some(0);
+        app.navigator.following.active_route = Some(8);
         let checkpoint = app.assistant_checkpoint();
         let session = app.ride_session();
         assert!(app.apply_chord(Chord::Assistant));
@@ -1078,7 +1078,7 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::VisitReview(_)));
         app.apply_gesture(Gesture::Back);
         assert_eq!(app.assistant_checkpoint(), checkpoint);
-        app.navigator.following.active_route = Some(0);
+        app.navigator.following.active_route = Some(8);
         assert!(app.current_visit_index().is_some());
         app.on_route_uploaded(8, true, None);
         assert!(app.current_visit_index().is_none());

@@ -32,11 +32,10 @@ const SWAP: usize = 0;
 const FINISH_NEW: usize = 1;
 const CANCEL: usize = 2;
 
-/// The prompt. `pending` is `None` when a catalog rescan removed the picked route from below the
-/// prompt, and both actions then cancel instead of navigating the route that took its index.
+/// The picked route's durable identity. Each action resolves it against the current catalog.
 #[derive(Debug)]
 pub struct RouteSwapScreen {
-    pending: Option<usize>,
+    pending: crate::CatalogObjectId,
     actions: ActionRows,
     /// `Some(opened_ms)` for the host-pushed prompt, which auto-closes. `None` for the manual
     /// prompt, which waits for the rider.
@@ -45,25 +44,19 @@ pub struct RouteSwapScreen {
 
 impl RouteSwapScreen {
     /// The manual prompt: the rider picked `pending` from the Route menu mid-ride.
-    pub fn new(pending: usize) -> Self {
-        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: None }
+    pub fn new(pending: crate::CatalogObjectId) -> Self {
+        RouteSwapScreen { pending, actions: ActionRows::new(0), received_ms: None }
     }
 
     /// The host-pushed prompt for a route that arrived over BLE mid-ride, opened at `now_ms`.
     /// Only the framing and the timeout differ from the manual prompt.
-    pub(crate) fn received(_permit: CardPermit, pending: usize, now_ms: u32) -> Self {
-        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: Some(now_ms) }
+    pub(crate) fn received(_permit: CardPermit, pending: crate::CatalogObjectId, now_ms: u32) -> Self {
+        RouteSwapScreen { pending, actions: ActionRows::new(0), received_ms: Some(now_ms) }
     }
 
     /// True for the host-pushed popup, which the app's popup rules treat differently.
     pub(crate) fn is_received(&self) -> bool {
         self.received_ms.is_some()
-    }
-
-    /// Re-point the picked route after a catalog rescan: follow its identity to the new index, or
-    /// mark it vanished, so a later fire cannot swap onto the wrong route.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.pending = self.pending.and_then(remap);
     }
 
     /// Always `false` for the manual prompt, which waits for the rider.
@@ -90,7 +83,7 @@ impl RouteSwapScreen {
             CardEvent::Activate(FINISH_NEW) => {
                 // The picked route vanished, so do not finalise the ride for a swap that cannot
                 // happen any more.
-                if self.pending.is_none() {
+                if !cx.route_available(self.pending) {
                     return Transition::Pop;
                 }
                 // Recorder opens the new session only after the store answered for the old one.
@@ -103,14 +96,16 @@ impl RouteSwapScreen {
     }
 
     /// Point navigation at the picked route and drop onto the riding Map. A pick that vanished or
-    /// is out of range cancels, so the screen never navigates the route that took its index.
+    /// is unavailable cancels.
     fn swap_route(&self, cx: &mut Ctx) -> Transition {
-        let Some(i) = self.pending.filter(|&i| i < cx.routes.len()) else {
+        if !cx.route_available(self.pending) {
             return Transition::Pop;
-        };
-        cx.state.enter_riding_view(cx.routes[i].start_lon, cx.routes[i].start_lat);
+        }
+        let route = cx.route(self.pending).expect("the route was resolved");
+        let (lon, lat) = (route.start_lon, route.start_lat);
+        cx.state.enter_riding_view(lon, lat);
         cx.activity.mode = Mode::Riding;
-        cx.navigator.load_route(i);
+        cx.navigator.load_route(self.pending);
         Transition::Root(Screen::Map(MapScreen::new()))
     }
 
@@ -125,7 +120,7 @@ impl RouteSwapScreen {
         title_frame(cv, w, h, title, "");
         let mut sub: heapless::String<64> = heapless::String::new();
         if self.is_received() {
-            match self.pending.and_then(|i| rx.routes.get(i)) {
+            match rx.route(self.pending) {
                 Some(route) => {
                     let name_row = rect(12, TITLE_BAR_H + 16, w - 24, Font::Label.line_height() as i32);
                     sub = rx.marquee.fit(&route.name, w - 24, Font::Label, Some(name_row));
@@ -139,7 +134,7 @@ impl RouteSwapScreen {
         }
         cv.text(&sub, Point::new(w / 2, TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
-        if let Some(route) = self.pending.and_then(|i| rx.routes.get(i)) {
+        if let Some(route) = rx.route(self.pending) {
             let stats = super::route_received::route_stats(route);
             cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 38), Font::Label, TextAlign::Center, SUBTEXT);
         }

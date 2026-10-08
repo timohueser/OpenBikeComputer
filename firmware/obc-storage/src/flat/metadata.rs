@@ -266,6 +266,7 @@ fn scan_rows<D: BlockDevice>(
     let mut i = 0;
     let mut row = if rows != 0 { Some(read(0)?) } else { None };
     for entry in store.entries() {
+        let entry = entry?;
         while row.is_some_and(|row| row.id < entry.id) {
             i += 1;
             row = if i < rows { Some(read(i)?) } else { None };
@@ -275,9 +276,6 @@ fn scan_rows<D: BlockDevice>(
             found[i] |= matched;
             present |= matched && target == Some(&entry);
         }
-    }
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
     }
     Ok((found, present))
 }
@@ -398,10 +396,8 @@ fn verify_published<D: BlockDevice>(
         store.close(handle);
         result
     });
-    let acceptance_verified = accepted.is_none_or(|want| {
-        let found = store.entries().any(|entry| entry == want);
-        found && store.entries_ok()
-    });
+    let acceptance_verified =
+        accepted.is_none_or(|want| store.find_entry(|entry| *entry == want).is_ok_and(|entry| entry.is_some()));
     if verified.is_err() || !acceptance_verified {
         store.require_remount();
         return Err(Error::RemountRequired);
@@ -412,12 +408,13 @@ fn verify_published<D: BlockDevice>(
 fn singleton<D: BlockDevice>(store: &FlatStore<D>) -> Result<Option<EntryMeta>, Error> {
     let mut found = None;
     let mut duplicate = false;
-    for entry in store.entries().filter(|e| e.kind == ObjectKind::Metadata && !e.flags.has(EntryFlags::RETAINED)) {
+    for entry in store.entries() {
+        let entry = entry?;
+        if entry.kind != ObjectKind::Metadata || entry.flags.has(EntryFlags::RETAINED) {
+            continue;
+        }
         duplicate |= found.is_some() || entry.flags != EntryFlags::NONE;
         found = Some(entry);
-    }
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
     }
     if duplicate {
         return Err(Error::DuplicateObject);
@@ -510,17 +507,14 @@ pub fn archive_ride<D: BlockDevice>(
     if id.0 == 0 || revision.0 == 0 || payload_len == 0 {
         return Err(Error::Stale);
     }
-    let target = store.entries().find(|entry| {
+    let target = store.find_entry(|entry| {
         entry.id == id
             && entry.revision == revision
             && entry.kind == ObjectKind::Ride
             && entry.flags == EntryFlags::NONE
             && entry.payload_len == payload_len
             && entry.payload_crc == payload_crc
-    });
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
-    }
+    })?;
     let target = target.ok_or(Error::Stale)?;
     edit(store, Edit::Archive(target))
 }
@@ -759,10 +753,7 @@ fn verify_checkpoint_payloads<D: BlockDevice>(
 /// Explicit removal/replacement must preserve an accepted journey's sources.
 #[inline(never)]
 pub fn check_route_change<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId) -> Result<(), Error> {
-    let route = store.entries().any(|entry| entry.id == id && entry.kind == ObjectKind::Route);
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
-    }
+    let route = store.find_entry(|entry| entry.id == id && entry.kind == ObjectKind::Route)?.is_some();
     if !route {
         return Ok(());
     }
@@ -774,10 +765,7 @@ pub fn check_route_change<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId) ->
 }
 
 fn source_head<D: BlockDevice>(store: &FlatStore<D>, id: ObjectId, kind: ObjectKind) -> Result<EntryMeta, Error> {
-    let entry = store.entries().find(|entry| entry.id == id && entry.kind == kind && entry.flags.is_route_head());
-    if !store.entries_ok() {
-        return Err(Error::Store(StoreError::Media));
-    }
+    let entry = store.find_entry(|entry| entry.id == id && entry.kind == kind && entry.flags.is_route_head())?;
     entry.ok_or(Error::Stale)
 }
 

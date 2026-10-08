@@ -86,7 +86,11 @@ impl TripCatalog for FlatTripStore {
             return Err(CatalogError::RemountRequired);
         }
         let mut rows = Vec::new();
-        for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Trip && meta.flags == EntryFlags::NONE) {
+        for meta in store.entries() {
+            let meta = meta.map_err(|_| CatalogError::Unreadable)?;
+            if meta.kind != ObjectKind::Trip || meta.flags != EntryFlags::NONE {
+                continue;
+            }
             if rows.len() >= obc_app::MAX_TRIPS {
                 return Err(CatalogError::Unreadable);
             }
@@ -98,9 +102,6 @@ impl TripCatalog for FlatTripStore {
                 return Err(CatalogError::Unreadable);
             }
             rows.push((meta.id.0, meta.revision, trip));
-        }
-        if !store.entries_ok() {
-            return Err(CatalogError::Unreadable);
         }
         let mut progress = Vec::new();
         metadata::read_progress(store, |record| progress.push(record)).map_err(|_| CatalogError::Unreadable)?;

@@ -79,7 +79,7 @@ pub struct NextAhead {
     turn: usize,
     /// The route the cached entries belong to. A different route (or none) empties the cache —
     /// along-route distances from another route are meaningless, not merely stale.
-    route: Option<usize>,
+    route: Option<crate::CatalogObjectId>,
 }
 
 impl NextAhead {
@@ -140,7 +140,7 @@ impl NextAhead {
         &mut self,
         placed: PoiCategorySet,
         shown: bool,
-        active_route: Option<usize>,
+        active_route: Option<crate::CatalogObjectId>,
         progress_m: u32,
     ) {
         if self.route != active_route {

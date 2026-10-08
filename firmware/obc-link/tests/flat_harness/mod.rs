@@ -255,7 +255,9 @@ impl<D: BlockDevice> Device<D> {
 
     /// The catalog entry for one id, straight from the store.
     pub fn entry(&self, id: u64) -> Option<EntryMeta> {
-        Store::entries(&self.store).find(|meta| meta.id == ObjectId(id) && !meta.flags.has(EntryFlags::RETAINED))
+        Store::entries(&self.store)
+            .map(Result::unwrap)
+            .find(|meta| meta.id == ObjectId(id) && !meta.flags.has(EntryFlags::RETAINED))
     }
 
     pub fn entries(&self) -> Vec<EntryMeta> {
@@ -269,6 +271,7 @@ impl<D: BlockDevice> Device<D> {
     pub fn remove_and_measure(&mut self, id: u64) -> u32 {
         let before = self.free_extents();
         let batch: Vec<obc_storage::flat::Mutation> = Store::entries(&self.store)
+            .map(Result::unwrap)
             .filter(|meta| meta.id == ObjectId(id))
             .map(|meta| obc_storage::flat::Mutation::Remove { id: meta.id, revision: meta.revision })
             .collect();

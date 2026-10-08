@@ -887,7 +887,7 @@ fn finalisation_rejects_corrupt_tail_header_and_wrong_crc() {
             disk.ledger()[baseline..].iter().all(|(_, op, _)| *op != MediaOp::Write),
             "a refused {name} finalisation wrote media",
         );
-        assert_eq!(store.entries().collect::<Vec<_>>(), [ride.meta]);
+        assert_eq!(store.entries().map(Result::unwrap).collect::<Vec<_>>(), [ride.meta]);
     }
 
     let disk = build(41);
@@ -904,7 +904,7 @@ fn finalisation_rejects_corrupt_tail_header_and_wrong_crc() {
         disk.ledger()[baseline..].iter().all(|(_, op, _)| *op != MediaOp::Write),
         "a refused wrong-CRC finalisation wrote media",
     );
-    assert_eq!(store.entries().collect::<Vec<_>>(), [ride.meta]);
+    assert_eq!(store.entries().map(Result::unwrap).collect::<Vec<_>>(), [ride.meta]);
 }
 
 /// A cut after the final tail reached the payload extent but before the catalog gate leaves the ride
@@ -1684,7 +1684,7 @@ fn an_unformatted_card_refuses_everything_at_the_seam() {
         super::error::StoreError::ReadOnly
     );
     assert!(matches!(store.open(ObjectId(1), None), Err(super::error::StoreError::ReadOnly)));
-    assert_eq!(store.entries().count(), 0);
+    assert_eq!(store.entries().collect::<Vec<_>>(), [Err(super::error::StoreError::Media)]);
     assert!(model::snapshot(&mut store).is_none());
 }
 
@@ -1878,7 +1878,7 @@ fn a_reader_holds_its_extents_until_it_closes() {
     let handle = store.open(ObjectId(1), None).unwrap();
     let second = store.open(ObjectId(1), None).unwrap();
     store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap();
-    assert_eq!(store.entries().count(), 0, "the commit did not remove the entry");
+    assert_eq!(store.entries().map(Result::unwrap).count(), 0, "the commit did not remove the entry");
     assert_eq!(store.free_extents(), EXTENTS - 1, "a held entry's extents went back to the allocator");
 
     // The handle keeps reading the revision it resolved, across the commit that removed it.
@@ -2302,11 +2302,11 @@ fn a_pending_rollover_may_be_discarded_without_repairing_it() {
 
     store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap();
     assert!(store.recovered_ride().is_none());
-    assert!(store.entries().all(|entry| entry.id != ObjectId(1)));
+    assert!(store.entries().map(Result::unwrap).all(|entry| entry.id != ObjectId(1)));
     disk.reboot();
     let store = FlatStore::mount(&disk);
     assert!(store.recovered_ride().is_none());
-    assert!(store.entries().all(|entry| entry.id != ObjectId(1)));
+    assert!(store.entries().map(Result::unwrap).all(|entry| entry.id != ObjectId(1)));
 }
 
 /// The hold rule asks the catalog which of a closing hold's extents an entry still names. A read that

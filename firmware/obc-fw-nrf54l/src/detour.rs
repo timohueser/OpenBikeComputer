@@ -154,7 +154,8 @@ impl Executor {
                     return Some(NavigatorOutcome::Failed { token, error: NavigatorError::Workspace });
                 }
                 self.token = Some(token);
-                let Some(id) = app.route_ids().get(request.route).copied() else {
+                let id = request.route;
+                if !app.route_ids().contains(&id) {
                     return self.fail(NavigatorError::SourceChanged);
                 };
                 let original = match crate::flat_store::planner_original(store, ObjectId(id)) {

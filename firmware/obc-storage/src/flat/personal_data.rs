@@ -5,20 +5,20 @@ use super::{store::MAX_BATCH, BlockDevice, FlatStore, Mutation, ObjectKind, Stor
 pub fn next<D: BlockDevice>(store: &FlatStore<D>) -> Result<heapless::Vec<Mutation, MAX_BATCH>, StoreError> {
     let mut batch = heapless::Vec::new();
     for metadata in [true, false] {
-        for entry in store.entries().filter(|entry| {
-            if metadata {
+        for entry in store.entries() {
+            let entry = entry?;
+            let remove = if metadata {
                 entry.kind == ObjectKind::Metadata
             } else {
                 matches!(entry.kind, ObjectKind::Route | ObjectKind::Trip | ObjectKind::Ride)
+            };
+            if !remove {
+                continue;
             }
-        }) {
             batch.push(Mutation::Remove { id: entry.id, revision: entry.revision }).map_err(|_| StoreError::Invalid)?;
             if batch.is_full() {
                 break;
             }
-        }
-        if !store.entries_ok() {
-            return Err(StoreError::Media);
         }
         if !batch.is_empty() {
             break;
@@ -75,7 +75,7 @@ mod tests {
             store.commit(&batch).unwrap();
         }
         assert_eq!(store.store_id(), identity);
-        assert_eq!(store.entries().collect::<std::vec::Vec<_>>(), system);
+        assert_eq!(store.entries().map(Result::unwrap).collect::<std::vec::Vec<_>>(), system);
         for meta in system {
             let handle = store.open(meta.id, Some(meta.revision)).unwrap();
             let mut bytes = [0; 11];

@@ -68,7 +68,7 @@ struct PreparedDetour {
 /// request context into the preview screen without a back-channel.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourScreen {
-    route: Option<usize>,
+    route: Option<crate::CatalogObjectId>,
     start_m: u32,
     total_m: u32,
     steps: u16,
@@ -99,13 +99,6 @@ impl DetourScreen {
             inspect_level: 0,
             prepared: None,
         }
-    }
-
-    /// Re-point the chooser's held catalog slot after a live route rescan. A surviving route keeps
-    /// the selection; a vanished one becomes unavailable and cannot start a plan.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.route = self.route.and_then(remap);
-        self.prepared = None;
     }
 
     fn actual_detour_m(&self) -> Option<u32> {
@@ -309,7 +302,7 @@ impl DetourScreen {
 /// the anchor is deliberately not re-derived here.
 #[derive(Debug, Clone, Copy)]
 pub struct DetourPreviewScreen {
-    route: Option<usize>,
+    route: Option<crate::CatalogObjectId>,
     /// The frozen anchor, which is the chooser's `start_m` at Press: the splice seam the commit
     /// handler re-anchors the matcher at.
     anchor_m: u32,
@@ -364,13 +357,6 @@ impl DetourPreviewScreen {
     pub(crate) fn set_commit_failed(&mut self) {
         self.committing = false;
         self.error = true;
-    }
-
-    /// Re-point the held catalog slot after a live route rescan. A vanished route makes the
-    /// staleness guard in [`handle`](Self::handle) cancel out.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.route = self.route.and_then(remap);
-        self.prepared = None;
     }
 
     /// The plan went stale under the preview: its route vanished or swapped, or the rider rode past
@@ -881,7 +867,7 @@ mod tests {
 
         let mut b = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&b);
-        p.remap_routes(&|_| None); // the planned route vanished in a rescan
+        b.active_route = None; // the planned route vanished from the catalog
         let t = with_state_ctx(&mut b, &mut rec, &mut nav_b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
         assert!(matches!(t, Transition::Pop));
         assert!(nav_b.cancel_pending(PlanFamily::Detour));

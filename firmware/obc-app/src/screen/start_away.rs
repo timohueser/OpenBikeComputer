@@ -37,7 +37,7 @@ enum Nearest {
 
 #[derive(Debug)]
 pub struct StartAwayScreen {
-    route: usize,
+    route: crate::CatalogObjectId,
     /// The fix at the press, `(lon, lat)` µdeg.
     from: (i32, i32),
     start_m: u32,
@@ -50,9 +50,9 @@ pub struct StartAwayScreen {
 impl StartAwayScreen {
     /// The prompt for START RIDE on catalog route `route`, or `None` when the rider can start as
     /// usual: no fix, or within [`START_AWAY_M`] of the start.
-    pub(crate) fn ask(cx: &Ctx, route: usize) -> Option<Self> {
+    pub(crate) fn ask(cx: &Ctx, route: crate::CatalogObjectId) -> Option<Self> {
         let fix = cx.state.user_fix?;
-        let summary = cx.routes.get(route)?;
+        let summary = cx.route(route)?;
         let from = (fix.lon, fix.lat);
         let start_m = obc_map_scene::ground_dist_m(from, (summary.start_lon, summary.start_lat)) as u32;
         (start_m > START_AWAY_M).then_some(StartAwayScreen {
@@ -81,7 +81,7 @@ impl StartAwayScreen {
         }
     }
 
-    pub(crate) fn route(&self) -> usize {
+    pub(crate) fn route(&self) -> crate::CatalogObjectId {
         self.route
     }
 
@@ -136,6 +136,9 @@ impl StartAwayScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        if !cx.route_available(self.route) {
+            return Transition::Pop;
+        }
         let rows = self.rows();
         let i = self.cursor(&rows);
         match g {
@@ -175,7 +178,7 @@ impl StartAwayScreen {
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
-        let name = rx.routes.get(self.route).map_or("", |r| r.name.as_str());
+        let name = rx.route(self.route).map_or("", |r| r.name.as_str());
         let title = rx.marquee.fit(name, w - 28, Font::Body, Some(rect(0, 0, w, TITLE_BAR_H)));
         title_frame(cv, w, h, &title, "");
 

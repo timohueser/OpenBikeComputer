@@ -239,7 +239,7 @@ pub fn planner_original(
 pub fn load_routes(store: &FlatStore<FlatCard>, app: &mut obc_app::App, _: &mut ()) {
     let mut summaries = Vec::new();
     let mut ids = Vec::new();
-    for meta in store.entries().filter(|m| m.kind == ObjectKind::Route && m.flags.is_route_head()) {
+    for meta in store.entries().map(Result::unwrap).filter(|m| m.kind == ObjectKind::Route && m.flags.is_route_head()) {
         summaries.push(
             store
                 .with_source(meta.id, Some(meta.revision), |source| obc_route::RouteSummary::read(source))
@@ -257,7 +257,9 @@ pub fn route_heads(
 ) -> heapless::Vec<(ObjectId, Revision), { obc_storage::flat::store::MAX_BATCH }> {
     let ids: Vec<u64> = ids.collect();
     let mut heads = heapless::Vec::new();
-    for meta in store.entries().filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head()) {
+    for meta in
+        store.entries().map(Result::unwrap).filter(|meta| meta.kind == ObjectKind::Route && meta.flags.is_route_head())
+    {
         if ids.contains(&meta.id.0) && heads.push((meta.id, meta.revision)).is_err() {
             break;
         }
@@ -270,7 +272,7 @@ pub fn fingerprint_reads() -> u32 {
 }
 pub fn route_fingerprint(store: &FlatStore<FlatCard>, id: u64) -> Option<obc_formats::assistant::PayloadFingerprint> {
     FINGERPRINT_READS.set(FINGERPRINT_READS.get() + 1);
-    store.entries().find(|e| e.id.0 == id).map(metadata::fingerprint)
+    store.entries().map(Result::unwrap).find(|e| e.id.0 == id).map(metadata::fingerprint)
 }
 pub fn planner_map_key(store: &FlatStore<FlatCard>) -> obc_formats::obcr::RouteSourceKey {
     SOURCES.with(|s| {

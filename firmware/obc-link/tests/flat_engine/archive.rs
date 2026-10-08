@@ -49,7 +49,11 @@ fn receipt_survives_lost_reply_reopen_and_preserves_the_first_stamp() {
     assert_eq!(device.store.sequence(), sequence);
     // A pre-existing timestamp survives an idempotent receipt.
     let store = &device.store;
-    let head = store.entries().find(|entry| entry.kind == obc_storage::flat::ObjectKind::Metadata).unwrap();
+    let head = store
+        .entries()
+        .map(Result::unwrap)
+        .find(|entry| entry.kind == obc_storage::flat::ObjectKind::Metadata)
+        .unwrap();
     let mut metadata_bytes = vec![0; head.payload_len as usize];
     let handle = store.open(head.id, Some(head.revision)).unwrap();
     assert_eq!(store.read(&handle, 0, &mut metadata_bytes).unwrap(), metadata_bytes.len());
@@ -95,7 +99,7 @@ fn every_source_component_and_current_finalized_head_are_required() {
         let answer = Answer::of(device.control(&receipt(2, id, rev, bytes)).answer());
         expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
     }
-    let old = device.store.entries().find(|entry| entry.id.0 == id).unwrap();
+    let old = device.store.entries().map(Result::unwrap).find(|entry| entry.id.0 == id).unwrap();
     let mut allocation = device.store.allocate(bytes.len() as u64).unwrap();
     device.store.write(&mut allocation, bytes).unwrap();
     device

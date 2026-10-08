@@ -804,9 +804,7 @@ fn a_device_local_commit_during_an_upload_does_not_steal_the_creates_identity() 
 // which is what `FaultOnce` produces. Each test asserts the fault fired: a probe that never fired
 // proves nothing about the path it was aiming at.
 
-/// A listing that stopped early is a media failure with nowhere to report itself, so every caller
-/// that treats one as the catalog asks `entries_ok()` — and an absent object is never made out of a
-/// read that failed.
+/// Every catalog operation reports a failed read instead of an absent object.
 #[test]
 fn a_short_listing_is_a_media_failure_and_never_an_absent_object() {
     let disk = formatted_card(30);

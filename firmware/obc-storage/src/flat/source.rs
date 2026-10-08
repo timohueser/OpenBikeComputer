@@ -487,32 +487,55 @@ mod tests {
         store.close(handle);
     }
 
-    /// A listing that outlives its catalog stops, and says so. Two commits later the copy it is
-    /// walking has been rewritten underneath its cursor, and serving those bytes with `entries_ok()`
-    /// still `true` would splice two catalogs together and call the result complete.
+    /// A listing cannot splice entries from different catalog generations.
     #[test]
     fn a_listing_that_outlives_its_commit_stops_short_and_reports_it() {
         let (disk, ids) = fixture(3);
         let store = FlatStore::mount(&disk);
 
-        // Drained inside its own moment: the whole catalog, and the flag agrees.
-        assert_eq!(Store::entries(&store).count(), 3);
-        assert!(store.entries_ok());
+        // Draining a listing before a commit reads one complete generation.
+        assert_eq!(Store::entries(&store).map(Result::unwrap).count(), 3);
 
         // Now hold one open across a commit. The first entry is served — it was read before anything
         // moved — and the walk stops at the commit rather than crossing it.
         let mut listing = Store::entries(&store);
-        assert!(listing.next().is_some(), "the first entry comes from the catalog the listing was made against");
+        assert!(listing.next().unwrap().is_ok());
         store
             .commit(&[Mutation::Remove { id: ids[2], revision: Revision(1) }])
             .expect("a commit lands while the listing is alive");
-        assert!(listing.next().is_none(), "the listing does not cross the commit");
+        assert_eq!(listing.next(), Some(Err(StoreError::Media)));
+        assert_eq!(listing.next(), None);
         drop(listing);
-        assert!(!store.entries_ok(), "and a short listing is never silent");
 
         // The store itself is unharmed: a fresh listing is complete again, and one entry shorter.
-        assert_eq!(Store::entries(&store).count(), 2);
-        assert!(store.entries_ok());
+        assert_eq!(Store::entries(&store).map(Result::unwrap).count(), 2);
+    }
+
+    #[test]
+    fn catalog_read_failures_belong_to_the_traversal_and_do_not_close_pinned_sources() {
+        use crate::flat::sim::{FaultOnce, MediaOp};
+
+        let (disk, ids) = fixture(2);
+        let faulty = FaultOnce::new(&disk);
+        let store = FlatStore::mount(&faulty);
+        let source = store.source(ids[0], None).unwrap();
+        let mut failed = store.entries();
+        let mut healthy = store.entries();
+        faulty.fault_next(MediaOp::Read);
+        assert_eq!(failed.next(), Some(Err(StoreError::Media)));
+        assert!(faulty.fired());
+        assert_eq!(healthy.next().unwrap().unwrap().id, ids[0]);
+        assert_eq!(failed.next(), None, "another traversal cannot clear or revive the failed one");
+        assert_eq!(healthy.next().unwrap().unwrap().id, ids[1]);
+        assert_eq!(healthy.next(), None);
+
+        faulty.fault_next(MediaOp::Read);
+        assert_eq!(store.find_entry(|entry| entry.id == ids[1]), Err(StoreError::Media));
+        assert!(faulty.fired());
+        let mut bytes = [0; 16];
+        source.read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, payload()[..bytes.len()]);
+        store.close(source.release());
     }
 
     /// A full hold table is `Busy`, not `Invalid`: `invalidRequest` means this request is wrong and

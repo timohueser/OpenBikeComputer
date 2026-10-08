@@ -59,8 +59,16 @@ pub fn report(source: &FileSource) -> Result<Report, String> {
         .put("next_object_id", store.next_object_id().0);
     out.group("catalog", catalog);
 
+    let mut listing_complete = true;
     let objects: Vec<Report> = store
         .entries()
+        .map_while(|entry| match entry {
+            Ok(entry) => Some(entry),
+            Err(_) => {
+                listing_complete = false;
+                None
+            }
+        })
         .map(|entry| {
             let mut row = Report::new();
             row.put("id", entry.id.0)
@@ -74,7 +82,7 @@ pub fn report(source: &FileSource) -> Result<Report, String> {
         })
         .collect();
     // The listing is read block by block; a failure part way through is a fact about the card.
-    out.put("listing_complete", store.entries_ok());
+    out.put("listing_complete", listing_complete);
     out.list("objects", objects);
 
     let mut recovery = Report::new();

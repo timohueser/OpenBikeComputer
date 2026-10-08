@@ -1,6 +1,8 @@
 use super::*;
 use crate::{FlatRideStore, RideRepository};
+use obc_crc::Crc32;
 use obc_formats::io::ByteSource;
+use obc_formats::ride::{FOOTER_LEN, SAMPLE_LEN};
 
 fn point(t_ms: u32) -> TrackPoint {
     TrackPoint {
@@ -64,12 +66,7 @@ fn seed(owner: &HostStore) -> EntryMeta {
     owner.import(ObjectKind::Ride, None, &mut &bytes[..], bytes.len() as u64, DisplayName::default()).unwrap()
 }
 fn key(recorder: &FlatRideRecorder) -> Key {
-    match &recorder.state {
-        State::Live(live) => live.key,
-        State::Closing(closing) => closing.live.key,
-        State::Damaged(key, _) => *key,
-        _ => panic!("no recording"),
-    }
+    recorder.key.expect("no recording")
 }
 fn fail_sync(owner: &HostStore, n: usize) {
     let owner = owner.0.lock().unwrap();
@@ -83,24 +80,35 @@ fn append(recorder: &mut FlatRideRecorder, points: &[TrackPoint]) {
 #[test]
 fn batch_capacity_and_context_are_atomic_and_legacy_lifecycle_remains_compatible() {
     let owner = HostStore::memory().unwrap();
-    let mut recorder = FlatRideRecorder::new(owner).unwrap();
+    let mut recorder = FlatRideRecorder::new(owner.clone()).unwrap();
     crate::conformance::track_lifecycle(&mut recorder);
     assert!(recorder.open(3, Some("boundary"), 0));
+    let original = key(&recorder);
     append(&mut recorder, &[point(1000); 16]);
-    let (crc, len, accepted) = match &recorder.state {
-        State::Live(live) => (live.crc, live.len, live.continuation),
-        _ => unreachable!(),
-    };
+    let bytes = recorder.buffers.append;
     assert_eq!(
         recorder.append_batch(&[point(2000)], Some(RideContinuation::default())),
         Ok(AppendStatus::NeedsCheckpoint)
     );
     assert_eq!(recorder.append_batch(&[point(2000)], None), Ok(AppendStatus::Cancelled));
-    let State::Live(live) = &recorder.state else { unreachable!() };
-    assert_eq!((live.crc, live.len, live.continuation), (crc, len, accepted));
+    assert_eq!(recorder.buffers.append, bytes);
     assert_eq!(recorder.checkpoint(stats(), None), Ok(CheckpointStatus::Unsupported));
+    assert_eq!(obc_app::recorder::continuation::decode(&recorder.buffers.resume).unwrap().0, context());
     append(&mut recorder, &[point(2000)]);
-    assert!(matches!(recorder.finalize(stats()), RideClose::Committed(_)));
+    assert_eq!(recorder.finalize(stats()), RideClose::Committed(original.id.0));
+    let source = owner.open(original.id, original.revision).unwrap();
+    let mut saved = [0; 17 * SAMPLE_LEN + FOOTER_LEN];
+    assert_eq!(source.len(), saved.len() as u64);
+    source.read_at(0, &mut saved).unwrap();
+    let points: Vec<_> =
+        saved[..17 * SAMPLE_LEN].as_chunks::<SAMPLE_LEN>().0.iter().map(obc_formats::track::decode_record).collect();
+    assert_eq!(points, [&[point(1000); 16][..], &[point(2000)]].concat());
+    let mut crc = Crc32::new();
+    crc.update(&saved);
+    assert_eq!(
+        owner.entries().unwrap().iter().find(|entry| entry.id == original.id).unwrap().payload_crc,
+        crc.finalize()
+    );
 }
 
 #[test]
@@ -159,19 +167,18 @@ fn failed_journal_replays_frozen_bytes_context_and_start_before_accepting_more()
     append(&mut recorder, &[point(10_000)]);
     fail_sync(&owner, 1);
     assert_eq!(recorder.checkpoint(stats(), None), Err(RecorderError::Write));
-    let State::Live(live) = &recorder.state else { unreachable!() };
-    let frozen = (live.pending, live.crc, recorder.delta);
+    let frozen = (recorder.buffers.resume, recorder.ride.pending_write(), recorder.buffers.append);
     assert_eq!(recorder.append_batch(&[point(11_000)], Some(context())), Ok(AppendStatus::NeedsCheckpoint));
     let mut changed = stats();
     changed.unix_at_anchor += 50;
     assert_eq!(recorder.checkpoint(changed, Some(RideContinuation::default())), Ok(CheckpointStatus::Durable));
-    assert_eq!(recorder.delta, frozen.2);
+    assert_eq!(recorder.buffers.append, frozen.2);
     let id = key(&recorder).id.0;
     drop((recorder, owner));
     let owner = HostStore::open_file(&path).unwrap();
     let recovered = owner.0.lock().unwrap().card.recovered_ride().unwrap();
-    assert_eq!(Some(recovered.resume), frozen.0);
-    assert_eq!(recovered.payload_crc, frozen.1.finalize());
+    assert_eq!(recovered.resume, frozen.0);
+    assert!(matches!(frozen.1, Some(Write::Journal { payload_crc, .. }) if recovered.payload_crc == payload_crc));
     let mut recorder = FlatRideRecorder::new(owner).unwrap();
     assert_eq!(recorder.recovered_continuation(), Some(context()));
     assert!(recorder.open(2, None, 0));
@@ -190,7 +197,7 @@ fn footer_recovery_is_terminal_and_failed_settlement_stops_startup() {
     // The real finalization journals its footer, then its catalog publication fails.
     fail_sync(&owner, 3);
     assert_eq!(recorder.finalize(stats()), RideClose::Failed);
-    assert!(matches!(&recorder.state, State::Closing(closing) if closing.journaled));
+    assert!(matches!(recorder.ride.pending_write(), Some(Write::Publish { .. })));
     drop((recorder, owner));
 
     let owner = HostStore::open_file(&path).unwrap();
@@ -201,7 +208,7 @@ fn footer_recovery_is_terminal_and_failed_settlement_stops_startup() {
     let owner = HostStore::open_file(&path).unwrap();
     let recorder = FlatRideRecorder::new(owner.clone()).unwrap();
     assert!(recorder.recovered_continuation().is_none());
-    assert!(matches!(recorder.state, State::Idle));
+    assert!(recorder.is_idle());
     let source = owner.open(original.id, original.revision).unwrap();
     assert_eq!(source.len(), (SAMPLE_LEN + FOOTER_LEN) as u64);
     assert_eq!(obc_route::RideInfo::read(&source).unwrap().point_count, 1);
@@ -237,23 +244,24 @@ fn damaged_discard_checks_recording_kind_card_and_exact_revision() {
     assert!(recorder.open(1, Some("damaged"), 0));
     let original = key(&recorder);
     let unrelated = seed(&owner);
-    recorder.state = State::Damaged(original, RideDamage::Metadata);
+    recorder.key = Some(original);
+    recorder.ride = RideWriter::damaged(RideDamage::Metadata);
     let other = HostStore::memory().unwrap();
     let saved_owner = std::mem::replace(&mut recorder.owner, other);
     assert_eq!(recorder.discard(), Err(RecorderError::ReadOnly));
     recorder.owner = saved_owner;
     let mut stale = original;
     stale.revision = Revision(original.revision.0 + 1);
-    recorder.state = State::Damaged(stale, RideDamage::Metadata);
+    recorder.key = Some(stale);
+    recorder.ride = RideWriter::damaged(RideDamage::Metadata);
     assert_eq!(recorder.discard(), Err(RecorderError::ReadOnly));
-    recorder.state = State::Damaged(original, RideDamage::Metadata);
+    recorder.key = Some(original);
+    recorder.ride = RideWriter::damaged(RideDamage::Metadata);
     assert_eq!(recorder.discard(), Ok(()));
     assert!(owner.open(unrelated.id, unrelated.revision).is_ok());
     assert_eq!(owner.0.lock().unwrap().card.recovered_ride(), None);
-    recorder.state = State::Damaged(
-        Key { store: original.store, id: unrelated.id, revision: unrelated.revision },
-        RideDamage::Payload,
-    );
+    recorder.key = Some(Key { store: original.store, id: unrelated.id, revision: unrelated.revision });
+    recorder.ride = RideWriter::damaged(RideDamage::Payload);
     assert_eq!(recorder.discard(), Err(RecorderError::ReadOnly));
     assert!(owner.open(unrelated.id, unrelated.revision).is_ok());
 }
