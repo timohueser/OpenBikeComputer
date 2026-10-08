@@ -7,10 +7,10 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 try:
-    from .landmark_capture import LANGUAGES, digest
+    from .landmark_capture import LANGUAGES, digest, photo_revision_matches, revision_info
     from .wikimedia_acquire import compact_entity, lead_html, original_notices, resolved_pages
 except ImportError:
-    from landmark_capture import LANGUAGES, digest
+    from landmark_capture import LANGUAGES, digest, photo_revision_matches, revision_info
     from wikimedia_acquire import compact_entity, lead_html, original_notices, resolved_pages
 
 
@@ -44,8 +44,11 @@ class RetainedCapture:
     def __init__(self, root: Path):
         self.root = root
         manifest = root / "manifest.json"
+        self.images = {}
         if manifest.exists():
-            self.sources = {source["path"]: source for source in json.loads(manifest.read_bytes())["sources"]}
+            value = json.loads(manifest.read_bytes())
+            self.sources = {source["path"]: source for source in value["sources"]}
+            self.images = {image["path"]: image for place in value.get("places", []) for image in place.get("images", []) if image.get("path")}
         else:
             self.sources = {source["path"]: source for path in (root / "outcomes").glob("*.json")
                             if (source := json.loads(path.read_bytes())).get("status") == "ok"}
@@ -139,7 +142,8 @@ class RetainedCapture:
         for path, source in sorted(self.sources.items()):
             if not path.startswith("images/") or Path(path).suffix not in {".jpg", ".png"}:
                 continue
-            metadata_path = str(Path(path).with_suffix(".json")).replace("-500.json", ".json")
+            image = self.images.get(path, {})
+            metadata_path = image.get("metadata_path") or re.sub(r"-500(?:-[0-9]+)?$", "", str(Path(path).with_suffix(""))) + ".json"
             if metadata_path not in self.sources:
                 continue
             raw = json.loads(self.read(metadata_path))
@@ -148,18 +152,33 @@ class RetainedCapture:
             if len(pages) != 1 or not pages[0].get("imageinfo"):
                 continue
             page, info = pages[0], pages[0]["imageinfo"][0]
+            witnesses = {}
             data = self.read(path)
             if source["url"] == info["url"]:
                 if hashlib.sha1(data).hexdigest() != info["sha1"]:
                     raise ValueError(f"retained file revision mismatch: {path}")
                 input_kind = "original"
             elif source["url"] == info.get("thumburl") and info.get("thumbwidth") == 500:
+                for moment in ("before", "after"):
+                    witness_path = image.get(f"revision_{moment}_path", str(Path(path).with_suffix("")) + f"-{moment}.json")
+                    if witness_path not in self.sources:
+                        break
+                    witness = json.loads(self.read(witness_path))
+                    current = revision_info(witness)
+                    if current is None or not photo_revision_matches((page["title"].removeprefix("File:").replace("_", " "), info), current):
+                        break
+                    if info.get("description_revision") is not None and current[1].get("description_revision") != info["description_revision"]:
+                        break
+                    witnesses[f"revision_{moment}"] = dict(query=dict(pages=dict(compact=dict(title="File:" + current[0], imageinfo=[current[1]]))),
+                                                           source_sha256=self.sources[witness_path]["sha256"])
+                if len(witnesses) != 2:
+                    continue
                 input_kind = "thumbnail500"
             else:
                 continue
             yield dict(kind="file", key=page["title"], status="present", identity=f"commons:{page['pageid']}",
                        revision={key: info[key] for key in ("timestamp", "sha1")}, checked_at=source["retrieved_at"], filename=page["title"].removeprefix("File:"),
-                       asset=dict(path=path, sha256=source["sha256"], bytes=source["bytes"], url=source["url"], input=input_kind)), self.root / path
+                       asset=dict(path=path, sha256=source["sha256"], bytes=source["bytes"], url=source["url"], input=input_kind), **witnesses), self.root / path
 
     def unversioned_metadata(self) -> list[dict]:
         """A source digest proves old metadata bytes, but is not a page revision id."""

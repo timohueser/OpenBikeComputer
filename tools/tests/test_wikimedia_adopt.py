@@ -124,6 +124,48 @@ class AdoptionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "revision mismatch"):
                 list(RetainedCapture(root).facts())
 
+    def test_thumbnail_adoption_requires_coherent_before_and_after_witnesses(self):
+        for outcome in ("complete", "missing-before", "missing-after", "changed-upload", "changed-credit", "changed-description"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                sources = self.capture(root)
+                metadata_path = root / "images/image.json"
+                metadata = json.loads(metadata_path.read_bytes())
+                info = metadata["query"]["pages"]["8"]["imageinfo"][0]
+                info.update(thumburl="https://upload.wikimedia.org/500px-Hill.jpg", thumbwidth=500,
+                            description_revision=20, extmetadata={"Permission": {"value": "Name the creator."}})
+
+                def add(path, data, url):
+                    target = root / path
+                    target.write_bytes(data)
+                    source = dict(path=path, url=url, sha256=digest(data), bytes=len(data), retrieved_at="2026-01-01T00:00:00Z")
+                    sources[:] = [existing for existing in sources if existing["path"] != path]
+                    sources.append(source)
+
+                add("images/image.json", encoded(metadata), "https://commons.wikimedia.org/w/api.php?titles=File%3AHill.jpg&iiurlwidth=500")
+                path = "images/image-500-1.jpg"
+                add(path, b"retained thumbnail", info["thumburl"])
+                for moment in ("before", "after"):
+                    if outcome == f"missing-{moment}":
+                        continue
+                    witness = json.loads(encoded(metadata))
+                    current = witness["query"]["pages"]["8"]["imageinfo"][0]
+                    if moment == "after":
+                        if outcome == "changed-upload":
+                            current["timestamp"] = "2026-01-02T00:00:00Z"
+                        elif outcome == "changed-credit":
+                            current["extmetadata"]["Permission"]["value"] = "Use the required custom credit."
+                        elif outcome == "changed-description":
+                            current["description_revision"] = 21
+                    add(f"images/image-500-1-{moment}.json", encoded(witness), "https://commons.wikimedia.org/w/api.php?titles=File%3AHill.jpg&iiurlwidth=500")
+                image = dict(path=path, metadata_path="images/image.json", revision_before_path="images/image-500-1-before.json", revision_after_path="images/image-500-1-after.json")
+                (root / "manifest.json").write_bytes(encoded(dict(sources=sources, places=[dict(images=[image])])))
+                thumbnails = [fact for fact, _ in RetainedCapture(root).files() if fact["asset"]["input"] == "thumbnail500"]
+                self.assertEqual(len(thumbnails), 1 if outcome == "complete" else 0)
+                if thumbnails:
+                    self.assertEqual(thumbnails[0]["revision_before"]["query"]["pages"]["compact"]["imageinfo"][0]["description_revision"], 20)
+                    self.assertEqual(thumbnails[0]["revision_after"]["query"]["pages"]["compact"]["imageinfo"][0]["extmetadata"]["Permission"]["value"], "Name the creator.")
+
 
 if __name__ == "__main__":
     unittest.main()
