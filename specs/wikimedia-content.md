@@ -126,6 +126,11 @@ An image asset has relative `path`, `sha256`, `bytes`, `url` and `input` fields.
 own the JSON facts and every asset they reference. Temporary request envelopes
 stay under `--work`. They are not source snapshot or publication outputs.
 
+A thumbnail file fact retains `revision_before` and `revision_after` witnesses.
+Both match the canonical filename, file timestamp and SHA-1, required credit
+fields, and description revision when present. A retained thumbnail without both
+coherent witnesses does not become a shared file pin.
+
 The adapter returns a nonzero exit status for unresolved work. It retains each
 successful compact fact before another request. A retry with the same `check_id`
 reuses those successes. A new freshness check uses a new token. Compilation
