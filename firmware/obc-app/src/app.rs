@@ -1038,6 +1038,7 @@ impl App {
                 menu.refresh_rows(catalogs.route_ids(), trips, new_len, navigator.internal_routes());
             }
         }
+        self.invalidate_detour_geometry();
     }
 
     pub fn routes(&self) -> &[RouteSummary] {
@@ -1478,12 +1479,23 @@ impl App {
     /// Drop everything derived from the active route's geometry. This is the whole-App seam, and
     /// the only thing route-replacing paths should call.
     ///
-    /// The UI also drops its next-category cache and corridor snapshot: their along-route
-    /// distances belong to the old geometry even when the index and frozen progress are unchanged.
+    /// UI caches also belong to the old geometry even when the route identity and progress
+    /// are unchanged.
     pub(crate) fn drop_route_derived_state(&mut self) {
         self.navigator.drop_route_derived_state();
         self.ui.next_ahead.invalidate();
         self.ui.corridor_scratch.invalidate();
+        self.invalidate_detour_geometry();
+    }
+
+    fn invalidate_detour_geometry(&mut self) {
+        for screen in &mut self.ui.stack {
+            match screen {
+                Screen::Detour(chooser) => chooser.invalidate_geometry(),
+                Screen::DetourPreview(preview) => preview.invalidate_geometry(),
+                _ => {}
+            }
+        }
     }
 
     /// Hand one rider request to Navigator, and repaint.
