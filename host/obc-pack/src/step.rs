@@ -234,6 +234,7 @@ fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
 fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for (path, object) in files {
         if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a relative path"));
@@ -252,6 +253,39 @@ fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), Stri
 mod tests {
     use super::*;
     use crate::landmarks::peaks::{discover, PeakContent};
+
+    #[test]
+    fn regions_without_content_identities_compile_empty_landmarks_and_peaks() {
+        let dir = obcm_testkit::scratch::scratch_dir("step", "empty-content");
+        let osm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../obc-data-steps/tests/data/planner.osm.pbf");
+        let poly = dir.join("area.poly");
+        std::fs::write(&poly, "test\n1\n 7.79 47.99\n 7.82 47.99\n 7.82 48.02\n 7.79 48.02\n 7.79 47.99\nEND\nEND\n")
+            .unwrap();
+        for (collection, compile, document) in [
+            ("landmarks", landmark_content as fn(&Request) -> Result<(), String>, "content.json"),
+            ("peaks", peak_content, "peaks.json"),
+        ] {
+            let request = Request {
+                step: format!("maps/{collection}-content"),
+                snapshots: BTreeMap::from([
+                    ("geofabrik-poly".into(), BTreeMap::from([("area.poly".into(), poly.clone())])),
+                    ("geofabrik-extracts".into(), BTreeMap::from([("area.osm.pbf".into(), osm.clone())])),
+                ]),
+                layers: BTreeMap::new(),
+                layer_files: BTreeMap::new(),
+                libraries: Vec::new(),
+                options: serde_json::json!({}),
+                output: dir.join(collection).join("output"),
+                metrics: dir.join(collection).join("metrics.json"),
+            };
+            compile(&request).unwrap();
+            let content: Value =
+                serde_json::from_slice(&std::fs::read(request.output.join(collection).join(document)).unwrap())
+                    .unwrap();
+            assert!(content["records"].as_array().unwrap().is_empty());
+            assert_eq!(std::fs::read_dir(request.output.join("shared-content")).unwrap().count(), 0);
+        }
+    }
 
     #[test]
     fn area_content_with_the_same_relative_path_preserves_unique_and_overlapping_articles() {
