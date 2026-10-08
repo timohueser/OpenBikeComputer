@@ -7,38 +7,18 @@ struct PlannerPreviewSearch: View {
     let onResult: (PlannerPreviewQueryResult) -> Void
     let onCancel: () -> Void
     let onPlace: (PlannerPreviewPlace) -> Void
-    let onQueryChange: (String) -> Void
-    let onRequestChange: (PlannerPreviewPlaceQuery?) -> Void
-    var viewBounds: [Double]? = nil
-    let isInMapView: (PlannerPreviewPlace) -> Bool
+    let search: PlannerPlaceSearch
     /// The routes row above the places of a name search, with its line of filters. Nil without a route catalog.
     var routes: (subtitle: String, open: (PlannerPreviewPlace) -> Void)?
-    @State private var query: String
-    @State private var request: PlannerPreviewPlaceQuery?
     @State private var activeEditor: PlannerPreviewQueryField?
     @FocusState private var isFocused: Bool
-    @State private var remote: PlannerPreviewQueryResult?
-    @State private var isSearching = false
-    @State private var searchError: String?
-    private struct SearchKey: Equatable { let query: String; let request: PlannerPreviewPlaceQuery? }
-    private var searchKey: SearchKey { .init(query: query, request: request) }
 
-    init(model: PlannerPreviewModel, initialQuery: String, initialRequest: PlannerPreviewPlaceQuery?,
-         initialEditor: PlannerPreviewQueryField?,
+    init(model: PlannerPreviewModel, search: PlannerPlaceSearch, initialEditor: PlannerPreviewQueryField?,
          onResult: @escaping (PlannerPreviewQueryResult) -> Void, onCancel: @escaping () -> Void,
-         onPlace: @escaping (PlannerPreviewPlace) -> Void,
-         onQueryChange: @escaping (String) -> Void,
-         onRequestChange: @escaping (PlannerPreviewPlaceQuery?) -> Void,
-         isInMapView: @escaping (PlannerPreviewPlace) -> Bool) {
-        self.model = model; self.onResult = onResult; self.onCancel = onCancel; self.onPlace = onPlace
-        self.onQueryChange = onQueryChange; self.onRequestChange = onRequestChange; self.isInMapView = isInMapView
-        _query = State(initialValue: initialQuery)
-        _request = State(initialValue: initialRequest ?? Self.interpret(initialQuery, model: model))
+         onPlace: @escaping (PlannerPreviewPlace) -> Void) {
+        self.model = model; self.search = search
+        self.onResult = onResult; self.onCancel = onCancel; self.onPlace = onPlace
         _activeEditor = State(initialValue: initialEditor)
-    }
-
-    func withViewBounds(_ bounds: [Double]?) -> Self {
-        var copy = self; copy.viewBounds = bounds; return copy
     }
 
     func withRoutes(_ routes: (subtitle: String, open: (PlannerPreviewPlace) -> Void)?) -> Self {
@@ -50,8 +30,9 @@ struct PlannerPreviewSearch: View {
         hasRoute ? "Find stops or change this route" : "Search places or describe a route"
     }
 
-    private var hasQuery: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    private var result: PlannerPreviewQueryResult { remote ?? model.lookup(query) }
+    private var query: String { search.draft.text }
+    private var request: PlannerPreviewPlaceQuery? { search.draft.request }
+    private var result: PlannerPreviewQueryResult { search.result }
     private var suggestions: [(title: String, symbol: String)] {
         model.hasRoute
             ? [("Cafés along route", "cup.and.saucer"), ("Water", "drop"), ("Shops", "basket"),
@@ -75,8 +56,7 @@ struct PlannerPreviewSearch: View {
                                 if let activeEditor {
                                     PlannerPreviewQueryEditor(field: activeEditor, request: request, hasRoute: model.hasRoute,
                                                               routeLengthMeters: model.stats.distanceMeters) { next in
-                                        self.request = next; self.activeEditor = nil
-                                        onRequestChange(next)
+                                        search.setRequest(next); self.activeEditor = nil
                                     } onCancel: { self.activeEditor = nil }
                                     .id(activeEditor)
                                 } else if request.area != .view && request.radiusMeters == nil {
@@ -88,16 +68,16 @@ struct PlannerPreviewSearch: View {
                             }
                         }
                         // A filter editor is the one open task; the results return once it closes.
-                        if hasQuery, activeEditor == nil {
-                            if isSearching { ProgressView("Searching places…") }
-                            else if let searchError { Text(searchError).foregroundStyle(OBCTheme.secondary) }
+                        if search.hasQuery, activeEditor == nil {
+                            if search.isSearching { ProgressView("Searching places…") }
+                            else if let searchError = search.searchError { Text(searchError).foregroundStyle(OBCTheme.secondary) }
                             else { results }
                         }
-                        if !hasQuery || result.places.isEmpty {
+                        if !search.hasQuery || result.places.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Examples").font(.headline).padding(.bottom, 4)
                                 ForEach(suggestions, id: \.title) { suggestion in
-                                    Button { query = suggestion.title; isFocused = false } label: {
+                                    Button { search.setQuery(suggestion.title); activeEditor = nil; isFocused = false } label: {
                                         HStack(spacing: 12) {
                                             Image(systemName: suggestion.symbol).frame(width: 24)
                                             Text(suggestion.title)
@@ -127,45 +107,19 @@ struct PlannerPreviewSearch: View {
             }
         }
         .tint(OBCTheme.tint)
-        .onChange(of: query) { _, value in
-            request = Self.interpret(value, model: model); activeEditor = nil
-            onQueryChange(value); onRequestChange(request)
-        }
-        .task { onRequestChange(request); isFocused = !hasQuery && activeEditor == nil }
-        .task(id: searchKey) {
-            let key = searchKey
-            remote = nil; searchError = nil; isSearching = false
-            guard hasQuery, model.lookup(query).action == nil else { return }
-            isSearching = true
-            defer { if key == searchKey { isSearching = false } }
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-                let query = request?.serverQuery(text: key.query, view: viewBounds, model: model)
-                    ?? PlannerSearchQuery(text: key.query, view: viewBounds)
-                let found = try await model.searchPlaces(query)
-                let places = request?.filter(found, routeLengthMeters: model.routeLine.length,
-                                             isInMapView: isInMapView, matchesName: false) ?? found
-                try Task.checkCancellation()
-                guard key == searchKey else { return }
-                remote = .init(title: request.map { $0.kinds.isEmpty ? $0.name : $0.kindLabel } ?? "Places",
-                               explanation: "", places: places, action: nil)
-            } catch is CancellationError {} catch {
-                guard key == searchKey else { return }
-                searchError = error.localizedDescription
-            }
-        }
+        .task { isFocused = !search.hasQuery && activeEditor == nil }
     }
 
     /// `OBCSearchField` with focus and submit, which the shared field does not carry.
     private var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").font(.subheadline.weight(.semibold)).foregroundStyle(OBCTheme.secondary)
-            TextField(Self.prompt(hasRoute: model.hasRoute), text: $query)
+            TextField(Self.prompt(hasRoute: model.hasRoute), text: Binding(get: { query }, set: { search.setQuery($0); activeEditor = nil }))
                 .font(.subheadline).foregroundStyle(OBCTheme.ink).focused($isFocused)
                 .submitLabel(.search).autocorrectionDisabled().onSubmit { submit() }
                 .accessibilityIdentifier("planner.searchField")
             if !query.isEmpty {
-                Button { query = ""; isFocused = true } label: {
+                Button { search.setQuery(""); activeEditor = nil; isFocused = true } label: {
                     Image(systemName: "xmark.circle.fill").font(.subheadline).foregroundStyle(OBCTheme.secondary)
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
@@ -190,7 +144,7 @@ struct PlannerPreviewSearch: View {
                 }
             } else {
                 if let routes, request?.kinds.isEmpty ?? true, let place = routesPlace(result.places) {
-                    Button { isFocused = false; routes.open(place) } label: {
+                    Button { _ = search.accept(); isFocused = false; routes.open(place) } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "signpost.right").frame(width: 24).foregroundStyle(OBCTheme.secondary)
                             VStack(alignment: .leading, spacing: 2) {
@@ -221,13 +175,13 @@ struct PlannerPreviewSearch: View {
         return places.first { fold($0.name) == fold(query) } ?? places.first
     }
 
-    private static func interpret(_ query: String, model: PlannerPreviewModel) -> PlannerPreviewPlaceQuery? {
-        guard model.lookup(query).action == nil else { return nil }
-        return PlannerPreviewPlaceQuery.parse(query, hasRoute: model.hasRoute)
+    private func submit() {
+        guard let result = search.accept() else { return }
+        isFocused = false; onResult(result)
     }
-    private func submit() { guard hasQuery, !isSearching, searchError == nil else { return }; isFocused = false; onResult(result) }
     // A picked place carries its list along, so the planner can offer the way back to it.
     private func select(_ place: PlannerPreviewPlace) {
+        guard let result = search.accept() else { return }
         isFocused = false
         onResult(result); onPlace(place)
     }
