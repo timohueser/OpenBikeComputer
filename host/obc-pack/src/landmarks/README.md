@@ -75,20 +75,21 @@ merge order.
 
 ### Photos
 
-All variants share one photo. `specs/photo-pools.json` sets the pool order: `P18`, verified
+Variants share one photo. `specs/photo-pools.json` sets the pool order: `P18`, verified
 article leads, then one direct `P373` category response with at most 100 files. Category capture
 records a limit outcome if continuation remains. A failed response contributes no candidates.
 Retained complete category chains stay valid; selection uses the first response only.
 
-A `Views from <category>` member is refused. Within a pool, views of the subject, matching
-`depicts` statements and camera distance rank candidates. Metadata checks reject invalid credits
-before image requests. The compiler keeps complete creators and licence references in the
-existing 1,024-byte credit bundle. Missing creators are allowed only for CC0 and verified
-public-domain releases. Public-domain labels alone do not establish a supported basis.
+A `Views from <category>` member is refused. Within a pool, subject views, matching `depicts`
+statements and camera distance rank candidates. Metadata rejects invalid credits before media requests.
+The 1,024-byte bundle keeps creators and licence references.
+Missing creators require CC0 or verified public-domain releases. A public-domain label is
+insufficient. Matching Commons licence blocks reduce to their URI. Requested attribution and
+residual permission text and links remain complete; unsupported credits select the next candidate.
 
-New image inputs use standard 500 px Commons thumbnails. Retained originals remain valid inputs.
-The input digest and the metadata URL bind thumbnail bytes; original bytes also match the
-upstream SHA-1. Credits identify the file, creator, licence and resize/dither operation.
+New inputs use standard 500 px Commons thumbnails. Revision checks bracket downloads.
+Witnesses must match its identity and revision. Orphan thumbnails are not reused.
+Retained originals match upstream SHA-1. Credits name file, creator, licence and resize/dither operation.
 
 Each photo file is exactly 51,840 bytes, 216 columns by 240 rows, one RGB222 pixel per byte
 (`00RRGGBB`). The host applies orientation, a Lanczos3 fit, white padding and a fixed 4 × 4

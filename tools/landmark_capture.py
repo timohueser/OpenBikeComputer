@@ -496,8 +496,8 @@ def image_metadata_url(filename: str) -> str:
     return api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo|categories", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, cllimit="max", uselang="en", iiurlwidth=500)
 
 
-def captured_image_metadata(capture: Capture, filename: str) -> dict | None:
-    path = f"images/{digest(filename.encode())}.json"
+def captured_image_metadata(capture: Capture, filename: str, path: str | None = None) -> dict | None:
+    path = path or f"images/{digest(filename.encode())}.json"
     outcome_path = capture.root / "outcomes" / (digest(path.encode()) + ".json")
     url = json.loads(outcome_path.read_text())["url"] if outcome_path.exists() else image_metadata_url(filename)
     return capture.json(path, url)
@@ -529,25 +529,71 @@ def photo_metadata(capture: Capture, filename: str) -> tuple[dict | None, str]:
     return record, "captured"
 
 
-def photo_bytes(capture: Capture, filename: str) -> tuple[str | None, str]:
-    """Use a 500 px thumbnail, or reuse the original pinned by an existing capture."""
+def revision_info(raw: dict | None) -> tuple[str, dict] | None:
+    pages = list((raw or {}).get("query", {}).get("pages", {}).values())
+    if len(pages) != 1 or len(pages[0].get("imageinfo", [])) != 1:
+        return None
+    title = pages[0].get("title", "")
+    if not title.startswith("File:"):
+        return None
+    return title[5:].replace("_", " "), pages[0]["imageinfo"][0]
+
+
+def photo_revision_matches(expected: tuple[str, dict], current: tuple[str, dict]) -> bool:
+    if expected[0] != current[0]:
+        return False
+    old, new = expected[1], current[1]
+    if any(not old.get(field) or old.get(field) != new.get(field) for field in ("timestamp", "sha1")):
+        return False
+    fields = ("Artist", "Attribution", "Permission", "License", "LicenseUrl", "Copyrighted", "AttributionRequired",
+              "Categories", "ObjectName", "Credit", "LicenseShortName", "UsageTerms")
+    return all(old.get("extmetadata", {}).get(field, {}).get("value") ==
+               new.get("extmetadata", {}).get(field, {}).get("value") for field in fields)
+
+
+def photo_bytes(capture: Capture, filename: str, image: dict | None = None) -> tuple[str | None, str]:
+    """Fresh revision checks bracket each thumbnail; retained originals keep their SHA-1 proof."""
     key = digest(filename.encode())
-    raw = captured_image_metadata(capture, filename)
-    if not raw:
+    raw = captured_image_metadata(capture, filename, image.get("metadata_path") if image else None)
+    expected = revision_info(raw)
+    if expected is None:
         return None, "metadata-acquisition-failed"
-    info = list(raw["query"]["pages"].values())[0]["imageinfo"][0]
+    info = expected[1]
+    if info.get("mime") not in IMAGE_EXTENSIONS:
+        return None, "unsupported-format"
     original_path = f"images/{key}{IMAGE_EXTENSIONS[info['mime']]}"
-    if (capture.root / "outcomes" / (digest(original_path.encode()) + ".json")).exists():
-        path, url = original_path, info["url"]
-    elif info.get("thumburl"):
-        mime = info.get("thumbmime", info["mime"])
-        if mime not in IMAGE_EXTENSIONS:
-            return None, "unsupported-thumbnail-format"
-        path, url = f"images/{key}-500{IMAGE_EXTENSIONS[mime]}", info["thumburl"]
-    else:
-        path, url = original_path, info["url"]
-    result = capture.fetch(path, url)
-    return (path, "captured") if result["status"] == "ok" else (None, result["status"])
+    if (capture.root / "outcomes" / (digest(original_path.encode()) + ".json")).exists() or not info.get("thumburl"):
+        result = capture.fetch(original_path, info["url"])
+        return (original_path, "captured") if result["status"] == "ok" else (None, result["status"])
+    mime = info.get("thumbmime", info["mime"])
+    if mime not in IMAGE_EXTENSIONS:
+        return None, "unsupported-thumbnail-format"
+    # A successful media outcome without both witnesses has no revision proof. A fresh bracket
+    # cannot retroactively prove it, so each attempt has its own media path and fresh API checks.
+    attempt = 1 + len(list((capture.root / "images").glob(f"{key}-500-*-before.json")))
+    prefix = f"images/{key}-500-{attempt}"
+    before_path, after_path = prefix + "-before.json", prefix + "-after.json"
+    before = revision_info(capture.json(before_path, image_metadata_url(expected[0])))
+    if before is None:
+        return None, "revision-check-acquisition-failed"
+    if not photo_revision_matches(expected, before):
+        if image is not None:
+            image["metadata_path"] = before_path
+        return None, "metadata-changed"
+    path = prefix + IMAGE_EXTENSIONS[mime]
+    result = capture.fetch(path, info["thumburl"])
+    if result["status"] != "ok":
+        return None, result["status"]
+    after = revision_info(capture.json(after_path, image_metadata_url(expected[0])))
+    if after is None:
+        return None, "revision-check-acquisition-failed"
+    if not photo_revision_matches(expected, after):
+        if image is not None:
+            image["metadata_path"] = after_path
+        return None, "metadata-changed"
+    if image is not None:
+        image.update(revision_before_path=before_path, revision_after_path=after_path)
+    return path, "captured"
 
 
 def capture_locales(capture: Capture, value: dict) -> None:
@@ -668,7 +714,8 @@ def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str
             key = (request["qid"], request["metadata_path"])
             tried.add(key)
             place, image = images[key]
-            path, status = photo_bytes(capture, request["filename"])
+            path, status = photo_bytes(capture, request["filename"], image)
+            images[(place["qid"], image["metadata_path"])] = (place, image)
             place["outcomes"].append(dict(asset="photo", source=image["source"], filename=request["filename"], status=status))
             if path:
                 image["path"] = path
