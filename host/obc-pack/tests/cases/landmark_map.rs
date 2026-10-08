@@ -118,7 +118,12 @@ fn source_join_content_pool_and_independent_photo_readback() {
         ),
         (
             first.photo_attribution,
-            ["Wikimedia Commons", "Burg.jpg", "A", "CC BY 4.0 creativecommons.org/licenses/by/4.0/"],
+            [
+                "https://commons.wikimedia.org/wiki/File:Burg.jpg",
+                "Burg.jpg",
+                "A",
+                "CC BY 4.0 creativecommons.org/licenses/by/4.0/; resized/dithered",
+            ],
         ),
     ] {
         let credit = directory.content(&source, reference, MAX_ATTRIBUTION_BYTES).unwrap();

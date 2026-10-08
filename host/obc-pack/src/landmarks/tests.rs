@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn commons_category_members_cover_every_page_in_stable_order() {
+fn retained_category_chain_is_verified_and_only_its_first_page_is_selected() {
     let root = obcm_testkit::scratch::scratch_dir("landmarks", "category-pages");
     let continuation = json!({"cmcontinue":"file|next|7","continue":"-||"});
     let captures = [
@@ -38,7 +38,10 @@ fn commons_category_members_cover_every_page_in_stable_order() {
         ]
     }]});
     let members = category_members(&root, &sources, &place, &["Category:Example".into()], 2).unwrap();
-    assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg", "C.jpg"]);
+    assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg"]);
+    let bounded = json!({"commons_categories":[{"title":"Category:Example","complete":false,"limit":100,
+        "pages":[{"path":captures[0].0,"continuation":null}]}]});
+    assert_eq!(category_members(&root, &sources, &bounded, &["Category:Example".into()], 2).unwrap().len(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
