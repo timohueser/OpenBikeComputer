@@ -3382,6 +3382,31 @@
 				)
 			)
 		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/Same-Sky/CPT-9019A-SMT-TR?qs=3Rah4i%252BhyCH9W9p08uaaRg%3D%3D"
+			(at 222.25 173.99 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/Same-Sky/CPT-9019A-SMT-TR?qs=3Rah4i%252BhyCH9W9p08uaaRg%3D%3D"
+			(at 222.25 173.99 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:1.08;10:0.815;25:0.734;50:0.679;100:0.63;250:0.576;500:0.531;1000:0.439"
+			(at 222.25 173.99 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 222.25 173.99 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" "Backorder shown; confirm delivery."
+			(at 222.25 173.99 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "obc:VSYS")
@@ -3708,7 +3733,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 104.14 97.79 0)
 			(hide yes)
 			(show_name no)
@@ -3744,7 +3769,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at 5.08 -7.62 0)
 			(hide yes)
 			(show_name no)
@@ -3780,7 +3805,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-0710KL"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3792,7 +3817,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -3817,6 +3842,26 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.de/en/ProductDetail/YAGEO/RC0402FR-0710KL?qs=I1mnnYJTTsxUoNwrUsQExA%3D%3D"
+			(at 99.06 50.8 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.de/en/ProductDetail/YAGEO/RC0402FR-0710KL?qs=I1mnnYJTTsxUoNwrUsQExA%3D%3D"
+			(at 99.06 50.8 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 99.06 50.8 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 99.06 50.8 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -4254,6 +4299,31 @@
 				)
 			)
 		)
+		(property "Mouser" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 226.06 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 226.06 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.318;10:0.278;25:0.257;100:0.23;250:0.213"
+			(at 226.06 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 226.06 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" "Volume price needs refresh; last published cut-tape break used conservatively."
+			(at 226.06 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "Connector:TestPoint")
@@ -4609,6 +4679,31 @@
 				)
 			)
 		)
+		(property "Mouser" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 165.1 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 165.1 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.318;10:0.278;25:0.257;100:0.23;250:0.213"
+			(at 165.1 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 165.1 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" "Volume price needs refresh; last published cut-tape break used conservatively."
+			(at 165.1 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
 	)
 	(symbol
 		(lib_id "Device:R_Small")
@@ -4656,7 +4751,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 419.1 259.08 90)
 			(hide yes)
 			(show_name no)
@@ -4692,7 +4787,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at 320.04 153.67 90)
 			(hide yes)
 			(show_name no)
@@ -4728,7 +4823,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-07470RL"
 			(at 16.51 0 90)
 			(hide yes)
 			(show_name no)
@@ -4740,7 +4835,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 16.51 0 90)
 			(hide yes)
 			(show_name no)
@@ -4765,6 +4860,26 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-07470RL?qs=dn7UOKrNBAlPAr3vO7H4cA%3D%3D"
+			(at 110.49 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-07470RL?qs=dn7UOKrNBAlPAr3vO7H4cA%3D%3D"
+			(at 110.49 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 110.49 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 110.49 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -4905,7 +5020,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -4953,7 +5068,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-07470RL"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -4965,7 +5080,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -4990,6 +5105,41 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Power" "62.5mW"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Voltage" "50V"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Technology" "Thick film"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-07470RL?qs=dn7UOKrNBAlPAr3vO7H4cA%3D%3D"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-07470RL?qs=dn7UOKrNBAlPAr3vO7H4cA%3D%3D"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 193.04 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -5171,6 +5321,31 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 226.06 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 226.06 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.318;10:0.278;25:0.257;100:0.23;250:0.213"
+			(at 226.06 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 226.06 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" "Volume price needs refresh; last published cut-tape break used conservatively."
+			(at 226.06 76.2 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -5485,7 +5660,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5533,7 +5708,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-0747KL"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5545,7 +5720,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -5570,6 +5745,41 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Power" "62.5mW"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Voltage" "50V"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Technology" "Thick film"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-0747KL?qs=V1yeUXFNrklslMUO6Zhx5g%3D%3D"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 199.39 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -5690,6 +5900,26 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.it/ProductDetail/Diodes-Incorporated/BAS40-7-F?qs=adAltDrIuTdmGfy%252B5OdHEA%3D%3D"
+			(at 168.91 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.it/ProductDetail/Diodes-Incorporated/BAS40-7-F?qs=adAltDrIuTdmGfy%252B5OdHEA%3D%3D"
+			(at 168.91 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.249;10:0.163;100:0.102;500:0.079;1000:0.069"
+			(at 168.91 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 168.91 106.68 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -5828,6 +6058,26 @@
 					(unit 3)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.es/ProductDetail/Texas-Instruments/SN74LVC2G00DCTR?qs=fvkeCqCHl3CDnEjEwbkcxQ%3D%3D"
+			(at 252.73 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.es/ProductDetail/Texas-Instruments/SN74LVC2G00DCTR?qs=fvkeCqCHl3CDnEjEwbkcxQ%3D%3D"
+			(at 252.73 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.697;10:0.501;25:0.451;100:0.396;250:0.369;500:0.353;1000:0.35"
+			(at 252.73 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 252.73 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -6247,7 +6497,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.murata.com/en-us/products/productdetail?partno=GRM155R71A104KA01D"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -6332,6 +6582,36 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Manufacturer" "Murata"
+			(at 276.86 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "MPN" "GRM155R71A104KA01D"
+			(at 276.86 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "DigiKey" "https://www.digikey.de/en/products/detail/murata-electronics/GRM155R71A104KA01D/2610881"
+			(at 276.86 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.digikey.de/en/products/detail/murata-electronics/GRM155R71A104KA01D/2610881"
+			(at 276.86 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.09000;10:0.02100;50:0.01400;100:0.01190;500:0.00830"
+			(at 276.86 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 276.86 184.15 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -6674,7 +6954,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.yageogroup.com/component-documentation/download/specsheet/CC0603KRX7R8BB105"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -6771,6 +7051,46 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Manufacturer" "YAGEO"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "MPN" "CC0603KRX7R8BB105"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Selection notes" "Candidate; verify DC-bias, temperature and tolerance against Capacitance at bias before release."
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "DigiKey" "https://www.digikey.jp/ja/products/detail/yageo/CC0603KRX7R8BB105/5195210"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://www.mouser.de/de/ProductDetail/YAGEO/CC0603KRX7R8BB105?qs=57cj7OiSijm1JqG%252BGXtOuQ%3D%3D"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.de/de/ProductDetail/YAGEO/CC0603KRX7R8BB105?qs=57cj7OiSijm1JqG%252BGXtOuQ%3D%3D"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.215;10:0.108;100:0.08;500:0.065;1000:0.054"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 187.96 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -7004,7 +7324,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7052,7 +7372,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-07100KL"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7064,7 +7384,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7089,6 +7409,41 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Power" "62.5mW"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Voltage" "50V"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Technology" "Thick film"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://www.mouser.fr/en/ProductDetail/YAGEO/RC0402FR-07100KL?qs=mnq%2FyloZIXzTlUn7JAHSWg%3D%3D"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.fr/en/ProductDetail/YAGEO/RC0402FR-07100KL?qs=mnq%2FyloZIXzTlUn7JAHSWg%3D%3D"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 100.33 213.36 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -7270,6 +7625,31 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 165.1 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.lu/ProductDetail/E-Switch/TL1016AAF220QG?qs=t7xnP681wgW5zrSpkWH91Q%3D%3D"
+			(at 165.1 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.318;10:0.278;25:0.257;100:0.23;250:0.213"
+			(at 165.1 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 165.1 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Sourcing notes" "Volume price needs refresh; last published cut-tape break used conservatively."
+			(at 165.1 45.72 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -7491,7 +7871,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7539,7 +7919,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-07100KL"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7551,7 +7931,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 0 0 0)
 			(hide yes)
 			(show_name no)
@@ -7576,6 +7956,41 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Power" "62.5mW"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Voltage" "50V"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Technology" "Thick film"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Mouser" "https://www.mouser.fr/en/ProductDetail/YAGEO/RC0402FR-07100KL?qs=mnq%2FyloZIXzTlUn7JAHSWg%3D%3D"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.fr/en/ProductDetail/YAGEO/RC0402FR-07100KL?qs=mnq%2FyloZIXzTlUn7JAHSWg%3D%3D"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 29.21 191.77 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -7807,6 +8222,26 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.es/ProductDetail/Texas-Instruments/SN74LVC2G00DCTR?qs=fvkeCqCHl3CDnEjEwbkcxQ%3D%3D"
+			(at 64.77 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.es/ProductDetail/Texas-Instruments/SN74LVC2G00DCTR?qs=fvkeCqCHl3CDnEjEwbkcxQ%3D%3D"
+			(at 64.77 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.697;10:0.501;25:0.451;100:0.396;250:0.369;500:0.353;1000:0.35"
+			(at 64.77 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 64.77 171.45 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -8122,7 +8557,7 @@
 				(justify left)
 			)
 		)
-		(property "Datasheet" ""
+		(property "Datasheet" "https://www.digikey.com/en/resources/datasheets/yageo/rc-series-l-suffix-datasheet"
 			(at 419.1 274.32 90)
 			(hide yes)
 			(show_name no)
@@ -8158,7 +8593,7 @@
 				(justify left)
 			)
 		)
-		(property "Power" "63mW"
+		(property "Power" "62.5mW"
 			(at 320.04 168.91 90)
 			(hide yes)
 			(show_name no)
@@ -8194,7 +8629,7 @@
 				(justify left)
 			)
 		)
-		(property "MPN" ""
+		(property "MPN" "RC0402FR-07470RL"
 			(at 16.51 15.24 90)
 			(hide yes)
 			(show_name no)
@@ -8206,7 +8641,7 @@
 				(justify left)
 			)
 		)
-		(property "Manufacturer" ""
+		(property "Manufacturer" "YAGEO"
 			(at 16.51 15.24 90)
 			(hide yes)
 			(show_name no)
@@ -8231,6 +8666,26 @@
 					(unit 1)
 				)
 			)
+		)
+		(property "Mouser" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-07470RL?qs=dn7UOKrNBAlPAr3vO7H4cA%3D%3D"
+			(at 165.1 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://eu.mouser.com/en/ProductDetail/YAGEO/RC0402FR-07470RL?qs=dn7UOKrNBAlPAr3vO7H4cA%3D%3D"
+			(at 165.1 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.086;10:0.009;100:0.006;1000:0.005;2500:0.003"
+			(at 165.1 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 165.1 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 	(symbol
@@ -8369,6 +8824,26 @@
 					(unit 2)
 				)
 			)
+		)
+		(property "Mouser" "https://www.mouser.es/ProductDetail/Texas-Instruments/SN74LVC2G00DCTR?qs=fvkeCqCHl3CDnEjEwbkcxQ%3D%3D"
+			(at 133.35 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price source" "https://www.mouser.es/ProductDetail/Texas-Instruments/SN74LVC2G00DCTR?qs=fvkeCqCHl3CDnEjEwbkcxQ%3D%3D"
+			(at 133.35 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price breaks EUR" "1:0.697;10:0.501;25:0.451;100:0.396;250:0.369;500:0.353;1000:0.35"
+			(at 133.35 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
+		)
+		(property "Price checked" "2026-10-02"
+			(at 133.35 199.39 0)
+			(hide yes)
+			(effects (font (size 1 1)))
 		)
 	)
 )

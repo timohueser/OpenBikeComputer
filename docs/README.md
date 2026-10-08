@@ -29,3 +29,8 @@ python3 docs/serve.py "$PWD/docs" 8090   # then open http://127.0.0.1:8090/docs/
 ```
 
 The preview does not build the WebAssembly landing-page demo.
+
+To include the BOM table, CSV files and all-sheet schematic PDFs, install KiCad 10
+and run `python3 docs/build_docs.py --hardware --check-links`. A normal preview
+does not require KiCad. The site workflow sets `OBC_BUILD_HARDWARE=1` for the Trunk
+hook. It publishes these exports on hardware changes pushed to `develop`.

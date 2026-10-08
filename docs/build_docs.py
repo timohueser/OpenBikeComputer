@@ -35,6 +35,7 @@ link resolves to a real page and heading id (the cross-page `#anchor` audit CI r
 import datetime
 import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -61,7 +62,7 @@ BLOG_POST_TEMPLATE = ROOT / "templates" / "blog_post.html"
 BLOG_INDEX_TEMPLATE = ROOT / "templates" / "blog_index.html"
 
 REPO = "https://github.com/timohueser/OpenBikeComputer"
-BRANCH = "main"
+BRANCH = "develop"
 SITE = "https://openbikecomputer.com/"   # absolute base for the feed and sitemap
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -711,6 +712,8 @@ def check_links(rendered):
             if target.startswith(("builder/", "plan/")):
                 continue
             label = "/" + url
+            if not frag and target.startswith("docs/") and (OUT / target[5:]).is_file():
+                continue
             if target not in pages:
                 broken.append("%s: '%s' -> no such page '%s'" % (label, href, target or "(index)"))
             elif frag and frag not in slugs[target]:
@@ -727,6 +730,7 @@ def check_links(rendered):
 
 def main():
     check = "--check-links" in sys.argv[1:]
+    hardware = "--hardware" in sys.argv[1:] or os.environ.get("OBC_BUILD_HARDWARE") == "1"
     if not TEMPLATE.exists():
         sys.exit("missing template: %s" % TEMPLATE)
     nav = json.loads((CONTENT / "nav.json").read_text())
@@ -750,6 +754,11 @@ def main():
             continue
         fm, body = split_front_matter(src.read_text())
         content, toc = render_blocks(body, src)
+        if path == "hardware/bom" and hardware:
+            sys.path.insert(0, str(ROOT.parent))
+            from hardware import bom
+
+            content += bom.export(OUT / "hardware" / "bom", schematics=True)
         url = page_url(path)
         base = base_for(url)
         title = fm.get("title") or nav_title_for(nav, path)
@@ -769,7 +778,8 @@ def main():
             "toc": render_toc(toc),
             "copy_notice": copy_notice(fm.get("copy", "")),
             "content": content,
-            "has_toc": "has-toc" if render_toc(toc) else "",
+            "has_toc": ("has-toc" if render_toc(toc) else "") +
+                       (" wide" if fm.get("layout") == "wide" else ""),
         })
 
         dest = OUT / "index.html" if url == "" else OUT / url / "index.html"

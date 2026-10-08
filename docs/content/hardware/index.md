@@ -13,6 +13,9 @@ The board crate defines the pin map, sensor connections, storage transport, buil
 
 The [display protocol](display-protocol/) defines the panel waveform and the FLPR scan sequence.
 
+The [BOM and schematics](bom/) page provides component specifications, supplier links,
+cost estimates, CSV files and schematic PDFs for both custom boards.
+
 The [`hardware/`](src:hardware) directory contains KiCad schematics, PCB layouts, footprints,
 and component models for the custom board. The custom board and enclosure remain in development.
 The repository does not yet provide a complete production hardware and assembly release.

@@ -265,6 +265,8 @@ triggers = [
   "pyproject.toml", "uv.lock",
   "tools/*.py",
   "tools/**/*.py",
+  "hardware/bom.py",
+  "docs/build_docs.py",
   "tools/planner-regions/**",
   # The planner tools read their credits and region boxes from them.
   "data/sources.toml",
