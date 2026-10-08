@@ -21,7 +21,7 @@ public struct PlannerPreviewView: View {
     private enum Panel: Identifiable { case planning, stops, preferences, days, results, place, routes, route, leg; var id: Self { self } }
     private enum SearchIntent: Equatable { case general, overnight, replace(String) }
     @State private var searchAfterDismissal = false
-    @State private var searchQuery = ""
+    @State private var search: PlannerPlaceSearch
     @State private var model: PlannerPreviewModel
     @ScaledMetric(relativeTo: .body) private var collapsedHeight = PlannerPreviewDrawerPosition.collapsedBase
     @ScaledMetric(relativeTo: .body) private var listContentHeight: CGFloat = 350
@@ -56,10 +56,6 @@ public struct PlannerPreviewView: View {
     @State private var fitRevision = 0
     @State private var fraction: Double?
     @State private var layerStatus: String?
-    @State private var results: PlannerPreviewQueryResult?
-    @State private var selectedPlace: PlannerPreviewPlace?
-    @State private var detailsError: String?
-    @State private var selectionRevision = 0
     @State private var editingPointID: String?
     @State private var legHit: PlannerPreviewLegHit?
     @State private var visibleRouteRange: ClosedRange<Double>? = 0...1
@@ -67,9 +63,8 @@ public struct PlannerPreviewView: View {
     @State private var hiddenCategories: Set<PlannerPreviewPlaceCategory> = []
     @State private var highlightedCategories: Set<PlannerPreviewPlaceCategory> = []
     @State private var visibleMapRect = MKMapRect.world
-    @State private var queryRequest: PlannerPreviewPlaceQuery?
     @State private var queryEditor: PlannerPreviewQueryField?
-    @State private var searchSnapshot: (String, PlannerPreviewPlaceQuery?, SearchIntent)?
+    @State private var resumesSearch = false
     @State private var searchSelectedPlace: PlannerPreviewPlace?
     @State private var searchRoutesPlace: PlannerPreviewPlace?
     @State private var finder = PlannerRouteFinder()
@@ -86,7 +81,9 @@ public struct PlannerPreviewView: View {
 
     public init(onSave: @escaping (PlannerPreviewSave) -> Void,
                 onClose: @escaping () -> Void, sample: Bool = false, source: any PlannerDataSource = PlannerService.shared) {
-        _model = State(initialValue: PlannerPreviewModel(sample: sample, service: source))
+        let model = PlannerPreviewModel(sample: sample, service: source)
+        _model = State(initialValue: model)
+        _search = State(initialValue: PlannerPlaceSearch(model: model))
         self.onSave = onSave
         self.onClose = onClose
         isEditing = false
@@ -96,7 +93,9 @@ public struct PlannerPreviewView: View {
     public init(editing plan: PlannerPlan,
                 onSave: @escaping (PlannerPreviewSave) -> Void,
                 onClose: @escaping () -> Void, source: any PlannerDataSource = PlannerService.shared) {
-        _model = State(initialValue: PlannerPreviewModel(plan: plan, service: source))
+        let model = PlannerPreviewModel(plan: plan, service: source)
+        _model = State(initialValue: model)
+        _search = State(initialValue: PlannerPlaceSearch(model: model))
         self.onSave = onSave
         self.onClose = onClose
         isEditing = true
@@ -171,14 +170,9 @@ public struct PlannerPreviewView: View {
                                             ? min(max(openHeight + 120, geometry.size.height * 0.52), geometry.size.height - 48) : nil,
                                          onHeight: { sheetHeight = $0 }, header: { routeHeader }, content: { drawerContent })
                         .fullScreenCover(isPresented: $searchShown, onDismiss: finishSearch) {
-                            PlannerPreviewSearch(model: model, initialQuery: searchQuery, initialRequest: queryRequest,
-                                                 initialEditor: queryEditor, onResult: receiveSearch,
-                                                 onCancel: cancelSearch,
-                                                 onPlace: { searchSelectedPlace = $0; searchShown = false },
-                                                 onQueryChange: { searchQuery = $0 },
-                                                 onRequestChange: { queryRequest = $0 },
-                                                 isInMapView: isInMapView)
-                                .withViewBounds(searchBounds)
+                            PlannerPreviewSearch(model: model, search: search, initialEditor: queryEditor,
+                                                 onResult: receiveSearch, onCancel: cancelSearch,
+                                                 onPlace: { searchSelectedPlace = $0; searchShown = false })
                                 .withRoutes(finder.available ? (finder.subtitle(activity: model.activity), { searchRoutesPlace = $0; searchShown = false }) : nil)
                         }
                         .fullScreenCover(isPresented: $filtersShown) {
@@ -234,25 +228,6 @@ public struct PlannerPreviewView: View {
         }
         .tint(OBCTheme.tint)
         .task { drawerShown = true }
-        .task(id: "\(selectedPlace?.id ?? "")-\(selectionRevision)") {
-            detailsError = nil
-            guard let place = selectedPlace, !place.detailsLoaded,
-                  place.id.range(of: #"^(?:[nwr]|Q)[1-9][0-9]*$"#, options: .regularExpression) != nil else { return }
-            let coordinate = place.coordinate
-            var query = PlannerSearchQuery(text: "Place", view: [coordinate.longitude - 0.01, coordinate.latitude - 0.01,
-                                                                  coordinate.longitude + 0.01, coordinate.latitude + 0.01])
-            query.source = place.id
-            do {
-                let details = try await model.searchPlaces(query).first
-                try Task.checkCancellation()
-                guard selectedPlace?.id == place.id, let details else { return }
-                selectedPlace = .init(id: place.id, name: place.name, coordinate: coordinate, kind: place.kind,
-                    alongRouteMeters: place.alongRouteMeters, offRouteMeters: place.offRouteMeters,
-                    hours: details.hours, note: details.note, website: details.website, phone: details.phone, description: details.description, content: details.content, detailsLoaded: true)
-            } catch {
-                if !Task.isCancelled { detailsError = "Place details are unavailable. Try selecting the place again." }
-            }
-        }
         .task(id: model.routingRevision) {
             do {
                 if model.hasRoute { try await Task.sleep(for: .milliseconds(250)) }
@@ -438,7 +413,7 @@ public struct PlannerPreviewView: View {
             }
         case .stops:
             PlannerPreviewPoints(model: model, onEdit: editPoint, onAdd: startSearch,
-                onReverse: { queryRequest = nil; results = model.lookup("reverse"); panel = .results },
+                onReverse: { search.showAction("reverse"); panel = .results },
                 onExample: { model.loadSample(); resetPanel(); fitRevision += 1 },
                 onNew: { model.newRoute(); resetPanel(); fitRevision += 1 })
         default: EmptyView()
@@ -580,7 +555,7 @@ public struct PlannerPreviewView: View {
                     .font(.footnote).foregroundStyle(OBCTheme.secondary)
             }
             Button("Replace place", systemImage: "magnifyingglass") {
-                intent = .replace(point.id); searchQuery = ""; openSearchFromDetail()
+                intent = .replace(point.id); openSearchFromDetail()
             }.frame(minHeight: 44)
             if !model.isEndpoint(point.id), point.kind != .marker, model.isNight(point.id) || model.canAddDay {
                 let isNight = model.isNight(point.id)
@@ -642,9 +617,8 @@ public struct PlannerPreviewView: View {
                 }
                 if model.canAddDay {
                     Button("Add a night", systemImage: "tent") {
-                        searchQuery = "camping"; queryRequest = PlannerPreviewPlaceQuery.parse("camping", hasRoute: model.hasRoute)
-                        queryEditor = nil; intent = .overnight
-                        openSearchFromDetail()
+                        intent = .overnight
+                        openSearchFromDetail(query: "camping")
                     }.buttonStyle(.obcPrimary).accessibilityIdentifier("planner.addNight")
                 }
                 if !model.nights.isEmpty {
@@ -708,7 +682,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func editPoint(_ point: PlannerPreviewPoint) {
-        editingPointID = point.id; selectedPlace = point.place; intent = .general
+        editingPointID = point.id; search.select(point.place); intent = .general
         panel = .place; drawerPosition = .open
     }
 
@@ -726,27 +700,39 @@ public struct PlannerPreviewView: View {
         }.font(.subheadline.monospacedDigit()).foregroundStyle(OBCTheme.secondary)
     }
 
+    private var results: PlannerPreviewQueryResult? { search.results }
+    private var selectedPlace: PlannerPreviewPlace? { search.selectedPlace }
+    private var detailsError: String? { search.detailsError }
+    private var queryRequest: PlannerPreviewPlaceQuery? { search.accepted.request }
+
+    private func beginSearch(query: String? = nil) {
+        let rect = visibleMapRect
+        search.begin(query: query, viewBounds: searchBounds) { place in
+            rect.contains(MKMapPoint(CLLocationCoordinate2D(latitude: place.coordinate.latitude, longitude: place.coordinate.longitude)))
+        }
+    }
+
     private func startSearch() {
-        searchSnapshot = nil
+        resumesSearch = false
         layersShown = false; infoShown = false
-        intent = .general; searchQuery = ""; queryRequest = nil; queryEditor = nil; searchShown = true
+        intent = .general; queryEditor = nil
+        beginSearch(query: ""); searchShown = true
     }
 
     private func resumeSearch(field: PlannerPreviewQueryField? = nil) {
-        searchSnapshot = (searchQuery, queryRequest, intent)
-        queryEditor = field; searchShown = true
+        resumesSearch = true
+        beginSearch(); queryEditor = field; searchShown = true
     }
 
     private func cancelSearch() {
-        if let snapshot = searchSnapshot {
-            searchQuery = snapshot.0; queryRequest = snapshot.1; intent = snapshot.2
-        } else { intent = .general }
-        searchSnapshot = nil; searchShown = false
+        search.cancel()
+        if !resumesSearch { intent = .general }
+        searchShown = false
     }
 
-    private func openSearchFromDetail() {
-        searchSnapshot = nil
-        queryRequest = nil; queryEditor = nil
+    private func openSearchFromDetail(query: String = "") {
+        resumesSearch = false
+        beginSearch(query: query); queryEditor = nil
         if editor != nil { searchAfterDismissal = true; editor = nil }
         else { searchShown = true }
     }
@@ -757,7 +743,7 @@ public struct PlannerPreviewView: View {
     }
 
     private func finishSearch() {
-        queryEditor = nil; searchSnapshot = nil
+        queryEditor = nil; search.cancel()
         if let place = searchRoutesPlace {
             searchRoutesPlace = nil; openRoutes(at: place.coordinate, name: place.name)
         } else if let place = searchSelectedPlace {
@@ -785,36 +771,34 @@ public struct PlannerPreviewView: View {
     }
 
     private func returnToPlanning() {
-        panel = .planning; drawerPosition = .open; results = nil; fraction = nil; intent = .general
-        selectedPlace = nil; editingPointID = nil; legHit = nil
+        panel = .planning; drawerPosition = .open; search.clearResults(); fraction = nil; intent = .general
+        search.select(nil); editingPointID = nil; legHit = nil
     }
 
     private func showResults() {
-        selectedPlace = nil; editingPointID = nil
+        search.select(nil); editingPointID = nil
         panel = .results; drawerPosition = .open
     }
 
     /// After an edit: back to the list the place came from, else to planning. The camera stays.
     private func resetPanel() {
-        if let results, results.action == nil { showResults() } else { queryRequest = nil; returnToPlanning() }
+        if let results, results.action == nil { showResults() } else { returnToPlanning() }
     }
 
     /// A replace or an overnight pick answers the search that asked for it, so its list closes.
     private func finishIntent() {
-        queryRequest = nil; returnToPlanning()
+        returnToPlanning()
     }
 
     private func receiveSearch(_ result: PlannerPreviewQueryResult) {
-        model.mapPlaces = result.places
-        results = result; selectedPlace = nil; editingPointID = nil
+        search.select(nil); editingPointID = nil
         panel = .results; drawerPosition = .open; searchShown = false
         if !result.places.isEmpty { fitRevision += 1 }
     }
 
     private func selectResult(_ place: PlannerPreviewPlace) {
         if routesOpen { moveRoutesStart(place.coordinate, name: place.name); return }
-        selectedPlace = model.positionedPlace(place); editingPointID = nil
-        selectionRevision += 1
+        search.select(model.positionedPlace(place)); editingPointID = nil
         panel = .place; drawerPosition = .open
     }
 
@@ -839,7 +823,7 @@ public struct PlannerPreviewView: View {
     private func selectLine(_ coordinate: Coordinate, tolerance: Double) -> Bool {
         guard !routesOpen, let hit = model.leg(near: coordinate, within: tolerance) else { return false }
         layersShown = false; infoShown = false
-        selectedPlace = nil; editingPointID = nil; legHit = hit
+        search.select(nil); editingPointID = nil; legHit = hit
         panel = .leg; drawerPosition = .open
         return true
     }
@@ -883,18 +867,15 @@ public struct PlannerPreviewView: View {
     private func selectMapPoint(_ coordinate: Coordinate, at location: CGPoint) {
         if routesOpen { moveRoutesStart(coordinate, name: nil); return }
         editingPointID = nil; layersShown = false; infoShown = false
-        selectedPlace = model.positionedPlace(.init(id: UUID().uuidString, name: PlannerPreviewModel.mapPointName, coordinate: coordinate))
+        search.select(model.positionedPlace(.init(id: UUID().uuidString, name: PlannerPreviewModel.mapPointName, coordinate: coordinate)))
         panel = .place; drawerPosition = .open
     }
 
     /// Closes the drawer first and runs `action` after it has gone.
     private func leave(_ action: @escaping () -> Void) {
+        search.cancel(); search.select(nil)
         afterDrawerDismiss = action
         drawerShown = false
-    }
-
-    private func isInMapView(_ place: PlannerPreviewPlace) -> Bool {
-        visibleMapRect.contains(MKMapPoint(CLLocationCoordinate2D(latitude: place.coordinate.latitude, longitude: place.coordinate.longitude)))
     }
 
     private var searchBounds: [Double]? {
@@ -926,7 +907,7 @@ public struct PlannerPreviewView: View {
     private func openRoutes(at coordinate: Coordinate, name: String?) {
         finder.use(model.release)
         moveRoutesStart(coordinate, name: name)
-        selectedPlace = nil; editingPointID = nil; results = nil; intent = .general
+        search.select(nil); editingPointID = nil; search.clearResults(); intent = .general
         drawerPosition = .open; fitRevision += 1
     }
 
@@ -998,7 +979,7 @@ public struct PlannerPreviewView: View {
     private func dragPoint(_ id: String, to coordinate: Coordinate) {
         guard let point = model.points.first(where: { $0.id == id }) else { return }
         model.movePoint(id: id, to: coordinate, name: point.kind == .shape ? nil : namer.name(near: coordinate))
-        if editingPointID == id, let moved = model.points.first(where: { $0.id == id }) { selectedPlace = moved.place }
+        if editingPointID == id, let moved = model.points.first(where: { $0.id == id }) { search.select(moved.place) }
     }
     private var cursor: Coordinate? {
         guard let fraction, model.geometry.count > 1 else { return nil }
