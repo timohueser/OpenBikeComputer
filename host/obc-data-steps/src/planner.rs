@@ -850,7 +850,7 @@ mod tests {
         let area = [("area".into(), "europe/second".into())];
         let shape = "second\n1\n 7.82 47.99\n 7.85 47.99\n 7.85 48.02\n 7.82 48.02\n 7.82 47.99\nEND\nEND\n";
         fetched(&store, "geofabrik-poly", "2026-10-02", &area, &[("europe/second.poly".into(), shape.into())]);
-        let bytes = include_bytes!("../../obc-pack/tests/data/peak-discovery.osm.pbf");
+        let bytes = include_bytes!("../tests/data/planner.osm.pbf");
         let sha256 = obc_data::store::sha256_hex(bytes);
         let file = store.partial("file");
         obc_data::store::write_atomic(&file, bytes).unwrap();
