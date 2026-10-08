@@ -1,13 +1,17 @@
 //! Bounded, opening-aware place pages over the existing POI quadtrees.
 
+mod cache;
+pub use cache::PlaceCache;
+
 use super::poi::{decode_poi_name, PoiCatEntry};
 use super::{Reader, BRANCH_BIT, EMPTY_LEAF};
-use crate::corridor::{project_onto_chunk, PathProjection};
+use crate::corridor::{project_with_scale, PathProjection};
 use crate::hours::OpeningStatus;
 use crate::{CorridorPoi, Error, Poi, PoiCategorySet, RoutePath};
+use core::cell::Cell;
 use heapless::Vec;
 use obc_formats::io::{rd_i32, rd_u16};
-use obc_formats::obcm::{poi_category_of, PoiMetadata, SourceId, POI_RECORD_LEN};
+use obc_formats::obcm::{poi_directory_category_of, PoiMetadata, SourceId, POI_RECORD_LEN, SETTLEMENT_CATEGORY_ID};
 use obc_map_scene::{cos_lat, delta_m, ground_dist_m_cl, BBox};
 
 /// Resident page capacity; identity continuations expose all matching places.
@@ -82,6 +86,8 @@ pub struct PlaceQuery {
     generation: u32,
     source_generation: Option<u32>,
     categories: PoiCategorySet,
+    settlement_width_m: Option<u16>,
+    within: Option<((i32, i32), u32)>,
     window: PlaceWindow,
     local: Option<(u8, u16)>,
     hours_filter: HoursFilter,
@@ -91,6 +97,7 @@ pub struct PlaceQuery {
     route_chunk: usize,
     /// The current route chunk's search box, clipped to the window; `None` until the chunk is read.
     route_search: Option<BBox>,
+    category_search: Option<BBox>,
     encounter: EncounterScan,
     stack: Vec<Branch, 33>,
     leaf: Option<u32>,
@@ -106,6 +113,8 @@ impl PlaceQuery {
             generation,
             source_generation: None,
             categories,
+            settlement_width_m: None,
+            within: None,
             window,
             local,
             hours_filter: HoursFilter::HideClosed,
@@ -114,6 +123,7 @@ impl PlaceQuery {
             category: 0,
             route_chunk: 0,
             route_search: None,
+            category_search: None,
             encounter: EncounterScan::default(),
             stack: Vec::new(),
             leaf: None,
@@ -126,6 +136,19 @@ impl PlaceQuery {
 
     pub fn with_hours_filter(mut self, filter: HoursFilter) -> Self {
         self.hours_filter = filter;
+        self
+    }
+
+    /// Include settlement points on the same route axis as services. Their payload is population,
+    /// not an opening-hours reference.
+    pub fn with_settlements(mut self, half_width_m: u16) -> Self {
+        self.settlement_width_m = Some(half_width_m);
+        self
+    }
+
+    /// Restrict route encounters to a geographic neighbourhood, without changing their ordering.
+    pub fn within(mut self, position: (i32, i32), radius_m: u32) -> Self {
+        self.within = Some((position, radius_m));
         self
     }
 
@@ -161,6 +184,7 @@ impl PlaceQuery {
         self.backwards = backwards;
         self.after = Some(after);
         self.category = 0;
+        self.category_search = None;
         self.route_chunk = 0;
         self.route_search = None;
         self.encounter = EncounterScan::default();
@@ -211,18 +235,27 @@ impl PlaceQuery {
         self.progress
     }
 
+    fn scan_bounds(&self, from_m: u32, to_m: u32) -> (u32, u32) {
+        match self.after {
+            Some(key) if self.backwards => (from_m, to_m.min(key.occurrence)),
+            Some(key) => (from_m.max(key.occurrence), to_m),
+            None => (from_m, to_m),
+        }
+    }
+
     fn advance<const N: usize>(
         &mut self,
         reader: &Reader,
         route: Option<&dyn RoutePath>,
         out: &mut Vec<CorridorPoi, N>,
     ) -> Result<(), Error> {
-        let search = match self.window {
+        let mut search = match self.window {
             PlaceWindow::Nearby { position: (lon, lat), radius_m } => crate::corridor::inflate_bbox(
                 BBox { min_lon: lon, max_lon: lon, min_lat: lat, max_lat: lat },
                 radius_m as f32,
             ),
             PlaceWindow::Corridor { from_m, to_m, half_width_m } => {
+                let (from_m, to_m) = self.scan_bounds(from_m, to_m);
                 let Some(route) = route else {
                     self.progress = QueryProgress::Unavailable;
                     return Ok(());
@@ -244,21 +277,46 @@ impl PlaceQuery {
                 match self.route_search {
                     Some(search) => search,
                     None => {
+                        if let Some((position, radius_m)) = self.within {
+                            let area = crate::corridor::inflate_bbox(
+                                BBox {
+                                    min_lon: position.0,
+                                    max_lon: position.0,
+                                    min_lat: position.1,
+                                    max_lat: position.1,
+                                },
+                                radius_m as f32
+                                    + self.settlement_width_m.unwrap_or(half_width_m).max(half_width_m) as f32,
+                            );
+                            if !area.intersects(&route.chunk_bbox(self.route_chunk)) {
+                                self.route_chunk += 1;
+                                self.route_search = None;
+                                return Ok(());
+                            }
+                        }
                         let k = self.route_chunk;
                         let mut clipped = None;
-                        route.visit_chunk_points(k, &mut |points| {
-                            clipped = window_bbox(points, route.chunk_start_m(k), from_m, to_m);
-                        });
-                        let search =
-                            crate::corridor::inflate_bbox(clipped.ok_or(Error::BadOffset)?, half_width_m as f32);
+                        if from_m <= route.chunk_start_m(k) && route.chunk_start_m(k + 1) <= to_m {
+                            clipped = Some(route.chunk_bbox(k));
+                        } else {
+                            visit_chunk_points(reader.place_cache, route, k, &mut |points| {
+                                clipped = window_bbox(points, route.chunk_start_m(k), from_m, to_m);
+                            });
+                        }
+                        let search = clipped.ok_or(Error::BadOffset)?;
                         self.route_search = Some(search);
                         search
                     }
                 }
             }
         };
-        self.coverage_complete &= contains(reader.bbox, search);
-        let Some(category) = self.categories.iter().nth(self.category) else {
+        let category = self
+            .categories
+            .iter()
+            .map(|c| c.id())
+            .chain(self.settlement_width_m.map(|_| SETTLEMENT_CATEGORY_ID))
+            .nth(self.category);
+        let Some(category) = category else {
             if matches!(self.window, PlaceWindow::Corridor { .. }) {
                 self.route_chunk += 1;
                 self.route_search = None;
@@ -269,8 +327,37 @@ impl PlaceQuery {
             }
             return Ok(());
         };
-        let Some(entry) = reader.tables.pois.entries.iter().find(|e| e.category_id == category.id() && !e.is_empty())
-        else {
+        if let Some(cached) = self.category_search {
+            search = cached;
+        } else {
+            if let PlaceWindow::Corridor { half_width_m, .. } = self.window {
+                let width = if category == SETTLEMENT_CATEGORY_ID {
+                    self.settlement_width_m.unwrap_or(half_width_m)
+                } else {
+                    half_width_m
+                };
+                search = crate::corridor::inflate_bbox(search, width as f32);
+            }
+            if let Some((position, radius_m)) = self.within {
+                let area = crate::corridor::inflate_bbox(
+                    BBox { min_lon: position.0, max_lon: position.0, min_lat: position.1, max_lat: position.1 },
+                    radius_m as f32,
+                );
+                if !area.intersects(&search) {
+                    self.next_category();
+                    return Ok(());
+                }
+                search = BBox {
+                    min_lon: search.min_lon.max(area.min_lon),
+                    max_lon: search.max_lon.min(area.max_lon),
+                    min_lat: search.min_lat.max(area.min_lat),
+                    max_lat: search.max_lat.min(area.max_lat),
+                };
+            }
+            self.category_search = Some(search);
+        }
+        self.coverage_complete &= contains(reader.bbox, search);
+        let Some(entry) = reader.tables.pois.entries.iter().find(|e| e.category_id == category && !e.is_empty()) else {
             self.next_category();
             return Ok(());
         };
@@ -317,6 +404,7 @@ impl PlaceQuery {
     }
 
     fn next_category(&mut self) {
+        self.category_search = None;
         self.category += 1;
         self.started = false;
         self.stack.clear();
@@ -366,17 +454,29 @@ impl PlaceQuery {
             return Err(Error::BadOffset);
         }
         let window = self.window;
+        let within = self.within.map(|(p, radius)| (p, radius as f32, cos_lat(p.1)));
         let route_chunk = self.route_chunk;
+        let first_chunk = match (window, route) {
+            (PlaceWindow::Corridor { from_m, to_m, .. }, Some(route)) => {
+                route_chunk == 0 || route.chunk_start_m(route_chunk) <= self.scan_bounds(from_m, to_m).0
+            }
+            _ => false,
+        };
         let mut cursor = core::mem::take(&mut self.encounter);
         let scan_chunk = cursor.chunk.unwrap_or(route_chunk);
         let mut paused = false;
         let mut scan = |points: &[(i32, i32)]| -> Result<(), Error> {
-            let reach = match (window, route) {
-                (PlaceWindow::Corridor { half_width_m, .. }, Some(route)) if points.len() >= 2 => {
-                    Some(Reach::new(points, route.chunk_start_m(scan_chunk), half_width_m as f32))
+            let width = match window {
+                PlaceWindow::Corridor { half_width_m, .. } => {
+                    if entry.category_id == SETTLEMENT_CATEGORY_ID {
+                        self.settlement_width_m.unwrap_or(half_width_m)
+                    } else {
+                        half_width_m
+                    }
                 }
-                _ => None,
+                _ => 0,
             };
+            let mut reach = None;
             let mut record_error = None;
             let mut record = 0;
             reader
@@ -387,7 +487,7 @@ impl PlaceQuery {
                         return;
                     }
 
-                    if poi_category_of(subtype).is_none_or(|c| c.id() != entry.category_id) {
+                    if poi_directory_category_of(subtype) != Some(entry.category_id) {
                         record_error = Some(Error::BadOffset);
                         return;
                     }
@@ -396,7 +496,12 @@ impl PlaceQuery {
                         return;
                     };
                     let place = (lon, lat);
-                    let hours_ref = rd_u16(bytes, off + 34);
+                    if within.is_some_and(|(p, radius, cl)| ground_dist_m_cl(p, place, cl) > radius) {
+                        cursor.record += 1;
+                        return;
+                    }
+                    let hours_ref =
+                        if entry.category_id == SETTLEMENT_CATEGORY_ID { 0xffff } else { rd_u16(bytes, off + 34) };
                     let mut opening = None;
                     // Geometry decides first; only an admitted place pays for its hours and name.
                     let mut offer = |distance_m: u32, dist_along_m: u32, offset_m: i32| {
@@ -444,8 +549,11 @@ impl PlaceQuery {
                             }
                         }
                         PlaceWindow::Corridor { from_m, to_m, .. } => {
-                            let (Some(route), Some(reach)) = (route, &reach) else { return };
-                            let first_chunk = route_chunk == 0 || route.chunk_start_m(route_chunk) < from_m;
+                            let Some(route) = route else { return };
+                            let passes =
+                                chunk_passes(reader.place_cache, route, scan_chunk, width, points, place, &mut reach);
+                            let starts_inside = passes
+                                .map_or_else(|| reach.as_ref().unwrap().inside(points[0], place), |p| p.starts_inside);
                             let mut emit = |projection: PathProjection| {
                                 let along = projection.dist_along_m.max(0.0) as u32;
                                 if (from_m..=to_m).contains(&along) {
@@ -453,7 +561,10 @@ impl PlaceQuery {
                                 }
                             };
                             if cursor.backwards {
-                                let continues = reach.preceding_pass(place, &mut cursor.best);
+                                let continues = match passes {
+                                    Some(p) => p.preceding_pass(&mut cursor.best),
+                                    None => reach.as_ref().unwrap().preceding_pass(place, &mut cursor.best),
+                                };
                                 if continues && scan_chunk > 0 {
                                     cursor.chunk = Some(scan_chunk - 1);
                                 } else {
@@ -469,7 +580,7 @@ impl PlaceQuery {
                                 && first_chunk
                                 && route_chunk > 0
                                 && cursor.best.is_none()
-                                && reach.inside(points[0], place)
+                                && starts_inside
                             {
                                 cursor.chunk = Some(route_chunk - 1);
                                 cursor.backwards = true;
@@ -477,13 +588,17 @@ impl PlaceQuery {
                                 return;
                             }
                             let continuation = cursor.chunk.is_some();
-                            let pending = reach.pass_encounters(
-                                place,
-                                !first_chunk && !continuation && reach.inside(points[0], place),
-                                continuation,
-                                &mut cursor.best,
-                                &mut emit,
-                            );
+                            let skip = !first_chunk && !continuation && starts_inside;
+                            let pending = match passes {
+                                Some(p) => p.encounters(skip, continuation, &mut cursor.best, &mut emit),
+                                None => reach.as_ref().unwrap().pass_encounters(
+                                    place,
+                                    skip,
+                                    continuation,
+                                    &mut cursor.best,
+                                    &mut emit,
+                                ),
+                            };
                             if pending && scan_chunk + 1 < route.chunk_count() {
                                 cursor.chunk = Some(scan_chunk + 1);
                                 paused = true;
@@ -508,7 +623,7 @@ impl PlaceQuery {
         };
         let result = if let (PlaceWindow::Corridor { .. }, Some(path)) = (window, route) {
             let mut result = Err(Error::BadOffset);
-            path.visit_chunk_points(scan_chunk, &mut |points| {
+            visit_chunk_points(reader.place_cache, path, scan_chunk, &mut |points| {
                 if points.len() >= 2 {
                     result = scan(points);
                 }
@@ -547,6 +662,101 @@ impl PlaceQuery {
     }
 }
 
+/// The route-distance range that selects one canonical encounter. Midpoint ties select the earlier pass.
+#[derive(Debug, Clone, Copy)]
+pub struct EncounterRange {
+    pub along_m: u32,
+    pub from_m: u32,
+    pub to_m: u32,
+}
+impl EncounterRange {
+    pub fn contains(self, near_m: u32) -> bool {
+        (self.from_m..=self.to_m).contains(&near_m)
+    }
+}
+
+/// The canonical pass of a point closest along the route to `near_m`. This shares the corridor
+/// query's continuous-pass rule, so settlement membership distinguishes repeated visits.
+pub fn nearest_encounter(
+    route: &dyn RoutePath,
+    position: (i32, i32),
+    radius_m: u16,
+    near_m: u32,
+) -> Result<Option<EncounterRange>, Error> {
+    nearest_encounter_cached(None, route, position, radius_m, near_m)
+}
+
+fn nearest_encounter_cached(
+    cache: Option<&PlaceCache>,
+    route: &dyn RoutePath,
+    position: (i32, i32),
+    radius_m: u16,
+    near_m: u32,
+) -> Result<Option<EncounterRange>, Error> {
+    let area = crate::corridor::inflate_bbox(
+        BBox { min_lon: position.0, max_lon: position.0, min_lat: position.1, max_lat: position.1 },
+        radius_m as f32,
+    );
+    let mut best = None;
+    let mut before = [None; 2];
+    let mut after = [None; 2];
+    let mut emit = |p: PathProjection| {
+        let along = p.dist_along_m.max(0.0) as u32;
+        let earlier = along <= near_m;
+        let side = if earlier { &mut before } else { &mut after };
+        if side.contains(&Some(along)) {
+            return;
+        }
+        if let Some(i) = side.iter().position(|p| p.is_none_or(|p| if earlier { along > p } else { along < p })) {
+            if i == 0 {
+                side[1] = side[0];
+            }
+            side[i] = Some(along);
+        }
+    };
+    for k in 0..route.chunk_count() {
+        if !area.intersects(&route.chunk_bbox(k)) {
+            if let Some(p) = best.take() {
+                emit(p);
+            }
+            continue;
+        }
+        let mut read = false;
+        visit_chunk_points(cache, route, k, &mut |points| {
+            if points.len() < 2 {
+                return;
+            }
+            read = true;
+            let mut reach = None;
+            match chunk_passes(cache, route, k, radius_m, points, position, &mut reach) {
+                Some(p) => {
+                    p.encounters(false, false, &mut best, &mut emit);
+                }
+                None => {
+                    reach.as_ref().unwrap().pass_encounters(position, false, false, &mut best, &mut emit);
+                }
+            }
+        });
+        if !read {
+            return Err(Error::BadOffset);
+        }
+    }
+    if let Some(p) = best {
+        emit(p);
+    }
+    let nearest = before[0].into_iter().chain(after[0]).min_by_key(|&along| (along.abs_diff(near_m), along));
+    Ok(nearest.map(|along_m| {
+        let previous = if along_m <= near_m { before[1] } else { before[0] };
+        let next = if along_m <= near_m { after[0] } else { after[1] };
+        let midpoint = |a, b| ((u64::from(a) + u64::from(b)) / 2) as u32;
+        EncounterRange {
+            along_m,
+            from_m: previous.map_or(0, |p| midpoint(p, along_m).saturating_add(1)),
+            to_m: next.map_or(u32::MAX, |p| midpoint(along_m, p)),
+        }
+    }))
+}
+
 fn contains(outer: BBox, inner: BBox) -> bool {
     outer.min_lon <= inner.min_lon
         && outer.min_lat <= inner.min_lat
@@ -555,6 +765,17 @@ fn contains(outer: BBox, inner: BBox) -> bool {
 }
 
 impl Reader<'_> {
+    /// Resolve a settlement visit using the same optional work cache as the place query.
+    pub fn nearest_encounter(
+        &self,
+        route: &dyn RoutePath,
+        position: (i32, i32),
+        radius_m: u16,
+        near_m: u32,
+    ) -> Result<Option<EncounterRange>, Error> {
+        nearest_encounter_cached(self.place_cache, route, position, radius_m, near_m)
+    }
+
     /// Refresh only status. Membership, geometry, order and continuation keys stay frozen.
     pub fn refresh_place_hours(&self, page: &mut [CorridorPoi], local: Option<(u8, u16)>) -> Result<(), Error> {
         for hit in page {
@@ -609,17 +830,24 @@ fn nearer(best: &mut Option<PathProjection>, candidate: PathProjection) {
     }
 }
 
-/// One route chunk prepared for corridor tests. Integer pads reject a far place or segment before
-/// any float maths runs. The pads are conservative, so the float results do not change.
+struct ReachBlock {
+    bbox: BBox,
+    along: f32,
+}
+
+/// Group bounds skip distant segments without changing the cumulative distance or pass boundaries.
 struct Reach<'a> {
     points: &'a [(i32, i32)],
-    start_m: u32,
     limit: f32,
     cl: f32,
+    blocks: Vec<ReachBlock, 16>,
+    stride: usize,
     lon_pad: i32,
     lat_pad: i32,
     /// The points' box. A place beyond the pads around it is outside the limit everywhere.
     bbox: BBox,
+    /// Nearby records often hit the same segments. Tags permit any chunk length in bounded space.
+    scales: [Cell<(usize, f32)>; 32],
 }
 
 impl<'a> Reach<'a> {
@@ -630,7 +858,21 @@ impl<'a> Reach<'a> {
         }
         // The margin covers float rounding in the distance maths.
         let (lon_pad, lat_pad) = crate::corridor::pads(bbox, limit * 1.01);
-        Self { points, start_m, limit, cl: cos_lat(points[0].1), lon_pad, lat_pad, bbox }
+        let cl = cos_lat(points[0].1);
+        let stride = points.len().saturating_sub(1).div_ceil(16).max(1);
+        let mut blocks = Vec::new();
+        let mut along = start_m as f32;
+        for (i, segment) in points.windows(2).enumerate() {
+            if i % stride == 0 {
+                let a = segment[0];
+                let _ = blocks
+                    .push(ReachBlock { bbox: BBox { min_lon: a.0, max_lon: a.0, min_lat: a.1, max_lat: a.1 }, along });
+            }
+            grow(&mut blocks.last_mut().unwrap().bbox, segment[1]);
+            let (dx, dy) = delta_m(segment[0], segment[1], cl);
+            along += libm::sqrtf(dx * dx + dy * dy);
+        }
+        Self { points, limit, cl, blocks, stride, lon_pad, lat_pad, bbox, scales: [const { Cell::new((0, 0.0)) }; 32] }
     }
 
     fn near(&self, a: (i32, i32), b: (i32, i32), place: (i32, i32)) -> bool {
@@ -645,22 +887,41 @@ impl<'a> Reach<'a> {
     /// segment can come within the limit, its projection.
     fn projections(&self, place: (i32, i32), mut visit: impl FnMut(bool, bool, Option<PathProjection>)) {
         let close = self.near((self.bbox.min_lon, self.bbox.min_lat), (self.bbox.max_lon, self.bbox.max_lat), place);
-        let inside = |point| close && self.inside(point, place);
-        let mut along = self.start_m as f32;
-        let mut a_inside = inside(self.points[0]);
-        for segment in self.points.windows(2) {
-            let b_inside = inside(segment[1]);
-            let projection = if close && self.near(segment[0], segment[1], place) {
-                project_onto_chunk(segment, 0, place, f32::INFINITY).map(|mut projection| {
-                    projection.dist_along_m += along;
-                    projection
-                })
-            } else {
-                None
-            };
-            visit(a_inside, b_inside, projection.filter(|p| p.offset_m.abs() <= self.limit));
-            a_inside = b_inside;
-            if close {
+        if !close {
+            visit(false, false, None);
+            return;
+        }
+        let place_cl = cos_lat(place.1);
+        let inside = |point| self.near(point, point, place) && ground_dist_m_cl(point, place, place_cl) <= self.limit;
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            let bbox = block.bbox;
+            if !self.near((bbox.min_lon, bbox.min_lat), (bbox.max_lon, bbox.max_lat), place) {
+                visit(false, false, None);
+                continue;
+            }
+            let first = block_index * self.stride;
+            let end = (first + self.stride).min(self.points.len() - 1);
+            let mut along = block.along;
+            let mut a_inside = inside(self.points[first]);
+            for (j, segment) in self.points[first..=end].windows(2).enumerate() {
+                let i = first + j;
+                let b_inside = inside(segment[1]);
+                let projection = if self.near(segment[0], segment[1], place) {
+                    let slot = &self.scales[i % self.scales.len()];
+                    let (tag, mut cl) = slot.get();
+                    if tag != i + 1 {
+                        cl = cos_lat(segment[0].1).max(1e-3);
+                        slot.set((i + 1, cl));
+                    }
+                    project_with_scale(segment, 0, place, f32::INFINITY, cl).map(|mut projection| {
+                        projection.dist_along_m += along;
+                        projection
+                    })
+                } else {
+                    None
+                };
+                visit(a_inside, b_inside, projection.filter(|p| p.offset_m.abs() <= self.limit));
+                a_inside = b_inside;
                 let (dx, dy) = delta_m(segment[0], segment[1], self.cl);
                 along += libm::sqrtf(dx * dx + dy * dy);
             }
@@ -719,5 +980,41 @@ impl<'a> Reach<'a> {
             }
         });
         best.is_some()
+    }
+}
+
+fn chunk_passes<'a>(
+    cache: Option<&PlaceCache>,
+    route: &dyn RoutePath,
+    chunk: usize,
+    width: u16,
+    points: &'a [(i32, i32)],
+    position: (i32, i32),
+    reach: &mut Option<Reach<'a>>,
+) -> Option<cache::Passes> {
+    let cached = cache.zip(route.geometry_generation());
+    let key = cache::Key { position, chunk: chunk as u32, width };
+    if let Some((cache, generation)) = cached {
+        if let Some(passes) = cache.get(generation, key) {
+            return Some(passes);
+        }
+    }
+    let reach = reach.get_or_insert_with(|| Reach::new(points, route.chunk_start_m(chunk), width as f32));
+    let (cache, _) = cached?;
+    let passes = cache::Passes::new(reach, position)?;
+    cache.insert(key, passes);
+    Some(passes)
+}
+
+#[allow(clippy::type_complexity)]
+fn visit_chunk_points(
+    cache: Option<&PlaceCache>,
+    route: &dyn RoutePath,
+    chunk: usize,
+    visit: &mut dyn FnMut(&[(i32, i32)]),
+) {
+    match cache {
+        Some(cache) => cache.visit_points(route, chunk, visit),
+        None => route.visit_chunk_points(chunk, visit),
     }
 }

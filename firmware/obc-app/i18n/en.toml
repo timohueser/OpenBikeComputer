@@ -376,6 +376,9 @@ phone_failed = "Phone not removed"
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
 [poi_cat]
+restaurant = "Restaurant"
+cafe = "Cafe"
+fuel = "Fuel"
 water = "Water"
 campsite = "Campsite"
 accommodation = "Lodging"
@@ -757,6 +760,7 @@ power_hold = "HOLD SELECT"
 powering_off = "POWERING OFF..."
 
 [ahead]
+route_end = "Route end"
 next = "Next"
 ahead = "Ahead"
 no_route = "No active route"
@@ -780,7 +784,6 @@ custom = "Custom waypoint"
 access = "off route: access unknown"
 whole_climb = "whole climb"
 at = "at"
-partial = "Data incomplete"
 
 [route_cleanup]
 title = "STORAGE FULL"

@@ -610,6 +610,10 @@ impl<'a> RouteReader<'a> {
 /// Everything but [`visit_chunk_points`](obc_reader::RoutePath::visit_chunk_points) reads the
 /// resident chunk index and does no I/O.
 impl obc_reader::RoutePath for RouteReader<'_> {
+    fn geometry_generation(&self) -> Option<u32> {
+        Some(self.identity())
+    }
+
     #[inline]
     fn chunk_count(&self) -> usize {
         self.chunks().len()

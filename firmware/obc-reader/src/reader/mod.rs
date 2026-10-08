@@ -412,6 +412,7 @@ pub struct Reader<'a> {
     /// False only when construction legally re-entered an already borrowed cache. Reconstructing
     /// the cheap reader is the retry.
     cache_ready: bool,
+    place_cache: Option<&'a places::PlaceCache>,
 }
 
 impl<'a> Reader<'a> {
@@ -440,6 +441,21 @@ impl<'a> Reader<'a> {
             tables,
             cache,
             cache_ready,
+            place_cache: None,
+        }
+    }
+
+    /// Borrow disposable POI work while an opaque search screen owns its arena.
+    pub fn with_place_cache(mut self, cache: &'a places::PlaceCache) -> Self {
+        cache.adopt_map(self.tables.generation);
+        self.place_cache = Some(cache);
+        self
+    }
+
+    fn read_poi_bytes(&self, offset: u64, out: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        match self.place_cache {
+            Some(cache) => cache.read(self.src, offset, out),
+            None => self.src.read_at(offset, out),
         }
     }
 
@@ -486,11 +502,15 @@ impl<'a> Reader<'a> {
         }
         let off = index.index_offset() + idx as u64 * 4;
         let mut b = [0u8; 4];
-        self.cache
-            .try_borrow_mut()
-            .map_err(MapReadError::Cache)?
-            .index_read(self.src, off, &mut b)
-            .map_err(MapReadError::Source)?;
+        if let Some(cache) = self.place_cache {
+            cache.read(self.src, off, &mut b).map_err(MapReadError::Source)?;
+        } else {
+            self.cache
+                .try_borrow_mut()
+                .map_err(MapReadError::Cache)?
+                .index_read(self.src, off, &mut b)
+                .map_err(MapReadError::Source)?;
+        }
         Ok(u32::from_le_bytes(b))
     }
 

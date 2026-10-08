@@ -216,7 +216,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 36;
+    const ENTRIES: usize = 37;
 
     #[used]
     #[no_mangle]
@@ -230,12 +230,12 @@ mod resource_report {
         entry("map_tables", core::mem::size_of::<MapTables>()),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
-        // `arena_total` is the only resident one of these four: it is the `max` of the three arms, not
-        // their sum. The arms are reported beside it so a reader can see which one sets the total.
+        // Only arena_total is resident: the arms share its storage.
         entry("arena_total", arena::ARENA_BYTES),
         entry("arena_render", arena::RENDER_ARM_BYTES),
         entry("arena_nav", arena::NAV_ARM_BYTES),
         entry("arena_usb", arena::USB_ARM_BYTES),
+        entry("arena_places", core::mem::size_of::<obc_reader::reader::places::PlaceCache>()),
         TERRAIN_ENTRIES[0],
         TERRAIN_ENTRIES[1],
         entry("stack_reserve", STACK_RESERVE),

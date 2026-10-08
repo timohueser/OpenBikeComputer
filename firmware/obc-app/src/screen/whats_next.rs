@@ -1,35 +1,44 @@
-//! What comes next on the frozen accepted journey.
-use super::{palette::*, Ctx, PoiDetailScreen, Render, Screen, Transition};
+//! The route as a service line, with distance on the left and places on the right.
+use super::{palette::*, vocab::spinner::Spinner, Ctx, PoiDetailScreen, Render, Screen, ScreenTick, Transition};
 use crate::{
-    whats_next::{Item, Page, Row},
+    whats_next::{AheadState, Item, Page, Row, ROWS, SERVICES},
     Gesture, Msg,
 };
 use core::fmt::Write;
 use embedded_graphics::prelude::Point;
-use obc_reader::{hours::OpeningStatus, reader::places::QueryProgress, PoiCategory};
+use obc_formats::obcm::SettlementClass;
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
+    text::{text_width, Font, TextAlign},
     Surface,
 };
-use obc_route::window::AheadRange;
+
+const TOP: i32 = 42;
+const LINE_X: i32 = 48;
+const NAME_X: i32 = 62;
+const NAME_W: i32 = 174;
 
 #[derive(Debug, Default)]
-pub struct WhatsNextScreen;
+pub struct WhatsNextScreen {
+    spin: Spinner,
+}
 impl WhatsNextScreen {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+    pub fn tick_timers(&mut self, now_ms: u32, w: i32, h: i32, pending: bool) -> ScreenTick {
+        if pending {
+            self.spin.tick_at_cadence(now_ms, w, h, 166)
+        } else {
+            self.spin = Spinner::default();
+            ScreenTick::idle()
+        }
     }
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let a = &mut cx.ahead;
         match (a.page, g) {
             (_, Gesture::Hold) => a.refresh(cx.navigator.route_state().progress_m),
-            (Page::Overview, Gesture::Step(n)) if n != 0 => {
-                a.range(if n < 0 { AheadRange::FiveKm } else { AheadRange::TenKm })
-            }
-            (Page::Overview, Gesture::Press) => a.explore(),
-            (Page::Overview, Gesture::Back) => return Transition::Pop,
-            (Page::Timeline, Gesture::Back) => a.back(),
+            (Page::Timeline, Gesture::Back) => return Transition::Pop,
             (Page::Detail, Gesture::Back) => a.page = Page::Timeline,
             (Page::Timeline, Gesture::Step(n)) if !a.pending() && n != 0 => {
                 if n > 0 && a.selected + 1 >= a.rows.len() {
@@ -46,399 +55,324 @@ impl WhatsNextScreen {
             }
             (Page::Timeline, Gesture::Press) if !a.pending() => {
                 if let Some(row) = a.rows.get(a.selected) {
-                    if let Item::Place(i) = row.item {
-                        if let Some(p) = cx.corridor.get(i as usize).filter(|p| p.poi.opening != OpeningStatus::Closed)
-                        {
-                            return Transition::Push(Screen::PoiDetail(
-                                PoiDetailScreen::new(p.poi.clone()).off_route(p.offset_m),
-                            ));
-                        }
-                    } else {
-                        a.page = Page::Detail;
+                    if let Item::Place(p) = &row.item {
+                        let mut detail = p.poi.clone();
+                        detail.distance_m = row.key.distance().saturating_sub(cx.navigator.route_state().progress_m);
+                        return Transition::Push(Screen::PoiDetail(PoiDetailScreen::new(detail).off_route(p.offset_m)));
                     }
+                    a.open_detail();
+                }
+            }
+            (Page::Detail, Gesture::Step(n)) if !a.pending() && n != 0 => {
+                if n > 0 && a.detail_selected + 1 >= a.detail_rows.len() {
+                    if a.detail_more {
+                        a.detail_page(false);
+                    }
+                } else if n < 0 && a.detail_selected == 0 {
+                    if a.detail_previous {
+                        a.detail_page(true);
+                    }
+                } else {
+                    a.detail_selected =
+                        (a.detail_selected as i32 + n).clamp(0, a.detail_rows.len().saturating_sub(1) as i32) as usize;
+                }
+            }
+            (Page::Detail, Gesture::Press) if !a.pending() => {
+                if let Some(p) = a.detail_rows.get(a.detail_selected) {
+                    let mut poi = p.poi.clone();
+                    poi.distance_m = p.dist_along_m.saturating_sub(cx.navigator.route_state().progress_m);
+                    return Transition::Push(Screen::PoiDetail(PoiDetailScreen::new(poi).off_route(p.offset_m)));
                 }
             }
             _ => {}
+        }
+        if !a.pending() && !a.rows.is_empty() {
+            a.scroll = scroll_for(a);
         }
         Transition::None
     }
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         cv.clear(PARCHMENT);
         let a = rx.ahead;
-        let caption = if a.page == Page::Overview { rx.t(Msg::AheadNext) } else { rx.t(Msg::AheadAhead) };
-        let range = distance(a.range.meters(), rx.settings.units);
-        let mut title = heapless::String::<24>::new();
-        // Timeline status markers start at x=202; keep an eight-pixel gap before them.
-        let budget = if a.page == Page::Timeline { 182 } else { rx.w - 24 };
-        let title_width = obc_render::text::text_width(caption, Font::Body)
-            + Font::Body.char_width()
-            + obc_render::text::text_width(&range, Font::Body);
-        let font = if title_width as i32 <= budget {
-            let _ = write!(title, "{caption} {range}");
-            Font::Body
-        } else {
-            // One cell of the budget is the space between the caption and the range.
-            let room =
-                budget - obc_render::text::text_width(&range, Font::Label) as i32 - Font::Label.char_width() as i32;
-            let caption = super::vocab::marquee::fit(caption, room, Font::Label);
-            let _ = write!(title, "{caption} {range}");
-            Font::Label
-        };
-        cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
-        label(cv, &title, 12, if font == Font::Body { 6 } else { 8 }, font, BAR_TEXT);
         if a.window.is_none() {
-            empty_message(
+            message(cv, if a.stale { rx.t(Msg::AheadChanged) } else { rx.t(Msg::AheadNoRoute) });
+        } else if a.pending() {
+            self.spin.draw_needle(cv, rx.w, rx.h);
+            super::vocab::chrome::wrapped(
                 cv,
-                if a.stale {
-                    rx.t(Msg::AheadChanged)
-                } else if matches!(a.status, QueryProgress::Failed(_)) {
-                    rx.t(Msg::AheadReadFailed)
-                } else {
-                    rx.t(Msg::AheadNoRoute)
-                },
-                rx.w,
+                rx.t(Msg::AheadLoading),
+                rx.w / 2,
+                rx.h * 72 / 100,
+                rx.w - 24,
+                Font::Label,
+                INK,
             );
-            return;
+        } else if a.rows.is_empty() {
+            message(cv, rx.t(Msg::AheadReadFailed));
+        } else if a.page == Page::Timeline {
+            timeline(cv, rx);
+        } else {
+            detail(cv, rx);
         }
-        match a.page {
-            Page::Overview => overview(cv, rx),
-            Page::Timeline => timeline(cv, rx),
-            Page::Detail => detail(cv, rx),
+        cv.fill(rect(0, 0, rx.w, TOP), PARCHMENT);
+        cv.round(rect(4, 4, rx.w - 8, 34), 6, WOOD);
+        if a.page == Page::Detail {
+            let name = a.rows.get(a.selected).map_or(rx.t(Msg::AheadAhead), |r| row_name(r, rx));
+            fitted(cv, name, 12, 6, rx.w - 24, BAR_TEXT);
+        } else {
+            label(cv, rx.t(Msg::AheadAhead), 12, 6, Font::Body, BAR_TEXT);
+            if let Some(window) = a.window {
+                let dist = distance(window.end_m.saturating_sub(rx.navigation.progress_m), rx.settings.units);
+                cv.text(&dist, Point::new(228, 8), Font::Label, TextAlign::Right, BAR_TEXT);
+            }
         }
     }
 }
 fn label(cv: &mut impl Surface, text: &str, x: i32, y: i32, font: Font, color: u16) {
     cv.text(text, Point::new(x, y), font, TextAlign::Left, color);
 }
-fn empty_message(cv: &mut impl Surface, text: &str, width: i32) {
-    if obc_render::text::text_width(text, Font::Body) as i32 > width - 28 {
-        super::vocab::chrome::wrapped(cv, text, width / 2, 108, width - 28, Font::Body, INK);
-    } else {
-        label(cv, text, 14, 108, Font::Body, INK);
-    }
+fn message(cv: &mut impl Surface, text: &str) {
+    super::vocab::chrome::wrapped(cv, text, 120, 110, 212, Font::Body, INK);
 }
-fn distance(m: u32, units: crate::settings::Units) -> heapless::String<24> {
+pub(crate) fn distance(m: u32, units: crate::settings::Units) -> heapless::String<24> {
     let mut s = heapless::String::new();
     super::vocab::fmt::write_distance_coarse(&mut s, "", m, units);
     s
 }
-fn icon(cv: &mut impl Surface, category: Option<PoiCategory>, x: i32, y: i32, bg: u16) {
-    let ink = if bg == AMBER { ON_ACCENT } else { INK };
-    if let Some(c) = category {
-        super::poi_menu::draw_category_icon(cv, c, Point::new(x, y), ink, bg);
+fn font_for(name: &str, width: i32) -> Font {
+    if text_width(name, Font::Body) as i32 <= width {
+        Font::Body
     } else {
-        cv.triangle(Point::new(x, y - 6), Point::new(x - 5, y), Point::new(x + 5, y), ink);
-        cv.triangle(Point::new(x, y + 6), Point::new(x - 5, y), Point::new(x + 5, y), ink);
+        Font::Label
     }
 }
-fn overview(cv: &mut impl Surface, rx: &Render) {
-    let a = rx.ahead;
-    let w = a.window.unwrap();
-    if a.totals.is_none() && matches!(a.status, QueryProgress::Failed(_)) {
-        label(cv, rx.t(Msg::AheadReadFailed), 14, 108, Font::Body, INK);
-        return;
-    }
-    cv.triangle(Point::new(217, 18), Point::new(227, 18), Point::new(222, 11), BAR_TEXT);
-    cv.triangle(Point::new(217, 25), Point::new(227, 25), Point::new(222, 32), BAR_TEXT);
-    for (x, down) in [(12, false), (130, true)] {
-        let mut s = heapless::String::<24>::new();
-        if let Some((up, dn)) = a.totals {
-            let _ = write!(
-                s,
-                "{}{}{}",
-                if down { "-" } else { "+" },
-                rx.settings.units.elev((if down { dn } else { up }) as f32) as u32,
-                rx.settings.units.elev_label()
-            );
-        } else {
-            let _ = write!(s, "? {}", rx.settings.units.elev_label());
-        }
-        label(cv, &s, x, 44, Font::Body, INK);
-    }
-    if let Some(c) = a.climb {
-        let mut s = heapless::String::<32>::new();
-        if c.start_m <= w.start_m {
-            let _ = s.push_str(rx.t(Msg::AheadOnClimb));
-        } else {
-            let _ = write!(s, "{} {}", rx.t(Msg::AheadClimbIn), distance(c.start_m - w.start_m, rx.settings.units));
-        }
-        label(cv, &s, 12, 76, Font::Body, INK);
-        s.clear();
-        let _ = write!(
-            s,
-            "{} {} {}%",
-            distance(c.end_m - c.start_m, rx.settings.units),
-            rx.t(Msg::AheadAt),
-            c.avg_grade_pct
-        );
-        label(cv, &s, 12, 106, Font::Label, INK);
-        s.clear();
-        let _ = write!(s, "+{}{}", rx.settings.units.elev(c.gain_m as f32) as u32, rx.settings.units.elev_label());
-        label(cv, &s, 166, 106, Font::Label, INK);
-    } else {
-        label(cv, rx.t(Msg::AheadNoClimb), 12, 76, Font::Body, INK);
-    }
-    if let Some(p) = rx.profile {
-        let total = rx.navigation.route_total_m.max(1) as f32;
-        let f = |x: u32| (w.start_m as f32 + (w.end_m - w.start_m) as f32 * x as f32 / 215.0) / total;
-        let (mut low, mut high) = (i16::MAX, i16::MIN);
-        for x in 0..216 {
-            let (lo, hi) = p.sample(0, f(x));
-            if lo <= hi {
-                low = low.min(lo);
-                high = high.max(hi);
-            }
-        }
-        let span = (i32::from(high) - i32::from(low)).max(100) as f32;
-        for x in 0..216 {
-            let (lo, hi) = p.sample(0, f(x));
-            if lo > hi {
-                continue;
-            }
-            let y = 194 - ((i32::from(hi) - i32::from(low)) as f32 * 65.0 / span) as i32;
-            let Some(grade) = p.grade_at(f(x)) else {
-                continue;
-            };
-            let color = super::climb::grade_color(grade);
-            cv.vline(12 + x as i32, y, (195 - y).max(1), 1, color);
-        }
-        cv.hline(12, 195, 216, RULE);
-        for d in
-            [a.water, a.next_waypoint.as_ref().map(|w| w.dist_along_m)].into_iter().flatten().filter(|d| w.contains(*d))
-        {
-            let x = 12 + (216u64 * (d - w.start_m) as u64 / (w.end_m - w.start_m).max(1) as u64) as i32;
-            cv.vline(x, 186, 16, 1, WOOD);
-        }
-    }
-    if a.totals.is_none() {
-        label(cv, rx.t(Msg::AheadIncomplete), 12, 201, Font::Label, SUBTEXT);
-    }
-    if let Some(wpt) = &a.next_waypoint {
-        icon(cv, wpt.category, 20, 240, PARCHMENT);
-        let distance = distance(wpt.dist_along_m.saturating_sub(w.start_m), rx.settings.units);
-        let budget = 228 - obc_render::text::text_width(&distance, Font::Label) as i32 - 8 - 38;
-        let name = super::vocab::marquee::fit(
-            if wpt.name.is_empty() { rx.t(Msg::AheadWaypoint) } else { &wpt.name },
-            budget,
-            Font::Body,
-        );
-        label(cv, &name, 38, 226, Font::Body, INK);
-        cv.text(&distance, Point::new(228, 228), Font::Label, TextAlign::Right, INK);
-    } else {
-        label(cv, rx.t(Msg::AheadNoWaypoint), 12, 226, Font::Label, SUBTEXT);
-    }
-    for (category, x, next) in [(PoiCategory::Water, 18, a.water), (PoiCategory::Resupply, 133, a.shop)] {
-        icon(cv, Some(category), x, 268, PARCHMENT);
-        let d = next.map(|d| distance(d.saturating_sub(w.start_m), rx.settings.units));
-        let text = d.as_deref().unwrap_or(match a.status {
-            QueryProgress::Ready { more: false, coverage_complete: true } => rx.t(Msg::AheadNone),
-            QueryProgress::Pending => "...",
-            _ => "?",
-        });
-        label(cv, text, x + 16, 256, Font::Label, INK);
-    }
-    cv.round(rect(8, 284, 224, 32), 6, AMBER);
-    cv.text(rx.t(Msg::AheadExplore), Point::new(120, 286), Font::Body, TextAlign::Center, ON_ACCENT);
+fn fitted(cv: &mut impl Surface, name: &str, x: i32, y: i32, width: i32, ink: u16) {
+    let font = font_for(name, width);
+    let name = super::vocab::marquee::fit(name, width, font);
+    label(cv, &name, x, y + if font == Font::Label { 2 } else { 0 }, font, ink);
 }
 fn row_name<'a>(row: &'a Row, rx: &'a Render) -> &'a str {
     match &row.item {
-        Item::Waypoint(w) => {
-            if w.name.is_empty() {
-                rx.t(Msg::AheadWaypoint)
-            } else {
-                &w.name
-            }
-        }
-        Item::Climb(_) => rx.t(Msg::AheadClimb),
-        Item::Place(i) => rx
-            .corridor
-            .get(*i as usize)
-            .map_or(rx.t(Msg::AheadUnavailable), |p| super::poi_display::poi_row_name(&p.poi)),
+        Item::End => rx.t(Msg::AheadRouteEnd),
+        Item::Place(p) if p.poi.name.is_empty() => super::poi_display::poi_row_name(&p.poi),
+        Item::Waypoint(w) if w.name.is_empty() => rx.t(Msg::AheadWaypoint),
+        _ => row.name(),
     }
+}
+fn row_height(row: &Row) -> i32 {
+    if matches!(row.item, Item::Place(_)) || row.services.is_empty() {
+        34
+    } else {
+        62
+    }
+}
+fn positions(a: &AheadState) -> ([i32; ROWS], i32) {
+    let mut positions = [0; ROWS];
+    let mut y = if a.has_previous() { 0 } else { 18 };
+    let mut last_d = a.window.map_or(0, |w| w.start_m);
+    for (i, row) in a.rows.iter().enumerate() {
+        if (i > 0 || !a.has_previous()) && row.key.distance().saturating_sub(last_d) >= 7_000 {
+            y += 18;
+        }
+        positions[i] = y;
+        y += row_height(row);
+        last_d = row.key.distance();
+    }
+    (positions, y)
+}
+fn scroll_for(a: &AheadState) -> i32 {
+    let (ys, total) = positions(a);
+    let selected = a.selected.min(a.rows.len() - 1);
+    let bottom = ys[selected] + row_height(&a.rows[selected]);
+    let height = 320 - TOP;
+    (if bottom - a.scroll > height {
+        bottom - height
+    } else if ys[selected] < a.scroll {
+        ys[selected]
+    } else {
+        a.scroll
+    })
+    .clamp(0, (total - height).max(0))
 }
 fn timeline(cv: &mut impl Surface, rx: &Render) {
     let a = rx.ahead;
-    let scope = rx.up_ahead_scope();
-    if scope.filter != obc_reader::PoiCategorySet::ALL || scope.source != crate::settings::UpAheadSource::Both {
-        cv.triangle(Point::new(202, 13), Point::new(218, 13), Point::new(210, 22), AMBER);
-        cv.fill(rect(208, 20, 4, 8), AMBER);
+    let (ys, _) = positions(a);
+    let selected = a.selected.min(a.rows.len() - 1);
+    let scroll = scroll_for(a);
+    let sy = |i: usize| TOP + ys[i] - scroll;
+    cv.round(rect(4, sy(selected), 232, row_height(&a.rows[selected]) - 2), 5, AMBER);
+    let first = sy(0) + 15;
+    let end = sy(a.rows.len() - 1) + 15;
+    let start_y = if a.has_previous() { TOP } else { (first - 20).max(TOP) };
+    let end_y = if a.has_next() { 320 } else { end };
+    cv.vline(LINE_X - 4, start_y, end_y - start_y + 1, 9, INK);
+    let mut colors = [RULE; 320];
+    for y in start_y.max(TOP)..end_y.min(319) + 1 {
+        let i = (0..a.rows.len()).find(|&i| sy(i) + 15 >= y).unwrap_or(a.rows.len() - 1);
+        let (d0, y0) =
+            if i == 0 { (a.window.unwrap().start_m, start_y) } else { (a.rows[i - 1].key.distance(), sy(i - 1) + 15) };
+        let d1 = a.rows[i].key.distance();
+        let y1 = sy(i) + 15;
+        let d = d0 + ((u64::from(d1.saturating_sub(d0)) * (y - y0).max(0) as u64) / (y1 - y0).max(1) as u64) as u32;
+        let km = d / 1_000 * 1_000 + 500;
+        colors[y as usize] = rx
+            .profile
+            .and_then(|p| {
+                let total = a.window.unwrap().end_m.max(1);
+                let start = km - 500;
+                let length = total.saturating_sub(start).clamp(1, 1_000);
+                let mut sum = 0;
+                for sample in 0..8 {
+                    sum += p.grade_at((start + length * (2 * sample + 1) / 16) as f32 / total as f32)?;
+                }
+                Some(libm::roundf(sum as f32 / 8.0) as i32)
+            })
+            .map_or(RULE, super::climb::grade_color);
     }
-    if !matches!(a.status, QueryProgress::Ready { coverage_complete: true, .. }) {
-        cv.text("?", Point::new(228, 8), Font::Label, TextAlign::Right, BAR_TEXT);
+    merge_short_runs(&mut colors[start_y.max(TOP) as usize..(end_y.min(319) + 1).max(start_y.max(TOP)) as usize]);
+    for y in start_y.max(TOP)..end_y.min(319) + 1 {
+        cv.hline(LINE_X - 3, y, 7, colors[y as usize]);
     }
-    if a.pending() {
-        empty_message(cv, rx.t(Msg::AheadLoading), rx.w);
-        return;
-    }
-    if a.rows.is_empty() {
-        let text = match a.status {
-            QueryProgress::Ready { coverage_complete: true, .. } => rx.t(Msg::AheadNoMatches),
-            QueryProgress::Failed(_) => rx.t(Msg::AheadReadFailed),
-            QueryProgress::Ready { coverage_complete: false, .. } => rx.t(Msg::AheadPartial),
-            _ => rx.t(Msg::AheadMapUnavailable),
-        };
-        empty_message(cv, text, rx.w);
-        return;
+    if !a.has_previous() && first - 20 >= TOP {
+        cv.triangle(
+            Point::new(LINE_X - 6, first - 22),
+            Point::new(LINE_X + 6, first - 22),
+            Point::new(LINE_X, first - 10),
+            WARNING,
+        );
     }
     for (i, row) in a.rows.iter().enumerate() {
-        let y = 44 + i as i32 * 67;
-        let selected = i == a.selected;
-        let bg = if selected { AMBER } else { PARCHMENT };
-        let ink = if selected { ON_ACCENT } else { INK };
-        let subtext = if selected { SUBTEXT_ON_ACCENT } else { SUBTEXT };
-        if selected {
-            cv.round(rect(8, y, 224, 63), 6, bg);
+        let y = sy(i);
+        if y + row_height(row) <= TOP || y >= 320 {
+            continue;
         }
-        let category = match &row.item {
-            Item::Waypoint(w) => w.category,
-            Item::Place(i) => {
-                rx.corridor.get(*i as usize).and_then(|p| obc_formats::obcm::poi_category_of(p.poi.subtype))
-            }
-            Item::Climb(_) => None,
+        let chosen = i == selected;
+        let bg = if chosen { AMBER } else { PARCHMENT };
+        let ink = if chosen { ON_ACCENT } else { INK };
+        let mut km = heapless::String::<16>::new();
+        let m = row.key.distance().saturating_sub(rx.navigation.progress_m);
+        let amount = match rx.settings.units {
+            crate::settings::Units::Metric => m as f32 / 1000.0,
+            crate::settings::Units::Imperial => m as f32 / 1609.344,
         };
-        icon(cv, category, 23, y + 19, bg);
-        let name_row = selected.then(|| rect(40, y + 3, 184, Font::Body.line_height() as i32));
-        let name = rx.marquee.fit(row_name(row, rx), 184, Font::Body, name_row);
-        label(cv, &name, 40, y + 3, Font::Body, ink);
-        let passed = row.key.distance() < rx.navigation.progress_m;
-        if passed {
-            label(cv, rx.t(Msg::AheadPassed), 12, y + 33, Font::Label, subtext);
+        if amount < 1.0 && amount > 0.0 {
+            let _ = write!(km, "{amount:.1}");
         } else {
-            label(
-                cv,
-                &distance(row.key.distance().saturating_sub(a.window.unwrap().start_m), rx.settings.units),
-                12,
-                y + 33,
-                Font::Label,
-                ink,
-            );
+            let _ = write!(km, "{}", libm::roundf(amount) as u32);
         }
-        let offset = match &row.item {
-            Item::Waypoint(w) => w.lateral_offset_m as i32,
-            Item::Place(i) => rx.corridor.get(*i as usize).map_or(0, |p| p.offset_m),
-            Item::Climb(_) => 0,
-        };
-        let offset = (offset.abs() > super::OFF_ROUTE_HINT_M)
-            .then(|| (distance(offset.unsigned_abs(), rx.settings.units), offset > 0));
-        if let Some((d, right)) = &offset {
-            let at = Point::new(offset_left(d), y + 33 + Font::Label.cap_mid() as i32);
-            super::poi_display::draw_side_arrow(cv, at, *right, ink);
-            cv.text(d, Point::new(FIGURE_RIGHT, y + 33), Font::Label, TextAlign::Right, ink);
-        }
-        // A climb under 5 m is noise, an unknown climb shows nothing, and the climb to a passed
-        // place means nothing.
-        if let Some(m) = row.ascent_m.filter(|m| *m >= 5 && !passed) {
-            let climb = super::vocab::fmt::elevation_short(Some(m), rx.settings.units);
-            if climb_fits(&climb, offset.as_ref().map(|(d, _)| d.as_str())) {
-                super::poi_display::draw_climb_figure(cv, CLIMB_X, y + 33, &climb, ink);
+        cv.text(&km, Point::new(35, y + 4), Font::Caption, TextAlign::Right, ink);
+        marker(cv, row, Point::new(LINE_X, y + 15), ink, bg);
+        fitted(cv, row_name(row, rx), NAME_X, y + 1, NAME_W, ink);
+        if !matches!(row.item, Item::Place(_)) {
+            let mut x = NAME_X + 10;
+            for cat in SERVICES.into_iter().filter(|c| row.services.contains(*c)) {
+                super::poi_menu::draw_category_icon(cv, cat, Point::new(x, y + 44), ink, bg);
+                x += 24;
             }
         }
     }
-    if a.has_next() {
-        cv.triangle(Point::new(234, 298), Point::new(228, 290), Point::new(239, 290), WOOD);
+}
+fn merge_short_runs(colors: &mut [u16]) {
+    let mut i = 0;
+    while i < colors.len() {
+        let mut end = i + 1;
+        while end < colors.len() && colors[end] == colors[i] {
+            end += 1;
+        }
+        if end - i < 5 && (i > 0 || end < colors.len()) {
+            let color = if i > 0 { colors[i - 1] } else { colors[end] };
+            colors[i..end].fill(color);
+        }
+        i = end;
     }
 }
-/// The climb figure's column on line 2 of a timeline row. It is 6 px clear of the widest imperial
-/// distance, and a 3-digit metric climb is 6 px clear of a 3-digit offset.
-const CLIMB_X: i32 = 90;
-/// The right edge of the offset figure on line 2.
-const FIGURE_RIGHT: i32 = 224;
-
-/// The left edge of the offset figure, which is its side arrow.
-fn offset_left(offset: &str) -> i32 {
-    use super::poi_display::{ARROW_GAP, ARROW_W};
-    FIGURE_RIGHT - obc_render::text::text_width(offset, Font::Label) as i32 - ARROW_GAP - ARROW_W
+fn marker(cv: &mut impl Surface, row: &Row, p: Point, ink: u16, bg: u16) {
+    match &row.item {
+        Item::Settlement(_, SettlementClass::Hamlet) => cv.fill(rect(p.x - 8, p.y - 2, 17, 5), ink),
+        Item::Settlement(_, class) => {
+            let r = if matches!(class, SettlementClass::City | SettlementClass::Town) { 9 } else { 7 };
+            cv.disc(p, r, ink);
+            cv.disc(p, r - 2, bg);
+        }
+        Item::Waypoint(_) => {
+            cv.triangle(Point::new(p.x, p.y - 9), Point::new(p.x - 9, p.y), Point::new(p.x + 9, p.y), ink);
+            cv.triangle(Point::new(p.x, p.y + 9), Point::new(p.x - 9, p.y), Point::new(p.x + 9, p.y), ink);
+            cv.triangle(Point::new(p.x, p.y - 5), Point::new(p.x - 5, p.y), Point::new(p.x + 5, p.y), bg);
+            cv.triangle(Point::new(p.x, p.y + 5), Point::new(p.x - 5, p.y), Point::new(p.x + 5, p.y), bg);
+        }
+        Item::End => {
+            cv.fill(rect(p.x - 9, p.y - 4, 19, 9), ink);
+            cv.fill(rect(p.x - 7, p.y - 2, 15, 5), bg);
+        }
+        Item::Place(s) => {
+            cv.disc(p, 12, bg);
+            if let Some(cat) = obc_formats::obcm::poi_category_of(s.poi.subtype) {
+                super::poi_menu::draw_category_icon(cv, cat, p, ink, bg);
+            }
+        }
+    }
 }
-
-/// Whether the climb figure clears the offset. When both do not fit, the offset stays, because it
-/// warns that the place is not on the route.
-fn climb_fits(climb: &str, offset: Option<&str>) -> bool {
-    let climb_right =
-        CLIMB_X + super::poi_display::CLIMB_TEXT_DX + obc_render::text::text_width(climb, Font::Label) as i32;
-    offset.is_none_or(|o| climb_right + 6 <= offset_left(o))
-}
-
 fn detail(cv: &mut impl Surface, rx: &Render) {
     let a = rx.ahead;
     let Some(row) = a.rows.get(a.selected) else {
         return;
     };
-    label(cv, row_name(row, rx), 12, 50, Font::Body, INK);
-    label(
-        cv,
-        &distance(row.key.distance().saturating_sub(rx.navigation.progress_m), rx.settings.units),
-        14,
-        88,
-        Font::Body,
-        INK,
-    );
-    match &row.item {
-        Item::Climb(c) => {
-            let mut s = heapless::String::<40>::new();
-            let _ = write!(
-                s,
-                "{} {} {}%",
-                distance(c.end_m - c.start_m, rx.settings.units),
-                rx.t(Msg::AheadAt),
-                c.avg_grade_pct
-            );
-            label(cv, &s, 14, 126, Font::Body, INK);
-            s.clear();
-            let _ = write!(
-                s,
-                "+{}{} ({})",
-                rx.settings.units.elev(c.gain_m as f32) as u32,
-                rx.settings.units.elev_label(),
-                rx.t(Msg::AheadWholeClimb)
-            );
-            label(cv, &s, 14, 162, Font::Label, INK);
-        }
-        Item::Waypoint(w) => {
-            label(cv, rx.t(Msg::AheadCustom), 14, 126, Font::Label, SUBTEXT);
-            if w.lateral_offset_m != 0 {
-                label(
-                    cv,
-                    &distance(w.lateral_offset_m.unsigned_abs() as u32, rx.settings.units),
-                    14,
-                    164,
-                    Font::Label,
-                    INK,
-                );
-                label(cv, rx.t(Msg::AheadAccess), 14, 200, Font::Label, SUBTEXT);
-            }
-        }
-        Item::Place(_) => {}
+    let dist = distance(row.key.distance().saturating_sub(rx.navigation.progress_m), rx.settings.units);
+    label(cv, &dist, 12, 44, Font::Body, INK);
+    if let Some(up) = row.facts.and_then(|f| f.ascent_m).map(|up| {
+        up.saturating_sub(rx.profile.map_or(0, |p| {
+            p.ascent_between_m(a.window.unwrap().start_m, rx.navigation.progress_m, a.window.unwrap().end_m)
+        }))
+    }) {
+        let climb = super::vocab::fmt::elevation_short(Some(up), rx.settings.units);
+        super::poi_display::draw_climb_figure(cv, 122, 46, &climb, INK);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::settings::{Language, Units};
-    use obc_render::text::text_width;
-
-    /// The widest string `format` gives for any distance up to 50 km.
-    fn widest(format: impl Fn(u32) -> heapless::String<24>) -> heapless::String<24> {
-        (0..50_000).step_by(3).map(format).max_by_key(|s| text_width(s, Font::Label)).unwrap()
+    if let Some(ele) = row.facts.and_then(|f| f.elevation_m) {
+        let mut text = heapless::String::<32>::new();
+        let _ = write!(text, "{}{}", rx.settings.units.elev(ele as f32) as i32, rx.settings.units.elev_label());
+        label(cv, &text, 12, 76, Font::Label, SUBTEXT);
     }
-
-    /// Line 2 never overprints in any unit or language: the distance or the "Passed" caption ends
-    /// before the climb and the widest offset, and the climb shows only where it clears the offset.
-    #[test]
-    fn line_two_figures_clear_each_other_in_every_unit_and_language() {
-        for units in [Units::Metric, Units::Imperial] {
-            let dist = widest(|m| distance(m, units));
-            let offset = offset_left(&dist);
-            let dist_right = 12 + text_width(&dist, Font::Label) as i32;
-            assert!(dist_right + 6 <= CLIMB_X, "{units:?}: {dist}");
-            for language in Language::ALL {
-                let passed = crate::i18n::t(Msg::AheadPassed, language);
-                assert!(12 + text_width(passed, Font::Label) as i32 + 6 <= offset, "{language:?}: {passed}");
-            }
-            let climb = super::super::vocab::fmt::elevation_short(Some(2_000), units);
-            assert!(climb_fits(&climb, None), "{units:?}: {climb} alone");
-            assert!(!climb_fits(&climb, Some(&dist)), "{units:?}: {climb} beside {dist} must give way");
+    let mut y = 108;
+    cv.hline(8, y, 224, RULE);
+    y += 4;
+    if a.detail_rows.is_empty() {
+        label(
+            cv,
+            if matches!(row.item, Item::Waypoint(_)) {
+                rx.t(Msg::AheadCustom)
+            } else if matches!(row.item, Item::End) {
+                &a.route_name
+            } else {
+                rx.t(Msg::AheadNoMatches)
+            },
+            12,
+            y + 12,
+            Font::Label,
+            SUBTEXT,
+        );
+        return;
+    }
+    let slots = ((310 - y) / 52).max(1) as usize;
+    if a.detail_previous || a.detail_selected >= slots {
+        cv.triangle(Point::new(224, y - 5), Point::new(218, y + 1), Point::new(230, y + 1), INK);
+    }
+    if a.detail_more || a.detail_selected + 1 < a.detail_rows.len() {
+        cv.triangle(Point::new(224, 316), Point::new(218, 310), Point::new(230, 310), INK);
+    }
+    let first = a.detail_selected.saturating_sub(slots - 1);
+    for (i, p) in a.detail_rows.iter().enumerate().skip(first).take(slots) {
+        let selected = i == a.detail_selected;
+        let bg = if selected { AMBER } else { PARCHMENT };
+        let ink = if selected { ON_ACCENT } else { INK };
+        if selected {
+            cv.round(rect(4, y, 232, 50), 5, bg);
         }
-        assert!(climb_fits("120m", Some("300m")), "a metric climb shows beside a corridor offset");
+        if let Some(cat) = obc_formats::obcm::poi_category_of(p.poi.subtype) {
+            super::poi_menu::draw_category_icon(cv, cat, Point::new(21, y + 25), ink, bg);
+            let subtype = obc_formats::obcm::poi_label_of(p.poi.subtype).unwrap_or("");
+            label(cv, subtype, 42, y + 26, Font::Caption, if selected { SUBTEXT_ON_ACCENT } else { SUBTEXT });
+        }
+        fitted(cv, super::poi_display::poi_row_name(&p.poi), 42, y, 190, ink);
+        y += 52;
     }
 }

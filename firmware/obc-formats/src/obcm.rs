@@ -314,8 +314,8 @@ pub fn nav_edge_record_range(chunk: &[u8], ordinal: u32) -> Option<(usize, usize
     Some((p, p + len))
 }
 
-pub const POI_CATEGORY_COUNT: u8 = 7;
-/// Geographic landmarks share the POI spatial index, outside the seven service categories.
+pub const POI_CATEGORY_COUNT: u8 = 10;
+/// Geographic landmarks share the POI spatial index, outside the service categories.
 pub const SUMMIT_CATEGORY_ID: u8 = 7;
 pub const SUMMIT_SUBTYPE_ID: u8 = 19;
 pub const TRAIN_CATEGORY_ID: u8 = 8;
@@ -488,6 +488,9 @@ pub enum PoiCategory {
     Pharmacy = 5,
     BikeShop = 6,
     Train = TRAIN_CATEGORY_ID,
+    Restaurant = 10,
+    Cafe = 11,
+    Fuel = 12,
 }
 
 impl PoiCategory {
@@ -499,6 +502,9 @@ impl PoiCategory {
         PoiCategory::Pharmacy,
         PoiCategory::BikeShop,
         PoiCategory::Train,
+        PoiCategory::Restaurant,
+        PoiCategory::Cafe,
+        PoiCategory::Fuel,
     ];
 
     #[inline]
@@ -516,6 +522,9 @@ impl PoiCategory {
             5 => PoiCategory::Pharmacy,
             6 => PoiCategory::BikeShop,
             TRAIN_CATEGORY_ID => PoiCategory::Train,
+            10 => PoiCategory::Restaurant,
+            11 => PoiCategory::Cafe,
+            12 => PoiCategory::Fuel,
             _ => return None,
         })
     }
@@ -531,6 +540,9 @@ impl PoiCategory {
             PoiCategory::Pharmacy => "Pharmacy",
             PoiCategory::BikeShop => "Bike shop",
             PoiCategory::Train => "Train station",
+            PoiCategory::Restaurant => "Restaurant",
+            PoiCategory::Cafe => "Cafe",
+            PoiCategory::Fuel => "Fuel station",
         }
     }
 }
@@ -615,12 +627,24 @@ pub const POI_SUBTYPES: [PoiSubtype; 18] = [
     subtype(PoiCategory::BikeShop, "Bike shop"),
 ];
 
+pub const RESTAURANT_SUBTYPE_ID: u8 = 25;
+pub const CAFE_SUBTYPE_ID: u8 = 26;
+pub const FUEL_SUBTYPE_ID: u8 = 27;
+const RESTAURANT_SUBTYPE: PoiSubtype = subtype(PoiCategory::Restaurant, "Restaurant");
+const CAFE_SUBTYPE: PoiSubtype = subtype(PoiCategory::Cafe, "Cafe");
+const FUEL_SUBTYPE: PoiSubtype = subtype(PoiCategory::Fuel, "Fuel station");
 const TRAIN_SUBTYPE: PoiSubtype = subtype(PoiCategory::Train, "Train station");
 
 #[inline]
 pub fn poi_subtype_row(subtype_id: u8) -> Option<&'static PoiSubtype> {
     if subtype_id == TRAIN_SUBTYPE_ID {
         return Some(&TRAIN_SUBTYPE);
+    }
+    match subtype_id {
+        RESTAURANT_SUBTYPE_ID => return Some(&RESTAURANT_SUBTYPE),
+        CAFE_SUBTYPE_ID => return Some(&CAFE_SUBTYPE),
+        FUEL_SUBTYPE_ID => return Some(&FUEL_SUBTYPE),
+        _ => {}
     }
     if subtype_id == 0 {
         return None;
@@ -1014,7 +1038,7 @@ mod tests {
     #[test]
     fn poi_id_tables_pin_the_append_only_contract() {
         assert_eq!(POI_SUBTYPES.len(), 18);
-        assert_eq!(PoiCategory::ALL.map(PoiCategory::id), [1, 2, 3, 4, 5, 6, 8]);
+        assert_eq!(PoiCategory::ALL.map(PoiCategory::id), [1, 2, 3, 4, 5, 6, 8, 10, 11, 12]);
         for (index, row) in POI_SUBTYPES.iter().enumerate() {
             let subtype_id = (index + 1) as u8;
             assert_eq!(poi_subtype_row(subtype_id).map(|value| value.label), Some(row.label));

@@ -28,10 +28,10 @@ pub const CORRIDOR_HALF_WIDTH_M: u16 = 300;
 /// not a dataset.
 pub const MAX_CORRIDOR_RESULTS: usize = 16;
 
-/// A bitset over the six POI categories, the corridor query's filter. Bit `i-1` carries category
-/// id `i`, so the set is one byte and cheap to key a frozen snapshot on.
+/// A bitset over the service categories, the corridor query's filter. Bit `i-1` carries category
+/// id `i`, so the set is two bytes and cheap to key a frozen snapshot on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PoiCategorySet(u8);
+pub struct PoiCategorySet(u16);
 
 impl PoiCategorySet {
     /// No categories, so the query returns nothing.
@@ -79,7 +79,7 @@ impl PoiCategorySet {
 
     /// The raw bits, the stable key a frozen snapshot compares on.
     #[inline]
-    pub const fn bits(self) -> u8 {
+    pub const fn bits(self) -> u16 {
         self.0
     }
 
@@ -97,6 +97,11 @@ impl PoiCategorySet {
 /// Every method must be cheap off the resident chunk index except `visit_chunk_points`, which may
 /// touch the card. Each query step reads at most one route chunk.
 pub trait RoutePath {
+    /// Identity of immutable geometry. Paths without a generation bypass encounter caching.
+    fn geometry_generation(&self) -> Option<u32> {
+        None
+    }
+
     /// Number of chunks, in route order.
     fn chunk_count(&self) -> usize;
 
@@ -158,18 +163,25 @@ pub(crate) struct PathProjection {
 /// `limit_m` bounds the answer and also prunes the walk, which is what keeps the cost sane: a
 /// chunk carries up to 256 points, so each segment first takes a four-integer µdeg-bbox test and
 /// only the survivors pay for the dot, cross and `sqrt`.
-pub(crate) fn project_onto_chunk(
-    pts: &[(i32, i32)],
-    chunk_start_m: u32,
-    p: (i32, i32),
-    limit_m: f32,
-) -> Option<PathProjection> {
+#[cfg(test)]
+fn project_onto_chunk(pts: &[(i32, i32)], chunk_start_m: u32, p: (i32, i32), limit_m: f32) -> Option<PathProjection> {
     if pts.len() < 2 {
         return None;
     }
     // One `cos_lat` for the whole chunk, taken at its first point, the convention `obc-route`'s
     // own along-route walks use.
     let cl = cos_lat(pts[0].1).max(1e-3);
+    project_with_scale(pts, chunk_start_m, p, limit_m, cl)
+}
+
+/// Project using the latitude scale prepared for this polyline.
+pub(crate) fn project_with_scale(
+    pts: &[(i32, i32)],
+    chunk_start_m: u32,
+    p: (i32, i32),
+    limit_m: f32,
+    cl: f32,
+) -> Option<PathProjection> {
     // The prune window in µdeg. Saturated to `i32::MAX` for an infinite limit, so the bbox test
     // then always passes.
     let lat_pad = udeg_pad(limit_m);
@@ -330,7 +342,7 @@ mod tests {
     /// The category set round-trips its members and "Everything" holds all six.
     #[test]
     fn category_set_membership() {
-        assert_eq!(PoiCategorySet::ALL.len(), 7);
+        assert_eq!(PoiCategorySet::ALL.len(), 10);
         assert!(PoiCategory::ALL.iter().all(|c| PoiCategorySet::ALL.contains(*c)));
         assert!(PoiCategorySet::EMPTY.is_empty());
         let only = PoiCategorySet::only(PoiCategory::Water);

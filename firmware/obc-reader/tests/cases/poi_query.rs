@@ -520,7 +520,50 @@ fn coverage_and_train_are_explicit() {
     while query.step(&reader, None, 1, &mut page) == QueryProgress::Pending {}
     assert_eq!(query.progress(), QueryProgress::Ready { more: false, coverage_complete: false });
     assert_eq!(page[0].poi.subtype, 20);
-    assert_eq!(PoiCategorySet::ALL.len(), 7);
+    assert_eq!(PoiCategorySet::ALL.len(), 10);
     assert!(PoiCategorySet::ALL.contains(PoiCategory::Train));
     assert_eq!(PoiCategorySet::ALL.bits() & (1 << 6), 0, "summits are not services");
+}
+
+#[test]
+fn search_arena_retains_category_indexes_and_records_between_queries() {
+    use crate::common::CountingSource;
+    use obc_reader::reader::places::PlaceCache;
+    // Several separate trees exceed the renderer's small index cache, but fit the search arena.
+    let categories = [(1, 1), (4, 13), (6, 18), (7, 19), (10, 25), (11, 26), (12, 27)];
+    let specs = categories.map(|(category, subtype)| {
+        (
+            category,
+            (0..64)
+                .map(|i| PoiSpec {
+                    lat: 43_500_000 + i / 8 * 1_000,
+                    lon: 7_500_000 + i % 8 * 1_000,
+                    subtype,
+                    name: format!("Place {i}"),
+                    payload: u16::MAX,
+                })
+                .collect(),
+        )
+    });
+    let bytes = build_poi_map((7_000_000, 43_000_000, 8_000_000, 44_000_000), 512, &specs);
+    let source = CountingSource::new(&bytes);
+    let tables = MapTables::parse(&source).unwrap();
+    let cache = MapCache::new();
+    let mut places = Box::<PlaceCache>::new_uninit();
+    // SAFETY: the allocation is aligned and exclusively owned.
+    let places = unsafe {
+        PlaceCache::init_in_place(places.as_mut_ptr());
+        places.assume_init()
+    };
+    let reader = Reader::new(&source, &tables, &cache).with_place_cache(&places);
+    let mut page = heapless::Vec::<Poi, MAX_POI_RESULTS>::new();
+    for pass in 0..2 {
+        let before = source.reads.get();
+        for category in PoiCategory::ALL {
+            reader.nearest_pois(category, (7_504_000, 43_504_000), &mut page).unwrap();
+        }
+        if pass == 1 {
+            assert_eq!(source.reads.get(), before, "warm searches read neither indexes nor records from storage");
+        }
+    }
 }

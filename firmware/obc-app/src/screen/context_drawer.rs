@@ -141,7 +141,7 @@ impl ContextValue {
     pub(crate) fn count(self) -> u8 {
         match self {
             // "Everything" plus the six categories.
-            ContextValue::UpAheadFilter => 1 + PoiCategory::ALL.len() as u8,
+            ContextValue::UpAheadFilter => 1 + crate::whats_next::SERVICES.len() as u8,
             ContextValue::UpAheadSource => UpAheadSource::COUNT as u8,
             ContextValue::FindResults => crate::settings::FindResults::COUNT as u8,
 
@@ -401,21 +401,22 @@ fn category_bit(cat: PoiCategory) -> u8 {
 
 /// The category a filter ordinal names, or `None` for ordinal 0 ("Everything").
 fn choice_category(ordinal: u8) -> Option<PoiCategory> {
-    (ordinal > 0).then(|| PoiCategory::ALL[(ordinal as usize - 1).min(PoiCategory::ALL.len() - 1)])
+    (ordinal > 0)
+        .then(|| crate::whats_next::SERVICES[(ordinal as usize - 1).min(crate::whats_next::SERVICES.len() - 1)])
 }
 
 /// The category set a filter ordinal selects.
 fn choice_filter(ordinal: u8) -> PoiCategorySet {
     match choice_category(ordinal) {
         Some(cat) => PoiCategorySet::only(cat),
-        None => PoiCategorySet::ALL,
+        None => crate::whats_next::DEFAULT_FILTER,
     }
 }
 
 /// The ordinal a live filter shows as — the inverse of [`choice_filter`], so the editor opens on
 /// what is already on. Any set the editor cannot produce reads as "Everything".
 fn filter_choice(filter: PoiCategorySet) -> u8 {
-    PoiCategory::ALL.iter().position(|c| filter == PoiCategorySet::only(*c)).map_or(0, |i| i as u8 + 1)
+    crate::whats_next::SERVICES.iter().position(|c| filter == PoiCategorySet::only(*c)).map_or(0, |i| i as u8 + 1)
 }
 
 /// What pressing a context row does: a destination or a binding, not a closure. The drawer
@@ -654,12 +655,10 @@ pub(crate) static ASSISTANT_RESUME =
 pub static ASSISTANT_VISIT =
     ContextMenu { rows: &[ContextRow { label: Msg::AssistantCurrentVisit, action: ContextAction::CurrentVisit }] };
 
-/// The Up-ahead context: the two controls that scope the timeline, and the only home either of
-/// them has.
+/// Service filters for the Up-ahead timeline.
 pub static UP_AHEAD = ContextMenu {
     rows: &[
         ContextRow { label: Msg::RideContextFilter, action: ContextAction::Edit(ContextValue::UpAheadFilter) },
-        ContextRow { label: Msg::RideContextSources, action: ContextAction::Edit(ContextValue::UpAheadSource) },
     ],
 };
 
@@ -998,7 +997,12 @@ impl ContextDrawerScreen {
                     rows::nav_row(cv, area, label, Some(Line2 { icon, text: value }), selected, live, true);
                 }
                 ContextAction::MapPoiCategories => {
-                    let _ = write!(buf, "{} / {}", rx.settings.map_poi_categories.count_ones(), PoiCategory::ALL.len());
+                    let _ = write!(
+                        buf,
+                        "{} / {}",
+                        rx.settings.map_poi_categories.count_ones(),
+                        MAP_POI_CATEGORIES.rows.len()
+                    );
                     rows::nav_row(cv, area, label, Some(Line2::text(&buf)), selected, live, true);
                 }
                 _ => rows::nav_row(cv, area, label, None, selected, live, true),
@@ -1329,27 +1333,6 @@ mod tests {
         assert_eq!(committed, 1, "…and, separately, what the device is set to");
     }
 
-    /// The Sources row commits `Settings::up_ahead_source`, the field the App's `==` diff turns
-    /// into a save, and then draws the value it wrote.
-    #[test]
-    fn the_sources_row_commits_the_persisted_settings_field() {
-        let mut w = World::riding();
-        let mut d = up_ahead_drawer();
-        w.press(&mut d, Gesture::Step(1)); // → Sources
-        w.press(&mut d, Gesture::Press);
-        assert_eq!(d.staged, UpAheadSource::Both as u8, "the editor opens on the persisted value");
-
-        w.press(&mut d, Gesture::Step(2)); // → Map POIs only
-        assert_eq!(w.settings.up_ahead_source, UpAheadSource::Both, "still nothing committed");
-        w.press(&mut d, Gesture::Press);
-        assert_eq!(w.settings.up_ahead_source, UpAheadSource::MapPoisOnly, "Select wrote the settings field");
-        assert_eq!(
-            d.key(&w.facts()).3,
-            UpAheadSource::MapPoisOnly as u8,
-            "…and the row now reads the value it committed"
-        );
-    }
-
     /// The editor is a ring of named alternatives: it wraps at both ends over exactly the choices
     /// the binding declares, and every ordinal round-trips to a value and back.
     #[test]
@@ -1367,7 +1350,7 @@ mod tests {
         for ordinal in 0..ContextValue::UpAheadFilter.count() {
             assert_eq!(filter_choice(choice_filter(ordinal)), ordinal, "ordinal {ordinal} round-trips");
         }
-        assert_eq!(choice_filter(0), PoiCategorySet::ALL, "ordinal 0 is Everything");
+        assert_eq!(choice_filter(0), crate::whats_next::DEFAULT_FILTER, "ordinal 0 is Everything");
     }
 
     /// A value row is live without a route, a graph or a ride: every binding is a preference.
@@ -1378,7 +1361,7 @@ mod tests {
         w.state.has_nav_graph = false;
         w.recorder.test_close();
         let facts = w.facts();
-        assert_eq!(up_ahead_drawer().key(&facts).4, 0b11, "both value rows stay live on a bare browse map");
+        assert_eq!(up_ahead_drawer().key(&facts).4, 0b1, "the filter stays live on a bare browse map");
         assert_eq!(route_plan_drawer().key(&facts).4, 1, "…and so does the bike-type row");
 
         // And a press really opens the editor, rather than drawing live and doing nothing.
@@ -1698,7 +1681,7 @@ mod tests {
         let mut categories = ContextDrawerScreen::opening(&MAP_POI_CATEGORIES, Language::En);
         assert!(MAP_POI_CATEGORIES.root_height(0, Language::En) <= MAX_SHEET_H, "seven switches scroll inside a sheet");
         world.press(&mut categories, Gesture::Step(2));
-        for _ in 2..PoiCategory::ALL.len() {
+        for _ in 2..MAP_POI_CATEGORIES.rows.len() {
             world.press(&mut categories, Gesture::Press);
             world.press(&mut categories, Gesture::Step(1));
         }

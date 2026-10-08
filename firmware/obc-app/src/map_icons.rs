@@ -32,6 +32,9 @@ enum Kind {
     Pharmacy,
     BikeShop,
     Train,
+    Restaurant,
+    Cafe,
+    Fuel,
 }
 
 impl Kind {
@@ -44,6 +47,9 @@ impl Kind {
             PoiCategory::Pharmacy => Self::Pharmacy,
             PoiCategory::BikeShop => Self::BikeShop,
             PoiCategory::Train => Self::Train,
+            PoiCategory::Restaurant => Self::Restaurant,
+            PoiCategory::Cafe => Self::Cafe,
+            PoiCategory::Fuel => Self::Fuel,
         }
     }
     fn radius(self) -> i32 {
@@ -81,7 +87,7 @@ impl Selection {
         let mut categories = PoiCategorySet::EMPTY;
         if settings.map_pois && mpp <= 10.0 {
             for (i, cat) in PoiCategory::ALL.into_iter().enumerate() {
-                if settings.map_poi_categories & (1 << i) != 0 {
+                if u16::from(settings.map_poi_categories) & (1u16 << i) != 0 {
                     categories = categories.with(cat);
                 }
             }
@@ -319,7 +325,7 @@ impl MapIcons {
             let _ = self.marks.push(mark);
             return;
         }
-        let mut counts = [0u8; 9];
+        let mut counts = [0u8; 12];
         for old in &self.marks {
             counts[old.kind as usize] += 1;
         }
@@ -379,7 +385,7 @@ impl MapIcons {
             (dx * dx + dy * dy, mark.id, mark.kind as u8, mark.position)
         });
         let mut placed = Vec::<(Point, Kind), DRAW_LIMIT>::new();
-        let mut counts = [0u8; 9];
+        let mut counts = [0u8; 12];
         let mut rejected = 0u64;
         for round in 0..limit as u8 {
             let before = placed.len();
@@ -517,6 +523,45 @@ fn draw_glyph(cv: &mut impl Surface, p: Point, kind: Kind) {
             0,
             0,
         ],
+        Kind::Restaurant => [
+            0b10010010000,
+            0b10010010110,
+            0b10010010110,
+            0b11110010110,
+            0b00100010110,
+            0b00100010010,
+            0b00100000010,
+            0b00100000010,
+            0b00100000010,
+            0,
+            0,
+        ],
+        Kind::Cafe => [
+            0,
+            0,
+            0b11111110000,
+            0b11111111100,
+            0b11111110110,
+            0b11111110110,
+            0b11111111100,
+            0b01111100000,
+            0b11111111110,
+            0,
+            0,
+        ],
+        Kind::Fuel => [
+            0b01111100000,
+            0b11000110010,
+            0b11000110101,
+            0b11111110001,
+            0b11111111101,
+            0b11111110101,
+            0b11111110101,
+            0b11111110010,
+            0b11111110000,
+            0b11111111000,
+            0,
+        ],
         Kind::Train => [
             0b00111111100,
             0b01000000010,
@@ -575,7 +620,7 @@ mod tests {
     fn map() -> std::vec::Vec<u8> {
         let mut cats = std::vec::Vec::new();
         for (i, cat) in PoiCategory::ALL.into_iter().enumerate() {
-            let subtype = [1, 5, 7, 13, 17, 18, 20][i];
+            let subtype = [1, 5, 7, 13, 17, 18, 20, 25, 26, 27][i];
             cats.push((
                 cat.id(),
                 std::vec![PoiSpec {

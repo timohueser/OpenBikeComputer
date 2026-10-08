@@ -496,12 +496,6 @@ impl Render<'_> {
         }
     }
 
-    /// What the Up-ahead timeline is scoped to this frame: the rider's live filter and their
-    /// persisted source preference, read as one value.
-    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
-        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
-    }
-
     /// The narrow live-data view the stat-field catalogue formats from, and the one constructor of
     /// [`Readout`](crate::stat_fields::Readout), so `stat_fields` stays decoupled from the full
     /// draw context.

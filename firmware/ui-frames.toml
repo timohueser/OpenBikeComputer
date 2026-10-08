@@ -55,15 +55,11 @@ place_detail = "A p d d d p u p f p f"
 landmarks = "A d d d p f"
 detour_pre = "p p p p T"
 dfu_pre = "B u p d*5 p d d d p p"
-up_base = "p p p p T A d p f p f*8"
+up_base = "p p p p T A d p f*400 w"
 # Open the timeline's context sheet, press its Filter row into the nested editor, stage the Water
 # choice and commit, then close the sheet — so the list comes back filtered. Every `p` that starts
 # a page slide is followed by `w`, because the sheet owns its input while a slide runs.
-up_filter_water = "C p w d p w b f*8"
-# The same idiom on the Sources row, staging one and two steps round the
-# Both → Waypoints → Map POIs ring.
-up_scope_waypoints = "C d p w d p w b f*8"
-up_scope_pois = "C d p w d d p w b f*8"
+up_filter_water = "C p w d p w b f*400 w"
 # Turn the Auto climb panel off (open the Climb row's editor, one step wraps Auto -> Off, commit),
 # then climb back to Home.
 u5_climb_off = "B u p p d d p d p b b b"
@@ -1447,8 +1443,15 @@ script = "p*4 f d p"
 expect = "Climb"
 args = ["--gpx", "{gpx}", "--at", "1500"]
 
-# (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
-# on one along-route axis, each with distance-to-go, climb-to-go and — past 50 m — the side arrow.
+# A service line with settlement summaries, authored waypoints, and standalone shops.
+[[frame]]
+name = "up-ahead-loading"
+map = "{monaco}"
+env = "monaco-route"
+script = "p p p p T A d p f w"
+expect = "WhatsNext"
+args = ["--gpx", "{upgpx}", "--at", "25"]
+
 [[frame]]
 name = "up-ahead"
 map = "{monaco}"
@@ -1457,80 +1460,58 @@ script = "{up_base}"
 expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# The timeline's own **context sheet** (#1515 D4a) and the two controls it is the only home for.
-# (b) Water from authored and mapped sources. Finish the page load after advancing the list.
 [[frame]]
 name = "up-ahead-water"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} {up_filter_water} d*9 f*8"
+script = "{up_base} {up_filter_water}"
 expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (c1) The context sheet itself: two value rows, Filter and Sources, each a door into its editor.
-# This frame replaces the Hold picker's — the filter is a sheet row now, not a mode on the list.
 [[frame]]
 name = "up-ahead-context"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} C"
+script = "{up_base} C w"
 expect = "ContextDrawer"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (c2) The nested value editor, on the row the rider is browsing (Campsite) with the committed
-# choice (Everything) still ticked under the first notch — the mark the grammar promises.
 [[frame]]
 name = "up-ahead-filter-editor"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} C p w d d"
+script = "{up_base} C p w d d d"
 expect = "ContextDrawer"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (c3) The Sources editor, where the choices carry no icon of their own — the other shape the one
-# generic editor draws.
 [[frame]]
-name = "up-ahead-sources-editor"
+name = "up-ahead-settlement-detail"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} C d p w d"
-expect = "ContextDrawer"
+script = "{up_base} p f*400 w"
+expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (d) A POI row's detail: the category title, the Ahead row and the Off route row's side arrow.
 [[frame]]
 name = "up-ahead-poi-detail"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} {up_scope_pois} p f"
+script = "{up_base} d*5 p f w"
 expect = "PoiDetail"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (d2) The fullest timeline detail: a two-line name, both distance rows and split hours. The page
-# drops its subtitle and draws the compact hours rows, so the hours clear the footer bar.
-[[frame]]
-name = "up-ahead-poi-detail-tight"
-map = "{monaco}"
-env = "monaco-garden"
-script = "{up_base} {up_scope_pois} p f"
-expect = "PoiDetail"
-args = ["--at", "0", "--clock", "2025-01-06T12:00"]
-
-# (b2) The same list in imperial units, where a climb gives way to the wider offset figure.
 [[frame]]
 name = "up-ahead-water-imperial"
 map = "{monaco}"
 env = "monaco-route"
-script = "B u p d*5 p p w d p w b b b w {up_base} {up_filter_water} d*9 f*8"
+script = "B u p d*5 p p w d p w b b b w {up_base} {up_filter_water}"
 expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 
-# (e) No-route and outside-map states. The plain vector route is outside Monaco;
-# the coverage guard takes precedence over map-place filters.
 [[frame]]
 name = "up-ahead-noroute"
 map = "{monaco}"
-script = "A d p f p f"
+script = "A d p f w"
 expect = "WhatsNext"
 
 [[frame]]
@@ -1540,42 +1521,13 @@ env = "plain-route"
 script = "{up_base}"
 expect = "WhatsNext"
 
-# (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
-# Ride settings — see the `up_scope_*` fragments. Waypoints-only must show no map-POI row (every
-# row keeps its amber icon + diamond pip) and Map-POIs-only no waypoint row; each also pins the
-# scope-named empty sub-line on the plain route,
-# where "No stops on route" would be a lie.
 [[frame]]
-name = "up-ahead-waypoints-only"
+name = "up-ahead-route-end"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} {up_scope_waypoints}"
+script = "{up_base} d*6 f*400 d*6 f*400 w"
 expect = "WhatsNext"
 args = ["--gpx", "{upgpx}", "--at", "25"]
-
-[[frame]]
-name = "up-ahead-pois-only"
-map = "{monaco}"
-env = "monaco-route"
-script = "{up_base} {up_scope_pois}"
-expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "25"]
-
-# The two controls composing: waypoints-only + the Water filter = just the rider's own water stops.
-[[frame]]
-name = "up-ahead-waypoints-only-water"
-map = "{monaco}"
-env = "monaco-route"
-script = "{up_base} {up_scope_waypoints} {up_filter_water}"
-expect = "WhatsNext"
-args = ["--gpx", "{upgpx}", "--at", "25"]
-
-[[frame]]
-name = "up-ahead-nothing-waypoints"
-map = "{monaco}"
-env = "plain-route"
-script = "{up_base} {up_scope_waypoints}"
-expect = "WhatsNext"
 
 [[frame]]
 name = "stats-next-category"
@@ -2569,13 +2521,12 @@ expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
 
-# The Up-ahead sheet (#1515 D4a): its two row labels, then the nested editor's title + the choice
-# it stages. `Campingplatz` / `Alojamiento` are the width constraint on the editor line.
+# The service filter and its editor at each supported language.
 [[frame]]
 name = "up-ahead-context"
 map = "{grimsel}"
 env = "routes"
-script = "{start_unguided} A d p f p f C"
+script = "{start_unguided} A d p f*400 C w"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2584,7 +2535,7 @@ langs = ["de", "fr", "es"]
 name = "up-ahead-filter-editor"
 map = "{grimsel}"
 env = "routes"
-script = "{start_unguided} A d p f p f C p w d d"
+script = "{start_unguided} A d p f*400 C w p w d d"
 expect = "ContextDrawer"
 args = ["--clock", "2025-06-29T14:40", "--gpx", "{gpx}", "--at", "30"]
 langs = ["de", "fr", "es"]
@@ -2595,7 +2546,7 @@ langs = ["de", "fr", "es"]
 name = "up-ahead-poi-detail"
 map = "{monaco}"
 env = "monaco-route"
-script = "{up_base} {up_scope_pois} p f"
+script = "{up_base} d*5 p f w"
 expect = "PoiDetail"
 args = ["--gpx", "{upgpx}", "--at", "25"]
 langs = ["de", "fr", "es"]

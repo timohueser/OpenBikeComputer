@@ -1096,8 +1096,9 @@ mod tests {
                 assert_eq!(f.name(lang), t(category_msg(cat), lang), "{f:?} in {lang:?} is the category's own word");
                 assert!(!f.name(lang).is_empty());
             }
-            // The words are distinct within a language, so six picker rows can't read alike.
-            let names: heapless::Vec<&str, 7> = PoiCategory::ALL.iter().map(|c| t(category_msg(*c), lang)).collect();
+            // Each service field has a distinct label within a language.
+            let names: heapless::Vec<&str, 7> =
+                StatField::ALL.iter().filter_map(|f| f.category()).map(|c| t(category_msg(c), lang)).collect();
             for (i, n) in names.iter().enumerate() {
                 assert!(!names[i + 1..].contains(n), "{n:?} appears twice in {lang:?}");
             }

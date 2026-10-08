@@ -716,7 +716,7 @@ mod tests {
         assert_ne!(staged, opened, "the staged choice is what the editor draws");
 
         let with_staged = app.render_key();
-        app.state.up_ahead_filter = obc_reader::PoiCategorySet::only(obc_reader::PoiCategory::Pharmacy);
+        app.state.up_ahead_filter = obc_reader::PoiCategorySet::only(obc_reader::PoiCategory::Restaurant);
         assert_ne!(app.render_key(), with_staged, "the committed mark is a pixel the sheet draws");
 
         let quiet = app.render_key();

@@ -155,6 +155,7 @@ union ScratchArena {
     render: ManuallyDrop<obc_render::RenderScratch>,
     peak_view: ManuallyDrop<PeakArm>,
     photo: ManuallyDrop<obc_app::photo::Runtime>,
+    places: ManuallyDrop<obc_reader::reader::places::PlaceCache>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
     #[cfg(has_nav)]
@@ -1028,3 +1029,30 @@ pub(crate) fn claim_photo() -> Option<PhotoGuard> {
     Some(PhotoGuard { _not_send: PhantomData })
 }
 const _: () = assert!(core::mem::size_of::<obc_app::photo::Runtime>() <= ARENA_BYTES);
+
+/// A synchronous Ahead query/render span. Release before any await.
+pub(crate) struct PlacesGuard {
+    _not_send: PhantomData<*mut ()>,
+}
+impl Deref for PlacesGuard {
+    type Target = obc_reader::reader::places::PlaceCache;
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: this guard exclusively owns the initialized places arm.
+        unsafe { &*(arena_ptr() as *const Self::Target) }
+    }
+}
+impl Drop for PlacesGuard {
+    fn drop(&mut self) {
+        release(ArenaOwner::Places);
+    }
+}
+pub(crate) fn claim_places() -> Option<PlacesGuard> {
+    // SAFETY: the ride loop is the sole owner-switcher, in thread mode.
+    let init = unsafe { gate() }.claim_places().ok()?;
+    if init == ArenaInit::Required {
+        // SAFETY: the successful claim owns the arm; no stack-sized temporary is made.
+        unsafe { obc_reader::reader::places::PlaceCache::init_in_place(arena_ptr() as *mut _) };
+    }
+    Some(PlacesGuard { _not_send: PhantomData })
+}
+const _: () = assert!(core::mem::size_of::<obc_reader::reader::places::PlaceCache>() <= ARENA_BYTES);

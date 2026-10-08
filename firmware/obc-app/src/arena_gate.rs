@@ -39,6 +39,8 @@ pub enum ArenaOwner {
     PeakView,
     /// Incremental photo decoder, borrowed for one bounded preparation step.
     Photo,
+    /// Disposable POI search cache while the opaque Ahead screen is active.
+    Places,
 }
 
 /// Why a claim (or a release) was refused. The board maps this to a debug `panic!` and a release
@@ -130,6 +132,11 @@ impl ArenaGate {
 
     pub fn is_idle(&self) -> bool {
         self.owner == ArenaOwner::None
+    }
+
+    /// Claim disposable search work; reuse only while no other arm overwrites it.
+    pub fn claim_places(&mut self) -> Result<ArenaInit, ArenaError> {
+        self.take(ArenaOwner::Places)
     }
 
     /// Claim one bounded photo step. Resume only if no other arm has used the bytes.
@@ -362,5 +369,23 @@ mod photo_tests {
         assert_eq!(gate.claim_photo(), Err(ArenaError::Busy(ArenaOwner::Render)));
         gate.release(ArenaOwner::Render).unwrap();
         assert_eq!(gate.claim_photo(), Ok(ArenaInit::Required));
+    }
+}
+
+#[cfg(test)]
+mod places_tests {
+    use super::*;
+    #[test]
+    fn place_work_is_disposable_and_excludes_live_arms() {
+        let mut gate = ArenaGate::new();
+        assert_eq!(gate.claim_places(), Ok(ArenaInit::Required));
+        assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::Places)));
+        gate.release(ArenaOwner::Places).unwrap();
+        assert_eq!(gate.claim_places(), Ok(ArenaInit::Skippable));
+        gate.release(ArenaOwner::Places).unwrap();
+        gate.claim_photo().unwrap();
+        assert_eq!(gate.claim_places(), Err(ArenaError::Busy(ArenaOwner::Photo)));
+        gate.release(ArenaOwner::Photo).unwrap();
+        assert_eq!(gate.claim_places(), Ok(ArenaInit::Required));
     }
 }

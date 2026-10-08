@@ -627,12 +627,11 @@ fn replay() -> Vec<Step> {
     steps.push(step("release the squeeze", 76_800).keys(&[release(Button::Back), release(Button::Down)]));
     steps.push(step("open Assistant", 77_000).keys(&tap(Button::Select)).expect("Assistant"));
     steps.push(step("choose What's next", 77_100).keys(&[InputEvent::Step(1)]));
-    steps.push(step("open the overview", 77_200).keys(&tap(Button::Select)).expect("WhatsNext"));
-    steps.push(step("explore ahead", 77_300).keys(&tap(Button::Select)).expect("WhatsNext"));
+    steps.push(step("open the timeline", 77_200).keys(&tap(Button::Select)).expect("WhatsNext"));
+    steps.push(step("prepare the timeline", 77_300).expect("WhatsNext"));
     steps.push(step("the rider advances under the timeline", 77_500).fix(20).expect("WhatsNext"));
     steps.push(step("and again", 78_000).fix(21).expect("WhatsNext"));
     steps.push(step("quiet again", 78_200).expect("WhatsNext"));
-    steps.push(step("return to overview", 78_300).keys(&tap(Button::Back)).expect("WhatsNext"));
     steps.push(step("return to questions", 78_400).keys(&tap(Button::Back)).expect("Assistant"));
     steps.push(step("return to map", 78_500).keys(&tap(Button::Back)).expect("Map"));
 

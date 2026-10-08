@@ -137,8 +137,8 @@ impl FactsAccumulator {
     pub(crate) fn push(&mut self, p: RoutePoint, grade: &mut dyn FnMut(GradeSample)) {
         let before_ascent = self.band.ascent() as u32;
         let before_descent = self.band.descent() as u32;
-        let next_distance =
-            self.distance + self.previous.map_or(0.0, |a| ground_dist_m((a.lon, a.lat), (p.lon, p.lat)) as f64);
+        let length = self.previous.map_or(0.0, |a| ground_dist_m((a.lon, a.lat), (p.lon, p.lat)));
+        let next_distance = self.distance + length as f64;
         if p.elevation_incomplete {
             self.band.pause();
         }
@@ -151,8 +151,7 @@ impl FactsAccumulator {
         }
         if let Some(a) = self.previous {
             let seg_start = self.distance as u32;
-            let length = ground_dist_m((a.lon, a.lat), (p.lon, p.lat));
-            self.distance += length as f64;
+            self.distance = next_distance;
             let seg_end = self.distance as u32;
             let lo = self.facts.start_m.max(seg_start);
             let hi = self.facts.end_m.min(seg_end);
