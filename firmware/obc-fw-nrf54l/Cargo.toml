@@ -122,7 +122,8 @@ embassy-futures = "0.1"
 # carry **no defmt dependency at all** (board crates do their own logging), so they coexist with
 # defmt 1.0 here with no version clash — wiring them in needs no defmt bump.
 defmt = "1.0"
-defmt-rtt = "1.0"
+# A disconnected debug host must not stall the device when the log buffer fills.
+defmt-rtt = { version = "1.0", features = ["disable-blocking-mode"] }
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 
 # defmt + embassy need a critical-section 1.0 impl; embassy-nrf does not bundle one. Ours is
