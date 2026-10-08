@@ -115,8 +115,9 @@ class Capture:
         self.stopped = False
         self.next_request = 0.0
         root.mkdir(parents=True, exist_ok=True)
-        for record in (root / "attempts").glob("*.json"):
-            self.pause(json.loads(record.read_text()).get("retry_not_before", 0) - time.time())
+        for directory in ("outcomes", "attempts"):
+            for record in (root / directory).glob("*.json"):
+                self.pause(json.loads(record.read_text()).get("retry_not_before", 0) - time.time())
 
     def fetch(self, path: str, url: str) -> dict:
         with self.lock:
@@ -821,7 +822,7 @@ def main() -> int:
         if args.policy is None or (args.candidates is None) == (args.osm is None):
             raise ValueError("landmarks require --policy and one of --candidates and --osm")
         return run(args)
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"landmark capture: {error}\n")
 
 

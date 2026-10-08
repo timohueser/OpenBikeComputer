@@ -1292,6 +1292,10 @@ fn listed_steps(
                 Ok(version) => version,
                 Err(error) if matches!(error.code, Code::FetchFailed | Code::Blocked) => {
                     env.fetch_failures.push((wanted.clone(), error.message.clone()));
+                    // These owners share a capture. A sibling must not restart a failed one.
+                    if matches!(wanted.source.as_str(), "wikidata" | "wikipedia" | "commons") {
+                        return Err(error);
+                    }
                     failure = Some(error);
                     continue;
                 }
@@ -1678,6 +1682,49 @@ pub(crate) mod tests {
         env.moves.insert("land".into(), Some("2026-10-03".into()));
         assert_eq!(env.version("land", &[("area".into(), "a".into())]), Ok(Some("2026-10-03")));
         assert_eq!(env.version("land", &[("area".into(), "b".into())]), Ok(Some("2026-10-03")));
+    }
+
+    #[test]
+    fn a_failed_wikimedia_capture_stops_before_siblings_or_other_collections() {
+        struct Wiki;
+        impl Product for Wiki {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+
+            fn steps(&self, _: &Path, _: &Env, _: &Regions, _: &Store) -> Result<crate::product::Steps, Unplanned> {
+                Err(Unplanned::NeedsFetch(
+                    ["landmarks", "peaks"]
+                        .into_iter()
+                        .flat_map(|collection| {
+                            ["wikidata", "wikipedia", "commons"].map(|source| Wanted {
+                                source: source.into(),
+                                version: None,
+                                params: vec![("collection".into(), collection.into())],
+                            })
+                        })
+                        .collect(),
+                ))
+            }
+        }
+        let fixture = fixture("wiki-stop");
+        let mut fetched = Vec::new();
+        let error = product_steps(
+            &fixture.root(),
+            &Wiki,
+            &mut env(&[]),
+            &Regions::new(Vec::new()).unwrap(),
+            &fixture.store,
+            &mut |wanted: &Wanted| {
+                fetched.push(wanted.clone());
+                Err(Code::FetchFailed.error("Wikimedia is busy"))
+            },
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code, Code::FetchFailed);
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].source, "wikidata");
     }
 
     #[test]

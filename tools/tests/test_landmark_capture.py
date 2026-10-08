@@ -66,6 +66,10 @@ class LandmarkCaptureTests(unittest.TestCase):
             self.assertEqual(capture.outcomes()[0]["http_status"], 429)
             self.assertGreater(min(call.args[0] for call in sleep.call_args_list), 119)
             restarted = Capture(Path(directory), interval=0)
+            with patch("tools.landmark_capture.urlopen", return_value=Response(b'{"ok":true}')):
+                with patch("tools.landmark_capture.time.sleep") as sleep:
+                    self.assertEqual(restarted.json("other.json", Response.url), {"ok": True})
+            self.assertGreater(sleep.call_args.args[0], 119)
             restarted.retry_failed()
             restarted = Capture(Path(directory), interval=0)
             restarted.retry_failed()
