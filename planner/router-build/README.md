@@ -65,7 +65,7 @@ between their endpoints. Without terrain, climb and slope remain unknown.
 | --- | --- |
 | Country defaults | Worldwide defaults, with the differences in the [OSM wiki country tables](https://wiki.openstreetmap.org/wiki/OSM_tags_for_routing/Access_restrictions) (`planner_router_build::country`); a way takes the country of its first known node |
 | Side of the road | A cycle lane without a direction runs with the traffic of the country |
-| One-way | Binds riding only; `oneway:bicycle=no` or a contraflow lane opens it; roundabouts and `junction=circular` imply it; `alternating` is two-way; `reversible` keeps both directions and the route reports a possible closure |
+| One-way | Binds riding only; `oneway:bicycle=no` or a contraflow lane opens it; roundabouts imply it; circular junctions need an explicit tag; `alternating` is two-way; `reversible` keeps both directions and the route reports a possible closure |
 | Access and direction | Separate cycling, walking and pushing; pushing follows foot access unless `bicycle:pushing` restricts it |
 | Node identity | Shared OSM node IDs create junctions; geometry crossings do not |
 | Via-node turn restrictions | Mode-specific forbidden transitions |
