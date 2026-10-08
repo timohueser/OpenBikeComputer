@@ -3,16 +3,8 @@ import Observation
 import OBCDomain
 import OBCTransport
 
-/// Drives a whole-trip upload: the queued sibling of `UploadSheetModel`. One transfer in flight
-/// at a time, in ride order: each day route is skipped when it is already up to date, replaced in
-/// place when it is on the device but outdated, or freshly uploaded when it is absent. Then the
-/// trip object, last. The precheck runs before any bytes, so a trip that cannot fit fails up front
-/// with guidance rather than hitting a full device at day four.
-///
-/// Interruption keeps `UploadSheetModel`'s restart-the-current-step semantics, completed days
-/// stay committed, and re-running is idempotent, because the skips catch everything already
-/// landed. Each object's link is committed the instant its transfer lands, exactly like a single
-/// upload.
+/// Owns a trip upload from catalog reconciliation through day routes, trip details and cleanup.
+/// Each successful transfer records its link before the next step starts.
 @MainActor @Observable
 public final class TripUploadModel: Identifiable {
     public nonisolated let id = UUID()
@@ -31,6 +23,8 @@ public final class TripUploadModel: Identifiable {
         case storagePrecheck(routeDeficit: Int)
         /// A device transfer failed for good.
         case device(DeviceError)
+        /// The trip is stored, but an old day route could not be deleted.
+        case cleanup(DeviceError)
     }
 
     public struct Timing: Sendable {
@@ -40,29 +34,9 @@ public final class TripUploadModel: Identifiable {
         }
     }
 
-    /// One queue step: a skipped day with no bytes, or a transfer of a day route or the trip object.
-    /// `makeTransfer` is evaluated at execution time, so the trip-object step reads the day route ids
-    /// the just-committed days landed under. An unavailable required transfer fails the queue.
-    public struct QueueStep: Sendable {
-        let title: String
-        let skip: Bool
-        let makeTransfer: (@MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?)?
-        let commit: (@MainActor @Sendable (DeviceObjectID?, UInt32) -> Void)?
-
-        public static func skip(
-            title: String
-        ) -> QueueStep {
-            QueueStep(title: title, skip: true, makeTransfer: nil, commit: nil)
-        }
-
-        /// A transfer step: a day route upload or the trip object.
-        public static func transfer(
-            title: String,
-            makeTransfer: @escaping @MainActor @Sendable () -> (handle: TransferHandle, committedCRC: UInt32)?,
-            commit: @escaping @MainActor @Sendable (DeviceObjectID?, UInt32) -> Void
-        ) -> QueueStep {
-            QueueStep(title: title, skip: false, makeTransfer: makeTransfer, commit: commit)
-        }
+    private enum Step {
+        case day(TripDayPlan)
+        case trip
     }
 
     // MARK: Observable state
@@ -87,14 +61,17 @@ public final class TripUploadModel: Identifiable {
     public var tripName: String { card.name }
     public let deviceName: String
     /// Total queue steps: the header's denominator.
-    public let stepCount: Int
+    public var stepCount: Int { steps.count }
     // MARK: Wiring
 
-    private let transport: any DeviceLink
-    private let steps: [QueueStep]
-    private let precheck: TripUploadPrecheck
+    private let transport: any DeviceLink & DeviceObjects
+    private let main: MainScreenModel
+    private let tripID: TripID
+    private var scope: LibraryScope?
+    private var days: [TripDayRoute]
+    private var steps: [Step] = []
+    private var precheck: TripUploadPrecheck
     private let timing: Timing
-    private let verifyConnection: @MainActor @Sendable () async throws -> Void
     @ObservationIgnored private let activity: TransferActivity?
     @ObservationIgnored private var activityToken: TransferActivity.Token?
     @ObservationIgnored private var currentHandle: TransferHandle?
@@ -104,26 +81,78 @@ public final class TripUploadModel: Identifiable {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var linkUp = true
 
-    public init(
-        transport: any DeviceLink,
-        card: DeviceTripCard,
-        deviceName: String,
-        precheck: TripUploadPrecheck,
-        steps: [QueueStep],
-        timing: Timing = Timing(),
-        activity: TransferActivity? = nil,
-        verifyConnection: @escaping @MainActor @Sendable () async throws -> Void = {}
-    ) {
-        self.transport = transport
-        self.card = card
-        self.deviceName = deviceName
-        self.precheck = precheck
-        self.steps = steps
-        self.stepCount = steps.count
+    init?(tripID: TripID, main: MainScreenModel, timing: Timing = Timing()) {
+        guard let trip = main.trip(tripID), let plan = Self.plan(tripID, in: main) else { return nil }
+        let days = main.tripDays(tripID)
+        self.main = main
+        self.tripID = tripID
+        self.transport = main.transport
+        self.scope = main.connectedScope
+        self.days = days
+        self.card = DeviceTripCard(name: trip.name, days: days.map { $0.summary(tripID: tripID) })
+        self.deviceName = main.deviceName
+        self.precheck = plan.precheck
         self.timing = timing
-        self.activity = activity
-        self.verifyConnection = verifyConnection
+        self.activity = main.transferActivity
         self.phase = .uploading
+        updatePlan(plan)
+    }
+
+    static func plan(_ id: TripID, in main: MainScreenModel) -> TripUploadPlan? {
+        guard let trip = main.trip(id) else { return nil }
+        let inputs = main.tripDays(id).map { day in
+            TripUploadPlanner.DayInput(
+                day: day.day,
+                isUpToDate: main.provenDayCRC(trip, day: day.day) == day.crc32,
+                committedObjectID: main.scopedDayCopy(trip, day: day.day)?.link.objectID)
+        }
+        let target = trip.deviceLink.flatMap { link -> DeviceObjectID? in
+            guard let scope = main.connectedScope, link.matches(scope) else { return nil }
+            return link.objectID
+        }
+        return TripUploadPlanner.plan(
+            days: inputs, tripObjectID: target,
+            deviceRouteCount: main.lastRouteCatalog?.count ?? 0,
+            deviceTripCount: main.lastTripCatalog?.count ?? 0)
+    }
+
+    /// Routes must reconcile before trips because trip adoption reads the day links.
+    func prepare() async {
+        do {
+            try await verifyConnection()
+            let routes = try await transport.listRoutes()
+            try await verifyConnection()
+            main.lastRouteCatalog = routes
+            main.reconcileOnDevice(with: routes)
+            main.routes = main.plannedList()
+            let trips = try await transport.listTrips()
+            try await verifyConnection()
+            main.lastTripCatalog = trips
+            main.reconcileTripsOnDevice(with: trips)
+            main.reloadTrips()
+            guard let plan = Self.plan(tripID, in: main) else { throw DeviceError.readFailed }
+            days = main.tripDays(tripID)
+            updatePlan(plan)
+        } catch {
+            main.reloadTrips()
+            fail(error)
+        }
+    }
+
+    private func updatePlan(_ plan: TripUploadPlan) {
+        precheck = plan.precheck
+        steps = plan.days.map(Step.day)
+        if !plan.allDaysSkip || main.tripOnDeviceState(tripID) != .upToDate {
+            steps.append(.trip)
+        }
+    }
+
+    private func verifyConnection() async throws {
+        await main.identityTask?.value
+        try Task.checkCancellation()
+        guard main.connection == .connected, let connected = main.connectedScope,
+              scope == nil || connected == scope else { throw DeviceError.readFailed }
+        scope = connected
     }
 
     // MARK: Derived lines
@@ -139,7 +168,10 @@ public final class TripUploadModel: Identifiable {
     /// The current step's title, a day name or the trip object's. Nil in a terminal phase.
     public var currentStepTitle: String? {
         guard stepIndex < steps.count else { return nil }
-        return steps[stepIndex].title
+        switch steps[stepIndex] {
+        case .day(let plan): return days[plan.day].name
+        case .trip: return "Trip details"
+        }
     }
 
     /// The queued-mode line over the bar: "Day 2 · 3 of 4". It counts every step, skips and the
@@ -153,6 +185,7 @@ public final class TripUploadModel: Identifiable {
 
     public var failedTitle: String {
         switch failure {
+        case .cleanup: "Trip sent"
         case .storagePrecheck, .device(.storageFull): "\(deviceName) is full"
         default: "Not sent"
         }
@@ -160,6 +193,8 @@ public final class TripUploadModel: Identifiable {
 
     public var failedMessage: String {
         switch failure {
+        case .cleanup:
+            return "The trip reached \(deviceName), but an old day route could not be deleted. Send the trip again to finish cleanup."
         case .storagePrecheck(let deficit):
             let noun = deficit == 1 ? "route" : "routes"
             return "\(tripName) needs room for \(deficit) more \(noun). Delete routes on \(deviceName), then send again."
@@ -173,7 +208,7 @@ public final class TripUploadModel: Identifiable {
     // MARK: Lifecycle
 
     public func start() {
-        guard !started else { return }
+        guard !started, phase != .failed else { return }
         started = true
 
         // A link drop stalls the current step. Progress after reconnect resumes it.
@@ -217,6 +252,9 @@ public final class TripUploadModel: Identifiable {
     /// committed on the device, and re-running is idempotent.
     public func cancel() {
         currentHandle?.cancel()
+        driver?.cancel()
+        setActive(false)
+        shouldDismiss = true
     }
 
     /// Done / a failure's Close.
@@ -239,63 +277,119 @@ public final class TripUploadModel: Identifiable {
     // MARK: Queue driver
 
     private func runQueue() async {
-        while stepIndex < steps.count {
-            if Task.isCancelled { return }
-            let step = steps[stepIndex]
-            if step.skip {
-                skippedCount += 1
-                stepIndex += 1
-                continue
-            }
-            do { try await verifyConnection() }
-            catch {
-                fail(error)
-                return
-            }
-            guard let (handle, committedCRC) = step.makeTransfer?() else {
-                fail(DeviceError.readFailed)
-                return
-            }
-            currentHandle = handle
-            phase = .uploading
-            watchProgress(handle)
-            // `handle.outcome` stays unresolved across a drop, because the transfer is
-            // restartable, so this awaits through the interrupt and the resume until the step
-            // truly finishes, fails, or is cancelled.
-            let outcome = await handle.outcome
-            progressWatcher?.cancel()
-            progressWatcher = nil
-            switch outcome {
-            case .completed:
-                let objectID = await handle.assignedObjectID
-                do { try await verifyConnection() }
-                catch {
-                    fail(error)
-                    return
+        var cleaningUp = false
+        do {
+            while stepIndex < steps.count {
+                try await verifyConnection()
+                let step = steps[stepIndex]
+                if case .day(let plan) = step, plan.action == .skip {
+                    skippedCount += 1
+                    stepIndex += 1
+                    continue
                 }
-                step.commit?(objectID, committedCRC)
-                committedCount += 1
-                stepIndex += 1
-            case .canceled:
-                setActive(false)
-                shouldDismiss = true
-                return
-            case .failed(let error):
-                failure = .device(error)
-                phase = .failed
-                setActive(false)
-                return
+                let (handle, crc) = try makeTransfer(step)
+                currentHandle = handle
+                phase = .uploading
+                watchProgress(handle)
+                let outcome = await handle.outcome
+                progressWatcher?.cancel()
+                progressWatcher = nil
+                try Task.checkCancellation()
+                switch outcome {
+                case .completed:
+                    guard let objectID = await handle.assignedObjectID else { throw DeviceError.writeFailed }
+                    try await verifyConnection()
+                    try recordCommit(step, objectID: objectID, crc: crc)
+                    committedCount += 1
+                    stepIndex += 1
+                case .canceled:
+                    setActive(false)
+                    shouldDismiss = true
+                    return
+                case .failed(let error):
+                    throw error
+                }
+                currentHandle = nil
             }
+            cleaningUp = true
+            try await deleteDroppedDays()
+            phase = .done
+            setActive(false)
+            try await Task.sleep(for: timing.doneAutoDismiss)
+            shouldDismiss = true
+        } catch is CancellationError {
+            setActive(false)
+        } catch {
+            fail(error, cleanup: cleaningUp)
         }
-        // Whole queue landed.
-        phase = .done
-        setActive(false)
-        try? await Task.sleep(for: timing.doneAutoDismiss)
-        shouldDismiss = true
     }
 
-    private func fail(_ error: Error) {
-        failure = .device(error as? DeviceError ?? .writeFailed)
+    private func makeTransfer(_ step: Step) throws -> (TransferHandle, UInt32) {
+        guard let trip = main.trip(tripID) else { throw DeviceError.readFailed }
+        switch step {
+        case .day(let plan):
+            let currentDays = main.tripDays(tripID)
+            guard currentDays.indices.contains(plan.day), !currentDays[plan.day].payload.isEmpty
+            else { throw DeviceError.readFailed }
+            let day = currentDays[plan.day]
+            let target: DeviceObjectID? =
+                if case .replace(let id) = plan.action { id } else { nil }
+            let blob = RouteBlob(
+                summary: day.summary(tripID: tripID), payload: day.payload, targetObjectID: target)
+            return (transport.uploadRoute(blob), CRC32.checksum(blob.payload))
+        case .trip:
+            guard let object = main.currentTripObject(for: trip) else { throw DeviceError.readFailed }
+            let target = trip.deviceLink.flatMap { link -> DeviceObjectID? in
+                guard let scope, link.matches(scope) else { return nil }
+                return link.objectID
+            }
+            let blob = TripBlob(
+                name: trip.name, deviceStageIDs: object.days.map(\.routeID),
+                payload: TripObjectCodec.encode(object), targetObjectID: target)
+            return (transport.uploadTrip(blob), CRC32.checksum(blob.payload))
+        }
+    }
+
+    private func recordCommit(_ step: Step, objectID: DeviceObjectID, crc: UInt32) throws {
+        guard var trip = main.trip(tripID), let scope else { throw DeviceError.readFailed }
+        let link = DeviceRouteLink(scope: scope, objectID: objectID)
+        switch step {
+        case .day(let plan):
+            while trip.dayCopies.count <= plan.day { trip.dayCopies.append(nil) }
+            trip.dayCopies[plan.day] = TripDayCopy(link: link, uploadedCRC32: crc)
+            main.deviceRouteCRCs[objectID] = crc
+        case .trip:
+            trip.deviceLink = link
+            trip.uploadedCRC32 = crc
+            main.deviceTripCRCs[objectID] = crc
+        }
+        main.library.saveTrip(trip)
+        main.reloadTrips()
+    }
+
+    /// Keep each dropped link until its delete succeeds, so a retry can finish cleanup.
+    private func deleteDroppedDays() async throws {
+        while true {
+            try await verifyConnection()
+            guard let trip = main.trip(tripID) else { throw DeviceError.readFailed }
+            guard trip.dayCopies.count > trip.dayCount else { return }
+            if let copy = trip.dayCopies.last ?? nil, let scope, copy.link.matches(scope) {
+                try await transport.deleteRoute(copy.link.objectID)
+                try await verifyConnection()
+            }
+            guard var current = main.trip(tripID), current.dayCount == trip.dayCount,
+                  current.dayCopies.count == trip.dayCopies.count,
+                  current.dayCopies.last == trip.dayCopies.last || current.dayCopies.last == .some(nil)
+            else { throw DeviceError.readFailed }
+            current.dayCopies.removeLast()
+            main.library.saveTrip(current)
+            main.reloadTrips()
+        }
+    }
+
+    private func fail(_ error: Error, cleanup: Bool = false) {
+        let deviceError = error as? DeviceError ?? .writeFailed
+        failure = cleanup ? .cleanup(deviceError) : .device(deviceError)
         phase = .failed
         setActive(false)
     }

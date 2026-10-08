@@ -84,7 +84,7 @@ extension MainScreenModel {
 
     /// A day route's copy on the connected device. A copy made on another device or in another
     /// id era answers nil, so a replace never overwrites an object the link does not point at.
-    private func scopedDayCopy(_ trip: Trip, day: Int) -> TripDayCopy? {
+    func scopedDayCopy(_ trip: Trip, day: Int) -> TripDayCopy? {
         guard let scope = connectedScope, trip.dayCopies.indices.contains(day),
             let copy = trip.dayCopies[day], copy.link.matches(scope)
         else { return nil }
@@ -92,7 +92,7 @@ extension MainScreenModel {
     }
 
     /// The day-route twin of `provenCommittedCRC(for:)`.
-    private func provenDayCRC(_ trip: Trip, day: Int) -> UInt32? {
+    func provenDayCRC(_ trip: Trip, day: Int) -> UInt32? {
         guard let copy = scopedDayCopy(trip, day: day), let uploaded = copy.uploadedCRC32,
             let catalogCRC = deviceRouteCRCs[copy.link.objectID], catalogCRC != 0, catalogCRC == uploaded
         else { return nil }
@@ -101,7 +101,7 @@ extension MainScreenModel {
 
     /// The trip object an upload would send now. Nil until every day route has a copy on the
     /// connected device: a trip object never names fewer days than the trip has.
-    private func currentTripObject(for trip: Trip) -> TripObjectCodec.Trip? {
+    func currentTripObject(for trip: Trip) -> TripObjectCodec.Trip? {
         let ids = (0..<trip.dayCount).compactMap { scopedDayCopy(trip, day: $0)?.link.objectID }
         guard !ids.isEmpty, ids.count == trip.dayCount else { return nil }
         return trip.tripObject(days: dayRoutes(of: trip), dayObjectIDs: ids)
@@ -220,139 +220,22 @@ extension MainScreenModel {
 
     // MARK: Whole-trip upload
 
-    /// Partition the day routes into skip, replace and fresh, and do the precheck math. Nil when
-    /// the trip is gone.
     public func planTripUpload(_ id: TripID) -> TripUploadPlan? {
-        guard let trip = trip(id) else { return nil }
-        let dayInputs = dayRoutes(of: trip).map { day in
-            TripUploadPlanner.DayInput(
-                day: day.day,
-                isUpToDate: provenDayCRC(trip, day: day.day) == day.crc32,
-                committedObjectID: scopedDayCopy(trip, day: day.day)?.link.objectID
-            )
-        }
-        // A valid scoped link is the replace target. Do not re-check the cached catalog: a
-        // stale cache demotes a valid link to a fresh upload, and a fresh upload of an
-        // already-stored trip mints a silent duplicate. A replace of a vanished trip fails
-        // loudly instead, which is the safe side.
-        let tripObjectID: DeviceObjectID? = {
-            guard let link = trip.deviceLink, let scope = connectedScope, link.matches(scope)
-            else { return nil }
-            return link.objectID
-        }()
-        return TripUploadPlanner.plan(
-            days: dayInputs,
-            tripObjectID: tripObjectID,
-            deviceRouteCount: lastRouteCatalog?.count ?? 0,
-            deviceTripCount: lastTripCatalog?.count ?? 0
-        )
+        TripUploadModel.plan(id, in: self)
     }
 
-    /// Re-read both catalogs and reconcile before planning: the retry-after-failure path. A
-    /// day route, or the trip object, that committed but whose ack was lost would otherwise
-    /// re-plan as fresh and mint a device twin. Routes before trips; the trip adoption reads
-    /// the day copies.
     public func prepareTripUpload(
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) async -> TripUploadModel? {
-        if connection == .connected {
-            if let deviceRoutes = try? await transport.listRoutes() {
-                lastRouteCatalog = deviceRoutes
-                reconcileOnDevice(with: deviceRoutes)
-                routes = plannedList()
-            }
-            if let deviceTrips = try? await transport.listTrips() {
-                lastTripCatalog = deviceTrips
-                reconcileTripsOnDevice(with: deviceTrips)
-            }
-            reloadTrips()
-        }
-        return makeTripUploadModel(id, timing: timing)
+        let upload = makeTripUploadModel(id, timing: timing)
+        await upload?.prepare()
+        return upload
     }
 
-    /// Turn the plan into a queue: a step per day route in ride order, then the trip object
-    /// last. Nothing is sent when every day route and the trip object are already current. Each
-    /// step commits its own link the instant it lands. Nil when the trip is gone.
     public func makeTripUploadModel(
         _ id: TripID, timing: TripUploadModel.Timing = TripUploadModel.Timing()
     ) -> TripUploadModel? {
-        guard let trip = trip(id), let plan = planTripUpload(id) else { return nil }
-        let scope = connectedScope
-        let days = dayRoutes(of: trip)
-        var steps: [TripUploadModel.QueueStep] = []
-        for dayPlan in plan.days {
-            let day = dayPlan.day
-            let title = days[day].name
-            switch dayPlan.action {
-            case .skip:
-                steps.append(.skip(title: title))
-            case .fresh, .replace:
-                let target: DeviceObjectID? =
-                    if case .replace(let objectID) = dayPlan.action { objectID } else { nil }
-                steps.append(.transfer(
-                    title: title,
-                    makeTransfer: { [weak self] in
-                        guard let self, let blob = self.makeDayBlob(id, day: day, target: target) else { return nil }
-                        return (self.transport.uploadRoute(blob), CRC32.checksum(blob.payload))
-                    },
-                    commit: { [weak self] objectID, crc in
-                        guard let objectID else { return }
-                        self?.markTripDayUploaded(id, day: day, objectID: objectID, crc32: crc)
-                    }
-                ))
-            }
-        }
-        let tripProven = provenTripCommittedCRC(for: trip)
-        let tripObjectUpToDate = tripProven != nil && tripProven == currentTripPayloadCRC(for: trip)
-        if !(plan.allDaysSkip && tripObjectUpToDate) {
-            steps.append(.transfer(
-                title: "Trip details",
-                makeTransfer: { [weak self] in
-                    // The target is read at execution time: the old trip object may be gone.
-                    guard let self, let blob = self.makeTripBlob(id) else { return nil }
-                    return (self.transport.uploadTrip(blob), CRC32.checksum(blob.payload))
-                },
-                commit: { [weak self] objectID, crc in
-                    self?.markTripUploaded(id, objectID: objectID, crc32: crc)
-                    if objectID != nil { self?.deleteDroppedDayRoutes(id) }
-                }
-            ))
-        }
-        return TripUploadModel(
-            transport: transport, card: DeviceTripCard(name: trip.name, days: days.map { $0.summary(tripID: id) }),
-            deviceName: deviceName,
-            precheck: plan.precheck, steps: steps,
-            timing: timing, activity: transferActivity,
-            verifyConnection: { [weak self] in
-                guard let self else { throw DeviceError.readFailed }
-                await identityTask?.value
-                try Task.checkCancellation()
-                guard connection == .connected, connectedScope != nil,
-                      scope == nil || connectedScope == scope else { throw DeviceError.readFailed }
-            }
-        )
-    }
-
-    /// Built at execution time from the current trip, so a change during the queue sends the
-    /// bytes the trip holds now.
-    private func makeDayBlob(_ tripID: TripID, day: Int, target: DeviceObjectID?) -> RouteBlob? {
-        let days = tripDays(tripID)
-        guard days.indices.contains(day), !days[day].payload.isEmpty else { return nil }
-        return RouteBlob(
-            summary: days[day].summary(tripID: tripID), payload: days[day].payload, targetObjectID: target)
-    }
-
-    /// Built at execution time, after the day routes committed, so it carries their fresh
-    /// device ids. Nil until every day has a copy.
-    private func makeTripBlob(_ tripID: TripID) -> TripBlob? {
-        guard let trip = trip(tripID), let object = currentTripObject(for: trip) else { return nil }
-        let target: DeviceObjectID? = {
-            guard let link = trip.deviceLink, let scope = connectedScope, link.matches(scope) else { return nil }
-            return link.objectID
-        }()
-        return TripBlob(
-            name: trip.name, deviceStageIDs: object.days.map(\.routeID),
-            payload: TripObjectCodec.encode(object), targetObjectID: target)
+        TripUploadModel(tripID: id, main: self, timing: timing)
     }
 
     /// Pure and static, so the rule is testable without a device.
@@ -362,58 +245,6 @@ extension MainScreenModel {
         guard !dayStates.isEmpty, tripSelf != .notOnDevice else { return .notOnDevice }
         if tripSelf == .upToDate, dayStates.allSatisfy({ $0 == .upToDate }) { return .upToDate }
         return .outdated
-    }
-
-    /// Record the link a day route upload landed under. No settled scope records no link.
-    func markTripDayUploaded(_ id: TripID, day: Int, objectID: DeviceObjectID, crc32: UInt32) {
-        guard var trip = trip(id) else { return }
-        while trip.dayCopies.count <= day { trip.dayCopies.append(nil) }
-        if let scope = connectedScope {
-            trip.dayCopies[day] = TripDayCopy(
-                link: DeviceRouteLink(scope: scope, objectID: objectID), uploadedCRC32: crc32)
-            // The transfer verified this CRC, so the badge proves before the next catalog read.
-            deviceRouteCRCs[objectID] = crc32
-        } else {
-            trip.dayCopies[day] = nil
-        }
-        library.saveTrip(trip)
-        reloadTrips()
-    }
-
-    /// Delete the device copies of days the trip no longer has. Runs after the new trip object
-    /// landed, so no stored trip names them and the device keeps no orphan day routes. A failed
-    /// delete leaves a plain route on the device.
-    private func deleteDroppedDayRoutes(_ id: TripID) {
-        guard var trip = trip(id), trip.dayCopies.count > trip.dayCount else { return }
-        let dropped = trip.dayCopies[trip.dayCount...].compactMap { copy -> DeviceObjectID? in
-            guard let copy, let scope = connectedScope, copy.link.matches(scope) else { return nil }
-            return copy.link.objectID
-        }
-        trip.dayCopies.removeLast(trip.dayCopies.count - trip.dayCount)
-        library.saveTrip(trip)
-        reloadTrips()
-        guard !dropped.isEmpty else { return }
-        Task { [transport] in
-            for objectID in dropped { try? await transport.deleteRoute(objectID) }
-        }
-    }
-
-    /// Record the link and fingerprint a trip-object upload landed under, so the trip badge
-    /// lights and a later push replaces that object in place. No scope or no id means no link,
-    /// the safe direction.
-    public func markTripUploaded(_ id: TripID, objectID: DeviceObjectID?, crc32: UInt32) {
-        guard var trip = trip(id) else { return }
-        if let scope = connectedScope, let objectID {
-            trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
-            trip.uploadedCRC32 = crc32
-            // The transfer verified this CRC, so the badge proves before the next `listTrips()`.
-            deviceTripCRCs[objectID] = crc32
-        } else {
-            trip.deviceLink = nil
-            trip.uploadedCRC32 = nil
-        }
-        library.saveTrip(trip)
-        reloadTrips()
     }
 
     // MARK: Trip edits

@@ -52,6 +52,7 @@ public final class MockControl: @unchecked Sendable {
     private var _pendingFailures: [DeviceError]
     private var _dropFraction: Double?
     private var _tripCatalogFailure: DeviceError?
+    private var _routeDeleteFailure: DeviceError?
     private var _fixtures: FixtureSet
     /// Starts above every fixture `deviceObjectID`, so a freshly assigned id cannot collide.
     private var _nextObjectID: UInt64 = 1000
@@ -219,6 +220,18 @@ public final class MockControl: @unchecked Sendable {
     /// fail `listTrips` while the same reload's `listRoutes` succeeds.
     public func failNextTripCatalog(_ error: DeviceError = .readFailed) {
         lock.withLocked { _tripCatalogFailure = error }
+    }
+
+    public func failNextRouteDelete(_ error: DeviceError = .writeFailed) {
+        lock.withLocked { _routeDeleteFailure = error }
+    }
+
+    func takeRouteDeleteFailure() throws {
+        let error: DeviceError? = lock.withLocked {
+            defer { _routeDeleteFailure = nil }
+            return _routeDeleteFailure
+        }
+        if let error { throw error }
     }
 
     func takeTripCatalogFailure() throws {
