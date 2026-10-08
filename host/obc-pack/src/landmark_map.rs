@@ -196,7 +196,7 @@ pub fn load(paths: &[PathBuf], links: &[LandmarkLink], bbox: (i64, i64, i64, i64
             let link = links
                 .iter()
                 .filter(|link| {
-                    link.wikidata.as_deref() == Some(record.qid.as_str())
+                    link.wikidata.as_ref().is_some_and(|id| content.aliases.get(id).unwrap_or(id) == &record.qid)
                         || (link.wikidata.is_none()
                             && link.wikipedia.as_ref().is_some_and(|b| articles.contains(&b.replace('_', " "))))
                 })

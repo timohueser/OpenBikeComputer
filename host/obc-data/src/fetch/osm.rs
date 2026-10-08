@@ -141,8 +141,12 @@ pub fn extract(store: &Store, http: &Http, request: &Request) -> Result<Snapshot
             Some(day)
         }
     };
-    let at =
-        |version: String| Request { source: request.source, version: Some(version), params: request.params.clone() };
+    let at = |version: String| Request {
+        refresh: false,
+        source: request.source,
+        version: Some(version),
+        params: request.params.clone(),
+    };
     match day {
         None => files(store, http, &at(request.version.clone().unwrap_or_default())).map_err(hint),
         // The dated file of the newest day can come after its `state.txt`; the day before is there.

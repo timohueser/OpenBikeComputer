@@ -479,18 +479,13 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
 }
 
 fn link_release(store: &Store, release: &release::Release, directory: &Path) -> Result<(), String> {
-    for file in &release.named {
-        let relative = if release.product == "planner" && file.path == "release.json" {
-            file.path.clone()
-        } else {
-            format!("releases/{}/{}", release.id(), file.path)
+    for (kind, file) in release.publication(&release.id()).files() {
+        let relative = match kind {
+            release::Published::Manifest => continue,
+            release::Published::Named("release.json") if release.product == "planner" => "release.json",
+            _ => &file.path,
         };
-        link(store, file, &directory.join(relative))?;
-    }
-    for file in
-        release.layers.iter().flat_map(|layer| layer.client_files()).filter(|file| file.path.starts_with("objects/"))
-    {
-        link(store, file, &directory.join(&file.path))?;
+        link(store, &file, &directory.join(relative))?;
     }
     Ok(())
 }
@@ -617,13 +612,33 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let store = Store::at(scratch.path().join("store"));
         let mut release = release::Release::compose("planner", "ride", &[], None, Vec::new(), &Default::default());
-        for name in ["indexes/places/grid/index.json", "indexes/basemap/grid/index.json", "release.json"] {
+        let stored = |path: &str, bytes: &[u8]| {
             let source = scratch.path().join("source");
-            std::fs::write(&source, name).unwrap();
+            std::fs::write(&source, bytes).unwrap();
             let (sha256, size) = hash_file(&source).unwrap();
             store.insert(&source, &sha256).unwrap();
-            release.named.push(obc_data::engine::LayerFile { path: name.into(), sha256, size });
+            obc_data::engine::LayerFile { path: path.into(), sha256, size }
+        };
+        let object = stored(&format!("objects/{}", sha256_hex(b"tile")), b"tile");
+        let private = stored("private", b"intermediate");
+        for name in ["indexes/places/grid/index.json", "indexes/basemap/grid/index.json", "release.json"] {
+            let file = stored("index.json", name.as_bytes());
+            release.layers.push(release::Layer {
+                step: name.into(),
+                key: String::new(),
+                inputs: Vec::new(),
+                options: json!({}),
+                code: String::new(),
+                command: None,
+                outputs: vec!["index.json".into(), "objects".into(), "private".into()],
+                digest: String::new(),
+                files: vec![file.clone(), object.clone(), private.clone()],
+                snapshots: BTreeMap::new(),
+                client: obc_data::engine::Client::Paths(vec!["objects".into()]),
+            });
+            release.named.push(obc_data::engine::LayerFile { path: name.into(), ..file });
         }
+        release.name_files(release.named.clone()).unwrap();
         let view = scratch.path().join("planner");
         link_release(&store, &release, &view).unwrap();
         for file in &release.named {
@@ -633,6 +648,36 @@ mod tests {
                 view.join("releases").join(release.id()).join(&file.path)
             };
             assert_eq!(std::fs::read_to_string(path).unwrap(), file.path);
+        }
+        assert_eq!(std::fs::read(view.join(&object.path)).unwrap(), b"tile");
+        assert_eq!(std::fs::read_dir(view.join("objects")).unwrap().count(), 1);
+        assert!(!view.join(format!("objects/{}", private.sha256)).exists());
+        assert!(!view.join("private").exists());
+
+        let id = release.id();
+        let live = Live {
+            products: vec![obc_data::live::LiveProduct {
+                product: "planner".into(),
+                prefix: "planner".into(),
+                release: Some((id.clone(), release)),
+                applied: None,
+                commit: None,
+                document: None,
+                observed: None,
+            }],
+            inputs: BTreeMap::new(),
+        };
+        let expected = live.expected();
+        assert_eq!(expected.len(), 6, "pointer, manifest, three aliases and one shared object");
+        for (key, size) in expected {
+            let relative = key.strip_prefix("planner/").unwrap();
+            let local = match relative {
+                "catalog.json" => continue,
+                path if path == format!("releases/{id}.json") => continue,
+                path if path == format!("releases/{id}/release.json") => "release.json",
+                path => path,
+            };
+            assert_eq!(std::fs::metadata(view.join(local)).unwrap().len(), size.unwrap());
         }
     }
 

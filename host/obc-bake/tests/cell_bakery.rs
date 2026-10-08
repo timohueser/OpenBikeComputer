@@ -341,6 +341,8 @@ impl Fixture {
             original_notices: r#"{"Artist":{"value":"A"}}"#.into(),
         };
         let content = obc_pack::landmarks::Content {
+            aliases: Default::default(),
+            wikipedia_aliases: Default::default(),
             schema: 2,
             input_sha256: sources.into(),
             policy_sha256: "policy".into(),
@@ -367,6 +369,11 @@ impl Fixture {
                     ),
                 }],
                 photo: Some(obc_pack::landmarks::Photo {
+                    online_url: None,
+                    file_identity: None,
+                    page_revision: None,
+                    file_revision: None,
+                    credit: Default::default(),
                     path: "Q1.rgb222".into(),
                     sha256: photo_sha,
                     bytes: pixels.len(),

@@ -146,8 +146,12 @@ pub fn step(
         terrain_cell_log2: V1_CELL_LOG2,
         dataset_version: glo30.into(),
     };
-    let mut inputs: Vec<Input> =
-        listed.iter().filter(|step| !step.client.is_none()).map(|step| Input::layer(&step.name)).collect();
+    let mut inputs: Vec<Input> = listed
+        .iter()
+        .filter(|step| !step.client.is_none())
+        .filter(|step| !matches!(step.name.split('/').nth(1), Some("landmark-content" | "peak-content")))
+        .map(|step| Input::layer(&step.name))
+        .collect();
     inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
     Ok(Step {
         name: LAYER.into(),

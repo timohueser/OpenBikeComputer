@@ -221,8 +221,7 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
             value
         };
         (
-            // A view of the peak outranks a plain image claim. A subcategory of views from the peak
-            // is refused outright.
+            // P18 has priority. A subcategory of views from the peak is refused outright.
             vec![
                 make("c", 30, FREE, &["Category:Views of Alpspitz"], None, None, "P4291"),
                 make("d", 40, FREE, &[], None, None, "P18"),
@@ -238,7 +237,7 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
             ],
             // The camera of the alphabetically first claim stands on the summit.
             vec![make("n", 90, FREE, &[], Some((0.5, 0.5)), None, "P18"), make("p", 100, FREE, &[], None, None, "P18")],
-            // A category member that depicts the peak outranks a plain image claim.
+            // A category member remains a fallback to the explicit P18 claim.
             vec![
                 make("h", 110, FREE, &["Category:Watzmann"], None, Some("Q8"), "commons-category"),
                 make("m", 120, FREE, &[], None, None, "P18"),
@@ -306,7 +305,7 @@ fn peak_photo_ranking_shows_the_peak_and_a_rejected_candidate_is_not_the_end() {
         |name: &str| hash(&photo::prepare(&fs::read(f.root.join(format!("photos/{name}.png"))).unwrap()).unwrap());
     let selected: Vec<_> =
         result.records.iter().filter_map(|r| r.article.photo.as_ref()).map(|p| p.sha256.clone()).collect();
-    assert_eq!(selected, ["c", "y", "p", "h"].map(chosen));
+    assert_eq!(selected, ["d", "y", "p", "m"].map(chosen));
     // Q9 has no acquired bytes, so the compiler asks for the two best and says nothing about a
     // missing photo until the capture has answered.
     assert_eq!(

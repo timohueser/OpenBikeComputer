@@ -7,6 +7,7 @@ pub mod http;
 pub mod osm;
 mod tools;
 pub mod upstream;
+pub mod wikimedia;
 
 pub use tools::basemap_jar;
 
@@ -24,6 +25,8 @@ use crate::sources::{FetchKind, Registry, Source, VersionScheme};
 use crate::store::{FileRecord, Requested, Snapshot, Store};
 
 pub struct Request<'a> {
+    /// Check current revisions even when an identity request is pinned.
+    pub refresh: bool,
     pub source: &'a Source,
     /// `None` takes the newest version upstream has. A URL of the `http` fetcher with `{version}`
     /// or `{yymmdd}` cannot give it; the `geofabrik` and `osm` fetchers find the newest day.
@@ -119,7 +122,12 @@ pub fn live(id: &str, version: Option<&str>, params: Vec<(String, String)>) -> R
     let source = registry.sources.iter().find(|s| s.id == id).ok_or_else(|| format!("no source `{id}`"))?;
     let version = version.map(str::to_string);
     let newest = version.is_none();
-    let snapshot = match fetch(&root, &store, &Http::new(), &Request { source, version, params: params.clone() }) {
+    let snapshot = match fetch(
+        &root,
+        &store,
+        &Http::new(),
+        &Request { refresh: false, source, version, params: params.clone() },
+    ) {
         Ok(snapshot) => snapshot,
         Err(error) if http::not_found(&error) => return Err(LiveError::NotFound(error)),
         Err(error) if newest && http::unreachable(&error) => match newest_stored(&store, id, &params)? {
@@ -546,6 +554,25 @@ pub(crate) mod tests {
         headers.iter().find(|(n, _)| n == name).map(|(_, value)| value.as_str())
     }
 
+    #[test]
+    fn a_thumbnail_bracket_never_resumes_bytes_from_an_earlier_attempt() {
+        let scratch = Scratch::new("fresh-thumbnail");
+        let store = Store::at(&scratch.0);
+        let (url, log) = serve(|_, headers| {
+            assert!(header(headers, "range").is_none());
+            whole(b"current thumbnail")
+        });
+        let key = &sha256_hex(url.as_bytes())[..32];
+        std::fs::create_dir_all(store.partial("root").parent().unwrap()).unwrap();
+        std::fs::write(store.partial(&format!("{key}.part")), b"unproven old bytes").unwrap();
+        std::fs::write(store.partial(&format!("{key}.validator")), b"old validator").unwrap();
+        let http = quick();
+        let download = http.fresh_download(&store, &url).unwrap();
+        assert_eq!(std::fs::read(download.object).unwrap(), b"current thumbnail");
+        assert_eq!(log.lock().unwrap().len(), 1);
+        assert_eq!(http.metrics(), (1, 17));
+    }
+
     pub(crate) fn quick() -> Http {
         Http::with_backoff(Duration::ZERO)
     }
@@ -567,7 +594,7 @@ pub(crate) mod tests {
         let scratch = Scratch::new("resume");
         let store = Store::at(&scratch.0);
         let land = source(&url, "date");
-        let request = Request { source: &land, version: Some("2026-10-05".into()), params: vec![] };
+        let request = Request { refresh: false, source: &land, version: Some("2026-10-05".into()), params: vec![] };
         let snapshot = fetch(&tooling_root(), &store, &quick(), &request).unwrap();
         let log = log.lock().unwrap();
         assert_eq!(log.len(), 2);
@@ -595,7 +622,7 @@ pub(crate) mod tests {
         let scratch = Scratch::new("restart");
         let store = Store::at(&scratch.0);
         let land = source(&url, "date");
-        let request = Request { source: &land, version: Some("2026-10-05".into()), params: vec![] };
+        let request = Request { refresh: false, source: &land, version: Some("2026-10-05".into()), params: vec![] };
         let file = fetch(&tooling_root(), &store, &quick(), &request).unwrap().files.remove(0);
         assert_eq!((file.sha256, file.size), (sha256_hex(&new), 60_000));
     }
@@ -607,7 +634,7 @@ pub(crate) mod tests {
         let store = Store::at(&scratch.0);
         let pgf = source(&url, "digest");
         let want = sha256_hex(b"expected");
-        let request = Request { source: &pgf, version: Some(want), params: vec![] };
+        let request = Request { refresh: false, source: &pgf, version: Some(want), params: vec![] };
         let err = fetch(&tooling_root(), &store, &quick(), &request).unwrap_err();
         assert!(err.contains("SHA-256"), "{err}");
         let left: Vec<_> = walk(&scratch.0).into_iter().filter(|p| !p.starts_with(scratch.0.join("locks"))).collect();
@@ -620,13 +647,13 @@ pub(crate) mod tests {
         let scratch = Scratch::new("hit");
         let store = Store::at(&scratch.0);
         let named = source(&url.replace("file.bin", "{version}.bin"), "release");
-        let request = Request { source: &named, version: Some("v1".into()), params: vec![] };
+        let request = Request { refresh: false, source: &named, version: Some("v1".into()), params: vec![] };
         let first = fetch(&tooling_root(), &store, &quick(), &request).unwrap();
         assert_eq!(fetch(&tooling_root(), &store, &quick(), &request).unwrap(), first);
         assert_eq!(log.lock().unwrap().len(), 1, "the second fetch asks upstream nothing");
         // Without a version, one HEAD names the date version, and the store has it.
         let land = source(&url, "date");
-        let newest = Request { source: &land, version: None, params: vec![] };
+        let newest = Request { refresh: false, source: &land, version: None, params: vec![] };
         let dated = fetch(&tooling_root(), &store, &quick(), &newest).unwrap();
         assert_eq!(dated.version, "2026-10-05");
         assert_eq!(fetch(&tooling_root(), &store, &quick(), &newest).unwrap(), dated);
@@ -639,7 +666,7 @@ pub(crate) mod tests {
         let scratch = Scratch::new("name");
         let store = Store::at(&scratch.0);
         let natural_earth = source(&url, "release");
-        let request = Request { source: &natural_earth, version: Some("5.1.2".into()), params: vec![] };
+        let request = Request { refresh: false, source: &natural_earth, version: Some("5.1.2".into()), params: vec![] };
         let err = fetch(&tooling_root(), &store, &quick(), &request).unwrap_err();
         assert!(err.contains("no snapshot record pins its bytes"), "{err}");
         assert!(log.lock().unwrap().is_empty());
@@ -720,7 +747,7 @@ pub(crate) mod tests {
         let scratch = Scratch::new("older");
         let store = Store::at(&scratch.0);
         let land = source(&url, "date");
-        let request = Request { source: &land, version: Some("2026-08-05".into()), params: vec![] };
+        let request = Request { refresh: false, source: &land, version: Some("2026-08-05".into()), params: vec![] };
         let err = fetch(&tooling_root(), &store, &quick(), &request).unwrap_err();
         assert!(err.contains("changed on 2026-10-05"), "{err}");
         assert_eq!(log.lock().unwrap().len(), 1, "it does not retry");
@@ -784,17 +811,18 @@ pub(crate) mod tests {
         ]);
         let scratch = Scratch::new("replication");
         let store = Store::at(&scratch.0);
-        let wednesday = Request { source: &diffs, version: Some("2026-09-30".into()), params: from("2026-09-28") };
+        let wednesday =
+            Request { refresh: false, source: &diffs, version: Some("2026-09-30".into()), params: from("2026-09-28") };
         let snapshot = fetch(&tooling_root(), &store, &quick(), &wednesday).unwrap();
         assert_eq!(changes(&snapshot), ["000/005/130.osc.gz", "000/005/131.osc.gz"]);
         assert_eq!(snapshot.files[0].name, "000/005/129.state.txt", "the state of the base day");
         let asked = log.lock().unwrap().len();
         assert_eq!(fetch(&tooling_root(), &store, &quick(), &wednesday).unwrap(), snapshot);
-        let later = Request { params: from("2026-09-29"), ..wednesday };
+        let later = Request { refresh: false, params: from("2026-09-29"), ..wednesday };
         assert_eq!(fetch(&tooling_root(), &store, &quick(), &later).unwrap().files, snapshot.files[2..]);
         assert_eq!(log.lock().unwrap().len(), asked, "a record that has the diffs needs no request");
         // The newest version keeps the base and downloads the diff of the new day only.
-        let newest = Request { source: &diffs, version: None, params: from("2026-09-28") };
+        let newest = Request { refresh: false, source: &diffs, version: None, params: from("2026-09-28") };
         let refreshed = fetch(&tooling_root(), &store, &quick(), &newest).unwrap();
         assert_eq!(refreshed.version, "2026-10-01");
         assert_eq!(refreshed.files[..5], snapshot.files);
@@ -817,7 +845,12 @@ pub(crate) mod tests {
         let scratch = Scratch::new("gaps");
         let store = Store::at(&scratch.0);
         let get = |version: &str, params: Vec<(String, String)>| {
-            fetch(&tooling_root(), &store, &quick(), &Request { source: &diffs, version: Some(version.into()), params })
+            fetch(
+                &tooling_root(),
+                &store,
+                &quick(),
+                &Request { refresh: false, source: &diffs, version: Some(version.into()), params },
+            )
         };
         assert!(get("2026-09-30", vec![]).unwrap_err().contains("a version of `osm-planet`"));
         assert!(get("2026-09-30", from("2026-10-01")).unwrap_err().contains("after the version"));
@@ -857,7 +890,7 @@ pub(crate) mod tests {
                 &tooling_root(),
                 &store,
                 &quick(),
-                &Request { source: &diffs, version: Some(version.into()), params: from(base) },
+                &Request { refresh: false, source: &diffs, version: Some(version.into()), params: from(base) },
             )
         };
         let twice = |result: Result<Snapshot, String>| result.unwrap_err().contains("two daily diffs of 2026-09-28");
@@ -947,7 +980,7 @@ pub(crate) mod tests {
         let store = Store::at(&scratch.0);
         let extracts = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}-{yymmdd}.osm.pbf"));
         let area = vec![("area".to_string(), "europe/monaco".to_string())];
-        let newest = Request { source: &extracts, version: None, params: area.clone() };
+        let newest = Request { refresh: false, source: &extracts, version: None, params: area.clone() };
         let snapshot = fetch(&tooling_root(), &store, &quick(), &newest).unwrap();
         assert_eq!(
             (snapshot.version.as_str(), snapshot.files[0].name.as_str()),
@@ -955,7 +988,7 @@ pub(crate) mod tests {
         );
         // Last-Modified is two days after the data, which a dated file does not ask.
         assert_eq!(log.lock().unwrap().len(), 2);
-        let gone = Request { source: &extracts, version: Some("2026-08-15".into()), params: area };
+        let gone = Request { refresh: false, source: &extracts, version: Some("2026-08-15".into()), params: area };
         assert!(fetch(&tooling_root(), &store, &quick(), &gone).unwrap_err().contains("first of each month"));
     }
 
@@ -970,7 +1003,7 @@ pub(crate) mod tests {
         let store = Store::at(&scratch.0);
         let glo30 = located(FetchKind::Glo30, &url.replace("data/file.bin", "{tile}.tif"));
         let params = vec![("tile".to_string(), "N43E007".to_string()), ("tile".to_string(), "N43E008".to_string())];
-        let request = Request { source: &glo30, version: Some("2026-10-05".into()), params };
+        let request = Request { refresh: false, source: &glo30, version: Some("2026-10-05".into()), params };
         assert!(http::not_found(&fetch(&tooling_root(), &store, &quick(), &request).unwrap_err()));
     }
 
@@ -999,7 +1032,7 @@ pub(crate) mod tests {
         let store = Store::at(&scratch.0);
         let extracts = located(FetchKind::Geofabrik, &url.replace("data/file.bin", "{area}-{yymmdd}.osm.pbf"));
         let area = vec![("area".to_string(), "europe/monaco".to_string())];
-        let newest = Request { source: &extracts, version: None, params: area.clone() };
+        let newest = Request { refresh: false, source: &extracts, version: None, params: area.clone() };
         assert_eq!(fetch(&tooling_root(), &store, &quick(), &newest).unwrap().version, "2026-10-03");
 
         let stored = newest_stored(&store, "land", &area).unwrap().unwrap();
@@ -1028,7 +1061,7 @@ pub(crate) mod tests {
         let held = Snapshot { source: "sea".into(), version: version.clone(), files: vec![old] };
         store.put_snapshot(&held).unwrap();
         let tooling = capture_fixture("capture-conflict-owner", &[land.clone(), sea.clone()]);
-        let today = Request { source: &land, version: None, params: vec![] };
+        let today = Request { refresh: false, source: &land, version: None, params: vec![] };
         let err = capture::capture(
             &tooling.root(),
             &store,
@@ -1067,7 +1100,7 @@ pub(crate) mod tests {
                 _ => &[0],
             }
         };
-        let today = Request { source: &land, version: None, params: vec![] };
+        let today = Request { refresh: false, source: &land, version: None, params: vec![] };
         let run = |request: &Request, script: &'static str| {
             capture::capture(&tooling.root(), &store, request, None, "q=1", &sources, owner, false, move |work, out| {
                 let mut command = std::process::Command::new("sh");
@@ -1092,19 +1125,20 @@ pub(crate) mod tests {
         assert!(store.object(&snapshot.files[2].sha256).is_file());
         let staging = store.root().join("partial").read_dir().unwrap();
         assert!(!staging.into_iter().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("capture-")));
-        let article = Request { source: &sea, version: None, params: vec![] };
+        let article = Request { refresh: false, source: &sea, version: None, params: vec![] };
         let articles = run(&article, "exit 1").unwrap();
         let names: Vec<_> = articles.files.iter().map(|file| file.name.as_str()).collect();
         assert_eq!(names, ["#q=1/articles/x.json", "#q=1/recipe.json"], "the recipe links the records");
         assert_eq!(run(&today, "exit 1").unwrap(), snapshot);
-        let pinned = Request { version: Some(version), ..today };
+        let pinned = Request { refresh: false, version: Some(version), ..today };
         assert_eq!(run(&pinned, "exit 1").unwrap(), snapshot);
-        let yesterday = Request { version: Some(date::format(date::today() - 1)), ..pinned };
+        let yesterday = Request { refresh: false, version: Some(date::format(date::today() - 1)), ..pinned };
         assert!(run(&yesterday, "exit 1").unwrap_err().contains("today's data"));
 
         // A run that writes no file is a fetch without files where the caller allows one, and the
         // record of the request that `fetch` writes serves it on another day.
-        let boxed = Request { source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
+        let boxed =
+            Request { refresh: false, source: &land, version: None, params: vec![("bbox".into(), "1,2,3,4".into())] };
         let nothing = |request: &Request, empty| {
             capture::capture(&tooling.root(), &store, request, None, "q=2", &sources, owner, empty, |_, _| {
                 Ok(std::process::Command::new("true"))
@@ -1115,7 +1149,7 @@ pub(crate) mod tests {
         let day = date::format(date::today() - 1);
         let requested = Requested { version: day.clone(), params: boxed.params.clone(), files: Vec::new() };
         store.put_requested("land", &requested).unwrap();
-        assert_eq!(nothing(&Request { version: Some(day), ..boxed }, true).unwrap().files, []);
+        assert_eq!(nothing(&Request { refresh: false, version: Some(day), ..boxed }, true).unwrap().files, []);
     }
 
     #[cfg(unix)]
@@ -1126,7 +1160,7 @@ pub(crate) mod tests {
         let model = located(FetchKind::Dtm, "https://example.org/model");
         let tooling = capture_fixture("capture-manual-owner", std::slice::from_ref(&model));
         let run = |query: &str, version: Option<&str>, script: &'static str| {
-            let request = Request { source: &model, version: version.map(Into::into), params: vec![] };
+            let request = Request { refresh: false, source: &model, version: version.map(Into::into), params: vec![] };
             capture::capture(
                 &tooling.root(),
                 &store,
@@ -1166,7 +1200,7 @@ pub(crate) mod tests {
         era5.credential =
             Some(crate::sources::Credential { env: vec![], file: Some("~/.obc-test-no-such-key".into()) });
         let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
-        let request = |params| Request { source: &era5, version: None, params };
+        let request = |params| Request { refresh: false, source: &era5, version: None, params };
         let err =
             fetch(&tooling_root(), &store, &quick(), &request(params(&[("bbox", "7.6,47.9,8.0,48.1")]))).unwrap_err();
         assert!(err.contains("takes bbox=… first-year=…"), "{err}");
@@ -1186,7 +1220,7 @@ pub(crate) mod tests {
     /// A Wikimedia capture names its inputs by digest, so its params are the same on every
     /// machine; only the `obc data` binary, which links the compiler, can select its places.
     #[test]
-    fn a_wikimedia_capture_reads_stored_files_and_needs_the_compiler() {
+    fn regional_wikimedia_capture_never_acquires_missing_facts() {
         let scratch = Scratch::new("wikimedia");
         let store = Store::at(&scratch.0);
         let mut wikidata = located(FetchKind::Capture, "https://example.org/wikidata");
@@ -1202,13 +1236,15 @@ pub(crate) mod tests {
             pairs.map(|(name, value)| (name.to_string(), value.to_string())).to_vec()
         };
         let fails = |params| {
-            fetch(&tooling_root(), &store, &quick(), &Request { source: &wikidata, version: None, params }).unwrap_err()
+            fetch(
+                &tooling_root(),
+                &store,
+                &quick(),
+                &Request { refresh: false, source: &wikidata, version: None, params },
+            )
+            .unwrap_err()
         };
-        assert!(fails(params("landmarks", "/tmp/a.pbf")).contains("is not sha256:"));
-        let missing = format!("sha256:{}", sha256_hex(b"osm"));
-        assert!(fails(params("landmarks", &missing)).contains("the store has no such file"));
-        assert!(fails(params("roads", &poly)).contains("is not `landmarks` or `peaks`"));
-        assert!(fails(params("peaks", &poly)).contains("this binary has no step code"));
+        assert!(fails(params("landmarks", "/tmp/a.pbf")).contains("regional Wikimedia capture is read-only"));
     }
 
     fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

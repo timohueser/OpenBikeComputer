@@ -36,6 +36,8 @@ pub(super) fn owner(source: &Source) -> OwnerCode {
                 "wikidata" | "wikipedia" | "commons" => {
                     paths.extend([
                         "tools/landmark_capture.py",
+                        "tools/wikimedia_acquire.py",
+                        "host/obc-data/src/fetch/wikimedia.rs",
                         "tools/peak_capture.py",
                         "host/obc-pack/src/landmarks/policy.json",
                         "specs/content-languages.json",

@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::build_cli::{self, BuildArgs, Built, BuiltRelease, EnvPlan};
 use super::{bytes, confirm, Code, Error};
 use crate::date;
+use crate::engine::release::Published;
 use crate::engine::runs::{Event, Phase, Publication, Run};
 use crate::fetch::http::Http;
 use crate::live::{removal_pass, Live, Remote, INPUTS};
@@ -410,26 +411,15 @@ pub(super) struct File {
 pub(super) fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec<File>, Error> {
     let mut files = Vec::new();
     for (prefix, id, release) in next.releases() {
-        files.push(File {
-            key: format!("{prefix}/releases/{id}.json"),
-            path: store.release(&release.product, id),
-            size: release.canonical().len() as u64,
-            sha256: id.into(),
-            upload: Upload { content_type: Some(JSON), ..IMMUTABLE },
-        });
-        files.extend(release.named.iter().map(|file| File {
-            key: format!("{prefix}/releases/{id}/{}", file.path),
-            path: store.object(&file.sha256),
-            size: file.size,
-            sha256: file.sha256.clone(),
-            upload: IMMUTABLE,
-        }));
-        files.extend(release.objects().into_iter().map(|(sha256, size)| File {
-            key: format!("{prefix}/objects/{sha256}"),
-            path: store.object(sha256),
-            size,
-            sha256: sha256.into(),
-            upload: IMMUTABLE,
+        files.extend(release.publication(id).files().map(|(kind, file)| {
+            let manifest = kind == Published::Manifest;
+            File {
+                key: format!("{prefix}/{}", file.path),
+                path: if manifest { store.release(&release.product, &file.sha256) } else { store.object(&file.sha256) },
+                size: file.size,
+                sha256: file.sha256,
+                upload: Upload { content_type: manifest.then_some(JSON), ..IMMUTABLE },
+            }
         }));
     }
     for (read, record) in &next.inputs {
