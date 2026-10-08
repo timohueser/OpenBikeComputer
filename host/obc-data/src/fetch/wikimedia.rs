@@ -112,6 +112,10 @@ pub(super) fn run(
     if !requested.is_object() || requested.get("check_id").is_some() || requested.get("refresh").is_some() {
         return Err("content request must name identities, without operation fields".into());
     }
+    let mut acquisition = json!({"requests":0,"api_response_body_bytes":0,"media_response_body_bytes":0,"historical_requests":null,"historical_response_body_bytes":null});
+    if let Some(checks) = checks.as_deref_mut() {
+        checks.acquisition = Some(acquisition.clone());
+    }
     let version = request.version.clone().unwrap_or_else(|| date::format(date::today()));
     check_version(request.source, &version)?;
     if let (Some(names), Some(snapshot)) =
@@ -152,7 +156,6 @@ pub(super) fn run(
     let code = super::owner_code(request.source).code;
     let before = code.files(root)?;
     let adopt = adoption_views(store, &work)?;
-    let mut acquisition = json!({"requests":0,"api_response_body_bytes":0,"media_response_body_bytes":0,"historical_requests":null,"historical_response_body_bytes":null});
     let mut stale = stale_requests(&requested, &admitted, &registry);
     // Adoption is evidence of a revision, not evidence of a current source check.
     if request.refresh || !adopt.is_empty() {
@@ -188,6 +191,17 @@ pub(super) fn run(
     let mut command = runner(root, &work, &out, &requests_path, &inputs_path, &[])?;
     let status = command.stdout(std::io::stderr()).status().map_err(|e| e.to_string())?;
     if !status.success() {
+        if let Ok(manifest) = read(&out.join("manifest.json")) {
+            count_api(&mut acquisition, &manifest);
+            if let Some(checks) = checks.as_deref_mut() {
+                checks.acquisition = Some(acquisition);
+            }
+            return Err(format!(
+                "Wikimedia acquisition incomplete: {}; successful work: {}",
+                manifest["failures"],
+                work.display()
+            ));
+        }
         return Err(format!(
             "Wikimedia acquisition failed with {status}; successful facts remain in {}",
             work.display()
@@ -201,7 +215,14 @@ pub(super) fn run(
         return Err("Wikimedia acquisition is incomplete".into());
     }
     count_api(&mut acquisition, &manifest);
-    media(root, store, &out, &requested, &mut manifest, &mut acquisition)?;
+    if let Some(checks) = checks.as_deref_mut() {
+        checks.acquisition = Some(acquisition.clone());
+    }
+    let media_result = media(root, store, &out, &requested, &mut manifest, &mut acquisition);
+    if let Some(checks) = checks.as_deref_mut() {
+        checks.acquisition = Some(acquisition.clone());
+    }
+    media_result?;
     if code.files(root)? != before {
         return Err("acquisition code changed; prepare again".into());
     }
@@ -347,96 +368,99 @@ fn media(
     acquisition: &mut Value,
 ) -> Result<(), String> {
     let http = super::http::Http::new().limited(3_125_000);
-    let mut records = manifest["records"].as_array().ok_or("invalid content records")?.clone();
-    let mut assets = manifest["assets"].as_array().cloned().unwrap_or_default();
-    let mut pending = Vec::new();
-    for filename in requested["files"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        let key = format!("File:{}", filename.trim_start_matches("File:").replace('_', " "));
-        let pin = records
-            .iter()
-            .find(|pin| pin["kind"] == "commons" && pin["key"] == key)
-            .ok_or("file lacks Commons metadata")?;
-        let metadata = read(&out.join(text(pin, "path")?))?;
-        if metadata["status"] == "missing" {
-            continue;
-        }
-        if let Some(existing) = records.iter().find(|pin| {
-            pin["kind"] == "file"
-                && pin["key"] == key
-                && pin["revision"] == metadata["file_revision"]
-                && pin["identity"] == metadata["identity"]
-        }) {
-            let file = read(&out.join(text(existing, "path")?))?;
-            let description_matches = ["revision_before", "revision_after"].into_iter().all(|field| {
-                file[field]["query"]["pages"].as_object().is_some_and(|pages| {
-                    pages.values().any(|page| page["imageinfo"][0]["description_revision"] == metadata["revision"])
-                })
-            });
-            if file["asset"]["input"] == "original" || description_matches {
+    let result = (|| {
+        let mut records = manifest["records"].as_array().ok_or("invalid content records")?.clone();
+        let mut assets = manifest["assets"].as_array().cloned().unwrap_or_default();
+        let mut pending = Vec::new();
+        for filename in requested["files"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            let key = format!("File:{}", filename.trim_start_matches("File:").replace('_', " "));
+            let pin = records
+                .iter()
+                .find(|pin| pin["kind"] == "commons" && pin["key"] == key)
+                .ok_or("file lacks Commons metadata")?;
+            let metadata = read(&out.join(text(pin, "path")?))?;
+            if metadata["status"] == "missing" {
                 continue;
             }
+            if let Some(existing) = records.iter().find(|pin| {
+                pin["kind"] == "file"
+                    && pin["key"] == key
+                    && pin["revision"] == metadata["file_revision"]
+                    && pin["identity"] == metadata["identity"]
+            }) {
+                let file = read(&out.join(text(existing, "path")?))?;
+                let description_matches = ["revision_before", "revision_after"].into_iter().all(|field| {
+                    file[field]["query"]["pages"].as_object().is_some_and(|pages| {
+                        pages.values().any(|page| page["imageinfo"][0]["description_revision"] == metadata["revision"])
+                    })
+                });
+                if file["asset"]["input"] == "original" || description_matches {
+                    continue;
+                }
+            }
+            let checked_at = pin["checked_at"].clone();
+            records.retain(|pin| pin["kind"] != "file" || pin["key"] != key);
+            pending.push((key, metadata, checked_at));
         }
-        let checked_at = pin["checked_at"].clone();
-        records.retain(|pin| pin["kind"] != "file" || pin["key"] != key);
-        pending.push((key, metadata, checked_at));
-    }
-    let filenames = pending.iter().map(|(key, _, _)| json!(key)).collect::<Vec<_>>();
-    if filenames.is_empty() {
-        return Ok(());
-    }
-    let before = check_media(root, out, &filenames, &records, acquisition)?;
-    let mut downloaded = Vec::new();
-    for (key, metadata, checked_at) in pending {
-        let url = text(&metadata["imageinfo"], "thumburl")?;
-        if !url.starts_with("https://upload.wikimedia.org/wikipedia/commons/thumb/")
-            || metadata["imageinfo"]["thumbwidth"] != 500
-        {
-            return Err("Commons conversion input is not a standard 500 px thumbnail".into());
+        let filenames = pending.iter().map(|(key, _, _)| json!(key)).collect::<Vec<_>>();
+        if filenames.is_empty() {
+            return Ok(());
         }
-        let _download_lock = super::http::Http::lock(store, url)?;
-        let download = http.download(store, url, &super::http::Expect::default())?;
-        let asset = json!({"path":format!("assets/{}",download.sha256),"sha256":download.sha256,"bytes":download.size,"url":url,"input":"thumbnail500"});
-        let target = out.join(text(&asset, "path")?);
-        fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
-        if !target.is_file() {
-            fs::hard_link(&download.object, &target).map_err(|e| e.to_string())?;
+        let before = check_media(root, out, &filenames, &records, acquisition)?;
+        let mut downloaded = Vec::new();
+        for (key, metadata, checked_at) in pending {
+            let url = text(&metadata["imageinfo"], "thumburl")?;
+            if !url.starts_with("https://upload.wikimedia.org/wikipedia/commons/thumb/")
+                || metadata["imageinfo"]["thumbwidth"] != 500
+            {
+                return Err("Commons conversion input is not a standard 500 px thumbnail".into());
+            }
+            let _download_lock = super::http::Http::lock(store, url)?;
+            let download = http.download(store, url, &super::http::Expect::default())?;
+            let asset = json!({"path":format!("assets/{}",download.sha256),"sha256":download.sha256,"bytes":download.size,"url":url,"input":"thumbnail500"});
+            let target = out.join(text(&asset, "path")?);
+            fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+            if !target.is_file() {
+                fs::hard_link(&download.object, &target).map_err(|e| e.to_string())?;
+            }
+            downloaded.push((key, metadata, checked_at, asset));
         }
-        downloaded.push((key, metadata, checked_at, asset));
-    }
-    let after = check_media(root, out, &filenames, &records, acquisition)?;
+        let after = check_media(root, out, &filenames, &records, acquisition)?;
+        for (key, metadata, checked_at, asset) in downloaded {
+            let value = json!({"kind":"file","key":key,"status":"present","identity":metadata["identity"],"revision":metadata["file_revision"],"filename":metadata["filename"],"asset":asset,"revision_before":before[&key],"revision_after":after[&key]});
+            let data = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+            let digest = store::sha256_hex(&data);
+            let path = format!("content/file/{digest}.json");
+            let target = out.join(&path);
+            fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
+            fs::write(&target, &data).map_err(|e| e.to_string())?;
+            let pin = json!({"kind":"file","key":key,"status":"present","identity":value["identity"],"revision":value["revision"],"checked_at":checked_at,"path":path,"sha256":digest});
+            let work = out.parent().ok_or("missing operation root")?.join("work");
+            let work_target = work.join(&path);
+            fs::create_dir_all(work_target.parent().unwrap()).map_err(|e| e.to_string())?;
+            fs::write(work_target, data).map_err(|e| e.to_string())?;
+            let asset_target = work.join(text(&asset, "path")?);
+            fs::create_dir_all(asset_target.parent().unwrap()).map_err(|e| e.to_string())?;
+            if !asset_target.is_file() {
+                fs::hard_link(out.join(text(&asset, "path")?), asset_target).map_err(|e| e.to_string())?;
+            }
+            let journal = work
+                .join("records")
+                .join(text(requested, "check_id")?)
+                .join(format!("{}.json", store::sha256_hex(format!("file:{key}").as_bytes())));
+            fs::create_dir_all(journal.parent().unwrap()).map_err(|e| e.to_string())?;
+            fs::write(journal, serde_json::to_vec(&pin).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            records.push(pin);
+            assets.push(asset);
+        }
+        manifest["records"] = json!(records);
+        manifest["assets"] = json!(assets);
+        Ok(())
+    })();
     let (requests, bytes) = http.metrics();
     acquisition["requests"] = json!(acquisition["requests"].as_u64().map(|old| old + requests));
     acquisition["media_response_body_bytes"] = json!(bytes);
-    for (key, metadata, checked_at, asset) in downloaded {
-        let value = json!({"kind":"file","key":key,"status":"present","identity":metadata["identity"],"revision":metadata["file_revision"],"filename":metadata["filename"],"asset":asset,"revision_before":before[&key],"revision_after":after[&key]});
-        let data = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
-        let digest = store::sha256_hex(&data);
-        let path = format!("content/file/{digest}.json");
-        let target = out.join(&path);
-        fs::create_dir_all(target.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(&target, &data).map_err(|e| e.to_string())?;
-        let pin = json!({"kind":"file","key":key,"status":"present","identity":value["identity"],"revision":value["revision"],"checked_at":checked_at,"path":path,"sha256":digest});
-        let work = out.parent().ok_or("missing operation root")?.join("work");
-        let work_target = work.join(&path);
-        fs::create_dir_all(work_target.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(work_target, data).map_err(|e| e.to_string())?;
-        let asset_target = work.join(text(&asset, "path")?);
-        fs::create_dir_all(asset_target.parent().unwrap()).map_err(|e| e.to_string())?;
-        if !asset_target.is_file() {
-            fs::hard_link(out.join(text(&asset, "path")?), asset_target).map_err(|e| e.to_string())?;
-        }
-        let journal = work
-            .join("records")
-            .join(text(requested, "check_id")?)
-            .join(format!("{}.json", store::sha256_hex(format!("file:{key}").as_bytes())));
-        fs::create_dir_all(journal.parent().unwrap()).map_err(|e| e.to_string())?;
-        fs::write(journal, serde_json::to_vec(&pin).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        records.push(pin);
-        assets.push(asset);
-    }
-    manifest["records"] = json!(records);
-    manifest["assets"] = json!(assets);
-    Ok(())
+    result
 }
 
 fn check_media(

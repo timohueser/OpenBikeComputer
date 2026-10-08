@@ -186,7 +186,7 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
                         bytes(*size)
                     )
                 }
-                Event::FetchFailed { source, version, params, error } => {
+                Event::FetchFailed { source, version, params, error, .. } => {
                     format!("{} fetch failed: {error}", fetched(source, version, params))
                 }
                 Event::Finished { ok: true, wall_ms, .. } => format!("finished in {}", duration(*wall_ms)),

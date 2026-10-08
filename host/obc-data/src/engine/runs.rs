@@ -95,6 +95,8 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acquisition: Option<serde_json::Value>,
     },
     StepStarted {
         step: String,
@@ -471,7 +473,8 @@ impl Run {
             }
             Err(error) => {
                 let mut failed = format!("fetch {source}@{version}: {error}");
-                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error }) {
+                let acquisition = self.codes.acquisition.take();
+                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error, acquisition }) {
                     failed += &format!("; the run journal could not record the failure: {journal}");
                 }
                 Err(failed)
@@ -751,9 +754,10 @@ fn from_events(id: String, events: Vec<Event>, running: bool) -> Details {
                 run.fetches[i].resolved = Some(resolved);
                 run.fetches[i].acquisition = acquisition;
             }
-            Event::FetchFailed { source, version, params, error } => {
+            Event::FetchFailed { source, version, params, error, acquisition } => {
                 let i = fetch(&mut run.fetches, source, version, params);
                 run.fetches[i].error = Some(error);
+                run.fetches[i].acquisition = acquisition;
             }
             Event::StepStarted { step: name } => {
                 step(&mut run.steps, &name);
