@@ -78,9 +78,9 @@ The API/Store seam has three operations within the existing fetch machinery:
    This operation makes no Wikimedia request. Missing pins fail preparation.
 
 Acquisition returns confirmed present or confirmed missing facts. Transport
-failure, incomplete pagination and server pressure are unresolved work, never
-confirmed missing content. An interrupted or failed operation cannot publish a
-complete capture. The next run reuses its successful responses.
+failure, incomplete required identity, language-link or dependency pagination,
+and server pressure are unresolved work, never confirmed missing content. An
+interrupted or failed operation cannot publish a complete capture. The next run reuses its successful responses.
 
 ## Selection and projections
 
@@ -117,8 +117,11 @@ A nearby camera position or matching filename is not subject evidence. Coverage
 and relevance are measured separately before the old category path is replaced.
 
 A proposed fallback uses one directly claimed P373 category, one nonrecursive
-category response and at most twenty files. The files still need subject evidence
-and valid credits. This bound is a proposal, not an enabled selection rule.
+category response and at most twenty files. A continuation beyond this deliberate
+candidate bound does not make the fallback incomplete. Record a complete bounded
+outcome and the limit reached; do not report the category as fully enumerated.
+The files still need subject evidence and valid credits. This bound is a proposal,
+not an enabled selection rule.
 The image-selection implementation selects the final bound from measured coverage;
 it must not retain the current unbounded category crawl as its replacement.
 
