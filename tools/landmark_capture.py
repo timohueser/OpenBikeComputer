@@ -5,10 +5,8 @@ Candidates are the QIDs a region's own OSM extract tags its objects with, so dis
 and every landmark has a map object. Entities are fetched fifty at a time; articles and images
 follow for the entities the compiler selects.
 
-The rate is ten requests a second over two workers. Wikimedia publishes no read rate: it asks for a
-descriptive User-Agent, for `maxlag`, and for a back-off on `429` and `503` with `Retry-After`. All
-three are met here, and ten a second is ordinary read-client load under them. Commons originals are
-tens of megabytes each, so image bandwidth decides the wall clock whatever the rate is.
+Requests are serial, use `maxlag`, and honor `Retry-After`. Repeated server-busy responses stop
+the capture; a later run reuses verified responses. HTTP compression does not change stored bytes.
 """
 from __future__ import annotations
 
@@ -16,8 +14,10 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import gzip
 import hashlib
 from html.parser import HTMLParser
+from io import BytesIO
 import json
 from pathlib import Path
 import re
@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import zlib
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, unquote, urlparse
 from urllib.request import Request, urlopen
@@ -48,7 +49,6 @@ MAXLAG = 5
 BACKOFF_STATUS = (429, 503)
 BACKOFF_ATTEMPTS = 3
 BACKOFF_SECONDS = 5.0
-MAX_BACKOFF = 60.0
 QID = r"Q[1-9][0-9]*"
 # The one group whose places are often unmapped, so the class query stays available for it.
 SWEEP_GROUP = "Natural curiosities"
@@ -112,14 +112,17 @@ class Capture:
         self.root = root
         self.interval = interval
         self.lock = threading.Lock()
-        self.path_locks = {}
+        self.stopped = False
         self.next_request = 0.0
         root.mkdir(parents=True, exist_ok=True)
+        for directory in ("outcomes", "attempts"):
+            for record in (root / directory).glob("*.json"):
+                self.pause(json.loads(record.read_text()).get("retry_not_before", 0) - time.time())
 
     def fetch(self, path: str, url: str) -> dict:
         with self.lock:
-            path_lock = self.path_locks.setdefault(path, threading.Lock())
-        with path_lock:
+            if self.stopped:
+                raise RuntimeError("Wikimedia is busy; stop this capture and retry later")
             return self._fetch(path, url)
 
     def _fetch(self, path: str, url: str) -> dict:
@@ -137,17 +140,25 @@ class Capture:
                 if len(data) != outcome["bytes"] or digest(data) != outcome["sha256"]:
                     raise ValueError(f"captured bytes changed: {path}")
             return outcome
+        busy = False
         for attempt in range(BACKOFF_ATTEMPTS):
             self.wait()
+            busy = False
+            backoff = BACKOFF_SECONDS * 2 ** attempt
             outcome = {"path": path, "url": url, "retrieved_at": datetime.now(timezone.utc).isoformat()}
             try:
-                with urlopen(Request(url, headers={"User-Agent": USER_AGENT}), timeout=75) as response:
+                with urlopen(Request(url, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "gzip"}), timeout=75) as response:
                     outcome["response_url"] = response.url
                     outcome["http_status"] = response.status
-                    outcome["headers"] = {k: response.headers[k] for k in ("ETag", "Last-Modified", "Content-Type") if k in response.headers}
+                    outcome["headers"] = {k: response.headers[k] for k in ("ETag", "Last-Modified", "Content-Type", "Retry-After") if k in response.headers}
                     if int(response.headers.get("Content-Length", 0)) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
                     data = response.read(MAX_SOURCE + 1)
+                    if len(data) > MAX_SOURCE:
+                        raise ValueError("source exceeds 32 MiB acquisition bound")
+                    if response.headers.get("Content-Encoding", "").lower() == "gzip":
+                        with gzip.GzipFile(fileobj=BytesIO(data)) as stream:
+                            data = stream.read(MAX_SOURCE + 1)
                     if len(data) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -163,33 +174,41 @@ class Capture:
                         value, valid = None, False
                     if not valid:
                         outcome.update(status="invalid-response", reason="response is not valid API JSON or contains an API error")
-                        if lagged(value) and attempt + 1 < BACKOFF_ATTEMPTS:
-                            self.pause(BACKOFF_SECONDS)
-                            continue
+                        busy = lagged(value) or isinstance(value, dict) and value.get("error", {}).get("code") == "ratelimited"
+                        if busy:
+                            backoff = max(backoff, retry_after(outcome["headers"]))
             except HTTPError as error:
                 outcome.update(status="http-error", http_status=error.code, reason=str(error))
-                if error.code in BACKOFF_STATUS and attempt + 1 < BACKOFF_ATTEMPTS:
-                    self.pause(retry_after(error.headers))
-                    continue
-            except (URLError, TimeoutError, OSError) as error:
+                busy = error.code in BACKOFF_STATUS
+                if busy:
+                    backoff = max(backoff, retry_after(error.headers))
+                error.close()
+            except (URLError, TimeoutError, OSError, EOFError, zlib.error) as error:
                 outcome.update(status="transport-error", reason=str(error))
             except ValueError as error:
                 outcome.update(status="oversized", reason=str(error))
+            if busy:
+                self.pause(backoff)
+                outcome["retry_not_before"] = time.time() + backoff
+                write_json(record, outcome)
+                if attempt + 1 < BACKOFF_ATTEMPTS:
+                    continue
             break
         write_json(record, outcome)
+        if busy:
+            self.stopped = True
+            raise RuntimeError(f"Wikimedia is busy; capture stopped at {path}; retry after {backoff:g} seconds or later")
         return outcome
 
     def wait(self) -> None:
-        with self.lock:
-            delay = max(0, self.next_request - time.monotonic())
-            self.next_request = max(time.monotonic(), self.next_request) + self.interval
+        delay = max(0, self.next_request - time.monotonic())
+        self.next_request = max(time.monotonic(), self.next_request) + self.interval
         if delay:
             time.sleep(delay)
 
     def pause(self, seconds: float) -> None:
         """A server that asks one worker to wait is asking all of them."""
-        with self.lock:
-            self.next_request = max(self.next_request, time.monotonic() + min(max(seconds, 0.0), MAX_BACKOFF))
+        self.next_request = max(self.next_request, time.monotonic() + max(seconds, 0.0))
 
     def json(self, path: str, url: str) -> dict | None:
         outcome = self.fetch(path, url)
@@ -205,6 +224,7 @@ class Capture:
             outcome = json.loads(record.read_text())
             if outcome["status"] == "ok":
                 continue
+            self.pause(outcome.get("retry_not_before", 0) - time.time())
             history = self.root / "attempts" / (record.stem + "-" + digest(record.read_bytes()) + ".json")
             if "sha256" in outcome:
                 data = (self.root / outcome["path"]).read_bytes()
@@ -802,7 +822,7 @@ def main() -> int:
         if args.policy is None or (args.candidates is None) == (args.osm is None):
             raise ValueError("landmarks require --policy and one of --candidates and --osm")
         return run(args)
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"landmark capture: {error}\n")
 
 
