@@ -129,6 +129,8 @@ An article pin records the resolved page's actual Wikidata item and alias proof.
 A redirect to another subject is a present source fact. Compilation rejects that
 article for the requested subject and records an identity omission. Other eligible
 languages remain usable. An unresolved API response still blocks acquisition.
+A QID subject requires the article's matching Wikidata item. A no-item article
+remains eligible for a confirmed synthetic Wikipedia subject.
 
 A thumbnail file fact retains `revision_before` and `revision_after` witnesses.
 Both match the canonical filename, file timestamp and SHA-1, required credit
