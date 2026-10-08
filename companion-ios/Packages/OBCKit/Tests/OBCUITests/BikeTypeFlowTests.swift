@@ -32,11 +32,7 @@ import OBCTransport
 
         flow.open(files: [(Data("<gpx/>".utf8), "col.gpx")])
         let pending = try #require(flow.pendingChoice?.first)
-        let landing = RouteDetailModel(
-            transport: MockTransport(control: MockControl(scenario: .happyPath)),
-            dressing: .imported(pending.route, fileName: pending.fileName), bikeType: pending.bikeType)
-
-        let record = pending.record(for: landing.makeDetail())
+        let record = pending.record()
         #expect(record.bikeType == .gravel)
         let totals = try #require(RouteObjectCodec.totals(points: route.points))
         #expect(record.summary.estimatedDuration == TimeInterval(BikeType.gravel.estimatedSeconds(

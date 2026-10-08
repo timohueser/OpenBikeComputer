@@ -358,14 +358,11 @@ struct RootView: View {
                 sendSetupRoute(existing.id)
                 return
             }
-            let detail = RouteDetailModel(
-                transport: transport, dressing: .imported(route, fileName: BundledDemoRoute.fileName)
-            ).makeDetail()
-            mainModel.addImportedRoute(PlannedRouteRecord(
-                summary: detail.summary, route: route,
-                sourceFileName: BundledDemoRoute.fileName, sourceFileData: data
-            ))
-            sendSetupRoute(detail.summary.id)
+            let record = PlannedRouteRecord(
+                route: route, sourceFileName: BundledDemoRoute.fileName, sourceFileData: data
+            )
+            mainModel.addImportedRoute(record)
+            sendSetupRoute(record.id)
         } catch {
             setupRouteError = "The demo route could not be opened. You can import a GPX or TCX route, or skip this step."
         }
@@ -493,12 +490,9 @@ struct RootView: View {
     /// Save one imported file as a route, with its plan.
     @discardableResult
     private func save(_ file: PendingImport) -> RouteID {
-        let detail = RouteDetailModel(
-            transport: transport, dressing: .imported(file.route, fileName: file.fileName),
-            bikeType: file.bikeType, importedRouteID: file.replacing?.id
-        ).makeDetail()
-        mainModel.addImportedRoute(file.record(for: detail))
-        return detail.summary.id
+        let record = file.record()
+        mainModel.addImportedRoute(record)
+        return record.id
     }
 
     /// The collision sheet's title: the imported route's name, or the file name, quoted.
@@ -783,11 +777,8 @@ struct RootView: View {
             dayEnds: [DayEnd(coordinate: end.coordinate, distance: line.length)],
             addedAt: Date()
         )
-        let detail = RouteDetailModel(
-            transport: transport, dressing: .imported(route, fileName: fileName), bikeType: bikeType
-        ).makeDetail()
         let record = PlannedRouteRecord(
-            summary: detail.summary, route: route, bikeType: bikeType,
+            route: route, bikeType: bikeType,
             sourceFileName: fileName, sourceFileData: GPXTripEncoder.encode(trip), plan: plan
         )
         if let id {
