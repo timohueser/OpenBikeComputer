@@ -13,33 +13,38 @@ description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / 
 # exists to refuse.
 #
 # The two producer halves are separate features because they are separate costs: `geotiff` is a
-# decoder, `fetch` is an HTTP client with a TLS stack behind it. The bakery (`obc-bake`) drives
-# `bake_cell` over tiles an operator already has and never downloads one, so it takes `geotiff`
-# alone and no `ureq`/rustls/ring reaches its dependency tree. `dem` is both, and stays the default
-# because the `obc-dem` binary is both.
+# decoder, `fetch` is the store of `obc-data` with its HTTP client and TLS stack. `dem` is both,
+# and stays the default because the `obc-dem` binary is both.
 [features]
 default = ["dem"]
 dem = ["geotiff", "fetch"]
 geotiff = ["dep:tiff", "dep:serde_json"]
-fetch = ["dep:ureq"]
+fetch = ["dep:obc-data"]
+# The terrain of the planner maps: Terrarium WebP tiles in MBTiles.
+terrarium = ["dem", "dep:image", "dep:rusqlite"]
 external-fixtures = []
 
 [[bin]]
 name = "obc-dem"
 path = "src/main.rs"
-required-features = ["geotiff", "fetch"]
+required-features = ["dem"]
+
+[[bin]]
+name = "planner-dem"
+path = "src/bin/planner-dem.rs"
+required-features = ["terrarium"]
 
 [dependencies]
 # The OBCT byte authority: magic, header offsets, sentinels, and the layout arithmetic that turns a
 # lattice sample into a byte offset. Transcribing any of it here is exactly the drift `obc-formats`
 # exists to prevent — this crate writes the bytes that module names.
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-formats = { workspace = true }
 # The **shared** lattice arithmetic and the **shared** reader. A baker that re-derived "which cell
 # owns sample i" from the prose would be a second implementation of the one thing `OBCT_Spec.md` §5
 # says two implementations must agree on — so this crate does the shifts with `obc_elevation::grid`
 # and every test reads its own output back through `obc_elevation::TerrainReader`. Depending on a
 # `no_std` foundation crate from a host tool is the allowed direction (`dependency_rules.json`).
-obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-elevation = { workspace = true }
 # The GeoTIFF decoder. **Pure Rust** — this is what the #1070 spike proved against a real GLO-30
 # tile: float32 samples (`SampleFormat = 3`), Adobe DEFLATE (`Compression = 8`) with the
 # *floating-point* horizontal predictor (`Predictor = 3`), 1024 × 1024 internal tiles. Default
@@ -50,18 +55,23 @@ tiff = { version = "0.11", default-features = false, features = ["deflate"], opt
 # sources contributed to each of them. Read as a `Value` rather than through derived structs,
 # because the index grows fields (`sha256`, `contributors`) that this reader must tolerate rather
 # than refuse. Already in the workspace lockfile (`obc-pack` and `obc-bake` both use it).
-serde_json = { version = "1", optional = true }
-# `fetch` only. Blocking and rustls-by-default, so no OpenSSL follows it onto macOS or Windows —
-# the same client `obc-pack`'s land-dataset download and the desktop app already use (#907: libGEOS
-# stays the last native dependency in the tree, and this crate has none at all).
-ureq = { version = "3", optional = true }
+serde_json = { workspace = true, optional = true }
+# `fetch` only: the store and its fetcher for the tiles. The binary also prints the Copernicus
+# credit from data/sources.toml.
+obc-data = { workspace = true, optional = true }
+image = { workspace = true, features = ["webp"], optional = true }
+rusqlite = { workspace = true, features = ["bundled"], optional = true }
 
 [dev-dependencies]
 # Digest pins on fixture output — the "same inputs ⇒ byte-identical cells" contract, checked rather
 # than asserted. Already in the workspace lockfile (`obc-pack` publishes catalog digests with it).
-sha2 = "0.11"
-obc-fixtures = { path = "../obc-fixtures" }
+sha2 = { workspace = true, default-features = true }
+obc-fixtures = { workspace = true }
 
 [[test]]
 name = "assets"
 required-features = ["external-fixtures"]
+
+[[test]]
+name = "planner_terrain"
+required-features = ["external-fixtures", "terrarium"]

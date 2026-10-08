@@ -111,7 +111,7 @@ struct SignedRoutesTests {
         #expect(try await SignedRoutes.hint(far, loadCell: loader) == nil)
     }
 
-    @Test func readsCoveredCellsFromAnOfflineGridAndARegionFile() async throws {
+    @Test func readsTheCoveredCellsOfAnOfflineSelectionOrOfTheReleaseBounds() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory.appending(path: "routes/tiles"), withIntermediateDirectories: true)
@@ -123,13 +123,12 @@ struct SignedRoutesTests {
             try body.write(to: directory.appending(path: path))
         }
         try write(routes, "routes/tiles/9-267-178.json")
-        try write(routes, "routes/test.json")
         // The union of cells 9-267-177 and 9-267-178.
         let bounds = [7.734375, 47.5172006978394, 8.4375, 48.45835188280866]
         func release(_ routes: String, cells: [String]? = nil) -> PlannerRelease {
-            PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: bounds, basemap: directory, glyphs: "",
+            PlannerRelease(id: String(repeating: "a", count: 64), region: "test", bounds: bounds, basemap: directory, places: directory, glyphs: "",
                            sprites: "", terrain: "", terrain_attribution: "", search: directory, routing: directory,
-                           manifest: directory.appending(path: "release.json"), routes: routes, offlineCells: cells)
+                           manifest: directory.appending(path: "release.json"), overlays: directory, routes: routes, offlineCells: cells)
         }
         let tiles = directory.appending(path: "routes/tiles").absoluteString + "/{cell}.json"
         let grid = try #require(RouteCatalog(release: release(tiles, cells: ["9-267-177", "9-267-178"])))
@@ -137,11 +136,10 @@ struct SignedRoutesTests {
         #expect(try await grid.loadCell("9-267-178")?.map(\.id) == [101, 105])
         #expect(try await grid.loadCell("9-268-178") == nil)
         await #expect(throws: PlannerFailure.invalidData) { try await grid.loadCell("9-267-177") }
-        let region = try #require(RouteCatalog(release: release(directory.appending(path: "routes/test.json").absoluteString)))
-        #expect(region.covered == nil)
+        let online = try #require(RouteCatalog(release: release(tiles)))
+        #expect(online.covered == nil)
         // A neighbour that only shares an edge with the bounds is not covered.
-        #expect(try await region.loadCell("9-268-178") == nil)
-        #expect(try await region.loadCell("9-267-177")?.map(\.id) == [105])
-        #expect(try await region.loadCell("9-267-178")?.map(\.id) == [101, 105])
+        #expect(try await online.loadCell("9-268-178") == nil)
+        #expect(try await online.loadCell("9-267-178")?.map(\.id) == [101, 105])
     }
 }

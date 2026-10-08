@@ -1,7 +1,6 @@
 ---
 title: Sound cues
 description: The five sound families, when a cue plays, and the Sound settings.
-copy: ai
 ---
 
 # Sound cues

@@ -9,18 +9,19 @@ works, read the docs site: <https://openbikecomputer.com/>. Per-crate roles are 
 [repo README](../README.md#repository-layout).
 
 The workspace is rooted at the repo root (`../Cargo.toml`) and spans `firmware/`, `../host/` and
-`../apps/` — one `Cargo.lock`, one `target/`. Only `firmware/` is device-reachable; that is the
+`../planner/`, `../sim/`, and `../builder/` — one `Cargo.lock`, one `target/`. Only `firmware/` is device-reachable; that is the
 rule `firmware/tools/check_dependencies.py` enforces. Dev-dependencies cross the boundary on
 purpose, because a dev-dep never enters the `no_std` build, so `cargo test` wants GEOS.
 
-Three crates are excluded from the workspace and built from **inside their own directory**, each
+Four crates are excluded from the workspace and built from **inside their own directory**, each
 with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 
 | Crate | Why it stands alone |
 | :-- | :-- |
 | [`obc-fw-nrf54l`](obc-fw-nrf54l/README.md) | the board: its own MCU target and `.cargo/config.toml` |
 | [`obc-boot`](obc-boot/README.md) | the 32 KB bootloader, same target, its own link script |
-| [`obc-desktop`](../apps/obc-desktop/README.md) | the Tauri app: a platform webview |
+| [`obc-desktop`](../builder/desktop/README.md) | the Tauri app: a platform webview |
+| [`obc-sensor-sim`](obc-sensor-sim/README.md) | the sensor simulator: its own MCU target |
 
 ## Prerequisites
 
@@ -29,7 +30,7 @@ with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 | Anything Rust | A stable toolchain (`rustup`). |
 | The desktop simulator | Just Rust — the GUI is pure eframe/egui. |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`), its only native dependency. |
-| The desktop app (`obc-desktop`) | **CMake** and a C++ compiler (it vendors GEOS), plus Node. Linux also wants WebKitGTK — see [its README](../apps/obc-desktop/README.md). |
+| The desktop app (`obc-desktop`) | **CMake** and a C++ compiler (it vendors GEOS), plus Node. Linux also wants WebKitGTK — see [its README](../builder/desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build
@@ -53,11 +54,8 @@ cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README 
 ## Test
 
 ```sh
-cargo test                # the whole host workspace
-cargo test -p obc-pack    # just the packer
+obc test -p obc-pack      # test only the crates you changed
 ```
-
-`cargo test` does not touch the three excluded crates.
 
 The frozen resource numbers are in [`tools/resource_baseline.json`](tools/resource_baseline.json),
 enforced by [`tools/resource_guard.py`](tools/resource_guard.py). A build with
@@ -68,14 +66,14 @@ enforced by [`tools/resource_guard.py`](tools/resource_guard.py). A build with
 `obc-bench` renders seven fixed scenes through the real reader and renderer over a deterministic
 fixture, and prints per-stage timings, a frame hash and the map read path's counters. `--check`
 also runs the nine route-corridor cases and fails if any frame hash or read counter drifts from
-`host/obc-bench/golden.txt`. Timings are printed but never gated.
+`sim/bench/golden.txt`. Timings are printed but never gated.
 
 ```sh
 cargo run -p obc-bench --release                                       # the table
-cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt  # what CI runs
+cargo run -p obc-bench --release -- --check sim/bench/golden.txt  # what CI runs
 cargo run -p obc-bench --release -- --repeat 9                         # stable timing sample
 cargo run -p obc-bench --release -- --corridor                         # the corridor matrix alone
-cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt
+cargo run -p obc-bench --release -- --write-golden sim/bench/golden.txt
 ```
 
 A pure refactor must leave the golden file untouched. An intentional rendering or cache change
@@ -83,18 +81,19 @@ regenerates it in the same pull request, with the reason stated.
 
 ## Format
 
-`rustfmt.toml` is committed, so let rustfmt own style. Formatting takes four invocations, and CI
+`.rustfmt.toml` is committed, so let rustfmt own style. Formatting takes five invocations, and CI
 checks all of them: the workspace is a *virtual* manifest, so `--all` is required or it formats
-nothing, and `--all` skips the three excluded crates.
+nothing, and `--all` skips the four excluded crates.
 
 ```sh
 cargo fmt --all                                             # the workspace
 cargo fmt --manifest-path firmware/obc-fw-nrf54l/Cargo.toml
 cargo fmt --manifest-path firmware/obc-boot/Cargo.toml
-cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
+cargo fmt --manifest-path builder/desktop/Cargo.toml
+cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
 ```
 
-`obc fmt` runs all four.
+`obc fmt` runs all five.
 
 ## Run the simulator
 
@@ -102,13 +101,14 @@ cargo fmt --manifest-path apps/obc-desktop/Cargo.toml
 `obc pack <region.osm.pbf>`.
 
 ```sh
+obc sim                                                # the Grimsel demo
 ./target/release/obc-sim map.obcm                      # device look, 240×320, 3× window scale
 ./target/release/obc-sim map.obcm --size 480x640 --scale 2
 ./target/release/obc-sim map.obcm --gpx ride.gpx       # replay a GPX as a fake GPS
 ./target/release/obc-sim map.obcm --png out.png        # headless one-frame render
 ```
 
-See the [simulator guide](../apps/obc-sim/README.md) or `obc-sim --help` for the rest.
+See the [simulator guide](../sim/desktop/README.md) or `obc-sim --help` for the rest.
 
 ## Run the web demo (`obc-web-demo`)
 
@@ -120,26 +120,17 @@ trunk serve --config docs/Trunk.toml            # http://127.0.0.1:8080/
 trunk build --release --config docs/Trunk.toml  # → docs/dist/, what CI and Pages deploy
 ```
 
-## Build the web builder's wasm bridges
+## Build the web builder core
 
-The hosted builder has no backend, so `obc-web-convert` (GPX → `.obcr`) and `obc-web-assemble`
-(OBCA cells → one map) run as wasm in the tab. They are libraries consumed by Vite, so they build
-with `wasm-pack` (`cargo install wasm-pack` once):
+Build the browser core and its test-only device variant with `wasm-pack`:
 
 ```sh
-# From builder/app — writes src/lib/{convert,assemble}/pkg/ (gitignored).
-npm run build:wasm            # both; :convert / :assemble build one
+# From builder/web.
+npm run build:wasm
 ```
 
-The frontend needs that output before `npm run check`, `npm test` or `npm run build` will work.
-CI's `wasm-bridges` job does the same and enforces the per-module bundle-size budgets:
-
-```sh
-# From the repo root.
-python3 firmware/tools/wasm_size_guard.py --module convert
-python3 firmware/tools/wasm_size_guard.py --module preview
-python3 firmware/tools/wasm_size_guard.py --module assemble
-```
+The frontend needs this output before `npm run check`, `npm test`, or `npm run build`.
+See [the bridge README](../builder/wasm/README.md) for paths and checks.
 
 ## Firmware update images (OBCU)
 
@@ -210,8 +201,8 @@ a different pairing is a re-bake, not a format change.
 and a box, and byte-identical output for identical inputs is a contract pinned by a digest test. A
 source void becomes `NODATA` and nothing is ever inpainted.
 
-Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it, and
-`obc_elevation::COPERNICUS_ATTRIBUTION` is its single copy in the repo.
+Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it. Its single copy
+is the `copernicus-glo-30` entry of [`data/sources.toml`](../data/sources.toml).
 
 For a published catalog, use `obc bake terrain`, which drives this crate as a library over the
 curated coverage (see the root [README](../README.md#baking-and-publishing-the-catalog)). The two

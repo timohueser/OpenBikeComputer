@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import {search,DEFAULT_VIEW,distance} from '../web/engine.mjs';
+import {readFileSync} from 'node:fs';
+import {resolve} from '../resolver.mjs';
+import {lengths} from '../web/geography.mjs';
+import {compact} from '../web/text.mjs';
+import {openRegion} from '../installation.mjs';
+
+const regions=(process.env.OBC_SEARCH_REGIONS || 'germany,baden-wuerttemberg').split(',');
+const dbs=Object.fromEntries(regions.map(name=>{
+  const installed=openRegion(process.env.OBC_SEARCH_DATA || 'data',name);
+  if(!installed)throw new Error(`Missing search data for ${name}.`);
+  return [name,installed.db];
+}));
+const habsburgerSources=new Set(['w154330310','n303825598','n801319951']);
+const habsburgerLocation=[7.85434,48.01003];
+const habsburgerAddress=p=>p.precision==='house'&&p.city==='Freiburg im Breisgau'
+  &&habsburgerSources.has(p.source)&&distance([p.lon,p.lat],habsburgerLocation)<.02;
+const cases=[
+  {q:'Kandel',check:r=>r[0]?.kind==='summit'&&r.some(p=>p.source==='n1591343465'&&p.kind==='pass')&&r.filter(p=>p.kind==='street'&&p.name==='Kandel'&&p.distance<30).length===1},
+  {q:'Feldberg',check:r=>r[0]?.source==='n26862857'&&r.some(p=>p.source==='r317609')},
+  {q:'Feldberg (Schwarzwald)',check:r=>r[0]?.source==='r317609'},
+  {q:'Kandel',view:[8.3,48.95,8.5,49.1],serverOnly:true,check:r=>r[0]?.kind==='city'},
+  {q:'Freiburg',check:r=>r[0]?.name==='Freiburg im Breisgau'},
+  {q:'Freibug',check:r=>r[0]?.name==='Freiburg im Breisgau'},
+  {q:'Xreiburg',check:r=>r[0]?.name==='Freiburg im Breisgau'},
+  ...['Munich','München','Muenchen','Munchne'].map(q=>({q,serverOnly:true,check:r=>r[0]?.name==='München'&&r[0]?.kind==='city'})),
+  {q:'Deutsches Museum München',serverOnly:true,check:r=>r[0]?.name==='Deutsches Museum'&&r[0]?.kind==='museum'},
+  {q:'Platz der Republik 1 Berlin',serverOnly:true,check:r=>r[0]?.precision==='house'&&r[0]?.city==='Berlin'},
+  {q:'Kaiser Joseph Straße 242 Freiburg',check:r=>r[0]?.precision==='house'},
+  {q:'Habsburgerstr. 10 Freiburg',check:r=>r.length>0&&habsburgerAddress(r[0])},
+  {q:'Habsburgerstr 10',check:r=>r[0]?.city==='Freiburg im Breisgau'&&r[0]?.precision==='house'},
+  ...['Media Markt','Media-Markt','NediaMarkt','Mdeia Mrkt','Media Markt Freiburg'].map(q=>({q,check:r=>r[0]?.source==='n809686332'})),
+  ...['MediaMarkt','Media Markt'].map(q=>({q,view:[7.76,48.08,7.86,48.16],check:r=>{
+    const shops=r.filter(p=>p.kind==='electronics'&&compact(p.name)==='mediamarkt');
+    return shops[0]?.source==='n414000115'&&shops[1]?.source==='n809686332'&&shops[2]?.source==='w143665549'
+      &&shops.every((p,i)=>!i||shops[i-1].distance<=p.distance);
+  }})),
+  {q:'Media Markt München',serverOnly:true,check:r=>r[0]?.city==='München'&&r[0]?.kind==='electronics'},
+  {q:'Kaiser Joseph Straße 9999 Freiburg',check:r=>r[0]?.precision==='street'},
+];
+const results=[];
+for(const [name,db]of Object.entries(dbs))for(const c of cases) {
+  if(name!=='germany'&&c.serverOnly)continue;
+  const input={...c,view:c.view||DEFAULT_VIEW};delete input.check;
+  const r=search(db,input);
+  assert.ok(c.check(r.results),`${name}: ${c.q}: ${JSON.stringify(r.results.slice(0,2).map(p=>[p.name,p.kind]))}`);
+  results.push({data:name,q:c.q,ms:r.elapsed,first:r.results[0]?.name});
+}
+console.log(`PASS ${results.length} real-data acceptance cases`);
+const timing=[];
+const primary=dbs.germany || dbs['baden-wuerttemberg'];
+for(let n=0;n<3;n++)for(const c of cases) {
+  if(!dbs.germany && c.serverOnly)continue;
+  const r=search(primary,{...c,view:c.view||DEFAULT_VIEW});timing.push(r.elapsed);
+}
+timing.sort((a,b)=>a-b);
+const xml=readFileSync(new URL('../../../fixtures/sources/route-import/komoot-schwarzwald.gpx',import.meta.url),'utf8');
+const line=[...xml.matchAll(/<trkpt lat="([^"]+)" lon="([^"]+)"/g)].map(m=>[Number(m[2]),Number(m[1])]),total=lengths(line).at(-1);
+const context={q:'hotels end of day 1',view:DEFAULT_VIEW,plan:{coordinates:line,points:[],days:[1,2,3].map(n=>({number:n,from:(n-1)*total/3,to:n*total/3}))}};
+const hotels=resolve(dbs['baden-wuerttemberg'],{type:'places',what:['hotel'],where:{day:1,part:'end'}},context);
+assert.ok(hotels.results.length>0);assert.ok(hotels.results.every(p=>p.kind==='hotel'&&p.distance<=3));
+const gap=resolve(dbs['baden-wuerttemberg'],{type:'stretches',what:'gap:water'},context);
+assert.ok(gap.stretches.length>0);assert.ok(gap.stretches.every(s=>s.from>=0&&s.to<=total&&s.coordinates.length>=2));
+const address=resolve(primary,{type:'route',from:{plan:'start'},to:{name:'Habsburgerstr. 10 Freiburg'}},context);
+const target=address.changes[0].points.at(-1);
+assert.ok(habsburgerSources.has(target.source)&&distance(target.coordinate,habsburgerLocation)<.02);
+assert.ok(primary.rows({sql:"SELECT 1 FROM {c}.addresses WHERE source='w154330310' AND house='10'",limit:1}).length>0);
+console.log('PASS real-data day scope, water gaps, and address route target');
+for(const db of Object.values(dbs))db.close();
+console.log(JSON.stringify({queries:results.length,medianMs:timing[Math.floor(timing.length/2)],p95Ms:timing[Math.ceil(timing.length*.95)-1]},null,2));

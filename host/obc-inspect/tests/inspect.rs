@@ -15,7 +15,7 @@ use obc_storage::flat::{
 use obcm_testkit::scratch::{scratch_dir, scratch_path};
 use serde_json::Value;
 
-const DEMO_MAP: &str = "../../apps/obc-sim/assets/grimsel-demo.obcm";
+const DEMO_MAP: &str = "../../sim/desktop/assets/grimsel-demo.obcm";
 
 fn inspect(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_obc-inspect")).args(args).output().expect("the inspector runs")

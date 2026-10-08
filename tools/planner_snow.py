@@ -1,6 +1,9 @@
 """Bake the planner snow layer of one region: `snow.pmtiles`, as `specs/planner-snow-tiles.md` defines it.
 
-    uv run --with-requirements tools/requirements-planner-snow.txt python -m tools.planner_snow REGION
+The `obc data` step (`--step`) reads HR-WSI where it has data and MODIS elsewhere. The command line
+reads one source:
+
+    uv run --locked --group planner-snow python -m tools.planner_snow REGION
 
 The default source is NASA MODIS daily snow cover from the anonymous Microsoft Planetary Computer
 copy. It ends in June 2025. The bake reads only the region window of each daily file and writes no
@@ -13,7 +16,7 @@ reads the window of one zoom-9 tile at a time from each file on the Copernicus D
 """
 
 import argparse
-from collections import namedtuple
+from collections import deque, namedtuple
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import gzip
@@ -31,23 +34,19 @@ import urllib.request
 
 import numpy as np
 
-from . import planner_maps as maps
+from . import planner_geo as geo, step_request
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
 TILE = 256
-RECIPES = maps.ROOT / "tools/planner-regions"
-# `canopy`: MODIS sees the canopy, not the snow under it. The Copernicus input corrects for trees.
 # `smooth`: 20 m day values are noisy, so the lower zooms smooth them before they blend.
 SOURCES = {
-    "nasa-modis": {"resolution_m": 500, "canopy": True, "smooth": False,
-                   "attribution": "NASA MODIS snow cover MOD10A1/MYD10A1 (NSIDC); tree canopy: Hansen/UMD/Google/USGS/NASA"},
-    "copernicus-hr-wsi": {"resolution_m": 20, "canopy": False, "smooth": True,
-                          "attribution": f"© European Union, Copernicus Land Monitoring Service {dt.date.today().year}, "
-                                         "European Environment Agency (EEA): HR-WSI Snow Phenology"},
+    "nasa-modis": {"resolution_m": 500, "smooth": False},
+    "copernicus-hr-wsi": {"resolution_m": 20, "smooth": True},
 }
-CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/Hansen_GFC-2023-v1.11_treecover2000_{}.tif"
-# The owner chose 75 % canopy cover as "dense": below it, MODIS still sees the snow between the trees.
+CANOPY = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-{0}/Hansen_GFC-2023-{0}_treecover2000_{1}.tif"
+# MODIS sees the canopy, not the snow under it; HR-WSI corrects for trees. The owner chose 75 % canopy cover as
+# "dense": below it, MODIS still sees the snow between the trees.
 DENSE_CANOPY_PERCENT = 75
 STAC = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 SAS = "https://planetarycomputer.microsoft.com/api/sas/v1/token/{}/{}"
@@ -175,12 +174,6 @@ def tile_lonlat(z, x, y):
     return lon.ravel(), lat.ravel()
 
 
-def tile_bounds(z, x, y):
-    n = 2 ** z
-    lat = lambda row: math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
-    return x / n * 360 - 180, lat(y + 1), (x + 1) / n * 360 - 180, lat(y)
-
-
 def sample(planes, grid, z, x, y):
     """Bilinear blend of the source planes (seasons, 2, rows, cols) at the pixel centres of a tile."""
     from rasterio.warp import transform
@@ -227,35 +220,32 @@ def parent(children, seasons, smoothed=False):
 
 
 def canopy_tiles(bounds):
-    """Names of the 10° Hansen tiles, named by their north-west corner, that the bounds touch."""
-    west, south, east, north = bounds
+    """Names of the 10° Hansen tiles, named by their north-west corner, that the bounds overlap with one MODIS pixel of
+    margin: the bake samples the MODIS pixels around its edge. As `canopy_tiles` of the planner step list."""
+    pad = 10 / MODIS_PIXELS
+    widen = pad / math.cos(math.radians(max(abs(bounds[1]), abs(bounds[3]))))
+    west, south, east, north = bounds[0] - widen, bounds[1] - pad, bounds[2] + widen, bounds[3] + pad
     return [f"{abs(lat):02d}{'N' if lat >= 0 else 'S'}_{abs(lon):03d}{'E' if lon >= 0 else 'W'}"
-            for lat in range(math.ceil(south / 10) * 10, math.ceil(north / 10) * 10 + 1, 10)
+            for lat in range(math.floor(south / 10) * 10 + 10, math.ceil(north / 10) * 10 + 1, 10)
             for lon in range(math.floor(west / 10) * 10, math.ceil(east / 10) * 10, 10)]
 
 
-def canopy_cover(z, x, y):
-    """Mean tree canopy cover in percent of each pixel of tile z/x/y, in the year 2000."""
+def canopy_cover(grid, paths):
+    """Mean tree canopy cover in percent of each pixel of `grid`, in the year 2000, from the Hansen GFC
+    `treecover2000` rasters `paths`."""
     import rasterio
-    from rasterio.transform import from_bounds
-    from rasterio.warp import Resampling, reproject, transform_bounds
-    from rasterio.windows import Window, from_bounds as window_from_bounds
+    from rasterio.warp import Resampling, reproject
 
-    bounds = tile_bounds(z, x, y)
-    cover = np.zeros((TILE, TILE), np.float32)
-    target = from_bounds(*transform_bounds("EPSG:4326", "EPSG:3857", *bounds), TILE, TILE)
-    for name in canopy_tiles(bounds):
-        with rasterio.open(CANOPY.format(name)) as src:
-            window = window_from_bounds(*bounds, src.transform).intersection(Window(0, 0, src.width, src.height))
-            window = window.round_offsets().round_lengths()
-            reproject(src.read(1, window=window).astype(np.float32), cover, src_transform=src.window_transform(window),
-                      src_crs=src.crs, dst_transform=target, dst_crs="EPSG:3857", resampling=Resampling.average,
-                      init_dest_nodata=False)
+    cover = np.zeros(grid.shape, np.float32)
+    for path in paths:
+        with rasterio.open(path) as src:
+            reproject(rasterio.band(src, 1), cover, dst_transform=grid.transform, dst_crs=grid.crs,
+                      resampling=Resampling.average, init_dest_nodata=False)
     return cover
 
 
-def trails(bounds):
-    """OSM `highway=path|track` segments inside the bounds: midpoint longitude, latitude and length in metres."""
+def overpass_trails(bounds):
+    """The Overpass answer, in JSON, with the OSM `highway=path|track` ways that the bounds touch."""
     west, south, east, north = bounds
     query = f'[out:json][timeout:180];way["highway"~"^(path|track)$"]({south},{west},{north},{east});out geom;'
     request = urllib.request.Request(OVERPASS, data=urllib.parse.urlencode({"data": query}).encode(),
@@ -263,89 +253,71 @@ def trails(bounds):
     for attempt in range(4):
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
-                ways = json.load(response)["elements"]
-            break
+                return response.read()
         except urllib.error.HTTPError as error:
             # Overpass answers 429 and 504 when it is busy.
             if error.code not in (429, 504) or attempt == 3:
                 raise
             time.sleep(60 * (attempt + 1))
-    lon, lat, metres = [], [], []
-    for way in ways:
-        points = np.radians([[p["lon"], p["lat"]] for p in way.get("geometry", [])])
-        if len(points) < 2:
-            continue
-        a, b = points[:-1], points[1:]
-        h = np.sin((b[:, 1] - a[:, 1]) / 2) ** 2 + np.cos(a[:, 1]) * np.cos(b[:, 1]) * np.sin((b[:, 0] - a[:, 0]) / 2) ** 2
-        metres.append(2 * 6371008.8 * np.arcsin(np.sqrt(h)))
-        mid = np.degrees((a + b) / 2)
-        lon.append(mid[:, 0])
-        lat.append(mid[:, 1])
-    lon, lat, metres = (np.concatenate(v) for v in (lon, lat, metres))
-    inside = (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
-    return lon[inside], lat[inside], metres[inside]
 
 
-def bake(source, first_season, seasons, name, bounds, output, trail_segments=None, workers=4):
-    """Write the archive; return the tile count and, with trail segments, the share of trail length on no data.
+def bake(sources, first_season, seasons, bounds, output, credit, workers=4):
+    """Write the archive with the attribution `credit`; return the tile count.
 
-    `source(bounds)` gives the season planes and their grid around the bounds of one chunk tile. The chunks
-    bake in `workers` threads: numpy, zlib and GDAL release the GIL. CDSE S3 allows 4 connections per user.
+    `sources` is [(name, planes)], the finest first: `planes(bounds)` gives the season planes and their grid around
+    the bounds of one chunk tile. In each season, a pixel takes the first source that has data there. The finest
+    source sets the max zoom, the smoothing and the metadata. The chunks bake in `workers` threads: numpy, zlib and
+    GDAL release the GIL. CDSE S3 allows 4 connections per user.
     """
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import Writer
 
+    name = sources[0][0]
     top = max_zoom(SOURCES[name]["resolution_m"], bounds)
     chunk = min(CHUNK_ZOOM, top)
     west, south, east, north = bounds
     tiles = {}
-    if trail_segments is not None:
-        lon, lat, metres = trail_segments
-        n = 2 ** top * TILE
-        px = ((lon + 180) / 360 * n).astype(np.int64)
-        py = ((1 - np.log(np.tan(np.radians(lat)) + 1 / np.cos(np.radians(lat))) / np.pi) / 2 * n).astype(np.int64)
 
     def area(z, x, y):
         """The part of the bounds in tile z/x/y, or None."""
-        w, s, e, n_ = tile_bounds(z, x, y)
+        w, s, e, n_ = geo.tile_bounds(z, x, y)
         if w >= east or e <= west or s >= north or n_ <= south:
             return None
         return max(w, west), max(s, south), min(e, east), min(n_, north)
 
-    def build(z, x, y, planes=None, grid=None):
-        """The body of tile z/x/y and its trail length on no data. Its tiles and those below go into `tiles`."""
+    def build(z, x, y, read=None):
+        """The body of tile z/x/y from `read`, the planes and grids of the sources around its chunk. Its tiles and
+        those below go into `tiles`."""
         if area(z, x, y) is None:
-            return None, 0.0
-        if z == chunk and planes is None:
+            return None
+        if z == chunk and read is None:
             return chunks[x, y].result()
-        masked = 0.0
         if z == top:
-            body = sample(planes, grid, z, x, y)
+            body = None
+            for planes, grid in read:
+                if body is not None and not (body == NO_DATA).any():
+                    break
+                sampled = sample(planes, grid, z, x, y)
+                body = sampled if body is None else np.where(body == NO_DATA, sampled, body)
             lon_c, lat_c = tile_lonlat(z, x, y)
             outside = ((lon_c < west) | (lon_c > east) | (lat_c < south) | (lat_c > north)).reshape(TILE, TILE)
             body[:, :, outside] = NO_DATA
-            if SOURCES[name]["canopy"]:
-                body[:, :, canopy_cover(z, x, y) > DENSE_CANOPY_PERCENT] = NO_DATA
-            if trail_segments is not None:
-                here = (px // TILE == x) & (py // TILE == y)
-                missing = (body[:, 0] == NO_DATA).all(0)
-                masked = metres[here][missing[py[here] % TILE, px[here] % TILE]].sum()
         else:
-            children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy, planes, grid) for dx in (0, 1) for dy in (0, 1)}
-            masked = sum(length for _, length in children.values())
-            body = parent({key: child for key, (child, _) in children.items()}, seasons, SOURCES[name]["smooth"])
+            children = {(dx, dy): build(z + 1, 2 * x + dx, 2 * y + dy, read) for dx in (0, 1) for dy in (0, 1)}
+            body = parent(children, seasons, SOURCES[name]["smooth"])
         if (body != NO_DATA).any():
             tiles[zxy_to_tileid(z, x, y)] = gzip.compress(body.tobytes(), mtime=0)
-        return body, masked
+        return body
 
-    count = 2 ** chunk
-    row = lambda lat: int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * count)
+    x0, y0 = geo.mercator(west, north, chunk)
+    x1, y1 = geo.mercator(east, south, chunk)
     pool = ThreadPoolExecutor(workers)
     try:
-        chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, *source(part)), x, y, part)
-                  for x in range(int((west + 180) / 360 * count), int((east + 180) / 360 * count) + 1)
-                  for y in range(row(north), row(south) + 1) if (part := area(chunk, x, y))}
-        _, masked = build(0, 0, 0)
+        read = lambda part: [planes(part) for _, planes in sources]
+        chunks = {(x, y): pool.submit(lambda x, y, part: build(chunk, x, y, read(part)), x, y, part)
+                  for x in range(int(x0), int(x1) + 1)
+                  for y in range(int(y0), int(y1) + 1) if (part := area(chunk, x, y))}
+        build(0, 0, 0)
     finally:
         pool.shutdown(cancel_futures=True)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -362,15 +334,14 @@ def bake(source, first_season, seasons, name, bounds, output, trail_segments=Non
                 "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, {
                 "first_season": first_season, "seasons": seasons, "step_days": 2, "source": name,
-                "resolution_m": meta["resolution_m"], "attribution": meta["attribution"],
+                "resolution_m": meta["resolution_m"], "attribution": credit,
             })
             stream.flush()
             os.replace(stream.name, output)
         except BaseException:
             os.unlink(stream.name)
             raise
-    share = None if trail_segments is None else masked / max(trail_segments[2].sum(), 1e-9)
-    return len(tiles), share
+    return len(tiles)
 
 
 def http_json(url, body=None):
@@ -395,50 +366,50 @@ def modis_grid(bounds):
     size = MODIS_TILE_M / MODIS_PIXELS
     c0, c1 = math.floor((left - MODIS_X0) / size) - 1, math.ceil((right - MODIS_X0) / size) + 1
     r0, r1 = math.floor((MODIS_Y0 - top) / size) - 1, math.ceil((MODIS_Y0 - bottom) / size) + 1
-    return Grid(SINUSOIDAL, Affine(size, 0, MODIS_X0 + c0 * size, 0, -size, MODIS_Y0 - r0 * size), (r1 - r0, c1 - c0)), (r0, c0)
+    return Grid(SINUSOIDAL, Affine(size, 0, MODIS_X0 + c0 * size, 0, -size, MODIS_Y0 - r0 * size), (r1 - r0, c1 - c0))
 
 
 def modis_items(bounds, start, end):
-    """{date: [(platform, h, v, href)]} of the MOD10A1/MYD10A1 files from `start` to `end`."""
+    """{date: [(platform, href)]} of the MOD10A1/MYD10A1 files from `start` to `end`."""
     body = {"collections": ["modis-10A1-061"], "bbox": list(bounds), "datetime": f"{start}/{end}", "limit": 1000}
     items, page = {}, http_json(STAC, body)
     while True:
         for feature in page["features"]:
-            p = feature["properties"]
-            items.setdefault(dt.date.fromisoformat(p["start_datetime"][:10]), []).append(
-                (feature["id"][:3], p["modis:horizontal-tile"], p["modis:vertical-tile"], feature["assets"]["NDSI_Snow_Cover"]["href"]))
+            items.setdefault(dt.date.fromisoformat(feature["properties"]["start_datetime"][:10]), []).append(
+                (feature["id"][:3], feature["assets"]["NDSI_Snow_Cover"]["href"]))
         link = next((link for link in page.get("links", []) if link["rel"] == "next"), None)
         if link is None:
             break
         page = http_json(link["href"], link.get("body")) if link.get("method") == "POST" else http_json(link["href"])
     # Each file needs a read token of its storage account and container; a token is valid for about an hour.
     container = lambda href: (urllib.parse.urlsplit(href).netloc.split(".")[0], urllib.parse.urlsplit(href).path.split("/")[1])
-    keys = {container(file[3]) for files in items.values() for file in files}
+    keys = {container(href) for files in items.values() for _, href in files}
     tokens = {key: http_json(SAS.format(*key))["token"] for key in keys}
-    sign = lambda href: f"{href}?{tokens[container(href)]}"
-    return {day: [(*rest, sign(href)) for *rest, href in files] for day, files in items.items()}
+    return {day: [(platform, f"{href}?{tokens[container(href)]}") for platform, href in files] for day, files in items.items()}
 
 
-def modis_day(files, grid, origin):
-    """Clear and snow masks of one day: Terra first, Aqua where Terra is not clear."""
+def modis_day(files, grid):
+    """Clear and snow masks of one day from its files [(platform, path)]: Terra first, Aqua where Terra is not
+    clear. A file is a MODIS tile or a window of one; its transform places it on the grid."""
     import rasterio
     from rasterio.windows import Window
 
     rows, cols = grid.shape
-    r0, c0 = origin
+    size = grid.transform.a
     ndsi = {"MOD": np.full(grid.shape, NO_DATA, np.uint8), "MYD": np.full(grid.shape, NO_DATA, np.uint8)}
-    for platform, h, v, href in files:
-        top, bottom = max(r0, v * MODIS_PIXELS), min(r0 + rows, (v + 1) * MODIS_PIXELS)
-        left, right = max(c0, h * MODIS_PIXELS), min(c0 + cols, (h + 1) * MODIS_PIXELS)
-        if top >= bottom or left >= right:
-            continue
+    for platform, path in files:
         for attempt in range(5):
             try:
-                with rasterio.open(href) as src:
-                    if abs(src.transform.c - (MODIS_X0 + h * MODIS_TILE_M)) > 1 or abs(src.transform.f - (MODIS_Y0 - v * MODIS_TILE_M)) > 1:
-                        raise ValueError(f"{href} is not on the MODIS sinusoidal grid")
-                    window = Window(left - h * MODIS_PIXELS, top - v * MODIS_PIXELS, right - left, bottom - top)
-                    ndsi[platform][top - r0:bottom - r0, left - c0:right - c0] = src.read(1, window=window)
+                with rasterio.open(path) as src:
+                    col, row = (src.transform.c - grid.transform.c) / size, (grid.transform.f - src.transform.f) / size
+                    if abs(src.transform.a - size) > 1e-3 or max(abs(col - round(col)), abs(row - round(row))) * size > 1:
+                        raise ValueError(f"{path} is not on the MODIS sinusoidal grid")
+                    col, row = round(col), round(row)
+                    top, left = max(row, 0), max(col, 0)
+                    bottom, right = min(row + src.height, rows), min(col + src.width, cols)
+                    if top < bottom and left < right:
+                        window = Window(left - col, top - row, right - left, bottom - top)
+                        ndsi[platform][top:bottom, left:right] = src.read(1, window=window)
                 break
             except rasterio.errors.RasterioIOError:
                 if attempt == 4:
@@ -450,25 +421,47 @@ def modis_day(files, grid, origin):
     return clear(value), clear(value) & (value >= MODIS_SNOW_NDSI)
 
 
-def nasa_planes(bounds, first_season, last_season, workers=24):
-    """Season planes on the MODIS grid, streamed one season of daily files at a time."""
+def modis_seasons(bounds, first_season, last_season):
+    """(season, its files as `modis_items`) for each season, with GDAL set up to read them.
+
+    One season at a time: a read token lasts about an hour."""
     os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
                       GDAL_HTTP_MAX_RETRY="5", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE")
-    grid, origin = modis_grid(bounds)
+    for season in range(first_season, last_season + 1):
+        yield season, modis_items(bounds, dt.date(season, 9, 1), dt.date(season + 1, 8, 31))
+
+
+def bounded_map(pool, function, items, ahead):
+    """`pool.map(function, items)` with at most `ahead` items submitted and not yet read: the readers of MODIS days
+    outrun `SnowSeasons.observe`, and each day read holds its planes until it is observed."""
+    pending = deque()
+    for item in items:
+        pending.append(pool.submit(function, item))
+        if len(pending) == ahead:
+            yield pending.popleft().result()
+    while pending:
+        yield pending.popleft().result()
+
+
+def modis_planes(groups, bounds, first_season, last_season, canopy, workers=24):
+    """Season planes on the MODIS grid around the bounds, from daily files fed as groups {date: [(platform, path)]}
+    whose days increase from group to group. A pixel whose mean tree canopy cover in the Hansen GFC rasters
+    `canopy` is more than DENSE_CANOPY_PERCENT is no data."""
+    grid = modis_grid(bounds)
     state = SnowSeasons(first_season, last_season - first_season + 1, grid.shape)
-    end, start = 0, time.monotonic()
+    first, end, start = dt.date(first_season, 9, 1), 0, time.monotonic()
     with ThreadPoolExecutor(workers) as pool:
-        for season in range(first_season, last_season + 1):
-            first, last = dt.date(season, 9, 1), dt.date(season + 1, 8, 31)
-            items = modis_items(bounds, first, last)
+        for items in groups:
             days = sorted(items)
-            for day, (clear, snow) in zip(days, pool.map(lambda d: modis_day(items[d], grid, origin), days)):
-                index = season_start(first_season, season) + (day - first).days
-                state.observe(index, clear, snow)
-                end = index + 1
-            print(f"Season {season}/{(season + 1) % 100:02d}: {len(days)} days, {time.monotonic() - start:.0f} s",
+            read = lambda day: modis_day(items[day], grid)
+            for day, (clear, snow) in zip(days, bounded_map(pool, read, days, 2 * workers)):
+                end = (day - first).days + 1
+                state.observe(end - 1, clear, snow)
+            print(f"MODIS: {len(days)} days to {days[-1] if days else '-'}, {time.monotonic() - start:.0f} s",
                   file=sys.stderr, flush=True)
-    return state.planes(end), grid
+    planes = state.planes(end)
+    planes[:, :, canopy_cover(grid, canopy) > DENSE_CANOPY_PERCENT] = NO_DATA
+    return planes, grid
 
 
 def copernicus_files(bounds):
@@ -539,34 +532,126 @@ def copernicus_planes(files, bounds, seasons):
     return np.stack(planes), grid
 
 
+def subset(path, bounds, out):
+    """Write the window of raster `path` that covers `bounds`, one pixel wider on each side, to `out`.
+
+    The file keeps the name of the source file. A file whose raster misses the bounds writes nothing.
+    """
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    target = out / Path(urllib.parse.urlsplit(path).path).name
+    if target.exists():
+        return
+    with rasterio.open(path) as src:
+        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bounds, densify_pts=100), src.transform)
+        # Rounded first: a bound on a pixel edge comes back a hair off it.
+        col, row = round(window.col_off, 6), round(window.row_off, 6)
+        left, top = math.floor(col) - 1, math.floor(row) - 1
+        right, bottom = math.ceil(round(col + window.width, 6)) + 1, math.ceil(round(row + window.height, 6)) + 1
+        left, top, right, bottom = max(left, 0), max(top, 0), min(right, src.width), min(bottom, src.height)
+        if left >= right or top >= bottom:
+            return
+        window = Window(left, top, right - left, bottom - top)
+        profile = {key: value for key, value in src.profile.items() if key not in ("blockxsize", "blockysize", "tiled")}
+        profile.update(driver="GTiff", width=window.width, height=window.height, transform=src.window_transform(window),
+                       compress="deflate")
+        data = src.read(window=window)
+    part = target.with_name(target.name + ".part")
+    with rasterio.open(part, "w", **profile) as dst:
+        dst.write(data)
+    os.replace(part, target)
+
+
+def fetch(source, bounds, first_season, last_season, out):
+    """Write the window of every source file of the seasons to `out`, for `obc data fetch`."""
+    out.mkdir(parents=True, exist_ok=True)
+    if source == "copernicus-hr-wsi":
+        cdse_credentials()
+        files = copernicus_files(bounds)
+        paths = {path for season in range(first_season, last_season + 1)
+                 for layer in files.get(season, {}).values() for path in layer}
+        with ThreadPoolExecutor(4) as pool:
+            list(pool.map(lambda path: subset(path, bounds, out), paths))
+        return
+    for season, items in modis_seasons(bounds, first_season, last_season):
+        # The search can list a file twice, and two writers of one file collide.
+        hrefs = {urllib.parse.urlsplit(href).path: href for files in items.values() for _, href in files}
+        with ThreadPoolExecutor(24) as pool:
+            list(pool.map(lambda href: subset(href, bounds, out), hrefs.values()))
+        print(f"Season {season}/{(season + 1) % 100:02d}: {len(hrefs)} files", file=sys.stderr, flush=True)
+
+
+def step():
+    """The `obc data` step `planner/snow`: `snow.pmtiles` from the HR-WSI Snow Phenology windows of the `hr-wsi`
+    snapshot where they have data, and else from the MODIS daily windows of `modis-snow` with the tree canopy of
+    `hansen-gfc`. A region outside HR-WSI has no `hr-wsi` snapshot."""
+    request = step_request.read()
+    options = request["options"]
+    bounds, (first, last) = options["bounds"], options["seasons"]
+    seasons = range(first, last + 1)
+    days = {}
+    for name, path in sorted(step_request.files(request, "modis-snow").items()):
+        platform, year, day = re.fullmatch(r"(MOD|MYD)10A1\.A(\d{4})(\d{3})\..*\.tif", name).groups()
+        days.setdefault(dt.date(int(year), 1, 1) + dt.timedelta(int(day) - 1), []).append((platform, path))
+    canopy = [path for _, path in sorted(step_request.files(request, "hansen-gfc").items())]
+    modis = modis_planes([days], bounds, first, last, canopy)
+    sources = [("nasa-modis", lambda chunk: modis)]
+    if "hr-wsi" in request["snapshots"]:
+        files = {}
+        for name, path in sorted(step_request.files(request, "hr-wsi").items()):
+            season, layer = re.fullmatch(r".*_(\d{4})0901P1Y_.*_(SCO|SCM|SCD)\.tif", name).groups()
+            files.setdefault(int(season), {}).setdefault(layer, []).append(str(path))
+        sources.insert(0, ("copernicus-hr-wsi", lambda chunk: copernicus_planes(files, chunk, seasons)))
+    count = bake(sources, first, len(seasons), bounds, Path(request["output"]) / "snow.pmtiles",
+                 options["attribution"].format(year=options["year"]))
+    step_request.metrics(request, {"tiles": count})
+
+
 def main():
+    # The step gets its credit and its versions in its options, so only this command line reads
+    # the registry and the versions.
+    from . import data_registry, planner_sources
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", help="region name: the recipe in tools/planner-regions and the default output folder")
-    parser.add_argument("--bounds", type=maps.bounds, help="west,south,east,north instead of the recipe bounds")
+    parser.add_argument("region", nargs="?", help="region id: a box region in data/regions/ and the default output folder")
+    parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/snow.pmtiles")
     parser.add_argument("--source", choices=SOURCES, default="nasa-modis")
     parser.add_argument("--first-season", type=int, default=2000, help="the first NASA season")
     parser.add_argument("--last-season", type=int, default=2024, help="the last NASA season (2024 ends in June 2025)")
-    parser.add_argument("--trails", action="store_true", help="report the share of OSM path and track length with no data in every season")
+    parser.add_argument("--fetch", type=Path, help="only write the source windows of the seasons to this directory")
+    parser.add_argument("--fetch-trails", type=Path, help="only write the Overpass answer of the trails to trails.json in this directory")
     args = parser.parse_args()
-    bounds = args.bounds or json.loads((RECIPES / f"{args.region}.json").read_text())["bounds"]
+    if not args.region and not ((args.fetch or args.fetch_trails) and args.bounds):
+        parser.error("give a region, or --bounds with --fetch or --fetch-trails")
+    bounds = args.bounds or data_registry.region_box(args.region)
+    if args.fetch_trails:
+        args.fetch_trails.mkdir(parents=True, exist_ok=True)
+        (args.fetch_trails / "trails.json").write_bytes(overpass_trails(bounds))
+        return
+    if args.fetch:
+        fetch(args.source, bounds, args.first_season, args.last_season, args.fetch)
+        return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/snow.pmtiles"
     start = time.monotonic()
     if args.source == "copernicus-hr-wsi":
         cdse_credentials()
         seasons = range(min(files := copernicus_files(bounds)), max(files) + 1)
         source = lambda chunk: copernicus_planes(copernicus_files(chunk), chunk, seasons)
+        credit = data_registry.attribution("hr-wsi", year=dt.date.today().year)
     else:
-        planes, grid = nasa_planes(bounds, args.first_season, args.last_season)
-        seasons = range(args.first_season, args.first_season + planes.shape[0])
-        source = lambda chunk: (planes, grid)
-    count, share = bake(source, seasons.start, len(seasons), args.source, bounds, output, trails(bounds) if args.trails else None)
-    report = {"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
-              "total_s": round(time.monotonic() - start)}
-    if share is not None:
-        report["no_data_trail_share"] = round(share, 3)
-    print(json.dumps(report))
+        seasons = range(args.first_season, args.last_season + 1)
+        canopy = [CANOPY.format(planner_sources.VERSIONS["hansen-gfc"], name) for name in canopy_tiles(bounds)]
+        groups = (items for _, items in modis_seasons(bounds, args.first_season, args.last_season))
+        modis = modis_planes(groups, bounds, args.first_season, args.last_season, canopy)
+        source = lambda chunk: modis
+        credit = f"{data_registry.attribution('modis-snow')}; tree canopy: {data_registry.attribution('hansen-gfc')}"
+    count = bake([(args.source, source)], seasons.start, len(seasons), bounds, output, credit)
+    print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": count, "seasons": len(seasons),
+                      "total_s": round(time.monotonic() - start)}))
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

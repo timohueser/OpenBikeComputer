@@ -6,30 +6,37 @@ public struct PlannerRelease: Decodable, Equatable, Sendable {
     public let region: String
     public let bounds: [Double]
     public let basemap: URL
+    public let places: URL
     public let glyphs: String
     public let sprites: String
     public let terrain: String
     public let terrain_attribution: String
+    /// The OSM credit of the release, from data/sources.toml. Nil for a release without one.
+    public let attribution: String?
+    /// The credit of the basemap's land cover. Nil for a release without one.
+    public let landcover_attribution: String?
     public let search: URL
     public let routing: URL
     public let manifest: URL
-    /// Route network tiles of an online release. Offline releases read networks from their routing cells.
-    public let overlays: URL?
-    /// The route catalog: a cell file URL with `{cell}`, or the one region file. Nil when the release has none.
+    /// The route network TileJSON.
+    public let overlays: URL
+    /// The route catalog: a cell file URL with `{cell}`. Nil when the release has none.
     public let routes: String?
     /// The cell IDs of an offline grid selection. Only routes wholly inside them are listed.
     public let offlineCells: [String]?
 
-    public init(id: String, region: String, bounds: [Double], basemap: URL, glyphs: String,
+    public init(id: String, region: String, bounds: [Double], basemap: URL, places: URL, glyphs: String,
                 sprites: String, terrain: String, terrain_attribution: String, search: URL, routing: URL, manifest: URL,
-                overlays: URL? = nil, routes: String? = nil, offlineCells: [String]? = nil) {
-        self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap
+                overlays: URL, routes: String? = nil, offlineCells: [String]? = nil, attribution: String? = nil,
+                landcover_attribution: String? = nil) {
+        self.id = id; self.region = region; self.bounds = bounds; self.basemap = basemap; self.places = places
         self.glyphs = glyphs; self.sprites = sprites; self.terrain = terrain
         self.terrain_attribution = terrain_attribution; self.search = search; self.routing = routing; self.manifest = manifest
-        self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells
+        self.overlays = overlays; self.routes = routes; self.offlineCells = offlineCells; self.attribution = attribution
+        self.landcover_attribution = landcover_attribution
     }
 
-    public var isLocal: Bool { manifest.isFileURL || (basemap.scheme == "pmtiles" && basemap.absoluteString.hasPrefix("pmtiles://file:")) }
+    public var isLocal: Bool { manifest.isFileURL }
 
     public func contains(_ coordinate: Coordinate) -> Bool {
         bounds.count == 4 && (bounds[0]...bounds[2]).contains(coordinate.longitude)
@@ -140,13 +147,12 @@ public struct PlannerSearchQuery: Sendable {
     public init(text: String, view: [Double]? = nil) { self.text = text; self.view = view }
 }
 
-/// The same release supplies maps, search, routing, and viewport overlays.
+/// The same release supplies maps, search, and routing.
 /// A local provider can implement this boundary without changing planner interactions.
 public protocol PlannerDataSource: RoutePlanning {
     var supportsOffline: Bool { get }
     func mapRelease(bounds: [Double]?, allowNetwork: Bool) async throws -> PlannerRelease
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace]
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data
     /// The routing profiles of the release, or nil when the source does not know them.
     func profiles(release: PlannerRelease) async throws -> [String]?
     /// The plan points of a route with `profile` that follows `line`.
@@ -163,7 +169,8 @@ extension PlannerDataSource {
     }
 }
 
-/// Pins every request in a planning session to the release that supplies its map.
+/// Sends the requests of a planning session to one release. When a catalogue switch removes it, the requests
+/// move to the new active release.
 public actor PlannerService: PlannerDataSource {
     public static let shared = PlannerService()
     private let catalogURL: URL
@@ -198,20 +205,53 @@ public actor PlannerService: PlannerDataSource {
         self.transport = transport
     }
 
+    init(catalogURL: URL, transport: @escaping Transport) {
+        self.catalogURL = catalogURL
+        self.fixedRelease = nil
+        self.transport = transport
+    }
+
+    /// A release object answered 404.
+    private struct ReleaseGone: Error {}
+
+    /// Release objects are immutable, so a 404 means that a catalogue switch removed the release. The catalogue is read
+    /// again, once, and the request repeats with the new active release.
+    /// A newer cached active release replaces `release` before the first request.
+    private func onActive<T>(_ release: PlannerRelease, _ body: (PlannerRelease) async throws -> T) async throws -> T {
+        let first = fixedRelease == nil ? cached?.release ?? release : release
+        do { return try await body(first) } catch is ReleaseGone {
+            guard fixedRelease == nil else { throw PlannerFailure.unavailable }
+            let active = try await reloadedRelease()
+            guard active.id != first.id else { throw PlannerFailure.unavailable }
+            do { return try await body(active) } catch is ReleaseGone { throw PlannerFailure.unavailable }
+        }
+    }
+
+    /// The active release, read again from the catalogue.
+    public func reloadedRelease() async throws -> PlannerRelease {
+        cached = nil
+        return try await release()
+    }
+
     public func release() async throws -> PlannerRelease {
         if let fixedRelease { return fixedRelease }
         if let cached, Date().timeIntervalSince(cached.fetched) < 30 { return cached.release }
         if let loading { return try await loading.value }
         let task = Task { [transport, catalogURL] in
             struct Catalog: Decodable { let format: Int; let active: PlannerRelease }
-            let data = try await Self.get(catalogURL, transport: transport)
+            var request = URLRequest(url: catalogURL)
+            request.timeoutInterval = 25
+            // A CDN can give the catalogue a browser cache lifetime longer than its own.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let data: Data
+            do { data = try await Self.send(request, transport: transport) } catch is ReleaseGone { throw PlannerFailure.unavailable }
             let catalog = try Self.decode(Catalog.self, data: data)
             let r = catalog.active
             guard catalog.format == 1, r.id.count == 64, r.id.allSatisfy({ $0.isHexDigit && $0.isASCII }), r.bounds.count == 4,
                   r.bounds.allSatisfy(\.isFinite), r.bounds[0] < r.bounds[2], r.bounds[1] < r.bounds[3],
                   r.bounds[0] >= -180, r.bounds[2] <= 180, r.bounds[1] >= -90, r.bounds[3] <= 90,
-                  r.basemap.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
-                  r.overlays.map({ $0.scheme == "https" }) ?? true,
+                  r.basemap.scheme == "https", r.places.scheme == "https", r.routing.scheme == "https", r.manifest.scheme == "https", r.search.scheme == "https",
+                  r.overlays.scheme == "https",
                   r.routes.map({ $0.hasPrefix("https://") && $0.contains("{cell}") }) ?? true,
                   [r.glyphs, r.sprites, r.terrain].allSatisfy({ $0.hasPrefix("https://") })
             else { throw PlannerFailure.invalidData }
@@ -224,7 +264,9 @@ public actor PlannerService: PlannerDataSource {
         return release
     }
 
-    public func profiles(release: PlannerRelease) async throws -> [String]? { try await manifest(release).profiles }
+    public func profiles(release: PlannerRelease) async throws -> [String]? {
+        try await onActive(release) { try await self.manifest($0).profiles }
+    }
 
     public func route(points: [Coordinate], turnarounds: [Int] = [], activity: RouteActivity, preference: RoutePreference = .balanced,
                       release: PlannerRelease) async throws -> PlannedPath {
@@ -232,11 +274,13 @@ public actor PlannerService: PlannerDataSource {
             throw PlannerFailure.outsideRegion
         }
         guard turnarounds.allSatisfy({ (1..<points.count - 1).contains($0) }) else { throw PlannerFailure.invalidData }
-        let manifest = try await manifest(release)
         let profile = preference.profile(for: activity)
-        guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
-        return try await route(points, turnarounds: Set(turnarounds), profile: profile, release: release,
-                               package: manifest.routing_package, whole: false)
+        return try await onActive(release) { release in
+            let manifest = try await self.manifest(release)
+            guard manifest.profiles.contains(profile) else { throw PlannerFailure.invalidData }
+            return try await self.route(points, turnarounds: Set(turnarounds), profile: profile, release: release,
+                                        package: manifest.routing_package, whole: false)
+        }
     }
 
     /// One request at most: for the legs from the first to the last leg that is not cached, pinned to the cached legs
@@ -344,17 +388,19 @@ public actor PlannerService: PlannerDataSource {
         guard simplified.count <= Self.shapeMaxPoints,
               zip(simplified, simplified.dropFirst()).reduce(0, { $0 + $1.0.distance(to: $1.1) }) <= Self.shapeMaxMeters
         else { throw PlannerFailure.lineTooLong }
-        let release = try await release()
         struct Query: Encodable { let line: [[Double]]; let profile: String }
         func rounded(_ value: Double) -> Double { (value * 1e6).rounded() / 1e6 }
-        var request = URLRequest(url: release.routing.appending(path: "v1/shape"))
-        request.httpMethod = "POST"
-        // The service stops a shape after 30 s.
-        request.timeoutInterval = 40
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(Query(line: simplified.map { [rounded($0.longitude), rounded($0.latitude)] }, profile: profile))
+        let body = try JSONEncoder().encode(Query(line: simplified.map { [rounded($0.longitude), rounded($0.latitude)] }, profile: profile))
         struct Answer: Decodable { let points: [[Double]]; let turnarounds: [Int] }
-        let answer = try Self.decode(Answer.self, data: await Self.send(request, transport: transport))
+        let answer = try await onActive(try await release()) { release in
+            var request = URLRequest(url: release.routing.appending(path: "v1/shape"))
+            request.httpMethod = "POST"
+            // The service stops a shape after 30 s.
+            request.timeoutInterval = 40
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+            return try Self.decode(Answer.self, data: await Self.send(request, transport: self.transport))
+        }
         guard (2...64).contains(answer.points.count),
               answer.points.allSatisfy({ $0.count == 2 && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }),
               answer.turnarounds.allSatisfy({ (1..<answer.points.count - 1).contains($0) })
@@ -364,13 +410,17 @@ public actor PlannerService: PlannerDataSource {
     }
 
     public func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
+        try await onActive(release) { try await self.search(query, on: $0) }
+    }
+
+    private func search(_ query: PlannerSearchQuery, on release: PlannerRelease) async throws -> [PlannerPlace] {
         if query.kinds.count > 3 {
             var results: [PlannerPlace] = [], ids: Set<String> = []
             for start in stride(from: 0, to: query.kinds.count, by: 3) {
                 try Task.checkCancellation()
                 var part = query
                 part.kinds = Array(query.kinds[start..<min(start + 3, query.kinds.count)])
-                for place in try await search(part, release: release) where ids.insert(place.id).inserted { results.append(place) }
+                for place in try await search(part, on: release) where ids.insert(place.id).inserted { results.append(place) }
             }
             return Array(results.prefix(100))
         }
@@ -393,8 +443,8 @@ public actor PlannerService: PlannerDataSource {
         } else { queryRequest["where"] = ["scope": "view"] }
         if kinds.isEmpty { queryRequest.removeValue(forKey: "where") }
         if let radiusMeters, !kinds.isEmpty { queryRequest["radius"] = ["value": radiusMeters / 1000, "unit": "km"] }
-        var body: [String: Any] = ["q": text, "region": release.region, "view": view ?? release.bounds,
-                                  "plan": context, "limit": 100, "submitted": true, "request": queryRequest]
+        var body: [String: Any] = ["q": text, "view": view ?? release.bounds, "plan": context, "limit": 100,
+                                  "request": queryRequest]
         if let source = query.source { body["source"] = source }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         struct Response: Decodable { let results: [PlannerPlace] }
@@ -408,40 +458,6 @@ public actor PlannerService: PlannerDataSource {
               }) else { throw PlannerFailure.invalidData }
         try Task.checkCancellation()
         return result.results
-    }
-
-    public func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) async throws -> Data {
-        guard bounds.count == 4, bounds.allSatisfy(\.isFinite), bounds[0] < bounds[2], bounds[1] < bounds[3], zoom.isFinite,
-              ["cycling", "hiking"].contains(network) else { throw PlannerFailure.invalidData }
-        var url = URLComponents(url: release.routing.appending(path: "v1/overlays"), resolvingAgainstBaseURL: false)!
-        url.queryItems = [URLQueryItem(name: "bbox", value: bounds.map { String($0) }.joined(separator: ",")),
-                          URLQueryItem(name: "zoom", value: String(min(22, max(6, floor(zoom))))),
-                          URLQueryItem(name: "layers", value: network),
-                          URLQueryItem(name: "mode", value: network == "hiking" ? "walking" : "cycling")]
-        let data = try await Self.get(url.url!, transport: transport)
-        struct Collection: Codable {
-            let package: String
-            let type: String
-            struct Feature: Codable {
-                let type: String
-                struct Geometry: Codable { let type: String; let coordinates: [[Double]] }
-                struct Properties: Codable { let kind: String; let rank: Int; let ref: String }
-                let geometry: Geometry
-                let properties: Properties
-            }
-            let features: [Feature]
-        }
-        let collection = try Self.decode(Collection.self, data: data)
-        guard collection.type == "FeatureCollection", collection.package == (try await manifest(release)).routing_package,
-              collection.features.reduce(0, { $0 + $1.geometry.coordinates.count }) <= 200_000,
-              collection.features.allSatisfy({ feature in
-                  feature.type == "Feature" && feature.geometry.type == "LineString" && feature.geometry.coordinates.count >= 2
-                    && feature.geometry.coordinates.allSatisfy { $0.count == 2 && $0.allSatisfy(\.isFinite)
-                        && (-180...180).contains($0[0]) && (-90...90).contains($0[1]) }
-              }) else { throw PlannerFailure.invalidData }
-        try Task.checkCancellation()
-        // Native workers need geometry and style properties, not the relation catalogue or tags.
-        return try JSONEncoder().encode(collection)
     }
 
     private func searchCoordinates(_ coordinates: [Coordinate]) -> [Coordinate] {
@@ -474,6 +490,7 @@ public actor PlannerService: PlannerDataSource {
             let (data, response) = try await transport(request)
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse else { throw PlannerFailure.invalidData }
+            if response.statusCode == 404 { throw ReleaseGone() }
             guard response.statusCode == 200 else {
                 struct Failure: Decodable { let code: String }
                 let code = try? JSONDecoder().decode(Failure.self, from: data).code
@@ -490,6 +507,7 @@ public actor PlannerService: PlannerDataSource {
         } catch is CancellationError { throw CancellationError() }
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch let error as PlannerFailure { throw error }
+        catch let error as ReleaseGone { throw error }
         catch { throw PlannerFailure.unavailable }
     }
 }

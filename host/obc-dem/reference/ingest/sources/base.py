@@ -16,6 +16,7 @@ import base64
 import hashlib
 import os
 import shutil
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -28,6 +29,21 @@ from rasterio.crs import CRS
 from ..lattice import Refuse
 
 HTTP_TIMEOUT = 300
+
+
+def registry(key: str) -> dict:
+    """The row `dtm-<key>` of data/sources.toml, the one home of a model's credit and box.
+
+    It is read when a fact of it is asked, not when the rows load: the merge step loads the
+    rows, takes the credit from its request and so reads no registry.
+    """
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[5] / "tools"))
+    try:
+        import data_registry
+    finally:
+        sys.path.pop(0)
+    return data_registry.SOURCES[f"dtm-{key}"]
 
 # What one member of a delivered archive may weigh unpacked. A national DEM tile is
 # megabytes and an ELVIS order's largest file is gigabytes; nothing legitimate reaches
@@ -379,6 +395,9 @@ class Source:
     `resolution_m` is the product's step, and it is `None` for a product that has no one
     step: the step of an ELVIS order is whatever survey the order covered.
 
+    The credit and the box that the product covers are in its row `dtm-<key>` of
+    data/sources.toml: `attribution` and `extent`.
+
     Five keywords are for a source behind an account. `credential` is what the portal
     wants before it answers and `credential_hosts` are the hosts it may be sent to;
     `grid_epsg` is the grid its ESRI ASCII files are on, because that format carries no
@@ -394,9 +413,9 @@ class Source:
     #: is a request that goes out unsigned and comes back as an error page.
     credential_style = None
 
-    def __init__(self, key, country, product, resolution_m, licence, attribution,
-                 vertical_datum, extent, credential=None, credential_hosts=(),
-                 grid_epsg=None, confirm_datum=None, steps=()):
+    def __init__(self, key, country, product, resolution_m, licence, vertical_datum,
+                 credential=None, credential_hosts=(), grid_epsg=None, confirm_datum=None,
+                 steps=()):
         self.check_datum(key, vertical_datum)
         self.check_credential(key, credential, credential_hosts)
         self.key = key
@@ -404,14 +423,24 @@ class Source:
         self.product = product
         self.resolution_m = resolution_m
         self.licence = licence
-        self.attribution = attribution
         self.vertical_datum = vertical_datum
-        self.extent = extent
         self.credential = credential
         self.credential_hosts = credential_hosts
         self.grid_epsg = grid_epsg
         self.confirm_datum = confirm_datum
         self.steps = steps
+
+    @property
+    def attribution(self) -> str:
+        """The credit; a `{month}` or `{year}` in it stays for `credit` to fill."""
+
+        return registry(self.key)["attribution"]
+
+    @property
+    def extent(self) -> tuple[float, float, float, float]:
+        """The box the product covers: west, south, east, north in degrees."""
+
+        return tuple(registry(self.key)["extent"])
 
     def grid_crs(self):
         """The CRS of a grid that carries none, from the row, or `None`."""
@@ -497,13 +526,18 @@ class Source:
         return self.credential.headers()
 
     def credit(self, fetched: str) -> str:
-        """The attribution a published map must carry, for a source fetched on that day.
+        """The attribution a published map must carry, for a source fetched on that day."""
+
+        return self.fill(self.attribution, fetched)
+
+    def fill(self, attribution: str, fetched: str) -> str:
+        """`attribution` for a source fetched on that day.
 
         Most agencies ask for a fixed sentence. One asks for the month of the delivery in
         it, which is what `fetched` is for and what a row overrides this to fill.
         """
 
-        return self.attribution
+        return attribution
 
     def fetch(self, bbox, workdir) -> list[Path]:
         raise Refuse(f"{self.key} has no adapter; fetch the rasters by hand and pass --input")

@@ -26,7 +26,7 @@ class PlannerDownloads(unittest.TestCase):
         for name, data in {"routing/packs/" + "c" * 64 + "/pages.bin": b"abcdef",
                            "routing/packs/" + "c" * 64 + "/pages.idx": b"index", "search/left.sqlite": b"left places",
                            "search/right.sqlite": b"right places", "maps/tiles/basemap/0-0-0.pmtiles": b"tiles",
-                           "offline/fonts/Sans.pbf": b"glyphs"}.items():
+                           "maps/tiles/places/0-0-0.pmtiles": b"places", "maps/tiles/overlays/6-33-22.pmtiles": b"networks", "offline/fonts/Sans.pbf": b"glyphs"}.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -47,9 +47,14 @@ class PlannerDownloads(unittest.TestCase):
             "routing_source": "b" * 64, "files": files,
             "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
             "map_blocks": [{"kind": "basemap", "tile": [0,0,0], "bounds": [-180,-85,180,85],
-                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]}], "cells": cells}
+                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]},
+                           {"kind": "places", "tile": [0,0,0], "bounds": [-180,-85,180,85],
+                            "files": ["maps/tiles/places/0-0-0.pmtiles"]},
+                           {"kind": "overlays", "tile": [6,33,22], "bounds": [5.625,45.09,11.25,48.92],
+                            "files": ["maps/tiles/overlays/6-33-22.pmtiles"]}], "cells": cells}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
-        self.service = downloads.Downloads(self.source, self.root / "cache", 1000000)
+        self.public = "https://releases.test/planner-api/services/" + "f" * 64 + "/downloads"
+        self.service = downloads.Downloads(self.source, self.root / "cache", 1000000, public_url=self.public)
 
     def request(self, bounds=None):
         return {"bounds": bounds or [7,47,9,49]}
@@ -59,20 +64,29 @@ class PlannerDownloads(unittest.TestCase):
         request = self.request([7.1, 47.1, 7.9, 48.9])
         first = self.service.prepare(request)
         self.assertEqual(first["state"], "ready")
+        self.assertEqual(first["source"], self.public + "/bundles/" + first["id"])
         self.assertEqual(first, self.service.prepare(request))
         directory = self.service.cache / first["id"]
         manifest = json.loads((directory / "release.json").read_bytes())
         bundle = json.loads((directory / "bundle.json").read_bytes())
         self.assertEqual(manifest["bounds"], [7, 47, 8, 49])
+        self.assertEqual(manifest["offline"]["cells"], [{"id": "left", "bounds": [7,47,8,49], "files": ["search/left.sqlite"]}])
         self.assertIn("search/left.sqlite", bundle["files"])
+        self.assertIn("maps/tiles/places/0-0-0.pmtiles", bundle["files"])
+        self.assertIn("maps/places.json", bundle["files"])
         self.assertNotIn("search/right.sqlite", bundle["files"])
         fonts = [bundle["files"][f"maps/assets/fonts/Sans/{name}.pbf"] for name in ("0-255", "256-511")]
         self.assertEqual(fonts, [self.service.publication["files"]["offline/fonts/Sans.pbf"]] * 2)
         self.assertEqual(manifest["files"]["maps/assets/fonts/Sans/0-255.pbf"]["bytes"], len(b"glyphs"))
+        self.assertIn("maps/tiles/overlays/6-33-22.pmtiles", bundle["files"])
+        overlays = bundle["files"]["maps/overlays.json"]["transport"]["sha256"]
+        tilejson = json.loads(gzip.decompress((directory / "objects" / overlays).read_bytes()))
+        self.assertEqual((tilejson["tiles"], tilejson["minzoom"]),
+                         ([f"https://offline.openbikecomputer.invalid/{first['id']}/overlays/{{z}}/{{x}}/{{y}}"], 6))
         static = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         self.assertFalse((directory / "objects" / static).exists())
         self.assertEqual(before, {p.name: p.read_bytes() for p in (self.source / "objects").iterdir()})
-        restarted = downloads.Downloads(self.source, self.service.cache, 1000000)
+        restarted = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertEqual(first, restarted.prepare(request))
 
     def test_new_selection_has_no_reservation_and_is_immediate(self):
@@ -82,7 +96,7 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual(first["state"], "ready")
         self.assertEqual(second["state"], "ready")
         self.assertNotEqual(first["id"], second["id"])
-        self.assertEqual(self.service.status(first["id"])["state"], "ready")
+        self.assertIsNotNone(self.service.selection(first["id"]))
 
     def test_invalid_coverage_and_disk_capacity_do_not_leave_selections(self):
         for value in ([0, 0, 1, 1], [7, 47, 7, 48], [7, 47, float("nan"), 48], [True, 47, 8, 48]):
@@ -109,11 +123,24 @@ class PlannerDownloads(unittest.TestCase):
         publication = json.loads(path.read_bytes())
         publication["map_zoom"] = 12
         path.write_bytes(runtime.encoded(publication))
-        newer = downloads.Downloads(self.source, self.service.cache, 1000000)
+        newer = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertNotEqual(first["id"], newer.prepare(self.request())["id"])
         (self.source / "routing-cells/left.json").write_bytes(b"{}")
         with self.assertRaisesRegex(ValueError, "checksum"):
             newer.prepare(self.request([7.1,47.1,7.9,48]))
+
+    def test_a_pool_change_keeps_the_old_quote_and_uses_a_new_cache_entry(self):
+        old = self.service.prepare(self.request())
+        old_directory = self.service.cache / old["id"]
+        before = {path.name: path.read_bytes() for path in old_directory.iterdir() if path.is_file()}
+        newer = downloads.Downloads(self.source, self.service.cache, 1000000,
+                                    objects_url="https://new-pool.test/planner/objects", public_url=self.public)
+        current = newer.prepare(self.request())
+        self.assertNotEqual(old["id"], current["id"])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in old_directory.iterdir() if path.is_file()})
+        self.assertIsNotNone(self.service.selection(old["id"]))
+        origin = json.loads((newer.cache / current["id"] / "origin.json").read_bytes())
+        self.assertEqual(origin["objects_url"], newer.objects_url)
 
     def test_metadata_cache_evicts_the_oldest_selection_and_keeps_origin(self):
         first = self.service.prepare(self.request([7.1,47.1,7.9,48]))
@@ -128,8 +155,8 @@ class PlannerDownloads(unittest.TestCase):
         shutil.rmtree(self.service.cache / third["id"])
         os.utime(directory, (1, 1))
         self.assertEqual(third, self.service.prepare(self.request()))
-        self.assertEqual(self.service.status(first["id"])["state"], "failed")
-        self.assertEqual(self.service.status(second["id"])["state"], "ready")
+        self.assertIsNone(self.service.selection(first["id"]))
+        self.assertIsNotNone(self.service.selection(second["id"]))
 
     def serve(self):
         server = downloads.ThreadingHTTPServer(("127.0.0.1", 0), downloads.handler(self.service))
@@ -151,13 +178,42 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual((len(data), hashlib.sha256(data).hexdigest()), (entry["bytes"], entry["sha256"]))
         self.assertEqual(json.loads(data)["archives"], ["c" * 64])
 
-    def test_http_supports_exact_ranges_and_rejects_traversal(self):
+    def test_published_payload_redirects_to_the_shared_pool_and_keeps_its_identity(self):
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+        from functools import partial
+        pool = self.root / 'pool'
+        objects = pool / 'planner/objects'
+        objects.mkdir(parents=True)
+        for path in (self.source / 'objects').iterdir():
+            os.link(path, objects / path.name)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=pool))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def close():
+            server.shutdown(); server.server_close(); thread.join()
+        self.addCleanup(close)
+        self.service.objects_url = f'http://127.0.0.1:{server.server_port}/planner/objects'
         job = self.service.prepare(self.request())
+        bundle = json.loads((self.service.cache / job['id'] / 'bundle.json').read_bytes())
+        entry = bundle['files']['routing/packs/' + 'c' * 64 + '/pages.bin']['transport']
+        url = f"{self.serve()}/bundles/{job['id']}/objects/{entry['sha256']}"
+        with urlopen(url) as response:
+            self.assertEqual(response.url, self.service.objects_url + '/' + entry['sha256'])
+            payload = response.read()
+        self.assertEqual((len(payload), hashlib.sha256(payload).hexdigest()), (entry['bytes'], entry['sha256']))
+
+    def test_http_supports_exact_ranges_and_rejects_traversal(self):
         base = self.serve()
+        with urlopen(Request(base + '/jobs', data=runtime.encoded(self.request()), headers={"Content-Type": "application/json"})) as response:
+            job = json.load(response)
+        self.assertEqual(job["source"], self.public + "/bundles/" + job["id"])
+        with urlopen(base + '/catalog') as response:
+            self.assertEqual(json.load(response)['sha256'], runtime.digest(self.source / 'catalog.json'))
         bundle = json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())
         digest = bundle["files"]["routing/packs/" + "c" * 64 + "/pages.bin"]["transport"]["sha256"]
         url = f"{base}/bundles/{job['id']}/objects/{digest}"
-        with urlopen(Request(url, headers={"Range": "bytes=2-4"})) as response:
+        # A selection being built holds the cache lock; object reads never wait for it.
+        with self.service.lock, urlopen(Request(url, headers={"Range": "bytes=2-4"}), timeout=5) as response:
             self.assertEqual(response.status, 206)
             self.assertEqual(response.headers["Content-Range"], "bytes 2-4/6")
             self.assertEqual(response.read(), b"cde")

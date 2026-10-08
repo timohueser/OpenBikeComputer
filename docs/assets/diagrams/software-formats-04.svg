@@ -1,0 +1,30 @@
+<svg viewBox="0 0 720 205" role="img" aria-label="A quadtree node is one 32-bit word. The high bit identifies a branch. Other values identify an empty leaf or a chunk." xmlns="http://www.w3.org/2000/svg" width="720" height="205" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">One u32 per node — the high bit decides</text>
+
+  <!-- 32-bit strip -->
+  <g stroke="#20301d" stroke-width="0.8">
+    <rect x="56" y="48" width="19" height="26" class="d-hot-fill" fill="#ae4825" />
+    <rect x="75" y="48" width="589" height="26" fill="#eae4cb" />
+  </g>
+  <g stroke="#20301d" stroke-opacity="0.12" stroke-width="1">
+    <line x1="94" y1="48" x2="94" y2="74"/><line x1="132" y1="48" x2="132" y2="74"/><line x1="170" y1="48" x2="170" y2="74"/><line x1="246" y1="48" x2="246" y2="74"/><line x1="322" y1="48" x2="322" y2="74"/><line x1="398" y1="48" x2="398" y2="74"/><line x1="474" y1="48" x2="474" y2="74"/><line x1="550" y1="48" x2="550" y2="74"/><line x1="626" y1="48" x2="626" y2="74"/>
+  </g>
+  <text class="d-num" x="65" y="65" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">b31</text>
+  <text class="d-sub" x="370" y="65" text-anchor="middle" fill="#5c5a2e" font-size="12px">bits 30 … 0</text>
+  <text class="d-sub" x="65" y="92" text-anchor="middle" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">branch flag</text>
+
+  <!-- interpretations -->
+  <g>
+    <rect x="56" y="110" width="14" height="14" rx="3" class="d-hot-fill" fill="#ae4825" />
+    <text class="d-label" x="80" y="121" style="font-size:12px" fill="#1c1b14" font-size="14px">high bit set</text>
+    <text class="d-sub" x="200" y="121" fill="#5c5a2e" font-size="12px">branch → low 31 bits = index of the first child (NW)</text>
+
+    <rect x="56" y="136" width="14" height="14" rx="3" class="d-muted" fill="#d6d5c8" />
+    <text class="d-label" x="80" y="147" style="font-size:12px" fill="#1c1b14" font-size="14px">0x7FFF_FFFF</text>
+    <text class="d-sub" x="200" y="147" fill="#5c5a2e" font-size="12px">empty leaf → nothing to draw here</text>
+
+    <rect x="56" y="162" width="14" height="14" rx="3" class="d-forest" fill="#a4501e" />
+    <text class="d-label" x="80" y="173" style="font-size:12px" fill="#1c1b14" font-size="14px">anything else</text>
+    <text class="d-sub" x="200" y="173" fill="#5c5a2e" font-size="12px">leaf → the value is a chunk id into this LOD's chunks</text>
+  </g>
+</svg>

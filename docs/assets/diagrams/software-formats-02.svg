@@ -1,0 +1,55 @@
+<svg viewBox="0 0 940 320" role="img" aria-label="A file ribbon shows the header, styles, LOD table, LOD regions, POIs and hours, navigation, optional landmarks, optional peak articles, and optional terrain. LOD 0 expands into its quadtree, chunk offsets, and geometry chunks." xmlns="http://www.w3.org/2000/svg" width="940" height="320" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<defs><marker id="r9arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">OBCM · follow the file, then open one LOD</text>
+<rect x="20" y="65" width="60" height="55" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="50.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">Header</text>
+<text class="d-sub" x="50.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">65 B</text>
+<rect x="80" y="65" width="70" height="55" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="115.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">Styles</text>
+<text class="d-sub" x="115.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">global</text>
+<rect x="150" y="65" width="80" height="55" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="190.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">LOD table</text>
+<text class="d-sub" x="190.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">N × 18 B</text>
+<rect x="230" y="65" width="75" height="55" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="267.5" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">LOD 0</text>
+<text class="d-sub" x="267.5" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">coarsest</text>
+<rect x="305" y="65" width="60" height="55" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="335.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">…</text>
+<text class="d-sub" x="335.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px"></text>
+<rect x="365" y="65" width="80" height="55" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="405.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">LOD N−1</text>
+<text class="d-sub" x="405.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">finest</text>
+<rect x="445" y="65" width="70" height="55" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="480.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">POIs</text>
+<text class="d-sub" x="480.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">+ hours</text>
+<rect x="515" y="65" width="70" height="55" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="550.0" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">Nav</text>
+<text class="d-sub" x="550.0" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">graph</text>
+<rect x="585" y="65" width="115" height="55" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="642.5" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">Landmarks</text>
+<text class="d-sub" x="642.5" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">optional</text>
+<rect x="700" y="65" width="90" height="55" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="745" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">Peak articles</text>
+<text class="d-sub" x="745" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">optional</text>
+<rect x="790" y="65" width="115" height="55" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="847.5" y="87" text-anchor="middle" fill="#1c1b14" font-size="14px">Terrain</text>
+<text class="d-sub" x="847.5" y="107" text-anchor="middle" fill="#5c5a2e" font-size="12px">OBCT · optional</text>
+<text class="d-sub" x="20" y="51" text-anchor="start" fill="#5c5a2e" font-size="12px">File order; region widths depend on the data.</text>
+<path d="M230 120 L110 198" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M305 120 L690 198" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="240" y="177" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">One LOD, expanded</text>
+<rect x="110" y="199" width="160" height="57" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="190.0" y="222" text-anchor="middle" fill="#1c1b14" font-size="14px">Quadtree index</text>
+<text class="d-sub" x="190.0" y="242" text-anchor="middle" fill="#5c5a2e" font-size="12px">flat u32 nodes</text>
+<rect x="270" y="199" width="160" height="57" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="350.0" y="222" text-anchor="middle" fill="#1c1b14" font-size="14px">Chunk offsets</text>
+<text class="d-sub" x="350.0" y="242" text-anchor="middle" fill="#5c5a2e" font-size="12px">one scaled u32 each</text>
+<rect x="430" y="199" width="130" height="57" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="495.0" y="222" text-anchor="middle" fill="#1c1b14" font-size="14px">Chunk 0</text>
+<text class="d-sub" x="495.0" y="242" text-anchor="middle" fill="#5c5a2e" font-size="12px">geometry records</text>
+<rect x="560" y="199" width="130" height="57" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="625.0" y="222" text-anchor="middle" fill="#1c1b14" font-size="14px">… Chunk k</text>
+<text class="d-sub" x="625.0" y="242" text-anchor="middle" fill="#5c5a2e" font-size="12px">aligned data</text>
+<path d="M350 256 V282 H495 V258" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r9arrow)"/>
+<text class="d-sub" x="110" y="300" text-anchor="start" fill="#5c5a2e" font-size="12px">The offset table locates each geometry chunk. Global addresses use scaled units.</text>
+</svg>

@@ -1,14 +1,17 @@
-"""Derive the rider places archive from the basemap's most detailed `pois` layer."""
+"""Build rider-place tiles from the same POI database that serves search."""
 
 import argparse
 import gzip
 import json
 import math
+import sqlite3
+import sys
+from contextlib import closing
 from pathlib import Path
 
-from . import planner_mvt as mvt
+from . import planner_mvt as mvt, step_request
 
-KINDS = Path(__file__).resolve().parents[1] / "builder/app/src/lib/planner/poi-kinds.json"
+KINDS = Path(__file__).resolve().parents[1] / "builder/web/src/lib/planner/poi-kinds.json"
 # The only zoom: a route corridor reads few tiles, and rider places keep each tile small.
 ZOOM = 11
 
@@ -49,55 +52,62 @@ def tile(places):
     return layer.encode()
 
 
-def derive(basemap, destination):
-    """Write the rider places of the basemap's deepest zoom, one copy each, into tiles at `ZOOM`."""
-    from pmtiles.reader import Reader, MmapSource, all_tiles
+def derive(database, destination):
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
 
     kinds = rider_kinds()
-    with basemap.open("rb") as stream:
-        source = MmapSource(stream)
-        reader = Reader(source)
-        header, metadata = reader.header(), reader.metadata()
-        if header["tile_type"] != TileType.MVT or header["tile_compression"] not in (Compression.NONE, Compression.GZIP):
-            raise ValueError("The basemap must hold MVT tiles")
-        places = {}
-        for (z, tx, ty), data in all_tiles(source):
-            if z != header["max_zoom"]: continue
-            if header["tile_compression"] == Compression.GZIP: data = gzip.decompress(data)
-            for identity, properties, x, y, extent in pois(data):
-                if properties.get("kind") not in kinds: continue
-                if identity is None: raise ValueError("A basemap place has no feature ID")
-                # Tiles repeat points near their edges; the copy inside its own tile is exact.
-                inside = 0 <= x < extent and 0 <= y < extent
-                if inside or identity not in places:
-                    places[identity] = ({k: properties[k] for k in ("kind", "name", "name:en") if properties.get(k) is not None},
-                                        (tx + x / extent) / (1 << z), (ty + y / extent) / (1 << z))
     tiles = {}
-    for identity, (properties, u, v) in sorted(places.items()):
-        x, y = u * (1 << ZOOM), v * (1 << ZOOM)
-        tiles.setdefault((math.floor(x), math.floor(y)), []).append(
-            (identity, properties, math.floor((x % 1) * mvt.EXTENT), math.floor((y % 1) * mvt.EXTENT)))
-    if not tiles: raise ValueError("The basemap has no rider places")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+        meta = {key: json.loads(value) for key, value in db.execute('SELECT key,value FROM metadata')}
+        if meta.get('component') != 'pois':
+            raise ValueError('Place tiles require the POI search component')
+        bounds = meta['bounds']
+        for source, kind, name, lon, lat in db.execute('SELECT source,kind,name,lon,lat FROM places ORDER BY source'):
+            if kind not in kinds or not (bounds[0] <= lon <= bounds[2] and bounds[1] <= lat <= bounds[3]):
+                continue
+            if source[0] not in 'nwr' or not source[1:].isdigit() or not 0 < int(source[1:]) < 2**44:
+                raise ValueError('A place has no representable OSM identity')
+            identity = ('nwr'.index(source[0]) + 1) * 2**44 + int(source[1:])
+            x = (lon + 180) / 360 * (1 << ZOOM)
+            y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * (1 << ZOOM)
+            properties = {'kind': kind, 'name': name, 'lon': str(lon), 'lat': str(lat)}
+            tiles.setdefault((math.floor(x), math.floor(y)), []).append(
+                (identity, properties, math.floor((x % 1) * mvt.EXTENT), math.floor((y % 1) * mvt.EXTENT)))
+            count += 1
+    # PMTiles needs a directory entry even when the region has no rider places.
+    if not tiles:
+        tiles[(int((bounds[0] + 180) / 360 * (1 << ZOOM)),
+               int((1 - math.asinh(math.tan(math.radians(bounds[1]))) / math.pi) / 2 * (1 << ZOOM)))] = []
     with write(destination) as writer:
         for (x, y), points in sorted(tiles.items(), key=lambda item: zxy_to_tileid(ZOOM, *item[0])):
             writer.write_tile(zxy_to_tileid(ZOOM, x, y), gzip.compress(tile(points), mtime=0))
-        writer.finalize({**header, "tile_compression": Compression.GZIP, "center_zoom": ZOOM}, {
-            "name": "OpenBikeComputer rider places", "attribution": metadata.get("attribution", ""),
-            "vector_layers": [{"id": "pois", "minzoom": ZOOM, "maxzoom": ZOOM,
-                               "fields": {"kind": "String", "name": "String", "name:en": "String"}}]})
-    return {"places": len(places), "tiles": len(tiles)}
+        writer.finalize({'tile_type': TileType.MVT, 'tile_compression': Compression.GZIP,
+            'min_zoom': ZOOM, 'max_zoom': ZOOM, 'center_zoom': ZOOM,
+            'min_lon_e7': round(bounds[0]*1e7), 'min_lat_e7': round(bounds[1]*1e7),
+            'max_lon_e7': round(bounds[2]*1e7), 'max_lat_e7': round(bounds[3]*1e7),
+            'center_lon_e7': round((bounds[0]+bounds[2])*5e6), 'center_lat_e7': round((bounds[1]+bounds[3])*5e6)}, {
+            'name': 'OpenBikeComputer rider places', 'attribution': meta['attribution'], 'osm_sha256': meta['osm_sha256'],
+            'vector_layers': [{'id': 'pois', 'minzoom': ZOOM, 'maxzoom': ZOOM,
+                'fields': {'kind': 'String', 'name': 'String', 'lon': 'String', 'lat': 'String'}}]})
+    return {'places': count, 'tiles': len(tiles)}
+
+
+def step():
+    """The `obc data` step `planner/places`: `places.pmtiles` from the database of `planner/search/pois`."""
+    request = step_request.read()
+    (database,) = request["layers"]["planner/search/pois"].values()
+    step_request.metrics(request, derive(Path(database), Path(request["output"]) / "places.pmtiles"))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("basemap", type=Path)
+    parser.add_argument("database", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    print(derive(args.basemap, args.output))
+    print(derive(args.database, args.output))
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

@@ -22,8 +22,7 @@ from .stac import StacSearchSource
 
 SE = StacSearchSource(
     "se", "Sweden", "Markhöjdmodell 1 m (Lantmäteriet)", 1.0,
-    "CC BY 4.0", "© Lantmäteriet", "RH2000 (the tiles are EPSG:5845, SWEREF99 TM + RH2000)",
-    (9.08, 55.16, 25.54, 69.07),
+    "CC BY 4.0", "RH2000 (the tiles are EPSG:5845, SWEREF99 TM + RH2000)",
     credential=Credential("se"),
     credential_hosts=("lantmateriet.se",),
     search="https://api.lantmateriet.se/stac-hojd/v1/search",

@@ -60,7 +60,7 @@ class BilWmsSource(TiledService):
 
 FR = BilWmsSource(
     "fr", "France", "RGE ALTI 1 m", 1.0,
-    "Licence Ouverte / Open Licence", "© IGN", "NGF-IGN69", (-5.3, 41.3, 9.6, 51.1),
+    "Licence Ouverte / Open Licence", "NGF-IGN69",
     url="https://data.geopf.fr/wms-r/wms",
     layer="ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES",
 )

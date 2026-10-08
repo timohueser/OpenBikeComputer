@@ -167,6 +167,14 @@ final class OBCNativeMapView: MLNMapView {
         data["sprite"] = release.sprites + (dark ? "/dark" : "/light")
         var sources = data["sources"] as! [String: [String: Any]]
         sources["basemap"]?["url"] = release.basemap.absoluteString
+        sources["places"]?["url"] = release.places.absoluteString
+        sources["places"]?["attribution"] = release.attribution ?? ""
+        // A release without a land cover credit drops that part of the credit line.
+        let landcover = release.landcover_attribution.map { ($0, "__LANDCOVER_ATTRIBUTION__") } ?? ("", " · __LANDCOVER_ATTRIBUTION__")
+        let credit = (sources["basemap"]?["attribution"] as? String)?
+            .replacingOccurrences(of: "__ATTRIBUTION__", with: release.attribution ?? "")
+            .replacingOccurrences(of: landcover.1, with: landcover.0)
+        sources["basemap"]?["attribution"] = credit
         sources["terrain"]?["tiles"] = [release.terrain]
         if release.isLocal {
             sources["terrain"]?.removeValue(forKey: "tiles")
@@ -174,18 +182,16 @@ final class OBCNativeMapView: MLNMapView {
         }
         sources["terrain"]?["bounds"] = release.bounds
         sources["terrain"]?["attribution"] = release.terrain_attribution
-        if let overlays = release.overlays, !release.isLocal {
-            // Each network layer draws one layer of the tiles; the planner map shows one network at a time.
-            sources["networks"] = ["type": "vector", "url": overlays.absoluteString]
-            data["layers"] = (data["layers"] as! [[String: Any]]).flatMap { layer -> [[String: Any]] in
-                guard layer["source"] as? String == "networks" else { return [layer] }
-                return ["cycling", "hiking"].map { network in
-                    var copy = layer
-                    copy["id"] = "\(layer["id"]!)-\(network)"
-                    copy["source-layer"] = network
-                    copy["layout"] = (layer["layout"] as? [String: Any] ?? [:]).merging(["visibility": "none"]) { $1 }
-                    return copy
-                }
+        // Each network layer draws one layer of the tiles; the planner map shows one network at a time.
+        sources["networks"] = ["type": "vector", "url": release.overlays.absoluteString]
+        data["layers"] = (data["layers"] as! [[String: Any]]).flatMap { layer -> [[String: Any]] in
+            guard layer["source"] as? String == "networks" else { return [layer] }
+            return ["cycling", "hiking"].map { network in
+                var copy = layer
+                copy["id"] = "\(layer["id"]!)-\(network)"
+                copy["source-layer"] = network
+                copy["layout"] = (layer["layout"] as? [String: Any] ?? [:]).merging(["visibility": "none"]) { $1 }
+                return copy
             }
         }
         data["sources"] = sources

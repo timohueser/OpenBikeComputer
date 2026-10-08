@@ -19,8 +19,7 @@ from .protocols import Wcs11Source
 CA = Wcs11Source(
     "ca", "Canada", "HRDEM DTM 1 m", 1.0,
     "Open Government Licence – Canada 2.0",
-    "Contains information licensed under the Open Government Licence – Canada",
-    "CGVD2013", (-141.0, 41.6, -52.6, 83.2),
+    "CGVD2013",
     url="https://datacube.services.geo.ca/ows/elevation",
     coverage="dtm",
     epsg=3979,

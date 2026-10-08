@@ -1,7 +1,6 @@
 ---
 title: Terrain and elevation
 description: How OpenBikeComputer bakes, assembles, samples, and uses terrain data.
-copy: ai
 ---
 
 # Terrain and elevation
@@ -15,71 +14,7 @@ and [`obc-dem`](src:host/obc-dem) converts it to the OBCT format.
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 483" role="img" aria-label="Terrain cells contain a route sample. A query at the center of heights 100, 120, 120 and 140 metres returns 120 metres by bilinear interpolation. Sampling along the route gives an elevation profile. Contours, integrated uphill ascent, visibility and altitude correction use the same terrain.">
-<defs><marker id="r68arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
-<text class="d-tag" x="20" y="26" text-anchor="start">Terrain · one lattice, shared sampling, several geometric uses</text>
-<text class="d-title" x="20" y="60" text-anchor="start">Baked terrain cells</text>
-<text class="d-title" x="260" y="60" text-anchor="start">Sample between four heights</text>
-<text class="d-title" x="560" y="60" text-anchor="start">Route profile</text>
-<rect x="25" y="82" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="59" y="82" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="93" y="82" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="127" y="82" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="25" y="116" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="59" y="116" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="93" y="116" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="127" y="116" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="25" y="150" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="59" y="150" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="93" y="150" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="127" y="150" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="25" y="184" width="34" height="34" fill="#91b378" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="59" y="184" width="34" height="34" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="93" y="184" width="34" height="34" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<rect x="127" y="184" width="34" height="34" fill="#b8cba2" stroke="#3c6b39" stroke-width="1.2" />
-<path d="M30 191 Q76 139 157 121" fill="none" stroke="#cf6a2a" stroke-width="3"/>
-<circle cx="103" cy="140" r="4" fill="#cf6a2a"/>
-<path d="M174 150 H231" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r68arrow)"/>
-<rect x="269" y="86" width="178" height="132" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
-<path d="M269 152 L447 152" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<path d="M358 86 L358 218" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<circle cx="269" cy="86" r="4" fill="#cf6a2a"/>
-<circle cx="447" cy="86" r="4" fill="#cf6a2a"/>
-<circle cx="269" cy="218" r="4" fill="#cf6a2a"/>
-<circle cx="447" cy="218" r="4" fill="#cf6a2a"/>
-<text class="d-sub" x="269" y="80" text-anchor="start">120 m</text>
-<text class="d-sub" x="447" y="80" text-anchor="end">140 m</text>
-<text class="d-sub" x="269" y="240" text-anchor="start">100 m</text>
-<text class="d-sub" x="447" y="240" text-anchor="end">120 m</text>
-<circle cx="358" cy="152" r="5" fill="#24331c"/>
-<text class="d-sub" x="358" y="177" text-anchor="middle">120 m</text>
-<path d="M458 152 H516" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r68arrow)"/>
-<path d="M540 218 L698 218" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<path d="M540 218 L540 88" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<path d="M544 200 L567 161 L592 171 L626 116 L655 149 L694 125" fill="none" stroke="#cf6a2a" stroke-width="3"/>
-<text class="d-sub" x="540" y="240" text-anchor="start">distance</text>
-<text class="d-sub" x="20" y="265" text-anchor="start">obc-dem → cells → map</text>
-<text class="d-sub" x="260" y="265" text-anchor="start">Integer bilinear interpolation</text>
-<text class="d-sub" x="545" y="265" text-anchor="start">Heights along the route</text>
-<path d="M20 290 L700 290" fill="none" stroke="#9aa884" stroke-width="1.3" />
-<text class="d-title" x="20" y="319" text-anchor="start">One surface supports several geometric queries</text>
-<ellipse cx="95" cy="365" rx="57" ry="28" fill="none" stroke="#9aa884" stroke-width="1.5"/>
-<ellipse cx="95" cy="365" rx="39" ry="19" fill="none" stroke="#9aa884" stroke-width="1.5"/>
-<ellipse cx="95" cy="365" rx="19" ry="10" fill="none" stroke="#9aa884" stroke-width="1.5"/>
-<text class="d-sub" x="95" y="417" text-anchor="middle">Contour lines</text>
-<path d="M207 396 L232 352 L265 379 L297 330 L331 387" fill="none" stroke="#3c6b39" stroke-width="1.5" />
-<path d="M207 396 L232 352" fill="none" stroke="#cf6a2a" stroke-width="3"/>
-<path d="M265 379 L297 330" fill="none" stroke="#cf6a2a" stroke-width="3"/>
-<text class="d-sub" x="269" y="417" text-anchor="middle">Integrated ascent</text>
-<path d="M397 394 L425 354 L445 373 L477 337 L512 394" fill="none" stroke="#3c6b39" stroke-width="1.5" />
-<path d="M397 394 L477 337" fill="none" stroke="#cf6a2a" stroke-width="1.3" />
-<circle cx="397" cy="394" r="4" fill="#cf6a2a"/>
-<text class="d-sub" x="455" y="417" text-anchor="middle">Peak View / visibility</text>
-<text class="d-sub" x="560" y="352" text-anchor="start">Barometer + map</text>
-<text class="d-sub" x="560" y="375" text-anchor="start">altitude correction</text>
-<text class="d-sub" x="560" y="417" text-anchor="start">Live elevation</text>
-<text class="d-sub" x="20" y="459" text-anchor="start">Missing terrain stays explicit. Each consumer applies the fallback described below.</text>
-</svg>
+<img src="../../assets/diagrams/software-terrain-01.svg" alt="Terrain cells contain a route sample. A query at the center of heights 100, 120, 120 and 140 metres returns 120 metres by bilinear interpolation. Sampling along the route gives an elevation profile. Contours, integrated uphill ascent, visibility and altitude correction use the same terrain." data-inline-svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The center-sample example uses equal weights. The packer and device share elevation rules; Peak View additionally uses the baked surface index.</figcaption>
@@ -212,21 +147,18 @@ and [OBCC section 13](src:specs/OBCC_Spec.md) for the catalog contract.
 
 ## Attribution
 
-The data requires this attribution:
-
-> produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved
-
-The text is stored once, in
-[`COPERNICUS_ATTRIBUTION`](src:host/obc-dem/src/lib.rs), and the bakery copies it into the catalog
-terrain block, so every consumer reads it from the catalog and none of them hard-codes it. A map
-with terrain-derived contours needs it too.
+The data requires an exact attribution. The text is stored once, as the `copernicus-glo-30`
+entry of the [source registry](src:data/sources.toml), and the bakery copies it into the catalog
+terrain block, so every consumer reads it from the catalog and none of them hard-codes it. The
+device About page is the one exception: it shows the text pre-wrapped, and a test compares it with
+the registry. A map with terrain-derived contours needs the attribution too.
 
 A map with [crest lifts](#crest-lifts) also carries the attribution of each finer model it used.
 The catalog lists those models with their required credit and license, copied from the reference
 archive that holds the wording. A consumer that shows one shows all of them. The map builder shows
 them on the map summary card.
 
-Map data remains © OpenStreetMap contributors.
+Map data carries the OpenStreetMap credit of the same registry.
 
 ## Implementation
 
@@ -235,5 +167,5 @@ Map data remains © OpenStreetMap contributors.
 - DEM converter: [`obc-dem`](src:host/obc-dem)
 - Terrain publisher: [`terrain.rs`](src:host/obc-bake/src/terrain.rs)
 - Map assembly: [`terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
-- Edge ascent: [`nav.rs`](src:host/obc-pack/src/nav.rs)
+- Edge ascent: [`nav.rs`](src:host/obc-network/src/nav.rs)
 - Altimeter fusion: [`altitude.rs`](src:firmware/obc-app/src/altitude.rs)

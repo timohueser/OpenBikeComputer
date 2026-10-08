@@ -15,19 +15,27 @@ import sys
 import tempfile
 import time
 
+from .planner_geo import bounds, mercator
+
+
+def empty_mbtiles(path):
+    """Read metadata only when a valid MBTiles database has no tiles."""
+    from contextlib import closing
+    import sqlite3
+    from pmtiles.convert import mbtiles_to_header_json
+
+    with closing(sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)) as db:
+        if db.execute("SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles LIMIT 1").fetchone() is None:
+            return mbtiles_to_header_json(dict(db.execute("SELECT name, value FROM metadata")))
+    return None
+
 
 def tile_window(region, zoom, halo=0):
     """Return an exclusive XYZ rectangle. X can cross the world seam."""
-    west, south, east, north = region
-    count = 1 << zoom
-
-    def row(latitude):
-        return (1 - math.asinh(math.tan(math.radians(latitude))) / math.pi) / 2 * count
-
-    return (math.floor((west + 180) / 360 * count) - halo,
-            max(0, math.floor(row(north)) - halo),
-            math.ceil((east + 180) / 360 * count) + halo,
-            min(count, math.ceil(row(south)) + halo))
+    left, top = mercator(region[0], region[3], zoom)
+    right, bottom = mercator(region[2], region[1], zoom)
+    return (math.floor(left) - halo, max(0, math.floor(top) - halo),
+            math.ceil(right) + halo, min(1 << zoom, math.ceil(bottom) + halo))
 
 
 def selected(zxy, region, terrain=False):
@@ -136,10 +144,6 @@ def extract(source, destination, region, terrain=False, workers=os.cpu_count(), 
 
 
 def main():
-    try:
-        from .planner_maps import bounds
-    except ImportError:
-        from planner_maps import bounds
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)

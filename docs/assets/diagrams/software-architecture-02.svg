@@ -1,0 +1,55 @@
+<svg viewBox="0 0 720 372" role="img" aria-label="Four main host interfaces connect the shared core to a host. They provide pixels, color conversion, random-access bytes, and semantic hardware values." xmlns="http://www.w3.org/2000/svg" width="720" height="372" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="22" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Everything device-specific lives at four seams</text>
+
+  <!-- column headers -->
+  <text class="d-title" x="110" y="44" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-weight="650" font-size="14px">obc-sim host</text>
+  <text class="d-title" x="610" y="44" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-weight="650" font-size="14px">device host</text>
+
+  <!-- core -->
+  <rect class="d-hot" x="282" y="40" width="156" height="46" rx="11" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-title" x="360" y="62" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-weight="650" font-size="14px">shared core</text>
+  <text class="d-sub" x="360" y="77" text-anchor="middle" fill="#5c5a2e" font-size="12px">reader·route·render·app</text>
+  <!-- spine -->
+  <line x1="360" y1="86" x2="360" y2="320" stroke="#9aa884" stroke-width="1.4" />
+
+  <!-- seam rows: y-centers 130, 188, 246, 304 -->
+  <!-- 1 DrawTarget -->
+  <rect class="d-panel-2" x="298" y="112" width="124" height="38" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="360" y="129" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">DrawTarget</text>
+  <text class="d-sub" x="360" y="142" text-anchor="middle" fill="#5c5a2e" font-size="12px">pixels out</text>
+  <rect class="d-panel" x="20" y="112" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="110" y="135" text-anchor="middle" fill="#5c5a2e" font-size="12px">RGB222 FB · self-diffed</text>
+  <rect class="d-panel" x="520" y="112" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="610" y="135" text-anchor="middle" fill="#5c5a2e" font-size="12px">RGB222 FB · banded push</text>
+  <line class="d-stroke" x1="200" y1="131" x2="298" y2="131" fill="none" stroke="#1c1b14" stroke-width="1.6" /><line class="d-stroke" x1="422" y1="131" x2="520" y2="131" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+
+  <!-- 2 color_fn -->
+  <rect class="d-panel-2" x="298" y="170" width="124" height="38" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="360" y="187" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">color_fn</text>
+  <text class="d-sub" x="360" y="200" text-anchor="middle" fill="#5c5a2e" font-size="12px">u16 → pixel</text>
+  <rect class="d-panel" x="20" y="170" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="110" y="193" text-anchor="middle" fill="#5c5a2e" font-size="12px">native RGB222 (64)</text>
+  <rect class="d-panel" x="520" y="170" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="610" y="193" text-anchor="middle" fill="#5c5a2e" font-size="12px">native RGB222 (64)</text>
+  <line class="d-stroke" x1="200" y1="189" x2="298" y2="189" fill="none" stroke="#1c1b14" stroke-width="1.6" /><line class="d-stroke" x1="422" y1="189" x2="520" y2="189" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+
+  <!-- 3 ByteSource -->
+  <rect class="d-panel-2" x="298" y="228" width="124" height="38" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="360" y="245" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">ByteSource</text>
+  <text class="d-sub" x="360" y="258" text-anchor="middle" fill="#5c5a2e" font-size="12px">bytes in</text>
+  <rect class="d-panel" x="20" y="228" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="110" y="251" text-anchor="middle" fill="#5c5a2e" font-size="12px">flat-store map object</text>
+  <rect class="d-panel" x="520" y="228" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="610" y="251" text-anchor="middle" fill="#5c5a2e" font-size="12px">flat-store object</text>
+  <line class="d-stroke" x1="200" y1="247" x2="298" y2="247" fill="none" stroke="#1c1b14" stroke-width="1.6" /><line class="d-stroke" x1="422" y1="247" x2="520" y2="247" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+
+  <!-- 4 semantic ports -->
+  <rect class="d-panel-2" x="298" y="286" width="124" height="38" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="360" y="303" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">obc-ports</text>
+  <text class="d-sub" x="360" y="316" text-anchor="middle" fill="#5c5a2e" font-size="12px">semantic HAL</text>
+  <rect class="d-panel" x="20" y="286" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="110" y="309" text-anchor="middle" fill="#5c5a2e" font-size="12px">panel · GPX · keys</text>
+  <rect class="d-panel" x="520" y="286" width="180" height="38" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-sub" x="610" y="309" text-anchor="middle" fill="#5c5a2e" font-size="12px">GPS · baro · mag · GPIO</text>
+  <line class="d-stroke" x1="200" y1="305" x2="298" y2="305" fill="none" stroke="#1c1b14" stroke-width="1.6" /><line class="d-stroke" x1="422" y1="305" x2="520" y2="305" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+</svg>

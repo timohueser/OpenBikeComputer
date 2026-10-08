@@ -1,0 +1,125 @@
+{"id": "en-001", "lang": "en", "text": "campsites end of day 4", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}}}
+{"id": "en-002", "lang": "en", "text": "shops middle of day 4", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 4, "part": "middle"}}}
+{"id": "en-003", "lang": "en", "text": "pharmacies along route", "scope": "in", "request": {"type": "places", "what": ["pharmacy"], "where": {"scope": "route"}}}
+{"id": "en-004", "lang": "en", "text": "shops open day 3", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 3}, "open": {"day": 3}}}
+{"id": "en-005", "lang": "en", "text": "campsites with a pool end of day 4", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["with a pool"]}, "note": "attribute without a slot"}
+{"id": "en-006", "lang": "en", "text": "supermarket within the first 20 kilometers", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"along": {"ref": "start", "to": {"value": 20, "unit": "km"}}}}, "note": "'within the first' is a stretch, not a radius"}
+{"id": "en-007", "lang": "en", "text": "campsties near me", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"scope": "here"}}, "note": "typo"}
+{"id": "en-008", "lang": "en", "text": "could you show me hotels on the map", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"scope": "view"}}}
+{"id": "en-009", "lang": "en", "text": "water day 3 end", "scope": "in", "request": {"type": "places", "what": ["water"], "where": {"day": 3, "part": "end"}}}
+{"id": "en-010", "lang": "en", "text": "bakery tommorow morning", "scope": "in", "request": {"type": "places", "what": ["bakery"], "where": {"day": "tomorrow", "part": "start"}}, "note": "typo"}
+{"id": "en-011", "lang": "en", "text": "campsite at the end of every day", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"day": "every", "part": "end"}}}
+{"id": "en-012", "lang": "en", "text": "drinking water between Andermatt and the Furka pass", "scope": "in", "request": {"type": "places", "what": ["drinking_water"], "where": {"near": [{"name": "Andermatt"}, {"name": "Furka pass"}]}}}
+{"id": "en-013", "lang": "en", "text": "toilest km 40 to 60", "scope": "in", "request": {"type": "places", "what": ["toilets"], "where": {"along": {"ref": "km", "from": {"value": 40, "unit": "km"}, "to": {"value": 60, "unit": "km"}}}}, "note": "typo"}
+{"id": "en-014", "lang": "en", "text": "any cafes in the next 2 hours?", "scope": "in", "request": {"type": "places", "what": ["cafe"], "where": {"along": {"ref": "here", "to": {"value": 2, "unit": "h"}}}}}
+{"id": "en-015", "lang": "en", "text": "groceries in the last 15 km of day 2", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": 2, "along": {"ref": "end", "to": {"value": 15, "unit": "km"}}}}}
+{"id": "en-016", "lang": "en", "text": "campsite around km 250", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"along": {"ref": "km", "at": {"value": 250, "unit": "km"}}}}}
+{"id": "en-017", "lang": "en", "text": "somewhere to eat after 3 hours", "scope": "in", "request": {"type": "places", "what": ["food"], "where": {"along": {"ref": "start", "at": {"value": 3, "unit": "h"}}}}, "note": "'after N hours' is a mark from the start"}
+{"id": "en-018", "lang": "en", "text": "fountians before the Stelvio", "scope": "in", "request": {"type": "places", "what": ["fountain"], "where": {"before": {"name": "Stelvio"}}}, "note": "typo"}
+{"id": "en-019", "lang": "en", "text": "supermarket after Andermatt", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"after": {"name": "Andermatt"}}}}
+{"id": "en-020", "lang": "en", "text": "bakery open on sundy near Kandel", "scope": "in", "request": {"type": "places", "what": ["bakery"], "where": {"near": [{"name": "Kandel"}]}, "open": {"weekday": "sun"}}, "note": "typo"}
+{"id": "en-021", "lang": "en", "text": "pharmcy open now", "scope": "in", "request": {"type": "places", "what": ["pharmacy"], "open": {"now": true}}, "note": "typo"}
+{"id": "en-022", "lang": "en", "text": "campsites within 5 km of the route", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"scope": "route"}, "radius": {"value": 5, "unit": "km"}}}
+{"id": "en-023", "lang": "en", "text": "hotels within 500 m of the end of day 3", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"day": 3, "part": "end"}, "radius": {"value": 0.5, "unit": "km"}}}
+{"id": "en-024", "lang": "en", "text": "water and toilets on day 2", "scope": "in", "request": {"type": "places", "what": ["water", "toilets"], "where": {"day": 2}}}
+{"id": "en-025", "lang": "en", "text": "accomodation near Saint-Michel-de-Maurienne", "scope": "in", "request": {"type": "places", "what": ["lodging"], "where": {"near": [{"name": "Saint-Michel-de-Maurienne"}]}}, "note": "typo"}
+{"id": "en-026", "lang": "en", "text": "atm before the end of day 3", "scope": "in", "request": {"type": "places", "what": ["atm"], "where": {"before": {"day": 3, "part": "end"}}}}
+{"id": "en-027", "lang": "en", "text": "gas staton after km 80", "scope": "in", "request": {"type": "places", "what": ["fuel"], "where": {"after": {"along": {"ref": "km", "at": {"value": 80, "unit": "km"}}}}}, "note": "typo; 'after km N' is a point; 'after N km' is a mark"}
+{"id": "en-028", "lang": "en", "text": "shops before the finish", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"before": {"plan": "end"}}}}
+{"id": "en-029", "lang": "en", "text": "campsites near Rain", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"near": [{"name": "Rain"}]}}, "note": "Rain is a town"}
+{"id": "en-030", "lang": "en", "text": "watr next 30km", "scope": "in", "request": {"type": "places", "what": ["water"], "where": {"along": {"ref": "here", "to": {"value": 30, "unit": "km"}}}}, "note": "typo"}
+{"id": "en-031", "lang": "en", "text": "cheap hotles in Chur", "scope": "in", "request": {"type": "places", "what": ["hotel"], "where": {"near": [{"name": "Chur"}]}, "ignored": ["cheap"]}, "note": "typo"}
+{"id": "en-032", "lang": "en", "text": "supermarkt open saturday day 6", "scope": "in", "request": {"type": "places", "what": ["supermarket"], "where": {"day": 6}, "open": {"weekday": "sat"}}, "note": "typo"}
+{"id": "en-033", "lang": "en", "text": "day 2 start bakery", "scope": "in", "request": {"type": "places", "what": ["bakery"], "where": {"day": 2, "part": "start"}}}
+{"id": "en-034", "lang": "en", "text": "open shops tomorrow", "scope": "in", "request": {"type": "places", "what": ["resupply"], "where": {"day": "tomorrow"}, "open": {"day": "tomorrow"}}}
+{"id": "en-035", "lang": "en", "text": "ice cream in the first 3 hours of day 2", "scope": "in", "request": {"type": "places", "what": ["ice_cream"], "where": {"day": 2, "along": {"ref": "start", "to": {"value": 3, "unit": "h"}}}}}
+{"id": "en-036", "lang": "en", "text": "shelter in the last two hours", "scope": "in", "request": {"type": "places", "what": ["shelter"], "where": {"along": {"ref": "end", "to": {"value": 2, "unit": "h"}}}}}
+{"id": "en-037", "lang": "en", "text": "passes on day four", "scope": "in", "request": {"type": "places", "what": ["pass"], "where": {"day": 4}}}
+{"id": "en-038", "lang": "en", "text": "campsites 6 hours from here", "scope": "in", "request": {"type": "places", "what": ["campsite"], "where": {"along": {"ref": "here", "at": {"value": 6, "unit": "h"}}}}}
+{"id": "en-039", "lang": "en", "text": "Kandel", "scope": "in", "request": {"type": "place", "name": "Kandel"}}
+{"id": "en-040", "lang": "en", "text": "Col du Galibier", "scope": "in", "request": {"type": "place", "name": "Col du Galibier"}}
+{"id": "en-041", "lang": "en", "text": "show me Bad Säckingen", "scope": "in", "request": {"type": "place", "name": "Bad Säckingen"}}
+{"id": "en-042", "lang": "en", "text": "where is Passo dello Stelvio", "scope": "in", "request": {"type": "place", "name": "Passo dello Stelvio"}}
+{"id": "en-043", "lang": "en", "text": "Hotel Krone in St. Peter", "scope": "in", "request": {"type": "place", "name": "Hotel Krone", "near": {"name": "St. Peter"}}}
+{"id": "en-044", "lang": "en", "text": "Lidl near Andermatt", "scope": "in", "request": {"type": "place", "name": "Lidl", "near": {"name": "Andermatt"}}, "note": "a brand is a name"}
+{"id": "en-045", "lang": "en", "text": "rain am lech", "scope": "in", "request": {"type": "place", "name": "rain am lech"}}
+{"id": "en-046", "lang": "en", "text": "Andermat", "scope": "in", "request": {"type": "place", "name": "Andermat"}, "note": "typo"}
+{"id": "en-047", "lang": "en", "text": "road bike route up Kandel starting here", "scope": "in", "request": {"type": "route", "to": {"name": "Kandel"}, "from": {"here": true}, "bike": "road"}}
+{"id": "en-048", "lang": "en", "text": "route to the nearest pharmacy", "scope": "in", "request": {"type": "route", "to": {"kind": "pharmacy"}}}
+{"id": "en-049", "lang": "en", "text": "take me up the Furka pass", "scope": "in", "request": {"type": "route", "to": {"name": "Furka pass"}}}
+{"id": "en-050", "lang": "en", "text": "Basel to Nice in 7 days", "scope": "in", "request": {"type": "route", "to": {"name": "Nice"}, "from": {"name": "Basel"}, "days": 7}}
+{"id": "en-051", "lang": "en", "text": "gravel route from Freiburg to Titisee", "scope": "in", "request": {"type": "route", "to": {"name": "Titisee"}, "from": {"name": "Freiburg"}, "bike": "gravel"}}
+{"id": "en-052", "lang": "en", "text": "flatest way to Lucerne", "scope": "in", "request": {"type": "route", "to": {"name": "Lucerne"}, "goal": "least_climbing"}, "note": "typo"}
+{"id": "en-053", "lang": "en", "text": "route from the end of day 3 to the nearest train station", "scope": "in", "request": {"type": "route", "to": {"kind": "train_station"}, "from": {"day": 3, "part": "end"}}}
+{"id": "en-054", "lang": "en", "text": "touring trip Munich to Venice via Innsbruck, 8 days", "scope": "in", "request": {"type": "route", "to": {"name": "Venice"}, "from": {"name": "Munich"}, "via": [{"name": "Innsbruck"}], "bike": "touring", "days": 8}}
+{"id": "en-055", "lang": "en", "text": "mtb route to the Feldberg with max climbing", "scope": "out", "request": {"type": "none"}, "note": "this route goal is not in the language"}
+{"id": "en-056", "lang": "en", "text": "paved route to Zurich pls", "scope": "out", "request": {"type": "none"}, "note": "this route goal is not in the language"}
+{"id": "en-057", "lang": "en", "text": "route from km 120 to the closest station", "scope": "in", "request": {"type": "route", "to": {"kind": "train_station"}, "from": {"along": {"ref": "km", "at": {"value": 120, "unit": "km"}}}}}
+{"id": "en-058", "lang": "en", "text": "route from the finish to Geneva airport", "scope": "in", "request": {"type": "route", "to": {"name": "Geneva airport"}, "from": {"plan": "end"}}}
+{"id": "en-059", "lang": "en", "text": "60 km loop from here", "scope": "out", "request": {"type": "none"}, "note": "loops are Later in #2236"}
+{"id": "en-060", "lang": "en", "text": "Munich to Venice, 100 km a day", "scope": "in", "request": {"type": "route", "from": {"name": "Munich"}, "to": {"name": "Venice"}, "per_day": {"value": 100, "unit": "km"}}}
+{"id": "en-061", "lang": "en", "text": "water gaps", "scope": "in", "request": {"type": "stretches", "what": "gap:water"}}
+{"id": "en-062", "lang": "en", "text": "stretches without shops longer than 40 km", "scope": "in", "request": {"type": "stretches", "what": "gap:resupply", "min": {"value": 40, "unit": "km"}}}
+{"id": "en-063", "lang": "en", "text": "steep bits over 12%", "scope": "in", "request": {"type": "stretches", "what": "steep", "min": {"value": 12, "unit": "%"}}}
+{"id": "en-064", "lang": "en", "text": "unpaved sections on day 3", "scope": "in", "request": {"type": "stretches", "what": "unpaved", "where": {"day": 3}}}
+{"id": "en-065", "lang": "en", "text": "climbs ovr 500 m", "scope": "in", "request": {"type": "stretches", "what": "climb", "min": {"value": 500, "unit": "m"}}, "note": "typo"}
+{"id": "en-066", "lang": "en", "text": "descents tomorow", "scope": "in", "request": {"type": "stretches", "what": "descent", "where": {"day": "tomorrow"}}, "note": "typo"}
+{"id": "en-067", "lang": "en", "text": "road closures along the route", "scope": "in", "request": {"type": "stretches", "what": "closure", "where": {"scope": "route"}}}
+{"id": "en-068", "lang": "en", "text": "main roads on day 1", "scope": "out", "request": {"type": "none"}, "note": "main roads are not in the language"}
+{"id": "en-069", "lang": "en", "text": "unknown surface km 100 to 150", "scope": "in", "request": {"type": "stretches", "what": "unknown_surface", "where": {"along": {"ref": "km", "from": {"value": 100, "unit": "km"}, "to": {"value": 150, "unit": "km"}}}}}
+{"id": "en-070", "lang": "en", "text": "where do I have to push on day 4", "scope": "in", "request": {"type": "stretches", "what": "pushing", "where": {"day": 4}}}
+{"id": "en-071", "lang": "en", "text": "end day 4 at saint-michel", "scope": "in", "request": {"type": "end_day", "day": 4, "at": {"name": "saint-michel"}}}
+{"id": "en-072", "lang": "en", "text": "stop day 1 at km 95", "scope": "in", "request": {"type": "end_day", "day": 1, "at": {"along": {"ref": "km", "at": {"value": 95, "unit": "km"}}}}}
+{"id": "en-073", "lang": "en", "text": "end tomorrow at the nearest campsite", "scope": "in", "request": {"type": "end_day", "day": "tomorrow", "at": {"kind": "campsite"}}}
+{"id": "en-074", "lang": "en", "text": "end every day at a hotel", "scope": "in", "request": {"type": "end_day", "day": "every", "at": {"kind": "hotel"}}}
+{"id": "en-075", "lang": "en", "text": "day 5 should end in Bad Säckingen", "scope": "in", "request": {"type": "end_day", "day": 5, "at": {"name": "Bad Säckingen"}}}
+{"id": "en-076", "lang": "en", "text": "finish day three after 80 km", "scope": "in", "request": {"type": "end_day", "day": 3, "at": {"along": {"ref": "start", "at": {"value": 80, "unit": "km"}}}}}
+{"id": "en-077", "lang": "en", "text": "add water stops every three hours to route", "scope": "in", "request": {"type": "add_point", "point": {"kind": "water"}, "kind": "stop", "every": {"value": 3, "unit": "h"}, "where": {"scope": "route"}}}
+{"id": "en-078", "lang": "en", "text": "via Hotel Krone St. Peter", "scope": "in", "request": {"type": "add_point", "point": {"name": "Hotel Krone St. Peter"}, "kind": "visit"}}
+{"id": "en-079", "lang": "en", "text": "add a coffee stop every 60 km", "scope": "in", "request": {"type": "add_point", "point": {"kind": "cafe"}, "kind": "stop", "every": {"value": 60, "unit": "km"}}}
+{"id": "en-080", "lang": "en", "text": "pass through Andermatt", "scope": "in", "request": {"type": "add_point", "point": {"name": "Andermatt"}, "kind": "pass"}}
+{"id": "en-081", "lang": "en", "text": "add the Grimsel pass", "scope": "in", "request": {"type": "add_point", "point": {"name": "Grimsel pass"}}}
+{"id": "en-082", "lang": "en", "text": "add a supermarket on day 3", "scope": "in", "request": {"type": "add_point", "point": {"kind": "supermarket"}, "where": {"day": 3}}}
+{"id": "en-083", "lang": "en", "text": "lunch stop at km 60", "scope": "in", "request": {"type": "add_point", "point": {"kind": "food"}, "kind": "stop", "where": {"along": {"ref": "km", "at": {"value": 60, "unit": "km"}}}}}
+{"id": "en-084", "lang": "en", "text": "add a stop at the nearest bike shop", "scope": "in", "request": {"type": "add_point", "point": {"kind": "bike_shop"}, "kind": "stop"}}
+{"id": "en-085", "lang": "en", "text": "refill water every 90 min", "scope": "in", "request": {"type": "add_point", "point": {"kind": "water"}, "every": {"value": 1.5, "unit": "h"}}, "note": "no stop word, so no kind"}
+{"id": "en-086", "lang": "en", "text": "remove Andermatt", "scope": "in", "request": {"type": "remove_point", "point": {"name": "Andermatt"}}}
+{"id": "en-087", "lang": "en", "text": "remvoe the stop at km 80", "scope": "in", "request": {"type": "remove_point", "point": {"along": {"ref": "km", "at": {"value": 80, "unit": "km"}}}}, "note": "typo"}
+{"id": "en-088", "lang": "en", "text": "delete the castle detour", "scope": "in", "request": {"type": "remove_point", "point": {"kind": "castle"}}}
+{"id": "en-089", "lang": "en", "text": "take Hotel Krone out of the plan", "scope": "in", "request": {"type": "remove_point", "point": {"name": "Hotel Krone"}}}
+{"id": "en-090", "lang": "en", "text": "spilt into 5 days", "scope": "in", "request": {"type": "split", "days": 5}, "note": "typo"}
+{"id": "en-091", "lang": "en", "text": "split day 3 in two", "scope": "in", "request": {"type": "split", "days": 2, "where": {"day": 3}}}
+{"id": "en-092", "lang": "en", "text": "80 km per day", "scope": "in", "request": {"type": "split", "per_day": {"value": 80, "unit": "km"}}}
+{"id": "en-093", "lang": "en", "text": "make it a four day trip", "scope": "in", "request": {"type": "split", "days": 4}}
+{"id": "en-094", "lang": "en", "text": "max 6 hours of riding a day", "scope": "in", "request": {"type": "split", "per_day": {"value": 6, "unit": "h"}}}
+{"id": "en-095", "lang": "en", "text": "divide into days of about 100km", "scope": "in", "request": {"type": "split", "per_day": {"value": 100, "unit": "km"}}}
+{"id": "en-096", "lang": "en", "text": "join day 2 and 3", "scope": "in", "request": {"type": "join", "day": 2}}
+{"id": "en-097", "lang": "en", "text": "merge days 4 adn 5", "scope": "in", "request": {"type": "join", "day": 4}, "note": "typo"}
+{"id": "en-098", "lang": "en", "text": "join day three with the next day", "scope": "in", "request": {"type": "join", "day": 3}}
+{"id": "en-099", "lang": "en", "text": "reverse the route", "scope": "in", "request": {"type": "reverse"}}
+{"id": "en-100", "lang": "en", "text": "ride it the other way round", "scope": "in", "request": {"type": "reverse"}}
+{"id": "en-101", "lang": "en", "text": "flatter route for day 3", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-102", "lang": "en", "text": "avoid gravel on day 2", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-103", "lang": "en", "text": "less climbing tomorrow", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-104", "lang": "en", "text": "reroute km 40 to 60 for a road bike", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-105", "lang": "en", "text": "shortest way between Chur and Thusis", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-106", "lang": "en", "text": "last 20 km of day 2 on the mtb", "scope": "out", "request": {"type": "none"}, "note": "re-routing part of the plan is not in the language"}
+{"id": "en-107", "lang": "en", "text": "is the galibier worth it", "scope": "out", "request": {"type": "none"}}
+{"id": "en-108", "lang": "en", "text": "campsites near a supermarket at the end of day 4", "scope": "out", "request": {"type": "places", "what": ["campsite"], "where": {"day": 4, "part": "end"}, "ignored": ["near a supermarket"]}}
+{"id": "en-109", "lang": "en", "text": "pharmacy near a hotel within 20 km of Chur", "scope": "out", "request": {"type": "none"}}
+{"id": "en-110", "lang": "en", "text": "whats the wether on day 3", "scope": "out", "request": {"type": "none"}, "note": "typo"}
+{"id": "en-111", "lang": "en", "text": "hi there", "scope": "out", "request": {"type": "none"}}
+{"id": "en-112", "lang": "en", "text": "thanks, that's perfect", "scope": "out", "request": {"type": "none"}}
+{"id": "en-113", "lang": "en", "text": "how hard is day 2", "scope": "out", "request": {"type": "none"}}
+{"id": "en-114", "lang": "en", "text": "which is prettier, the Stelvio or the Gavia?", "scope": "out", "request": {"type": "none"}}
+{"id": "en-115", "lang": "en", "text": "can I make it to Andermatt by noon", "scope": "out", "request": {"type": "none"}}
+{"id": "en-116", "lang": "en", "text": "how many km is day 3", "scope": "out", "request": {"type": "none"}}
+{"id": "en-117", "lang": "en", "text": "route to the campsite closest to a train station", "scope": "out", "request": {"type": "route", "to": {"kind": "campsite"}, "ignored": ["closest to a train station"]}}
+{"id": "en-118", "lang": "en", "text": "hotel with a bakery nearby at the end of day 2", "scope": "out", "request": {"type": "places", "what": ["hotel"], "where": {"day": 2, "part": "end"}, "ignored": ["with a bakery nearby"]}}
+{"id": "en-119", "lang": "en", "text": "water after the last shop before the Stelvio", "scope": "out", "request": {"type": "none"}}
+{"id": "en-120", "lang": "en", "text": "add a coffee stop near the castle on day 2", "scope": "out", "request": {"type": "add_point", "point": {"kind": "cafe"}, "kind": "stop", "where": {"day": 2}, "ignored": ["near the castle"]}}
+{"id": "en-121", "lang": "en", "text": "hotels near the first supermarket after km 100", "scope": "out", "request": {"type": "none"}}
+{"id": "en-122", "lang": "en", "text": "is it safe to wild camp near Briançon", "scope": "out", "request": {"type": "none"}}
+{"id": "en-123", "lang": "en", "text": "tell me something about the Furka", "scope": "out", "request": {"type": "none"}}
+{"id": "en-124", "lang": "en", "text": "should I do the Furka or the Grimsel first", "scope": "out", "request": {"type": "none"}}
+{"id": "en-125", "lang": "en", "text": "campsite halfway between two supermarkets", "scope": "out", "request": {"type": "none"}}

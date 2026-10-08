@@ -2,7 +2,6 @@
 title: The map learns to climb
 date: 2026-08-03
 description: The first elevation design — a terrain raster beside the map, routing-graph elevation bytes, and a phantom-ascent bug.
-copy: ai
 ---
 
 > This post describes the first elevation implementation. Current maps embed terrain in OBCM.

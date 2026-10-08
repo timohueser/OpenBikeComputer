@@ -454,10 +454,11 @@ pub(crate) fn draw_prompt(
 ) {
     use palette::*;
     let mut y = PROMPT_TOP;
-    super::chrome::wrap(question, w - 2 * PROMPT_X, Font::Caption, |line| {
+    let mut lines = super::chrome::WrappedLines::new(question, w - 2 * PROMPT_X, Font::Caption);
+    while let Some(line) = lines.next() {
         cv.text(line, Point::new(PROMPT_X, y), Font::Caption, TextAlign::Left, SUBTEXT);
         y += PROMPT_PITCH;
-    });
+    }
     for (i, (option, top)) in options.iter().zip(OPTION_TOPS).enumerate() {
         let row = rect(OPTION_X, top, w - 2 * OPTION_X, OPTION_H);
         confirm_row(cv, row, i == selected, option.guard, hold_progress, WARNING, 5);

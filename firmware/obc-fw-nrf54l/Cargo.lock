@@ -1296,7 +1296,6 @@ name = "obc-formats"
 version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
- "obc-crc",
  "obc-ports",
 ]
 
@@ -1329,7 +1328,6 @@ dependencies = [
  "obc-elevation",
  "obc-formats",
  "obc-link",
- "obc-map-scene",
  "obc-platform",
  "obc-ports",
  "obc-reader",

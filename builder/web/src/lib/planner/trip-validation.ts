@@ -1,0 +1,71 @@
+import { maxRidingDays, type RoutePoint, type Trip } from './editor';
+import type { Coordinate } from './geo';
+import { presetNames, ridingProfiles } from './riding-profiles';
+
+function record(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function finite(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value);
+}
+
+function integer(value: unknown, min: number, max: number): value is number {
+    return finite(value) && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function coordinate(value: unknown): value is Coordinate {
+    return Array.isArray(value) && value.length === 2 && value.every(finite) && Math.abs(value[0]) <= 180 && Math.abs(value[1]) <= 90;
+}
+
+function point(value: unknown): value is RoutePoint {
+    return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
+        && coordinate(value.coordinate)
+        && typeof value.kind === 'string' && ['start', 'finish', 'pass', 'via', 'waypoint', 'detour', 'night', 'marker'].includes(value.kind)
+        && (value.leg === undefined || (typeof value.leg === 'string' && ['routed', 'straight', 'drawn', 'transfer'].includes(value.leg)))
+        && (value.drawn === undefined || (Array.isArray(value.drawn) && value.drawn.every(c =>
+            Array.isArray(c) && (coordinate(c) || (c.length === 3 && coordinate(c.slice(0, 2)) && finite(c[2]))))))
+        && (value.anchor === undefined || coordinate(value.anchor))
+        && (value.placeKind === undefined || typeof value.placeKind === 'string')
+        && (value.autoLabel === undefined || typeof value.autoLabel === 'boolean')
+        && (value.turnaround === undefined || value.turnaround === true)
+        && (value.note === undefined || typeof value.note === 'string')
+        && (value.legEnd === undefined || typeof value.legEnd === 'string');
+}
+
+/** Browser records and imported files must satisfy the route model. */
+export function isTrip(value: unknown): value is Trip {
+    if (!record(value) || !integer(value.days, 1, maxRidingDays)
+        || !Array.isArray(value.points) || !value.points.every(point)
+        || typeof value.budget !== 'string' || !['days', 'distance', 'hours'].includes(value.budget)
+        || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
+        || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
+        || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
+        || (value.name !== undefined && typeof value.name !== 'string')
+        || (value.startDate !== undefined && (typeof value.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.startDate)
+            || !Number.isFinite(Date.parse(value.startDate)) || new Date(value.startDate).toISOString().slice(0, 10) !== value.startDate))
+        || (value.loop !== undefined && value.loop !== true)) return false;
+
+    const { points, days } = value;
+    const ids = new Set(points.map(point => point.id));
+    const nights = points.filter(point => point.kind === 'night');
+    const route = points.filter(point => point.kind !== 'marker');
+    const starts = route.filter(point => point.kind === 'start').length;
+    const finishes = route.filter(point => point.kind === 'finish').length;
+    if (ids.size !== points.length || starts > 1 || finishes > 1
+        || (value.loop ? route.length < 2 || starts !== 1 || finishes !== 0
+            : route.length >= 2 ? starts !== 1 || finishes !== 1 : starts + finishes !== route.length)
+        || nights.some(point => !integer(point.night, 1, days - 1) || point.id !== `night-${point.night}`)
+        || new Set(nights.map(point => point.night)).size !== nights.length) return false;
+
+    // With unique point IDs, this makes the route order a permutation of the points between the start and the finish.
+    const order = value.routeOrder, middle = route.filter(point => point.kind !== 'start' && point.kind !== 'finish');
+    if (!Array.isArray(order) || order.length !== middle.length || !middle.every(point => order.includes(point.id))) return false;
+    if (value.restAfter !== undefined && (!Array.isArray(value.restAfter) || !value.restAfter.every(after => integer(after, 1, days)))) return false;
+    if (value.restNames !== undefined && (!Array.isArray(value.restNames) || !value.restNames.every(name => typeof name === 'string'))) return false;
+    if (value.splits !== undefined && (!record(value.splits) || !Object.entries(value.splits).every(([night, progress]) =>
+        integer(Number(night), 1, days - 1) && finite(progress) && progress >= 0 && progress <= 1))) return false;
+
+    if (value.bike !== undefined && (typeof value.bike !== 'string' || !Object.hasOwn(ridingProfiles, value.bike))) return false;
+    return value.preset === undefined || (typeof value.preset === 'string' && presetNames.includes(value.preset));
+}

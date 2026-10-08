@@ -26,8 +26,7 @@ from .base import ManualSource
 AU = ManualSource(
     "au", "Australia", "ELVIS DEM 1–5 m, per order", None,
     "CC BY 4.0 (the licensor is the contributing agency named in the order)",
-    "Sourced from ELVIS – Elevation and Depth, © the contributing agency",
-    "AHD (Australian Height Datum)", (112.0, -44.0, 154.0, -9.0),
+    "AHD (Australian Height Datum)",
     confirm_datum="AHD",
     why="ELVIS answers no box: the order is a web form and the delivery is a link sent "
         "by e-mail",

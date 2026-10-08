@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       regions:
-        description: "Regions to bake (comma-separated ids from host/obc-bake/regions.toml; blank = the small-region set)"
+        description: "Regions to bake (comma-separated Geofabrik region ids from data/regions/; blank = the small-region set)"
         required: false
         default: ""
       force:
@@ -72,8 +72,8 @@ permissions:
   contents: read
 
 env:
-  # The regions small enough to bake on a hosted runner. Everything else in
-  # regions.toml is a workstation job — see the header.
+  # The regions small enough to bake on a hosted runner. Every other Geofabrik
+  # region in data/regions/ is a workstation job — see the header.
   SMALL_REGIONS: >-
     europe/germany/bremen,
     europe/germany/hamburg,

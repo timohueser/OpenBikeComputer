@@ -8,8 +8,9 @@ import json
 import math
 from pathlib import Path
 import sqlite3
+import sys
 
-from . import planner_mvt as mvt
+from . import planner_geo as geo, planner_mvt as mvt, step_request
 
 LAYERS = ("cycling", "hiking", "mtb", "access", "routes")
 # The basemap's deepest zoom. The planner draws deeper zooms from these tiles.
@@ -31,8 +32,7 @@ def coordinates(blob):
     points, lon, lat = array("d"), 0, 0
     for dlon, dlat in zip(values[::2], values[1::2]):
         lon, lat = lon + dlon, lat + dlat
-        points.append((lon / 1e6 + 180) / 360)
-        points.append((1 - math.asinh(math.tan(math.radians(lat / 1e6))) / math.pi) / 2)
+        points.extend(geo.mercator(lon / 1e6, lat / 1e6, 0))
     return points
 
 
@@ -131,8 +131,9 @@ def merge(lines):
         yield identity, chain
 
 
-def derive(index, destination):
-    """Write one vector tile pyramid with the `cycling`, `hiking`, `mtb`, `access` and `routes` layers of the overlay index."""
+def derive(index, destination, credit):
+    """Write one vector tile pyramid with the `cycling`, `hiking`, `mtb`, `access` and `routes` layers of the overlay index.
+    `credit` is the attribution of the OSM data."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
 
@@ -193,20 +194,31 @@ def derive(index, destination):
                          "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
                          "center_zoom": min_zoom, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2)}, {
             "name": "OpenBikeComputer route networks and access",
-            "attribution": '<a href="https://www.openstreetmap.org/copyright">Route networks & access © OpenStreetMap</a>',
+            "attribution": f'<a href="https://www.openstreetmap.org/copyright">Route networks & access {credit}</a>',
             "routing_package": package,
             "vector_layers": [{"id": name, "minzoom": min_zoom, "maxzoom": MAX_ZOOM} for name in LAYERS]})
     partial.replace(destination)
     return {"tiles": len(tiles), "bytes": sum(map(len, tiles.values()))}
 
 
+def step():
+    """The `obc data` step `planner/overlays`: `overlays.pmtiles` from the overlay index of `planner/routing`."""
+    request = step_request.read()
+    index = Path(request["layers"]["planner/routing"]["routing/overlays.sqlite"])
+    output = Path(request["output"]) / "overlays.pmtiles"
+    step_request.metrics(request, derive(index, output, request["options"]["attribution"]))
+
+
 def main():
+    # The step gets its credit in its options, so only this command line reads the registry.
+    from . import data_registry
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("index", type=Path, help="routing/overlays.sqlite")
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    print(derive(args.index, args.output))
+    print(derive(args.index, args.output, data_registry.attribution("osm-planet")))
 
 
 if __name__ == "__main__":
-    main()
+    step() if sys.argv[1:] == ["--step"] else main()

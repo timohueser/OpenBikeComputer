@@ -57,7 +57,7 @@ class SelectionTests(unittest.TestCase):
             plan.Unit(id="rust.consumer", jobs=["clippy", "test"], package="consumer"),
             plan.Unit(id="rust.board", jobs=["embedded"], package="board"),
             plan.Unit(id="rust.bridge", jobs=["clippy", "test", "wasm-bridges"], package="bridge"),
-            unit("web.browser", ["web"], triggers=("builder/app/**", "specs/vectors/**")),
+            unit("web.browser", ["web"], triggers=("builder/web/**", "specs/vectors/**")),
             unit("swift.kit", ["ios-unit"], triggers=("ios/**", "specs/vectors/**")),
             unit("ci.builds", ["embedded"], foundation=True),
             unit("ci.docs", ["docs"], route="required", triggers=("docs/**",)),
@@ -78,7 +78,7 @@ class SelectionTests(unittest.TestCase):
             "crates/core/tests/common/mod.rs": {"rust.core", "rust.leaf", "rust.consumer"},
             "crates/core/Cargo.toml": {"rust.core", "rust.leaf"},
             "specs/vectors/format.json": {"web.browser", "swift.kit"},
-            "builder/app/src/panel.ts": {"web.browser"},
+            "builder/web/src/panel.ts": {"web.browser"},
             "docs/guide.md": {"ci.docs"},
             "fixtures/sources/tile.bin": {"rust.core"},
             "firmware/board/src/main.rs": {"rust.board"},
@@ -176,7 +176,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_the_json_plan_reports_jobs_platforms_and_unselected_reasons(self) -> None:
         self.units[5].platforms = ("linux", "macos")
-        data = plan.plan_data(self.plan_for("builder/app/src/panel.ts"))
+        data = plan.plan_data(self.plan_for("builder/web/src/panel.ts"))
         browser = next(item for item in data["suites"] if item["id"] == "web.browser")
         self.assertEqual(browser["platforms"], ["linux", "macos"])
         self.assertEqual(browser["jobs"], ["web"])
@@ -332,7 +332,7 @@ jobs:
   guards:
     runs-on: ubuntu-latest
     steps:
-      - run: python3 tools/check_one_home.py
+      - run: python3 tools/check_card_scheduler.py
   test:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
@@ -402,15 +402,24 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(plan.validate(self.root, self.graph, self.document, self.units), [])
         self.assertEqual(plan.validate_workflow(self.root), [])
 
+    def test_the_shared_config_schema_selects_its_rust_python_and_web_consumers(self) -> None:
+        selected = plan.select(self.units, self.graph, ["host/obc-map-core/schema/config.schema.json"])
+        self.assertEqual(selected.errors, [])
+        self.assertLessEqual(
+            {"rust.obc-map-core", "python.builder", "web.builder-vitest"},
+            {unit.id for unit in selected.selected},
+        )
+
     def test_every_package_reaches_the_jobs_that_compile_it(self) -> None:
         expected = {
             "obc-crc": ["clippy", "fmt", "test"],
             "obc-fw-nrf54l": ["embedded", "fmt"],
             "obc-boot": ["boot", "fmt"],
             "obc-desktop": ["desktop", "fmt"],
-            "obc-web-convert": ["clippy", "fmt", "test", "wasm-bridges"],
+            "obc-builder-bridge": ["clippy", "fmt", "test", "wasm-bridges"],
             "obc-web-demo": ["clippy", "fmt", "test", "wasm"],
             "obc-pack": ["builder-python", "clippy", "fmt", "test"],
+            "obc-bake": ["builder-python", "clippy", "fmt", "test"],
             "obc-sim": ["clippy", "fmt", "test", "ui-snapshots"],
             "obc-app": ["clippy", "device", "fmt", "test"],
         }
@@ -423,16 +432,16 @@ class ShippedPlanTests(unittest.TestCase):
         whose only build is a non-Cargo command, which a subset assertion let regress once."""
 
         cases = [
-            ("planner search", ["apps/planner-search/server.mjs"], ["ios-app", "ios-release", "planner-search"]),
+            ("planner search", ["planner/search/server.mjs"], ["planner-search"]),
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.
-            ("agent prose only", ["CLAUDE.md", "AGENTS.md"], ["docs"]),
-            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], ["clippy", "fmt", "test"]),
+            ("agent prose only", ["AGENTS.md", "companion-ios/AGENTS.md"], ["docs"]),
+            ("leaf Rust crate", ["sim/bench/src/main.rs"], ["clippy", "fmt", "test"]),
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "builder-python", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "builder-python", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
@@ -441,13 +450,13 @@ class ShippedPlanTests(unittest.TestCase):
             ),
             (
                 "desktop launch harness",
-                ["apps/obc-desktop/e2e/launch.py"],
+                ["builder/desktop/e2e/launch.py"],
                 ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges"],
             ),
             ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app", "ios-release"]),
             (
                 "web only",
-                ["builder/app/src/lib/panel.ts"],
+                ["builder/web/src/lib/panel.ts"],
                 ["desktop", "desktop-frontend", "desktop-launch", "fmt", "wasm-bridges", "web", "web-browser"],
             ),
             (
@@ -458,13 +467,13 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "desktop-launch", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
-            ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
+            ("web demo crate", ["sim/web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
             (
                 "web demo browser harness",
-                ["apps/obc-web-demo/tests/browser/ride-log.test.js"],
+                ["sim/web-demo/tests/browser/ride-log.test.js"],
                 ["clippy", "fmt", "test", "wasm"],
             ),
             (
@@ -485,18 +494,110 @@ class ShippedPlanTests(unittest.TestCase):
     def test_a_foundation_change_selects_the_whole_relevant_graph(self) -> None:
         whole = self.jobs_for(".github/workflows/ci.yml")
         for path in (
-            "tools/test_plan.py", "tools/ci/test.sh", "testing/suites.toml",
+            "tools/test_plan.py", "tools/ci/test.sh", "tools/testing/suites.toml",
             ".github/workflows/release.yml", ".github/workflows/test-weekly.yml",
             ".github/workflows/verification-candidate.yml", ".github/workflows/new-check.yml",
         ):
             with self.subTest(path=path):
-                self.assertEqual(self.jobs_for(path), whole)
-        for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", ".cargo/config.toml"):
+                expected = whole if path in plan.SCOPED_POLICY_PATHS else [job for job in whole if not job.startswith("ios-")]
+                self.assertEqual(self.jobs_for(path), expected)
+        for path in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".rustfmt.toml", ".cargo/config.toml"):
             with self.subTest(path=path):
                 self.assertLessEqual(
                     {"boot", "clippy", "desktop", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"},
                     set(self.jobs_for(path)),
                 )
+
+    def test_ios_suites_require_their_own_inputs(self) -> None:
+        unrelated = [
+            "docs/testing.md", ".github/CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", ".rustfmt.toml",
+            ".config/nextest.toml", "tools/testing/suites.toml", "tools/testing/coverage-policy.toml",
+            ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
+            "planner/router-build/src/lib.rs", "planner/service/src/main.rs", "planner/service/src/http.rs",
+            "planner/service/tests/http.rs", "planner/router/README.md",
+            "planner/search/server.mjs", "planner/search/tests/native.test.mjs",
+            "planner/search/query/train.py", "firmware/obc-crc/tests/crc.rs",
+            "sim/phone/host/src/tests.rs", "sim/host-core/src/flat_routes/tests.rs",
+            "firmware/obc-app/src/harness/route_import.rs",
+        ]
+        for path in unrelated:
+            with self.subTest(path=path):
+                self.assertFalse(set(self.jobs_for(path)) & {"ios-unit", "ios-app", "ios-release"})
+        deletion = plan.select(self.units, self.graph, ["retired/tool.rs"], deleted={"retired/tool.rs"})
+        self.assertFalse(set(plan.required_jobs(deletion)) & {"ios-unit", "ios-app", "ios-release"})
+        for path, expected in [
+            ("planner/router/src/lib.rs", {"ci.ios-app-build", "ci.ios-release-build"}),
+            ("planner/service/Cargo.toml", {"ci.ios-app-build", "ci.ios-release-build"}),
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
+              for path in ("firmware/obc-crc/src/lib.rs", "firmware/obc-app/i18n/en.toml")],
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
+              for path in ("sim/phone/host/src/client.rs", "firmware/obc-link/src/flat/client.rs")],
+            ("planner/search/runtime.mjs", {"ci.ios-app-build", "ci.ios-release-build"}),
+            ("planner/search/query/lexicon/kinds.json", {"ci.ios-app-build", "ci.ios-release-build"}),
+            *[(path, {"ci.ios-app-build", "ci.ios-release-build", "ci.ios-device-build", "swift.obckit-host"})
+              for path in ("Cargo.toml", "Cargo.lock", ".cargo/config.toml", ".cargo/config", "rust-toolchain.toml")],
+        ]:
+            with self.subTest(path=path):
+                selected = plan.select(self.units, self.graph, [path]).selected
+                self.assertEqual({u.id for u in selected if u.scoped}, expected)
+
+    def test_native_search_bundle_inputs_reach_the_app_builds(self) -> None:
+        pending = [self.root / "planner/search/native.mjs", self.root / "planner/search/native-build.mjs"]
+        visited = set()
+        while pending:
+            source = pending.pop().resolve()
+            if source in visited:
+                continue
+            visited.add(source)
+            path = source.relative_to(self.root).as_posix()
+            self.assertTrue({"ios-app", "ios-release"}.issubset(self.jobs_for(path)), path)
+            for imported in re.findall(r"(?:from\s+|import\s*(?:\(\s*)?)[\"'](\.[^\"']+)[\"']", source.read_text()):
+                pending.append(source.parent / imported)
+
+    def test_suite_definition_changes_select_only_the_changed_ios_suite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "testing").mkdir()
+            (root / "testing/suites.toml").write_text('schema = 2\n[[suite]]\nid = "swift.obckit-host"\ncommand = "before"\n')
+            for args in [("init", "-q"), ("add", "."), ("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base")]:
+                subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+            (root / "tools/testing").mkdir(parents=True)
+            subprocess.run(["git", "mv", "testing/suites.toml", "tools/testing/suites.toml"], cwd=root, check=True)
+            previous = plan.load_document(root)
+            documents = [
+                ({"suite": previous["suite"] + [{"id": "non-ios", "command": "new"}]}, set()),
+                ({"suite": [{"id": "swift.obckit-host", "command": "after"}]}, {"swift.obckit-host"}),
+            ]
+            for document, expected in documents:
+                definitions = plan.changed_suite_ids(root, "HEAD", document)
+                chosen = plan.select(self.units, self.graph, ["tools/testing/suites.toml"], changed_suites=definitions)
+                self.assertEqual({u.id for u in chosen.selected if u.scoped}, expected)
+
+    def test_ios_unit_steps_follow_the_selected_suite(self) -> None:
+        import yaml
+
+        steps = yaml.safe_load((self.root / ".github/workflows/ci.yml").read_text())["jobs"]["ios-unit"]["steps"]
+        cases = [
+            ("companion-ios/PlannerNative/tests/PMTilesArchiveTests.swift", {"Planner PMTiles reader"}),
+            ("companion-ios/ReplayAssets/test/camera.test.js", {"Prepare replay assets", "Test camera engine"}),
+            ("companion-ios/Packages/OBCKit/Tests/DomainTests.swift", {"Prepare replay assets", "OBCKit package tests (XCTest and Swift Testing, host)"}),
+        ]
+        routed = {"Prepare replay assets", "Test camera engine", "OBCKit package tests (XCTest and Swift Testing, host)", "Planner PMTiles reader"}
+        operand = r"contains\(fromJSON\(needs.selection.outputs.plan\).selected_suite_ids, '([^']+)'\)"
+        for path, expected in cases:
+            with self.subTest(path=path):
+                selected = {u.id for u in plan.select(self.units, self.graph, [path]).selected}
+                executed = set()
+                for step in steps:
+                    if step.get("name") not in routed:
+                        continue
+                    condition = step.get("if", "")
+                    self.assertRegex(condition, rf"^{operand}(?: \|\| {operand})*$")
+                    if selected.intersection(re.findall(operand, condition)):
+                        executed.add(step["name"])
+                self.assertEqual(executed, expected)
+        released = plan.select_release(plan.select(self.units, self.graph, []))
+        self.assertTrue({"ios-unit", "ios-app", "ios-release"}.issubset(plan.required_jobs(released)))
 
     def test_publication_workflows_keep_guards_without_product_builds(self) -> None:
         for path in sorted(plan.PUBLICATION_WORKFLOWS):
@@ -512,17 +613,19 @@ class ShippedPlanTests(unittest.TestCase):
         workflow = yaml.safe_load((self.root / ".github/workflows/ci.yml").read_text())
         steps = workflow["jobs"]["ios-app"]["steps"]
         app = {"Build (Debug, simulator SDK)", "Mock marker present in Debug"}
-        device = {"Pack the iOS host (simulator slice)", "Build OBCDevice (Debug, simulator SDK)"}
+        pack = {"Pack the iOS host (simulator slice)"}
+        device = pack | {"Build OBCDevice (Debug, simulator SDK)"}
         capture = {"Install WebP tools", "Start the screenshot simulator", "Companion website screenshots are current"}
         routed = app | device | capture
         cases = [
-            ("companion-ios/OBCDevice/App.swift", device),
-            ("host/obc-host-core/src/lib.rs", device),
-            ("apps/planner-search/server.mjs", app),
-            ("companion-ios/scripts/generate-website-fixture.py", app | capture),
-            ("companion-ios/scripts/capture-website-screenshots.sh", app | capture),
-            ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | capture),
-            ("companion-ios/OBCCompanion/App.swift", app | capture),
+            ("sim/phone/app/App.swift", device),
+            ("sim/host-core/src/lib.rs", app | device),
+            ("planner/search/server.mjs", set()),
+            ("planner/search/native.mjs", app | pack),
+            ("companion-ios/scripts/generate-website-fixture.py", app | pack | capture),
+            ("companion-ios/scripts/capture-website-screenshots.sh", app | pack | capture),
+            ("companion-ios/OBCCompanionUITests/WebsiteScreenshotTests.swift", app | pack | capture),
+            ("companion-ios/OBCCompanion/App.swift", app | pack | capture),
             ("companion-ios/OBCCompanion/Assets.xcassets/AppIcon.appiconset/Contents.json", routed),
             ("companion-ios/project.yml", routed),
             (".github/workflows/ci.yml", routed),
@@ -547,7 +650,7 @@ class ShippedPlanTests(unittest.TestCase):
 
     def test_the_snapshot_sweep_requires_its_own_rendering_inputs(self) -> None:
         cases = [
-            ("testing/coverage-policy.toml", False),
+            (".config/nextest.toml", False),
             (".github/workflows/ci.yml", False),
             ("firmware/obc-render/src/stroke.rs", True),
             ("firmware/ui-snapshots.sha256", True),
@@ -560,7 +663,7 @@ class ShippedPlanTests(unittest.TestCase):
                 sweep = next(item for item in chosen.units if item.id == "ci.ui-snapshots")
                 self.assertEqual(sweep.selected, selected)
 
-    def test_the_captured_fixture_tier_is_the_six_carved_targets(self) -> None:
+    def test_the_captured_fixture_tier_is_the_nine_carved_targets(self) -> None:
         self.assertEqual(
             sorted(
                 f"{name}:{target}"
@@ -569,7 +672,10 @@ class ShippedPlanTests(unittest.TestCase):
             ),
             [
                 "obc-app:peak_view_photos",
+                "obc-data-steps:cells_fixture",
+                "obc-data-steps:terrain_fixture",
                 "obc-dem:assets",
+                "obc-dem:planner_terrain",
                 "obc-host-core:altitude_fusion",
                 "obc-reader:poi_fixtures",
                 "obc-route:nav_fixtures",
@@ -588,16 +694,10 @@ class ShippedPlanTests(unittest.TestCase):
         self.assertEqual(
             missing,
             [
-                "ci.card-scheduler-guard",
-                "ci.catalog-ownership-guard",
-                "ci.changelog",
+                "ci.data-sources-guard",
                 "ci.fixture-policy",
                 "ci.ios-host-portability",
-                "ci.one-home-guard",
                 "ci.prose",
-                "ci.render-key-guard",
-                "ci.retired-map-stack",
-                "ci.screen-vocabulary-guard",
                 "python.repository-tools",
             ],
         )

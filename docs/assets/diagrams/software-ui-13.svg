@@ -1,0 +1,41 @@
+<svg viewBox="0 0 720 270" role="img" aria-label="Left, a device mock of the riding Map: a magenta route line down the middle, two small black diamonds on it marking named waypoints, a red heading arrow for the rider, and a bottom pill reading a diamond, the name Pass and 299 m — the approach chip counting down. Right, the Statistics progress bar in close-up: an amber fill from the left with two black vertical ticks, one at the far left for a waypoint at the start and one near three-quarters for the pass, annotated: the fill sweeps toward the next tick, the ticks are ink not red so they survive the off-route red tint, and the chip hides off-route." xmlns="http://www.w3.org/2000/svg" width="720" height="270" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Waypoints — diamonds, the approach chip, progress-bar ticks</text>
+
+  <!-- device mock: the Map -->
+  <rect x="40" y="48" width="150" height="188" rx="10" style="fill:#ffffff;stroke:#aaaa55;stroke-width:1.5" />
+  <rect x="107" y="54" width="12" height="150" style="fill:#ff00ff" />
+  <!-- waypoint diamonds on the route -->
+  <path d="M113 92 l7 7 l-7 7 l-7 -7 z" style="fill:#000" />
+  <path d="M113 132 l7 7 l-7 7 l-7 -7 z" style="fill:#000" />
+  <!-- rider heading arrow -->
+  <path d="M113 158 l8 15 l-8 -5 l-8 5 z" style="fill:#ff0000" />
+  <!-- scale bar -->
+  <line x1="50" y1="196" x2="72" y2="196" stroke="#000" stroke-width="1.4" />
+  <text x="50" y="192" style="fill:#000;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">20m</text>
+  <!-- approach chip -->
+  <rect x="46" y="208" width="138" height="22" rx="9" style="fill:#ffffff;stroke:#000;stroke-width:1" />
+  <path d="M60 219 l4 4 l-4 4 l-4 -4 z" style="fill:#000" />
+  <text x="70" y="223" style="fill:#000;font-family:var(--mono, 'Atkinson Mono', ui-monospace, monospace);font-size:12px" fill="#1c1b14">Pass · 299 m</text>
+  <text class="d-sub" x="115" y="248" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">waypoint + approach chip</text>
+
+  <!-- progress bar close-up -->
+  <text class="d-sub" x="250" y="56" style="font-size:12px" fill="#5c5a2e" font-size="12px">the Statistics progress bar shares the route's distance axis</text>
+  <rect x="250" y="86" width="430" height="18" rx="9" style="fill:#eae3c9;stroke:#aaaa55;stroke-width:1" />
+  <!-- live fill ~0.63 -->
+  <rect x="250" y="86" width="271" height="18" rx="9" style="fill:#ffaa00" />
+  <!-- ticks: start (~0) and pass (~0.77) -->
+  <rect x="252" y="89" width="2.4" height="12" style="fill:#000" />
+  <rect x="581" y="89" width="2.4" height="12" style="fill:#000" />
+  <!-- annotations -->
+  <line x1="253" y1="118" x2="253" y2="130" stroke="#6b5a2a" stroke-width="1" />
+  <text class="d-sub" x="258" y="142" style="font-size:12px" fill="#5c5a2e" font-size="12px">waypoint at the start</text>
+  <line x1="582" y1="118" x2="582" y2="130" stroke="#6b5a2a" stroke-width="1" />
+  <text class="d-sub" x="582" y="142" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">the pass</text>
+  <line x1="521" y1="76" x2="521" y2="84" stroke="#a9501c" stroke-width="1.2" marker-end="none" />
+  <text class="d-sub" x="521" y="72" text-anchor="middle" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">you are here</text>
+  <text class="d-sub" x="250" y="176" style="font-size:12px" fill="#5c5a2e" font-size="12px">· the fill sweeping toward the next tick is free "distance to go"</text>
+  <text class="d-sub" x="250" y="194" style="font-size:12px" fill="#5c5a2e" font-size="12px">· ticks are <tspan style="fill:#000;font-weight:600">ink</tspan>, never red — the bar itself tints red off-route, where a</text>
+  <text class="d-sub" x="262" y="210" style="font-size:12px" fill="#5c5a2e" font-size="12px">red tick would vanish</text>
+  <text class="d-sub" x="250" y="228" style="font-size:12px" fill="#5c5a2e" font-size="12px">· off-route the chip hides and the bar freezes — the along-route</text>
+  <text class="d-sub" x="262" y="244" style="font-size:12px" fill="#5c5a2e" font-size="12px">distance is meaningless once you've left the line</text>
+</svg>

@@ -188,11 +188,8 @@ public final class ImportFlowModel {
                                            profile: RoutePreference.balanced.profile(for: activity))
         let path = try await source.route(points: shape.points, turnarounds: shape.turnarounds, activity: activity,
                                           preference: .balanced, release: source.release())
-        let line = MeasuredLine(routePoints: path.points)
-        guard path.pointIndices.count == shape.points.count, line.length > 0,
-              let plan = PlannerPlan.shaped(shape.points, turnarounds: shape.turnarounds,
-                                            progress: path.pointIndices.map { line.vertices[$0].distance / line.length },
-                                            waypoints: file.route.waypoints)
+        guard path.pointIndices.count == shape.points.count, MeasuredLine(routePoints: path.points).length > 0,
+              let plan = PlannerPlan.shaped(shape.points, turnarounds: shape.turnarounds, waypoints: file.route.waypoints)
         else { throw PlannerFailure.invalidData }
         var planned = file
         planned.route.points = path.points

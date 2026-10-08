@@ -12,42 +12,41 @@ enum NativePlaceKind {
         return "\(["n", "w", "r"][Int(type) - 1])\(identity)"
     }
     struct Entry: Decodable { let category: String; let label: String }
-    static let entries: [String: Entry] = {
-        guard let url = Bundle.module.url(forResource: "poi-kinds", withExtension: "json", subdirectory: "Map"),
-              let data = try? Data(contentsOf: url) else { return [:] }
-        return (try? JSONDecoder().decode([String: Entry].self, from: data)) ?? [:]
-    }()
+    /// Basemap `pois` kinds (builder/web/src/lib/planner/poi-kinds.json).
+    static let entries: [String: Entry] = resource("poi-kinds") ?? [:]
+    /// The search query language (planner/search/query/contract.json).
+    struct Contract: Decodable {
+        struct Kind: Decodable { let category: String? }
+        let kinds: [String: Kind]
+        let data: [String: String]
+        let categories: [String: [String]]
+    }
+    static let contract: Contract? = resource("contract")
+    private static func resource<T: Decodable>(_ name: String) -> T? {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Map"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+    /// The map category of a search-data kind or a basemap kind.
+    static func category(of kind: String) -> String {
+        if let owner = contract?.data[kind], let category = contract?.kinds[owner]?.category { return category }
+        return entries[kind]?.category ?? kind
+    }
     static func kind(for value: String) -> PlannerPreviewPlace.Kind {
         if value == "cafe" { return .cafe }
-        let searchKinds = ["campsite": "camp", "water_point": "water", "water_tap": "water", "hut": "hotel",
-                           "bike_shop": "bike", "repair_station": "bike", "charging": "bike",
-                           "summit": "peak", "pass": "peak", "bus_stop": "station"]
-        let category = entries[value]?.category ?? searchKinds[value] ?? value
-        return PlannerPreviewPlace.Kind(rawValue: category == "camp" ? "camping" : category) ?? .town
+        let name = category(of: value)
+        return PlannerPreviewPlace.Kind(rawValue: name == "camp" ? "camping" : name) ?? .town
     }
     static func searchKinds(in categories: Set<String>) -> [String] {
-        let kinds = ["hotel": ["lodging"], "camp": ["campsite"], "shelter": ["shelter"], "shop": ["resupply"],
-                     "food": ["food"], "water": ["water"], "toilets": ["toilets"], "bike": ["bike"],
-                     "pharmacy": ["pharmacy"], "station": ["train_station", "bus_stop", "ferry"],
-                     "viewpoint": ["viewpoint"], "peak": ["summit", "pass"]]
-        return categories.sorted().flatMap { kinds[$0] ?? [] }
+        categories.sorted().flatMap { contract?.categories[$0] ?? [] }
     }
     nonisolated static func geoJSON(_ places: [PlannerPlace]) throws -> Data {
         let features: [[String: Any]] = places.map { place in
-            let category = switch place.kind {
-            case "campsite": "camp"
-            case "water_point", "water_tap": "water"
-            case "hut": "hotel"
-            case "bike_shop", "repair_station", "charging": "bike"
-            case "summit", "pass": "peak"
-            case "bus_stop", "train_station", "ferry": "station"
-            default: entries[place.kind]?.category ?? place.kind
-            }
-            return ["type": "Feature", "id": place.source,
-                    "geometry": ["type": "Point", "coordinates": [place.lon, place.lat]],
-                    "properties": ["kind": place.kind, "category": category, "name": place.name,
-                                   "opening_hours": place.opening_hours ?? "", "website": place.website ?? "",
-                                   "phone": place.phone ?? "", "description": place.description ?? ""]]
+            ["type": "Feature", "id": place.source,
+             "geometry": ["type": "Point", "coordinates": [place.lon, place.lat]],
+             "properties": ["kind": place.kind, "category": category(of: place.kind), "name": place.name,
+                            "opening_hours": place.opening_hours ?? "", "website": place.website ?? "",
+                            "phone": place.phone ?? "", "description": place.description ?? ""]]
         }
         return try JSONSerialization.data(withJSONObject: ["type": "FeatureCollection", "features": features])
     }

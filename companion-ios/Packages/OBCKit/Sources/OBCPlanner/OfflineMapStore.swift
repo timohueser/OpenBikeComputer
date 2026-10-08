@@ -71,13 +71,17 @@ public actor OfflineMapStore {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["bounds": bounds])
         status(0.1, "Checking map coverage")
-        struct Job: Decodable { let id: String; let state: String; let message: String? }
+        struct Job: Decodable { let id: String; let state: String; let message: String?; let source: URL }
         let job = try JSONDecoder().decode(Job.self, from: await send(request))
-        guard OfflineFile.validHash(job.id), job.state == "ready" else {
+        guard OfflineFile.validHash(job.id), job.state == "ready",
+              job.source.scheme == "https", job.source.host != nil,
+              job.source.user == nil, job.source.password == nil,
+              job.source.query == nil, job.source.fragment == nil,
+              Array(job.source.pathComponents.suffix(2)) == ["bundles", job.id] else {
             throw OfflineMapFailure.unavailable(job.message ?? "The map size could not be checked. Try again.")
         }
         status(0.6, "Reading download size")
-        let source = api.appending(path: "bundles/\(job.id)")
+        let source = job.source
         let bytes = try await get(source.appending(path: "bundle.json"))
         let bundle = try JSONDecoder().decode(OfflineBundle.self, from: bytes)
         let release = try await get(source.appending(path: "release.json"))
@@ -220,6 +224,10 @@ public actor OfflineMapStore {
         let (data, response) = try await metadataSession.data(for: request)
         guard data.count <= 16 * 1024 * 1024, let response = response as? HTTPURLResponse,
               (200..<300).contains(response.statusCode) else {
+            if let response = response as? HTTPURLResponse, response.statusCode == 404,
+               request.url?.pathComponents.contains("bundles") == true {
+                throw OfflineMapFailure.unavailable("This download has expired. Choose the area again to prepare a new download.")
+            }
             struct Failure: Decodable { let message: String }
             let message = (try? JSONDecoder().decode(Failure.self, from: data))?.message
             throw OfflineMapFailure.unavailable(message ?? "Offline downloads are unavailable. Try again later.")

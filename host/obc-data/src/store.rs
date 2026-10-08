@@ -1,0 +1,540 @@
+//! The local store: read-only objects named by their SHA-256, the snapshot records that say
+//! which objects are which source version, the receipts that say which objects are which layer,
+//! and the events of each run. `specs/obc-data.md` describes the layout.
+
+pub mod gc;
+
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::engine::Receipt;
+
+/// The files of one source version, as fetched.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Snapshot {
+    pub source: String,
+    pub version: String,
+    pub files: Vec<FileRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileRecord {
+    /// The part of `url` that names the file within its source, unique in a record: the name a
+    /// step gives the file when it needs one.
+    pub name: String,
+    pub url: String,
+    pub size: u64,
+    pub sha256: String,
+    /// `YYYY-MM-DDTHH:MM:SSZ`
+    pub retrieved: String,
+}
+
+impl Snapshot {
+    pub fn file(&self, url: &str) -> Option<&FileRecord> {
+        self.files.iter().find(|file| file.url == url)
+    }
+}
+
+pub struct Store {
+    root: PathBuf,
+}
+
+const STORE_LOCK: &str = "store";
+
+/// Held while it lives; the operating system releases it when the process ends.
+pub struct Lock(#[allow(dead_code)] File);
+
+impl Store {
+    /// The store at `OBC_DATA_STORE`, or else at `~/.cache/openbikecomputer/store`.
+    pub fn open() -> Result<Self, String> {
+        match std::env::var_os("OBC_DATA_STORE").filter(|dir| !dir.is_empty()) {
+            Some(dir) => Ok(Self::at(dir)),
+            None => {
+                let home = std::env::var_os("HOME").ok_or("HOME is not set; set OBC_DATA_STORE")?;
+                Ok(Self::at(Path::new(&home).join(".cache/openbikecomputer/store")))
+            }
+        }
+    }
+
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn object(&self, sha256: &str) -> PathBuf {
+        self.root.join("objects").join(&sha256[..2]).join(sha256)
+    }
+
+    /// A file that a download writes and a later download resumes.
+    pub fn partial(&self, name: &str) -> PathBuf {
+        self.root.join("partial").join(name)
+    }
+
+    /// Move `file`, whose SHA-256 is `sha256`, into the objects and make it read-only. `file` must
+    /// be in the store: a rename on one file system is atomic, so an object is always whole.
+    pub fn insert(&self, file: &Path, sha256: &str) -> Result<PathBuf, String> {
+        let object = self.object(sha256);
+        if object.is_file() {
+            fs::remove_file(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            return Ok(object);
+        }
+        let mut permissions = fs::metadata(file).map_err(|e| format!("{}: {e}", file.display()))?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(file, permissions).map_err(|e| format!("{}: {e}", file.display()))?;
+        create_parent(&object)?;
+        fs::rename(file, &object).map_err(|e| format!("{}: {e}", object.display()))?;
+        Ok(object)
+    }
+
+    /// Wait for the lock of `key`, and hold it until the guard drops.
+    pub fn lock(&self, key: &str) -> Result<Lock, String> {
+        let (file, path) = self.lock_file(key)?;
+        file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+        Ok(Lock(file))
+    }
+
+    /// The lock of `key`, or `None` when another holds it.
+    pub fn try_lock(&self, key: &str) -> Result<Option<Lock>, String> {
+        let (file, path) = self.lock_file(key)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Lock(file))),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(e)) => Err(format!("lock {}: {e}", path.display())),
+        }
+    }
+
+    /// Inspect an existing owner lock without creating a file or a directory.
+    pub fn is_locked(&self, key: &str) -> Result<bool, String> {
+        let file = match File::open(self.lock_path(key)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.to_string()),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(false),
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(e)) => Err(e.to_string()),
+        }
+    }
+
+    /// The shared lock that a mutating run, fetch or import holds while it uses objects and their
+    /// records. A collection waits for no holder: it refuses to start.
+    pub fn using(&self) -> Result<Lock, String> {
+        let (file, path) = self.lock_file(STORE_LOCK)?;
+        file.lock_shared().map_err(|e| format!("lock {}: {e}", path.display()))?;
+        Ok(Lock(file))
+    }
+
+    /// The store alone, for a collection, or `None` while a mutating run, fetch or import runs.
+    pub fn try_alone(&self) -> Result<Option<Lock>, String> {
+        self.try_lock(STORE_LOCK)
+    }
+
+    fn lock_file(&self, key: &str) -> Result<(File, PathBuf), String> {
+        let path = self.lock_path(key);
+        create_parent(&path)?;
+        let file = OpenOptions::new().create(true).truncate(false).write(true).open(&path);
+        Ok((file.map_err(|e| format!("{}: {e}", path.display()))?, path))
+    }
+
+    pub(crate) fn lock_path(&self, key: &str) -> PathBuf {
+        let name: String =
+            key.chars().map(|c| if c.is_ascii_alphanumeric() || "@.-".contains(c) { c } else { '_' }).collect();
+        self.root.join("locks").join(format!("{name}.lock"))
+    }
+
+    pub(crate) fn snapshot_path(&self, source: &str, version: &str) -> PathBuf {
+        self.root.join("snapshots").join(source).join(format!("{version}.json"))
+    }
+
+    pub fn snapshot(&self, source: &str, version: &str) -> Result<Option<Snapshot>, String> {
+        read_record(&self.snapshot_path(source, version))
+    }
+
+    /// Every snapshot record of `source` whose version is one path segment.
+    pub fn snapshots(&self, source: &str) -> Result<Vec<Snapshot>, String> {
+        let dir = self.root.join("snapshots").join(source);
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        };
+        let mut snapshots = Vec::new();
+        for entry in entries {
+            let name = entry.map_err(|e| format!("{}: {e}", dir.display()))?.file_name();
+            if let Some(version) = name.to_str().and_then(|name| name.strip_suffix(".json")) {
+                snapshots.extend(self.snapshot(source, version)?);
+            }
+        }
+        Ok(snapshots)
+    }
+
+    pub fn put_snapshot(&self, snapshot: &Snapshot) -> Result<(), String> {
+        write_record(&self.snapshot_path(&snapshot.source, &snapshot.version), snapshot)
+    }
+
+    fn layer_path(&self, key: &str) -> PathBuf {
+        self.root.join("layers").join(format!("{key}.json"))
+    }
+
+    /// The receipt of the layer with this key.
+    pub fn layer(&self, key: &str) -> Result<Option<Receipt>, String> {
+        read_receipt(&self.layer_path(key))
+    }
+
+    pub fn put_layer(&self, receipt: &Receipt) -> Result<(), String> {
+        write_record(&self.layer_path(&receipt.key), receipt)
+    }
+
+    /// Every receipt in the store.
+    pub fn layers(&self) -> Result<Vec<Receipt>, String> {
+        read_records(&self.root.join("layers"), read_receipt)
+    }
+
+    fn code_path(&self, hash: &str) -> PathBuf {
+        self.root.join("code").join(format!("{hash}.json"))
+    }
+
+    /// The code files of a code hash: path to SHA-256.
+    pub fn code(&self, hash: &str) -> Result<Option<BTreeMap<String, String>>, String> {
+        read_record(&self.code_path(hash))
+    }
+
+    pub fn put_code(&self, hash: &str, files: &BTreeMap<String, String>) -> Result<(), String> {
+        let path = self.code_path(hash);
+        if path.is_file() {
+            return Ok(());
+        }
+        write_record(&path, files)
+    }
+
+    pub fn producer(&self, code: &str) -> Result<Option<crate::engine::release::Producer>, String> {
+        if code.len() != 64 || !code.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Ok(None);
+        }
+        read_record(&self.root.join("producers").join(format!("{code}.json")))
+    }
+
+    pub fn put_producer(&self, code: &str, producer: &crate::engine::release::Producer) -> Result<(), String> {
+        producer.check(code)?;
+        write_record(&self.root.join("producers").join(format!("{code}.json")), producer)
+    }
+
+    pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
+        read_records(&self.root.join("local"), read_record)
+    }
+
+    pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
+        write_record(&self.root.join("local").join(format!("{}.json", adoption.plan.product)), adoption)
+    }
+
+    /// The manifest of a release.
+    pub fn release(&self, product: &str, id: &str) -> PathBuf {
+        self.root.join("releases").join(product).join(format!("{id}.json"))
+    }
+
+    /// The events of a run, one JSON object per line.
+    pub fn run(&self, id: &str) -> PathBuf {
+        self.root.join("runs").join(format!("{id}.jsonl"))
+    }
+
+    /// The path of a request record. The order of the params does not matter.
+    fn request_path(&self, source: &str, version: &str, params: &[(String, String)]) -> PathBuf {
+        let id = serde_json::to_vec(&(version, sorted(params))).expect("strings serialize");
+        self.root.join("requests").join(source).join(format!("{}.json", sha256_hex(&id)))
+    }
+
+    /// The names of the files that a fetch of `source@version` with `params` gave.
+    pub fn requested(
+        &self,
+        source: &str,
+        version: &str,
+        params: &[(String, String)],
+    ) -> Result<Option<Vec<String>>, String> {
+        let record: Option<Requested> = read_record(&self.request_path(source, version, params))?;
+        Ok(record.map(|record| record.files))
+    }
+
+    /// Every record of a fetch of `source` with `params`, in any version.
+    pub fn requests(&self, source: &str, params: &[(String, String)]) -> Result<Vec<Requested>, String> {
+        let records = self.requests_of(source)?;
+        Ok(records.into_iter().filter(|record| sorted(&record.params) == sorted(params)).collect())
+    }
+
+    /// Every record of a fetch of `source`, in any version and with any params.
+    pub fn requests_of(&self, source: &str) -> Result<Vec<Requested>, String> {
+        read_records(&self.root.join("requests").join(source), read_record)
+    }
+
+    pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
+        write_record(&self.request_path(source, &record.version, &record.params), record)
+    }
+}
+
+pub fn sorted(params: &[(String, String)]) -> Vec<(String, String)> {
+    let mut params = params.to_vec();
+    params.sort();
+    params
+}
+
+/// The files that a fetch with `params` gave: what a snapshot input with these params reads.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Requested {
+    pub version: String,
+    pub params: Vec<(String, String)>,
+    /// File names in the snapshot record of the version.
+    pub files: Vec<String>,
+}
+
+/// The space that fetches and builds leave free on a disk. Chosen, not measured: room for the
+/// system and the other programs of a laptop.
+const RESERVE: u64 = 4 << 30;
+
+/// Fail when the disk of `path` cannot take `needed` more bytes and keep [`RESERVE`] free.
+pub fn check_free(path: &Path, needed: u64) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let existing = path.ancestors().find(|path| path.exists()).ok_or("the store has no existing directory")?;
+        let name = std::ffi::CString::new(existing.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+        let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: the NUL-terminated path and the writable output stay valid for this call.
+        if unsafe { libc::statvfs(name.as_ptr(), status.as_mut_ptr()) } != 0 {
+            return Err(format!("{}: {}", existing.display(), std::io::Error::last_os_error()));
+        }
+        // SAFETY: statvfs initialized the output on success.
+        let status = unsafe { status.assume_init() };
+        #[allow(clippy::unnecessary_cast)]
+        let free = (status.f_bavail as u64).saturating_mul(status.f_frsize as u64);
+        if free < needed.saturating_add(RESERVE) {
+            let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+            return Err(format!(
+                "{} has {:.1} GiB free; this needs {:.1} GiB and keeps {:.0} GiB free. Release space with `obc data clean`, then retry",
+                existing.display(),
+                gib(free),
+                gib(needed),
+                gib(RESERVE)
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, needed);
+    Ok(())
+}
+
+fn read_text(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+fn read_record<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    let text = read_text(path)?;
+    text.map(|text| serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))).transpose()
+}
+
+/// For reuse, a receipt that this build cannot parse, such as one of an older format, is absent:
+/// its step builds again. The collection reads receipts strictly.
+fn read_receipt(path: &Path) -> Result<Option<Receipt>, String> {
+    Ok(read_text(path)?.and_then(|text| serde_json::from_str(&text).ok()))
+}
+
+/// The records in `dir`, or none when it does not exist.
+fn read_records<T>(dir: &Path, read: fn(&Path) -> Result<Option<T>, String>) -> Result<Vec<T>, String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let mut records = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if path.extension() == Some("json".as_ref()) {
+            records.extend(read(&path)?);
+        }
+    }
+    Ok(records)
+}
+
+fn write_record(path: &Path, record: &impl Serialize) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
+    write_atomic(path, text.as_bytes())
+}
+
+/// Write `bytes` to a temporary file beside `path`, then rename it: a reader sees the old file or
+/// the new one, never a part.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    create_parent(path)?;
+    let name = path.file_name().ok_or_else(|| format!("{} has no file name", path.display()))?;
+    let temporary = path.with_file_name(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    let written = File::create(&temporary).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    written.and_then(|()| fs::rename(&temporary, path)).map_err(|e| {
+        let _ = fs::remove_file(&temporary);
+        format!("{}: {e}", path.display())
+    })
+}
+
+/// [`write_atomic`], and the directory entries too: the file survives a power loss.
+pub fn durable(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("durable file has no directory")?;
+    durable_directory(parent)?;
+    write_atomic(path, bytes)?;
+    File::open(parent).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())
+}
+
+/// Create `path` and persist its entry and the entries of its ancestors.
+pub fn durable_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| e.to_string())?;
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    for directory in path.ancestors() {
+        File::open(directory).and_then(|file| file.sync_all()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The SHA-256 of a file, in lowercase hex, and its size.
+pub fn hash_file(path: &Path) -> Result<(String, u64), String> {
+    let mut file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 1 << 16];
+    let mut size = 0;
+    loop {
+        let read = file.read(&mut buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        if read == 0 {
+            return Ok((hex(&hasher.finalize()), size));
+        }
+        hasher.update(&buffer[..read]);
+        size += read as u64;
+    }
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn create_parent(path: &Path) -> Result<(), String> {
+    let parent = path.parent().ok_or_else(|| format!("{} has no parent", path.display()))?;
+    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    /// An empty directory that is removed when the test ends.
+    pub(crate) struct Scratch(pub PathBuf);
+
+    impl Scratch {
+        pub(crate) fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("obc-data-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            make_writable(&self.0);
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Windows refuses to delete a read-only file.
+    fn make_writable(dir: &Path) {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                make_writable(&path);
+            } else if let Ok(metadata) = fs::metadata(&path) {
+                let mut permissions = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(&path, permissions);
+            }
+        }
+    }
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_and_leaves_no_temporary() {
+        let scratch = Scratch::new("atomic");
+        let path = scratch.0.join("deep/record.json");
+        write_atomic(&path, b"old").unwrap();
+        write_atomic(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn an_object_is_named_by_its_digest_and_read_only() {
+        let scratch = Scratch::new("object");
+        let store = Store::at(&scratch.0);
+        let mut objects = Vec::new();
+        for copy in ["a", "b"] {
+            let file = store.partial(copy);
+            write_atomic(&file, b"bytes").unwrap();
+            let (sha256, size) = hash_file(&file).unwrap();
+            assert_eq!((sha256.as_str(), size), (sha256_hex(b"bytes").as_str(), 5));
+            objects.push(store.insert(&file, &sha256).unwrap());
+            assert!(!file.exists());
+        }
+        assert_eq!(objects[0], objects[1], "the same bytes are one object");
+        assert!(fs::metadata(&objects[0]).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn a_request_record_does_not_depend_on_the_order_of_its_params() {
+        let scratch = Scratch::new("requested");
+        let store = Store::at(&scratch.0);
+        let pair = |name: &str, value: &str| (name.to_string(), value.to_string());
+        let files = vec!["a.tif".to_string()];
+        let record = Requested { version: "v1".into(), params: vec![pair("tile", "a"), pair("bbox", "1")], files };
+        store.put_requested("land", &record).unwrap();
+        let swapped = [pair("bbox", "1"), pair("tile", "a")];
+        assert_eq!(store.requested("land", "v1", &swapped).unwrap(), Some(record.files.clone()));
+        assert_eq!(store.requests("land", &swapped).unwrap(), [record]);
+    }
+
+    #[test]
+    fn a_lock_waits_for_the_holder() {
+        let scratch = Scratch::new("lock");
+        let store = Store::at(&scratch.0);
+        let held = store.lock("osm-planet@2026-10-04").unwrap();
+        let acquired = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _lock = store.lock("osm-planet@2026-10-04").unwrap();
+                acquired.store(true, Ordering::SeqCst);
+            });
+            let _other = store.lock("osm-planet@2026-09-27").unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(!acquired.load(Ordering::SeqCst), "the second holder waits");
+            drop(held);
+        });
+        assert!(acquired.load(Ordering::SeqCst));
+    }
+}

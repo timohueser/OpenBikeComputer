@@ -1,0 +1,5 @@
+name = "Oberbayern"
+kind = "geofabrik"
+areas = ["europe/germany/bayern/oberbayern"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

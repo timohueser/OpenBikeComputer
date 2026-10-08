@@ -1,8 +1,9 @@
 import Foundation
 import OBCDomain
+import OBCHost
 
-/// OBCR v5 encoder and decoder. Stored geometry owns the route totals. Missing elevation and
-/// incoming graph validity stay explicit. The exact bytes are in specs/OBCR_Spec.md, and shared
+/// The Rust OBCR v5 encoder and the Swift decoder. Stored geometry owns the route totals.
+/// Missing elevation and incoming graph validity stay explicit. The exact bytes are in specs/OBCR_Spec.md, and shared
 /// Rust-produced vectors pin the reader.
 public enum RouteObjectCodec {
     // MARK: Format constants
@@ -22,18 +23,6 @@ public enum RouteObjectCodec {
     static let nameCap = 48
     /// Waypoint short-name cap.
     static let waypointNameCap = 24
-    /// Points per chunk incl. the shared anchor; the resident device index is
-    /// bounded by chunk count, not point count.
-    static let maxPointsPerChunk = 256
-    /// Largest stored per-vertex delta, in microdegrees. A longer segment is densified with
-    /// interpolated vertices, so a stored delta never wraps int16.
-    static let maxSegmentMicrodegrees = 30_000
-    /// Decimation tolerance: drop a vertex within this perpendicular distance (m)
-    /// of the chord its neighbours span.
-    static let decimationEpsilonMeters = 1.0
-    /// Force a kept vertex at least this often (m) so a long near-straight run
-    /// keeps shape fidelity at a real point.
-    static let maxSpanMeters = 1200.0
     /// `INT16_MIN` = "elevation unknown" in a waypoint record.
     static let waypointElevationUnknown = Int16.min
 
@@ -85,172 +74,55 @@ public enum RouteObjectCodec {
 
     /// Encode geometry and waypoints into an OBCR v5 file. `waypoints` are stored verbatim,
     /// already placed along the route; `points` carry the geometry and drive the header stats.
-    /// Empty `points` yields empty `Data`: there is no valid zero-geometry OBCR.
+    /// Invalid, empty or unsupported input yields empty `Data`. No partial object is returned.
     public static func encode(points: [RoutePoint], waypoints: [Waypoint], name: String, bikeType: BikeType) -> Data {
-        guard !points.isEmpty, points.allSatisfy({ $0.coordinate.isValidGeographic }) else { return Data() }
-
-        // One pass over every raw point: exact stats, distance plus dead-banded ascent and
-        // descent, and a per-point candidate carrying the cumulative distance and ascent a kept
-        // vertex records in its ChunkMeta.
-        var candidates: [Candidate] = []
-        candidates.reserveCapacity(points.count)
-        var cumulativeDistance = 0.0
-        var cumulativeAscent = 0.0
-        var cumulativeDescent = 0.0
-        var confirmedElevation: Double?
-        var minElevation = Int16.max
-        var maxElevation = Int16.min
-        var previous: Coordinate?
-        var bbox: BoundingBox?
-        for point in points {
-            let coordinate = point.coordinate
-            if let previous { cumulativeDistance += previous.routeDistance(to: coordinate) }
-            previous = coordinate
-
-            if let elevation = point.elevationMeters {
-                let rounded = roundToInt16(elevation)
-                minElevation = min(minElevation, rounded)
-                maxElevation = max(maxElevation, rounded)
-                // Dead-banded like `RouteStats.compute`: climb and descent accrue only once the
-                // track has moved past the hysteresis band.
-                if let confirmed = confirmedElevation {
-                    if elevation >= confirmed + RouteStats.climbHysteresisMeters {
-                        cumulativeAscent += elevation - confirmed
-                        confirmedElevation = elevation
-                    } else if elevation <= confirmed - RouteStats.climbHysteresisMeters {
-                        cumulativeDescent += confirmed - elevation
-                        confirmedElevation = elevation
-                    }
-                } else {
-                    confirmedElevation = elevation
-                }
-            } else { confirmedElevation = nil }
-
-            let lon = toMicrodegrees(coordinate.longitude)
-            let lat = toMicrodegrees(coordinate.latitude)
-            bbox = bbox?.extended(lon: lon, lat: lat) ?? BoundingBox(lon: lon, lat: lat)
-            candidates.append(Candidate(
-                lon: lon, lat: lat, elevation: point.elevationMeters.map(roundToInt16) ?? Int16.min,
-                surface: point.surface | (point.elevationIncomplete ? 8 : 0),
-                cumulativeDistance: UInt32(cumulativeDistance),
-                cumulativeAscent: UInt32(cumulativeAscent.rounded())
-            ))
+        guard !points.isEmpty, points.allSatisfy({ $0.coordinate.isValidGeographic
+            && ($0.elevationMeters?.isFinite ?? true) }),
+              waypoints.allSatisfy({ $0.coordinate.isValidGeographic }) else { return Data() }
+        let rawPoints = points.map { point in
+            ObcRoutePoint(lon: toMicrodegrees(point.coordinate.longitude),
+                lat: toMicrodegrees(point.coordinate.latitude),
+                elevation: point.elevationMeters.map(roundToInt16) ?? Int16.min,
+                surface: point.surface, elevation_incomplete: point.elevationIncomplete ? 1 : 0)
         }
-        if minElevation > maxElevation { minElevation = 0; maxElevation = 0 }
-
-        // Decimate (1-step-lookahead perpendicular distance + max span) into
-        // seam-sharing chunks; densification keeps every stored delta in int16 range.
-        var encoder = ChunkEncoder(waypoints: waypoints)
-        var lastKept: Candidate?
-        var pending: Candidate?
-        var storedPointCount: UInt32 = 0
-        for candidate in candidates {
-            switch (lastKept, pending) {
-            case (nil, _):
-                storedPointCount += encoder.emitDensified(previous: nil, candidate)
-                lastKept = candidate
-            case (.some, nil):
-                pending = candidate
-            case (.some(let keep), .some(let mid)):
-                let perpendicular = perpendicularDistanceMeters(mid, from: keep, to: candidate)
-                let span = Double(candidate.cumulativeDistance - keep.cumulativeDistance)
-                if perpendicular > decimationEpsilonMeters || span > maxSpanMeters || keep.elevation != mid.elevation || mid.elevation != candidate.elevation || mid.surface != candidate.surface || reverses(keep, mid, candidate) {
-                    storedPointCount += encoder.emitDensified(previous: keep, mid)
-                    lastKept = mid
-                }
-                pending = candidate
-            }
-        }
-        if let pending {  // the final point is always kept
-            storedPointCount += encoder.emitDensified(previous: lastKept, pending)
-        }
-        encoder.finish()
-
-        let box = bbox ?? BoundingBox(lon: 0, lat: 0)
-        let start = candidates[0]
-
-        // Physical layout: header, chunk bodies, index, waypoints. Offsets are
-        // known once the bodies are sized, so build the sections then the header.
-        let dataOffset = headerLength
-        let indexData = encoder.encodeIndex()
-        let indexOffset = dataOffset + encoder.bodies.count
-        let sortedWaypoints = waypoints.map { waypoint in
-            let mapped = encoder.waypointDistances[waypoint.index] ?? min(waypoint.distanceAlongMeters, encoder.distance)
-            return Waypoint(index: waypoint.index, name: waypoint.name, note: waypoint.note,
-                distanceAlongMeters: mapped, coordinate: waypoint.coordinate, category: waypoint.category,
-                lateralOffsetMeters: waypoint.lateralOffsetMeters, provenance: waypoint.provenance)
-        }.sorted { $0.distanceAlongMeters < $1.distanceAlongMeters }
-        let waypointData = encodeWaypoints(sortedWaypoints)
-        let waypointOffset = waypointData.isEmpty ? 0 : indexOffset + indexData.count
-
-        var header = Data(count: headerLength)
-        header.replaceSubrange(0..<4, with: magic)
-        header[4] = version
-        header[5] = encoder.hasElevation ? 2 : 0
-        let nameBytes = Data(name.truncatedToUTF8Bytes(nameCap).utf8)
-        header[6] = UInt8(nameBytes.count)
-        header[7] = bikeType.rawValue
-        header.putI32(box.minLon, at: 8)
-        header.putI32(box.minLat, at: 12)
-        header.putI32(box.maxLon, at: 16)
-        header.putI32(box.maxLat, at: 20)
-        header.putI32(start.lon, at: 24)
-        header.putI32(start.lat, at: 28)
-        header.putU32(storedPointCount, at: 32)
-        header.putU32(UInt32(encoder.distance), at: 36)
-        header.putU32(UInt32(encoder.ascent), at: 40)
-        header.putU32(UInt32(encoder.descent), at: 44)
-        header.putI16(minElevation, at: 48)
-        header.putI16(maxElevation, at: 50)
-        header.putU32(UInt32(encoder.metas.count), at: 52)
-        header.putU32(UInt32(indexOffset), at: 56)
-        header.putU32(UInt32(dataOffset), at: 60)
-        header.replaceSubrange(64..<(64 + nameBytes.count), with: nameBytes)
-        header.putU32(UInt32(waypointOffset), at: 112)
-        header.putU16(UInt16(sortedWaypoints.count), at: 116)
-
-        var file = header
-        file.append(encoder.bodies)
-        file.append(indexData)
-        file.append(waypointData)
-        return file
-    }
-
-    /// The waypoint records, 80 bytes each, in the caller's already distance-sorted order. The
-    /// lateral offset is stored saturating, so a waypoint further off route than `Int16` metres
-    /// reads as "very far to that side", never as the opposite one.
-    private static func encodeWaypoints(_ waypoints: [Waypoint]) -> Data {
-        guard !waypoints.isEmpty else { return Data() }
-        var data = Data(capacity: waypoints.count * waypointLength)
-        for waypoint in waypoints.prefix(Int(UInt16.max)) {
-            var record = Data(count: waypointLength)
-            record.putU32(UInt32(clamping: Int64(waypoint.distanceAlongMeters.rounded(.down))), at: 0)
-            record.putI32(toMicrodegrees(waypoint.coordinate.longitude), at: 4)
-            record.putI32(toMicrodegrees(waypoint.coordinate.latitude), at: 8)
-            record.putI16(waypointElevationUnknown, at: 12)  // Waypoint carries no elevation
-            record[14] = WaypointCategory.wireID(waypoint.category)
-            let nameBytes = Data(waypoint.name.truncatedToUTF8Bytes(waypointNameCap).utf8)
-            record[15] = UInt8(nameBytes.count)
-            record.putI16(lateralOffsetInt16(waypoint.lateralOffsetMeters), at: 16)  // [18..20] reserved
-            record.replaceSubrange(waypointNameOffset..<(waypointNameOffset + nameBytes.count), with: nameBytes)
+        let rawWaypoints = waypoints.map { waypoint in
+            var raw = ObcRouteWaypoint()
+            raw.raw_distance_m = waypoint.distanceAlongMeters
+            raw.lon = toMicrodegrees(waypoint.coordinate.longitude)
+            raw.lat = toMicrodegrees(waypoint.coordinate.latitude)
+            raw.lateral_offset_m = lateralOffsetInt16(waypoint.lateralOffsetMeters)
+            raw.category = WaypointCategory.wireID(waypoint.category)
+            let name = Array(waypoint.name.truncatedToUTF8Bytes(waypointNameCap).utf8)
+            raw.name_len = UInt8(name.count)
+            withUnsafeMutableBytes(of: &raw.name) { $0.copyBytes(from: name) }
             if let provenance = waypoint.provenance, provenance.store.count == 16 {
-                record.replaceSubrange(44..<60, with: provenance.store)
-                record.putU64(provenance.object, at: 60)
-                record.putU64(provenance.revision, at: 68)
-                record.putU16(provenance.ordinal, at: 76)
-                record.putU16(1, at: 78)
+                raw.has_provenance = 1
+                withUnsafeMutableBytes(of: &raw.store) { $0.copyBytes(from: provenance.store) }
+                raw.object = provenance.object
+                raw.revision = provenance.revision
+                raw.ordinal = provenance.ordinal
             }
-            data.append(record)
+            return raw
         }
-        return data
+        let name = Array(name.truncatedToUTF8Bytes(nameCap).utf8)
+        return rawPoints.withUnsafeBufferPointer { points in
+            rawWaypoints.withUnsafeBufferPointer { waypoints in
+                name.withUnsafeBufferPointer { name in
+                    var error: Int32 = 0
+                    guard let encoded = obc_format_route_encode(points.baseAddress, points.count,
+                        waypoints.baseAddress, waypoints.count, name.baseAddress, name.count,
+                        bikeType.rawValue, &error) else { return Data() }
+                    defer { obc_format_route_free(encoded) }
+                    guard let bytes = obc_format_route_data(encoded) else { return Data() }
+                    return Data(bytes: bytes, count: obc_format_route_len(encoded))
+                }
+            }
+        }
     }
 
-    /// A signed lateral offset in whole metres, saturating at plus or minus `Int16.max`. The
-    /// magnitude is clamped and then signed, exactly as the firmware converter does, so a waypoint
-    /// dropped 40 km off route never wraps to the other side. A non-finite offset stores as 0.
     private static func lateralOffsetInt16(_ meters: Double) -> Int16 {
         guard meters.isFinite else { return 0 }
-        let magnitude = min(abs(meters).rounded(), Double(Int16.max))
+        let magnitude = min(Double(Int16.max), abs(meters).rounded())
         return Int16(meters < 0 ? -magnitude : magnitude)
     }
 
@@ -425,7 +297,7 @@ public enum RouteObjectCodec {
     }
 
     private static func roundToInt16(_ meters: Double) -> Int16 {
-        Int16(clamping: max(Int64(Int16.min) + 1, Int64(meters.rounded())))
+        Int16(max(Double(Int16.min) + 1, min(Double(Int16.max), meters.rounded())))
     }
 
     private static func routePoint(lon: Int32, lat: Int32, elevation: Int16, surface: UInt8 = 0) -> RoutePoint {
@@ -435,239 +307,6 @@ public enum RouteObjectCodec {
         )
     }
 
-    private static func groundDistance(_ a: Candidate, _ b: Candidate) -> Double {
-        let cosLat = cos((Float(a.lat) / 1_000_000) * (Float.pi / 180))
-        let x = Float(b.lon - a.lon) * 0.000001 * 111_320 * cosLat
-        let y = Float(b.lat - a.lat) * 0.000001 * 111_320
-        return Double((x*x + y*y).squareRoot())
-    }
-
-    private static func reverses(_ a: Candidate, _ b: Candidate, _ c: Candidate) -> Bool {
-        let cosLat = cos(Double(a.lat) * .pi / 180_000_000)
-        let ux = Double(b.lon-a.lon) * cosLat, uy = Double(b.lat-a.lat)
-        let vx = Double(c.lon-b.lon) * cosLat, vy = Double(c.lat-b.lat)
-        return ux*vx + uy*vy < 0
-    }
-
-    /// Perpendicular distance in metres from `point` to the infinite chord `from` to `to`, in a
-    /// local-equirectangular metric. Accurate over a route's short segments, and the decimator's
-    /// straight-chord test.
-    private static func perpendicularDistanceMeters(
-        _ point: Candidate, from: Candidate, to: Candidate
-    ) -> Double {
-        let metersPerDegree = 111_320.0
-        let cosLat = Foundation.cos(Double(from.lat) / 1_000_000 * .pi / 180)
-        func delta(_ a: Candidate, _ b: Candidate) -> (x: Double, y: Double) {
-            (Double(b.lon - a.lon) / 1_000_000 * metersPerDegree * cosLat,
-             Double(b.lat - a.lat) / 1_000_000 * metersPerDegree)
-        }
-        let (cx, cy) = delta(from, to)
-        let (px, py) = delta(from, point)
-        let length2 = cx * cx + cy * cy
-        if length2 <= 1e-9 { return (px * px + py * py).squareRoot() }
-        return abs(cx * py - cy * px) / length2.squareRoot()
-    }
-}
-
-// MARK: - Encoder internals
-
-/// A kept (or interpolated) route vertex plus the cumulative stats a ChunkMeta
-/// records for its anchor. Coordinates in microdegrees.
-private struct RouteObjectCandidate {
-    var lon: Int32
-    var lat: Int32
-    var elevation: Int16
-    var surface: UInt8
-    var cumulativeDistance: UInt32
-    var cumulativeAscent: UInt32
-}
-
-private extension RouteObjectCodec {
-    typealias Candidate = RouteObjectCandidate
-
-    struct BoundingBox {
-        var minLon: Int32
-        var minLat: Int32
-        var maxLon: Int32
-        var maxLat: Int32
-
-        init(lon: Int32, lat: Int32) {
-            minLon = lon; maxLon = lon; minLat = lat; maxLat = lat
-        }
-
-        func extended(lon: Int32, lat: Int32) -> BoundingBox {
-            var box = self
-            box.minLon = min(box.minLon, lon); box.maxLon = max(box.maxLon, lon)
-            box.minLat = min(box.minLat, lat); box.maxLat = max(box.maxLat, lat)
-            return box
-        }
-    }
-
-    /// Accumulates kept vertices into seam-sharing chunks of at most ``maxPointsPerChunk``,
-    /// streaming each finished chunk's body into `bodies` and its ``ChunkMeta`` into `metas`.
-    struct ChunkEncoder {
-        var waypoints: [Waypoint] = []
-        init(waypoints: [Waypoint]) { self.waypoints = waypoints }
-        var waypointDistances: [Int: Double] = [:]
-        var bodies = Data()
-        var metas: [ChunkMeta] = []
-        private var current: [Candidate] = []
-        private var dataPosition = RouteObjectCodec.headerLength
-        private var chunkStartDistance: UInt32 = 0
-        private var chunkStartAscent: UInt32 = 0
-        var distance = 0.0
-        var ascent = 0.0
-        var descent = 0.0
-        var hasElevation = false
-        private var previous: Candidate?
-        private var reference: Double?
-
-        /// Emit `candidate`, first inserting linearly-interpolated vertices so no
-        /// stored delta exceeds int16 range. Returns the number of vertices emitted
-        /// (intermediates + the candidate) for the header's Point Count.
-        mutating func emitDensified(previous: Candidate?, _ candidate: Candidate) -> UInt32 {
-            guard let previous else { emit(candidate); return 1 }
-            let dLon = Int64(candidate.lon) - Int64(previous.lon)
-            let dLat = Int64(candidate.lat) - Int64(previous.lat)
-            let maxDelta = max(abs(dLon), abs(dLat))
-            var emitted: UInt32 = 0
-            if maxDelta > Int64(RouteObjectCodec.maxSegmentMicrodegrees) {
-                let steps = maxDelta / Int64(RouteObjectCodec.maxSegmentMicrodegrees) + 1
-                for step in 1..<steps {
-                    emit(interpolate(previous, candidate, Double(step) / Double(steps)))
-                    emitted += 1
-                }
-            }
-            emit(candidate)
-            return emitted + 1
-        }
-
-        private mutating func emit(_ candidate: Candidate) {
-            let before = distance
-            let first = previous == nil
-            if let previous {
-                distance += RouteObjectCodec.groundDistance(previous, candidate)
-            }
-            for waypoint in waypoints where waypointDistances[waypoint.index] == nil && waypoint.distanceAlongMeters <= Double(candidate.cumulativeDistance) {
-                let rawStart = Double(previous?.cumulativeDistance ?? 0)
-                let rawLength = Double(candidate.cumulativeDistance) - rawStart
-                let fraction = rawLength > 0 ? max(0, min(1, (waypoint.distanceAlongMeters - rawStart) / rawLength)) : 0
-                waypointDistances[waypoint.index] = (before + (distance - before) * fraction).rounded(.down)
-            }
-            previous = candidate
-            if candidate.surface & 8 != 0 { reference = nil }
-            if candidate.elevation == Int16.min { reference = nil } else {
-                hasElevation = true
-                let elevation = Double(candidate.elevation)
-                if !first && UInt32(distance) == UInt32(before) {
-                    // A sub-metre span owns no distance cell.
-                } else if let last = reference {
-                    let delta = elevation - last
-                    if delta >= 3 { ascent += delta; reference = elevation }
-                    else if delta <= -3 { descent -= delta; reference = elevation }
-                } else { reference = elevation }
-            }
-            if current.isEmpty {
-                chunkStartDistance = UInt32(distance)
-                chunkStartAscent = UInt32(ascent)
-            }
-            current.append(candidate)
-            if current.count == RouteObjectCodec.maxPointsPerChunk {
-                finalize()
-                // Reseed the next chunk with this point as the shared seam / anchor.
-                chunkStartDistance = UInt32(distance)
-                chunkStartAscent = UInt32(ascent)
-                current.append(candidate)
-            }
-        }
-
-        /// Flush the trailing chunk (skipping a lone seam point already stored in
-        /// the prior chunk).
-        mutating func finish() {
-            if current.count >= 2 || (metas.isEmpty && !current.isEmpty) { finalize() }
-        }
-
-        private mutating func finalize() {
-            let n = current.count
-            guard n > 0 else { return }
-            let anchor = current[0]
-            var box = BoundingBox(lon: anchor.lon, lat: anchor.lat)
-            var body = Data(capacity: (n - 1) * 7)
-            for i in 1..<n {
-                let point = current[i]
-                let previous = current[i - 1]
-                // Densification guarantees these deltas fit int16.
-                body.appendI16(Int16(point.lon - previous.lon))
-                body.appendI16(Int16(point.lat - previous.lat))
-                body.appendI16(point.elevation)
-                body.append(point.surface)
-                box = box.extended(lon: point.lon, lat: point.lat)
-            }
-            metas.append(ChunkMeta(
-                minLon: box.minLon, minLat: box.minLat, maxLon: box.maxLon, maxLat: box.maxLat,
-                anchorLon: anchor.lon, anchorLat: anchor.lat, anchorElevation: anchor.elevation,
-                pointCount: UInt16(n), cumulativeDistance: chunkStartDistance,
-                cumulativeAscent: chunkStartAscent, byteOffset: UInt32(dataPosition),
-                byteLength: UInt32(body.count)
-            ))
-            bodies.append(body)
-            dataPosition += body.count
-            current.removeAll(keepingCapacity: true)
-        }
-
-        func encodeIndex() -> Data {
-            var data = Data(capacity: metas.count * RouteObjectCodec.chunkMetaLength)
-            for meta in metas {
-                var record = Data(count: RouteObjectCodec.chunkMetaLength)
-                record.putI32(meta.minLon, at: 0)
-                record.putI32(meta.minLat, at: 4)
-                record.putI32(meta.maxLon, at: 8)
-                record.putI32(meta.maxLat, at: 12)
-                record.putI32(meta.anchorLon, at: 16)
-                record.putI32(meta.anchorLat, at: 20)
-                record.putI16(meta.anchorElevation, at: 24)
-                record.putU16(meta.pointCount, at: 26)
-                record.putU32(meta.cumulativeDistance, at: 28)
-                record.putU32(meta.cumulativeAscent, at: 32)
-                record.putU32(meta.byteOffset, at: 36)
-                record.putU32(meta.byteLength, at: 40)
-                data.append(record)
-            }
-            return data
-        }
-
-        private func interpolate(_ a: Candidate, _ b: Candidate, _ t: Double) -> Candidate {
-            func lerpI32(_ from: Int32, _ to: Int32) -> Int32 {
-                Int32((Double(from) + (Double(to) - Double(from)) * t).rounded())
-            }
-            func lerpU32(_ from: UInt32, _ to: UInt32) -> UInt32 {
-                UInt32((Double(from) + (Double(to) - Double(from)) * t).rounded())
-            }
-            return Candidate(
-                lon: lerpI32(a.lon, b.lon), lat: lerpI32(a.lat, b.lat),
-                elevation: a.elevation == Int16.min || b.elevation == Int16.min || b.surface & 8 != 0 ? Int16.min : Int16((Double(a.elevation) + (Double(b.elevation) - Double(a.elevation)) * t).rounded()),
-                surface: b.surface,
-                cumulativeDistance: lerpU32(a.cumulativeDistance, b.cumulativeDistance),
-                cumulativeAscent: lerpU32(a.cumulativeAscent, b.cumulativeAscent)
-            )
-        }
-    }
-
-    /// One chunk's index entry.
-    struct ChunkMeta {
-        var minLon: Int32
-        var minLat: Int32
-        var maxLon: Int32
-        var maxLat: Int32
-        var anchorLon: Int32
-        var anchorLat: Int32
-        var anchorElevation: Int16
-        var pointCount: UInt16
-        var cumulativeDistance: UInt32
-        var cumulativeAscent: UInt32
-        var byteOffset: UInt32
-        var byteLength: UInt32
-    }
 }
 
 // MARK: - Little-endian byte plumbing
@@ -701,31 +340,4 @@ private struct ByteView {
     func u64(at offset: Int) throws -> UInt64 { UInt64(try u32(at: offset)) | (UInt64(try u32(at: offset + 4)) << 32) }
     func i16(at offset: Int) throws -> Int16 { Int16(bitPattern: try u16(at: offset)) }
     func i32(at offset: Int) throws -> Int32 { Int32(bitPattern: try u32(at: offset)) }
-}
-
-private extension Data {
-    mutating func appendI16(_ value: Int16) {
-        let u = UInt16(bitPattern: value)
-        append(UInt8(u & 0xFF)); append(UInt8(u >> 8))
-    }
-
-    mutating func putU16(_ value: UInt16, at offset: Int) {
-        let i = startIndex + offset
-        self[i] = UInt8(value & 0xFF); self[i + 1] = UInt8(value >> 8)
-    }
-
-    mutating func putI16(_ value: Int16, at offset: Int) { putU16(UInt16(bitPattern: value), at: offset) }
-
-    mutating func putU32(_ value: UInt32, at offset: Int) {
-        let i = startIndex + offset
-        self[i] = UInt8(value & 0xFF); self[i + 1] = UInt8((value >> 8) & 0xFF)
-        self[i + 2] = UInt8((value >> 16) & 0xFF); self[i + 3] = UInt8((value >> 24) & 0xFF)
-    }
-
-    mutating func putU64(_ value: UInt64, at offset: Int) {
-        putU32(UInt32(truncatingIfNeeded: value), at: offset)
-        putU32(UInt32(value >> 32), at: offset + 4)
-    }
-
-    mutating func putI32(_ value: Int32, at offset: Int) { putU32(UInt32(bitPattern: value), at: offset) }
 }

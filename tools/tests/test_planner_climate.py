@@ -218,11 +218,11 @@ class BakeTest(unittest.TestCase):
         from pmtiles.reader import MmapSource, Reader
 
         bounds = [8.0, 48.0, 8.2, 48.1]
-        height = lambda region, key=None: 300 + 40 * np.arange(len(region.rows) * len(region.cols), dtype=float).reshape(len(region.rows), -1) % 700
+        height = lambda region, key=None, cache=None: 300 + 40 * np.arange(len(region.rows) * len(region.cols), dtype=float).reshape(len(region.rows), -1) % 700
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(climate, "orography", height):
             paths = [Path(directory) / f"{k}.pmtiles" for k in range(2)]
             for path in paths:
-                counts = climate.bake(bounds, FIRST, FakeSource(), path)
+                counts = climate.bake(bounds, FIRST, FakeSource(), path, "ERA5-Land {year}")
             self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
             self.assertEqual(counts, {8: 1, 9: 1})
             with paths[0].open("rb") as stream:
@@ -231,6 +231,27 @@ class BakeTest(unittest.TestCase):
         self.assertEqual((header["min_zoom"], header["max_zoom"], metadata["first_year"], metadata["years"]), (8, 9, FIRST, 10))
         self.assertEqual((sorted(metadata["inputs"]["chunks"]), metadata["wet_day_mm"]), (sorted(climate.SOURCE), climate.WET_MM))
         self.assertEqual((metadata["rain_factors"], metadata["wind_factor"]), (list(climate.RAIN_FACTORS), climate.WIND_FACTOR))
+
+
+class FetchTest(unittest.TestCase):
+    def test_a_fetch_asks_for_each_planned_chunk_with_the_key_and_keeps_it_in_the_directory(self):
+        bounds = [8.0, 48.0, 8.3, 48.1]
+        _, _, times, spatial = climate.chunk_plan(climate.Region(bounds), FIRST)
+        hours = climate.hour(dt.date(FIRST + climate.YEARS + 1, 1, 1))
+        layout = {variable: (f"https://arco.test/{variable}", hours) for variable in climate.SOURCE}
+        asked = []
+        answer = lambda url, key=None: asked.append((url, key)) or b"chunk"
+        with tempfile.TemporaryDirectory() as out, mock.patch.object(climate, "token", return_value="KEY"), \
+                mock.patch.object(climate, "stores", return_value=layout), mock.patch.object(climate, "fetch", answer), \
+                mock.patch.object(climate, "orography") as orography:
+            climate.fetch_sources(bounds, FIRST, Path(out))
+            files = sorted(str(path.relative_to(out)) for path in Path(out).rglob("*") if path.is_file())
+            orography.assert_called_once_with(mock.ANY, "KEY", cache=Path(out))
+        names = [f"{t}.{y}.{x}" for y, x in spatial for t in times]
+        wanted = {(f"https://arco.test/{variable}/{variable}/{name}", "KEY") for variable in climate.SOURCE for name in names}
+        self.assertEqual(set(asked), wanted)
+        digest = hashlib.sha256(b"chunk").hexdigest()
+        self.assertEqual(files, sorted(f"{variable}/{name}.{hours}.{digest}" for variable in climate.SOURCE for name in names))
 
 
 if __name__ == "__main__":

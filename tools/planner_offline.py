@@ -6,10 +6,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
-try:
-    from . import planner_runtime as runtime
-except ImportError:
-    import planner_runtime as runtime
+from . import planner_runtime as runtime
 
 
 COMPRESSED = {".bin", ".pmtiles", ".webp", ".png"}
@@ -71,13 +68,10 @@ def pack_file(source, objects):
     return {**original, "transport": transport}
 
 
-def materialize(source, destination, prefixes, skip=()):
-    """Install only the server's runtime files from the canonical object pool."""
-    _, document = runtime.release(source, include_sources=False)
-    if not document.get("grid"):
-        raise ValueError("Expected a grid publication")
+def materialize(source, destination, document, prefixes):
+    """Install the runtime files under `prefixes` from the object pool of a verified grid release."""
     for name, entry in document["files"].items():
-        if not name.startswith(prefixes) or name.startswith(skip): continue
+        if not name.startswith(prefixes): continue
         path = destination / name
         if path.exists():
             verify(path, entry)
@@ -85,6 +79,7 @@ def materialize(source, destination, prefixes, skip=()):
         path.parent.mkdir(parents=True, exist_ok=True)
         transport = entry["transport"]
         original = source / "objects" / transport["sha256"]
+        verify(original, transport)
         temporary = path.with_suffix(path.suffix + ".partial")
         try:
             if transport["encoding"] == "identity":
@@ -103,4 +98,3 @@ def materialize(source, destination, prefixes, skip=()):
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
-    return document

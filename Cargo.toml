@@ -1,8 +1,8 @@
 [workspace]
 # The host workspace root. It lives at the repo root rather than under firmware/ because its
 # members no longer all belong to the firmware: the device-reachable crates stay in firmware/,
-# the host tools and test oracles live in host/, and the four shells that drive them live in
-# apps/. One root keeps a single Cargo.lock and a single target/ across all three.
+# the host tools and test oracles live in host/, and the shells that drive them live in apps/.
+# One root keeps a single Cargo.lock and a single target/ across all three.
 members = [
     # firmware/ — reachable from the device image through normal dependencies.
     "firmware/obc-formats",
@@ -22,44 +22,120 @@ members = [
     "firmware/obc-crc",
     "firmware/obc-link",
     # host/ — tools, shared host glue, and the test oracles. Never on the device.
-    "host/route-engine",
-    "host/route-build",
-    "host/obc-host-core",
+    "planner/router",
+    "planner/router-build",
     "host/obc-file-source",
     "host/obc-inspect",
-    "host/obc-flat-device",
     "host/obc-fixtures",
     "host/obc-pack",
+    "host/obc-draw",
+    "host/obc-network",
+    "host/obc-pbf",
+    "host/obc-map-core",
+    "host/obc-places",
+    "host/obc-search-bake",
     "host/obc-bake",
+    "host/obc-osm",
     "host/obc-dem",
     "host/obc-mkimage",
-    "host/obc-bench",
     "host/obc-vectors",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
-    "host/obc-replay",
-    "host/obc-usb-host",
-    "host/obc-usb",
-    # apps/ — the shells. obc-desktop is here too, but carries its own [workspace].
-    "apps/route-server",
-    "apps/obc-ios-host",
-    "apps/obc-companion-core",
-    "apps/obc-sim",
-    "apps/obc-web-demo",
-    "apps/obc-web-convert",
-    "apps/obc-web-assemble",
-    "apps/obc-skin-preview",
+    "builder/usb",
+    "host/obc-data",
+    "host/obc-data-steps",
+    # sim/ — the shared host and development shells.
+    "sim/host-core",
+    "sim/replay",
+    "sim/flat-device",
+    "sim/feeder",
+    "sim/bench",
+    "sim/phone/host",
+    "sim/desktop",
+    "sim/web-demo",
+    # Product bridges. obc-desktop carries its own [workspace].
+    "planner/service",
+    "builder/wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its
-# members for the host target). obc-boot and obc-desktop carry their own [workspace] tables,
-# which excludes them automatically for the same reason.
+# members for the host target). obc-boot, obc-desktop and obc-sensor-sim carry their own
+# [workspace] tables, which excludes them automatically for the same reason.
 exclude = ["firmware/obc-fw-nrf54l"]
 resolver = "2"
+
+[workspace.dependencies]
+obc-crc = { path = "firmware/obc-crc" }
+obc-data = { path = "host/obc-data" }
+obc-display = { path = "firmware/obc-display" }
+obc-elevation = { path = "firmware/obc-elevation" }
+obc-fixtures = { path = "host/obc-fixtures" }
+obc-flat-device = { path = "sim/flat-device" }
+obc-formats = { path = "firmware/obc-formats" }
+obc-link = { path = "firmware/obc-link" }
+obc-map-scene = { path = "firmware/obc-map-scene" }
+obc-pack = { path = "host/obc-pack" }
+obc-bake = { path = "host/obc-bake" }
+obc-draw = { path = "host/obc-draw" }
+obc-network = { path = "host/obc-network" }
+obc-pbf = { path = "host/obc-pbf" }
+obc-map-core = { path = "host/obc-map-core" }
+obc-osm = { path = "host/obc-osm" }
+obc-ports = { path = "firmware/obc-ports" }
+obc-reader = { path = "firmware/obc-reader" }
+obc-render = { path = "firmware/obc-render" }
+obc-route = { path = "firmware/obc-route" }
+obc-storage = { path = "firmware/obc-storage" }
+obc-vectors = { path = "host/obc-vectors" }
+obcm-testkit = { path = "host/obcm-testkit" }
+obc-app = { path = "firmware/obc-app" }
+obc-dem = { path = "host/obc-dem", default-features = false }
+obc-dfu = { path = "firmware/obc-dfu" }
+obc-file-source = { path = "host/obc-file-source" }
+obc-host-core = { path = "sim/host-core" }
+obc-places = { path = "host/obc-places" }
+obc-platform = { path = "firmware/obc-platform" }
+obc-replay = { path = "sim/replay" }
+obc-tree-walk = { path = "host/obc-tree-walk" }
+obcm-assemble = { path = "host/obcm-assemble", default-features = false }
+planner-router-build = { path = "planner/router-build" }
+planner-router = { path = "planner/router" }
+
+embedded-graphics = "0.8"
+heapless = "0.8"
+libm = { version = "0.2", default-features = false }
+miniz_oxide = { version = "0.8.9", default-features = false }
+pollster = "0.3"
+serde_json = "1"
+sha2 = { version = "0.11", default-features = false }
+zlib-rs = "0.6.7"
+clap = "4"
+console_error_panic_hook = "0.1"
+eframe = "0.29"
+flate2 = "1"
+getrandom = "0.4"
+image = { version = "0.25", default-features = false }
+js-sys = "0.3"
+osmpbfreader = "0.19"
+postcard = "1"
+rfd = "0.14"
+rusqlite = "0.38"
+schemars = "1"
+serde = "1"
+tempfile = "3"
+tokio = "1"
+unicode-normalization = "0.1"
+ureq = "3"
+wasm-bindgen = "0.2"
+zip = { version = "8", default-features = false }
 
 # Optimize CRC and storage crash-matrix loops in development and tests.
 [profile.dev.package.obc-crc]
 opt-level = 2
 [profile.dev.package.obc-storage]
 opt-level = 2
+
+# Tool identities hash large compiler and sysroot files.
+[profile.dev.package.sha2]
+opt-level = 3

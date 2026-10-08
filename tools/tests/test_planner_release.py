@@ -11,7 +11,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from tools import planner_release as release, planner_prepare, planner_deploy, r2
+from tools import planner_bake, planner_release as release, planner_prepare, planner_deploy, r2
 
 
 class ReleaseTests(unittest.TestCase):
@@ -28,9 +28,9 @@ class ReleaseTests(unittest.TestCase):
                     db.execute("UPDATE metadata SET value=? WHERE key='schema'", (str(schema),))
                 with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
                     release.search_metadata(database)
-                with patch.object(planner_prepare.maps, 'run') as run:
+                with patch.object(planner_bake.maps, 'run') as run:
                     with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
-                        planner_prepare.prepare(argparse.Namespace(data_dir=root, recipe=release.maps.ROOT / 'tools/planner-regions/baden-wuerttemberg-switzerland.json'))
+                        planner_bake.prepare(argparse.Namespace(data_dir=root, recipe=release.maps.ROOT / 'tools/planner-regions/baden-wuerttemberg-switzerland.json'))
                     run.assert_not_called()
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE addresses(lat REAL,lon REAL)')
@@ -53,7 +53,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError): release.release(root)
 
     def test_seal_accepts_the_routing_format_that_the_engine_writes(self):
-        source = (release.maps.ROOT / "host/route-engine/src/package.rs").read_text()
+        source = (release.maps.ROOT / "planner/router/src/package.rs").read_text()
         engine_format = int(re.search(r"pub const FORMAT: u32 = (\d+);", source)[1])
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
@@ -73,7 +73,8 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             args = argparse.Namespace(data_dir=root, apply=True, public_url="https://maps.example")
-            document = {"region": "test", "files": {"page.bin": {"bytes": 10, "sha256": "a" * 64}}}
+            document = {"region": "test", "grid": {"format": 2, "zoom": 9, "map_zoom": 11}, "files": {"page.bin": {
+                "bytes": 10, "sha256": "a" * 64, "transport": {"bytes": 10, "sha256": "a" * 64, "encoding": "identity"}}}}
             calls = []
             def transfer(command, *_args, **_kwargs):
                 calls.append(command)
@@ -117,11 +118,11 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(len(runtime.storage_files(document)), 1)
             _, verified = runtime.release(root)
             self.assertEqual(verified, document)
-            offline.materialize(root, root / "runtime", ("search/",))
+            offline.materialize(root, root / "runtime", verified, ("search/",))
             for name in document["files"]:
                 self.assertEqual((root / "runtime" / name).read_bytes(), raw.read_bytes())
             keys = planner_cleanup.referenced_keys(document, "planner/releases/test/")
-            self.assertIn("planner/releases/test/objects/" + entry["transport"]["sha256"], keys)
+            self.assertIn("planner/objects/" + entry["transport"]["sha256"], keys)
             self.assertNotIn("planner/releases/test/search/tiles/9-1-1.sqlite", keys)
             self.assertIn("planner/releases/test/public/grid.json", keys)
             cell = runtime.public_metadata({**document, "files": {"routes/tiles/9-1-1.json": entry}})["public/routes/tiles/9-1-1.json.json"]
@@ -130,26 +131,11 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 runtime.release(root)
 
-    def test_site_configuration_uses_one_release_and_rejects_line_injection(self):
-        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
-        active = release.endpoints("a" * 64, document, "https://maps.example", "https://tiles.example", "https://api.example")
-        self.assertEqual(release.vite_environment(active)["VITE_PLANNER_SNOW_URL"], "")
-        for name in ["maps/snow.json", "maps/snow.pmtiles"]:
-            active = release.endpoints("a" * 64, {**document, "files": {name: {}}}, "https://maps.example", "https://tiles.example", "https://api.example")
-            self.assertEqual(active["snow"], "https://tiles.example/releases/" + "a" * 64 + "/snow.json")
-            self.assertNotIn("climate", active)
-        climate = release.endpoints("a" * 64, {**document, "files": {"maps/climate.pmtiles": {}}}, "https://maps.example", "https://tiles.example", "https://api.example")
-        self.assertEqual((climate["climate"], "snow" in climate), ("https://tiles.example/releases/" + "a" * 64 + "/climate.json", False))
-        self.assertEqual(release.vite_environment(climate)["VITE_PLANNER_SNOW_URL"], "")
-        env = release.vite_environment(active)
-        for key in ["VITE_PLANNER_TILEJSON_URL", "VITE_PLANNER_PLACES_URL", "VITE_PLANNER_SEARCH_URL", "VITE_PLANNER_SNOW_URL", "VITE_CATALOG_URL"]:
-            self.assertIn("a" * 64, env[key])
-        self.assertEqual(env["VITE_PLANNER_ROUTES_URL"], "")
-        grid = release.endpoints("a" * 64, {**document, "grid": {"format": 2}}, "https://maps.example", "https://tiles.example", "https://api.example")
-        self.assertEqual(release.vite_environment(grid)["VITE_PLANNER_ROUTES_URL"],
-                         "https://tiles.example/releases/" + "a" * 64 + "/routes/tiles/{cell}.json")
-        active["terrain_attribution"] = "Terrain\nOTHER=value"
-        with self.assertRaisesRegex(ValueError, "configuration"): release.vite_environment(active)
+    def test_catalogue_entry_names_each_data_layer(self):
+        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
+                    "files": {"maps/snow.json": {}}}
+        active = release.endpoints("a" * 64, document, "Test region", "https://maps.example", "https://tiles.example", "https://api.example")
+        self.assertEqual(active["layers"], {"snow": "https://tiles.example/releases/" + "a" * 64 + "/snow.json"})
 
     def test_region_recipe_refuses_unsupported_country_defaults(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -174,37 +160,61 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unique routing profile"):
                     planner_prepare.recipe(path)
 
-    def test_failed_service_probe_does_not_activate_a_release(self):
-        args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
+    def deploy_args(self):
+        return argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
+                                  recipe=release.maps.ROOT / "tools/planner-regions/engadin.json",
                                   site_origin="https://site.example", public_url="https://maps.example",
                                   tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
-        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
-        with patch.object(release, "release", return_value=("a" * 64, document)), \
-             patch.object(release, "read_url", side_effect=[document, {"active": None, "previous": None}]), \
+
+    DOCUMENT = {"region": "engadin", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain",
+                "grid": {"format": 2, "zoom": 9, "map_zoom": 11}, "files": {}}
+
+    def test_activation_refuses_a_catalogue_that_an_apply_wrote_meanwhile(self):
+        for text in [json.dumps({"format": 1, "active": None, "release": "c" * 64}), "{\"release\": "]:
+            def fetch(_remote, _key, path, text=text):
+                path.write_text(text)
+                return path
+            with patch.object(r2, "bucket_remote", return_value=r2.Remote("test:bucket", {})), \
+                 patch.object(r2, "fetch_optional", side_effect=fetch), \
+                 patch.object(r2, "run_rclone", side_effect=AssertionError("no upload")):
+                with self.assertRaises(ValueError):
+                    planner_deploy.activate("https://maps.example", {"format": 1, "active": None})
+
+    def test_failed_service_probe_does_not_activate_a_release(self):
+        with patch.object(release, "release", return_value=("a" * 64, self.DOCUMENT)) as verified, \
+             patch.object(planner_deploy, "read_url", side_effect=[self.DOCUMENT, {"active": None, "previous": None}]), \
+             patch.object(planner_deploy.offline, "materialize") as materialize, \
              patch.object(planner_deploy, "ssh") as ssh, patch.object(planner_deploy.maps, "run"), \
              patch.object(planner_deploy, "verify_services", side_effect=ValueError("Tiles unavailable")), \
              patch.object(planner_deploy, "activate") as activate:
             with self.assertRaisesRegex(ValueError, "Tiles unavailable"):
-                planner_deploy.deploy(args)
+                planner_deploy.deploy(self.deploy_args())
             activate.assert_not_called()
-            for call in ssh.call_args_list:
-                script = call.args[1]
-                if script.startswith("python3 - <<'PY'\n"):
-                    compile(script.split("\n", 1)[1].split("\nPY\n", 1)[0], "remote Caddy setup", "exec")
+            # One deploy hashes the object pool once.
+            verified.assert_called_once()
+            materialize.assert_called_once()
+            scripts = [call.args[1] for call in ssh.call_args_list]
+            self.assertFalse(any("obc-planner-downloads.service" in script for script in scripts))
+            caddy = next(script for script in scripts if "python3 - <<'PY'\n" in script)
+            compile(caddy.split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0], "remote Caddy setup", "exec")
 
     def test_missing_active_slot_cannot_restart_live_services(self):
-        args = argparse.Namespace(host="root@vps.example", data_dir=Path("/release"), apply=True,
-                                  site_origin="https://site.example", public_url="https://maps.example",
-                                  tiles_url="https://tiles.example", api_url="https://releases.openbikecomputer.com")
-        document = {"region": "test", "bounds": [1, 2, 3, 4], "attribution": "OSM", "terrain_attribution": "Terrain", "files": {}}
         current = {"active": {"id": "b" * 64}, "previous": None}
-        with patch.object(release, "release", return_value=("a" * 64, document)), \
-             patch.object(release, "read_url", side_effect=[document, current]), \
+        with patch.object(release, "release", return_value=("a" * 64, self.DOCUMENT)), \
+             patch.object(planner_deploy, "read_url", side_effect=[self.DOCUMENT, current]), \
              patch.object(planner_deploy, "ssh") as ssh, patch.object(planner_deploy.maps, "run") as run:
             with self.assertRaisesRegex(ValueError, "needs slot"):
-                planner_deploy.deploy(args)
+                planner_deploy.deploy(self.deploy_args())
             ssh.assert_not_called()
             run.assert_not_called()
+
+    def test_online_commands_refuse_a_regional_release(self):
+        regional = {key: value for key, value in self.DOCUMENT.items() if key != "grid"}
+        with patch.object(release, "release", return_value=("a" * 64, regional)):
+            with self.assertRaisesRegex(ValueError, "grid releases only"):
+                planner_deploy.deploy(self.deploy_args())
+            with self.assertRaisesRegex(ValueError, "grid releases only"):
+                release.publish(self.deploy_args())
 
 
 if __name__ == "__main__": unittest.main()

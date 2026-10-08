@@ -1,0 +1,36 @@
+<svg viewBox="0 0 720 250" role="img" aria-label="The opening_hours stage. A raw OSM opening_hours string is parsed at pack time into a normalized weekly schedule of seven days. A seasonal date rule is flattened to a representative in-season week and flagged seasonal; a public-holiday or unmodellable rule is dropped and flagged truncated. All resulting schedules are then deduplicated into a small pool, and each POI stores only its pool index." xmlns="http://www.w3.org/2000/svg" width="720" height="250" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aOH" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">opening_hours → normalize → flag → dedup pool</text>
+
+  <!-- raw string -->
+  <rect class="d-panel-2" x="24" y="44" width="238" height="52" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="40" y="62" style="font-size:12px" fill="#5c5a2e" font-size="12px">raw OSM tag</text>
+  <text class="d-sub" x="40" y="80" font-family="var(--mono)" style="font-size:12px" fill="#5c5a2e" font-size="12px">Mo-Fr 08:00-18:00; Sa 09-13</text>
+  <text class="d-sub" x="40" y="98" font-family="var(--mono)" style="font-size:12px" fill="#5c5a2e" font-size="12px">Apr-Oct: …; PH off</text>
+
+  <!-- parse -->
+  <line class="d-flow" x1="266" y1="70" x2="312" y2="70" marker-end="url(#aOH)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="318" y="44" width="196" height="52" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-tag" x="334" y="64" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">parse (subset grammar)</text>
+  <text class="d-sub" x="334" y="84" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ 7 days × ≤2 intervals</text>
+
+  <!-- flags -->
+  <line class="d-flow" x1="416" y1="96" x2="416" y2="120" marker-end="url(#aOH)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel-2" x="300" y="126" width="232" height="58" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="316" y="146" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">seasonal — Apr-Oct flattened to</text>
+  <text class="d-sub" x="316" y="159" style="font-size:12px" fill="#5c5a2e" font-size="12px">a representative in-season week</text>
+  <text class="d-sub" x="316" y="176" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">truncated — PH / 3rd interval dropped</text>
+
+  <!-- dedup pool -->
+  <line class="d-flow" x1="300" y1="155" x2="230" y2="200" marker-end="url(#aOH)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-hot" x="24" y="196" width="300" height="44" rx="12" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-tag" x="40" y="216" style="fill:#a9501c" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">dedup — a region's shops share hours</text>
+  <text class="d-sub" x="40" y="232" style="font-size:12px" fill="#5c5a2e" font-size="12px">one schedule per pool entry</text>
+
+  <!-- only-with-hours note -->
+  <rect class="d-panel-2" x="344" y="196" width="352" height="44" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="360" y="214" style="font-size:12px" fill="#5c5a2e" font-size="12px">a POI with no parseable hours stores <tspan font-family="var(--mono)">0xFFFF</tspan></text>
+  <text class="d-sub" x="360" y="230" style="font-size:12px" fill="#5c5a2e" font-size="12px">— only POIs that actually have hours cost a pool slot</text>
+</svg>

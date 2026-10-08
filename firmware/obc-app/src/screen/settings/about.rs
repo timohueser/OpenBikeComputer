@@ -23,12 +23,14 @@ const PITCH: i32 = 22;
 const START_PAD: i32 = 16;
 /// Room under the last line. A Label cell is 24 px, which is 2 px more than [`PITCH`].
 const BOTTOM_PAD: i32 = 14;
-/// The OSMF requested credit, pre-wrapped. Legal formulas are not translated.
+/// The OSMF requested credit, pre-wrapped. Legal formulas are not translated. A test compares the
+/// credit and the licence with the `osm-planet` entry of data/sources.toml; the link is the OSMF
+/// copyright page, which the registry does not hold.
 const OSM_LINES: &[&str] =
     &["\u{00a9} OpenStreetMap", "contributors", "Open Database", "License (ODbL)", "openstreetmap", ".org/copyright"];
 
-/// `obc_elevation::COPERNICUS_ATTRIBUTION`, pre-wrapped. A test re-joins the lines with single
-/// spaces and compares them with that constant, so the wording cannot drift.
+/// The `copernicus-glo-30` credit of data/sources.toml, pre-wrapped. The licence requires the exact
+/// notice. A test re-joins the lines with single spaces and compares them with the registry.
 const COPERNICUS_LINES: &[&str] = &[
     "produced using",
     "Copernicus",
@@ -159,15 +161,14 @@ mod tests {
     }
 
     #[test]
-    fn copernicus_wording_matches_obc_elevation() {
-        let mut joined = std::string::String::new();
-        for (i, line) in COPERNICUS_LINES.iter().enumerate() {
-            if i > 0 {
-                joined.push(' ');
-            }
-            joined.push_str(line);
-        }
-        assert_eq!(joined, obc_elevation::COPERNICUS_ATTRIBUTION);
+    fn the_credits_are_the_registry_wording() {
+        use obc_data::sources::{attribution, embedded};
+        assert_eq!(COPERNICUS_LINES.join(" "), attribution("copernicus-glo-30"));
+        let osm = OSM_LINES.join(" ");
+        assert!(osm.starts_with(&format!("{} ", attribution("osm-planet"))), "{osm}");
+        // `ODbL-1.0` is the SPDX id; the glass names the licence and its short name.
+        let licence = embedded("osm-planet").licence.as_deref().unwrap().split('-').next().unwrap();
+        assert!(osm.contains(&format!("Open Database License ({licence})")), "{osm}");
     }
 
     #[test]

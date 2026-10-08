@@ -67,8 +67,13 @@ fn bake_then_publish_is_the_whole_loop() {
         "testland\n1\n  7.790 47.980\n  7.830 47.980\n  7.830 48.010\n  7.790 48.010\n  7.790 47.980\nEND\nEND\n",
     )
     .unwrap();
-    let regions = dir.join("regions.toml");
-    std::fs::write(&regions, "regions = [ { id = \"europe/testland\", name = \"Testland\" } ]\n").unwrap();
+    let regions = dir.join("regions");
+    std::fs::create_dir_all(regions.join("europe")).unwrap();
+    std::fs::write(
+        regions.join("europe/testland.toml"),
+        "name = \"Testland\"\nkind = \"geofabrik\"\nareas = [\"europe/testland\"]\n",
+    )
+    .unwrap();
     let tree = dir.join("tree");
     let presets = fixture_presets(&dir);
 
@@ -111,7 +116,7 @@ fn bake_then_publish_is_the_whole_loop() {
     let out = obc_bake()
         .arg("publish")
         .arg(&tree)
-        .args(["--base-url", "https://maps.example/obc", "--dry-run", "--generated-at", "2026-07-29T00:00:00Z"])
+        .args(["--base-url", "https://maps.example/obc", "--dry-run"])
         .output()
         .expect("run publish");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -128,36 +133,20 @@ fn a_region_outside_the_curated_list_is_refused() {
     let out = obc_bake().args(["bake", "--out", "/tmp/nope", "europe/france"]).output().expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("not in the curated region list"), "{err}");
+    assert!(err.contains("not a Geofabrik region in data/regions/"), "{err}");
 }
 
 #[test]
 fn all_checks_osmium_before_touching_the_planet_source() {
     let out = obc_bake()
         .env("OBC_OSMIUM", "/definitely/not/an/osmium-binary")
-        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
+        .args(["bake", "--all", "--presets-dir"])
         .arg(repo("builder/presets"))
         .output()
         .expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("is required for `obc bake --all`"), "{err}");
-    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
-}
-
-#[test]
-fn all_checks_replication_tool_before_touching_the_planet_source() {
-    let out = obc_bake()
-        .env("OBC_OSMIUM", "true")
-        .env("OBC_PYOSMIUM_UP_TO_DATE", "/definitely/not/a/pyosmium-up-to-date-binary")
-        .args(["bake", "--all", "--source", "http://127.0.0.1:1/planet.osm.pbf", "--presets-dir"])
-        .arg(repo("builder/presets"))
-        .output()
-        .expect("run");
-    assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("obc doctor --install"), "{err}");
-    assert!(!err.contains("HEAD http"), "the prerequisite check must happen before network I/O: {err}");
+    assert!(err.contains("/definitely/not/an/osmium-binary is required for OSM preparation"), "{err}");
 }
 
 #[test]

@@ -17,6 +17,20 @@ struct OfflineMapsTests {
         #expect(coverage.cells(covering: [0,0,1,1]).isEmpty)
     }
 
+    @Test func aQuoteUsesItsPinnedSourceAcrossTheMutableServiceEntry() async throws {
+        let root = temporary()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [OfflineQuoteHTTP.self]
+        let store = OfflineMapStore(root: root, api: URL(string: "https://stable.test/entry")!,
+                                    session: URLSession(configuration: configuration), capacity: { _ in 1 << 30 })
+        let quote = try await store.prepare(bounds: [7,47,9,49], name: "Pinned area") { _, _ in }
+        #expect(quote.source == OfflineQuoteHTTP.source)
+        #expect(quote.map.name == "Pinned area")
+        #expect(quote.map.bounds == [7,47,9,49])
+        #expect(quote.map.id == quote.bundle.release.sha256)
+    }
+
     @Test func installationVerifiesAndLinksFilesBeforeMakingThemAvailable() async throws {
         let root = temporary()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -146,13 +160,8 @@ struct OfflineMapsTests {
         let planner = LocalFirstPlanner(store: store, online: online) { map, _ in map.id == first.map.id ? a : b }
         for (bounds, id) in [([7.2,47.2,7.8,47.8], "first"), ([9.2,49.2,9.8,49.8], "second"),
                              ([10.2,50.2,10.8,50.8], "online")] {
-            let selected = try await planner.mapRelease(bounds: bounds)
-            #expect(selected.id == id)
-            _ = try? await planner.overlays(bounds: bounds, zoom: 10, network: "cycling", release: selected)
+            #expect(try await planner.mapRelease(bounds: bounds).id == id)
         }
-        #expect(await a.calls.contains("overlays"))
-        #expect(await b.calls.contains("overlays"))
-        #expect(await !online.calls.contains("overlays"))
     }
 
     @Test func exactSourceDetailsStayOfflineAtCoverageEdges() async throws {
@@ -241,9 +250,9 @@ private actor RecordingSource: PlannerDataSource {
     func release() throws -> PlannerRelease {
         calls.append("release")
         let url = URL(string: "https://planner.test/")!
-        return PlannerRelease(id: id, region: "test", bounds: bounds,
-            basemap: local ? URL(string: "pmtiles://file:///map.pmtiles")! : url,
-            glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url, manifest: url)
+        return PlannerRelease(id: id, region: "test", bounds: bounds, basemap: url, places: url,
+            glyphs: "", sprites: "", terrain: "", terrain_attribution: "", search: url, routing: url,
+            manifest: local ? URL(fileURLWithPath: "/release.json") : url, overlays: url)
     }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) throws -> PlannedPath {
         calls.append("route")
@@ -256,7 +265,30 @@ private actor RecordingSource: PlannerDataSource {
         if let view = query.view { searchViews.append(view) }
         return []
     }
-    func overlays(bounds: [Double], zoom: Double, network: String, release: PlannerRelease) -> Data {
-        calls.append("overlays"); return Data()
+}
+
+private final class OfflineQuoteHTTP: URLProtocol, @unchecked Sendable {
+    static let jobID = String(repeating: "d", count: 64)
+    static let source = URL(string: "https://pinned.test/planner-api/services/" + String(repeating: "f", count: 64) + "/downloads/bundles/" + jobID)!
+    private static let quote = try! fixture().0
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let quote = Self.quote
+        let url = request.url!
+        let data: Data
+        let code: Int
+        if url.absoluteString == "https://stable.test/entry/jobs" && request.httpMethod == "POST" {
+            data = try! JSONSerialization.data(withJSONObject: ["id": Self.jobID, "state": "ready", "source": Self.source.absoluteString])
+            code = 200
+        } else if url == Self.source.appending(path: "bundle.json") {
+            data = try! JSONEncoder().encode(quote.bundle); code = 200
+        } else if url == Self.source.appending(path: "release.json") {
+            data = quote.release; code = 200
+        } else { data = Data(); code = 404 }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
     }
+    override func stopLoading() {}
 }

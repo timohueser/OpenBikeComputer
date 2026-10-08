@@ -8,7 +8,6 @@ from __future__ import annotations
 import io
 import re
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -64,7 +63,7 @@ class ReadyPlanTests(unittest.TestCase):
         changed = ("docs/content/riding.md",)
         self.assertEqual(
             self.running(*changed),
-            ["python3 docs/build_docs.py --check-links", "obc docs check"],
+            ["just check-docs"],
         )
         skipped = self.skipped(*changed)
         self.assertEqual(skipped["cargo fmt --all"], "no Rust source changed")
@@ -123,7 +122,7 @@ class ReadyPlanTests(unittest.TestCase):
         )
 
     def test_test_policy_and_test_sources_select_the_suites_check(self):
-        for path in ("testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
+        for path in ("tools/testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
             self.assertIn("obc suites check", self.running(path), path)
         self.assertNotIn("obc suites check", self.running("firmware/obc-app/src/app.rs"))
 
@@ -139,7 +138,7 @@ class ReadyPlanTests(unittest.TestCase):
         skipped = self.skipped("firmware/obc-app/src/app.rs", "docs/content/riding.md", "Cargo.lock", suites=suites)
         self.assertEqual(skipped["obc shot --check"], "obc test affected runs it as ci.ui-snapshots")
         self.assertEqual(
-            skipped["python3 docs/build_docs.py --check-links"], "obc test affected runs it as ci.docs"
+            skipped["just check-docs"], "obc test affected runs it as ci.docs"
         )
         self.assertEqual(
             skipped["tools/licenses/gen-third-party.sh --check"], "obc test affected runs it as ci.licenses"
@@ -190,7 +189,7 @@ class ReadyPlanTests(unittest.TestCase):
         # A suite no running gate covers keeps its own line; that is the whole point here.
         self.assertEqual(lines["obc check docs"].reason, "ci.docs is left to CI")
         self.assertEqual(
-            lines["python3 docs/build_docs.py --check-links"].reason, "nothing under docs/ changed"
+            lines["just check-docs"].reason, "nothing under docs/ changed"
         )
         # The snapshot sweep stays CI's work: the budget gives it one run, and CI has it.
         self.assertEqual(lines["obc shot --check"].reason, "ci.ui-snapshots is left to CI")
@@ -205,20 +204,31 @@ class ReadyPlanTests(unittest.TestCase):
         for gate in gates:
             self.assertTrue(gate.reason.strip(), gate.command)
 
+        gates = self.plan("Cargo.toml", "docs/content/riding.md", suites=selected)
+        lines = {gate.command: gate for gate in gates}
+        self.assertTrue(lines["just check-docs"].run)
+        self.assertIn("and it runs ci.docs", lines["just check-docs"].reason)
+        self.assertNotIn("obc check docs", lines)
+        self.assertFalse(lines["obc test affected --base origin/develop"].run)
+
     def test_the_free_command_rule_reads_every_executable_a_command_names(self):
         # Each row is a form a suite command can take. A separator the lexer does not cut out
         # of its neighbour would hide the executable behind it, which is how a build slips in.
         for command, free in (
-            ("python3 tools/check_one_home.py", True),
+            ("python3 tools/check_card_scheduler.py", True),
             ("mkdir -p .artifacts && rm -rf .artifacts/x && python3 -m unittest discover", True),
             ("PYTHONPATH=. python3 -m pytest builder/tests/", True),
+            ("uv run --locked --group dev --group planner-snow python -m xmlrunner discover", True),
+            ("PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/", True),
+            ("uv run --locked --group dev cargo build", False),
+            ("uv build", False),
             ("python3 a.py; cargo build --release", False),
             ("python3 a.py&&cargo build --release", False),
             ("python3 a.py | cargo build --release", False),
             ("python3 a.py & cargo build --release", False),
             ("python3 a.py\ncargo build --release", False),
-            ("cd builder/app && npm test", False),
-            ("xvfb-run -a dbus-run-session -- python3 apps/obc-desktop/e2e/launch.py", False),
+            ("cd builder/web && npm test", False),
+            ("xvfb-run -a dbus-run-session -- python3 builder/desktop/e2e/launch.py", False),
         ):
             self.assertEqual(ready.builds_nothing(command), free, command)
 
@@ -246,18 +256,6 @@ class ReadyPlanTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             code, formatted = ready.run_gates(gates, Path("."), status=lambda _root: {"src/b.rs": " M"})
         self.assertEqual((code, formatted), (0, []))
-
-    def test_a_human_page_that_cites_a_changed_source_is_reported(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            root = Path(scratch).resolve()
-            content = root / "docs/content"
-            content.mkdir(parents=True)
-            front = "---\ntitle: Test\ndescription: Test page.\ncopy: %s\n---\n\n# Test\n\n"
-            (content / "human.md").write_text(front % "human" + "See [src:firmware/x.rs].", encoding="utf-8")
-            (content / "draft.md").write_text(front % "ai" + "See [src:firmware/x.rs].", encoding="utf-8")
-
-            self.assertEqual(ready.human_pages(root, ["firmware/x.rs"]), ["docs/content/human.md"])
-            self.assertEqual(ready.human_pages(root, ["firmware/other.rs"]), [])
 
     def test_surfaces_name_the_changed_areas(self):
         self.assertEqual(

@@ -1,0 +1,47 @@
+<svg viewBox="0 0 720 250" role="img" aria-label="The POIs browser flow. The compass Menu's POIs station opens the category screen: a six-row list of Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, each with a small icon. Pressing a category opens the list screen: a page of that category's nearby POIs sorted by distance, each row a name, a bearing arrow and a distance. Back climbs one step; selecting a POI opens its detail view." xmlns="http://www.w3.org/2000/svg" width="720" height="250" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aU9" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Menu → categories → pages of nearby places</text>
+
+  <!-- Menu station -->
+  <rect class="d-panel-2" x="24" y="88" width="120" height="44" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="84" y="108" text-anchor="middle" fill="#1c1b14" font-size="14px">Menu</text>
+  <text class="d-sub" x="84" y="123" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">POIs station</text>
+
+  <!-- category screen -->
+  <line class="d-flow" x1="146" y1="110" x2="196" y2="110" marker-end="url(#aU9)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="171" y="102" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">press</text>
+  <rect class="d-panel" x="202" y="44" width="188" height="168" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <rect x="210" y="52" width="172" height="20" rx="4" style="fill:#aa5500" /><text class="d-sub" x="220" y="66" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">POIS</text>
+  <g font-family="var(--mono)">
+    <rect x="210" y="78" width="172" height="20" rx="4" class="d-amber" fill="#f4a81d" />
+    <circle cx="222" cy="88" r="4" fill="#000" /><text class="d-sub" x="234" y="92" style="fill:#000;font-size:12px" fill="#5c5a2e" font-size="12px">Water</text>
+    <circle cx="222" cy="110" r="4" fill="#24331c" /><text class="d-sub" x="234" y="114" style="font-size:12px" fill="#5c5a2e" font-size="12px">Campsite</text>
+    <circle cx="222" cy="130" r="4" fill="#24331c" /><text class="d-sub" x="234" y="134" style="font-size:12px" fill="#5c5a2e" font-size="12px">Lodging</text>
+    <circle cx="222" cy="150" r="4" fill="#24331c" /><text class="d-sub" x="234" y="154" style="font-size:12px" fill="#5c5a2e" font-size="12px">Resupply</text>
+    <circle cx="222" cy="170" r="4" fill="#24331c" /><text class="d-sub" x="234" y="174" style="font-size:12px" fill="#5c5a2e" font-size="12px">Pharmacy</text>
+    <circle cx="222" cy="190" r="4" fill="#24331c" /><text class="d-sub" x="234" y="194" style="font-size:12px" fill="#5c5a2e" font-size="12px">Bike shop</text>
+  </g>
+
+  <!-- list screen -->
+  <line class="d-flow" x1="392" y1="110" x2="442" y2="110" marker-end="url(#aU9)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="417" y="102" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">press</text>
+  <rect class="d-panel" x="448" y="44" width="248" height="168" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <rect x="456" y="52" width="232" height="20" rx="4" style="fill:#aa5500" /><text class="d-sub" x="466" y="66" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">Water · 1/8</text>
+  <g font-family="var(--mono)">
+    <!-- selected row -->
+    <rect x="456" y="78" width="232" height="24" rx="4" class="d-amber" fill="#f4a81d" />
+    <text class="d-sub" x="466" y="94" style="fill:#000;font-size:12px" fill="#5c5a2e" font-size="12px">Stadtbrunnen</text>
+    <path d="M636 84 l6 -6 l6 6 l-4 0 l0 8 l-4 0 l0 -8 z" fill="#000" />
+    <text class="d-sub" x="656" y="94" style="fill:#000;font-size:12px" fill="#5c5a2e" font-size="12px">210m</text>
+    <!-- more rows -->
+    <text class="d-sub" x="466" y="118" style="font-size:12px" fill="#5c5a2e" font-size="12px">Spring</text>
+    <path d="M638 110 l8 4 l-8 4 l3 -4 z" fill="#24331c" /><text class="d-sub" x="656" y="118" style="font-size:12px" fill="#5c5a2e" font-size="12px">410m</text>
+    <text class="d-sub" x="466" y="140" style="font-size:12px" fill="#5c5a2e" font-size="12px">Brunnen Nord</text>
+    <path d="M642 132 l0 8 l-3 -3 M642 140 l3 -3" fill="none" stroke="#24331c" stroke-width="1.4" /><text class="d-sub" x="656" y="140" style="font-size:12px" fill="#5c5a2e" font-size="12px">820m</text>
+    <text class="d-sub" x="466" y="162" style="font-size:12px" fill="#5c5a2e" font-size="12px">Drinking water</text>
+    <text class="d-sub" x="656" y="162" style="font-size:12px" fill="#5c5a2e" font-size="12px">1km</text>
+    <text class="d-sub" x="466" y="188" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">name · arrow · distance</text>
+  </g>
+</svg>

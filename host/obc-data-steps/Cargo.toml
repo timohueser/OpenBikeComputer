@@ -1,0 +1,63 @@
+[package]
+name = "obc-data-steps"
+version = "0.1.0"
+edition = "2021"
+publish = false
+default-run = "obc-data"
+# It links the GPL step code of the products into the MIT library obc-data.
+license = "GPL-3.0-only"
+description = "The `obc data` binary: the commands of obc-data with the steps of each product"
+
+[[bin]]
+name = "obc-data"
+path = "src/main.rs"
+
+[[bin]]
+name = "obc-data-worker"
+path = "src/bin/obc-data-worker.rs"
+
+[features]
+external-fixtures = []
+
+[dependencies]
+obc-map-core = { workspace = true }
+obc-draw = { workspace = true }
+obc-network = { workspace = true }
+obc-osm = { workspace = true }
+# Real assembly and reader verification before publishing map picks.
+obcm-assemble = { workspace = true, features = ["cli"] }
+obc-file-source = { workspace = true }
+tempfile = { workspace = true }
+obc-formats = { workspace = true }
+obc-data = { path = "../obc-data" }
+# The step list of the device maps: the outline of a region and its cells.
+obc-bake = { path = "../obc-bake" }
+obc-pack = { path = "../obc-pack" }
+# The terrain steps.
+obc-dem = { path = "../obc-dem", features = ["terrarium"] }
+# The planner routing step and stored graph verification.
+planner-router = { path = "../../planner/router" }
+planner-router-build = { path = "../../planner/router-build" }
+# The planner search dump step.
+obc-search-bake = { path = "../obc-search-bake" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+[dev-dependencies]
+# A stand-in for the Nominatim archive in the planner build test.
+flate2 = "1"
+obc-elevation = { path = "../../firmware/obc-elevation" }
+obc-fixtures = { path = "../obc-fixtures" }
+# Reads the search databases of the planner build test.
+rusqlite = { version = "0.38", features = ["bundled"] }
+# The land polygons of the map-cell fixture and the Nominatim stand-in: zips that the tests write.
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+
+[[test]]
+name = "terrain_fixture"
+required-features = ["external-fixtures"]
+
+[[test]]
+name = "cells_fixture"
+required-features = ["external-fixtures"]

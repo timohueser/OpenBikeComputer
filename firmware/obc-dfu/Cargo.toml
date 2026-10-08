@@ -3,7 +3,7 @@ name = "obc-dfu"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal firmware crate — not published to crates.io
-description = "OBCU update-image container + boot-state RRAM page codec + boot-decision logic (SD-staged DFU, epic #615). no_std, core-only — shared by the obc-boot bootloader, the board crate, obc-app, and the obc-mkimage host tool."
+description = "OBCU update-image container + boot-state RRAM page codec + boot-decision logic (SD-staged DFU). no_std, core-only — shared by the obc-boot bootloader, the board crate, obc-app, and the obc-mkimage host tool."
 
 # Foundation crate for the DFU epic: the byte formats and the pure boot-decision logic
 # every other piece shares. `core`-only (no alloc, no heapless) so the 32 KB bootloader
@@ -12,7 +12,7 @@ description = "OBCU update-image container + boot-state RRAM page codec + boot-d
 [dependencies]
 # CRC-32/IEEE, shared with obc-ble. A dependency-free leaf, so it does not cost the bootloader's
 # link anything the old in-crate copy didn't.
-obc-crc = { path = "../obc-crc" }
+obc-crc = { workspace = true }
 # The OBCU v2 signature check (#997), on BOTH sides of the pipeline: the armer verifies with it and
 # `obc-mkimage` signs with it, so host and device can never drift onto different implementations.
 # Chosen over ed25519-dalek because it is `core`-only with no RNG or `zeroize` machinery pulled in,

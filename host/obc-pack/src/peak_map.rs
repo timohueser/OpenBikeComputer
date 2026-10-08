@@ -1,6 +1,8 @@
 //! Join canonical peak articles to the exact summit nodes carried by a map.
-use crate::{landmarks::peaks::PeakContent, poi::Poi};
+use crate::landmarks::peaks::PeakContent;
 use obc_formats::obcm::{landmarks::ContentRef, peaks::*, SourceId, SUMMIT_SUBTYPE_ID};
+use obc_map_core::grid::CellId;
+use obc_places::metadata::Poi;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,11 +17,15 @@ pub struct Peaks {
 }
 impl Peaks {
     pub fn select(&self, pois: &[Poi]) -> Self {
-        let associations: BTreeMap<_, _> = pois
-            .iter()
-            .filter(|p| p.subtype == SUMMIT_SUBTYPE_ID)
-            .filter_map(|p| self.associations.get(&p.metadata.source).map(|&a| (p.metadata.source, a)))
-            .collect();
+        let summits: BTreeSet<_> =
+            pois.iter().filter(|p| p.subtype == SUMMIT_SUBTYPE_ID).map(|p| p.metadata.source).collect();
+        self.keep(|source| summits.contains(source))
+    }
+
+    /// The associations of the summits that `wanted` accepts, and their articles.
+    fn keep(&self, wanted: impl Fn(&SourceId) -> bool) -> Self {
+        let associations: BTreeMap<_, _> =
+            self.associations.iter().filter(|(source, _)| wanted(source)).map(|(&s, &a)| (s, a)).collect();
         let wanted: BTreeSet<_> = associations.values().collect();
         Self {
             records: self
@@ -58,7 +64,6 @@ pub fn fingerprint(paths: &[PathBuf]) -> Result<String, String> {
     h.update(include_bytes!("landmarks/credit.rs"));
     h.update(include_bytes!("../../../firmware/obc-formats/src/obcm/peaks.rs"));
     h.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
-    h.update(include_bytes!("../../../Cargo.lock"));
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 /// Duplicate articles use canonical encoded-byte order. Conflicting summit links fail closed.
@@ -126,6 +131,38 @@ pub fn load(paths: &[PathBuf]) -> Result<Peaks, String> {
     }
     Ok(out)
 }
+/// The peak artifact of each of `cells` that owns a linked summit (OBCC §14.3): the §10 section of
+/// the associations whose summit node is in the cell, and their articles. A cell without one has no
+/// artifact.
+pub fn artifacts(paths: &[PathBuf], cells: &[CellId]) -> Result<BTreeMap<CellId, Vec<u8>>, String> {
+    let Some(log2) = cells.first().map(|cell| cell.log2) else { return Ok(BTreeMap::new()) };
+    let wanted: BTreeSet<CellId> = cells.iter().copied().collect();
+    let mut owner = BTreeMap::new();
+    for path in paths {
+        let content: PeakContent =
+            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        for a in content.associations {
+            // The rounding of a summit POI, from the same decimicro degrees.
+            let (lat, lon) =
+                ((a.latitude * 1e6).round_ties_even() as i64, (a.longitude * 1e6).round_ties_even() as i64);
+            let cell = CellId::containing(log2, lat, lon);
+            if wanted.contains(&cell) {
+                owner.insert(SourceId::osm(1, a.node_id as u64), cell);
+            }
+        }
+    }
+    // The associations of these cells only, once: a region has many more.
+    let peaks = load(paths)?.keep(|source| owner.contains_key(source));
+    let mut out = BTreeMap::new();
+    for cell in wanted {
+        let bytes = serialize(&peaks.keep(|source| owner.get(source) == Some(&cell)))?;
+        if !bytes.is_empty() {
+            out.insert(cell, bytes);
+        }
+    }
+    Ok(out)
+}
+
 pub fn serialize(peaks: &Peaks) -> Result<Vec<u8>, String> {
     if peaks.associations.is_empty() {
         return Ok(Vec::new());

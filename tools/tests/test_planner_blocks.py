@@ -1,4 +1,4 @@
-"""Grid cells carry joined fonts, their route records and complete overlay features."""
+"""Grid cells carry joined fonts and their route records."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from tools import planner_blocks as blocks, planner_runtime as runtime
+from tools import planner_blocks as blocks
 
 
 def varint(value):
@@ -20,18 +20,19 @@ def field(number, payload):
     return varint(number << 3 | 2) + varint(len(payload)) + payload
 
 
-def release(source, name, kind="", ref=""):
+def release(source, name, kind="", ref="", poi=""):
     """Write a one-tile basemap with one feature and an overlay database with one route."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
     layer = (field(1, b"places") + field(2, field(2, bytes([0, 0, 1, 1]))) + field(3, b"name") + field(3, b"kind")
              + field(4, field(1, name.encode())) + field(4, field(1, kind.encode())))
     (source / "maps").mkdir()
-    with write(source / "maps/basemap.pmtiles") as writer:
-        writer.write_tile(zxy_to_tileid(0, 0, 0), field(3, layer))
-        writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
-                         "min_lon_e7": -1800000000, "min_lat_e7": -850000000, "max_lon_e7": 1800000000,
-                         "max_lat_e7": 850000000, "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0}, {})
+    for archive in ("basemap", "places"):
+        with write(source / f"maps/{archive}.pmtiles") as writer:
+            writer.write_tile(zxy_to_tileid(0, 0, 0), field(3, layer if archive == "basemap" else field(1, b"pois") + field(2, field(2, bytes([0, 0]))) + field(3, b"name") + field(4, field(1, poi.encode()))))
+            writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
+                             "min_lon_e7": -1800000000, "min_lat_e7": -850000000, "max_lon_e7": 1800000000,
+                             "max_lat_e7": 850000000, "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0}, {})
     (source / "routing").mkdir()
     db = sqlite3.connect(source / "routing/overlays.sqlite")
     db.executescript("CREATE TABLE attributes(id INTEGER PRIMARY KEY, properties TEXT NOT NULL);"
@@ -63,7 +64,7 @@ class OfflineFonts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
             # µ and ÿ upper-case to U+039C and U+0178; Persian letters shape into U+FB50-U+FEFF.
-            release(source, "µÿ چای")
+            release(source, "µÿ", poi="چای")
             self.assertEqual(blocks.glyph_ranges(source), {0, 1, 3, 6, 251, 252, 253, 254})
 
 
@@ -83,38 +84,6 @@ class RouteTiles(unittest.TestCase):
         self.assertEqual(ids, {"9-1-1": [10, 21], "9-1-2": [5, 10, 22], "9-2-1": []})
         self.assertEqual(tiles["9-1-2"]["routes"][1], long_route)
         self.assertEqual({tile["format"] for tile in tiles.values()}, {1})
-
-
-class OverlayShard(unittest.TestCase):
-    def test_cell_retains_whole_crossing_features_and_properties(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            source, target = (Path(temporary) / name for name in ("source.sqlite", "target.sqlite"))
-            with sqlite3.connect(source) as db:
-                db.executescript("""PRAGMA user_version=2;
-                    CREATE TABLE metadata(package TEXT,coverage TEXT);
-                    INSERT INTO metadata VALUES('original','[-2,-2,4,4]');
-                    CREATE TABLE geometries(id INTEGER PRIMARY KEY,way INTEGER,points INTEGER,coordinates BLOB);
-                    CREATE TABLE attributes(id INTEGER PRIMARY KEY,properties TEXT);
-                    CREATE TABLE routes(id INTEGER PRIMARY KEY,properties TEXT);
-                    CREATE TABLE features(id INTEGER PRIMARY KEY,kind TEXT,geometry INTEGER,attributes INTEGER);
-                    CREATE VIRTUAL TABLE bounds USING rtree(id,west,east,south,north,facet_min,facet_max);""")
-                for identity, west, east in [(1, -1, 2), (2, 2, 3), (3, 1, 2)]:
-                    db.execute("INSERT INTO geometries VALUES(?,?,?,?)", (identity, identity * 100, 2, bytes([identity, 0, 255])))
-                    db.execute("INSERT INTO routes VALUES(?,?)", (identity, json.dumps({"id": identity, "name": "A route", "website": "https://example.com"})))
-                    db.execute("INSERT INTO attributes VALUES(?,?)", (identity, json.dumps({"routes": [identity]})))
-                    db.execute("INSERT INTO features VALUES(?,?,?,?)", (identity, "cycling", identity, identity))
-                    db.execute("INSERT INTO bounds VALUES(?,?,?,?,?,?,?)", (identity, west, east, 0, 1, 8, 8))
-            original = runtime.digest(source)
-            blocks.overlay_shard(source, target, [0, 0, 1, 1], "new")
-            self.assertEqual(runtime.digest(source), original)
-            with sqlite3.connect(source) as before, sqlite3.connect(target) as after:
-                self.assertEqual(after.execute('PRAGMA user_version').fetchone(), (2,))
-                for name in ('features', 'bounds', 'geometries', 'attributes', 'routes'):
-                    self.assertEqual(after.execute(f"SELECT * FROM {name} ORDER BY id").fetchall(),
-                                     before.execute(f"SELECT * FROM {name} WHERE id IN (1,3) ORDER BY id").fetchall())
-                package, coverage = after.execute("SELECT * FROM metadata").fetchone()
-                self.assertEqual(package, "new")
-                self.assertEqual(json.loads(coverage), [0, 0, 1, 1])
 
 
 if __name__ == "__main__":

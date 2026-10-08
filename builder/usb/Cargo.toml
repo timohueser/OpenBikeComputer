@@ -1,0 +1,16 @@
+[package]
+name = "obc-usb"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Shared native USB byte transport and maintenance CLI for OpenBikeComputer"
+
+[dependencies]
+getrandom = { workspace = true }
+nusb = { version = "=0.2.5", features = ["tokio"] }
+obc-link = { workspace = true, features = ["client"] }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+obc-flat-device = { workspace = true }

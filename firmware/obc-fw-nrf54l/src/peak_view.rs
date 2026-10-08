@@ -26,6 +26,10 @@ use peak_view::runtime::{Failed, Lifecycle, Platform, Progress};
 pub(crate) struct Runtime {
     lifecycle: Lifecycle,
     job: Job,
+    #[cfg(feature = "debug-uart")]
+    opened_at: Option<Instant>,
+    #[cfg(feature = "debug-uart")]
+    ui_presented: bool,
 }
 struct Job {
     source: Option<&'static Source>,
@@ -116,12 +120,26 @@ impl Runtime {
         Self {
             lifecycle: Lifecycle::default(),
             job: Job { source, arm: None, started: Instant::now(), search: Default::default(), revision: 0 },
+            #[cfg(feature = "debug-uart")]
+            opened_at: None,
+            #[cfg(feature = "debug-uart")]
+            ui_presented: false,
         }
+    }
+
+    #[cfg(feature = "debug-uart")]
+    pub fn note_opened(&mut self, input_started: Instant) {
+        self.opened_at = Some(input_started);
+        self.ui_presented = false;
     }
 
     pub fn reconcile(&mut self, app: &App) {
         if self.lifecycle.reconcile(app) {
             self.job.arm = None;
+            #[cfg(feature = "debug-uart")]
+            {
+                self.opened_at = None;
+            }
         }
     }
     pub fn panorama(&self) -> Option<&Panorama> {
@@ -131,8 +149,26 @@ impl Runtime {
         self.lifecycle.busy()
     }
     pub fn note_frame_presented(&mut self, app: &App) {
-        if let Some(ms) = self.lifecycle.note_presented(app, Instant::now().as_millis()) {
+        let presented_at = Instant::now();
+        #[cfg(feature = "debug-uart")]
+        if !self.ui_presented && matches!(app.top_screen(), obc_app::Screen::PeakView(_)) {
+            if let Some(opened_at) = self.opened_at {
+                self.ui_presented = true;
+                defmt::info!(
+                    "peak-view: open-pass to first UI present {=u64} ms",
+                    presented_at.duration_since(opened_at).as_millis()
+                );
+            }
+        }
+        if let Some(ms) = self.lifecycle.note_presented(app, presented_at.as_millis()) {
             defmt::info!("peak-view: first view in {=u64} ms", ms);
+            #[cfg(feature = "debug-uart")]
+            if let Some(opened_at) = self.opened_at.take() {
+                defmt::info!(
+                    "peak-view: open-pass to first job view present {=u64} ms",
+                    presented_at.duration_since(opened_at).as_millis()
+                );
+            }
         }
     }
     pub fn update(&mut self, app: &mut App, reader: &Reader<'_>) {

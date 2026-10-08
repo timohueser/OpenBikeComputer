@@ -1,29 +1,21 @@
-//! `obc-dem fetch` — downloading the GLO-30 tiles a box needs, over HTTPS.
+//! `obc-dem fetch` — the GLO-30 tiles a box needs, from the store.
 //!
 //! Deliberately separate from `bake`: a bake is a pure function of a directory of tiles, so it must
 //! never reach for the network. Splitting them is what lets a bake be re-run offline and
 //! byte-compared, and what keeps this module's failure modes out of the determinism contract.
 //!
-//! The AWS Open Data mirror of the Copernicus DEM publishes one object per 1° × 1° tile, named by
-//! the tile's south-west corner. Ocean-only squares have no object at all, so a `404` is coverage
-//! information rather than an error: the bake writes `NODATA` there.
+//! The source `copernicus-glo-30` of `data/sources.toml` has one object per 1° × 1° tile, named by
+//! the tile's south-west corner. `obc_data` fetches each one into the store, and this module links
+//! it into the directory a bake reads. Ocean-only squares have no object at all, so a `404` is
+//! coverage information rather than an error: the bake writes `NODATA` there.
 
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::BboxUdeg;
 
-/// The AWS Open Data mirror of the Copernicus DEM GLO-30 instance, public HTTPS, no credentials.
-pub const GLO30_BASE_URL: &str = "https://copernicus-dem-30m.s3.amazonaws.com";
-
-/// Read size for the download loop — big enough that syscall overhead is irrelevant on a 40 MB
-/// body, small enough that a partial file is never far from the last byte that arrived.
-const CHUNK: usize = 1 << 16;
-
-/// Attempts per tile. An attempt restarts from zero rather than resuming: the mirror is not
-/// guaranteed to honour a `Range` request, and a silently truncated DEM tile would bake a plausible
-/// raster with a torn edge.
-const ATTEMPTS: usize = 3;
+const SOURCE: &str = "copernicus-glo-30";
+/// The version of `SOURCE` that this fetch reads, so a bake of the older bake tools keeps its bytes.
+const VERSION: &str = "2022-05-09";
 
 /// One GLO-30 tile, named by the integer degree of its south-west corner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,12 +32,6 @@ impl TileId {
         let (ns, lat) = if self.lat < 0 { ('S', -self.lat) } else { ('N', self.lat) };
         let (ew, lon) = if self.lon < 0 { ('W', -self.lon) } else { ('E', self.lon) };
         format!("Copernicus_DSM_COG_10_{ns}{lat:02}_00_{ew}{lon:03}_00_DEM")
-    }
-
-    /// The full object URL on the mirror.
-    pub fn url(&self) -> String {
-        let stem = self.stem();
-        format!("{GLO30_BASE_URL}/{stem}/{stem}.tif")
     }
 
     /// The local file name a fetch writes.
@@ -93,13 +79,13 @@ pub const EDGE_PAD_DEG: f64 = 0.002;
 pub enum Fetched {
     /// The file was already on disk and was left alone.
     Cached,
-    /// Downloaded, this many bytes.
-    Downloaded(u64),
+    /// Linked from the store, which fetched it when it did not have it; this many bytes.
+    Stored(u64),
     /// The mirror has no object for this square — ocean, or outside the dataset. Not an error.
     Absent,
 }
 
-/// Download every tile `bbox` needs into `dir`, skipping ones already there.
+/// Link every tile `bbox` needs into `dir` from the store, skipping ones already there.
 ///
 /// `progress` is called once per tile with its id and outcome.
 pub fn fetch_tiles(
@@ -111,7 +97,7 @@ pub fn fetch_tiles(
     let mut present = Vec::new();
     for tile in tiles_for(bbox) {
         let path = dir.join(tile.file_name());
-        let outcome = if path.exists() { Fetched::Cached } else { download(&tile, &path)? };
+        let outcome = if path.exists() { Fetched::Cached } else { link(&tile, &path)? };
         progress(tile, &outcome);
         if outcome != Fetched::Absent {
             present.push(path);
@@ -123,60 +109,20 @@ pub fn fetch_tiles(
     Ok(present)
 }
 
-/// Fetch one tile to `path`, via a `.part` file so an interrupted run never leaves a half tile
-/// looking like a whole one.
-fn download(tile: &TileId, path: &Path) -> Result<Fetched, String> {
-    let url = tile.url();
-    let part = path.with_extension("tif.part");
-    let mut last = String::new();
-    for attempt in 1..=ATTEMPTS {
-        match try_once(&url, &part) {
-            Ok(Some(len)) => {
-                std::fs::rename(&part, path).map_err(|e| format!("{}: {e}", path.display()))?;
-                return Ok(Fetched::Downloaded(len));
-            }
-            Ok(None) => {
-                let _ = std::fs::remove_file(&part);
-                return Ok(Fetched::Absent);
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&part);
-                last = e;
-                if attempt < ATTEMPTS {
-                    eprintln!("obc-dem: {url}: {last} (attempt {attempt}/{ATTEMPTS})");
-                }
-            }
-        }
-    }
-    Err(format!("GET {url}: {last}"))
-}
-
-/// One attempt. `Ok(None)` is a `404` — the square has no tile, which is a fact about the world
-/// rather than a failure.
-fn try_once(url: &str, part: &Path) -> Result<Option<u64>, String> {
-    let response = match ureq::get(url).call() {
-        Ok(response) => response,
-        Err(ureq::Error::StatusCode(404)) => return Ok(None),
-        Err(e) => return Err(e.to_string()),
+/// Fetch one tile into the store at [`VERSION`], and link it as `path`.
+fn link(tile: &TileId, path: &Path) -> Result<Fetched, String> {
+    let fetched = match obc_data::fetch::live(SOURCE, Some(VERSION), vec![("tile".into(), tile.stem())]) {
+        Ok(fetched) => fetched,
+        // The square has no tile, which is a fact about the world rather than a failure.
+        Err(obc_data::fetch::LiveError::NotFound(_)) => return Ok(Fetched::Absent),
+        Err(error) => return Err(error.into()),
     };
-    let mut body = response.into_body().into_reader();
-    let file = std::fs::File::create(part).map_err(|e| format!("{}: {e}", part.display()))?;
-    let mut out = std::io::BufWriter::new(file);
-    let mut buf = vec![0u8; CHUNK];
-    let mut total = 0u64;
-    loop {
-        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        out.write_all(&buf[..n]).map_err(|e| format!("{}: {e}", part.display()))?;
-        total += n as u64;
+    let object = &fetched.paths[0];
+    // A hard link costs no space; another file system needs a copy.
+    if std::fs::hard_link(object, path).is_err() {
+        std::fs::copy(object, path).map_err(|e| format!("{} -> {}: {e}", object.display(), path.display()))?;
     }
-    out.flush().map_err(|e| format!("{}: {e}", part.display()))?;
-    if total == 0 {
-        return Err("empty body".to_string());
-    }
-    Ok(Some(total))
+    Ok(Fetched::Stored(fetched.snapshot.files[0].size))
 }
 
 #[cfg(test)]
@@ -186,10 +132,6 @@ mod tests {
     #[test]
     fn a_tile_id_is_the_mirrors_object_name() {
         assert_eq!(TileId { lat: 46, lon: 8 }.stem(), "Copernicus_DSM_COG_10_N46_00_E008_00_DEM");
-        assert_eq!(
-            TileId { lat: 46, lon: 8 }.url(),
-            "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N46_00_E008_00_DEM/Copernicus_DSM_COG_10_N46_00_E008_00_DEM.tif"
-        );
         // Both hemispheres, and the asymmetric zero padding the mirror uses (2 for lat, 3 for lon).
         assert_eq!(TileId { lat: -34, lon: -59 }.stem(), "Copernicus_DSM_COG_10_S34_00_W059_00_DEM");
         assert_eq!(TileId { lat: 0, lon: 0 }.stem(), "Copernicus_DSM_COG_10_N00_00_E000_00_DEM");

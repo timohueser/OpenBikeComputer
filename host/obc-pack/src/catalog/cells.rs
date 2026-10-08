@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use obc_formats::obcm::VERSION as OBCM_VERSION;
 
-use crate::grid::CellId;
+use obc_map_core::grid::CellId;
 
 use super::coverage::{inclusive_run_count, CoverageIndex, IndexedCoverage};
 use super::model::{BandEntry, CellEntry, CellSource, KnownEmptyRun};
@@ -45,7 +45,15 @@ pub(super) struct Cells {
 pub(super) struct KnownEmptyState {
     pub(super) schema_revision: u32,
     pub(super) band: String,
-    pub(super) known_empty: Vec<KnownEmptyRun>,
+    pub(super) known_empty: Vec<LegacyEmptyRun>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct LegacyEmptyRun {
+    pub(super) start: String,
+    pub(super) end: String,
+    pub(super) built_at: String,
+    pub(super) sources: Vec<CellSource>,
 }
 
 pub(super) type BandIndex<'a> = CoverageIndex<'a, CellEntry>;
@@ -202,14 +210,14 @@ fn read_cell_row(
 
         // A schema-revision bump is as hard a cut as an OBCM bump: assembly copies
         // chunk bytes between files, which is only meaningful within one revision.
-        if sidecar.schema_revision != schema.revision {
+        if sidecar.schema_revision != schema.revision.expect("a tree schema declares its revision") {
             return Err(format!(
                 "{}: cell was baked at schema revision {} but `{SCHEMA_DOC}` is revision {}. A schema-revision bump \
                  invalidates every cell (OBCA_Spec.md §6.3) — re-bake, or publish the revision the cells actually \
                  carry. There is no mixed-revision catalog.",
                 path.display(),
                 sidecar.schema_revision,
-                schema.revision
+                schema.revision.expect("a tree schema declares its revision")
             ));
         }
 
@@ -276,7 +284,6 @@ fn read_cell_row(
             bytes,
             sha256: sha256.clone(),
             url: format!("{base_url}/{published_rel_path}"),
-            built_at: sidecar.built_at,
             sources: sidecar.sources,
             partial: sidecar.partial,
         });
@@ -329,12 +336,12 @@ fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> 
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut state: KnownEmptyState = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    if state.schema_revision != schema.revision {
+    if state.schema_revision != schema.revision.expect("a tree schema declares its revision") {
         return Err(format!(
             "{}: known-empty state is schema revision {} but `{SCHEMA_DOC}` is revision {}",
             path.display(),
             state.schema_revision,
-            schema.revision
+            schema.revision.expect("a tree schema declares its revision")
         ));
     }
     if state.band != band.id {
@@ -346,7 +353,7 @@ fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> 
         ));
     }
 
-    let mut previous: Option<(CellId, KnownEmptyRun)> = None;
+    let mut previous: Option<(CellId, LegacyEmptyRun)> = None;
     for run in &mut state.known_empty {
         let start = parse_strict_id(&run.start).map_err(|e| format!("{}: {e}", path.display()))?;
         let end = parse_strict_id(&run.end).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -404,8 +411,20 @@ fn read_known_empty_state(path: &Path, band: &BandEntry, schema: &SchemaDoc) -> 
         }
         previous = Some((end, run.clone()));
     }
-    known_empty_count(&state.known_empty)?;
-    Ok(state.known_empty)
+    let mut published: Vec<KnownEmptyRun> = Vec::new();
+    for run in state.known_empty {
+        if let Some(previous) = published.last_mut() {
+            let end = parse_strict_id(&previous.end)?;
+            let start = parse_strict_id(&run.start)?;
+            if end.i == start.i && end.j + 1 == start.j && previous.sources == run.sources {
+                previous.end = run.end;
+                continue;
+            }
+        }
+        published.push(KnownEmptyRun { start: run.start, end: run.end, sources: run.sources });
+    }
+    known_empty_count(&published)?;
+    Ok(published)
 }
 
 pub(super) fn known_empty_count(runs: &[KnownEmptyRun]) -> Result<u32, String> {

@@ -1,6 +1,10 @@
 """Merge cell descriptors without reading or changing their immutable page payloads."""
 from copy import deepcopy
 
+from . import planner_geo
+
+ZOOM = 9
+
 
 def ranges(values):
     result = []
@@ -64,3 +68,22 @@ def routing(selections, adjacency, region, bounds):
     result["archives"] = sorted({key for selection in selections for key in selection["archives"]})
     result["arcs"] = sum(z - a for a, z in ranges(r for group in adjacency for r in group))
     return result
+
+def tile(lon, lat, zoom=ZOOM):
+    n = 1 << zoom
+    return tuple(min(n - 1, max(0, int(value))) for value in planner_geo.mercator(lon, lat, zoom))
+
+
+def intersects(a, b):
+    return a[0] <= b[2] and a[2] >= b[0] and a[1] <= b[3] and a[3] >= b[1]
+
+
+def cells(bounds):
+    left, top = tile(bounds[0], bounds[3])
+    right, bottom = tile(bounds[2], bounds[1])
+    for x in range(left, right + 1):
+        for y in range(top, bottom + 1):
+            b = planner_geo.tile_bounds(ZOOM, x, y)
+            clipped = [max(b[0], bounds[0]), max(b[1], bounds[1]), min(b[2], bounds[2]), min(b[3], bounds[3])]
+            if clipped[0] < clipped[2] and clipped[1] < clipped[3]:
+                yield f"{ZOOM}-{x}-{y}", clipped

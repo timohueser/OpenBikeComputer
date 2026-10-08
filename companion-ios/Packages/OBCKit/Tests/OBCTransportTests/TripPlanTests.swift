@@ -17,7 +17,7 @@ struct TripPlanTests {
 
     private func point(_ id: String, _ label: String, _ x: Double, _ kind: PlanPoint.Kind, night: Int? = nil,
                        leg: PlanPoint.Leg? = nil) -> PlanPoint {
-        PlanPoint(id: id, label: label, coordinate: coordinate(x), progress: 0, kind: kind, night: night, leg: leg)
+        PlanPoint(id: id, label: label, coordinate: coordinate(x), kind: kind, night: night, leg: leg)
     }
 
     @Test func savingAPlanMakesItsDaysAndKeepsTheTripsOwnFacts() throws {
@@ -70,10 +70,12 @@ struct TripPlanTests {
     }
 
     @Test func aDayAddedToAPlanEndsTheLastDayAndCrossesAGapByTransfer() throws {
-        let plan = try #require(PlannerPlan.keptLine(points(0, 10_000)))
-        let joined = try #require(plan.appendingDay(points(10_000, 20_000), name: "Brig"))
+        let spring = Waypoint(index: 0, name: "Spring", distanceAlongMeters: 0, coordinate: coordinate(5_000))
+        let plan = try #require(PlannerPlan.keptLine(points(0, 10_000), waypoints: [spring]))
+        let joined = try #require(plan.appendingDay(points(10_000, 20_000), name: "Brig", waypoints: [spring]))
         #expect(joined.routePoints.map(\.kind) == [.start, .night, .finish] && joined.days == 2 && joined.mode == .trip)
         #expect(joined.routePoints.map(\.leg) == [nil, .drawn, .drawn] && joined.routePoints.last?.label == "Brig")
+        #expect(joined.markers.map(\.legEnd) == ["night-1", "finish"], "each day's waypoint keeps its own day's leg")
         let apart = try #require(joined.appendingDay(points(21_000, 30_000), name: nil))
         #expect(apart.routePoints.map(\.kind) == [.start, .night, .night, .via, .finish])
         #expect(apart.routePoints.map(\.leg) == [nil, .drawn, .drawn, .transfer, .drawn] && apart.days == 3)

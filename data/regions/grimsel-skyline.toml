@@ -1,0 +1,6 @@
+name = "Grimsel skyline"
+kind = "box"
+# west, south, east, north
+box = [7.9, 46.3, 8.75, 46.95]
+countries = ["CH", "IT"]
+time_zone = "Europe/Zurich"

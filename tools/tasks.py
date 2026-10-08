@@ -1,19 +1,11 @@
 #!/usr/bin/env python3
-"""List the `obc` tasks by group, or describe one task.
-
-`obc` shows every group but `agent`, so the everyday list stays short. Nothing becomes
-unreachable: `obc --agent` shows the agent tasks and `obc --all` shows all of them.
-A task belongs to `agent` when an automation is its main user. `obc help TASK` prints the
-whole comment block above the recipe, whose last line is the summary the listing shows.
-
-The justfile is read as text, not through `just`. The CI runners have no `just`, and the
-listing needs three line shapes: a comment, an attribute and a recipe header.
-"""
+"""List tasks from native just metadata and show a recipe without executing it."""
 
 from __future__ import annotations
 
 import argparse
-import re
+import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -22,50 +14,24 @@ AGENT = "agent"
 # Groups print in this order; a group not named here prints after them, sorted.
 ORDER = ("run", "device", "ios", "maps", "build", "test", "docs", AGENT)
 
-# A recipe header at column 0: a name, optional parameters and dependencies, then a colon.
-# `x := y` and `set shell := [...]` do not match, because `=` is not whitespace or a comment.
-RECIPE = re.compile(r"^([a-z][a-z0-9-]*)(?:[ \t]+[^:=\n]*?)?:[ \t]*(?:#.*)?$")
-ATTRIBUTE = re.compile(r"^\[(.+)\][ \t]*$")
-GROUP = re.compile(r"""group\([ \t]*['"]([^'"]+)['"][ \t]*\)""")
-
-
 class Task(NamedTuple):
     group: str
-    block: tuple[str, ...]
-
-    @property
-    def doc(self) -> str:
-        """The listing summary: the last comment line, as `just --list` shows it."""
-        return self.block[-1].strip() if self.block else ""
+    doc: str
 
 
 def load(justfile: Path) -> dict[str, Task]:
-    """Map each public task name to its group and comment block.
-
-    `just` documents a recipe with the block of comment lines directly above it. An empty
-    line or any other statement breaks that association.
-    """
-    tasks: dict[str, Task] = {}
-    block: list[str] = []
-    attributes = ""
-    for line in justfile.read_text(encoding="utf-8").splitlines():
-        recipe = RECIPE.match(line)
-        if recipe:
-            if "private" not in attributes:
-                group = GROUP.search(attributes)
-                tasks[recipe.group(1)] = Task(group.group(1) if group else "", tuple(block))
-            block, attributes = [], ""
-            continue
-        attribute = ATTRIBUTE.match(line)
-        if attribute:
-            attributes += attribute.group(1) + " "
-        elif line.startswith("#"):
-            block.append(line[1:].removeprefix(" ").rstrip())
-        elif not line[:1].isspace() or not line.strip():
-            block, attributes = [], ""
-    if not tasks:
-        raise SystemExit(f"obc: no task found in {justfile}")
-    return tasks
+    document = json.loads(subprocess.check_output(
+        ["just", "--justfile", str(justfile), "--dump", "--dump-format", "json"], text=True,
+    ))
+    return {
+        name: Task(
+            next((attribute["group"] for attribute in recipe["attributes"]
+                  if isinstance(attribute, dict) and "group" in attribute), ""),
+            recipe.get("doc") or "",
+        )
+        for name, recipe in document["recipes"].items()
+        if not recipe["private"]
+    }
 
 
 def grouped(tasks: dict[str, Task], keep) -> list[tuple[str, list[str]]]:
@@ -83,24 +49,15 @@ def render(tasks, keep, pointer: str = "") -> str:
     for group, names in grouped(tasks, keep):
         lines.append(f"\n{group or 'other'}")
         for name in names:
-            lines.append(f"  {name.ljust(width)}  {tasks[name].doc}".rstrip())
+            lines.append(f"  {name.ljust(width)}  {tasks[name].doc.splitlines()[0] if tasks[name].doc else ''}".rstrip())
     if pointer:
         lines.append(f"\n{pointer}")
     return "\n".join(lines).lstrip("\n")
 
 
-def describe(name: str, task: Task) -> str:
-    """The summary as a heading, then the rest of the comment block."""
-    lines = [f"obc {name}  {task.doc}".rstrip()]
-    body = [f"  {line}".rstrip() for line in task.block[:-1]]
-    if body:
-        lines += ["", *body]
-    return "\n".join(lines)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--justfile", type=Path, default=Path(__file__).parent / "justfile")
+    parser.add_argument("--justfile", type=Path, default=Path(__file__).parents[1] / "justfile")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--agent", action="store_true", help="the agent tasks only")
     scope.add_argument("--all", action="store_true", help="every task")
@@ -108,13 +65,12 @@ def main() -> int:
     parser.add_argument("--task", metavar="NAME", help="describe one task")
     args = parser.parse_args()
 
-    tasks = load(args.justfile)
     if args.task:
-        if args.task not in tasks:
-            print(f"obc: no task named {args.task}; `obc --all` lists them", file=sys.stderr)
-            return 1
-        print(describe(args.task, tasks[args.task]))
-        return 0
+        return subprocess.run(["just", "--justfile", str(args.justfile), "--show", args.task]).returncode
+    try:
+        tasks = load(args.justfile)
+    except subprocess.CalledProcessError as error:
+        return error.returncode
     if args.all:
         keep, pointer = (lambda _: True), ""
     elif args.agent:

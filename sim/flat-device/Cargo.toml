@@ -1,0 +1,18 @@
+[package]
+name = "obc-flat-device"
+version = "0.1.0"
+edition = "2021"
+publish = false # internal test library — not published to crates.io
+description = "The real protocol-v4 engine over a real simulated card, behind one bounded adapter: native Rust with a builder wasm facade, so the Rust harness and the TypeScript suites test the same device."
+
+# The device and its simulated card are shared by native and browser test harnesses.
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The engine under test. `std` is on because this device only ever runs on a host or in a browser.
+obc-link = { workspace = true, features = ["std"] }
+# The card under test: the real flat store over the deterministic sparse disk and its fault gates.
+obc-storage = { workspace = true, features = ["std"] }
+# The CRC the wire and the card both use, for the seeded payloads.
+obc-crc = { workspace = true }

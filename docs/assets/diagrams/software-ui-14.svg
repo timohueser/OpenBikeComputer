@@ -1,0 +1,46 @@
+<svg viewBox="0 0 720 320" role="img" aria-label="Two panels comparing the device's two spatial queries. On the left, near me: a dashed circle drawn around the rider's fix, with points of interest scattered inside it and one greyed out beyond the edge; the route line crosses the panel faintly and plays no part. On the right, up ahead: the magenta route line runs through a pale band three hundred metres wide to each side, the rider sits on the line, and two points of interest inside the band are joined by dashed leaders to tick marks on the line itself, labelled with their along-route distances of one point two kilometres and four point eight kilometres; a third point outside the band is greyed out. Below each panel, a summary box: the left produces a browser list sorted by straight-line distance with a live bearing arrow, the right produces the Up ahead timeline sorted along the route, each row carrying a distance to go, a climb to go, and which side it sits on." xmlns="http://www.w3.org/2000/svg" width="720" height="320" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Two spatial questions — one map, one index, two windows</text>
+
+  <text class="d-sub" x="30" y="52" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">① near me — a disc around the fix</text>
+  <rect class="d-panel" x="24" y="60" width="320" height="186" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <!-- the route is present but irrelevant to this question -->
+  <path d="M56 232 C 106 198, 146 188, 186 158 C 226 128, 258 108, 320 90" fill="none" stroke="#ff00ff" stroke-width="4" opacity="0.16" />
+  <circle cx="184" cy="158" r="66" fill="none" stroke="#6b7758" stroke-width="1.3" stroke-dasharray="4 4" />
+  <g fill="#3d3427">
+    <circle cx="146" cy="124" r="5" /><circle cx="228" cy="140" r="5" />
+    <circle cx="162" cy="200" r="5" /><circle cx="232" cy="196" r="5" />
+  </g>
+  <circle cx="300" cy="104" r="5" fill="none" stroke="#c9c7b8" stroke-width="1.4" />
+  <text class="d-sub" x="292" y="92" text-anchor="end" style="font-size:12px;fill:#9aa884" fill="#5c5a2e" font-size="12px">out of range</text>
+  <path d="M184 158 L222 143" stroke="#cf6a2a" stroke-width="1.6" />
+  <path d="M228 140 l-11 -1 l5 6 z" fill="#cf6a2a" />
+  <text class="d-sub" x="222" y="122" text-anchor="end" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">bearing</text>
+  <path d="M184 150 l7 14 l-7 -5 l-7 5 z" fill="#ff0000" />
+  <text class="d-sub" x="184" y="236" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">nearest 16 · by straight-line distance · route-blind</text>
+
+  <text class="d-sub" x="382" y="52" style="font-size:12px;fill:#4d5b3c" fill="#5c5a2e" font-size="12px">② up ahead — a corridor along the route</text>
+  <rect class="d-panel" x="376" y="60" width="320" height="186" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <path d="M402 228 C 450 206, 468 170, 510 148 C 552 126, 578 100, 668 84" fill="none" stroke="#e6e0c4" stroke-width="34" stroke-linecap="round" />
+  <path d="M402 228 C 450 206, 468 170, 510 148 C 552 126, 578 100, 668 84" fill="none" stroke="#ff00ff" stroke-width="4" />
+  <!-- inside the corridor: projected onto the line -->
+  <circle cx="492" cy="170" r="5" fill="#3d3427" />
+  <path d="M492 170 L503 150" stroke="#6b7758" stroke-width="1.1" stroke-dasharray="3 3" />
+  <circle cx="503" cy="150" r="2.8" fill="#000" />
+  <text class="d-sub" x="512" y="180" style="font-size:12px" fill="#5c5a2e" font-size="12px">1.2 km</text>
+  <circle cx="572" cy="92" r="5" fill="#3d3427" />
+  <path d="M572 92 L566 114" stroke="#6b7758" stroke-width="1.1" stroke-dasharray="3 3" />
+  <circle cx="566" cy="114" r="2.8" fill="#000" />
+  <text class="d-sub" x="584" y="90" style="font-size:12px" fill="#5c5a2e" font-size="12px">4.8 km</text>
+  <!-- outside the corridor -->
+  <circle cx="636" cy="164" r="5" fill="none" stroke="#c9c7b8" stroke-width="1.4" />
+  <text class="d-sub" x="644" y="180" text-anchor="middle" style="font-size:12px;fill:#9aa884" fill="#5c5a2e" font-size="12px">off corridor</text>
+  <path d="M444 201 l8 13 l-8 -5 l-8 5 z" fill="#ff0000" transform="rotate(53 444 201)" />
+  <text class="d-sub" x="392" y="236" style="font-size:12px" fill="#5c5a2e" font-size="12px">±300 m either side · only what is still ahead of you</text>
+
+  <rect class="d-panel-2" x="24" y="262" width="320" height="48" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="40" y="282" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ the <tspan class="d-label" style="font-size:12px" font-size="14px" fill="#1c1b14">POIs browser</tspan> — rows by distance,</text>
+  <text class="d-sub" x="52" y="298" style="font-size:12px" fill="#5c5a2e" font-size="12px">with a live bearing arrow</text>
+  <rect class="d-hot" x="376" y="262" width="320" height="48" rx="9" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-sub" x="392" y="282" style="font-size:12px" fill="#5c5a2e" font-size="12px">→ the <tspan class="d-label" style="font-size:12px;fill:#a9501c" font-size="14px" fill="#1c1b14">Up ahead timeline</tspan> — rows along the route,</text>
+  <text class="d-sub" x="404" y="298" style="font-size:12px" fill="#5c5a2e" font-size="12px">with distance-to-go, climb-to-go and a side</text>
+</svg>

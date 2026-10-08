@@ -6,4 +6,4 @@ case "${PLATFORM_NAME:-iphonesimulator}" in
   iphonesimulator) planner_target=aarch64-apple-ios-sim ;;
   *) echo "Unsupported planner platform" >&2; exit 1 ;;
 esac
-cargo build --locked --release -p route-server --lib --target "$planner_target"
+cargo build --locked --release -p planner-service --lib --no-default-features --target "$planner_target"

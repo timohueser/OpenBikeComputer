@@ -1,0 +1,16 @@
+{
+  "name": "obc-builder-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder', { recursive: true, force: true })\" && VITE_PLANNER_CONFIG=\"$(cat basemap-config.json)\" VITE_CATALOG_URL=/catalog/catalog.json npm run build:web --prefix ../..",
+    "test": "playwright test",
+    "pretest:live": "node -e \"require('node:fs').rmSync('../../../../.artifacts/web-builder-live', { recursive: true, force: true })\" && VITE_PLANNER_CONFIG=\"$(cat basemap-config.json)\" VITE_CATALOG_URL=https://maps.openbikecomputer.com/cell-catalog/catalog.json npm run build:web --prefix ../..",
+    "test:live": "playwright test --config playwright.live.config.js",
+    "pretest:planner": "VITE_PLANNER_CONFIG=\"$(cat planner/config.json)\" npm run build:planner --prefix ../..",
+    "test:planner": "playwright test --config playwright.planner.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

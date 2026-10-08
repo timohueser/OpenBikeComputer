@@ -1,0 +1,223 @@
+// The packer-config data model. The bare config shape is owned by obc-pack; this
+// module only normalizes it for editing and rebuilds it for submission. CRITICAL
+// invariant: the `features` object's key insertion order assigns style IDs 1-based in
+// the packer, so every function that rebuilds the tree must copy keys in order, never
+// re-sort them.
+
+export interface LodTier {
+    max_mpp: number | null;
+    simplify: number;
+    // Drop area features whose projected area is below this many square pixels at this
+    // tier's finest on-screen scale; absent or 0 means off. Lines are never culled, and
+    // the packer ignores it on the finest tier, which has no coarser fallback.
+    min_area_px?: number;
+    // Line tolerance in metres when it differs from `simplify`; absent means `simplify`.
+    line_simplify?: number;
+    // Continue solid, uncased lines through junctions as trails; fewer records per junction.
+    merge_line_trails?: boolean;
+    // Replace classified thematic fills with the packer's semantic-grid generalisation.
+    semantic_coverage?: boolean;
+    // Drop lines shorter than this many kilometres, measured after same-class fragments
+    // are stitched together, which needs `merge_lines`. It clears the junction stubs and
+    // roundabout arms stitching could not absorb and keeps the long-distance skeleton.
+    // Polygons are never touched. Absent or 0 means off.
+    min_line_km?: number;
+}
+
+export interface StyleDef {
+    color: string | number;
+    z_index?: number;
+    weight?: number;
+    priority?: number;
+    min_lod?: number;
+    // Schema-declared style fields and any future ones ride along untouched. `color2` is
+    // optional: its key is simply absent when unset, never null or "0x0000", because
+    // black is a legit color and absence is not.
+    [key: string]: unknown;
+}
+
+/** One routing edge-weight multiplier: a number >= 1.0 or the string "forbidden". The
+ *  bounds and the sentinel are owned by obc-pack's schema; this type mirrors the
+ *  two-variant shape. */
+export type Multiplier = number | "forbidden";
+
+/** One bike profile: a display name, a `default` multiplier for unlisted classes, and
+ *  per-class overrides keyed by the schema's class-name enums. `highway` and `surface`
+ *  are sparse — an absent class inherits `default`. */
+export interface NavProfile {
+    name: string;
+    default?: Multiplier;
+    highway?: Record<string, Multiplier>;
+    surface?: Record<string, Multiplier>;
+    // Flat metres charged per metre of ascent, `0..255`. Unlike a class multiplier it
+    // does NOT inherit anything — absent means `0`, climb-blind, which is how the packer
+    // reads it.
+    climb_weight?: number;
+}
+
+/** The `routing` config section (owned by obc-pack; see `obc-pack schema`). */
+export interface RoutingConfig {
+    min_component_edges?: number;
+    profiles: NavProfile[];
+}
+
+export interface PackConfig {
+    lods: LodTier[];
+    features: Record<string, Record<string, StyleDef>>;
+    marker: { color: string | number };
+    chunk_size?: number;
+    // Dissolve pixel-identical fill polygons per LOD. Absent or false is a visual no-op
+    // size and render win.
+    merge_fills?: boolean;
+    // Stitch same-styled connected line fragments into maximal polylines per LOD —
+    // reclaims a span and a ring per join. Solid lines are unchanged; dashed and cased
+    // phase runs continuous.
+    merge_lines?: boolean;
+    // Contour-line settings ride through untouched; the packer validates them.
+    contours?: unknown;
+    // Bike-type routing profiles. Absent means the packer bakes in its four shipped
+    // defaults; the profile editor materializes it on first edit.
+    routing?: RoutingConfig;
+}
+
+/** One checked-in schema document offered by the maintainer editor. */
+export interface Preset {
+    id: string;
+    name: string;
+    description: string;
+    version: number;
+    /** Representative colors, read out of the config. */
+    swatch?: string[];
+    /** The packer config to build with. */
+    config?: PackConfig;
+}
+
+/** A preset that carries its config — what the style editor applies. */
+export type BuildablePreset = Preset & { config: PackConfig };
+
+/** Narrow a schema document to one the editor can actually apply. */
+export function isBuildable(preset: Preset): preset is BuildablePreset {
+    return preset.config !== undefined;
+}
+
+/** The schema envelope served by /api/schema (from `obc-pack schema`). */
+export interface SchemaEnvelope {
+    schema_version: number;
+    format_version: number | null;
+    schema: {
+        $defs: { style: { properties: Record<string, unknown> } };
+        [key: string]: unknown;
+    };
+    source: "binary" | "repo-file";
+}
+
+export function deepCopy<T>(v: T): T {
+    return JSON.parse(JSON.stringify(v)) as T;
+}
+
+/**
+ * Adopt a loaded config as editable state: guarantee lods/features/marker exist, pin the
+ * coarsest tier to +inf, clamp per-style min_lod, and lift out the `disabled` list — a
+ * top-level `["cat/name", …]` array the packer ignores.
+ */
+export function normalizeConfig(raw: Record<string, unknown>): {
+    config: PackConfig;
+    disabled: string[];
+} {
+    const cfg = deepCopy(raw) as unknown as PackConfig & { disabled?: unknown; _meta?: unknown };
+    delete cfg._meta;
+    if (!Array.isArray(cfg.lods) || cfg.lods.length === 0) {
+        cfg.lods = [{ max_mpp: null, simplify: 0 }];
+    }
+    cfg.lods = cfg.lods.map((l, i) => ({
+        max_mpp: i === 0 ? null : (l.max_mpp ?? null),
+        simplify: l.simplify ?? 0,
+        ...(l.min_area_px ? { min_area_px: l.min_area_px } : {}),
+        ...(l.line_simplify ? { line_simplify: l.line_simplify } : {}),
+        ...(l.merge_line_trails ? { merge_line_trails: true } : {}),
+        ...(l.semantic_coverage ? { semantic_coverage: true } : {}),
+        ...(l.min_line_km ? { min_line_km: l.min_line_km } : {}),
+    }));
+    cfg.features = cfg.features ?? {};
+    cfg.marker = cfg.marker ?? { color: "0xF800" };
+    const disabled = Array.isArray(cfg.disabled) ? (cfg.disabled as string[]) : [];
+    delete cfg.disabled;
+    const maxLod = cfg.lods.length - 1;
+    for (const cat of Object.keys(cfg.features)) {
+        for (const name of Object.keys(cfg.features[cat])) {
+            const def = cfg.features[cat][name];
+            if (typeof def.min_lod === "number") {
+                def.min_lod = Math.max(0, Math.min(maxLod, def.min_lod | 0));
+            }
+        }
+    }
+    return { config: cfg, disabled };
+}
+
+/**
+ * The config actually submitted to a build: disabled features dropped, min_lod clamped
+ * to the LOD count, and per-style keys not declared by the served schema stripped, so
+ * the UI never sends styling the binary would silently ignore. Returns the stripped key
+ * names alongside the config. Key order is preserved throughout, because it assigns
+ * style IDs.
+ */
+export function buildConfigForSubmit(
+    config: PackConfig,
+    disabled: string[],
+    schema: SchemaEnvelope | null,
+): { config: PackConfig; strippedKeys: string[] } {
+    const disabledSet = new Set(disabled);
+    const known = schema ? new Set(Object.keys(schema.schema.$defs.style.properties)) : null;
+    const stripped = new Set<string>();
+    const n = config.lods.length;
+    const out: PackConfig = {
+        lods: config.lods.map((l, i) => {
+            const tier: LodTier = { max_mpp: i === 0 ? null : (l.max_mpp ?? null), simplify: l.simplify || 0 };
+            // Emit only a positive footprint floor; the finest tier's value is ignored by
+            // the packer, so leaving it off keeps the submitted config clean.
+            if (l.min_area_px && i < n - 1) tier.min_area_px = l.min_area_px;
+            // Same rule: zero and false are the off values.
+            if (l.line_simplify) tier.line_simplify = l.line_simplify;
+            if (l.merge_line_trails) tier.merge_line_trails = true;
+            if (l.semantic_coverage) tier.semantic_coverage = true;
+            if (l.min_line_km) tier.min_line_km = l.min_line_km;
+            return tier;
+        }),
+        features: {},
+        marker: config.marker,
+    };
+    if (config.chunk_size != null) out.chunk_size = config.chunk_size;
+    // Emit merge_fills / merge_lines only when on; absent is the packer's default (off).
+    if (config.merge_fills) out.merge_fills = true;
+    if (config.merge_lines) out.merge_lines = true;
+    // Routing profiles ride through untouched, validated by the packer. Absent means the
+    // binary bakes in its four shipped defaults, so CLI parity holds.
+    if (config.routing) out.routing = deepCopy(config.routing);
+    if (config.contours != null) out.contours = deepCopy(config.contours);
+    for (const cat of Object.keys(config.features)) {
+        for (const name of Object.keys(config.features[cat])) {
+            if (disabledSet.has(`${cat}/${name}`)) continue;
+            const def = config.features[cat][name];
+            const copy: StyleDef = { ...def };
+            copy.min_lod = Math.max(0, Math.min(n - 1, (def.min_lod ?? 0) | 0));
+            copy.priority = def.priority || 3;
+            for (const key of Object.keys(copy)) {
+                // A cleared optional field is present-but-undefined after a spread; drop
+                // it so JSON emits absence, not the key.
+                if (copy[key] === undefined) {
+                    delete copy[key];
+                    continue;
+                }
+                // Keys the served schema does not declare would be silently ignored by the
+                // binary — strip them and report which.
+                if (known && !known.has(key)) {
+                    stripped.add(key);
+                    delete copy[key];
+                }
+            }
+            out.features[cat] = out.features[cat] || {};
+            out.features[cat][name] = copy;
+        }
+    }
+    return { config: out, strippedKeys: [...stripped] };
+}

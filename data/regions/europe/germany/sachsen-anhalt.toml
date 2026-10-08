@@ -1,0 +1,5 @@
+name = "Sachsen-Anhalt"
+kind = "geofabrik"
+areas = ["europe/germany/sachsen-anhalt"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

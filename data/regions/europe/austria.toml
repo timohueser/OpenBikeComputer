@@ -1,0 +1,5 @@
+name = "Austria"
+kind = "geofabrik"
+areas = ["europe/austria"]
+countries = ["AT"]
+time_zone = "Europe/Vienna"

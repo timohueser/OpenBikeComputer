@@ -1,0 +1,5 @@
+name = "Germany, Austria and Switzerland"
+kind = "union"
+union = ["europe/germany", "europe/austria", "europe/switzerland"]
+countries = ["DE", "AT", "CH", "LI"]
+time_zone = "Europe/Berlin"

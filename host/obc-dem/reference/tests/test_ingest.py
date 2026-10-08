@@ -10,8 +10,10 @@ carry a one-pixel rock tower without spreading it over its neighbours.
 import hashlib
 import json
 import os
+import shutil
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -23,6 +25,7 @@ from rasterio.warp import transform_bounds
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import ingest  # noqa: E402
+import merge  # noqa: E402
 
 LV95 = CRS.from_epsg(2056)
 # A 200 m square of 1 m posts near Engelberg, high enough that no rounding hides a defect.
@@ -88,8 +91,7 @@ def wgs84_grid(step_u, ti=4812, tj=4223, row=100, col=100):
 
 
 def local_source(key, country="Testland"):
-    return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", f"© {key}", "EGM2008",
-                         (-180, -90, 180, 90))
+    return ingest.Source(key, country, f"{key} test product", 1.0, "CC0", "EGM2008")
 
 
 class ArchiveCase(unittest.TestCase):
@@ -412,8 +414,7 @@ class BoxService(ingest.Source):
     """A service that answers a box with the columns of one EPSG:4326 raster inside it."""
 
     def __init__(self, raster):
-        super().__init__("ch", "Testland", "box service", 1.0, "CC0", "© box", "EGM2008",
-                         (-180, -90, 180, 90))
+        super().__init__("ch", "Testland", "box service", 1.0, "CC0", "EGM2008")
         self.raster, self.boxes = raster, []
 
     def fetch(self, bbox, workdir):
@@ -431,6 +432,145 @@ class BoxService(ingest.Source):
         with rasterio.open(path, "r+") as dst:
             dst.crs = ingest.WGS84
         return [path]
+
+
+class Fetch(ArchiveCase):
+    """`ingest.py fetch`: one archive tile of a model, pooled, and nothing of the raw rasters."""
+
+    def fetch(self, key, tile):
+        """`ingest.py fetch` of `key` and `tile`: its exit code and the files it wrote."""
+
+        out = self.root / "out"
+        shutil.rmtree(out, ignore_errors=True)
+        code = ingest.main(["fetch", key, "--tile", tile, "--work", str(self.root / "work"), "--out", str(out)])
+        return code, sorted(str(path.relative_to(out)) for path in out.rglob("*") if path.is_file())
+
+    def serve(self, service):
+        real = ingest.SOURCES["ch"]
+        ingest.SOURCES["ch"] = service
+        self.addCleanup(ingest.SOURCES.__setitem__, "ch", real)
+        return service
+
+    def test_a_tile_is_what_the_per_tile_ingest_writes_and_the_raw_rasters_are_removed(self):
+        # A 128 µdeg source that straddles two tiles, with a tower in each.
+        transform, _, _ = wgs84_grid(128, col=ingest.TILE_PX - 50)
+        values = np.full((100, 100), 1000.0, dtype="float32")
+        values[50, 10] = values[50, 60] = TOWER
+        raster = source_raster(self.inputs / "wide.tif", values, transform=transform)
+        with rasterio.open(raster, "r+") as dst:
+            dst.crs = ingest.WGS84
+        service = self.serve(BoxService(raster))
+        self.assertEqual(ingest.main(["ingest", "ch", "--bbox", bbox_of(raster), "--archive", str(self.archive),
+                                      "--work", str(self.root / "ingest"), "--per-tile"]), 0)
+        tiles = self.index()["sha256"]
+        self.assertEqual(len(tiles), 2)
+        for tile, digest in tiles.items():
+            ti, tj = (int(part) for part in tile.split("/"))
+            name = f"{ti:04}-{tj:04}"
+            self.assertEqual(self.fetch("ch", name), (0, [f"{name}.tif"]))
+            self.assertEqual(service.boxes[-1], ingest.tile_bounds(ti, tj))
+            self.assertEqual(ingest.tile_digest(self.root / "out" / f"{name}.tif"), digest)
+            self.assertEqual(ingest.tile_problems(self.root / "out" / f"{name}.tif", ti, tj), [])
+            self.assertFalse((self.root / "work").exists())
+
+    def test_a_tile_without_a_height_is_a_none_file_and_a_failure_keeps_no_raw_raster(self):
+        class Service(ingest.Source):
+            boxes = []
+
+            def fetch(self, bbox, workdir):
+                self.boxes.append(bbox)
+                workdir.mkdir(parents=True, exist_ok=True)
+                void = np.full((SIDE, SIDE), -9999.0, dtype="float32")
+                path = source_raster(workdir / "void.tif", void, nodata=-9999.0)
+                if len(self.boxes) > 1:
+                    raise ingest.Refuse("the service dropped the connection")
+                return [path]
+
+        self.serve(Service("ch", "Testland", "test", 1.0, "CC0", "EGM2008"))
+        # The row `dtm-ch` has the extent [5.9, 45.8, 10.5, 47.9], and tile 4823-4256 straddles 10.5°.
+        self.assertEqual(self.fetch("ch", "4823-4256"), (0, ["4823-4256.none"]))
+        west, south, _, north = ingest.tile_bounds(4823, 4256)
+        self.assertEqual(Service.boxes, [(west, south, 10.5, north)])
+        self.assertEqual(self.fetch("ch", "4823-4300"), (0, ["4823-4300.none"]))
+        self.assertEqual(len(Service.boxes), 1, "a tile outside the extent asks nothing")
+        self.assertEqual(self.fetch("ch", "4823-4255"), (1, []))
+        self.assertFalse((self.root / "work").exists())
+        self.assertEqual(self.fetch("ch", "48230-4255")[0], 1)
+
+    def test_a_delivery_is_fetched_from_the_directory_that_the_environment_names(self):
+        """A row without a service reads its delivery like a credential, and leaves it as it is."""
+
+        (self.inputs / "order").mkdir()
+        raster = source_raster(self.inputs / "order" / "dem.tif", plateau_with_tower())
+        ti, tj, _, _ = archive_pixel(grid(), TOWER_ROW, TOWER_COL)
+        name = f"{ti:04}-{tj:04}"
+        with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_AU_INPUT": str(self.inputs)}):
+            self.assertEqual(self.fetch("au", name)[0], 1, "the datum of the order is not confirmed")
+            os.environ["OBC_REFERENCE_AU_DATUM"] = "AHD"
+            self.assertEqual(self.fetch("au", name), (0, [f"{name}.tif"]))
+            os.environ["OBC_REFERENCE_AU_INPUT"] = os.path.relpath(self.inputs)
+            self.assertEqual(self.fetch("au", name)[0], 1, "a relative path names another directory in the step")
+        self.assertEqual(sorted(path.name for path in self.inputs.rglob("*")), ["dem.tif", "order"])
+
+
+class MergeStep(ArchiveCase):
+    """The step of a map leaf: its models, best first, into an empty archive."""
+
+    def request(self, output, models, tiles):
+        """The request of a step with `models` as (source, version, files), whose output is in a
+        directory of its own, as the engine gives it."""
+
+        output.mkdir(parents=True)
+        snapshots = {source: {f"#tile={path.stem}/{path.name}": str(path) for path in paths}
+                     for source, _, paths in models}
+        options = {"models": [{"source": source, "version": version, "credit": f"credit of {source}"}
+                              for source, version, _ in models],
+                   "tiles": tiles}
+        return {"options": options, "snapshots": snapshots, "output": str(output)}
+
+    def test_the_step_writes_the_archive_of_ingest_best_first_dated_by_each_fetch(self):
+        coarse = source_raster(self.inputs / "coarse.tif", np.full((SIDE, SIDE), 1000.0, dtype="float32"))
+        (self.root / "corner").mkdir()
+        corner = source_raster(self.root / "corner" / "corner.tif",
+                               np.full((SIDE // 2, SIDE // 2), 900.0, dtype="float32"))
+        # What `ingest` of each model, the better one first, writes.
+        self.ingest("nl", corner, inputs=corner.parent)
+        self.ingest("es", coarse)
+        tile, path = self.only_tile()
+        with rasterio.open(path) as src:
+            expected = src.read(1)
+
+        # The pooled tile of each model, as `ingest.py fetch` stores it.
+        name = tile.replace("/", "-")
+        pooled = []
+        for key, raster in (("es", coarse), ("nl", corner)):
+            alone = self.root / key
+            self.assertEqual(ingest.main(["ingest", key, "--bbox", bbox_of(raster), "--archive", str(alone),
+                                          "--input", str(raster.parent)]), 0)
+            pooled.append(alone / f"{name}.tif")
+            ingest.tile_path(alone, *map(int, tile.split("/"))).rename(pooled[-1])
+        none = self.root / f"{name}.none"
+        none.touch()
+
+        # The request names the worse model first, and a model without a height in the tile.
+        models = [("dtm-es", "2026-01-02", [pooled[0]]), ("dtm-nl", "2026-02-03", [pooled[1]]),
+                  ("dtm-dk", "2026-05-06", [none])]
+        output = self.root / "step" / "output"
+        metrics = merge.merge(self.request(output, models, [tile, "0000/0000"]))
+        layer = output / "reference"
+        self.assertEqual(metrics, {"tiles": 1, "sources": ["es", "nl"]})
+        index = ingest.read_index(layer)
+        self.assertEqual(index["contributors"], {tile: ["nl", "es"]})
+        with rasterio.open(ingest.tile_path(layer, *map(int, tile.split("/")))) as src:
+            self.assertTrue((src.read(1) == expected).all())
+        self.assertEqual((index["sources"]["nl"]["fetched"], index["sources"]["nl"]["attribution"]),
+                         ("2026-02-03", "credit of dtm-nl"))
+        dk = json.loads((layer / "sources" / "dk.json").read_text(encoding="utf-8"))
+        self.assertEqual((dk["fetched"], dk["tiles"]), ("2026-05-06", []))
+
+        # A tile that no terrain cell of the leaf reads stays out.
+        output = self.root / "other" / "output"
+        self.assertEqual(merge.merge(self.request(output, models, ["0000/0000"]))["tiles"], 0)
 
 
 class PerTile(ArchiveCase):

@@ -1,0 +1,5 @@
+name = "Thüringen"
+kind = "geofabrik"
+areas = ["europe/germany/thueringen"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

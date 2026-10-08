@@ -1,0 +1,48 @@
+<svg viewBox="0 0 720 340" role="img" aria-label="The device plays two BLE roles on one radio. On the left the companion phone is the central and the device is the peripheral it connects to — the phone link. On the right the device is itself the central, connecting out to three sensors: a heart-rate strap, a power meter, and a cadence sensor. A band along the bottom notes that a single radio carries both directions, with MPSL time-slicing the airtime between the peripheral (phone) and central (sensor) roles, and that sensors are open GATT servers connected by stored address with no bond, one saved slot per quantity." xmlns="http://www.w3.org/2000/svg" width="720" height="340" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="se-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="se-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#33575b" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Two roles, one radio — peripheral to the phone, central to the sensors</text>
+
+  <!-- phone (device = peripheral) -->
+  <rect class="d-panel" x="24" y="128" width="128" height="84" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="88" y="162" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">companion app</text>
+  <text class="d-sub" x="88" y="182" text-anchor="middle" fill="#5c5a2e" font-size="12px">BLE central</text>
+  <text class="d-sub" x="88" y="198" text-anchor="middle" fill="#5c5a2e" font-size="12px">(iPhone)</text>
+
+  <!-- device -->
+  <rect class="d-panel" x="278" y="112" width="184" height="116" rx="12" style="fill:#eef2df" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="370" y="150" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">OBC device</text>
+  <text class="d-sub" x="370" y="172" text-anchor="middle" style="fill:#3c6b39" fill="#5c5a2e" font-size="12px">peripheral · to phone</text>
+  <text class="d-sub" x="370" y="190" text-anchor="middle" style="fill:#33575b" fill="#5c5a2e" font-size="12px">central · to sensors</text>
+  <text class="d-sub" x="370" y="210" text-anchor="middle" fill="#5c5a2e" font-size="12px">one radio · nRF54L</text>
+
+  <!-- phone <-> device -->
+  <line class="d-flow" x1="152" y1="170" x2="276" y2="170" marker-start="url(#se-a)" marker-end="url(#se-a)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="214" y="160" text-anchor="middle" style="font-size:12px;fill:#3c6b39" fill="#5c5a2e" font-size="12px">the phone link</text>
+
+  <!-- sensors (device = central) -->
+  <rect class="d-panel-2" x="566" y="70" width="138" height="48" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="635" y="90" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">heart-rate strap</text>
+  <text class="d-sub" x="635" y="106" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">HRS · 0x180D</text>
+
+  <rect class="d-panel-2" x="566" y="146" width="138" height="48" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="635" y="166" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">power meter</text>
+  <text class="d-sub" x="635" y="182" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Cycling Power · 0x1818</text>
+
+  <rect class="d-panel-2" x="566" y="222" width="138" height="48" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="635" y="242" text-anchor="middle" style="font-size:12px" fill="#1c1b14" font-size="14px">cadence sensor</text>
+  <text class="d-sub" x="635" y="258" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">CSC · 0x1816</text>
+
+  <!-- device -> each sensor -->
+  <line class="d-flow" x1="462" y1="150" x2="564" y2="96" style="stroke:#33575b" marker-end="url(#se-c)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="462" y1="170" x2="564" y2="170" style="stroke:#33575b" marker-end="url(#se-c)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="462" y1="192" x2="564" y2="244" style="stroke:#33575b" marker-end="url(#se-c)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="524" y="160" text-anchor="middle" style="font-size:12px;fill:#33575b" fill="#5c5a2e" font-size="12px">scan · connect · subscribe</text>
+
+  <!-- bottom band -->
+  <rect class="d-panel-2" x="24" y="292" width="680" height="40" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="364" y="309" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">one radio — <tspan style="fill:#a9501c">MPSL time-slices</tspan> the peripheral (phone) and central (sensor) roles; no second radio</text>
+  <text class="d-sub" x="364" y="325" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">sensors are open GATT servers — connected by stored address, <tspan style="fill:#a9501c">no bond</tspan>, one saved slot per quantity</text>
+</svg>

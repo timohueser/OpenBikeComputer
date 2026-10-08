@@ -1,0 +1,5 @@
+name = "Regierungsbezirk Freiburg"
+kind = "geofabrik"
+areas = ["europe/germany/baden-wuerttemberg/freiburg-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

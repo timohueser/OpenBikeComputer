@@ -140,7 +140,7 @@ impl HelloScreen {
     }
 }
 
-/// The brand signpost from `assets/brand/signpost.svg`, its 100-unit view box drawn at one pixel
+/// The brand signpost from `tools/brand/signpost.svg`, its 100-unit view box drawn at one pixel
 /// a unit with the top-left at `(cx - 50, top)`: an olive post under two amber arrow boards, each
 /// tilted 4° about its own centre line.
 fn signpost(cv: &mut impl Surface, cx: i32, top: i32) {

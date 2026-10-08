@@ -1,7 +1,7 @@
 """Routing-profile round-trips through the web builder's pack path (N6).
 
-These tests exercise the same `obc-pack` binary the builder API shells out to
-(``builder/server/jobs.py``): a config carrying custom ``routing.profiles``
+These tests exercise the same `obc-pack` binary the builder dev server shells out
+to (``builder/server/schema_preview.py``): a config carrying custom ``routing.profiles``
 is packed over the tiny corpus fixture, and the resulting §8.6 profile-table
 bytes are compared against independently quantized expectations. A sub-1.0
 multiplier must be rejected with the packer's admissibility error — the same
@@ -11,7 +11,7 @@ network is needed.
 
 Run from the repo root with the uv-managed venv, e.g.::
 
-    PYTHONPATH=. .venv/bin/python -m pytest builder/tests/
+    PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/
 """
 import json
 import os
@@ -27,7 +27,7 @@ REPO_ROOT = os.path.dirname(BUILDER_ROOT)
 TINY_PBF = os.path.join(HERE, "corpus", "data", "tiny.osm.pbf")
 SCHEMA_PRESET = os.path.join(BUILDER_ROOT, "presets", "schema.json")
 
-# Canonical class order; must match obc-pack/src/nav.rs and the OBCM spec.
+# Canonical class order; must match obc-map-core/src/nav.rs and the OBCM spec.
 HIGHWAY_CLASSES = [
     "cycleway", "path", "track", "footway", "steps", "bridleway", "living_street",
     "residential", "service", "unclassified", "tertiary", "secondary", "primary", "trunk_cycl",

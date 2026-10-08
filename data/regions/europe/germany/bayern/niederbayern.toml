@@ -1,0 +1,5 @@
+name = "Niederbayern"
+kind = "geofabrik"
+areas = ["europe/germany/bayern/niederbayern"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

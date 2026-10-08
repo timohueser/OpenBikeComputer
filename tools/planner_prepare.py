@@ -6,15 +6,13 @@ import re
 import shutil
 from zoneinfo import ZoneInfo
 
-try:
-    from . import planner_maps as maps, planner_sources as sources, planner_release as releases
-except ImportError:
-    import planner_maps as maps, planner_sources as sources, planner_release as releases
+from . import data_registry, planner_geo as geo
 
 
 def recipe(path):
+    """The recipe, with `name` and `bounds` from its box region in data/regions/."""
     document = json.loads(path.read_text())
-    if document["format"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document["region"]):
+    if document["format"] != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document["region"]) or {"name", "bounds"} & set(document):
         raise ValueError("Invalid region recipe")
     if document["access"] != "DE":
         raise ValueError("Routing has German access defaults. Add and verify each country's access policy before extending coverage.")
@@ -24,11 +22,13 @@ def recipe(path):
         ZoneInfo(document["time_zone"])
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("Name the region's IANA time zone in the recipe") from error
-    maps.bounds(",".join(map(str, document["bounds"])))
+    document["bounds"] = data_registry.region_box(document["region"])
+    document["name"] = data_registry.region(document["region"])["name"]
+    geo.bounds(",".join(map(str, document["bounds"])))
     if not re.fullmatch(r"[a-f0-9]{64}", document["osm"]["sha256"]):
         raise ValueError("Pin the OSM SHA-256 in the recipe")
     profiles = document["profiles"]
-    # The presets of route-build (`Profile::presets`); it rejects any other ID at bake time.
+    # The presets of planner-router-build (`Profile::presets`); it rejects any other ID at bake time.
     if not isinstance(profiles, list) or not profiles or any(
             not isinstance(profile, str) or not re.fullmatch(r"(?:touring|road|gravel|mtb|hiking)(?:/(?:shorter|less-climbing))?", profile)
             for profile in profiles) or len(profiles) != len(set(profiles)):
@@ -42,17 +42,3 @@ def link(source, destination):
         os.link(source, destination)
     except OSError:
         shutil.copyfile(source, destination)
-
-
-def add_map(folder, name):
-    manifest = json.loads((folder / "manifest.json").read_bytes())
-    manifest["files"][name] = {"bytes": (folder / name).stat().st_size, "sha256": sources.digest(folder / name)}
-    (folder / "manifest.json").write_bytes(releases.encoded(manifest))
-
-
-def prepare(args):
-    try:
-        from .planner_bake import prepare as bake
-    except ImportError:
-        from tools.planner_bake import prepare as bake
-    return bake(args)

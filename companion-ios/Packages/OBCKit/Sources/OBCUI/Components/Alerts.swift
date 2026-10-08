@@ -221,12 +221,7 @@ private struct OBCRenameSheet: View {
     }
 }
 
-/// A documentation wrapper, no custom UI. Pairing runs through two native iOS prompts
-/// that must not be themed: the Bluetooth permission prompt, whose intent string lives
-/// in the app target as `NSBluetoothAlwaysUsageDescription`, and the bonding alert iOS
-/// raises when the device asks for an encrypted link. The bonding alert renders in
-/// system blue; that is expected. Do not attempt a custom passkey UI.
-public enum OBCSystemPairing {
-    public static let expectation =
-        "Bluetooth permission + pairing alerts are native, system-blue prompts; the app never re-skins them."
-}
+// Pairing has no custom UI. It runs through two native iOS prompts that must not be themed:
+// the Bluetooth permission prompt (`NSBluetoothAlwaysUsageDescription` in the app target) and
+// the bonding alert iOS raises when the device asks for an encrypted link. The bonding alert
+// renders in system blue; that is expected. Do not attempt a custom passkey UI.

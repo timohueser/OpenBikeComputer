@@ -29,7 +29,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-        run: python3 apps/obc-verification/ops/download_reports.py reports
+        run: python3 tools/verification/ops/download_reports.py reports
       - name: Import observed test identities
         env:
           OBC_VERIFICATION_URL: ${{ vars.OBC_VERIFICATION_URL }}
@@ -38,6 +38,6 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
-          python3 apps/obc-verification/ops/import_results.py --reports reports \
+          python3 tools/verification/ops/import_results.py --reports reports \
             --source-sha "$SOURCE_SHA" --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" \
             --catalog-only --conclusion success

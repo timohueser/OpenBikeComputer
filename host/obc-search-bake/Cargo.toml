@@ -1,0 +1,30 @@
+[package]
+name = "obc-search-bake"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "OSM enrichment for planner search and place tiles"
+
+[[bin]]
+name = "search-bake"
+path = "src/main.rs"
+
+[dependencies]
+obc-places = { workspace = true }
+# The planner search dump step of `obc data`.
+obc-data = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+osmpbfreader = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+geo = { version = "0.31", default-features = false }
+rstar = "0.12"
+zstd = "0.13"
+unicode-normalization = { workspace = true }
+flate2 = { workspace = true }
+regex = "1"
+tempfile = { workspace = true }
+
+[dev-dependencies]
+obc-map-core = { workspace = true }

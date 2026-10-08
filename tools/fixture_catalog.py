@@ -12,7 +12,7 @@ a document.
 Run it as a server for a browser test:
 
     python3 tools/fixture_catalog.py --catalog web-assemble --port 4180 \\
-        --static builder/app/dist/web --log .artifacts/web-builder/catalog.jsonl
+        --static builder/web/dist/web --log .artifacts/web-builder/catalog.jsonl
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_EXAMPLES = ROOT / "host/obc-pack/schema"
-ASSEMBLE_FIXTURE = ROOT / "apps/obc-web-assemble/tests/fixture"
+ASSEMBLE_FIXTURE = ROOT / "builder/wasm/tests/fixture"
 
 CONTENT_TYPES = {
     ".json": "application/json",
@@ -75,10 +75,9 @@ def schema_examples() -> dict[str, bytes]:
     objects: dict[str, bytes] = {}
 
     catalog.pop("terrain", None)
-    catalog.pop("network_terrain_revision", None)
     for ref in catalog["cell_index"]:
         doc = fine if ref["band"] == "fine" else {
-            "schema_version": 3, "schema_revision": catalog["schema"]["revision"],
+            "schema_version": 3, "schema_sha256": catalog["schema"]["sha256"],
             "band": ref["band"], "cells": [], "known_empty": [],
         }
         ref.update(_document(objects, f"/{ref['band']}.json", doc))
@@ -109,17 +108,13 @@ FEATURE_TYPES = {
     4: "highway.path",
 }
 
-# Where this catalog is published on the server, and what the browser suite builds
-# `VITE_CATALOG_URL` from.
+# Where this catalog is published on the server, and what the browser suite sets
+# `VITE_CATALOG_URL` to.
 PREFIX = "/catalog"
 REGION_ID = "bridge-fixture"
 REGION_NAME = "Bridge Fixture"
-SCHEMA_REVISION = 1
-TERRAIN_REVISION = 1
 DATASET_ID = "fixture-raster"
 DATASET_VERSION = "1"
-BUILT_AT = "2026-07-30T02:12:55Z"
-GENERATED_AT = "2026-07-30T09:00:00Z"
 SOURCES = [{"extract_id": "fixture", "snapshot": "2026-07-19"}]
 
 
@@ -144,12 +139,14 @@ def web_assemble() -> dict[str, bytes]:
     schema = dict(sidecar["schema"])
     schema.update(
         id="bridge-fixture",
-        revision=SCHEMA_REVISION,
         name="Bridge Fixture",
-        description="The obc-web-assemble bridge fixture's cut, published as a catalog schema.",
+        description="The obc-builder-bridge bridge fixture's cut, published as a catalog schema.",
         styles=[{"id": s["id"], "feature_type": FEATURE_TYPES[s["id"]]} for s in styles],
     )
     schema["routing"] = {**schema.get("routing", {}), "profiles": []}
+    schema_body = json.dumps(schema).encode()
+    objects[f"{PREFIX}/schema.json"] = schema_body
+    schema["sha256"] = hashlib.sha256(schema_body).hexdigest()
 
     def hosted_style(feature_type: str, style: dict) -> dict:
         def color(value: int | str) -> int:
@@ -187,7 +184,7 @@ def web_assemble() -> dict[str, bytes]:
     by_band: dict[str, list[dict]] = {band["id"]: [] for band in schema["bands"]}
     for cell in sidecar["cells"]:
         body = (ASSEMBLE_FIXTURE / cell["path"]).read_bytes()
-        entry = {"id": cell["id"], "built_at": BUILT_AT, "sources": SOURCES, "partial": cell["partial"]}
+        entry = {"id": cell["id"], "sources": SOURCES, "partial": cell["partial"]}
         entry.update(pin(objects, _cell_path(cell["band"], cell["id"], "obcm"), body))
         by_band[cell["band"]].append(entry)
 
@@ -195,7 +192,7 @@ def web_assemble() -> dict[str, bytes]:
     for band in sorted(schema["bands"], key=lambda b: -b["cell_log2"]):
         cells = by_band[band["id"]]
         document = {
-            "schema_version": 3, "schema_revision": SCHEMA_REVISION, "band": band["id"],
+            "schema_version": 3, "schema_sha256": schema["sha256"], "band": band["id"],
             "cells": cells, "known_empty": [],
         }
         ref = {"band": band["id"], "cell_log2": band["cell_log2"],
@@ -206,11 +203,11 @@ def web_assemble() -> dict[str, bytes]:
     terrain_cells = []
     for cell in terrain_doc["cells"]:
         body = (ASSEMBLE_FIXTURE / cell["path"]).read_bytes()
-        entry = {"id": cell["id"], "built_at": BUILT_AT}
+        entry = {"id": cell["id"]}
         entry.update(pin(objects, _cell_path("terrain", cell["id"], "obcd"), body))
         terrain_cells.append(entry)
     terrain_index = {
-        "schema_version": 3, "terrain_revision": TERRAIN_REVISION,
+        "schema_version": 3,
         "dataset_id": DATASET_ID, "dataset_version": DATASET_VERSION,
         "posting_log2": terrain_doc["posting_log2"], "cell_log2": terrain_doc["cell_log2"],
         "cells": terrain_cells, "known_empty": [],
@@ -218,14 +215,13 @@ def web_assemble() -> dict[str, bytes]:
     terrain = {
         "dataset_id": DATASET_ID, "dataset_version": DATASET_VERSION,
         "posting_log2": terrain_doc["posting_log2"], "cell_log2": terrain_doc["cell_log2"],
-        "terrain_revision": TERRAIN_REVISION,
-        "attribution": "Synthetic raster cut by apps/obc-web-assemble/examples/fixture.rs.",
+        "attribution": "Synthetic raster cut by builder/wasm/examples/fixture.rs.",
         "cell_index": {"cell_count": len(terrain_cells), "known_empty_count": 0,
                        **_document(objects, f"{PREFIX}/cells/terrain/index.json", terrain_index)},
     }
 
     region_cells = {
-        "schema_version": 3, "schema_revision": SCHEMA_REVISION, "region_id": REGION_ID,
+        "schema_version": 3, "schema_sha256": schema["sha256"], "region_id": REGION_ID,
         "cells": {band: [cell["id"] for cell in cells] for band, cells in by_band.items() if cells},
         "terrain": [cell["id"] for cell in terrain_cells],
     }
@@ -253,10 +249,9 @@ def web_assemble() -> dict[str, bytes]:
 
     catalog = {
         "schema_version": 3,
-        "generated_at": GENERATED_AT,
         "source": {
             "dataset_id": "fixture",
-            "attribution": "Synthetic geometry cut by apps/obc-web-assemble/examples/fixture.rs.",
+            "attribution": "Synthetic geometry cut by builder/wasm/examples/fixture.rs.",
             "license": "CC0-1.0",
             "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
         },
@@ -265,7 +260,6 @@ def web_assemble() -> dict[str, bytes]:
         "regions": [region],
         "cell_index": cell_index,
         "terrain": terrain,
-        "network_terrain_revision": TERRAIN_REVISION,
     }
     objects[f"{PREFIX}/catalog.json"] = json.dumps(catalog).encode()
     return objects
@@ -355,7 +349,7 @@ def main() -> None:
     if args.static and not (args.static / "index.html").is_file():
         raise SystemExit(
             f"{args.static}/index.html is missing. Build it first:\n"
-            "  cd builder/app && npm run build:web"
+            "  cd builder/web && npm run build:web"
         )
     server = CatalogServer(CATALOGS[args.catalog](), args.port, args.static, args.log)
     print(f"{server.origin} serving {len(server.objects)} pinned objects", flush=True)

@@ -1,0 +1,5 @@
+name = "Mecklenburg-Vorpommern"
+kind = "geofabrik"
+areas = ["europe/germany/mecklenburg-vorpommern"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

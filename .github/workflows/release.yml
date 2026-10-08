@@ -56,8 +56,8 @@ jobs:
             firmware/obc-boot
           key: release
 
-      - name: Install RISC-V GCC for the FLPR blob
-        run: sudo apt-get update && sudo apt-get install -y gcc-riscv64-unknown-elf
+      # The same pinned compiler that CI tests the board image with.
+      - uses: ./.github/actions/setup-riscv
 
       - name: Resolve candidate version
         env:

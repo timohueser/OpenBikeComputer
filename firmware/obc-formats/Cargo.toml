@@ -7,6 +7,5 @@ description = "Allocator-free persistent-format constants and primitive codecs f
 
 [dependencies]
 # The bounded trip-progress list.
-heapless = "0.8"
-obc-crc = { path = "../obc-crc" }
-obc-ports = { path = "../obc-ports" }
+heapless = { workspace = true }
+obc-ports = { workspace = true }

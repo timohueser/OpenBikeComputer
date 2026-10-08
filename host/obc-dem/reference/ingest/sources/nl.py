@@ -4,7 +4,7 @@ from .protocols import Wcs20Source
 
 NL = Wcs20Source(
     "nl", "Netherlands", "AHN DTM 0.5 m", 0.5,
-    "CC BY 4.0", "© Rijkswaterstaat / AHN", "NAP", (3.2, 50.7, 7.3, 53.6),
+    "CC BY 4.0", "NAP",
     url="https://service.pdok.nl/rws/ahn/wcs/v1_0",
     coverage="dtm_05m",
     epsg=28992,

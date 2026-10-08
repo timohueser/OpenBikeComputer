@@ -1,0 +1,6 @@
+name = "Upper Engadin"
+kind = "box"
+# west, south, east, north
+box = [9.55, 46.3, 10.25, 46.7]
+countries = ["CH", "IT"]
+time_zone = "Europe/Zurich"

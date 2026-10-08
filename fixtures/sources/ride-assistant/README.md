@@ -53,7 +53,7 @@ To package completed work without a re-bake:
 ```sh
 python3 fixtures/build-assistant-package.py west-cork \
   --assembled-map PATH/west-cork.obcm \
-  --provenance fixtures/sources/ride-assistant/west-cork-v18.json
+  --provenance fixtures/sources/ride-assistant/west-cork-v19.json
 ```
 
 The Swiss recipe gives the full pinned national PBF to the baker and selects the cells that
@@ -69,8 +69,8 @@ Each `sources[]` entry in the JSON records below pins `path`, `url`, `retrieved_
 
 | Record | What it pins | Licence |
 | --- | --- | --- |
-| [`assistant-osm.json`](assistant-osm.json) | The full Switzerland and Monaco PBF files, and the West Cork complete-relation extract of the Ireland snapshot with its exact `osmium extract` command. All native OSM IDs, versions, timestamps, tags and geometry are retained. `switzerland.poly` records the provider's own country boundary, which is separate from the authored regional view bounds. | ODbL-1.0, © OpenStreetMap contributors |
-| [`assistant-terrain.json`](assistant-terrain.json) | Untouched Copernicus GLO-30 TIFF tiles `N46_00_E008_00` and `N51_00_W010_00`, with HTTP Last-Modified, ETag, source URL, licence URL and SHA-256. | Produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved |
+| [`assistant-osm.json`](assistant-osm.json) | The full Switzerland and Monaco PBF files, and the West Cork complete-relation extract of the Ireland snapshot with its exact `osmium extract` command. All native OSM IDs, versions, timestamps, tags and geometry are retained. `switzerland.poly` records the provider's own country boundary, which is separate from the authored regional view bounds. | ODbL-1.0; the `osm-planet` credit of [`data/sources.toml`](../../../data/sources.toml) |
+| [`assistant-terrain.json`](assistant-terrain.json) | Untouched Copernicus GLO-30 TIFF tiles `N46_00_E008_00` and `N51_00_W010_00`, with HTTP Last-Modified, ETag, source URL, licence URL and SHA-256. | The `copernicus-glo-30` credit of [`data/sources.toml`](../../../data/sources.toml) |
 | [`assistant-wiki.json`](assistant-wiki.json) | Captured Wikidata entity JSON, Wikipedia HTML at exact `oldid` revisions, raw page revisions, Commons metadata and original image bytes, for four review sites in 11 article languages, with the P279 ancestor closure for their P31 types. | Per article and per image; the notices travel in the capture |
 | [`switzerland-content.json`](switzerland-content.json) | The `assistant-switzerland-content` archive: schema 2, the source capture, the compiler, the policy, the counts and the coverage limits. Each article variant and photo keeps its own source and licence notice. | Per article and per image |
 
@@ -136,5 +136,5 @@ cargo run --release -p obc-sim -- --card .artifacts/west-cork.obc --physical \
 
 The second command reopens saved routes and recordings without importing the fixture again.
 **The card is user state**: fixture sync does not replace it, so create a new card to test a new
-package. See the [simulator README](../../../apps/obc-sim/README.md) for imports and recording
+package. See the [simulator README](../../../sim/desktop/README.md) for imports and recording
 recovery.

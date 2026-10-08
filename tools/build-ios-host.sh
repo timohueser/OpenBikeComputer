@@ -1,36 +1,44 @@
 #!/usr/bin/env bash
-# Pack the iOS host static library as target/OBCHost.xcframework — the artifact the OBCDevice app
-# links. Both slices by default. `--sim-only` builds the simulator slice alone, which is what a
-# simulator run needs, and keeps whatever device slice is already on disk: dropping it would leave
-# the bundle with no library for a phone, and Xcode refuses to plan a device build against that.
-# Release always: a debug Rust build cannot hold a 60 Hz loop.
+# Pack the existing OBCHost static library for the selected Apple surface. Keep other slices
+# already on disk so a simulator or package-test build does not remove a phone's library.
 set -euo pipefail
-
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-
-usage() { echo "usage: $(basename "$0") [--sim-only]" >&2; exit 2; }
-
-sim_only=""
-case "${1:-}" in
-  --sim-only) sim_only=yes ;;
-  "") ;;
-  *) usage ;;
-esac
+usage() { echo "usage: $(basename "$0") [--sim-only|--mac-only]" >&2; exit 2; }
+mode="${1:-all}"
+case "$mode" in all|--sim-only|--mac-only) ;; *) usage ;; esac
 (( $# <= 1 )) || usage
-
+mac_target="$(rustc -vV | sed -n 's/^host: //p')"
+case "$mac_target" in *-apple-darwin) ;; *) echo "OBCHost packaging requires macOS" >&2; exit 1 ;; esac
+build_dir="${CARGO_TARGET_DIR:-$root/target}"
+[[ "$build_dir" == /* ]] || build_dir="$root/$build_dir"
 slices=()
-for target in aarch64-apple-ios aarch64-apple-ios-sim; do
-  library="target/$target/release/libobc_ios_host.a"
-  if [[ -z "$sim_only" || "$target" == aarch64-apple-ios-sim ]]; then
-    cargo build -p obc-ios-host --release --locked --target "$target"
+for target in aarch64-apple-ios aarch64-apple-ios-sim "$mac_target"; do
+  library="$build_dir/$target/release/libobc_ios_host.a"
+  [[ "$target" != "$mac_target" ]] || library="$build_dir/release/libobc_ios_host.a"
+  if [[ "$mode" == all && "$target" != "$mac_target" ]] ||
+     [[ "$mode" == --sim-only && "$target" == aarch64-apple-ios-sim ]] ||
+     [[ "$mode" == --mac-only && "$target" == "$mac_target" ]]; then
+    if [[ "$target" == "$mac_target" ]]; then
+      env -u CARGO_BUILD_TARGET cargo build -p obc-ios-host --release --locked
+    else
+      cargo build -p obc-ios-host --release --locked --target "$target"
+    fi
   elif [[ ! -f "$library" ]]; then
-    # Nothing to keep: this run packs the simulator alone.
     continue
   fi
-  slices+=(-library "$library" -headers apps/obc-ios-host/include)
+  slices+=(-library "$library" -headers sim/phone/host/include)
 done
-
-# -create-xcframework refuses to write over an existing bundle.
-rm -rf target/OBCHost.xcframework
-xcodebuild -create-xcframework "${slices[@]}" -output target/OBCHost.xcframework
+build_dir="$(cd "$build_dir" && pwd -P)"
+framework="$build_dir/OBCHost.xcframework"
+rm -rf "$framework"
+xcodebuild -create-xcframework "${slices[@]}" -output "$framework"
+# Xcode's OBCDevice target links this canonical path even when Cargo uses another cache.
+mkdir -p "$root/target"
+canonical="$(cd "$root/target" && pwd -P)/OBCHost.xcframework"
+if [[ "$framework" != "$canonical" ]]; then
+  rm -rf "$canonical"
+  ln -s "$framework" "$canonical"
+fi
+mkdir -p companion-ios/Packages/OBCKit/.swiftpm
+ln -sfn "$framework" companion-ios/Packages/OBCKit/.swiftpm/OBCHost.xcframework

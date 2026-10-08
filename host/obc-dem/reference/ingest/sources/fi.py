@@ -16,7 +16,7 @@ from .protocols import Wcs20Source
 
 FI = Wcs20Source(
     "fi", "Finland", "Korkeusmalli 2 m (NLS)", 2.0,
-    "CC BY 4.0", "© Maanmittauslaitos", "N2000", (19.0, 59.7, 31.6, 70.1),
+    "CC BY 4.0", "N2000",
     credential=Credential("fi", "api-key"),
     url="https://avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wcs/v2",
     coverage="korkeusmalli_2m",

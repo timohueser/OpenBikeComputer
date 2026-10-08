@@ -1,0 +1,25 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="On the left, a long route crosses a small viewport; only the visible portion is stroked while the off-screen majority costs nothing. On the right, a thick line drawn as a chain of filled rectangles leaves a notch at each joint, smoothed by filling a disc at the run ends and at the vertices where the line bends sharply." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Clip to the view, then smooth the joints</text>
+
+  <!-- LEFT: clip -->
+  <rect x="34" y="48" width="300" height="224" rx="8" style="fill:#eef2df;stroke:#9aa884;stroke-width:1.2;stroke-dasharray:4 4" />
+  <text class="d-sub" x="44" y="66" fill="#5c5a2e" font-size="12px">the whole route</text>
+  <!-- off-screen route (grey) -->
+  <path d="M20 250 C 120 60, 180 320, 250 120 S 360 40, 460 160" fill="none" stroke="#9aa884" stroke-width="3" stroke-opacity="0.6" />
+  <!-- viewport -->
+  <rect x="150" y="120" width="120" height="92" style="fill:none;stroke:#cf6a2a;stroke-width:2.4" />
+  <text class="d-label" x="210" y="138" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">view</text>
+  <!-- visible portion (coral, bold) -->
+  <path d="M150 196 C 170 150, 200 150, 214 150 S 250 168, 270 150" fill="none" stroke="#cf6a2a" stroke-width="4" />
+  <text class="d-sub" x="44" y="262" style="font-size:12px" fill="#5c5a2e" font-size="12px">only the clipped part is stroked</text>
+
+  <!-- RIGHT: joints -->
+  <text class="d-sub" x="430" y="66" fill="#5c5a2e" font-size="12px">butt-jointed rects (notch)</text>
+  <polyline points="420,110 470,140 520,104 560,150" fill="none" stroke="#4f6b43" stroke-width="12" stroke-linejoin="bevel" stroke-linecap="butt" />
+  <text class="d-sub" x="430" y="196" fill="#5c5a2e" font-size="12px">+ round-join / cap discs</text>
+  <polyline points="420,224 470,254 520,218 560,264" fill="none" stroke="#4f6b43" stroke-width="12" stroke-linejoin="bevel" stroke-linecap="butt" />
+  <g fill="#3c6b39"><circle cx="420" cy="224" r="6"/><circle cx="470" cy="254" r="6"/><circle cx="520" cy="218" r="6"/><circle cx="560" cy="264" r="6"/></g>
+  <text class="d-sub" x="576" y="244" style="font-size:12px" fill="#5c5a2e" font-size="12px">a disc (⌀ = width) at</text>
+  <text class="d-sub" x="576" y="260" style="font-size:12px" fill="#5c5a2e" font-size="12px">corners + run ends →</text>
+  <text class="d-sub" x="576" y="276" style="font-size:12px" fill="#5c5a2e" font-size="12px">smooth arc, no gaps</text>
+</svg>

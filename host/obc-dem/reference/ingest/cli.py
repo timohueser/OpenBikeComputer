@@ -17,33 +17,27 @@ source pixel wide survives the 7 m step, and writes whole tiles.
 
 import argparse
 import json
+import os
 import shutil
+import signal
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import publish, wizard
-from .archive import (contributors, ingest_raster, load_manifests, local_rasters, rebuild_index,
-                      read_index, tile_path, tile_problems, tile_digest, write_manifest)
+from .archive import (ingest_rasters, load_manifests, local_rasters, rebuild_index, read_index,
+                      tile_path, tile_problems, tile_digest, write_manifest)
 from .lattice import Refuse, box_tiles, check_world, tile_bounds, tile_id
-from .pool import open_raster
-from .sources import SOURCES
+from .sources import SOURCES, ManualSource
 
 
 def registered(key: str):
     if key not in SOURCES:
         raise Refuse(f"unknown source `{key}`; this tool implements {', '.join(sorted(SOURCES))}")
     return SOURCES[key]
-
-
-def source_step(path: Path) -> str:
-    """The step one delivered raster is on, in the units of its own CRS."""
-
-    with open_raster(path) as src:
-        step = abs(src.transform.a)
-        unit = "°" if src.crs and src.crs.is_geographic else "m"
-    return f"{step:.3g} {unit}"
 
 
 def require_datum(source, given) -> None:
@@ -99,8 +93,90 @@ def command_ingest(args) -> int:
         rasters = source.fetch(bbox, work)
     if not rasters:
         raise Refuse("no rasters cover that box")
-    ingest_rasters(rasters, source, root)
+    ingest_today(rasters, source, root)
     return finish(root, source)
+
+
+def ingest_today(rasters, source, root: Path) -> None:
+    """Ingest rasters that the service answered or the portal delivered today."""
+
+    fetched = datetime.now(timezone.utc).date().isoformat()
+    ingest_rasters(rasters, source, root, fetched, source.credit(fetched))
+
+
+def command_fetch(args) -> int:
+    """One archive tile of a model into `--out`, for `obc data fetch`: `<ti>-<tj>.tif`, the
+    rasters of the tile pooled onto the lattice, or the empty file `<ti>-<tj>.none` where the
+    model has no height in the tile.
+
+    The raw rasters go to `--work`, which is removed at the end whatever happens, so disk holds
+    one tile's rasters at a time and the store never sees them.
+    """
+
+    # A stop ends the fetch through `finally`, which removes the raw rasters.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    stop_with_parent()
+    ti, tj = parse_tile(args.tile)
+    source = registered(args.source)
+    work, out = Path(args.work), Path(args.out)
+    box = tile_bounds(ti, tj)
+    check_world(box, f"--tile {args.tile}")
+    try:
+        if isinstance(source, ManualSource):
+            # A delivery is like a credential: the environment names its directory and the datum
+            # that the owner read in the order's metadata.
+            prefix = f"OBC_REFERENCE_{source.key.upper().replace('-', '_')}"
+            base = Path(os.environ.get(f"{prefix}_INPUT", "").strip())
+            # `obc data` runs the fetch in the repository root, not where the variable was set.
+            if base.name and not base.is_absolute():
+                raise Refuse(f"{prefix}_INPUT is `{base}`: give the absolute path of the delivery")
+            if not base.name or not base.is_dir():
+                raise Refuse(f"{source.key} is ordered by hand: set {prefix}_INPUT to the directory of "
+                             f"the delivery; `python3 ingest.py wizard {source.key}` walks the order")
+            require_datum(source, os.environ.get(f"{prefix}_DATUM", "").strip() or None)
+            rasters = local_rasters(source, base, box, work)
+        else:
+            source.require_credential()
+            # Outside its `extent` the product has no data, so only the overlap is downloaded.
+            west, south, east, north = source.extent
+            box = (max(box[0], west), max(box[1], south), min(box[2], east), min(box[3], north))
+            rasters = source.fetch(box, work) if box[0] < box[2] and box[1] < box[3] else []
+        pooled = work / "pooled"
+        ingest_rasters(rasters, source, pooled, "", "", {tile_id(ti, tj)})
+        out.mkdir(parents=True, exist_ok=True)
+        if tile_path(pooled, ti, tj).is_file():
+            os.replace(tile_path(pooled, ti, tj), out / f"{ti:04}-{tj:04}.tif")
+        else:
+            (out / f"{ti:04}-{tj:04}.none").touch()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return 0
+
+
+def stop_with_parent() -> None:
+    """Stop this process when the process `OBC_PARENT_PID` names ends, so an orphan never removes
+    the work directory of a later run."""
+
+    parent = int(os.environ.get("OBC_PARENT_PID") or 0)
+
+    def watch():
+        while True:
+            time.sleep(2)
+            try:
+                os.kill(parent, 0)
+            except ProcessLookupError:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    if parent:
+        threading.Thread(target=watch, daemon=True).start()
+
+
+def parse_tile(text: str) -> tuple[int, int]:
+    ti, _, tj = text.partition("-")
+    if not (len(ti) == len(tj) == 4 and ti.isdigit() and tj.isdigit()):
+        raise Refuse(f"--tile {text} is <ti>-<tj>, two four-digit archive tile indices")
+    return int(ti), int(tj)
 
 
 def ingest_per_tile(bbox, source, root: Path, work: Path) -> None:
@@ -121,51 +197,10 @@ def ingest_per_tile(bbox, source, root: Path, work: Path) -> None:
         ti, tj = (int(part) for part in tile.split("/"))
         print(f"tile {tile} [{n}/{len(todo)}]")
         shutil.rmtree(work, ignore_errors=True)
-        ingest_rasters(source.fetch(tile_bounds(ti, tj), work), source, root)
+        ingest_today(source.fetch(tile_bounds(ti, tj), work), source, root)
         manifest = load_manifests(root)[source.key]
         write_manifest(root, {**manifest, "done": sorted({*manifest.get("done", []), tile})})
     shutil.rmtree(work, ignore_errors=True)
-
-
-def ingest_rasters(rasters: list[Path], source, root: Path) -> None:
-    """The shared tail over rasters on disk: pool each one, merge, and write the manifests."""
-
-    manifests = load_manifests(root)
-    held = contributors(manifests)
-    touched: set[str] = set()
-    outside = 0
-    for i, path in enumerate(rasters, 1):
-        written, voided, dropped = ingest_raster(path, source, root, held)
-        touched.update(written)
-        outside += dropped
-        # A row that states no step gets the delivered one printed, because the step of
-        # an order is a fact about the delivery and not about the row.
-        step = "" if source.resolution_m else f", {source_step(path)}"
-        print(f"  [{i}/{len(rasters)}] {path.name}: {len(written)} tile(s), "
-              f"{voided:.1%} void{step}")
-
-    fetched = datetime.now(timezone.utc).date().isoformat()
-    mine = sorted(tile for tile, keys in held.items() if source.key in keys)
-    write_manifest(root, {
-        **manifests.get(source.key, {}),
-        "key": source.key,
-        "country": source.country,
-        "product": source.product,
-        "resolution_m": source.resolution_m,
-        "licence": source.licence,
-        "attribution": source.credit(fetched),
-        "vertical_datum": source.vertical_datum,
-        "fetched": fetched,
-        "tiles": mine,
-    })
-    for key, manifest in manifests.items():
-        if key == source.key:
-            continue
-        kept = [tile for tile in manifest.get("tiles", []) if key in held.get(tile, set())]
-        if kept != manifest.get("tiles", []):
-            write_manifest(root, {**manifest, "tiles": kept})
-    print(f"  {len(touched)} tile(s) written, {outside} source pixel centre(s) fell outside "
-          "their lattice window")
 
 
 def finish(root: Path, source) -> int:
@@ -351,6 +386,13 @@ def main(argv=None) -> int:
              "stopped run (a country-scale box)")
     for_source("wizard", "walk the account and download steps of a source behind a login",
                command_wizard)
+
+    fetch = commands.add_parser("fetch", help="pool one archive tile of a source into --out, for obc data fetch")
+    fetch.add_argument("source", help=f"source key: {', '.join(sorted(SOURCES))}")
+    fetch.add_argument("--tile", required=True, help="<ti>-<tj>, the archive tile")
+    fetch.add_argument("--work", required=True, help="where the raw rasters go; removed at the end")
+    fetch.add_argument("--out", required=True, help="where the pooled tile goes")
+    fetch.set_defaults(run=command_fetch)
 
     with_archive("index", "rebuild index.json from the source manifests").set_defaults(run=command_index)
     with_archive("check", "hold every tile against the contract").set_defaults(run=command_check)

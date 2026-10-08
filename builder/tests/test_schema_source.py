@@ -7,13 +7,13 @@ copy's *contents* are pinned on the Rust side (obc-pack's
 string-joining in Python — and that degrades silently. When obc-pack moved from
 ``firmware/`` to ``host/``, the binary branch kept working, ``os.path.exists``
 quietly went False, and the fallback simply stopped firing; nothing failed. CI
-builds obc-pack before running these tests, so the existing ``/api/schema``
+builds the obc-pack binary before running these tests, so the existing ``/api/schema``
 coverage took the binary branch and never noticed. Hence a test for the path
 itself, and one that forces the fallback branch with no binary in sight.
 
 Run from the repo root with the uv-managed venv, e.g.::
 
-    PYTHONPATH=. .venv/bin/python -m pytest builder/tests/
+    PYTHONPATH=. uv run --locked --group builder-test python -m pytest builder/tests/
 """
 import json
 import os

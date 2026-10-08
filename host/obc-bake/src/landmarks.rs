@@ -1,7 +1,7 @@
 //! The landmark stage: a region's coverage polygon in, its compiled landmark artifact out.
 //!
 //! ```text
-//! regions.toml ──▶ .poly ──▶ coverage ──▶ boundary.geojson
+//! data/regions ──▶ .poly ──▶ coverage ──▶ boundary.geojson
 //!                .osm.pbf ──▶ wikidata tags ──▶ candidates.json
 //!                                              │
 //!           policy.json + content-languages ───┤
@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use obc_pack::progress::Progress;
+use obc_map_core::progress::Progress;
 use serde::{Deserialize, Serialize};
 
 use crate::coverage::Coverage;
@@ -128,9 +128,9 @@ pub trait LandmarkCapture {
 
 /// The real capture: `tools/landmark_capture.py`.
 ///
-/// Spawned rather than linked, the way the planet bake spawns `pyosmium-up-to-date`: the tool is
-/// the repository's one rate-limited, resumable API client, and a second implementation of its
-/// politeness and its content addressing is the last thing this stage should own.
+/// Spawned rather than linked: the tool is the repository's one rate-limited, resumable API
+/// client, and a second implementation of its politeness and its content addressing is the last
+/// thing this stage should own.
 pub struct PythonCapture {
     python: PathBuf,
     script: PathBuf,

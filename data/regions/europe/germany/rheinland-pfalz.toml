@@ -1,0 +1,5 @@
+name = "Rheinland-Pfalz"
+kind = "geofabrik"
+areas = ["europe/germany/rheinland-pfalz"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

@@ -7,28 +7,28 @@ description = "OBC device application (no_std) — shared by the desktop simulat
 
 [dependencies]
 # Dependency-light semantic hardware/host ports.
-obc-ports = { path = "../obc-ports" }
+obc-ports = { workspace = true }
 # The persistent-format authority: OBCM/ride format constants, the POI category/subtype table, and
 # its lookups (`poi_label_of` / `poi_category_of`). no_std foundation crate — a downward edge.
-obc-formats = { path = "../obc-formats" }
+obc-formats = { workspace = true }
 # Elevation: the shared ascent dead-band the ride ledger integrates barometric climb through, and
 # (from EL7) the OBCT terrain source the app mounts. no_std leaf — a downward edge like obc-formats.
-obc-elevation = { path = "../obc-elevation" }
+obc-elevation = { workspace = true }
 # default-features = false keeps `std` OUT of the shared app layer, so this crate
 # (and everything it pulls) compiles for the nRF54L's bare-metal target. The host
 # simulator re-enables std on `obc-reader` through its own dependency edge. `render`
 # brings the `Viewport` + the `RenderScratch` the app draws through; it's no_std.
-obc-reader = { path = "../obc-reader" }
-obc-map-scene = { path = "../obc-map-scene" }
-obc-render = { path = "../obc-render" }
-obc-route = { path = "../obc-route" }
+obc-reader = { workspace = true }
+obc-map-scene = { workspace = true }
+obc-render = { workspace = true }
+obc-route = { workspace = true }
 # Needed only to name the `DrawTarget` bound on `App::render_frame`. no_std.
-embedded-graphics = "0.8"
+embedded-graphics = { workspace = true }
 # Fixed-capacity screen stack (no_std, zero-alloc) — same crate the renderer uses.
-heapless = "0.8"
+heapless = { workspace = true }
 # sin/cos for the Menu compass needle at arbitrary sweep angles — the same no_std math
 # shim the renderer and route crates use.
-libm = { version = "0.2", default-features = false } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
+libm = { workspace = true } # no arch asm: identical correctly-rounded results, keeps the suite Miri-runnable (the #501 alignment-UB tripwire)
 
 [features]
 # Host-only. It turns on the captured-fixture test targets and the small read-only accessors they
@@ -39,16 +39,18 @@ external-fixtures = []
 # The same `obc-render` the crate already depends on, with the host-only text tap turned on: the
 # copy-fit gate reads the (box, font, string) of every text draw a frame makes. A dev-dependency
 # feature reaches the test build only, so the device image is untouched.
-obc-render = { path = "../obc-render", features = ["text-tap"] }
+obc-render = { workspace = true, features = ["text-tap"] }
 # The hand-written OBCM v6 byte builder shared by the reader/renderer tests — the POIs-browser
 # integration tests (#425) use `build_poi_map` to synthesise a v6 map with real POIs to snapshot.
-obcm-testkit = { path = "../../host/obcm-testkit" }
+obcm-testkit = { workspace = true }
 # The external fixture registry, the JSON the Peak View photo skylines are recorded in, and the
 # digest that pins the shard they were measured on. All three are dev-only and host-only: a
 # dev-dependency is never part of the device build.
-obc-fixtures = { path = "../../host/obc-fixtures" }
-serde_json = "1"
-sha2 = "0.11"
+obc-fixtures = { workspace = true }
+serde_json = { workspace = true }
+# The registry the About credits are tested against. Dev-only and host-only, like the two above.
+obc-data = { workspace = true }
+sha2 = { workspace = true, default-features = true }
 # The QR encoder the pairing code's test re-encodes the app link with (BLE spec §9.2).
 qrcodegen-no-heap = "1.8"
 

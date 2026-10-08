@@ -1,0 +1,25 @@
+<svg viewBox="0 0 720 270" role="img" aria-label="A timeline for one pixel row as one GCK period. GCK rises to advance to the row and open the MSB phase; while high, the MSB bit-plane is shifted in and a GEN pulse latches the two-thirds block. GCK then falls for the LSB phase on the same row; while low, the LSB bit-plane is shifted in and a second GEN pulse latches the one-third block. The next rising edge advances to the next row." xmlns="http://www.w3.org/2000/svg" width="720" height="270" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="22" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">One pixel row = one GCK period</text>
+
+  <!-- GCK -->
+  <text class="d-sub" x="34" y="92" text-anchor="start" fill="#5c5a2e" font-size="12px">GCK</text>
+  <path d="M80 122 H150 V70 H360 V122 H570 V70 H694" fill="none" stroke="#3c6b39" stroke-width="2" />
+  <!-- phase labels -->
+  <text class="d-label" x="255" y="98" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">MSB phase · GCK HIGH</text>
+  <text class="d-sub" x="255" y="114" text-anchor="middle" fill="#5c5a2e" font-size="12px">shift MSB plane → 2/3 block</text>
+  <text class="d-label" x="465" y="98" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">LSB phase · GCK LOW</text>
+  <text class="d-sub" x="465" y="114" text-anchor="middle" fill="#5c5a2e" font-size="12px">shift LSB plane → 1/3 block</text>
+
+  <!-- GEN -->
+  <text class="d-sub" x="34" y="196" text-anchor="start" fill="#5c5a2e" font-size="12px">GEN</text>
+  <path d="M80 200 H220 V172 H260 V200 H430 V172 H470 V200 H694" fill="none" stroke="#cf6a2a" stroke-width="2" />
+  <text class="d-sub" x="240" y="222" text-anchor="middle" fill="#5c5a2e" font-size="12px">latch 2/3</text>
+  <text class="d-sub" x="450" y="222" text-anchor="middle" fill="#5c5a2e" font-size="12px">latch 1/3</text>
+
+  <!-- edge annotations -->
+  <line class="d-stroke" x1="150" y1="70" x2="150" y2="44" style="stroke:#9aa884" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <text class="d-sub" x="150" y="38" text-anchor="middle" fill="#5c5a2e" font-size="12px">advance + MSB</text>
+  <line class="d-stroke" x1="570" y1="70" x2="570" y2="44" style="stroke:#9aa884" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <text class="d-sub" x="570" y="38" text-anchor="middle" fill="#5c5a2e" font-size="12px">next row</text>
+  <text class="d-sub" x="360" y="250" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">one gate advance per pixel row · two GEN pulses per row</text>
+</svg>

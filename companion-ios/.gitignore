@@ -1,6 +1,6 @@
 # Xcode / SwiftPM build artifacts. The .xcodeproj is XcodeGen-generated, NOT
 # committed — `xcodegen generate` is a required first step after cloning.
-# Policy rationale: companion-ios/CLAUDE.md.
+# Policy rationale: companion-ios/README.md.
 *.xcodeproj/
 
 ## Build output
@@ -32,3 +32,4 @@ Packages/OBCKit/Sources/OBCUI/Resources/Map/light.json
 Packages/OBCKit/Sources/OBCUI/Resources/Map/dark.json
 
 Packages/OBCKit/Sources/OBCUI/Resources/Map/poi-kinds.json
+Packages/OBCKit/Sources/OBCUI/Resources/Map/contract.json

@@ -1,12 +1,12 @@
 //! The cell bake: named regions in, an [`OBCA`](../../../specs/OBCA_Spec.md) cell store plus an
 //! [`OBCC`](../../../specs/OBCC_Spec.md) catalog out.
 //!
-//! `regions.toml` stays the curation surface — a region is still one reviewable line — but it names
+//! `data/regions/` stays the curation surface — a region is still one reviewable file — but it names
 //! a selection rather than an artifact: the set of grid cells its coverage polygon touches, per
 //! band. Two regions that share ground share the same cells, and the store pays for them once.
 //!
 //! ```text
-//! regions.toml ──▶ .poly ──▶ coverage ──▶ per-band cell sets
+//! data/regions ──▶ .poly ──▶ coverage ──▶ per-band cell sets
 //!                    │                         │
 //!                    │                    group by source set
 //!                    ▼                         ▼
@@ -78,13 +78,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
+use crate::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
+use obc_map_core::grid::{BandTable, CellId};
+use obc_map_core::progress::Progress;
 use obc_pack::catalog::CellSource;
-use obc_pack::cut::{CellArtifact, CutOptions, CutSummary, SourceExtent};
-use obc_pack::grid::{BandTable, CellId};
-use obc_pack::ingest::Bbox;
-use obc_pack::progress::Progress;
+use obc_pbf::bbox::Bbox;
 use serde::Serialize;
 
 use crate::cell_store::{
@@ -100,7 +101,7 @@ use crate::util::{human_bytes, write_json};
 
 /// Bumped when a cutter change alters cell bytes for unchanged inputs, forcing a re-cut that
 /// content hashing alone would not.
-pub const CELL_RECIPE_VERSION: u32 = 3;
+pub const CELL_RECIPE_VERSION: u32 = 4;
 
 /// Bumped only when the in-process bbox selection changes. Planet leaves do not crop in the
 /// cutter, so folding this into [`CELL_RECIPE_VERSION`] would force a re-cut whose bytes cannot
@@ -131,19 +132,27 @@ pub trait CellCutter: Sync {
     fn cut(
         &self,
         pbfs: &[String],
-        config: &obc_pack::config::Config,
+        config: &obc_map_core::config::Config,
         out_dir: &Path,
         opts: &CutOptions,
         progress: &Progress,
     ) -> Result<CutSummary, String>;
 }
 
-/// The real thing: `obc_pack::cut::cut`, linked in rather than spawned, for the same reason the
+/// The real thing: `crate::cut::cut`, linked in rather than spawned, for the same reason the
 /// bakery links the pipeline directly.
 pub struct ObcCutter {
     /// Skip land generation, a ~950 MB dataset a real bake wants and no test does.
     pub no_land: bool,
+    /// The land polygons from the store, fetched when the first cell needs them.
+    pub land: OnceLock<Result<PathBuf, String>>,
     pub chunk_size: Option<usize>,
+}
+
+/// The `land-polygons` zip of the store: the newest one upstream.
+fn land_polygons() -> Result<PathBuf, String> {
+    let fetched = obc_data::fetch::live("land-polygons", None, Vec::new())?;
+    fetched.paths.into_iter().next().ok_or_else(|| "the land-polygons snapshot has no file".into())
 }
 
 impl CellCutter for ObcCutter {
@@ -154,18 +163,21 @@ impl CellCutter for ObcCutter {
     fn cut(
         &self,
         pbfs: &[String],
-        config: &obc_pack::config::Config,
+        config: &obc_map_core::config::Config,
         out_dir: &Path,
         opts: &CutOptions,
         progress: &Progress,
     ) -> Result<CutSummary, String> {
         let mut opts = opts.clone();
         opts.no_land = self.no_land;
+        if !self.no_land {
+            opts.land = Some(self.land.get_or_init(land_polygons).clone()?);
+        }
         opts.chunk_size = self.chunk_size;
-        match obc_pack::cut::cut(pbfs, config, out_dir, &opts, progress) {
+        match crate::cut::cut(pbfs, config, out_dir, &opts, progress) {
             Ok(s) => Ok(s),
-            Err(obc_pack::PackError::Failed(e)) => Err(e),
-            Err(obc_pack::PackError::Cancelled) => Err("cancelled".into()),
+            Err(obc_map_core::progress::PackError::Failed(e)) => Err(e),
+            Err(obc_map_core::progress::PackError::Cancelled) => Err("cancelled".into()),
         }
     }
 }
@@ -701,6 +713,7 @@ impl CellBakery<'_> {
                 .collect(),
             chunk_size: None,
             no_land: false,
+            land: None,
             // The terrain already published in this tree, or nothing. A tree with no terrain bakes
             // `Ascent M = 0` throughout, which is a decode-valid map.
             terrain: self.opts.terrain.as_ref().map(|t| t.dir.clone()),
@@ -867,7 +880,7 @@ impl CellBakery<'_> {
         pack_key: &str,
         progress: &Progress,
     ) -> Result<CellOutcome, String> {
-        let src = obc_pack::cut::artifact_path(tmp, artifact);
+        let src = crate::cut::artifact_path(tmp, artifact);
         let verified = crate::verify::verify_cell(&src, artifact.id.square())?;
         let (dest, sidecar_path, state_path) = cell_paths(&self.opts.out, &artifact.band, artifact.id);
 
@@ -1267,12 +1280,7 @@ mod tests {
         let sliver = CellId::parse("18/183/36").unwrap();
         let parent = Resolved {
             region: Region { id: "europe/germany".into(), name: "Germany".into() },
-            extract: Some(Extract {
-                path: "de.osm.pbf".into(),
-                snapshot: "2026-08-01".into(),
-                bytes: 1,
-                downloaded: false,
-            }),
+            extract: Some(Extract { path: "de.osm.pbf".into(), snapshot: "2026-08-01".into(), bytes: 1 }),
             extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage: coverage(),
@@ -1311,12 +1319,7 @@ mod tests {
         let far = CellId::parse("18/204/38").unwrap();
         let resolved = vec![Resolved {
             region: Region { id: "europe/germany".into(), name: "Germany".into() },
-            extract: Some(Extract {
-                path: "de.osm.pbf".into(),
-                snapshot: "2026-08-01".into(),
-                bytes: 1,
-                downloaded: false,
-            }),
+            extract: Some(Extract { path: "de.osm.pbf".into(), snapshot: "2026-08-01".into(), bytes: 1 }),
             extract_sha: Some("0".repeat(64)),
             poly: poly.to_string(),
             coverage,

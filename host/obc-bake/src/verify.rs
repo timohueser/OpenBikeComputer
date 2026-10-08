@@ -280,11 +280,11 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             Some(d) => d,
             None => continue,
         };
-        if doc.schema_revision != root.schema.revision || doc.band != band.band {
+        if doc.schema_sha256 != root.schema.sha256 || doc.band != band.band {
             problem(
                 format!(
                     "{rel}: says band `{}` revision {} but the root says `{}` revision {}",
-                    doc.band, doc.schema_revision, band.band, root.schema.revision
+                    doc.band, doc.schema_sha256, band.band, root.schema.sha256
                 ),
                 &mut report.problems,
             );
@@ -420,18 +420,23 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
             &pin.sha256,
             &mut report.problems,
         ) {
-            if (doc.terrain_revision, doc.dataset_version.as_str(), doc.posting_log2, doc.cell_log2)
-                != (terrain.terrain_revision, terrain.dataset_version.as_str(), terrain.posting_log2, terrain.cell_log2)
+            if (doc.dataset_id.as_str(), doc.dataset_version.as_str(), doc.posting_log2, doc.cell_log2)
+                != (
+                    terrain.dataset_id.as_str(),
+                    terrain.dataset_version.as_str(),
+                    terrain.posting_log2,
+                    terrain.cell_log2,
+                )
             {
                 problem(
                     format!(
                         "{rel}: says {} {} at posting 2^{} / cell 2^{}, the root says {} {} at 2^{} / 2^{}",
                         doc.dataset_version,
-                        doc.terrain_revision,
+                        doc.dataset_id,
                         doc.posting_log2,
                         doc.cell_log2,
                         terrain.dataset_version,
-                        terrain.terrain_revision,
+                        terrain.dataset_id,
                         terrain.posting_log2,
                         terrain.cell_log2
                     ),
@@ -464,7 +469,7 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
                     // `obc-elevation` parse the packer and the device run, so a container that
                     // reads here reads everywhere.
                     Ok(_) => {
-                        if let Err(e) = obc_pack::terrain::TerrainSet::open(&path) {
+                        if let Err(e) = obc_map_core::terrain::TerrainSet::open(&path) {
                             problem(e, &mut report.problems);
                         }
                     }
@@ -490,11 +495,11 @@ pub fn verify_cell_tree(tree: &Path, opts: CellTreeVerifyOptions) -> Result<Cell
         else {
             continue;
         };
-        if doc.region_id != region.id || doc.schema_revision != root.schema.revision {
+        if doc.region_id != region.id || doc.schema_sha256 != root.schema.sha256 {
             problem(
                 format!(
                     "{rel}: says `{}` revision {}, the root says `{}` revision {}",
-                    doc.region_id, doc.schema_revision, region.id, root.schema.revision
+                    doc.region_id, doc.schema_sha256, region.id, root.schema.sha256
                 ),
                 &mut report.problems,
             );
