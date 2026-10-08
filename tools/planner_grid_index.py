@@ -41,7 +41,7 @@ def compose(indexes, options):
     for component in ("pois", "addresses"):
         index = indexes[component]
         item = index["metadata"]
-        if (item["schema"] != 5 or not item["time_zone"] or item["bounds"] != options["bounds"]
+        if (item["schema"] != 6 or not item["time_zone"] or item["bounds"] != options["bounds"]
                 or item["osm_sha256"] != osm or item["component"] != component):
             raise ValueError("Search component, source or coverage differs")
         if metadata:

@@ -40,7 +40,7 @@ test('the POI builder retains contact aliases and descriptions for named and unn
   try {
     connection=writePlaces(directory,records);
     db=openCells([join(directory,'test.sqlite')]);
-    assert.equal(db.metadata.schema,5);
+    assert.equal(db.metadata.schema,6);
     const rows=connection.prepare('SELECT website,phone,description FROM places ORDER BY id').all().map(row=>({...row}));
     assert.deepEqual(rows,[
       {website:'https://hotel.example',phone:'+49 123',description:'Tents welcome.'},

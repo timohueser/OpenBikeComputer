@@ -129,7 +129,7 @@ class SunIndexTest(unittest.TestCase):
                 **{f"routes/tiles/{cell['id']}.json": item for cell in cells}},
                 graph={"source": "routing", "data": {**options, "source_sha256": ["osm", "dem"], "metrics": ["bike"]}})
             for component in ("pois", "addresses"):
-                indexes[component] = index(component, cells=cells, metadata={**options, "schema": 5,
+                indexes[component] = index(component, cells=cells, metadata={**options, "schema": 6,
                     "time_zone": "Europe/Berlin", "osm_sha256": "osm", "component": component, "counts": {}})
             planner_grid_index.compose(indexes, options)
             terrain["source"]["sha256"] = "b" * 64

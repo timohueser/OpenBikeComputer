@@ -67,9 +67,9 @@ def derive(database, destination):
         for source, kind, name, lon, lat in db.execute('SELECT source,kind,name,lon,lat FROM places ORDER BY source'):
             if kind not in kinds or not (bounds[0] <= lon <= bounds[2] and bounds[1] <= lat <= bounds[3]):
                 continue
-            if source[0] not in 'nwr' or not source[1:].isdigit() or not 0 < int(source[1:]) < 2**44:
-                raise ValueError('A place has no representable OSM identity')
-            identity = ('nwr'.index(source[0]) + 1) * 2**44 + int(source[1:])
+            if source[0] not in 'nwrQ' or not source[1:].isdigit() or not 0 < int(source[1:]) < 2**44:
+                raise ValueError('A place has no representable source identity')
+            identity = ('nwrQ'.index(source[0]) + 1) * 2**44 + int(source[1:])
             x = (lon + 180) / 360 * (1 << ZOOM)
             y = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * (1 << ZOOM)
             properties = {'kind': kind, 'name': name, 'lon': str(lon), 'lat': str(lat)}

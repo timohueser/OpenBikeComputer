@@ -5,11 +5,11 @@ import { kmPerDegree, routeDistance, type Coordinate } from './geo';
 import { openSource, requestSignal, type Source } from './layers/archive';
 import { poiKinds } from './poi-kinds';
 
-/** Place tile feature IDs put the OSM element type in the high bits above its 44-bit ID. */
-export function osmSource(id: string | number | undefined): string | undefined {
-    if (typeof id === 'string' && /^[nwr][1-9]\d*$/.test(id)) return id;
+/** Place tile IDs use namespaces 1–3 for OSM elements and 4 for Wikidata, above the 44-bit ID. */
+export function placeSource(id: string | number | undefined): string | undefined {
+    if (typeof id === 'string' && /^[nwrQ][1-9]\d*$/.test(id)) return id;
     const value = Number(id), unit = 2 ** 44, type = Math.floor(value / unit), identity = value % unit;
-    return Number.isSafeInteger(value) && type >= 1 && type <= 3 && identity > 0 ? `${'nwr'[type - 1]}${identity}` : undefined;
+    return Number.isSafeInteger(value) && type >= 1 && type <= 4 && identity > 0 ? `${'nwrQ'[type - 1]}${identity}` : undefined;
 }
 
 /** A searchable place as a planner place, or null when the planner does not show its kind. */
@@ -17,7 +17,7 @@ export function poiPlace(id: string | number | undefined, kind: string, name: un
     const known = poiKinds[kind];
     if (!known) return null;
     return {
-        id: osmSource(id) ?? `poi-${id}`, kind: 'place', placeKind: kind, label: String(name ?? known.label), coordinate,
+        id: placeSource(id) ?? `poi-${id}`, kind: 'place', placeKind: kind, label: String(name ?? known.label), coordinate,
         category: known.category, description: known.label,
     };
 }

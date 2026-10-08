@@ -17,6 +17,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dump', type=Path)
     ap.add_argument('--component', choices=['all', 'pois', 'addresses'], default='all')
+    ap.add_argument('--landmarks', type=Path, action='append', default=[])
+    ap.add_argument('--peaks', type=Path, action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--output', type=Path, default=ROOT / 'data')
     ap.add_argument('--region', default='all')
@@ -41,12 +43,12 @@ def main():
 
     try:
         build(args.dump, args.dump.name, args.output, args.component, args.region, bounds, countries,
-              args.time_zone, attribution("osm-planet"), args.osm_sha256, args.limit)
+              args.time_zone, attribution("osm-planet"), args.osm_sha256, args.limit, args.landmarks, args.peaks)
     except ValueError as error:
         ap.error(str(error))
 
 
-def build(dump, source, output, component, region, bounds, countries, time_zone, credit, osm_sha256=None, limit=0):
+def build(dump, source, output, component, region, bounds, countries, time_zone, credit, osm_sha256=None, limit=0, landmarks=(), peaks=()):
     """Write the search databases of `component` from the dump `dump`, whose name in their metadata
     is `source`. `credit` is the attribution of the OSM data."""
     import orjson
@@ -116,6 +118,9 @@ def build(dump, source, output, component, region, bounds, countries, time_zone,
                 break
     (output / 'regions.geojson').write_bytes(orjson.dumps({'type':'FeatureCollection','features':outlines}))
     for w in writers.values():
+        if component != 'addresses':
+            from content import add
+            add(w, landmarks, peaks, bounds)
         w.finish(meta)
     print(f'Complete: {n:,} records, {time.monotonic()-start:.0f}s', flush=True)
 
@@ -134,7 +139,9 @@ def step():
     output = Path(request['output']) / component
     build(dump, name, output, component, options['region'], options['bounds'],
           [country.lower() for country in options['countries']], ZoneInfo(options['time_zone']),
-          options['attribution'])
+          options['attribution'],
+          landmarks=[files['landmarks/content.json'] for name, files in request['layers'].items() if name.startswith('maps/landmark-content')],
+          peaks=[files['peaks/peaks.json'] for name, files in request['layers'].items() if name.startswith('maps/peak-content')])
     (output / 'regions.geojson').unlink()
     # The key holds no SQLite version, so the metrics record it.
     step_request.metrics(request, {'sqlite': sqlite3.sqlite_version})

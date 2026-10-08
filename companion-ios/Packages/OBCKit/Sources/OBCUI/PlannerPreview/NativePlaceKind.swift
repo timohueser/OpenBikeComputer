@@ -5,11 +5,11 @@ enum NativePlaceKind {
     static func source(for identifier: Any?) -> String? {
         guard let identifier else { return nil }
         let text = String(describing: identifier)
-        if text.range(of: #"^[nwr][1-9][0-9]*$"#, options: .regularExpression) != nil { return text }
+        if text.range(of: #"^[nwrQ][1-9][0-9]*$"#, options: .regularExpression) != nil { return text }
         guard let value = UInt64(text) else { return nil }
         let type = value >> 44, identity = value & ((1 << 44) - 1)
-        guard (1...3).contains(type), identity > 0 else { return nil }
-        return "\(["n", "w", "r"][Int(type) - 1])\(identity)"
+        guard (1...4).contains(type), identity > 0 else { return nil }
+        return "\(["n", "w", "r", "Q"][Int(type) - 1])\(identity)"
     }
     struct Entry: Decodable { let category: String; let label: String }
     /// Basemap `pois` kinds (builder/web/src/lib/planner/poi-kinds.json).

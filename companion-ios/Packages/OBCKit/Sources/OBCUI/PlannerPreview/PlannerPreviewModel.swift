@@ -5,16 +5,16 @@ import OBCPlanner
 
 public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     public enum Kind: String, Sendable {
-        case town, cafe, water, camping, shop, hotel, shelter, rest, food, toilets, bike, pharmacy, station, viewpoint, peak
+        case town, cafe, water, camping, shop, hotel, shelter, rest, food, toilets, bike, pharmacy, station, viewpoint, peak, landmark
         public var title: String {
             switch self { case .town: "Place"; case .cafe: "Café"; case .water: "Water"; case .camping: "Camping"; case .shop: "Food shop"
             case .hotel: "Lodging"; case .shelter: "Shelter"; case .rest: "Rest stop"; case .food: "Food"; case .toilets: "Toilets"
-            case .bike: "Bike service"; case .pharmacy: "Pharmacy & hospital"; case .station: "Station"; case .viewpoint: "Viewpoint"; case .peak: "Peak" }
+            case .bike: "Bike service"; case .pharmacy: "Pharmacy & hospital"; case .station: "Station"; case .viewpoint: "Viewpoint"; case .peak: "Peak"; case .landmark: "Landmark" }
         }
         public var symbol: String {
             switch self { case .town: "mappin"; case .cafe: "cup.and.saucer.fill"; case .water: "drop.fill"; case .camping: "tent.fill"; case .shop: "cart.fill"
             case .hotel: "bed.double"; case .shelter: "house"; case .rest: "table.furniture"; case .food: "fork.knife"; case .toilets: "toilet"
-            case .bike: "bicycle"; case .pharmacy: "cross.case"; case .station: "tram"; case .viewpoint: "eye"; case .peak: "mountain.2" }
+            case .bike: "bicycle"; case .pharmacy: "cross.case"; case .station: "tram"; case .viewpoint: "eye"; case .peak: "mountain.2"; case .landmark: "building.2" }
         }
     }
     public let id: String
@@ -30,16 +30,17 @@ public struct PlannerPreviewPlace: Identifiable, Equatable, Sendable {
     public let website: String?
     public let phone: String?
     public let description: String?
+    public let content: PlaceContent?
     public let detailsLoaded: Bool
 
     public init(id: String, name: String, coordinate: Coordinate, kind: Kind = .town,
                 alongRouteMeters: Double = 0, offRouteMeters: Double = 0, hours: String? = nil, note: String? = nil,
-                website: String? = nil, phone: String? = nil, description: String? = nil, detailsLoaded: Bool = false) {
+                website: String? = nil, phone: String? = nil, description: String? = nil, content: PlaceContent? = nil, detailsLoaded: Bool = false) {
         self.id = id; self.name = name; self.coordinate = coordinate; self.kind = kind
         self.alongRouteMeters = alongRouteMeters; self.offRouteMeters = offRouteMeters
         self.hours = hours; self.note = note
         self.website = website; self.phone = phone; self.description = description
-        self.detailsLoaded = detailsLoaded
+        self.content = content; self.detailsLoaded = detailsLoaded
     }
 }
 
@@ -235,7 +236,7 @@ public final class PlannerPreviewModel {
         let projection = routeLine.projection(of: place.coordinate, near: routeLine.length / 2, window: routeLine.length)
         return .init(id: place.id, name: place.name, coordinate: place.coordinate, kind: place.kind,
                      alongRouteMeters: projection.distance, offRouteMeters: projection.error,
-                     hours: place.hours, note: place.note, website: place.website, phone: place.phone, description: place.description, detailsLoaded: place.detailsLoaded)
+                     hours: place.hours, note: place.note, website: place.website, phone: place.phone, description: place.description, content: place.content, detailsLoaded: place.detailsLoaded)
     }
 
     public func searchPlaces(_ query: PlannerSearchQuery) async throws -> [PlannerPreviewPlace] {
@@ -247,13 +248,14 @@ public final class PlannerPreviewModel {
         try Task.checkCancellation()
         let line = routeLine
         return places.map { place in
-            let kind = NativePlaceKind.kind(for: place.kind)
+            let mappedKind = NativePlaceKind.kind(for: place.kind)
+            let kind: PlannerPreviewPlace.Kind = place.landmark_id != nil && mappedKind == .town ? .landmark : mappedKind
             let projection = place.position.map { (distance: $0.along * 1000, error: $0.distance * 1000) }
                 ?? line.projection(of: place.coordinate, near: line.length / 2, window: line.length)
             return .init(id: place.source, name: place.name, coordinate: place.coordinate, kind: kind,
                          alongRouteMeters: projection.distance, offRouteMeters: projection.error,
                          hours: place.opening_hours, note: place.city.isEmpty ? nil : place.city,
-                         website: place.website, phone: place.phone, description: place.description, detailsLoaded: true)
+                         website: place.website, phone: place.phone, description: place.description, content: place.content, detailsLoaded: true)
         }
     }
 
