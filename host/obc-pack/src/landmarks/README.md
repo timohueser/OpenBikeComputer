@@ -43,10 +43,10 @@ map-wide language argument.
 | --- | --- |
 | Identity | Input digests (source manifest, boundary) and policy digests (category file, extraction code, dependency lock, image recipe, language mapping, locale rules). A separate category-policy digest lets acquisition check its own discovery roots. |
 | Candidates | The QIDs before article selection, so the same compiler chooses which assets to acquire. |
-| Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no originals. `--photo-requests` names the two the compiler would use: the second covers a rejection only the bytes can prove. Without that flag the field is never written, and a candidate with no bytes is one the compiler cannot use. |
+| Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no image inputs. `--photo-requests` names the two the compiler would use: the second covers a rejection only the bytes can prove. Without that flag the field is never written, and a candidate with no bytes is one the compiler cannot use. |
 | Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
 | Records | Sorted by QID: category 1–16, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
-| Attribution | Article and photo source, revision, licence and the exact original notices, at most 8 KiB per asset. The map serializer derives the device credit from them (`credit.rs`, `OBCM_Spec.md` §9.2). |
+| Attribution | Article and photo source, revision, licence and complete notice values, at most 8 KiB per asset. The map serializer derives the device credit from them (`credit.rs`, `OBCM_Spec.md` §9.2). |
 | Omissions | QID, asset and reason. A rejected photo leaves usable text available. |
 
 ### In the bake tree
@@ -75,18 +75,20 @@ merge order.
 
 ### Photos
 
-All variants of a site share one photo. Both sides read the pool order from
-`specs/photo-pools.json`: `P18` claims, article leads, `P373` Commons category members, then the
-`P4291`, `P8592` and `P5252` view claims. Captured bytes prove the pool, and a rejection moves to
-the next candidate. A `Views from <category>` member is refused; a `Views of <category>` member,
-a `depicts` (P180) statement naming the record, and, for a peak, a camera over 500 m from the
-summit rank a file up. Ties keep the pool order, then the normalized filename; selection never
-depends on device language. **Reject a photo if its credit does not fit the 1,024-byte credit
-bundle**, and keep the articles.
+All variants share one photo. `specs/photo-pools.json` sets the pool order: `P18`, verified
+article leads, then one direct `P373` category response with at most 100 files. Category capture
+records a limit outcome if continuation remains. A failed response contributes no candidates.
+Retained complete category chains stay valid; selection uses the first response only.
 
-A CC BY or CC BY-SA photo needs a nonempty captured Artist identity. A generic credit such as "Own
-work" does not identify a creator, and empty Artist metadata gives `photo_creator_missing`: the
-compiler never infers an author. CC0 does not need the field.
+A `Views from <category>` member is refused. Within a pool, views of the subject, matching
+`depicts` statements and camera distance rank candidates. Metadata checks reject invalid credits
+before image requests. The compiler keeps complete creators and licence references in the
+existing 1,024-byte credit bundle. Missing creators are allowed only for CC0 and verified
+public-domain releases. Public-domain labels alone do not establish a supported basis.
+
+New image inputs use standard 500 px Commons thumbnails. Retained originals remain valid inputs.
+The input digest and the metadata URL bind thumbnail bytes; original bytes also match the
+upstream SHA-1. Credits identify the file, creator, licence and resize/dither operation.
 
 Each photo file is exactly 51,840 bytes, 216 columns by 240 rows, one RGB222 pixel per byte
 (`00RRGGBB`). The host applies orientation, a Lanczos3 fit, white padding and a fixed 4 × 4
