@@ -1100,6 +1100,7 @@ pub(super) fn fetcher_recorded<'a>(
     mut run: Option<&'a mut Run>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
+    let refresh: BTreeSet<String> = moved.iter().filter(|source| !env.stale.contains(*source)).cloned().collect();
     let reads = env.live.iter().flat_map(|((source, _), read)| read.iter().map(move |version| (source, version)));
     let live: BTreeSet<(String, String)> = reads.map(|(source, version)| (source.clone(), version.clone())).collect();
     move |wanted| {
@@ -1114,7 +1115,7 @@ pub(super) fn fetcher_recorded<'a>(
             return Err(Code::Usage.error(message).fix(pick));
         }
         let request = Request {
-            refresh: moved.contains(&source.id),
+            refresh: refresh.contains(&source.id),
             source,
             version: wanted.version.clone(),
             params: wanted.params.clone(),
