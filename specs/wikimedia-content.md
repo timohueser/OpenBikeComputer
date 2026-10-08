@@ -2,8 +2,7 @@
 
 This contract defines acquired landmark and peak content. The regional capture and
 compiled device formats in [obc-data](obc-data.md) and [OBCM](OBCM_Spec.md) remain
-separate outputs. Shared acquisition uses the existing Store and source release pins. The regional
-capture integration does not yet implement this shared boundary.
+separate outputs. Shared acquisition uses the existing Store and source release pins. Normal preparation uses this shared boundary. Retained regional captures are read-only adoption inputs.
 
 ## Policy owners
 
@@ -175,14 +174,10 @@ Photo order starts with explicit P18, then identity-checked Wikipedia lead image
 A nearby camera position or matching filename is not subject evidence. Coverage
 and relevance are measured separately before the old category path is replaced.
 
-A proposed fallback uses one directly claimed P373 category, one nonrecursive
-category response and at most twenty files. A continuation beyond this deliberate
-candidate bound does not make the fallback incomplete. Record a complete bounded
-outcome and the limit reached; do not report the category as fully enumerated.
-The files still need subject evidence and valid credits. This bound is a proposal,
-not an enabled selection rule.
-The image-selection implementation selects the final bound from measured coverage;
-it must not retain the current unbounded category crawl as its replacement.
+Fallback uses one directly claimed P373 category, one nonrecursive category response
+and at most the file bound in `photo_policy.fallback` of `policy.json`.
+Continuation beyond that deliberate candidate bound is a complete bounded outcome.
+The record states the limit reached. Files require subject evidence and valid credits.
 
 The Store keeps inputs reachable from pinned releases, active plans and resumable
 operations under its existing retention rules. Compact shared records and final
@@ -190,3 +185,31 @@ device assets use bounded publication bundles. Bundles retain their source pins
 and licence identities. Temporary thumbnails, full originals, rejected candidates
 and per-request logs are not R2 publication outputs. Cleanup follows Store
 reachability; content does not create an independent permanent history cache.
+
+Normal intermediate content layers publish `shared-content/` bundles of at most
+16 MiB, the existing compiler JSON input bound. Each bundle keeps exact compact
+fact bytes, their SHA-256 and source pins. Entity dependency facts, article aliases,
+Commons description metadata and MediaInfo statements remain reusable.
+Local image inputs are excluded. The Wikimedia source declarations set
+`r2_copy=false`; ownership for Store reachability does not select a source mirror.
+Final device images remain publication outputs of the device cell layers.
+
+A warm pinned bake needs no network. In the same Store, a transform rebuild reuses
+reachable local conversion inputs. A new machine can restore compact facts from
+publication bundles. It needs image acquisition when conversion pixels are absent.
+An available final device image does not promise an offline source-pixel rebuild.
+
+Expired identity inputs remain available for revision checks. A separate refresh
+stage checks those roots and their bounded dependencies. Unchanged revisions reuse
+content bytes. Fresh and missing identities use the ordinary acquisition stage.
+An explicit move carries refresh intent outside the identity key and uses a new
+operation check id. Failed source checks block preparation; they are not missing facts.
+
+`Content.aliases` maps exact Wikidata aliases to canonical subject ids.
+`Content.wikipedia_aliases` maps proven `language:title` aliases of accepted article
+variants to those ids. Planner search uses these exact identities for OSM association.
+Peak node ids and OSM coordinates remain the regional association.
+Online photo credits omit device transform notices. A photo reference includes
+`file_identity`, `page_revision` and `file_revision`; incomplete provenance gives a
+source-page link. Consumers recheck that identity before displaying online photos.
+A mutable CDN URL is not a permanent certificate for future bytes.
