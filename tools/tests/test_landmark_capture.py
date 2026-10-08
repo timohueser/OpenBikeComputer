@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+import gzip
 import json
 import tempfile
 import unittest
@@ -54,23 +55,69 @@ class LandmarkCaptureTests(unittest.TestCase):
     def test_too_many_requests_backs_every_worker_off_for_the_requested_wait(self):
         with tempfile.TemporaryDirectory() as directory:
             capture = Capture(Path(directory), interval=0)
-            error = HTTPError(Response.url, 429, "Too many requests", {"Retry-After": "12"}, None)
+            error = HTTPError(Response.url, 429, "Too many requests", {"Retry-After": "120"}, None)
             with patch("tools.landmark_capture.urlopen", side_effect=error) as request:
                 with patch("tools.landmark_capture.time.sleep") as sleep:
-                    outcome = capture.fetch("query.json", Response.url)
-            self.assertEqual(request.call_count, BACKOFF_ATTEMPTS, "the back-off is bounded")
-            self.assertEqual(outcome["http_status"], 429)
-            # The pause is on the shared schedule, so the second worker waits for it as well.
-            self.assertGreater(max(call.args[0] for call in sleep.call_args_list), 11)
+                    with self.assertRaisesRegex(RuntimeError, "capture stopped"):
+                        capture.fetch("query.json", Response.url)
+                    with self.assertRaisesRegex(RuntimeError, "stop this capture"):
+                        capture.fetch("next.json", Response.url)
+            self.assertEqual(request.call_count, BACKOFF_ATTEMPTS)
+            self.assertEqual(capture.outcomes()[0]["http_status"], 429)
+            self.assertGreater(min(call.args[0] for call in sleep.call_args_list), 119)
+            restarted = Capture(Path(directory), interval=0)
+            restarted.retry_failed()
+            restarted = Capture(Path(directory), interval=0)
+            restarted.retry_failed()
+            with patch("tools.landmark_capture.urlopen", return_value=Response(b'{"ok":true}')):
+                with patch("tools.landmark_capture.time.sleep") as sleep:
+                    self.assertEqual(restarted.json("query.json", Response.url), {"ok": True})
+            self.assertGreater(sleep.call_args.args[0], 119)
 
     def test_replication_lag_waits_instead_of_recording_a_refusal(self):
         with tempfile.TemporaryDirectory() as directory:
             capture = Capture(Path(directory), interval=0)
             responses = [Response(b'{"error":{"code":"maxlag"}}'), Response(b'{"ok":true}')]
+            responses[0].headers = {"Retry-After": "120"}
             with patch("tools.landmark_capture.urlopen", side_effect=responses) as request:
-                with patch("tools.landmark_capture.time.sleep"):
+                with patch("tools.landmark_capture.time.sleep") as sleep:
                     self.assertEqual(capture.json("query.json", Response.url), {"ok": True})
             self.assertEqual(request.call_count, 2)
+            self.assertGreater(sleep.call_args.args[0], 119)
+
+    def test_compressed_responses_keep_plain_bytes_and_enforce_the_decoded_bound(self):
+        for data, status in [(b'{"ok":true}', "ok"), (b"x" * 100, "oversized")]:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                capture = Capture(Path(directory), interval=0)
+                response = Response(gzip.compress(data))
+                response.headers = {"Content-Encoding": "gzip"}
+                with patch("tools.landmark_capture.MAX_SOURCE", 64):
+                    with patch("tools.landmark_capture.urlopen", return_value=response) as request:
+                        result = capture.fetch("query.json", Response.url)
+                        self.assertEqual(result["status"], status)
+                        self.assertEqual(request.call_args.args[0].get_header("Accept-encoding"), "gzip")
+                        self.assertEqual(capture.fetch("query.json", Response.url), result)
+                        request.assert_called_once()
+                if status == "ok":
+                    self.assertEqual((Path(directory) / "query.json").read_bytes(), data)
+                    self.assertEqual(result["sha256"], digest(data))
+                else:
+                    self.assertFalse((Path(directory) / "query.json").exists())
+
+    def test_persistent_api_pressure_stops_before_another_item(self):
+        for code in ("maxlag", "ratelimited"):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                capture = Capture(Path(directory), interval=0)
+                responses = [Response(json.dumps({"error": {"code": code}}).encode()) for _ in range(BACKOFF_ATTEMPTS)]
+                with patch("tools.landmark_capture.urlopen", side_effect=responses) as request:
+                    with patch("tools.landmark_capture.time.sleep") as sleep:
+                        with self.assertRaisesRegex(RuntimeError, "capture stopped"):
+                            capture.fetch("query.json", Response.url)
+                        with self.assertRaisesRegex(RuntimeError, "stop this capture"):
+                            capture.fetch("next.json", Response.url)
+                self.assertEqual(request.call_count, BACKOFF_ATTEMPTS)
+                self.assertEqual(capture.outcomes()[0]["status"], "invalid-response")
+                self.assertGreater(sleep.call_args_list[1].args[0], sleep.call_args_list[0].args[0])
 
     def test_retry_after_reads_seconds_a_date_and_nothing_at_all(self):
         self.assertEqual(retry_after({"Retry-After": "7"}), 7.0)
@@ -89,11 +136,11 @@ class LandmarkCaptureTests(unittest.TestCase):
             error = HTTPError(Response.url, 429, "Too many requests", {"Retry-After": "9"}, None)
             with patch("tools.landmark_capture.urlopen", side_effect=error) as request:
                 with patch("tools.landmark_capture.time.sleep") as sleep:
-                    pages, status, members = category_files(capture, "Category:Alpspitz")
-            self.assertEqual((status, members), ("acquisition-failed", []))
+                    with self.assertRaisesRegex(RuntimeError, "capture stopped"):
+                        category_files(capture, "Category:Alpspitz")
             self.assertEqual(request.call_count, BACKOFF_ATTEMPTS, "the back-off is bounded")
             self.assertGreater(max(call.args[0] for call in sleep.call_args_list), 8)
-            self.assertTrue(pages[0]["path"].startswith("categories/"))
+            self.assertTrue(capture.outcomes()[0]["path"].startswith("categories/"))
             asked = request.call_args.args[0].full_url
             self.assertIn("list=categorymembers", asked)
             self.assertIn("cmlimit=max", asked)
