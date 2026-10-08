@@ -315,7 +315,7 @@ fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, Str
         Ok(serde_json::json!({"entities":{string(&value,"key")?:{"statements":value["statements"]}}}))
     } else if value["kind"] == "category" {
         let mut raw = serde_json::json!({"query":{"categorymembers":value["members"]}});
-        if value["continuation"].is_object() {
+        if value["continuation"].as_object().is_some_and(|continuation| !continuation.is_empty()) {
             raw["continue"] = value["continuation"].clone();
         }
         Ok(raw)
