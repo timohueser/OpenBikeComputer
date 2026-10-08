@@ -272,10 +272,17 @@ fn runtime_loader_search_paths_do_not_select_native_compiler_libraries() {
     };
     assert_eq!(retained.output().unwrap().stdout, expected);
     let mut compiler = runtime();
+    compiler
+        .env("CARGO_MANIFEST_DIR", "/runtime/package")
+        .env("CARGO_PKG_NAME", "runtime-package")
+        .env("CARGO_TARGET_DIR", "/selected/target");
     crate::worker::compiler_command(&mut compiler);
-    for name in ["LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+    for name in ["LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "CARGO_MANIFEST_DIR", "CARGO_PKG_NAME"] {
         assert!(compiler.get_envs().any(|(key, selected)| key == name && selected.is_none()));
     }
+    assert!(compiler
+        .get_envs()
+        .any(|(key, selected)| key == "CARGO_TARGET_DIR" && selected == Some(OsStr::new("/selected/target"))));
     assert_eq!(compiler.output().unwrap().stdout, b"|");
 
     let native = Code { crates: vec!["producer".into()], ..Default::default() };
