@@ -10,7 +10,7 @@ fn attribution(
     license_url: String,
     original_notices: String,
 ) -> Result<Attribution, String> {
-    if !supported_license(&license_url) {
+    if !license_url.is_empty() && !supported_license(&license_url) {
         return Err("unsupported_license".into());
     }
     if original_notices.len() > text::MAX_NOTICE_BYTES {
@@ -142,7 +142,7 @@ fn degrees(value: &Value) -> Option<f64> {
 }
 
 /// The one Commons file a metadata response describes, and its normalized name.
-fn described(metadata: &Value) -> Result<(&Value, String), String> {
+pub(super) fn described(metadata: &Value) -> Result<(&Value, String), String> {
     let page = metadata["query"]["pages"]
         .as_object()
         .and_then(|pages| pages.values().next())
@@ -195,26 +195,48 @@ pub(super) fn photo(
         return Err("photo_identity_mismatch".into());
     }
     let info = &page["imageinfo"][0];
-    let ext = &info["extmetadata"];
-    let license = ext["LicenseUrl"]["value"].as_str().ok_or("photo_license_missing")?.to_owned();
-    let original = serde_json::to_string(ext).map_err(|e| e.to_string())?;
-    let source_url = string(info, "descriptionurl")?.to_owned();
-    let attribution = attribution(source_url, string(info, "timestamp")?.to_owned(), license, original)?;
-    credit::photo(&attribution)?;
+    let attribution = photo_attribution(info)?;
     let input_path = string(capture, "path")?;
     let source = sources.iter().find(|source| source.path == input_path).ok_or("photo_source_missing")?;
-    if source.url != string(info, "url")? {
+    let thumbnail = info.get("thumburl").and_then(Value::as_str).is_some_and(|url| source.url == url);
+    if source.url != string(info, "url")? && !thumbnail {
         return Err("photo_identity_mismatch".into());
     }
     let bytes = read_pinned(root, sources, input_path, photo::MAX_SOURCE_BYTES as u64)?;
     let sha1 =
         <sha1::Sha1 as sha1::Digest>::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    if info["sha1"].as_str() != Some(&sha1) {
+    if !thumbnail && info["sha1"].as_str() != Some(&sha1) {
         return Err("photo_revision_mismatch".into());
     }
     let pixels = photo::prepare(&bytes).map_err(str::to_owned)?;
     let path = format!("{qid}.rgb222");
     Ok((Photo { path, sha256: hash(&pixels), bytes: pixels.len(), attribution }, pixels))
+}
+
+pub(super) fn photo_attribution(info: &Value) -> Result<Attribution, String> {
+    let ext = &info["extmetadata"];
+    let license = ext["LicenseUrl"]["value"].as_str().unwrap_or_default().to_owned();
+    // Metadata provenance and HTML decoration are retained in the pinned response. The credit
+    // notices preserve every value; Permission's markup can dominate the notice budget.
+    let mut notices = serde_json::Map::new();
+    for (key, field) in ext.as_object().ok_or("photo_notices")? {
+        let value = if key == "Permission" {
+            Value::String(text::normalize(
+                &Html::parse_fragment(field["value"].as_str().unwrap_or_default())
+                    .root_element()
+                    .text()
+                    .collect::<String>(),
+            ))
+        } else {
+            field["value"].clone()
+        };
+        notices.insert(key.clone(), serde_json::json!({"value": value}));
+    }
+    let original = serde_json::to_string(&notices).map_err(|e| e.to_string())?;
+    let source_url = string(info, "descriptionurl")?.to_owned();
+    let attribution = attribution(source_url, string(info, "timestamp")?.to_owned(), license, original)?;
+    credit::photo(&attribution)?;
+    Ok(attribution)
 }
 
 /// Check the API normalization and redirect chain against the requested title.

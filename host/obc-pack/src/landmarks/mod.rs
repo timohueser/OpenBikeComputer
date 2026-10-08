@@ -78,7 +78,11 @@ const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;lab
 pub const PHOTO_POOL_BYTES: &[u8] = include_bytes!("../../../../specs/photo-pools.json");
 
 fn photo_pools() -> Vec<String> {
-    serde_json::from_slice(PHOTO_POOL_BYTES).expect("checked photo pool order")
+    serde_json::from_value(photo_policy()["sources"].clone()).expect("checked photo pool order")
+}
+
+fn photo_policy() -> Value {
+    serde_json::from_slice(PHOTO_POOL_BYTES).expect("checked photo selection policy")
 }
 
 /// A camera this close to a summit looks out from it rather than at it. The radius is the owner's,
@@ -604,7 +608,10 @@ fn category_members(
     snapshot_schema: u32,
 ) -> Result<BTreeSet<String>, String> {
     let mut members = BTreeSet::new();
-    for listing in place["commons_categories"].as_array().into_iter().flatten() {
+    let limits = photo_policy()["fallback"].clone();
+    let max_files = limits["files"].as_u64().expect("checked file limit") as usize;
+    let max_categories = limits["categories"].as_u64().expect("checked category limit") as usize;
+    for listing in place["commons_categories"].as_array().into_iter().flatten().take(max_categories) {
         let title = string(listing, "title")?;
         if !categories.iter().any(|name| name == title) {
             return Err(format!("unclaimed commons category: {title}"));
@@ -612,15 +619,20 @@ fn category_members(
         if snapshot_schema == 1 {
             return Err(format!("schema 1 cannot prove complete commons category coverage: {title}"));
         }
+        let bounded = listing["limit"].as_u64() == Some(max_files as u64);
         let complete = listing["complete"].as_bool().ok_or("missing category completeness")?;
-        if !complete {
+        if !complete && !bounded {
             continue;
         }
         let pages = listing["pages"].as_array().ok_or("missing category pages")?;
         if pages.is_empty() {
             return Err(format!("empty commons category page set: {title}"));
         }
+        if bounded && pages.len() != 1 {
+            return Err(format!("bounded commons category must have one page: {title}"));
+        }
         let mut expected = Value::Null;
+        let mut selected = 0;
         let mut paths = BTreeSet::new();
         for (index, page) in pages.iter().enumerate() {
             if index > 0 && expected == Value::Null {
@@ -639,14 +651,17 @@ fn category_members(
                 let file = string(member, "title")?
                     .strip_prefix("File:")
                     .ok_or_else(|| format!("invalid category member: {title}"))?;
-                members.insert(file.replace('_', " "));
+                if index == 0 && selected < max_files {
+                    members.insert(file.replace('_', " "));
+                    selected += 1;
+                }
             }
             expected = raw.get("continue").cloned().unwrap_or(Value::Null);
             if expected != Value::Null && (!expected.is_object() || expected["cmcontinue"].as_str().is_none()) {
                 return Err(format!("invalid commons category continuation: {title}"));
             }
         }
-        if expected != Value::Null {
+        if expected != Value::Null && !bounded {
             return Err(format!("unconsumed commons category continuation: {title}"));
         }
     }
@@ -753,7 +768,17 @@ fn prepare_article(
         let near = summit.zip(signals.camera).is_some_and(|(summit, camera)| metres(summit, camera) <= CAMERA_METRES);
         let of = signals.views(&categories, "Views of ");
         let depicts = signals.depicts.contains(qid);
-        ranked.push((((near, !of, !depicts, tier), signals.filename), image, allowed));
+        if !allowed.contains(&signals.filename) {
+            omit("photo", "photo_identity_mismatch".into());
+            continue;
+        }
+        let metadata = json_pinned(root, sources, string(image, "metadata_path")?)?;
+        let (page, _) = assets::described(&metadata)?;
+        if let Err(reason) = assets::photo_attribution(&page["imageinfo"][0]) {
+            omit("photo", reason);
+            continue;
+        }
+        ranked.push((((tier, near, !of, !depicts), signals.filename), image, allowed));
     }
     ranked.sort_by(|a, b| a.0.cmp(&b.0));
     let mut photo = None;

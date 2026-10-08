@@ -31,6 +31,30 @@ class LandmarkCaptureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "captured bytes changed"):
                 capture.fetch("raw/entity.json", Response.url)
 
+    def test_thumbnail_inputs_and_retained_originals_use_their_pinned_urls(self):
+        for retained in (False, True):
+            with self.subTest(retained=retained), tempfile.TemporaryDirectory() as directory:
+                capture = Capture(Path(directory), interval=0)
+                filename = "Example.jpg"
+                key = digest(filename.encode())
+                info = {"mime":"image/jpeg", "url":"https://example.test/original.jpg", "thumburl":"https://example.test/500.jpg"}
+                metadata = json.dumps({"query":{"pages":{"1":{"imageinfo":[info]}}}}).encode()
+                old_url = image_metadata_url(filename).replace("&iiurlwidth=500", "")
+                with patch("tools.landmark_capture.urlopen", return_value=Response(metadata)):
+                    capture.fetch(f"images/{key}.json", old_url)
+                if retained:
+                    with patch("tools.landmark_capture.urlopen", return_value=Response(b"original")):
+                        capture.fetch(f"images/{key}.jpg", info["url"])
+                with patch("tools.landmark_capture.urlopen", return_value=Response(b"thumbnail")) as request:
+                    path, status = photo_bytes(capture, filename)
+                self.assertEqual(status, "captured")
+                self.assertEqual(path, f"images/{key}{'.jpg' if retained else '-500.jpg'}")
+                if retained:
+                    request.assert_not_called()
+                else:
+                    self.assertEqual(request.call_args.args[0].full_url, info["thumburl"])
+                self.assertIn("iiurlwidth=500", image_metadata_url(filename))
+
     def test_shared_photo_is_downloaded_once(self):
         with tempfile.TemporaryDirectory() as directory:
             capture = Capture(Path(directory), interval=0)
@@ -195,19 +219,13 @@ class LandmarkCaptureTests(unittest.TestCase):
             self.assertEqual(resumed_pages, pages)
             request.assert_called_once()
 
-    def test_incomplete_commons_category_contributes_no_partial_asset(self):
+    def test_failed_commons_category_contributes_no_partial_asset(self):
         value = {
             "sitelinks": {"enwiki": {"title": "Example"}},
             "claims": {"P373": [{"mainsnak": {"datavalue": {"value": "Example"}}}]},
         }
-        capture = Mock()
-        capture.json.side_effect = [
-            {
-                "continue": {"cmcontinue": "file|next|7", "continue": "-||"},
-                "query": {"categorymembers": [{"title": "File:Partial.jpg"}]},
-            },
-            None,
-        ]
+        capture = Mock(root=Path("unused-capture"))
+        capture.json.return_value = None
         with patch("tools.landmark_capture.capture_locales"), patch(
             "tools.landmark_capture.article", return_value=(None, None, "article-missing")
         ), patch("tools.landmark_capture.photo_metadata") as metadata:
@@ -216,6 +234,15 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertFalse(place["commons_categories"][0]["complete"])
         self.assertFalse(category_coverage_complete([place]))
         metadata.assert_not_called()
+
+    def test_bounded_category_stops_at_one_response_and_reports_the_limit(self):
+        capture = Mock(root=Path("unused-capture"))
+        capture.json.return_value = {"continue":{"cmcontinue":"next"}, "query":{"categorymembers":
+            [{"title":f"File:{index}.jpg"} for index in range(150)]}}
+        pages, status, members = category_files(capture, "Category:Example", 100)
+        self.assertEqual((len(pages), status, len(members)), (1, "candidate-limit", 100))
+        capture.json.assert_called_once()
+        self.assertEqual(members[-1], "99.jpg")
 
     def test_entities_are_fetched_fifty_at_a_time_and_read_back_by_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -334,7 +361,7 @@ class LandmarkCaptureTests(unittest.TestCase):
     def test_class_redirect_keeps_the_canonical_identity_in_the_closure(self):
         canonical = {"id": "Q2", "claims": {"P279": [{"mainsnak": {"datavalue": {"value": {"id": "Q3"}}}}]}}
         redirected = dict(canonical, redirects={"from": "Q1", "to": "Q2"})
-        capture = Mock()
+        capture = Mock(root=Path("unused-capture"))
         capture.json.side_effect = [{"entities": {"Q2": canonical}}, {"entities": {"Q1": redirected}}]
         value = entity(capture, "Q1", "classes")
         self.assertEqual(class_parents(value, "Q1"), ["Q2"])
@@ -367,7 +394,7 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertEqual(parser.status, "unsupported-repository")
 
     def test_photo_metadata_carries_categories_and_structured_data_but_no_original(self):
-        capture = Mock()
+        capture = Mock(root=Path("unused-capture"))
         capture.json.side_effect = [
             {"query": {"pages": {"7": {"pageid": 7, "title": "File:A.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/a.jpg"}]}}}},
             {"entities": {"M7": {"statements": {"P180": []}}}},
@@ -381,7 +408,7 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertEqual(record["depicts_path"], f"images/{digest(b'A.jpg')}-mediainfo.json")
 
     def test_acquisition_asks_again_until_the_compiler_needs_nothing_new(self):
-        capture = Mock()
+        capture = Mock(root=Path("unused-capture"))
         capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:X.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/x.jpg"}]}}}}
         # The first two originals fail to download; the third arrives.
         capture.fetch.side_effect = [{"status": "http-error"}, {"status": "transport-error"}, {"status": "ok"}]
@@ -410,7 +437,7 @@ class LandmarkCaptureTests(unittest.TestCase):
         self.assertEqual(acquired, 0)
 
     def test_later_request_rounds_only_revisit_the_preceding_qids(self):
-        capture = Mock()
+        capture = Mock(root=Path("unused-capture"))
         capture.json.return_value = {"query": {"pages": {"7": {"pageid": 7, "title": "File:X.jpg", "imageinfo": [{"mime": "image/jpeg", "size": 10, "url": "https://example.test/x.jpg"}]}}}}
         capture.fetch.side_effect = [{"status": "http-error"}, {"status": "ok"}, {"status": "ok"}]
         places = [
@@ -467,12 +494,12 @@ class LandmarkCaptureTests(unittest.TestCase):
                 self.assertIn(dict(asset="article", status="no-supported-sitelink"), place["outcomes"])
                 self.assertEqual(place["name"], "Schafberg")
 
-    def test_candidate_pool_adds_view_claims_and_every_commons_category(self):
+    def test_candidate_pool_uses_direct_images_and_one_bounded_category(self):
         def claims(**properties):
             return {prop: [{"mainsnak": {"datavalue": {"value": name}}} for name in names] for prop, names in properties.items()}
         value = {"sitelinks": {"enwiki": {"title": "Alpspitz"}},
                  "claims": claims(P18=["Lead.jpg"], P4291=["Panorama.jpg"], P373=["Alpspitz", "Alpspitz massif"])}
-        capture = Mock()
+        capture = Mock(root=Path("unused-capture"))
         capture.json.return_value = {"query": {"categorymembers": [{"title": "File:In_category.jpg"}]}}
         for context in (patch("tools.landmark_capture.capture_locales"),
                         patch("tools.landmark_capture.article", return_value=(None, None, "article-missing")),
@@ -482,10 +509,11 @@ class LandmarkCaptureTests(unittest.TestCase):
         place = capture_assets(capture, "Q5", value)
         # A P18 claim no longer hides the category: ranking, not acquisition, decides between them.
         self.assertEqual([(i["source"], i["filename"]) for i in place["images"]],
-                         [("P18", "Lead.jpg"), ("commons-category", "In category.jpg"), ("P4291", "Panorama.jpg")])
+                         [("P18", "Lead.jpg"), ("commons-category", "In category.jpg")])
         self.assertEqual([c["title"] for c in place["commons_categories"]],
-                         ["Category:Alpspitz", "Category:Alpspitz massif"])
-        self.assertEqual(capture.json.call_count, 2, "one listing per P373 claim")
+                         ["Category:Alpspitz"])
+        self.assertEqual(capture.json.call_count, 1, "one bounded listing")
+        self.assertIn("cmlimit=100", capture.json.call_args.args[1])
         self.assertEqual(PHOTO_SOURCES[0], "P18")
 
 
