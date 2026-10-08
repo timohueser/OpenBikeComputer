@@ -4,8 +4,8 @@ A SvelteKit application that stores system requirements, their coverage plans, l
 immutable revisions and release evidence. The database is the authority; Git holds the
 implementation, not an editable copy of requirement prose.
 
-Server setup, deployment, backups and credential rotation are in
-[`ops/verification-console.md`](../../ops/verification-console.md).
+Server setup, deployment, backups and credential rotation:
+[server runbook](ops/README.md).
 
 ## Local development
 

@@ -10,7 +10,7 @@
 
 [Live browser demo](https://openbikecomputer.com/#demo) ·
 [Documentation](https://openbikecomputer.com/docs/software/architecture/) ·
-[Contributing](CONTRIBUTING.md)
+[Contributing](.github/CONTRIBUTING.md)
 
 [<img src="docs/assets/og-card.png" width="100%" alt="OpenBikeComputer concept render with the device showing an offline map of the Grimsel Pass">](https://openbikecomputer.com/#demo)
 
@@ -155,7 +155,6 @@ over BLE and USB. The custom PCB and enclosure are still under development. KiCa
 | `data/` | External data sources with their licences, regions, and environments |
 | `docs/` | Public documentation, website, and project blog |
 | `hardware/` | KiCad schematics, PCB layouts, footprints, and component models |
-| `ops/` | Service configuration, probes, and runbooks |
 | `tools/` | The `obc` command, repository tools, and verification console |
 
 `Cargo.toml` lists the root workspace crates. The nRF54L board image,
@@ -185,5 +184,5 @@ Contributions are always welcome! This project is in the very early stages and m
 
 Software is available under [GPL-3.0-only](LICENSE), except `host/obc-data`, which is MIT OR
 Apache-2.0 and depends on no GPL crate. Hardware design sources are available under
-[CERN-OHL-S-2.0](hardware/LICENSE). Third-party notices are listed in
-[`THIRD-PARTY.md`](THIRD-PARTY.md).
+[CERN-OHL-S-2.0](hardware/LICENSE). Third-party notices are in
+[the notice file](tools/licenses/THIRD-PARTY.md).
