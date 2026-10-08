@@ -81,7 +81,13 @@ house numbers. A missing number returns a clearly labelled street location.
 
 `POST /api/planner-search/reverse` accepts `[longitude, latitude]` in `coordinate`.
 It returns `label` for the nearest mapped house within 100 metres, or `null`.
-Search packages use schema 5. Rebuild with `build.py` after a schema change.
+Search packages use schema 6. Rebuild with `build.py` after a schema change.
+Pass `--landmarks CONTENT.json` and `--peaks PEAKS.json` to include prepared content.
+The normal `obc data` POI step reads both content layers. Search matches explicit
+Wikidata and Wikipedia links and returns one result per curated landmark. Summit links keep OSM
+coordinates. The planners retain short articles offline. Photos load from Commons
+only after current file and credit revisions match. A failed check leaves the text
+and photo source link available. Search and routing packages contain no photo bytes.
 
 ## Checks
 
