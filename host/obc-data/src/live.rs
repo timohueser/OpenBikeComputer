@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::engine::release::{Layer, Release};
+use crate::engine::release::{Layer, Published, Release};
 use crate::env::LiveVersions;
 use crate::fetch::http::{self, Http};
 use crate::input_copy::{self, Key, Record};
@@ -226,14 +226,10 @@ impl Live {
     /// record of an input copy.
     pub fn expected(&self) -> BTreeMap<String, Option<u64>> {
         let mut keys = BTreeMap::new();
-        for (prefix, id, release) in self.releases() {
+        for (prefix, _, release) in self.releases() {
             keys.insert(format!("{prefix}/catalog.json"), None);
-            keys.insert(format!("{prefix}/releases/{id}.json"), Some(release.canonical().len() as u64));
             keys.extend(
-                release.named.iter().map(|file| (format!("{prefix}/releases/{id}/{}", file.path), Some(file.size))),
-            );
-            keys.extend(
-                release.objects().into_iter().map(|(sha256, size)| (format!("{prefix}/objects/{sha256}"), Some(size))),
+                release.publication().files().map(|(_, file)| (format!("{prefix}/{}", file.path), Some(file.size))),
             );
         }
         for (key, record) in &self.inputs {
@@ -253,17 +249,24 @@ impl Live {
     /// The layers of the live releases whose files `keys` hold.
     pub fn owners(&self, keys: &[String]) -> BTreeSet<String> {
         let mut owners = BTreeSet::new();
-        for (prefix, id, release) in self.releases() {
-            let named: BTreeSet<_> = release
-                .named
-                .iter()
-                .filter(|file| keys.contains(&format!("{prefix}/releases/{id}/{}", file.path)))
-                .map(|file| file.sha256.as_str())
-                .collect();
-            let holds = |sha256: &str| keys.contains(&format!("{prefix}/objects/{sha256}"));
+        for (prefix, _, release) in self.releases() {
+            let (mut named, mut objects) = (BTreeSet::new(), BTreeSet::new());
+            for (kind, file) in
+                release.publication().files().filter(|(_, file)| keys.contains(&format!("{prefix}/{}", file.path)))
+            {
+                match kind {
+                    Published::Named(_) => {
+                        named.insert(file.sha256);
+                    }
+                    Published::Object => {
+                        objects.insert(file.sha256);
+                    }
+                    Published::Manifest => (),
+                }
+            }
             let layers = release.layers.iter().filter(|layer| {
-                layer.client_files().any(|file| holds(&file.sha256))
-                    || layer.files.iter().any(|file| named.contains(file.sha256.as_str()))
+                layer.client_files().any(|file| objects.contains(&file.sha256))
+                    || layer.files.iter().any(|file| named.contains(&file.sha256))
             });
             owners.extend(layers.map(|layer| layer.step.clone()));
         }
@@ -273,9 +276,9 @@ impl Live {
     /// Restore missing local publication metadata from its exact immutable remote key.
     pub fn restore_named(&self, remote: &Remote, store: &Store) -> Result<(), String> {
         let _using = store.using()?;
-        for (prefix, id, release) in self.releases() {
-            for file in &release.named {
-                let key = format!("{prefix}/releases/{id}/{}", file.path);
+        for (prefix, _, release) in self.releases() {
+            for (_, file) in release.publication().files().filter(|(kind, _)| matches!(kind, Published::Named(_))) {
+                let key = format!("{prefix}/{}", file.path);
                 let object = store.object(&file.sha256);
                 let _lock = store.lock(&format!("named-{}", file.sha256))?;
                 if object.is_file() {
@@ -332,10 +335,7 @@ impl Live {
             for id in ids.filter(|id| !live.contains(id) && is_sha256(id)) {
                 // Bytes that are not a manifest of this product belong to another publisher.
                 let Ok(release) = manifest(remote, store, &product.product, &product.prefix, id) else { continue };
-                keys.insert(format!("{releases}{id}.json"));
-                keys.extend(release.named.iter().map(|file| format!("{releases}{id}/{}", file.path)));
-                let objects = release.objects().into_keys().map(|sha256| sha256.to_string());
-                keys.extend(objects.map(|sha256| format!("{}/objects/{sha256}", product.prefix)));
+                keys.extend(release.publication().files().map(|(_, file)| format!("{}/{}", product.prefix, file.path)));
                 reads.extend(input_copy::reads_release(&release)?.into_iter().map(|read| read.key));
             }
         }

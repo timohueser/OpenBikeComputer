@@ -916,16 +916,18 @@ fn against<'a>(
     });
     let drift = drift.map(|drift| {
         let keys: Vec<String> = drift.iter().map(|drift| drift.key.clone()).collect();
-        let local_named: BTreeSet<String> = live
-            .releases()
-            .flat_map(|(prefix, id, release)| {
+        let mut local_named = BTreeSet::new();
+        for (prefix, _, release) in live.releases() {
+            local_named.extend(
                 release
-                    .named
-                    .iter()
-                    .filter(|file| store.object(&file.sha256).is_file())
-                    .map(move |file| format!("{prefix}/releases/{id}/{}", file.path))
-            })
-            .collect();
+                    .publication()
+                    .files()
+                    .filter(|(kind, file)| {
+                        matches!(kind, release::Published::Named(_)) && store.object(&file.sha256).is_file()
+                    })
+                    .map(|(_, file)| format!("{prefix}/{}", file.path)),
+            );
+        }
         let unavailable: Vec<_> = keys.iter().filter(|key| !local_named.contains(*key)).cloned().collect();
         let owners = live.owners(&unavailable);
         (keys, owners)

@@ -31,6 +31,53 @@ pub struct Release {
     pub producers: BTreeMap<String, Producer>,
 }
 
+/// The role of a published file. A named file retains its product-declared alias.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Published<'a> {
+    Manifest,
+    Named(&'a str),
+    Object,
+}
+
+/// Immutable publication paths, relative to the product prefix.
+pub struct Publication<'a> {
+    release: &'a Release,
+    manifest: LayerFile,
+}
+
+impl Publication<'_> {
+    fn named_path(&self, name: &str) -> String {
+        format!("releases/{}/{name}", self.manifest.sha256)
+    }
+
+    fn object_path(sha256: &str) -> String {
+        format!("objects/{sha256}")
+    }
+
+    pub fn files(&self) -> impl Iterator<Item = (Published<'_>, LayerFile)> {
+        let manifest = std::iter::once((Published::Manifest, self.manifest.clone()));
+        let named = self.release.named.iter().map(|file| {
+            (Published::Named(file.path.as_str()), LayerFile { path: self.named_path(&file.path), ..file.clone() })
+        });
+        let objects = self.release.objects().into_iter().map(|(sha256, size)| {
+            (Published::Object, LayerFile { path: Self::object_path(sha256), sha256: sha256.into(), size })
+        });
+        manifest.chain(named).chain(objects)
+    }
+
+    /// The published address of a selected layer file, or none for an unpublished intermediate.
+    pub fn path(&self, layer: &Layer, file: &LayerFile) -> Option<String> {
+        if layer.client.includes(&file.path) {
+            return Some(Self::object_path(&file.sha256));
+        }
+        self.release
+            .named
+            .iter()
+            .find(|named| (named.size, &named.sha256) == (file.size, &file.sha256))
+            .map(|named| self.named_path(&named.path))
+    }
+}
+
 /// The original execution identity and its portable source/config projection.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -214,6 +261,13 @@ impl Release {
         sha256_hex(&self.canonical())
     }
 
+    pub fn publication(&self) -> Publication<'_> {
+        let bytes = self.canonical();
+        let sha256 = sha256_hex(&bytes);
+        let manifest = LayerFile { path: format!("releases/{sha256}.json"), sha256, size: bytes.len() as u64 };
+        Publication { release: self, manifest }
+    }
+
     /// The objects of its client layers, which R2 holds: SHA-256 to size.
     pub fn objects(&self) -> BTreeMap<&str, u64> {
         let files = self.layers.iter().flat_map(Layer::client_files);
@@ -362,7 +416,7 @@ mod tests {
         steps[0].client = Client::Paths(vec!["published".into()]);
         assert_ne!(super::super::recipe(&steps[0], "code"), before);
         assert!(fixture.plan(&steps).unwrap().groups.is_empty(), "visibility changes reuse byte artifacts");
-        let selected = release(&fixture.store, &fixture.root(), "test", "monaco", &[], &steps).unwrap().unwrap();
+        let mut selected = release(&fixture.store, &fixture.root(), "test", "monaco", &[], &steps).unwrap().unwrap();
         assert_eq!(selected.layers[0].key, all.layers[0].key);
         assert_eq!(selected.layers[0].files.len(), 4, "private files stay in provenance");
         assert_eq!(
@@ -371,6 +425,46 @@ mod tests {
         );
         assert_eq!(selected.objects().len(), 1, "equal selected payloads share one object");
         assert_ne!(selected.id(), all.id());
+
+        let metadata = selected.layers[0].files.iter().find(|file| file.path == "index.json").unwrap().clone();
+        selected
+            .name_files(
+                ["indexes/a.json", "indexes/b.json"]
+                    .map(|path| LayerFile { path: path.into(), ..metadata.clone() })
+                    .into(),
+            )
+            .unwrap();
+        let before = selected.canonical();
+        let id = selected.id();
+        let publication = selected.publication();
+        let published: Vec<_> = publication.files().collect();
+        let payload = selected.layers[0].files.iter().find(|file| file.path == "published/a").unwrap();
+        assert_eq!(
+            published,
+            vec![
+                (
+                    Published::Manifest,
+                    LayerFile { path: format!("releases/{id}.json"), sha256: id.clone(), size: before.len() as u64 }
+                ),
+                (
+                    Published::Named("indexes/a.json"),
+                    LayerFile { path: format!("releases/{id}/indexes/a.json"), ..metadata.clone() }
+                ),
+                (
+                    Published::Named("indexes/b.json"),
+                    LayerFile { path: format!("releases/{id}/indexes/b.json"), ..metadata.clone() }
+                ),
+                (Published::Object, LayerFile { path: format!("objects/{}", payload.sha256), ..payload.clone() }),
+            ]
+        );
+        let layer = &selected.layers[0];
+        assert_eq!(publication.path(layer, payload), Some(format!("objects/{}", payload.sha256)));
+        assert_eq!(publication.path(layer, &metadata), Some(format!("releases/{id}/indexes/a.json")));
+        let private = layer.files.iter().find(|file| file.path == "published-extra/a").unwrap();
+        assert_eq!(publication.path(layer, private), None);
+        assert_eq!(publication.path(layer, &LayerFile { size: metadata.size + 1, ..metadata.clone() }), None);
+        assert_eq!(selected.canonical(), before, "publication does not change the manifest or its identity");
+
         steps[0].client = Client::Paths(vec!["published/a".into()]);
         assert!(fixture.plan(&steps).unwrap_err().contains("not a declared output"));
         steps[0].client = Client::Paths(Vec::new());

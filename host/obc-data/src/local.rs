@@ -55,6 +55,7 @@ pub fn plan(
         Compatibility { root, store, release, steps, checked: BTreeMap::new(), codes: Witnesses::default() };
     let mut plan =
         Plan { product: release.product.clone(), release: release.id(), layers: Vec::new(), blocked: Vec::new() };
+    let publication = release.publication();
     for (name, extra) in required {
         let mut select = || -> Result<Selection, String> {
             let step = steps.iter().find(|step| &step.name == name).ok_or("no current producer declaration")?;
@@ -75,7 +76,7 @@ pub fn plan(
             for file in &files {
                 if store.object(&file.sha256).is_file() {
                     verify(store, file)?;
-                } else if remote_key(product.prefix(), release, layer, file).is_none() {
+                } else if publication.path(layer, file).is_none() {
                     return Err(format!("{} is an unpublished input; rebuild or materialize it locally", file.path));
                 }
             }
@@ -347,17 +348,6 @@ impl Compatibility<'_> {
     }
 }
 
-fn remote_key(prefix: &str, release: &Release, layer: &Layer, file: &LayerFile) -> Option<String> {
-    if layer.client.includes(&file.path) {
-        return Some(format!("{prefix}/objects/{}", file.sha256));
-    }
-    release
-        .named
-        .iter()
-        .find(|named| (named.size, &named.sha256) == (file.size, &file.sha256))
-        .map(|named| format!("{prefix}/releases/{}/{}", release.id(), named.path))
-}
-
 fn verify(store: &Store, file: &LayerFile) -> Result<(), String> {
     if hash_file(&store.object(&file.sha256))? != (file.sha256.clone(), file.size) {
         return Err(format!("{}: portable bytes have another SHA-256 or size", file.path));
@@ -401,13 +391,14 @@ fn transfer(
     if &current != confirmed || !current.blocked.is_empty() || current.layers.is_empty() {
         return Err("portable adoption changed or is blocked; review it again".into());
     }
+    let publication = release.publication();
     for selection in &current.layers {
         let layer = release.layers.iter().find(|layer| layer.step == selection.step).expect("planned layer");
         for file in &selection.files {
             let _object = store.lock(&format!("local-object-{}", file.sha256))?;
             if !store.object(&file.sha256).is_file() {
-                let key =
-                    remote_key(product.prefix(), release, layer, file).ok_or("the required input is unpublished")?;
+                let path = publication.path(layer, file).ok_or("the required input is unpublished")?;
+                let key = format!("{}/{path}", product.prefix());
                 match remote {
                     Remote::Bucket(bucket) => {
                         let part = store.partial(&format!("local-{}.part", file.sha256));
