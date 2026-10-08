@@ -55,9 +55,10 @@ SWEEP_GROUP = "Natural curiosities"
 # The photo candidate pools the compiler ranks, best first, read from the file the compiler reads.
 # A pool one side offers and the other refuses is a photo that can never be selected.
 PHOTO_POOL_BYTES = (Path(__file__).resolve().parents[1] / "specs/photo-pools.json").read_bytes()
-PHOTO_SOURCES = tuple(json.loads(PHOTO_POOL_BYTES))
-# The pools that are image claims of the entity: the lead picture, then a panoramic, an aerial and
-# a winter view.
+PHOTO_POLICY = json.loads(PHOTO_POOL_BYTES)
+PHOTO_SOURCES = tuple(PHOTO_POLICY["sources"])
+PHOTO_FALLBACK = PHOTO_POLICY["fallback"]
+# The explicit image claims admitted by the shared policy.
 IMAGE_PROPERTIES = tuple(pool for pool in PHOTO_SOURCES if re.fullmatch(r"P[0-9]+", pool))
 IMAGE_EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png"}
 
@@ -245,7 +246,7 @@ def semantic_sources(outcomes: list[dict]) -> list[dict]:
 
 def category_coverage_complete(places: list[dict]) -> bool:
     return all(
-        category.get("complete") is True
+        category.get("complete") is True or category.get("limit") == PHOTO_FALLBACK["files"]
         for place in places
         for category in place.get("commons_categories", [])
     )
@@ -426,8 +427,8 @@ def article(capture: Capture, qid: str, language: str, title: str) -> tuple[dict
     return record, parser.filename, "captured"
 
 
-def category_files(capture: Capture, category: str) -> tuple[list[dict], str, list[str]]:
-    """Capture every page of a Commons category and return members only for a complete chain."""
+def category_files(capture: Capture, category: str, limit: int | None = None) -> tuple[list[dict], str, list[str]]:
+    """Capture a bounded first response, or verify a retained complete category chain."""
     key = digest(category.encode())
     continuation, seen, pages, members = {}, set(), [], []
     while True:
@@ -435,18 +436,19 @@ def category_files(capture: Capture, category: str) -> tuple[list[dict], str, li
         path = f"categories/{key}{'' if page == 1 else f'-{page}'}.json"
         identity = dict(path=path, continuation=continuation or None)
         pages.append(identity)
-        raw = capture.json(
-            path,
-            api(
-                "commons.wikimedia.org",
-                action="query",
-                list="categorymembers",
-                cmtitle=category,
-                cmtype="file",
-                cmlimit="max",
-                **continuation,
-            ),
+        url = api(
+            "commons.wikimedia.org",
+            action="query",
+            list="categorymembers",
+            cmtitle=category,
+            cmtype="file",
+            cmlimit=limit or "max",
+            **continuation,
         )
+        outcome_path = capture.root / "outcomes" / (digest(path.encode()) + ".json")
+        if outcome_path.exists():
+            url = json.loads(outcome_path.read_text())["url"]
+        raw = capture.json(path, url)
         if raw is None:
             return pages, "acquisition-failed", []
         listed = raw.get("query", {}).get("categorymembers")
@@ -460,9 +462,11 @@ def category_files(capture: Capture, category: str) -> tuple[list[dict], str, li
         members.extend(page_members)
         following = raw.get("continue")
         if following is None:
-            return pages, ("captured" if members else "no-category-members"), members
+            return pages, ("captured" if members else "no-category-members"), members[:limit] if limit else members
         if not isinstance(following, dict) or not isinstance(following.get("cmcontinue"), str) or any(not isinstance(value, str) for value in following.values()):
             return pages, "invalid-category-continuation", []
+        if limit is not None:
+            return pages, "candidate-limit", members[:limit]
         continuation = {name: following[name] for name in sorted(following)}
         identity = json.dumps(continuation, sort_keys=True)
         if identity in seen:
@@ -471,7 +475,14 @@ def category_files(capture: Capture, category: str) -> tuple[list[dict], str, li
 
 
 def image_metadata_url(filename: str) -> str:
-    return api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo|categories", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, cllimit="max", uselang="en")
+    return api("commons.wikimedia.org", action="query", titles="File:" + filename, prop="imageinfo|categories", iiprop="url|timestamp|sha1|extmetadata|mime|size", iilimit=1, cllimit="max", uselang="en", iiurlwidth=500)
+
+
+def captured_image_metadata(capture: Capture, filename: str, path: str | None = None) -> dict | None:
+    path = path or f"images/{digest(filename.encode())}.json"
+    outcome_path = capture.root / "outcomes" / (digest(path.encode()) + ".json")
+    url = json.loads(outcome_path.read_text())["url"] if outcome_path.exists() else image_metadata_url(filename)
+    return capture.json(path, url)
 
 
 def photo_metadata(capture: Capture, filename: str) -> tuple[dict | None, str]:
@@ -480,7 +491,7 @@ def photo_metadata(capture: Capture, filename: str) -> tuple[dict | None, str]:
     filename = filename.replace("_", " ")
     key = digest(filename.encode())
     metadata = f"images/{key}.json"
-    raw = capture.json(metadata, image_metadata_url(filename))
+    raw = captured_image_metadata(capture, filename)
     if not raw:
         return None, "metadata-acquisition-failed"
     pages = list(raw.get("query", {}).get("pages", {}).values())
@@ -489,7 +500,7 @@ def photo_metadata(capture: Capture, filename: str) -> tuple[dict | None, str]:
     info = pages[0]["imageinfo"][0]
     if info.get("mime") not in IMAGE_EXTENSIONS:
         return None, "unsupported-format"
-    if info.get("size", 0) > MAX_SOURCE:
+    if not info.get("thumburl") and info.get("size", 0) > MAX_SOURCE:
         return None, "oversized"
     record = dict(metadata_path=metadata, filename=filename)
     # Structured data lives in the file's own MediaInfo entity, which `imageinfo` never carries.
@@ -500,17 +511,71 @@ def photo_metadata(capture: Capture, filename: str) -> tuple[dict | None, str]:
     return record, "captured"
 
 
-def photo_bytes(capture: Capture, filename: str) -> tuple[str | None, str]:
-    """The original of a file whose metadata is already captured. The metadata request is cached,
-    so this costs one download and nothing else."""
+def revision_info(raw: dict | None) -> tuple[str, dict] | None:
+    pages = list((raw or {}).get("query", {}).get("pages", {}).values())
+    if len(pages) != 1 or len(pages[0].get("imageinfo", [])) != 1:
+        return None
+    title = pages[0].get("title", "")
+    if not title.startswith("File:"):
+        return None
+    return title[5:].replace("_", " "), pages[0]["imageinfo"][0]
+
+
+def photo_revision_matches(expected: tuple[str, dict], current: tuple[str, dict]) -> bool:
+    if expected[0] != current[0]:
+        return False
+    old, new = expected[1], current[1]
+    if any(not old.get(field) or old.get(field) != new.get(field) for field in ("timestamp", "sha1")):
+        return False
+    fields = ("Artist", "Attribution", "Permission", "License", "LicenseUrl", "Copyrighted", "AttributionRequired",
+              "Categories", "ObjectName", "Credit", "LicenseShortName", "UsageTerms")
+    return all(old.get("extmetadata", {}).get(field, {}).get("value") ==
+               new.get("extmetadata", {}).get(field, {}).get("value") for field in fields)
+
+
+def photo_bytes(capture: Capture, filename: str, image: dict | None = None) -> tuple[str | None, str]:
+    """Fresh revision checks bracket each thumbnail; retained originals keep their SHA-1 proof."""
     key = digest(filename.encode())
-    raw = capture.json(f"images/{key}.json", image_metadata_url(filename))
-    if not raw:
+    raw = captured_image_metadata(capture, filename, image.get("metadata_path") if image else None)
+    expected = revision_info(raw)
+    if expected is None:
         return None, "metadata-acquisition-failed"
-    info = list(raw["query"]["pages"].values())[0]["imageinfo"][0]
-    path = f"images/{key}{IMAGE_EXTENSIONS[info['mime']]}"
-    result = capture.fetch(path, info["url"])
-    return (path, "captured") if result["status"] == "ok" else (None, result["status"])
+    info = expected[1]
+    if info.get("mime") not in IMAGE_EXTENSIONS:
+        return None, "unsupported-format"
+    original_path = f"images/{key}{IMAGE_EXTENSIONS[info['mime']]}"
+    if (capture.root / "outcomes" / (digest(original_path.encode()) + ".json")).exists() or not info.get("thumburl"):
+        result = capture.fetch(original_path, info["url"])
+        return (original_path, "captured") if result["status"] == "ok" else (None, result["status"])
+    mime = info.get("thumbmime", info["mime"])
+    if mime not in IMAGE_EXTENSIONS:
+        return None, "unsupported-thumbnail-format"
+    # A successful media outcome without both witnesses has no revision proof. A fresh bracket
+    # cannot retroactively prove it, so each attempt has its own media path and fresh API checks.
+    attempt = 1 + len(list((capture.root / "images").glob(f"{key}-500-*-before.json")))
+    prefix = f"images/{key}-500-{attempt}"
+    before_path, after_path = prefix + "-before.json", prefix + "-after.json"
+    before = revision_info(capture.json(before_path, image_metadata_url(expected[0])))
+    if before is None:
+        return None, "revision-check-acquisition-failed"
+    if not photo_revision_matches(expected, before):
+        if image is not None:
+            image["metadata_path"] = before_path
+        return None, "metadata-changed"
+    path = prefix + IMAGE_EXTENSIONS[mime]
+    result = capture.fetch(path, info["thumburl"])
+    if result["status"] != "ok":
+        return None, result["status"]
+    after = revision_info(capture.json(after_path, image_metadata_url(expected[0])))
+    if after is None:
+        return None, "revision-check-acquisition-failed"
+    if not photo_revision_matches(expected, after):
+        if image is not None:
+            image["metadata_path"] = after_path
+        return None, "metadata-changed"
+    if image is not None:
+        image.update(revision_before_path=before_path, revision_after_path=after_path)
+    return path, "captured"
 
 
 def capture_locales(capture: Capture, value: dict) -> None:
@@ -571,14 +636,15 @@ def capture_assets(capture: Capture, qid: str, value: dict, photo_without_text: 
             if lead:
                 candidates.add((lead, "wikipedia-lead", language))
     place["commons_categories"] = []
-    for category in claim_values(value, "P373"):
+    for category in [v for v in claim_values(value, "P373") if isinstance(v, str)][:PHOTO_FALLBACK["categories"]]:
         if not isinstance(category, str):
             continue
         title = "Category:" + category.replace("_", " ")
-        pages, status, members = category_files(capture, title)
+        pages, status, members = category_files(capture, title, PHOTO_FALLBACK["files"])
         place["outcomes"].append(dict(asset="photo", source="commons-category", filename=title, status=status))
         place["commons_categories"].append(
-            dict(title=title, pages=pages, complete=status in ("captured", "no-category-members"))
+            dict(title=title, pages=pages, complete=status in ("captured", "no-category-members"),
+                 limit=PHOTO_FALLBACK["files"] if status in ("captured", "no-category-members", "candidate-limit") else None)
         )
         candidates.update((name, "commons-category", None) for name in members)
     if not candidates:
@@ -630,7 +696,8 @@ def acquire_requested_photos(capture: Capture, executable: Path, subcommand: str
             key = (request["qid"], request["metadata_path"])
             tried.add(key)
             place, image = images[key]
-            path, status = photo_bytes(capture, request["filename"])
+            path, status = photo_bytes(capture, request["filename"], image)
+            images[(place["qid"], image["metadata_path"])] = (place, image)
             place["outcomes"].append(dict(asset="photo", source=image["source"], filename=request["filename"], status=status))
             if path:
                 image["path"] = path

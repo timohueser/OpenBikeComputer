@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn commons_category_members_cover_every_page_in_stable_order() {
+fn retained_category_chain_is_verified_and_only_its_first_page_is_selected() {
     let root = obcm_testkit::scratch::scratch_dir("landmarks", "category-pages");
     let continuation = json!({"cmcontinue":"file|next|7","continue":"-||"});
     let captures = [
@@ -38,7 +38,10 @@ fn commons_category_members_cover_every_page_in_stable_order() {
         ]
     }]});
     let members = category_members(&root, &sources, &place, &["Category:Example".into()], 2).unwrap();
-    assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg", "C.jpg"]);
+    assert_eq!(members.into_iter().collect::<Vec<_>>(), ["A.jpg", "B.jpg"]);
+    let bounded = json!({"commons_categories":[{"title":"Category:Example","complete":false,"limit":100,
+        "pages":[{"path":captures[0].0,"continuation":null}]}]});
+    assert_eq!(category_members(&root, &sources, &bounded, &["Category:Example".into()], 2).unwrap().len(), 2);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -171,6 +174,43 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
             assert_eq!(result.unwrap().0.bytes, 51_840);
         }
     }
+    let mut metadata = json!({"query":{"pages":{"1":{"title":"File:Image.png","imageinfo":[{
+        "url":"https://upload.wikimedia.org/original.png", "thumburl":"https://upload.wikimedia.org/image.png",
+        "descriptionurl":"https://commons.wikimedia.org/wiki/File:Image.png", "timestamp":"2026-01-01T00:00:00Z",
+        "sha1":"0000000000000000000000000000000000000000", "extmetadata":{"Artist":{"value":"Example"},
+            "LicenseUrl":{"value":"https://creativecommons.org/licenses/by/4.0/"}}}]}}}});
+    let raw = serde_json::to_vec(&metadata).unwrap();
+    fs::write(root.join("metadata.json"), &raw).unwrap();
+    fs::write(root.join("before.json"), &raw).unwrap();
+    fs::write(root.join("after.json"), &raw).unwrap();
+    let mut sources: Vec<_> = ["metadata.json", "before.json", "after.json"]
+        .into_iter()
+        .map(|path| Source {
+            path: path.into(),
+            url: "https://commons.wikimedia.org/w/api.php".into(),
+            bytes: raw.len() as u64,
+            sha256: hash(&raw),
+        })
+        .collect();
+    sources.push(Source {
+        path: "image.png".into(),
+        url: "https://upload.wikimedia.org/image.png".into(),
+        bytes: bytes.len() as u64,
+        sha256: hash(&bytes),
+    });
+    assert_eq!(
+        assets::photo(&root, &sources, &capture, &allowed, "Q1").unwrap_err(),
+        "photo_thumbnail_revision_unverified"
+    );
+    let proven = json!({"path":"image.png","metadata_path":"metadata.json",
+        "revision_before_path":"before.json","revision_after_path":"after.json"});
+    assert!(assets::photo(&root, &sources, &proven, &allowed, "Q1").is_ok());
+    metadata["query"]["pages"]["1"]["imageinfo"][0]["sha1"] = json!("1111111111111111111111111111111111111111");
+    let changed = serde_json::to_vec(&metadata).unwrap();
+    fs::write(root.join("after.json"), &changed).unwrap();
+    sources[2].bytes = changed.len() as u64;
+    sources[2].sha256 = hash(&changed);
+    assert_eq!(assets::photo(&root, &sources, &proven, &allowed, "Q1").unwrap_err(), "photo_revision_mismatch");
     fs::remove_dir_all(root).unwrap();
 }
 

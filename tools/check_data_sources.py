@@ -36,6 +36,7 @@ NOT_SOURCES = {
     "*.r2.cloudflarestorage.com": "our R2 bucket",
     # Links a person reads, licence texts and schema identifiers; nothing fetches them.
     "creativecommons.org": "licence text",
+    "artlibre.org": "licence text",
     "opendatacommons.org": "licence text",
     "www.openstreetmap.org": "copyright page",
     "wiki.openstreetmap.org": "routing policy documentation",
