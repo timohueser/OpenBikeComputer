@@ -554,6 +554,25 @@ pub(crate) mod tests {
         headers.iter().find(|(n, _)| n == name).map(|(_, value)| value.as_str())
     }
 
+    #[test]
+    fn a_thumbnail_bracket_never_resumes_bytes_from_an_earlier_attempt() {
+        let scratch = Scratch::new("fresh-thumbnail");
+        let store = Store::at(&scratch.0);
+        let (url, log) = serve(|_, headers| {
+            assert!(header(headers, "range").is_none());
+            whole(b"current thumbnail")
+        });
+        let key = &sha256_hex(url.as_bytes())[..32];
+        std::fs::create_dir_all(store.partial("root").parent().unwrap()).unwrap();
+        std::fs::write(store.partial(&format!("{key}.part")), b"unproven old bytes").unwrap();
+        std::fs::write(store.partial(&format!("{key}.validator")), b"old validator").unwrap();
+        let http = quick();
+        let download = http.fresh_download(&store, &url).unwrap();
+        assert_eq!(std::fs::read(download.object).unwrap(), b"current thumbnail");
+        assert_eq!(log.lock().unwrap().len(), 1);
+        assert_eq!(http.metrics(), (1, 17));
+    }
+
     pub(crate) fn quick() -> Http {
         Http::with_backoff(Duration::ZERO)
     }

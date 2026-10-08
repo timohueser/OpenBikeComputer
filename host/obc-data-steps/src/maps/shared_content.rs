@@ -93,7 +93,7 @@ pub(super) fn captures(
             };
             let mut articles = Vec::new();
             for id in &subjects {
-                if let Some(entity) = obc_pack::landmarks::shared::subject(&facts, &id) {
+                if let Some(entity) = obc_pack::landmarks::shared::subject(&facts, id) {
                     for (wiki, link) in entity["sitelinks"].as_object().into_iter().flatten() {
                         if let Some(language) = wiki.strip_suffix("wiki") {
                             articles.push(serde_json::json!({"language":language,"title":link["title"],"qid":entity["id"].as_str().filter(|id|id.starts_with('Q'))}));

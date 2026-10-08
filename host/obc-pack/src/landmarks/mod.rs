@@ -547,7 +547,13 @@ fn compile_selected(
         for article in place["articles"].as_array().into_iter().flatten().filter(|article| article["compact"] == true) {
             let language = string(article, "language")?;
             if !variants.iter().any(|variant| {
-                variant.language == language && variant.attribution.revision == article["revision"].to_string()
+                variant.language == language
+                    && variant
+                        .attribution
+                        .revision
+                        .parse::<u64>()
+                        .ok()
+                        .is_some_and(|revision| Some(revision) == article["revision"].as_u64())
             }) {
                 continue;
             }

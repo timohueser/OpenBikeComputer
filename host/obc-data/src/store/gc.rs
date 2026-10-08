@@ -321,7 +321,7 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
 
 fn resumable(path: &Path) -> bool {
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("wikimedia-"))
-        && path.join("work/records").is_dir()
+        && ["work/records", "refresh/records"].into_iter().any(|records| path.join(records).is_dir())
 }
 
 /// `1 object`, `2 objects`.
@@ -427,14 +427,14 @@ mod tests {
         let store = Store::at(&scratch.0);
         let digest = object(&store, b"pinned conversion input");
         let operation = store.partial("wikimedia-operation");
-        fs::create_dir_all(operation.join("work/records")).unwrap();
+        fs::create_dir_all(operation.join("refresh/records")).unwrap();
         fs::write(operation.join("inputs.json"), format!("[{{\"sha256\":\"{digest}\"}}]")).unwrap();
-        fs::write(operation.join("work/records/completed.json"), b"{}").unwrap();
+        fs::write(operation.join("refresh/records/completed.json"), b"{}").unwrap();
         let active = plan(&store, &Roots::default()).unwrap();
         assert!(active.objects.is_empty());
         assert_eq!(active.partial_bytes, 0);
         assert!(active.kept.iter().any(|entry| entry.because.contains(&"resumable operation".into())));
-        fs::remove_dir_all(operation.join("work/records")).unwrap();
+        fs::remove_dir_all(operation.join("refresh/records")).unwrap();
         let complete = plan(&store, &Roots::default()).unwrap();
         assert!(complete.objects.iter().any(|(sha, _)| sha == &digest));
         assert!(complete.partial_bytes > 0);

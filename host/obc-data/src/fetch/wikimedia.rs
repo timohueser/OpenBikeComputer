@@ -150,15 +150,15 @@ pub(super) fn run(
     let requests_path = staging.join("requests.json");
     let inputs_path = staging.join("inputs.json");
     fs::write(&requests_path, serde_json::to_vec(&requested).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let registry = crate::sources::Registry::load(root)?;
+    let registry = crate::sources::Registry::effective(root, store)?;
     let admitted = inputs(store)?;
     fs::write(&inputs_path, serde_json::to_vec(&admitted).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let code = super::owner_code(request.source).code;
     let before = code.files(root)?;
     let adopt = adoption_views(store, &work)?;
-    let mut stale = stale_requests(&requested, &admitted, &registry);
+    let mut stale = stale_requests(&requested, &admitted, &registry, !adopt.is_empty());
     // Adoption is evidence of a revision, not evidence of a current source check.
-    if request.refresh || !adopt.is_empty() {
+    if request.refresh {
         stale = requested.clone();
     }
     if stale.as_object().is_some_and(|fields| fields.values().any(|v| v.as_array().is_some_and(|a| !a.is_empty()))) {
@@ -265,7 +265,12 @@ fn runner(
     Ok(command)
 }
 
-fn stale_requests(request: &Value, pins: &[Value], registry: &crate::sources::Registry) -> Value {
+fn stale_requests(
+    request: &Value,
+    pins: &[Value],
+    registry: &crate::sources::Registry,
+    include_missing: bool,
+) -> Value {
     let mut stale = json!({});
     for (field, kind) in [
         ("entities", "entity"),
@@ -273,6 +278,7 @@ fn stale_requests(request: &Value, pins: &[Value], registry: &crate::sources::Re
         ("articles", "article"),
         ("commons", "commons"),
         ("categories", "category"),
+        ("files", "file"),
     ] {
         let values = request[field]
             .as_array()
@@ -286,13 +292,22 @@ fn stale_requests(request: &Value, pins: &[Value], registry: &crate::sources::Re
                         value["title"].as_str().unwrap_or_default()
                     )
                 } else {
-                    value.as_str().unwrap_or_default().to_owned()
+                    let value = value.as_str().unwrap_or_default();
+                    if matches!(field, "commons" | "files") {
+                        format!("File:{}", value.trim_start_matches("File:").replace('_', " "))
+                    } else {
+                        value.to_owned()
+                    }
                 };
+                if include_missing && !pins.iter().any(|pin| pin["kind"] == kind && pin["key"] == key) {
+                    return true;
+                }
                 pins.iter().any(|pin| {
                     pin["kind"] == kind && pin["key"] == key && {
                         let source = &registry.sources.iter().find(|s| s.id == SOURCES[owner(kind).unwrap()]).unwrap();
                         match source.refresh {
                             crate::sources::Refresh::Manual => false,
+                            crate::sources::Refresh::Days(_) if kind == "file" => false,
                             crate::sources::Refresh::Days(days) => pin["checked_at"]
                                 .as_str()
                                 .and_then(date::seconds)
@@ -726,6 +741,12 @@ mod tests {
             .unwrap()
             .success());
         assert!(std::process::Command::new("git").args(["add", "."]).current_dir(&root).status().unwrap().success());
+        let config = root.join("data/sources.toml");
+        fs::write(
+            &config,
+            fs::read_to_string(&config).unwrap().replace("id = \"wikidata\"", "id = \"wikidata\"\nrefresh = 1"),
+        )
+        .unwrap();
         let (out, manifest) = staged(&store, "expired-input");
         admit(&store, &out, &manifest, &[("content".into(), "old-query".into())], "2026-01-01", "wikidata").unwrap();
         let old = store.partial("capture-retained/out");
@@ -741,15 +762,21 @@ a=p.parse_args(); request=json.load(open(a.requests)); inputs=json.load(open(a.i
 pin=next(x for x in inputs if x['kind']=='entity' and x['key']=='Q1')
 if a.adopt:
  assert request['refresh'] is True
- assert pin['checked_at']=='2026-01-01T00:00:00Z'
+ assert request['entities']==(['Q1'] if pin['checked_at']=='2026-01-01T00:00:00Z' or len(request['check_id'].split('-'))==6 else ['Q2'])
 else:
  assert request['refresh'] is False
  assert pin['checked_at']!='2026-01-01T00:00:00Z'
-data=pathlib.Path(pin['path']).read_bytes(); digest=hashlib.sha256(data).hexdigest()
-out=pathlib.Path(a.out); relative='content/entity/'+digest+'.json'
-(out/relative).parent.mkdir(parents=True,exist_ok=True); (out/relative).write_bytes(data)
-pin['path']=relative; pin['checked_at']=datetime.datetime.now(datetime.timezone.utc).isoformat()
-(out/'manifest.json').write_text(json.dumps({'schema':1,'complete':True,'failures':[],'records':[pin]}))
+records=[]; out=pathlib.Path(a.out)
+for key in request['entities']:
+ retained=next((x for x in inputs if x['kind']=='entity' and x['key']==key),None)
+ data=pathlib.Path(retained['path']).read_bytes() if retained else json.dumps({'kind':'entity','key':key,'status':'missing'}).encode()
+ digest=hashlib.sha256(data).hexdigest(); relative='content/entity/'+digest+'.json'
+ (out/relative).parent.mkdir(parents=True,exist_ok=True); (out/relative).write_bytes(data)
+ record=dict(retained) if retained else dict(kind='entity',key=key,status='missing',sha256=digest)
+ record['path']=relative
+ if a.adopt: record['checked_at']=datetime.datetime.now(datetime.timezone.utc).isoformat()
+ records.append(record)
+(out/'manifest.json').write_text(json.dumps({'schema':1,'complete':True,'failures':[],'records':records}))
 "#,
         )
         .unwrap();
@@ -757,6 +784,15 @@ pin['path']=relative; pin['checked_at']=datetime.datetime.now(datetime.timezone.
         let snapshot = run(&root, &store, &Request { refresh: false, source, version: None, params }, None).unwrap();
         assert!(snapshot.files.iter().any(|file| file.sha256 == manifest["records"][0]["sha256"]));
         assert_ne!(inputs(&store).unwrap()[0]["checked_at"], "2026-01-01T00:00:00Z");
+        let mixed = vec![("content".into(), "{\"entities\":[\"Q1\",\"Q2\"]}".into())];
+        run(&root, &store, &Request { refresh: false, source, version: None, params: mixed }, None).unwrap();
+        assert!(inputs(&store).unwrap().iter().any(|pin| pin["key"] == "Q2" && pin["status"] == "missing"));
+        let before = inputs(&store).unwrap().into_iter().find(|pin| pin["key"] == "Q1").unwrap();
+        let explicit = vec![("content".into(), "{\"entities\":[\"Q1\"]}".into())];
+        run(&root, &store, &Request { refresh: true, source, version: None, params: explicit }, None).unwrap();
+        let after = inputs(&store).unwrap().into_iter().find(|pin| pin["key"] == "Q1").unwrap();
+        assert_eq!(before["sha256"], after["sha256"]);
+        assert_ne!(before["checked_at"], after["checked_at"]);
     }
 
     #[test]
