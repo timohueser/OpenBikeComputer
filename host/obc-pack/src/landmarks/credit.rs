@@ -25,6 +25,14 @@ pub fn article(attribution: &Attribution) -> Result<Credit, &'static str> {
 /// On Commons the file name is the file page, so it names the photo and locates it. A licensor's
 /// requested attribution replaces the plain author.
 pub fn photo(attribution: &Attribution) -> Result<Credit, &'static str> {
+    photo_credit(attribution, true)
+}
+
+pub fn online_photo(attribution: &Attribution) -> Result<Credit, &'static str> {
+    photo_credit(attribution, false)
+}
+
+fn photo_credit(attribution: &Attribution, transformed: bool) -> Result<Credit, &'static str> {
     let file =
         attribution.source_url.strip_prefix("https://commons.wikimedia.org/wiki/File:").ok_or("photo_source_url")?;
     let file = percent_encoding::percent_decode_str(file).decode_utf8().map_err(|_| "photo_source_url")?;
@@ -54,15 +62,14 @@ pub fn photo(attribution: &Attribution) -> Result<Credit, &'static str> {
         creator.push_str(&residual);
     }
     let title = Some(plain("ObjectName")).filter(|value| !value.is_empty()).unwrap_or_else(|| file.replace('_', " "));
-    checked([attribution.source_url.clone(), title, creator, format!("{licence}; resized/dithered")]).map_err(
-        |reason| {
-            if !residual.is_empty() && matches!(reason, "attribution_bytes" | "attribution_glyph") {
-                "photo_permission_unsupported"
-            } else {
-                reason
-            }
-        },
-    )
+    let licence = if transformed { format!("{licence}; resized/dithered") } else { licence };
+    checked([attribution.source_url.clone(), title, creator, licence]).map_err(|reason| {
+        if !residual.is_empty() && matches!(reason, "attribution_bytes" | "attribution_glyph") {
+            "photo_permission_unsupported"
+        } else {
+            reason
+        }
+    })
 }
 
 /// Commons identifies a single licence block and its requested attribution with documented
@@ -283,6 +290,9 @@ mod tests {
             r#"{"Artist":{"value":"A.Savin"},"Permission":{"value":"Correct attribution is A.Savin, Wikipedia."}}"#,
         );
         assert_eq!(photo(&source).unwrap()[2], "A.Savin; Correct attribution is A.Savin, Wikipedia.");
+        let online = online_photo(&source).unwrap();
+        assert_eq!(online[2], photo(&source).unwrap()[2]);
+        assert_eq!(online[3], "FAL 1.3 artlibre.org/licence/lal/en/");
     }
 
     #[test]
