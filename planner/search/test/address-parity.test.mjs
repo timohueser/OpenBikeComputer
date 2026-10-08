@@ -12,6 +12,10 @@ test('parity measures missing houses and lookup regressions from the reference p
   try {
     assert.equal(compareAddresses(candidate.db,reference.db).fields.percent.all,100);
     assert.ok(equivalent(compareAddresses(candidate.db,reference.db)));
+    candidate.conn.exec("INSERT INTO addresses SELECT street_id,house,lon,lat,'extra' FROM addresses WHERE source='w123'");
+    assert.equal(compareAddresses(candidate.db,reference.db).identity.extra,1);
+    assert.ok(!equivalent(compareAddresses(candidate.db,reference.db)));
+    candidate.conn.exec("DELETE FROM addresses WHERE source='extra'");
     candidate.conn.exec("DELETE FROM addresses WHERE source='w123'");
     const result=compareAddresses(candidate.db,reference.db);
     assert.equal(result.identity.missing,1);
