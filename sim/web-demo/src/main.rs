@@ -119,6 +119,12 @@ mod web {
         with_demo(|d| d.find_ready())
     }
 
+    /// True once the route line or its selected stop has finished loading.
+    #[wasm_bindgen]
+    pub fn obc_demo_ahead_ready() -> bool {
+        with_demo(|d| d.ahead_ready())
+    }
+
     /// Shared immutable Visit review state; screen names alone cannot distinguish planning.
     #[wasm_bindgen]
     pub fn obc_demo_visit_status() -> String {

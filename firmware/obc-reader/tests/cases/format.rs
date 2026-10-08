@@ -694,7 +694,7 @@ fn header_has_scaled_section_offsets() {
     assert_eq!(poi_off % UNIT, 0, "every scaled offset names a unit boundary");
 
     // The directory there declares six categories and the shared 512-byte chunk size.
-    assert_eq!(bytes[poi_off], 7, "category_count");
+    assert_eq!(bytes[poi_off], obc_formats::obcm::POI_CATEGORY_COUNT, "category_count");
     assert_eq!(u16::from_le_bytes(bytes[poi_off + 1..poi_off + 3].try_into().unwrap()), 512, "shared chunk_size");
 
     // The nav-graph offset is likewise never 0: an empty graph still writes its directory and
@@ -726,7 +726,7 @@ fn empty_poi_directory_parses_six_empty_categories() {
 
     let dir = r.poi_directory();
     assert_eq!(dir.chunk_size, 512);
-    assert_eq!(dir.entries.len(), 7);
+    assert_eq!(dir.entries.len(), obc_formats::obcm::PoiCategory::ALL.len());
     for (k, e) in dir.entries.iter().enumerate() {
         assert_eq!(e.category_id, obc_formats::obcm::PoiCategory::ALL[k].id());
         assert!(e.is_empty(), "category {} is empty in a no-POI map", e.category_id);
@@ -819,7 +819,7 @@ fn populated_poi_category_round_trips_with_record_layout() {
 
     let dir = r.poi_directory();
     assert_eq!(dir.chunk_size, 512);
-    assert_eq!(dir.entries.len(), 7);
+    assert_eq!(dir.entries.len(), obc_formats::obcm::PoiCategory::ALL.len());
     let cat3 = dir.entries.iter().find(|e| e.category_id == 3).expect("category 3");
     assert!(!cat3.is_empty());
     assert_eq!(cat3.node_count, 1);
@@ -827,7 +827,7 @@ fn populated_poi_category_round_trips_with_record_layout() {
     assert_eq!(cat3.index_offset, cat3_index_off as u64);
     assert_eq!(cat3.data_start(), Some(cat3_chunk_off as u64), "chunks start after the 1-node index");
     // Every other category is still present and empty.
-    assert_eq!(dir.entries.iter().filter(|e| e.is_empty()).count(), 6);
+    assert_eq!(dir.entries.iter().filter(|e| e.is_empty()).count(), obc_formats::obcm::PoiCategory::ALL.len() - 1);
 
     // The hours-pool directory fields resolve to the pool and its two blobs.
     assert_eq!(dir.hours_pool_count, 2, "two pooled schedules");
@@ -983,7 +983,7 @@ fn poi_directory_rejects_out_of_bound_count_and_chunk_size() {
 
     // A hours_pool_count large enough to run the pool past EOF is rejected.
     let mut forged = bytes.clone();
-    let pool_count_at = poi_off + 3 + 7 * 13 + 4; // hours_pool_offset u32, then the u16 count
+    let pool_count_at = poi_off + 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 4; // hours_pool_offset u32, then the u16 count
     forged[pool_count_at..pool_count_at + 2].copy_from_slice(&0xFFFFu16.to_le_bytes());
     assert!(matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)), "pool count runs past EOF");
 }
@@ -994,18 +994,18 @@ fn empty_poi_directory_builder_matches_reader() {
     let dir = empty_poi_directory(AT);
     // The fixed-length directory, then filler to the boundary the zero-length indexes and the pool
     // are named at, the 2-byte empty-pool header, and filler to the nav directory's boundary.
-    assert_eq!(poi_dir_len(), 3 + 7 * 13 + 6);
+    assert_eq!(poi_dir_len(), 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 6);
     let pool_at = align_up(AT + poi_dir_len());
     assert_eq!(dir.len(), align_up(pool_at - AT + 2), "the section ends on a unit boundary");
-    assert_eq!(dir[0], 7);
+    assert_eq!(dir[0], obc_formats::obcm::POI_CATEGORY_COUNT);
     assert_eq!(u16::from_le_bytes([dir[1], dir[2]]), 512);
     // An offset cannot point at the directory's last byte, so they point at the next boundary.
-    for k in 0..7usize {
+    for k in 0..obc_formats::obcm::PoiCategory::ALL.len() {
         let entry = 3 + k * 13;
         assert_eq!(resolve_offset(&dir, entry + 1), pool_at, "category {k}'s empty index is nameable");
     }
-    let count_field = 3 + 7 * 13 + 4;
-    assert_eq!(resolve_offset(&dir, 3 + 7 * 13), pool_at, "hours_pool_offset");
+    let count_field = 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 4;
+    assert_eq!(resolve_offset(&dir, 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13), pool_at, "hours_pool_offset");
     assert_eq!(u16::from_le_bytes([dir[count_field], dir[count_field + 1]]), 0, "empty pool");
     assert!(dir[poi_dir_len()..pool_at - AT].iter().all(|&b| b == FILLER), "the gap behind the directory is 0xFF");
 }

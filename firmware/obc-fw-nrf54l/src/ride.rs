@@ -764,6 +764,8 @@ pub(crate) async fn run_app(
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
     let mut find_loading_painted = false;
+    let mut ahead_loading_painted = false;
+    let mut ahead_work_us = 0u64;
     let mut power_off = crate::panel_power::SystemOff;
     // The level last handed to the backlight, so the PWM is touched on a change rather than every
     // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
@@ -2688,6 +2690,34 @@ pub(crate) async fn run_app(
             let find_can_prepare = nav_guard.is_none();
             #[cfg(not(has_nav))]
             let find_can_prepare = true;
+            if !app.ahead_preparing() {
+                ahead_work_us = 0;
+            }
+            ahead_loading_painted &= app.ahead_preparing();
+            if ahead_loading_painted && crate::flpr_mux::storage_admitted() {
+                let places = crate::arena::claim_places();
+                let reader = Reader::new(flat_map, map_tables, map_cache);
+                let reader = places.as_ref().map_or(reader, |cache| reader.with_place_cache(cache));
+                let started = Instant::now();
+                loop {
+                    app.prepare_ahead(Some(&reader), route.as_ref());
+                    if !app.ahead_preparing() || started.elapsed().as_millis() >= 10 {
+                        break;
+                    }
+                }
+                ahead_work_us += started.elapsed().as_micros();
+                if !app.ahead_preparing() {
+                    defmt::info!("ahead: background work {} us", ahead_work_us);
+                    ahead_work_us = 0;
+                    #[cfg(feature = "debug-uart")]
+                    app.ahead_debug(|name, along, id, lon, lat| {
+                        defmt::info!("ahead row: {} along={} id={} lon={} lat={}", name, along, id, lon, lat)
+                    });
+                    ahead_loading_painted = false;
+                    dirty.map = true;
+                    dirty.region = None;
+                }
+            }
             let review_pending = app.assistant_route_pending();
             if (find_loading_painted || review_pending) && find_can_prepare && crate::flpr_mux::storage_admitted() {
                 let reader = Reader::new(flat_map, map_tables, map_cache);
@@ -2702,15 +2732,16 @@ pub(crate) async fn run_app(
                     dirty.region = None;
                 }
             }
-            if pending_map_redraw {
+            if pending_map_redraw && !ahead_loading_painted {
                 dirty.map = true;
                 dirty.region = None;
+                pending_map_redraw = false;
             }
-            pending_map_redraw = false;
             // A panel relaunch landed since the last pass: the fresh core has no frame history and
             // the diff store was reset, so schedule the full repaint even if nothing else is dirty.
             if display.take_relaunch_repaint() {
                 find_loading_painted = false;
+                ahead_loading_painted = false;
                 dirty.map = true;
                 dirty.region = None;
             }
@@ -2744,8 +2775,12 @@ pub(crate) async fn run_app(
             }
             // A region of opaque chrome repaints with no `Reader` and no map render: a static map
             // base's hold fill, or the Map's effort band, which the app marks opaque.
+            let ahead_spinner = ahead_loading_painted
+                && dirty.region == Some(obc_app::screen::needle_region(FRAME_W as i32, FRAME_H as i32));
             let map_free = dirty.map
-                && ((hold_region.is_some() && dirty.region == hold_region) || dirty.map_free_region().is_some());
+                && (ahead_spinner
+                    || (hold_region.is_some() && dirty.region == hold_region)
+                    || dirty.map_free_region().is_some());
             prev_hold_p = hold_p;
 
             // While a hold charges on the map view, defer expensive map redraws instead of rendering
@@ -2769,7 +2804,8 @@ pub(crate) async fn run_app(
             // a still-running search has no plan edge in it at all. Keyed on the plan's edge, this
             // branch would find `dirty.overlay` already spent on the chrome frame and paint nothing
             // for the rest of the search.
-            let frozen = app.reroute_freeze_active() || find_loading_painted;
+            let frozen =
+                app.reroute_freeze_active() || find_loading_painted || (ahead_loading_painted && !ahead_spinner);
             if frozen && dirty.map {
                 pending_map_redraw = true;
                 dirty.map = false;
@@ -2819,7 +2855,11 @@ pub(crate) async fn run_app(
                 let needs_map = sources.map && !map_free && !map_blocked;
                 // The flat map source is resolved once at boot and skipped on chrome-only frames,
                 // which keeps menu redraws free of map I/O.
-                let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
+                let places = if app.ahead_base_active() { crate::arena::claim_places() } else { None };
+                let reader = needs_map.then(|| {
+                    let reader = Reader::new(flat_map, map_tables, map_cache);
+                    places.as_ref().map_or(reader, |cache| reader.with_place_cache(cache))
+                });
                 if map_blocked || (needs_map && reader.is_none()) {
                     pending_map_redraw = true;
                     if needs_map {
@@ -2943,6 +2983,7 @@ pub(crate) async fn run_app(
             };
             if dirty.map && rendered.is_some() {
                 find_loading_painted = app.find_preparing();
+                ahead_loading_painted = app.ahead_preparing();
             }
             // Rendering can arm a marquee wake after the pass plan was made.
             (rendered, dirty.map, hold_p, app.ms_until_next_wake(now), immediate, t_store.elapsed().as_micros())
@@ -2993,6 +3034,7 @@ pub(crate) async fn run_app(
             // faulting.
             if !ok {
                 find_loading_painted = false;
+                ahead_loading_painted = false;
                 pending_map_redraw = true;
             }
 
@@ -3161,7 +3203,11 @@ pub(crate) async fn run_app(
         // "A search is live" is the app's fact, never the board's run handle: the mode is set when
         // the plan command drains and cleared by the answer, which brackets `nav_run` on both sides.
         let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
-        let animating = charging || planning || pending_map_redraw || display.overlay_owed() || overlay_span.is_some();
+        let animating = charging
+            || planning
+            || (pending_map_redraw && !ahead_loading_painted)
+            || display.overlay_owed()
+            || overlay_span.is_some();
         // The app's deadline, plus the reasons to come straight back: the plan's `immediate`, and the
         // executor's own `owed`. An outstanding store round trip takes the short animation cadence
         // instead, because spinning at full speed against a commit that runs for hundreds of
@@ -3180,7 +3226,8 @@ pub(crate) async fn run_app(
         } else {
             next_wake_ms
         };
-        let next_ms = if peak_view.busy() { Some(0) } else { next_ms };
+        // Search steps already bound their work. Charging animation must not delay the next step.
+        let next_ms = if peak_view.busy() || app.ahead_preparing() { Some(0) } else { next_ms };
         // The debug-uart build keeps a 2 Hz floor, so streamed telemetry and zoom commands stay
         // responsive on an otherwise-quiet screen.
         #[cfg(feature = "debug-uart")]

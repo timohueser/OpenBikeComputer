@@ -183,6 +183,7 @@ struct SimGui {
     /// the eframe setup.
     scratch: Box<obc_render::RenderScratch>,
     photo: obc_host_core::photo::Preparer,
+    places: Box<obc_reader::reader::places::PlaceCache>,
     /// The card route projection and its retained active geometry.
     store: RouteStore,
     /// The trips beside the routes: the grouped-route folders. Rescanned and re-fed with the route
@@ -406,6 +407,7 @@ impl SimGui {
             app,
             scratch: Box::new(obc_render::RenderScratch::new()),
             photo: obc_host_core::photo::Preparer::default(),
+            places: crate::place_cache(),
             store,
             trip_store,
             ride_store,
@@ -493,7 +495,7 @@ impl SimGui {
         // Reuse the session-long tables and chunk cache: the map is parsed once at startup, as the
         // device parses once at boot, so a frame costs one cheap `Reader` view. The map plane, nav,
         // POI, hours and routing all read it.
-        let reader = self.map.reader();
+        let reader = self.map.reader().with_place_cache(&self.places);
 
         // Feed the BLE seam with the control panel's injected link state, every frame, as the
         // board's ride loop feeds its own snapshot. An unchanged status repaints nothing.

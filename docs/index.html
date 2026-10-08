@@ -1140,20 +1140,20 @@
         },
         {
           id: 'ahead', title: 'Time to find the next stop',
-          blurb: '<b>Lunch, water, and the next bed are still up the road.</b> Up ahead merges your waypoints with nearby map POIs into one ride-ordered timeline.',
+          blurb: '<b>See what remains on the ride.</b> What’s Next shows towns, services and your waypoints in route order. The route end stays visible when no services are in range.',
           highlights: [
-            'Water, food, lodging and your own waypoints',
-            'Distance, climbing and off-route side at a glance',
-            'Hold Select to filter the timeline by category'
+            'Nearby services grouped under towns',
+            'Distance ahead and details for each stop',
+            'Squeeze Down + Back to filter services'
           ],
           staged: true,
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
             { cmds: ['context'], until: ["ContextDrawer"], label: 'Squeeze Down + Back for mid-ride tools' },
             { cmds: ['press'], until: ["Assistant"], label: 'Ride Assistant' },
-            { cmds: ['step:1', 'press'], until: ["WhatsNext"], label: 'What comes next on the ride' },
-            { cmds: ['press'], until: ["WhatsNext"], label: 'Explore waypoints and map places' },
-            { cmds: ['back'], until: ["WhatsNext"], label: 'Back to the overview' },
+            { cmds: ['step:1', 'press'], until: ["WhatsNext"], label: 'The route end ahead' },
+            { cmds: ['press'], until: ["WhatsNext"], label: 'Review the route end' },
+            { cmds: ['back'], until: ["WhatsNext"], label: 'Back to the route line' },
             { cmds: ['back'], until: ["Assistant"], label: 'Back to the questions' },
             { cmds: ['back'], until: ["Map"], label: 'Back on the route' }
           ]
@@ -1370,7 +1370,7 @@
             var reset = api.obc_demo_reset_status();
             if (reset === 'Failed') return resolve('reset-failed');
             var settled = !waitFor || (waitFor === 'places' ? api.obc_demo_find_ready() : api.obc_demo_visit_status() === waitFor);
-            if (reset === 'Ready' && settled && targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready())) return resolve('reached');
+            if (reset === 'Ready' && settled && targets.indexOf(screenName()) >= 0 && (screenName() !== 'PeakView' || api.obc_demo_peak_ready()) && (screenName() !== 'WhatsNext' || api.obc_demo_ahead_ready())) return resolve('reached');
             if (performance.now() - t0 > (targets.indexOf('PeakView') >= 0 ? 45000 : 12000)) return resolve('timeout');
             setTimeout(poll, 90);
           })();

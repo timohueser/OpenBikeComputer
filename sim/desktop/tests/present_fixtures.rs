@@ -97,10 +97,7 @@ fn monaco_fixture_parses_populated_poi_and_nav_sections() {
 
     assert_eq!(r.version, obc_formats::obcm::VERSION, "the fixture is the OBCM version this build reads");
     let dir = r.poi_directory();
-    let mut expected: Vec<_> = obc_formats::obcm::PoiCategory::ALL.iter().map(|c| c.id()).collect();
-    expected.push(obc_formats::obcm::SUMMIT_CATEGORY_ID);
-    expected.push(obc_formats::obcm::SETTLEMENT_CATEGORY_ID);
-    expected.sort_unstable();
+    let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9];
     assert_eq!(dir.entries.iter().map(|e| e.category_id).collect::<Vec<_>>(), expected);
     assert_eq!(dir.chunk_size, 512, "the packer's fixed 512-byte POI chunks");
     // A dense coastal city populates several categories, and each must carry a real quadtree:

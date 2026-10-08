@@ -516,8 +516,8 @@ the trailing **hours-pool section** (§7.5), reached from the directory's
 ### 7.1 POI Directory
 
 ```
-uint8   Category Count            (7, 8 or 9: the seven service categories plus the
-                                  optional landmark and settlement categories)
+uint8   Category Count            (7 to 12: seven base services plus optional
+                                  landmarks, settlements and additional services)
 uint16  Chunk Size                (POI chunk capacity in bytes — the packer writes 512)
 per category (Category Count entries, 13 bytes each):
   uint8   Category ID
@@ -657,8 +657,13 @@ end-of-chunk sentinel and can never be a subtype id.
 | 9 | Settlement | 22 | `place=town` | Town |
 | 9 | Settlement | 23 | `place=village` | Village |
 | 9 | Settlement | 24 | `place=hamlet` | Hamlet |
+| 10 | Restaurant | 25 | `amenity=restaurant` | Restaurant |
+| 11 | Cafe | 26 | `amenity=cafe` | Cafe |
+| 12 | Fuel station | 27 | `amenity=fuel` | Fuel station |
 
-The seven service categories (IDs 1–6 and 8) are always present in the directory. Category 7 is an optional
+Additional service categories 10–12 are optional. Fuel stations are distinct from shops.
+
+The seven base service categories (IDs 1–6 and 8) are always present in the directory. Category 7 is an optional
 landmark index for Peak View and is not part of the service POI browser. The producer emits
 it only when named summit nodes exist. Closed-way centroids and unnamed peaks are excluded.
 Each subtype belongs to exactly one category; its record must be stored in that category.

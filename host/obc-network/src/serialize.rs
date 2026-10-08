@@ -191,7 +191,7 @@ pub fn serialize_poi_pool(
     }
     category_ids.sort_unstable();
     let category_count = category_ids.len();
-    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=SETTLEMENT_CATEGORY_ID).map(|_| Vec::new()).collect();
+    let mut by_cat: Vec<Vec<PoiPoint>> = (0..=category_ids.last().copied().unwrap_or(0)).map(|_| Vec::new()).collect();
     for (p, hours_ref) in pois.iter().zip(refs.iter()) {
         let cat = table_row(p.subtype).category() as usize;
         by_cat[cat].push(PoiPoint {

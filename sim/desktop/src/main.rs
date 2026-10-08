@@ -1091,6 +1091,15 @@ Other:
 display calibration remain available from the GUI control panel.
 "#;
 
+fn place_cache() -> Box<obc_reader::reader::places::PlaceCache> {
+    let mut cache = Box::<obc_reader::reader::places::PlaceCache>::new_uninit();
+    // SAFETY: the new allocation is aligned, writable and exclusively owned.
+    unsafe {
+        obc_reader::reader::places::PlaceCache::init_in_place(cache.as_mut_ptr());
+        cache.assume_init()
+    }
+}
+
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--obc-build-identity") {
         println!(
@@ -1242,6 +1251,8 @@ fn main() {
         // One reader over the one map file: the map plane, nav, POI, hours and routing all read
         // it, as they do on the device.
         let reader = map.reader();
+        let places = place_cache();
+        let reader = reader.with_place_cache(&places);
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
             cx = lon;

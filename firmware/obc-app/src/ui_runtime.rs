@@ -184,9 +184,13 @@ impl UiRuntime {
         let first = base + usize::from(self.base_frozen());
         let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;
+        let ahead_pending = self.ahead.pending();
         let screens = self.stack.iter_mut().skip(first);
         let ticks = screens
-            .map(|scr| scr.tick_timers(self.now_ms, now, ms_to_next_minute, settings, w, h, pan_active, tracking))
+            .map(|scr| match scr {
+                Screen::WhatsNext(s) => s.tick_timers(self.now_ms, w, h, ahead_pending),
+                _ => scr.tick_timers(self.now_ms, now, ms_to_next_minute, settings, w, h, pan_active, tracking),
+            })
             .chain(core::iter::once(self.marquee.tick(self.now_ms)));
         for tick in ticks {
             // A change that promises a containing region accumulates apart from the full-frame
@@ -518,7 +522,8 @@ impl UiRuntime {
     /// card cannot be forgotten here. The base answers, because a sheet over a card is not
     /// consent to take the card away.
     fn idle_return_exempt(&self) -> bool {
-        crate::screen::base_screen(&self.stack).is_some_and(|s| s.caps().idle_exempt)
+        crate::screen::base_screen(&self.stack)
+            .is_some_and(|s| s.caps().idle_exempt || (matches!(s, Screen::WhatsNext(_)) && self.ahead.pending()))
     }
 
     /// Whether the top screen is a deliberate ride view that must never time out while a ride is

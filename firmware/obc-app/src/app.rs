@@ -2954,11 +2954,6 @@ impl App {
         {
             self.ui.map_dirty = true;
         }
-        // A kept Overview holds no query, so only its own quarter-hour stamp can ask for a new one.
-        // Only a visible Overview asks: a covered one would ask on every pass.
-        if matches!(self.ui.stack.last(), Some(Screen::WhatsNext(_))) && self.ui.ahead.overview_expired(place_local) {
-            self.ui.map_dirty = true;
-        }
         if self.ui.stack.iter().any(|screen| {
             matches!(
                 screen,
@@ -3005,6 +3000,7 @@ impl App {
         if self.photo_pending()
             || self.landmarks_pending()
             || self.find_preparing()
+            || self.ahead_preparing()
             || self.assistant_route_pending()
             || (matches!(self.top_screen(), Screen::VisitReview(_))
                 && self.assistant_review_status() == crate::navigator::ReviewStatus::Planning)
@@ -3143,11 +3139,9 @@ impl App {
         // Rebuild the cached elevation profile when the active route changes — it streams every
         // chunk, so it's built once on load, never per frame; clears when no route is loaded.
         self.navigator.refresh_route_profile(route);
-        if self.ui.stack.iter().any(|s| matches!(s, Screen::WhatsNext(_))) {
-            let scope = self.up_ahead_scope();
-            let local = self.place_local_time();
-            self.ui.ahead.prepare(reader, route, self.navigator.climbs(), scope, &mut self.ui.corridor_scratch, local);
-            if self.ui.ahead.pending() {
+        if render_clip.is_none() {
+            self.prepare_ahead(reader, route);
+            if self.ahead_preparing() {
                 self.ui.map_dirty = true;
                 self.ui.next_wake_ms = Some(1);
             }
@@ -4860,7 +4854,7 @@ mod tests {
         app.advance_animations(InputClock(2_000));
         assert_eq!(
             app.ui.corridor_scratch.armed().map(|k| k.filter),
-            Some(PoiCategorySet::ALL),
+            Some(crate::whats_next::DEFAULT_FILTER),
             "the screen's own key wins the shared buffer"
         );
     }
@@ -5890,6 +5884,42 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the overview keeps the whole window");
         idle_tick(&mut app, 135_000);
         assert!(matches!(app.top_screen(), Screen::Home(_)), "the restarted timeout eventually fires");
+    }
+
+    #[test]
+    fn ahead_loading_suspends_idle_return_until_the_query_stops() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.settings.idle_return = IdleReturn::S15;
+        app.open_whats_next();
+        idle_tick(&mut app, 120_000);
+        assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
+        assert!(!app.ui.idle_return_timing);
+
+        app.ui.ahead.invalidate();
+        idle_tick(&mut app, 120_000);
+        assert_eq!(app.ui.last_input_ms, 120_000);
+        idle_tick(&mut app, 134_999);
+        assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
+        idle_tick(&mut app, 135_000);
+        assert!(matches!(app.top_screen(), Screen::Home(_)));
+    }
+
+    #[test]
+    fn ahead_spinner_repaints_only_its_disc_and_stops_when_ready() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.open_whats_next();
+        app.ui.frame_size = (240, 320);
+        idle_tick(&mut app, 0);
+        let _ = app.take_dirty();
+        idle_tick(&mut app, 80);
+        assert!(!app.take_dirty().map, "search work keeps the time between compass frames");
+        idle_tick(&mut app, 166);
+        let dirty = app.take_dirty();
+        assert!(dirty.map);
+        assert_eq!(dirty.region, Some(crate::screen::needle_region(240, 320)));
+        app.ui.ahead.invalidate();
+        idle_tick(&mut app, 332);
+        assert!(!app.take_dirty().map, "completed or failed searches stop the compass");
     }
 
     /// The route-less browse map is a deliberate view, so it is exempt even though it is not the

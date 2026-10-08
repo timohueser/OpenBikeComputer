@@ -189,8 +189,8 @@ fn poi_hours_corrupt_count_past_eof_is_none() {
 
     let real_len = bytes.len();
     let poi_off = resolve_offset(&bytes, 32);
-    let count_field = poi_off + 3 + 7 * 13 + 4;
-    let off_field = poi_off + 3 + 7 * 13; // hours_pool_offset u32 (scaled)
+    let count_field = poi_off + 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13 + 4;
+    let off_field = poi_off + 3 + obc_formats::obcm::PoiCategory::ALL.len() * 13; // hours_pool_offset u32 (scaled)
     let pool_off = resolve_offset(&bytes, off_field);
     // Forge just enough blobs that the last one's read runs one blob past the real bytes, derived
     // from the real length so it survives a change in the trailing nav section's size.

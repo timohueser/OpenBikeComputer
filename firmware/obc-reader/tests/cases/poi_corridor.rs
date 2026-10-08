@@ -72,6 +72,10 @@ fn chunk_len_m(c: &[(i32, i32)]) -> f32 {
 }
 
 impl RoutePath for FixturePath {
+    fn geometry_generation(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
@@ -105,6 +109,18 @@ fn query(bytes: &[u8], cats: PoiCategorySet, path: &FixturePath, progress_m: u32
     let r = Reader::new(&src, &tables, &cache);
     let mut out = heapless::Vec::<CorridorPoi, MAX_CORRIDOR_RESULTS>::new();
     r.corridor_pois(cats, path, progress_m, &mut out).unwrap();
+    let mut places = Box::<obc_reader::reader::places::PlaceCache>::new_uninit();
+    // SAFETY: the allocation is aligned and exclusively owned.
+    let places = unsafe {
+        obc_reader::reader::places::PlaceCache::init_in_place(places.as_mut_ptr());
+        places.assume_init()
+    };
+    let cached = r.with_place_cache(&places);
+    for _ in 0..2 {
+        let mut hits = heapless::Vec::<CorridorPoi, MAX_CORRIDOR_RESULTS>::new();
+        cached.corridor_pois(cats, path, progress_m, &mut hits).unwrap();
+        assert_eq!(hits, out, "cold and warm search work must preserve every encounter");
+    }
     out.into_iter().collect()
 }
 
@@ -421,11 +437,28 @@ fn meanders_across_chunks_keep_one_nearest_encounter_per_pass_and_stable_pages()
         assert_eq!(hits[1].offset_m, 167);
         assert!(hits[0].dist_along_m < hits[1].dist_along_m);
         assert_eq!(hits[0].poi.metadata.source, hits[1].poi.metadata.source);
+        let midpoint = (hits[0].dist_along_m + hits[1].dist_along_m) / 2;
+        for near in [0, hits[0].dist_along_m, midpoint, midpoint + 1, hits[1].dist_along_m, u32::MAX] {
+            let encounter = obc_reader::reader::places::nearest_encounter(&path, (7_120_000, LAT + 1_620), 300, near)
+                .unwrap()
+                .unwrap();
+            let expected = if near <= midpoint { &hits[0] } else { &hits[1] };
+            assert_eq!(encounter.along_m, expected.dist_along_m);
+            assert!(encounter.contains(near));
+            assert_eq!(encounter.from_m, if near <= midpoint { 0 } else { midpoint + 1 });
+            assert_eq!(encounter.to_m, if near <= midpoint { midpoint } else { u32::MAX });
+        }
 
         let source = CountingSource::new(&bytes);
         let tables = MapTables::parse(&source).unwrap();
         let cache = MapCache::new();
-        let reader = Reader::new(&source, &tables, &cache);
+        let mut places = Box::<obc_reader::reader::places::PlaceCache>::new_uninit();
+        // SAFETY: the allocation is aligned and exclusively owned.
+        let places = unsafe {
+            obc_reader::reader::places::PlaceCache::init_in_place(places.as_mut_ptr());
+            places.assume_init()
+        };
+        let reader = Reader::new(&source, &tables, &cache).with_place_cache(&places);
         let mut q = PlaceQuery::new(
             3,
             PoiCategorySet::ALL,
@@ -439,7 +472,8 @@ fn meanders_across_chunks_keep_one_nearest_encounter_per_pass_and_stable_pages()
                 let before_map = source.reads.get();
                 let state = q.step(&reader, Some(&path), 3, page);
                 assert!(path.visits.get() - before_route <= 1, "one route chunk per step");
-                assert!(source.reads.get() - before_map <= 1, "one POI/index chunk per step");
+                // A 512-byte POI chunk can straddle two aligned cache sectors.
+                assert!(source.reads.get() - before_map <= 2, "at most two sectors per POI/index chunk");
                 if state != QueryProgress::Pending {
                     assert!(matches!(state, QueryProgress::Ready { .. }));
                     return;

@@ -6,7 +6,6 @@ use obc_render::Surface;
 
 pub const OFF_ROUTE_HINT_M: i32 = 50;
 pub(super) const ARROW_W: i32 = 7;
-pub(super) const ARROW_GAP: i32 = 4;
 
 pub(crate) fn poi_row_name(poi: &obc_reader::Poi) -> &str {
     if poi.name.is_empty() {

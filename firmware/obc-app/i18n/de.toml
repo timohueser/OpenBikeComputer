@@ -348,6 +348,9 @@ hold_to_erase = "Halten: löschen"
 # --- The six POI categories (obcm §7.4): the browser's rows, the POI list's title, and the
 # "Up ahead" category picker all draw these ---
 [poi_cat]
+restaurant = "Restaurant"
+cafe = "Café"
+fuel = "Tankstelle"
 water = "Wasser"
 campsite = "Campingplatz"
 accommodation = "Unterkunft"
@@ -707,6 +710,7 @@ power_hold = "AUSWAHL HALTEN"
 powering_off = "SCHALTET AUS..."
 
 [ahead]
+route_end = "Routenende"
 next = "Nächste"
 ahead = "Voraus"
 no_route = "Keine aktive Route"
@@ -730,7 +734,6 @@ custom = "Eigener Wegpunkt"
 access = "abseits: Zugang unbekannt"
 whole_climb = "ganzer Anstieg"
 at = "bei"
-partial = "Daten unvollständig"
 
 [route_cleanup]
 title = "SPEICHER VOLL"

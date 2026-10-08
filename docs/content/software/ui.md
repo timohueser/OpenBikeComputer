@@ -219,9 +219,10 @@ promises a rideable connection.
 
 ### What is next
 
-The overview freezes a 5 km or 10 km window: ascent, descent, next climb, waypoint,
-water, and shop. Explore ahead opens its timeline with drawer filters.
-Hold to refresh; figures stay fixed while the rider reads.
+The line shows the remaining route, with places ahead below the rider. Settlements group
+nearby services; waypoints and the route end stay visible through filters. Larger spaces
+mark long distances between stops. Select opens details. Hold refreshes the list.
+Service records follow the [map format](src:specs/OBCM_Spec.md).
 
 ### Nearby landmarks
 

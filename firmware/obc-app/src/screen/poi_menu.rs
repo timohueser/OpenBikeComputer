@@ -15,6 +15,9 @@ pub(crate) fn category_msg(cat: PoiCategory) -> Msg {
         PoiCategory::Pharmacy => Msg::PoiCatPharmacy,
         PoiCategory::BikeShop => Msg::PoiCatBikeShop,
         PoiCategory::Train => Msg::PoiCatTrain,
+        PoiCategory::Restaurant => Msg::PoiCatRestaurant,
+        PoiCategory::Cafe => Msg::PoiCatCafe,
+        PoiCategory::Fuel => Msg::PoiCatFuel,
     }
 }
 
@@ -30,6 +33,9 @@ pub(super) fn draw_category_icon(cv: &mut impl Surface, cat: PoiCategory, c: Poi
         PoiCategory::Pharmacy => icon_pharmacy(cv, c, color, bg),
         PoiCategory::BikeShop => icon_bike(cv, c, color, bg),
         PoiCategory::Train => icon_train(cv, c, color, bg),
+        PoiCategory::Restaurant => icon_restaurant(cv, c, color),
+        PoiCategory::Cafe => icon_cafe(cv, c, color, bg),
+        PoiCategory::Fuel => icon_fuel(cv, c, color, bg),
     }
 }
 
@@ -110,4 +116,28 @@ fn icon_train(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     cv.disc(Point::new(c.x + 4, c.y + 4), 2, bg);
     cv.line(Point::new(c.x - 4, c.y + 8), Point::new(c.x - 7, c.y + 11), color);
     cv.line(Point::new(c.x + 4, c.y + 8), Point::new(c.x + 7, c.y + 11), color);
+}
+
+fn icon_restaurant(cv: &mut impl Surface, c: Point, ink: u16) {
+    for x in [-8, -5, -2] {
+        cv.vline(c.x + x, c.y - 9, 8, 1, ink);
+    }
+    cv.hline(c.x - 8, c.y - 1, 7, ink);
+    cv.vline(c.x - 5, c.y - 1, 12, 2, ink);
+    cv.fill(rect(c.x + 4, c.y - 9, 4, 11), ink);
+    cv.vline(c.x + 6, c.y + 2, 9, 2, ink);
+}
+fn icon_cafe(cv: &mut impl Surface, c: Point, ink: u16, bg: u16) {
+    cv.disc(Point::new(c.x + 7, c.y), 5, ink);
+    cv.disc(Point::new(c.x + 7, c.y), 3, bg);
+    cv.round(rect(c.x - 9, c.y - 6, 15, 14), 3, ink);
+    cv.fill(rect(c.x - 11, c.y + 9, 23, 2), ink);
+}
+fn icon_fuel(cv: &mut impl Surface, c: Point, ink: u16, bg: u16) {
+    cv.round(rect(c.x - 9, c.y - 10, 13, 20), 2, ink);
+    cv.fill(rect(c.x - 7, c.y - 7, 9, 6), bg);
+    cv.fill(rect(c.x - 11, c.y + 9, 17, 2), ink);
+    cv.line(Point::new(c.x + 3, c.y), Point::new(c.x + 8, c.y + 5), ink);
+    cv.vline(c.x + 8, c.y - 4, 10, 2, ink);
+    cv.line(Point::new(c.x + 5, c.y - 8), Point::new(c.x + 9, c.y - 4), ink);
 }

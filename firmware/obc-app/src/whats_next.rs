@@ -1,184 +1,245 @@
-//! Prepared facts and a four-row view over one frozen accepted-route interval.
-//! Map places remain in the existing corridor page. Authored records are streamed independently
-//! of the riding waypoint cache, so browsing cannot change guidance or truncate the timeline.
+//! A bounded, paged line over the complete accepted route. Drawing reads prepared facts only.
 
-use crate::{
-    corridor::{quarter, CorridorKey, CorridorScratch, UpAheadScope},
-    settings::UpAheadSource,
-};
-use core::cmp::Ordering;
-use heapless::Vec;
-use obc_formats::obcm::SourceId;
+use crate::corridor::{CorridorKey, UpAheadScope};
+use heapless::{String, Vec};
+use obc_formats::obcm::{settlement_class_of, SettlementClass, SourceId};
 use obc_reader::{
-    hours::OpeningStatus,
-    reader::places::{PlaceKey, QueryProgress},
+    reader::places::{EncounterRange, HoursFilter, PlaceKey, PlaceQuery, PlaceWindow, QueryProgress},
     CorridorPoi, PoiCategory, PoiCategorySet, Reader,
 };
-use obc_route::{
-    window::{AheadRange, RouteWindow},
-    ClimbSeg, Climbs, RouteReader, WaypointCursor, WptEntry,
-};
+use obc_route::{window::RouteWindow, RouteReader, Waypoint, WaypointCursor};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Key {
-    Waypoint(u32, u16),
-    Climb(u32, u8),
-    Place(PlaceKey),
-}
+pub(crate) const ROWS: usize = 6;
+pub(crate) const SERVICES: [PoiCategory; 7] = [
+    PoiCategory::Water,
+    PoiCategory::Resupply,
+    PoiCategory::Restaurant,
+    PoiCategory::Cafe,
+    PoiCategory::BikeShop,
+    PoiCategory::Train,
+    PoiCategory::Fuel,
+];
+pub(crate) const DEFAULT_FILTER: PoiCategorySet = PoiCategorySet::only(PoiCategory::Water)
+    .with(PoiCategory::Resupply)
+    .with(PoiCategory::Restaurant)
+    .with(PoiCategory::Cafe)
+    .with(PoiCategory::BikeShop)
+    .with(PoiCategory::Train)
+    .with(PoiCategory::Fuel);
+const GROUP_M: u32 = 1_000;
+const SETTLEMENT_CORRIDOR_M: u16 = 1_150;
+const CORE: [PoiCategory; 2] = [PoiCategory::Water, PoiCategory::Resupply];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Key(pub u32, pub u8, pub u64);
 impl Key {
     pub fn distance(self) -> u32 {
-        match self {
-            Self::Waypoint(d, _) | Self::Climb(d, _) => d,
-            Self::Place(k) => k.occurrence,
-        }
-    }
-    fn order(self) -> (u32, u8, u64, u32) {
-        match self {
-            Self::Waypoint(d, i) => (d, 0, i.into(), 0),
-            Self::Climb(d, i) => (d, 1, i.into(), 0),
-            Self::Place(k) => (k.occurrence, 2, k.source.0, k.distance_m),
-        }
-    }
-    fn place_boundary(self, anchor: u32) -> PlaceKey {
-        match self {
-            Self::Place(k) => k,
-            _ => PlaceKey {
-                distance_m: self.distance().saturating_sub(anchor),
-                source: SourceId(0),
-                occurrence: self.distance(),
-            },
-        }
+        self.0
     }
 }
-impl Ord for Key {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.order().cmp(&other.order())
-    }
-}
-impl PartialOrd for Key {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Item {
-    Waypoint(WptEntry),
-    Climb(ClimbSeg),
-    Place(u8),
+    Waypoint(Waypoint),
+    Settlement(CorridorPoi, SettlementClass),
+    Place(CorridorPoi),
+    End,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StopFacts {
+    pub ascent_m: Option<u32>,
+    pub elevation_m: Option<i16>,
+}
+#[derive(Debug, Clone)]
 pub(crate) struct Row {
     pub key: Key,
     pub item: Item,
-    pub ascent_m: Option<u32>,
+    pub services: PoiCategorySet,
+    pub facts: Option<StopFacts>,
 }
-
+impl Row {
+    fn new(key: Key, item: Item) -> Self {
+        Self { key, item, services: PoiCategorySet::EMPTY, facts: None }
+    }
+    pub(crate) fn name(&self) -> &str {
+        match &self.item {
+            Item::Waypoint(w) => &w.name,
+            Item::Settlement(p, _) | Item::Place(p) => &p.poi.name,
+            Item::End => "",
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Page {
-    Overview,
     Timeline,
     Detail,
 }
 
+struct CachedOwner {
+    source: SourceId,
+    occurrence: u32,
+    owner: Option<(SourceId, u32)>,
+}
+
+struct CachedSettlement {
+    source: SourceId,
+    encounter: Option<EncounterRange>,
+}
+struct OwnerCache {
+    services: Vec<CachedOwner, 16>,
+    settlements: Vec<CachedSettlement, 8>,
+}
+impl OwnerCache {
+    const fn new() -> Self {
+        Self { services: Vec::new(), settlements: Vec::new() }
+    }
+    fn clear(&mut self) {
+        self.services.clear();
+        self.settlements.clear();
+    }
+}
+
+/// A source-free cursor and its current page; map and route bytes remain on the card.
+struct Scan {
+    query: PlaceQuery,
+    hits: Vec<CorridorPoi, 8>,
+    at: usize,
+    status: QueryProgress,
+}
+impl Scan {
+    fn new(query: PlaceQuery) -> Self {
+        Self { query, hits: Vec::new(), at: 0, status: QueryProgress::Pending }
+    }
+    fn step(&mut self, reader: &Reader, route: &RouteReader) {
+        for _ in 0..64 {
+            if self.status != QueryProgress::Pending {
+                break;
+            }
+            self.status = self.query.step(reader, Some(route), 0, &mut self.hits);
+        }
+    }
+    fn take(&mut self, backwards: bool) -> Option<CorridorPoi> {
+        if matches!(self.status, QueryProgress::Ready { .. }) {
+            let index = if backwards { self.hits.len().checked_sub(self.at + 1)? } else { self.at };
+            let hit = self.hits.get(index)?.clone();
+            self.at += 1;
+            Some(hit)
+        } else {
+            None
+        }
+    }
+    fn advance(&mut self, backwards: bool) -> bool {
+        if !matches!(self.status, QueryProgress::Ready { more: true, .. }) {
+            return false;
+        }
+        let edge = if backwards { self.hits.first() } else { self.hits.last() };
+        let Some(hit) = edge else {
+            return false;
+        };
+        let key = self.query.key(hit);
+        if backwards {
+            self.query.previous_page(key);
+        } else {
+            self.query.next_page(key);
+        }
+        self.hits.clear();
+        self.at = 0;
+        self.status = QueryProgress::Pending;
+        true
+    }
+}
+
 pub struct AheadState {
     pub(crate) window: Option<RouteWindow>,
-    pub(crate) range: AheadRange,
     pub(crate) page: Page,
-    pub(crate) totals: Option<(u32, u32)>,
-    pub(crate) next_waypoint: Option<WptEntry>,
-    pub(crate) climb: Option<ClimbSeg>,
-    pub(crate) water: Option<u32>,
-    pub(crate) shop: Option<u32>,
-    pub(crate) status: QueryProgress,
-    pub(crate) rows: Vec<Row, 4>,
+    pub(crate) rows: Vec<Row, ROWS>,
     pub(crate) selected: usize,
+    pub(crate) scroll: i32,
+    pub(crate) status: QueryProgress,
+    pub(crate) stale: bool,
+    pub(crate) detail_rows: Vec<CorridorPoi, 8>,
+    pub(crate) detail_selected: usize,
+    pub(crate) detail_more: bool,
     anchor: u32,
-    scope: Option<UpAheadScope>,
+    filter: PoiCategorySet,
     boundary: Option<Key>,
     backwards: bool,
-    /// The settled Overview's place status and the quarter hour it was taken at. It outlives a
-    /// visit to the Timeline, so Back shows the Overview without a new query.
-    overview: Option<(QueryProgress, Option<(u8, u16)>)>,
+    more: bool,
+    dirty: bool,
     cursor: Option<WaypointCursor>,
     ordinal: u16,
     authored_done: bool,
-    places_done: bool,
-    more: bool,
-    dirty: bool,
-    settled: bool,
-    pub(crate) stale: bool,
+    scan: Option<Scan>,
+    work: Option<Scan>,
+    candidate: Option<Row>,
+    map_done: bool,
+    detail_facts_dirty: bool,
+    detail_dirty: bool,
+    detail_boundary: Option<PlaceKey>,
+    detail_backwards: bool,
+    owners: OwnerCache,
+    pub(crate) detail_previous: bool,
+    pub(crate) route_name: String<64>,
 }
 impl AheadState {
     pub const fn new() -> Self {
         Self {
             window: None,
-            range: AheadRange::TenKm,
-            page: Page::Overview,
-            totals: None,
-            next_waypoint: None,
-            climb: None,
-            water: None,
-            shop: None,
-            status: QueryProgress::Unavailable,
+            page: Page::Timeline,
             rows: Vec::new(),
             selected: 0,
+            scroll: 0,
+            status: QueryProgress::Unavailable,
+            stale: false,
+            detail_rows: Vec::new(),
+            detail_selected: 0,
+            detail_more: false,
             anchor: 0,
-            scope: None,
+            filter: PoiCategorySet::ALL,
             boundary: None,
             backwards: false,
-            overview: None,
+            more: false,
+            dirty: true,
             cursor: None,
             ordinal: 0,
             authored_done: false,
-            places_done: false,
-            more: false,
-            dirty: true,
-            settled: false,
-            stale: false,
+            scan: None,
+            work: None,
+            candidate: None,
+            map_done: false,
+            detail_facts_dirty: false,
+            detail_dirty: false,
+            detail_boundary: None,
+            detail_backwards: false,
+            owners: OwnerCache::new(),
+            detail_previous: false,
+            route_name: String::new(),
         }
     }
     pub(crate) fn open(&mut self, anchor: u32) {
         *self = Self::new();
         self.anchor = anchor;
     }
-    pub(crate) fn range(&mut self, range: AheadRange) {
-        if self.range != range {
-            self.range = range;
-            self.window = None;
-            self.dirty = true;
-        }
-    }
-    pub(crate) fn explore(&mut self) {
-        self.page = Page::Timeline;
-        self.boundary = None;
-        self.backwards = false;
-        self.dirty = true;
-    }
-    pub(crate) fn back(&mut self) {
-        self.page = Page::Overview;
-        self.rows.clear();
-        self.boundary = None;
-        self.backwards = false;
-        if let Some((status, _)) = self.overview {
-            self.status = status;
-            self.authored_done = true;
-            self.places_done = true;
-            self.settled = true;
-        } else if !self.stale {
-            self.dirty = true;
-        }
-    }
-    /// Whether the kept Overview's opening status is from an earlier quarter hour.
-    pub(crate) fn overview_expired(&self, local: Option<(u8, u16)>) -> bool {
-        self.page == Page::Overview && self.overview.is_some_and(|(_, at)| at != quarter(local))
-    }
     pub(crate) fn refresh(&mut self, anchor: u32) {
-        self.stale = false;
-        self.anchor = anchor;
+        self.open(anchor);
+    }
+    pub(crate) fn invalidate(&mut self) {
+        self.stale = true;
         self.window = None;
-        self.boundary = None;
-        self.dirty = true;
+        self.rows.clear();
+        self.scan = None;
+        self.work = None;
+        self.status = QueryProgress::Unavailable;
+    }
+    pub(crate) fn pending(&self) -> bool {
+        !self.stale
+            && (self.dirty || !self.authored_done || !self.map_done || self.detail_facts_dirty || self.detail_dirty)
+    }
+    pub(crate) fn request(&self, scope: UpAheadScope) -> Option<CorridorKey> {
+        (self.pending() || self.filter != scope.filter).then_some(CorridorKey {
+            filter: scope.filter,
+            hours_filter: HoursFilter::All,
+            anchor_m: self.anchor,
+        })
     }
     pub(crate) fn has_next(&self) -> bool {
         if self.backwards {
@@ -195,45 +256,30 @@ impl AheadState {
         }
     }
     pub(crate) fn turn_page(&mut self, backwards: bool) {
-        let edge = if backwards { self.rows.first() } else { self.rows.last() };
-        if let Some(row) = edge {
+        if let Some(row) = if backwards { self.rows.first() } else { self.rows.last() } {
             self.boundary = Some(row.key);
             self.backwards = backwards;
             self.dirty = true;
         }
     }
-    pub(crate) fn invalidate(&mut self) {
-        self.stale = true;
-        self.window = None;
-        self.rows.clear();
-        self.next_waypoint = None;
-        self.totals = None;
-        self.status = QueryProgress::Unavailable;
-        self.authored_done = true;
-        self.places_done = true;
-        self.dirty = false;
+    pub(crate) fn open_detail(&mut self) {
+        self.page = Page::Detail;
+        self.detail_selected = 0;
+        self.detail_boundary = None;
+        self.detail_backwards = false;
+        self.detail_previous = false;
+        self.detail_rows.clear();
+        self.detail_facts_dirty = self.rows.get(self.selected).is_some_and(|r| r.facts.is_none());
+        self.detail_dirty = matches!(self.rows.get(self.selected).map(|r| &r.item), Some(Item::Settlement(..)));
+        self.work = None;
     }
-    pub(crate) fn pending(&self) -> bool {
-        self.dirty || !self.authored_done || !self.places_done
-    }
-    pub(crate) fn request(&self, scope: UpAheadScope) -> Option<CorridorKey> {
-        if self.stale || (self.page == Page::Overview && self.overview.is_some()) {
-            return None;
+    pub(crate) fn detail_page(&mut self, backwards: bool) {
+        if let Some(p) = if backwards { self.detail_rows.first() } else { self.detail_rows.last() } {
+            self.detail_boundary = Some(place_key(p));
+            self.detail_backwards = backwards;
+            self.detail_dirty = true;
+            self.work = None;
         }
-        let filter = if self.page == Page::Overview {
-            PoiCategorySet::only(PoiCategory::Water).with(PoiCategory::Resupply)
-        } else {
-            scope.filter
-        };
-        (self.page == Page::Overview || scope.source.shows_pois()).then_some(CorridorKey {
-            hours_filter: obc_reader::reader::places::HoursFilter::HideClosed,
-            filter,
-            anchor_m: self.window.map_or(self.anchor, |w| w.start_m),
-        })
-    }
-    /// Where a later Timeline page starts its place query.
-    fn start(&self, window: RouteWindow) -> Option<(PlaceKey, bool)> {
-        self.boundary.map(|boundary| (boundary.place_boundary(window.start_m), self.backwards))
     }
     fn keep(&self, key: Key) -> bool {
         self.boundary.is_none_or(|b| if self.backwards { key < b } else { key > b })
@@ -259,245 +305,451 @@ impl AheadState {
             let _ = self.rows.insert(i, row);
         }
     }
-    pub(crate) fn prepare(
-        &mut self,
-        reader: Option<&Reader>,
-        route: Option<&RouteReader>,
-        climbs: &Climbs,
-        scope: UpAheadScope,
-        scratch: &mut CorridorScratch,
-        local: Option<(u8, u16)>,
-    ) {
-        if self.stale {
-            scratch.disarm();
-            return;
-        }
-        if self.window.is_some_and(|w| route.is_none_or(|r| !w.matches(r))) {
-            self.invalidate();
-            scratch.disarm();
-            return;
-        }
-        let Some(route) = route else {
-            return self.fail(QueryProgress::Unavailable, scratch);
-        };
-        let window = RouteWindow::new(route, self.anchor, self.range);
-        if self.window != Some(window) {
-            self.boundary = None;
-            self.backwards = false;
-            self.overview = None;
-            self.dirty = true;
-            let facts = window.facts(route).and_then(|f| Ok((f, window.next_waypoint(route)?)));
-            let (facts, next_waypoint) = match facts {
-                Ok(facts) => facts,
-                Err(e) => return self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)), scratch),
-            };
-            self.window = Some(window);
-            self.totals = facts.complete_elevation().then_some((facts.ascent_m, facts.descent_m));
-            self.next_waypoint = next_waypoint.map(entry);
-            self.climb = window.climb(climbs).copied();
-        }
-        if self.overview_expired(local) {
-            self.dirty = true;
-        }
-        if self.settled
-            && self.request(scope).is_some()
-            && (scratch.pending() || matches!(scratch.status(), QueryProgress::Failed(_) | QueryProgress::Unavailable))
-        {
-            scratch.prepare_page(reader, Some(route), local, window.end_m, self.start(window));
-            self.status = scratch.status();
-            if matches!(self.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
-                self.rows.retain(|row| !matches!(row.item, Item::Place(_)));
-                self.selected = self.selected.min(self.rows.len().saturating_sub(1));
-            } else {
-                let selected = self.rows.get(self.selected).map(|row| row.key);
-                self.rows.retain(|row| selected == Some(row.key) || !matches!(row.item, Item::Place(i) if scratch.entries().get(i as usize).is_none_or(|p| p.poi.opening == OpeningStatus::Closed)));
-                self.selected = selected.and_then(|key| self.rows.iter().position(|row| row.key == key)).unwrap_or(0);
-            }
-        }
-        if self.scope != Some(scope) {
-            self.scope = Some(scope);
-            self.boundary = None;
-            self.backwards = false;
-            self.dirty = true;
-        }
-        if self.dirty {
-            self.settled = false;
-            self.rows.clear();
-            self.selected = 0;
-            self.more = false;
-            self.ordinal = 0;
-            // The Overview shows no authored rows, so only the Timeline walks them.
-            let overview = self.page == Page::Overview;
-            if overview {
-                self.overview = None;
-                self.water = None;
-                self.shop = None;
-            } else {
-                match route.waypoint_cursor() {
-                    Ok(cursor) => self.cursor = Some(cursor),
-                    Err(e) => return self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)), scratch),
-                }
-            }
-            self.authored_done = overview;
-            self.places_done = false;
-            scratch.invalidate();
-            if let Some(key) = self.request(scope) {
-                scratch.arm(key);
-            } else {
-                scratch.disarm();
-                self.places_done = true;
-            }
-            self.status = QueryProgress::Pending;
-            if !overview && scope.source == UpAheadSource::Both && scope.filter == PoiCategorySet::ALL {
-                for (i, c) in climbs.as_slice().iter().enumerate() {
-                    if window.contains(c.start_m) {
-                        self.insert(Row { key: Key::Climb(c.start_m, i as u8), item: Item::Climb(*c), ascent_m: None });
-                    }
-                }
-            }
-            self.dirty = false;
-        }
-        if !self.authored_done {
-            for _ in 0..16 {
-                match route.next_waypoint(self.cursor.as_mut().unwrap()) {
-                    // Waypoints are sorted by distance, so the first one past the window ends the walk.
-                    Ok(Some(w)) if w.dist_along_m <= window.end_m => {
-                        let index = self.ordinal;
-                        self.ordinal += 1;
-                        if window.contains(w.dist_along_m)
-                            && scope.source.shows_waypoints()
-                            && w.category().map_or(scope.filter == PoiCategorySet::ALL, |c| scope.filter.contains(c))
-                        {
-                            self.insert(Row {
-                                key: Key::Waypoint(w.dist_along_m, index),
-                                item: Item::Waypoint(entry(w)),
-                                ascent_m: None,
-                            });
-                        }
-                    }
-                    Ok(_) => {
-                        self.authored_done = true;
-                        break;
-                    }
-                    Err(e) => return self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)), scratch),
-                }
-            }
-        }
-        if !self.places_done {
-            if reader.is_none() {
-                scratch.cancel();
-                self.status = QueryProgress::Unavailable;
-                self.places_done = true;
-                return;
-            }
-            scratch.prepare_page(reader, Some(route), local, window.end_m, self.start(window));
-            self.status = scratch.status();
-            if let QueryProgress::Ready { more, .. } = self.status {
-                if self.page == Page::Overview {
-                    for p in scratch.entries().iter().filter(|p| p.poi.opening != OpeningStatus::Closed) {
-                        match obc_formats::obcm::poi_category_of(p.poi.subtype) {
-                            Some(PoiCategory::Water) if self.water.is_none() => self.water = Some(p.dist_along_m),
-                            Some(PoiCategory::Resupply) if self.shop.is_none() => self.shop = Some(p.dist_along_m),
-                            _ => {}
-                        }
-                    }
-                    if more && (self.water.is_none() || self.shop.is_none()) {
-                        if let Some(last) = scratch.entries().last() {
-                            let key = place_key(last);
-                            scratch.next_page(key);
-                            self.status = QueryProgress::Pending;
-                            return;
-                        }
-                    }
-                } else {
-                    for (i, p) in scratch.entries().iter().enumerate() {
-                        if p.poi.opening != OpeningStatus::Closed {
-                            self.insert(Row {
-                                key: Key::Place(place_key(p)),
-                                item: Item::Place(i as u8),
-                                ascent_m: None,
-                            });
-                        }
-                    }
-                    self.more |= more;
-                }
-                self.places_done = true;
-            } else if matches!(self.status, QueryProgress::Failed(_) | QueryProgress::Unavailable) {
-                self.places_done = true;
-            }
-        }
-        if self.authored_done && self.places_done && !self.settled {
-            self.settled = true;
-            if self.page == Page::Overview {
-                self.overview = Some((self.status, quarter(local)));
-                scratch.disarm();
-                return;
-            }
-            if self.backwards && self.rows.is_empty() {
-                self.boundary = None;
-                self.backwards = false;
-                self.dirty = true;
-                return;
-            }
-            if self.backwards {
-                self.selected = self.rows.len().saturating_sub(1);
-            }
-            let ends: Vec<u32, 4> = self.rows.iter().map(|row| row.key.distance()).collect();
-            let facts = route.interval_facts_to::<4>(window.start_m, &ends);
-            for (i, row) in self.rows.iter_mut().enumerate() {
-                let facts = facts.as_ref().ok().and_then(|facts| facts.get(i));
-                row.ascent_m = facts.filter(|f| f.complete_elevation()).map(|f| f.ascent_m);
-            }
-            if self.request(scope).is_none() {
-                self.status = QueryProgress::Ready { more: self.more, coverage_complete: true };
-            }
-        }
-    }
-    /// A read failure or a missing route shows no window. The next prepare starts it again.
-    fn fail(&mut self, status: QueryProgress, scratch: &mut CorridorScratch) {
-        self.window = None;
-        self.rows.clear();
-        self.totals = None;
-        self.next_waypoint = None;
-        self.status = status;
-        self.dirty = false;
-        self.authored_done = true;
-        self.places_done = true;
-        scratch.disarm();
-    }
 }
 impl Default for AheadState {
     fn default() -> Self {
         Self::new()
     }
 }
-fn entry(w: obc_route::Waypoint) -> WptEntry {
-    let category = w.category();
-    WptEntry {
-        dist_along_m: w.dist_along_m,
-        lon: w.lon,
-        lat: w.lat,
-        category,
-        lateral_offset_m: w.lateral_offset_m,
-        name: w.name,
-    }
-}
 pub(crate) fn place_key(p: &CorridorPoi) -> PlaceKey {
     PlaceKey { distance_m: p.poi.distance_m, source: p.poi.metadata.source, occurrence: p.dist_along_m }
 }
-
 impl crate::App {
-    /// Open the production overview at current accepted-route progress. Category is per-entry;
-    /// the rider's persisted source preference remains unchanged.
+    pub fn ahead_debug(&self, mut visit: impl FnMut(&str, u32, u64, i32, i32)) {
+        for row in &self.ui.ahead.rows {
+            if let Item::Settlement(p, _) | Item::Place(p) = &row.item {
+                visit(row.name(), row.key.0, p.poi.metadata.source.0, p.poi.lon, p.poi.lat);
+            }
+        }
+    }
+
+    pub fn ahead_base_active(&self) -> bool {
+        matches!(crate::screen::base_screen(&self.ui.stack), Some(crate::screen::Screen::WhatsNext(_)))
+    }
+
+    pub fn ahead_preparing(&self) -> bool {
+        matches!(self.top_screen(), crate::screen::Screen::WhatsNext(_)) && self.ui.ahead.pending()
+    }
+
+    /// Advance the query without repainting an unchanged loading screen.
+    pub fn prepare_ahead(&mut self, reader: Option<&Reader>, route: Option<&RouteReader>) {
+        if self.ui.stack.iter().any(|s| matches!(s, crate::screen::Screen::WhatsNext(_))) {
+            let scope = self.up_ahead_scope();
+            self.ui.ahead.prepare(reader, route, scope, self.place_local_time());
+            self.ui.reconcile_corridor(scope);
+        }
+    }
+
     pub fn open_whats_next(&mut self) {
         self.ui.ahead.open(self.navigator.route_state().progress_m);
-        self.state.up_ahead_filter = PoiCategorySet::ALL;
+        self.state.up_ahead_filter = DEFAULT_FILTER;
         crate::screen::apply(
             &mut self.ui.stack,
             crate::screen::Transition::Push(crate::screen::Screen::WhatsNext(crate::screen::WhatsNextScreen::new())),
         );
         self.ui.reconcile_corridor(self.up_ahead_scope());
         self.ui.map_dirty = true;
+    }
+}
+
+fn service_on_route(p: &CorridorPoi) -> bool {
+    obc_formats::obcm::poi_category_of(p.poi.subtype)
+        .is_some_and(|c| p.offset_m.unsigned_abs() <= if CORE.contains(&c) { 100 } else { 150 })
+}
+fn settlement_area(pos: (i32, i32)) -> obc_map_scene::BBox {
+    let pad_lat = 9_000;
+    let pad_lon = (pad_lat as f32 / obc_map_scene::cos_lat(pos.1).max(0.01)) as i32;
+    obc_map_scene::BBox {
+        min_lon: pos.0.saturating_sub(pad_lon),
+        max_lon: pos.0.saturating_add(pad_lon),
+        min_lat: pos.1.saturating_sub(pad_lat),
+        max_lat: pos.1.saturating_add(pad_lat),
+    }
+}
+
+/// OSM can describe one settlement as both a place node and an area. Prefer its named node;
+/// distinct place nodes and later route visits keep their own identities.
+fn settlement_duplicate(
+    reader: &Reader,
+    id: SourceId,
+    position: (i32, i32),
+    name: &str,
+    class: SettlementClass,
+) -> Result<bool, obc_reader::Error> {
+    if id.0 >> 62 == 1 {
+        return Ok(false);
+    }
+    let cl = obc_map_scene::cos_lat(position.1);
+    let mut duplicate = false;
+    reader.visit_settlements_in(&settlement_area(position), |s| {
+        duplicate |= s.source.0 >> 62 == 1
+            && s.class == class
+            && s.name == name
+            && obc_map_scene::ground_dist_m_cl(position, (s.lon, s.lat), cl) <= GROUP_M as f32;
+    })?;
+    Ok(duplicate)
+}
+
+fn owner(
+    cache: &mut OwnerCache,
+    reader: &Reader,
+    route: &RouteReader,
+    p: &CorridorPoi,
+    anchor: u32,
+) -> Result<Option<(SourceId, u32)>, obc_reader::Error> {
+    let key = (p.poi.metadata.source, p.dist_along_m);
+    if let Some(hit) = cache.services.iter().find(|hit| (hit.source, hit.occurrence) == key) {
+        return Ok(hit.owner);
+    }
+    use obc_map_scene::{cos_lat, ground_dist_m_cl};
+    let pos = (p.poi.lon, p.poi.lat);
+    let cl = cos_lat(pos.1);
+    let area = settlement_area(pos);
+    let mut error = None;
+    let mut nearest: Option<(u32, SourceId, (i32, i32))> = None;
+    reader.visit_settlements_in(&area, |s| {
+        let d = ground_dist_m_cl(pos, (s.lon, s.lat), cl) as u32;
+        let rank = (d, s.source, (s.lon, s.lat));
+        if d <= GROUP_M && nearest.is_none_or(|old| rank < old) {
+            match settlement_duplicate(reader, s.source, (s.lon, s.lat), &s.name, s.class) {
+                Ok(false) => nearest = Some(rank),
+                Ok(true) => {}
+                Err(e) => error = Some(e),
+            }
+        }
+    })?;
+    if let Some(error) = error {
+        return Err(error);
+    }
+    let owner = match nearest {
+        Some((_, id, position)) => {
+            let encounter = if let Some(hit) = cache
+                .settlements
+                .iter()
+                .find(|hit| hit.source == id && hit.encounter.is_none_or(|e| e.contains(p.dist_along_m)))
+            {
+                hit.encounter
+            } else {
+                let encounter = reader.nearest_encounter(route, position, SETTLEMENT_CORRIDOR_M, p.dist_along_m)?;
+                if cache.settlements.is_full() {
+                    cache.settlements.remove(0);
+                }
+                let _ = cache.settlements.push(CachedSettlement { source: id, encounter });
+                encounter
+            };
+            encounter.filter(|e| e.along_m >= anchor).map(|e| (id, e.along_m))
+        }
+        None => None,
+    };
+    if cache.services.is_full() {
+        cache.services.remove(0);
+    }
+    let _ = cache.services.push(CachedOwner { source: key.0, occurrence: key.1, owner });
+    Ok(owner)
+}
+fn query(filter: PoiCategorySet, from: u32, to: u32, width: u16, local: Option<(u8, u16)>) -> PlaceQuery {
+    PlaceQuery::new(0, filter, PlaceWindow::Corridor { from_m: from, to_m: to, half_width_m: width }, local)
+        .with_hours_filter(HoursFilter::All)
+}
+impl AheadState {
+    fn fail(&mut self, status: QueryProgress) {
+        self.status = status;
+        self.scan = None;
+        self.work = None;
+        self.candidate = None;
+        self.dirty = false;
+        self.authored_done = true;
+        self.map_done = true;
+        self.detail_facts_dirty = false;
+        self.detail_dirty = false;
+    }
+    fn services_query(&self, stop: &CorridorPoi, local: Option<(u8, u16)>) -> PlaceQuery {
+        let window = self.window.unwrap();
+        query(self.filter, window.start_m, window.end_m, 150, local).within((stop.poi.lon, stop.poi.lat), GROUP_M)
+    }
+    pub(crate) fn prepare(
+        &mut self,
+        reader: Option<&Reader>,
+        route: Option<&RouteReader>,
+        scope: UpAheadScope,
+        local: Option<(u8, u16)>,
+    ) {
+        if self.stale {
+            return;
+        }
+        let Some(route) = route else {
+            self.fail(QueryProgress::Unavailable);
+            return;
+        };
+        if self.window.is_some_and(|w| !w.matches(route)) {
+            self.invalidate();
+            return;
+        }
+        if self.filter != scope.filter {
+            self.filter = scope.filter;
+            self.boundary = None;
+            self.backwards = false;
+            self.dirty = true;
+        }
+        if self.dirty {
+            self.owners.clear();
+            self.rows.clear();
+            self.selected = 0;
+            self.scroll = 0;
+            self.more = false;
+            self.ordinal = 0;
+            self.detail_facts_dirty = false;
+            self.work = None;
+            self.candidate = None;
+            let window = RouteWindow {
+                identity: route.identity(),
+                start_m: self.anchor.min(route.total_distance_m),
+                end_m: route.total_distance_m,
+            };
+            self.window = Some(window);
+            self.route_name.clear();
+            let _ = self.route_name.push_str(route.name());
+            match route.waypoint_cursor() {
+                Ok(cursor) => self.cursor = Some(cursor),
+                Err(e) => {
+                    self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)));
+                    return;
+                }
+            }
+            self.authored_done = false;
+            let standalone =
+                CORE.into_iter().filter(|&c| self.filter.contains(c)).fold(PoiCategorySet::EMPTY, |s, c| s.with(c));
+            let mut q =
+                query(standalone, window.start_m, window.end_m, 100, local).with_settlements(SETTLEMENT_CORRIDOR_M);
+            if let Some(b) = self.boundary {
+                // At equal distance, authored waypoints precede map stops and the route end follows them.
+                q = q.starting_after(
+                    PlaceKey {
+                        distance_m: b.0.saturating_sub(window.start_m),
+                        source: SourceId(match b.1 {
+                            0 => 0,
+                            1 => b.2,
+                            _ => u64::MAX,
+                        }),
+                        occurrence: if b.1 == 2 { u32::MAX } else { b.0 },
+                    },
+                    self.backwards,
+                );
+            }
+            self.scan = reader.map(|_| Scan::new(q));
+            self.map_done = false;
+            self.status = if reader.is_some() { QueryProgress::Pending } else { QueryProgress::Unavailable };
+            self.insert(Row::new(Key(window.end_m, 2, 0), Item::End));
+            self.dirty = false;
+        }
+        if !self.authored_done {
+            for _ in 0..16 {
+                match route.next_waypoint(self.cursor.as_mut().unwrap()) {
+                    Ok(Some(w)) => {
+                        let index = self.ordinal;
+                        self.ordinal += 1;
+                        if self.window.unwrap().contains(w.dist_along_m) {
+                            self.insert(Row::new(Key(w.dist_along_m, 0, u64::from(index)), Item::Waypoint(w)));
+                        }
+                    }
+                    Ok(None) => {
+                        self.authored_done = true;
+                        break;
+                    }
+                    Err(e) => {
+                        self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)));
+                        return;
+                    }
+                }
+            }
+            return;
+        }
+        if !self.map_done {
+            if let Some(reader) = reader {
+                if let Err(e) = self.prepare_map(reader, route, local) {
+                    self.fail(QueryProgress::Failed(e));
+                }
+            } else {
+                self.finish_map();
+            }
+            return;
+        }
+        if self.detail_facts_dirty {
+            self.detail_facts_dirty = false;
+            if let Err(e) = self.prepare_detail_facts(route) {
+                self.fail(QueryProgress::Failed(obc_reader::Error::Source(e)));
+            }
+            return;
+        }
+        if self.detail_dirty {
+            if let Some(reader) = reader {
+                if let Err(e) = self.prepare_detail(reader, route, local) {
+                    self.fail(QueryProgress::Failed(e));
+                }
+            } else {
+                self.fail(QueryProgress::Unavailable);
+            }
+        }
+    }
+    fn prepare_map(
+        &mut self,
+        reader: &Reader,
+        route: &RouteReader,
+        local: Option<(u8, u16)>,
+    ) -> Result<(), obc_reader::Error> {
+        if self.candidate.is_some() {
+            let work = self.work.as_mut().unwrap();
+            work.step(reader, route);
+            match work.status {
+                QueryProgress::Pending => return Ok(()),
+                QueryProgress::Failed(e) => return Err(e),
+                _ => {}
+            }
+            while let Some(p) = work.take(false) {
+                let row = self.candidate.as_mut().unwrap();
+                let Item::Settlement(stop, _) = &row.item else { unreachable!() };
+                if service_on_route(&p)
+                    && owner(&mut self.owners, reader, route, &p, self.anchor)?
+                        == Some((stop.poi.metadata.source, stop.dist_along_m))
+                {
+                    if let Some(cat) = obc_formats::obcm::poi_category_of(p.poi.subtype) {
+                        row.services = row.services.with(cat);
+                    }
+                }
+            }
+            if work.advance(false) {
+                return Ok(());
+            }
+            let row = self.candidate.take().unwrap();
+            self.work = None;
+            if !row.services.is_empty() {
+                self.insert(row);
+            }
+            return Ok(());
+        }
+        let scan = self.scan.as_mut().unwrap();
+        scan.step(reader, route);
+        match scan.status {
+            QueryProgress::Pending => return Ok(()),
+            QueryProgress::Failed(e) => return Err(e),
+            _ => {}
+        }
+        let hit = scan.take(self.backwards);
+        if let Some(p) = hit {
+            let key = Key(p.dist_along_m, 1, p.poi.metadata.source.0);
+            if !self.keep(key) {
+                return Ok(());
+            }
+            if self.rows.is_full()
+                && if self.backwards {
+                    key < self.rows.first().unwrap().key
+                } else {
+                    key > self.rows.last().unwrap().key
+                }
+            {
+                self.more = true;
+                self.finish_map();
+                return Ok(());
+            }
+            if let Some(class) = settlement_class_of(p.poi.subtype) {
+                if settlement_duplicate(reader, p.poi.metadata.source, (p.poi.lon, p.poi.lat), &p.poi.name, class)? {
+                    return Ok(());
+                }
+                self.work = Some(Scan::new(self.services_query(&p, local)));
+                self.candidate = Some(Row::new(key, Item::Settlement(p, class)));
+            } else if service_on_route(&p) && owner(&mut self.owners, reader, route, &p, self.anchor)?.is_none() {
+                if let Some(cat) = obc_formats::obcm::poi_category_of(p.poi.subtype).filter(|c| CORE.contains(c)) {
+                    let mut row = Row::new(key, Item::Place(p));
+                    row.services = PoiCategorySet::only(cat);
+                    self.insert(row);
+                }
+            }
+        } else if !scan.advance(self.backwards) {
+            self.finish_map();
+        }
+        Ok(())
+    }
+    fn finish_map(&mut self) {
+        self.status = self.scan.as_ref().map_or(QueryProgress::Unavailable, |s| s.status);
+        self.scan = None;
+        self.map_done = true;
+        if self.backwards {
+            if self.rows.is_empty() {
+                self.boundary = None;
+                self.backwards = false;
+                self.dirty = true;
+            } else {
+                self.selected = self.rows.len() - 1;
+                self.scroll = 320;
+            }
+        }
+    }
+    fn prepare_detail_facts(&mut self, route: &RouteReader) -> Result<(), obc_formats::io::Error> {
+        let Some(row) = self.rows.get_mut(self.selected) else {
+            return Ok(());
+        };
+        let facts = route.interval_facts(self.window.unwrap().start_m, row.key.0)?;
+        row.facts = Some(StopFacts {
+            ascent_m: facts.complete_elevation().then_some(facts.ascent_m),
+            elevation_m: match &row.item {
+                Item::Waypoint(w) if w.ele != i16::MIN => Some(w.ele),
+                _ => route.elevation_at(row.key.0),
+            },
+        });
+        Ok(())
+    }
+    fn prepare_detail(
+        &mut self,
+        reader: &Reader,
+        route: &RouteReader,
+        local: Option<(u8, u16)>,
+    ) -> Result<(), obc_reader::Error> {
+        let Some(Row { item: Item::Settlement(stop, _), .. }) = self.rows.get(self.selected) else {
+            self.detail_dirty = false;
+            return Ok(());
+        };
+        if self.work.is_none() {
+            let mut q = self.services_query(stop, local);
+            if let Some(b) = self.detail_boundary {
+                q = q.starting_after(b, self.detail_backwards);
+            }
+            self.work = Some(Scan::new(q));
+            self.detail_rows.clear();
+        }
+        let work = self.work.as_mut().unwrap();
+        work.step(reader, route);
+        match work.status {
+            QueryProgress::Pending => return Ok(()),
+            QueryProgress::Failed(e) => return Err(e),
+            _ => {}
+        }
+        let mut more = false;
+        while let Some(p) = work.take(self.detail_backwards) {
+            if service_on_route(&p)
+                && owner(&mut self.owners, reader, route, &p, self.anchor)?
+                    == Some((stop.poi.metadata.source, stop.dist_along_m))
+            {
+                if self.detail_rows.is_full() {
+                    more = true;
+                    break;
+                }
+                if self.detail_backwards {
+                    let _ = self.detail_rows.insert(0, p);
+                } else {
+                    let _ = self.detail_rows.push(p);
+                }
+            }
+        }
+        // Only an eligible service beyond this page proves that another page exists.
+        if !more && work.advance(self.detail_backwards) {
+            return Ok(());
+        }
+        self.detail_more = if self.detail_backwards { self.detail_boundary.is_some() } else { more };
+        self.detail_previous = if self.detail_backwards { more } else { self.detail_boundary.is_some() };
+        self.detail_selected = if self.detail_backwards { self.detail_rows.len().saturating_sub(1) } else { 0 };
+        self.detail_dirty = false;
+        self.work = None;
+        Ok(())
     }
 }
 
@@ -509,7 +761,6 @@ mod tests {
     use obc_route::RouteIndex;
     use obcm_testkit::{build_poi_map, PoiSpec};
     use std::fmt::Write;
-
     #[derive(Default)]
     struct Sink(std::vec::Vec<u8>);
     impl ByteSink for Sink {
@@ -556,455 +807,386 @@ mod tests {
         put_u16(&mut sink.0, HEADER_LEN + 4, 40);
         sink.0
     }
-    fn settle(
-        a: &mut AheadState,
-        map: Option<&Reader>,
-        route: &RouteReader,
-        scope: UpAheadScope,
-        scratch: &mut CorridorScratch,
-    ) {
-        for _ in 0..1000 {
-            a.prepare(map, Some(route), &Climbs::default(), scope, scratch, None);
+
+    fn settle(a: &mut AheadState, map: Option<&Reader>, route: &RouteReader) {
+        for _ in 0..10_000 {
+            a.prepare(
+                map,
+                Some(route),
+                UpAheadScope { filter: DEFAULT_FILTER, source: crate::settings::UpAheadSource::Both },
+                None,
+            );
             if !a.pending() {
                 return;
             }
         }
-        panic!("window did not settle");
+        panic!("line did not settle");
     }
-    fn scope(source: UpAheadSource) -> UpAheadScope {
-        UpAheadScope { filter: PoiCategorySet::ALL, source }
-    }
-
     #[test]
-    fn real_route_window_is_frozen_clipped_and_distinguishes_missing_elevation() {
-        for missing in [false, true] {
-            let bytes = route(missing);
-            let src = SliceSource(&bytes);
-            let idx = RouteIndex::read(&src).unwrap();
-            let route = RouteReader::new(&idx, &src);
-            let mut a = AheadState::new();
-            a.open(3_000);
-            let mut scratch = CorridorScratch::new();
-            settle(&mut a, None, &route, scope(UpAheadSource::Both), &mut scratch);
-            assert_eq!(a.window.unwrap().start_m, 3_000);
-            assert_eq!(a.window.unwrap().end_m, 13_000);
-            assert_eq!(a.totals.is_some(), !missing);
-            a.range(AheadRange::FiveKm);
-            settle(&mut a, None, &route, scope(UpAheadSource::Both), &mut scratch);
-            assert_eq!(a.window.unwrap().end_m, 8_000);
-            a.refresh(15_000);
-            settle(&mut a, None, &route, scope(UpAheadSource::Both), &mut scratch);
-            assert_eq!(a.window.unwrap().end_m, route.total_distance_m);
-            a.refresh(u32::MAX);
-            settle(&mut a, None, &route, scope(UpAheadSource::Both), &mut scratch);
-            assert_eq!(scratch.armed().unwrap().anchor_m, route.total_distance_m);
-            assert_eq!(a.window.unwrap().start_m, route.total_distance_m);
-            let replacement = RouteIndex::read(&src).unwrap();
-            let replacement = RouteReader::new(&replacement, &src);
-            a.prepare(None, Some(&replacement), &Climbs::default(), scope(UpAheadSource::Both), &mut scratch, None);
-            assert!(a.stale);
-            assert!(a.rows.is_empty());
-            assert!(a.window.is_none());
-        }
-    }
-
-    #[test]
-    fn authored_and_map_pages_are_complete_and_bidirectional_without_touching_riding_cache() {
+    fn full_route_pages_keep_every_authored_waypoint_and_return_in_reverse() {
         let bytes = route(false);
-        let src = SliceSource(&bytes);
-        let idx = RouteIndex::read(&src).unwrap();
-        let route = RouteReader::new(&idx, &src);
-        let pois = (1..=22)
-            .map(|i| PoiSpec {
-                lat: 100,
-                lon: i * 3_000 + 1000,
-                subtype: 1,
-                name: format!("Water {i}"),
-                payload: u16::MAX,
-            })
-            .collect();
-        let train = vec![PoiSpec { lat: 100, lon: 65_000, subtype: 20, name: "Station".into(), payload: u16::MAX }];
-        let map = build_poi_map((-1000, -1000, 150_000, 1000), 512, &[(1, pois), (8, train)]);
-        let source = obc_reader::SliceSource(&map);
-        let tables = MapTables::parse(&source).unwrap();
-        let cache = MapCache::new();
-        let map = Reader::new(&source, &tables, &cache);
+        let source = SliceSource(&bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
         let mut a = AheadState::new();
-        a.open(0);
-        a.explore();
-        let mut scratch = CorridorScratch::new();
-        let mut keys = std::vec::Vec::new();
-        let mut last_page = std::vec::Vec::new();
+        let mut pages = std::vec::Vec::new();
         loop {
-            settle(&mut a, Some(&map), &route, scope(UpAheadSource::Both), &mut scratch);
-            let page: std::vec::Vec<_> = a.rows.iter().map(|r| r.key).collect();
-            assert!(!page.is_empty());
-            if !keys.is_empty() {
-                assert!(keys.last().unwrap() < &page[0]);
-            }
-            keys.extend_from_slice(&page);
-            if !a.more {
+            settle(&mut a, None, &route);
+            let keys: std::vec::Vec<_> = a.rows.iter().map(|r| r.key).collect();
+            assert!(!keys.is_empty());
+            pages.push(keys);
+            if !a.has_next() {
                 break;
             }
-            last_page = page;
             a.turn_page(false);
         }
-        assert_eq!(keys.iter().filter(|k| matches!(k, Key::Waypoint(..))).count(), 40);
-        assert_eq!(keys.iter().filter(|k| matches!(k, Key::Place(_))).count(), 23);
-        a.turn_page(true);
-        settle(&mut a, Some(&map), &route, scope(UpAheadSource::Both), &mut scratch);
-        assert_eq!(a.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), last_page);
-        let selected = a.rows[a.selected].key;
-        a.page = Page::Detail;
-        settle(&mut a, Some(&map), &route, scope(UpAheadSource::Both), &mut scratch);
-        a.page = Page::Timeline;
-        assert_eq!(a.rows[a.selected].key, selected);
-        settle(&mut a, None, &route, scope(UpAheadSource::WaypointsOnly), &mut scratch);
-        assert!(a.rows.iter().all(|r| matches!(r.item, Item::Waypoint(_))));
-        assert_eq!(route.load_waypoints(0).entries.len(), obc_route::MAX_WAYPOINTS);
-        let train = UpAheadScope { filter: PoiCategorySet::only(PoiCategory::Train), source: UpAheadSource::Both };
-        settle(&mut a, Some(&map), &route, train, &mut scratch);
-        assert!(a.rows.iter().all(|r| matches!(&r.item,Item::Waypoint(w) if w.category==Some(PoiCategory::Train))
-            || matches!(r.item, Item::Place(_))));
-    }
-    #[test]
-    fn ordinary_assistant_sources_and_filters_preserve_authored_rows_and_persist() {
-        use crate::{input::Chord, screen::Screen, App, AppState, Gesture};
-        let bytes = route(false);
-        let source = SliceSource(&bytes);
-        let index = RouteIndex::read(&source).unwrap();
-        let route = RouteReader::new(&index, &source);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.test_mount_store();
-        app.set_routes_with_ids(&[route.summary()], &[7]);
-        app.navigator.set_active_route(Some(0));
-        app.navigator.sync_route_state(Some(&route));
-        assert!(app.apply_chord(Chord::Assistant));
-        app.apply_gesture(Gesture::Step(1));
-        app.apply_gesture(Gesture::Press);
-        assert!(matches!(app.top_screen(), Screen::WhatsNext(_)));
-        app.apply_gesture(Gesture::Press);
-        let mut now = 1_000;
-        let act = |app: &mut App, now: &mut u32, gesture| {
-            *now += 400;
-            app.advance_animations(obc_ports::InputClock(*now));
-            app.apply_gesture(gesture);
-        };
-        assert!(app.apply_chord(Chord::Context));
-        act(&mut app, &mut now, Gesture::Step(1));
-        act(&mut app, &mut now, Gesture::Press);
-        act(&mut app, &mut now, Gesture::Step(1));
-        assert_eq!(app.settings().up_ahead_source, UpAheadSource::Both);
-        act(&mut app, &mut now, Gesture::Press);
-        assert_eq!(app.settings().up_ahead_source, UpAheadSource::WaypointsOnly);
-        assert!(!crate::harness::support::quiet_pass(&mut app, now).effects.settings.is_empty());
-        act(&mut app, &mut now, Gesture::Back);
-        let scope = app.up_ahead_scope();
-        settle(&mut app.ui.ahead, None, &route, scope, &mut app.ui.corridor_scratch);
-        assert!(app.ui.ahead.rows.iter().any(|r| matches!(r.item, Item::Waypoint(_))));
-        assert!(app.ui.ahead.rows.iter().all(|r| matches!(r.item, Item::Waypoint(_))));
-        assert!(app.ui.ahead.request(scope).is_none());
-        app.apply_gesture(Gesture::Step(1));
-        let selected = app.ui.ahead.rows[app.ui.ahead.selected].key;
-        assert!(app.apply_chord(Chord::Context));
-        act(&mut app, &mut now, Gesture::Press);
-        act(&mut app, &mut now, Gesture::Step(1));
-        act(&mut app, &mut now, Gesture::Back);
-        assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL);
-        act(&mut app, &mut now, Gesture::Back);
-        assert_eq!(app.ui.ahead.rows[app.ui.ahead.selected].key, selected);
-        assert!(app.apply_chord(Chord::Context));
-        act(&mut app, &mut now, Gesture::Press);
-        act(&mut app, &mut now, Gesture::Step(1));
-        act(&mut app, &mut now, Gesture::Press);
-        act(&mut app, &mut now, Gesture::Back);
-        assert_eq!(app.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
-        let scope = app.up_ahead_scope();
-        settle(&mut app.ui.ahead, None, &route, scope, &mut app.ui.corridor_scratch);
-        assert!(app
-            .ui
-            .ahead
-            .rows
-            .iter()
-            .all(|r| matches!(&r.item, Item::Waypoint(w) if w.category == Some(PoiCategory::Water))));
-        app.apply_gesture(Gesture::Back);
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
-        app.apply_gesture(Gesture::Press);
-        assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL);
-        assert_eq!(app.settings().up_ahead_source, UpAheadSource::WaypointsOnly);
-    }
-
-    #[test]
-    fn timeline_gestures_can_return_forward_after_reversing_to_the_first_page() {
-        use crate::{App, AppState, Gesture, Settings};
-        let mut bytes = route(false);
-        obc_formats::io::put_u16(&mut bytes, obc_formats::obcr::HEADER_LEN + 4, 8);
-        let source = SliceSource(&bytes);
-        let index = RouteIndex::read(&source).unwrap();
-        let route = RouteReader::new(&index, &source);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.set_settings(Settings { up_ahead_source: UpAheadSource::WaypointsOnly, ..Settings::default() });
-        app.set_routes_with_ids(&[route.summary()], &[7]);
-        app.navigator.set_active_route(Some(0));
-        app.navigator.sync_route_state(Some(&route));
-        app.open_whats_next();
-        app.apply_gesture(Gesture::Press);
-        let scope = scope(UpAheadSource::WaypointsOnly);
-        let mut scratch = CorridorScratch::new();
-        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
-        let first: std::vec::Vec<_> = app.ui.ahead.rows.iter().map(|r| r.key).collect();
-        assert_eq!(first.len(), 4);
-        app.apply_gesture(Gesture::Step(-1));
-        assert!(!app.ui.ahead.pending());
-        for _ in 0..4 {
-            app.apply_gesture(Gesture::Step(1));
+        assert_eq!(pages.iter().map(|p| p.len()).sum::<usize>(), 41);
+        assert!(matches!(a.rows.last().unwrap().item, Item::End));
+        let all: std::vec::Vec<_> = pages.iter().flatten().copied().collect();
+        assert!(all.windows(2).all(|p| p[0] < p[1]));
+        let mut backwards = std::vec::Vec::new();
+        backwards.extend(a.rows.iter().rev().map(|r| r.key));
+        while a.has_previous() {
+            a.turn_page(true);
+            settle(&mut a, None, &route);
+            backwards.extend(a.rows.iter().rev().map(|r| r.key));
         }
-        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
-        let second: std::vec::Vec<_> = app.ui.ahead.rows.iter().map(|r| r.key).collect();
-        assert_eq!(second.len(), 4);
-        assert!(first[3] < second[0]);
-        assert!(!app.ui.ahead.has_next());
-        app.apply_gesture(Gesture::Step(-1));
-        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
-        assert_eq!(app.ui.ahead.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), first);
-        assert!(!app.ui.ahead.has_previous());
-        assert_eq!(app.ui.ahead.selected, 3);
-        app.apply_gesture(Gesture::Step(1));
-        settle(&mut app.ui.ahead, None, &route, scope, &mut scratch);
-        assert_eq!(app.ui.ahead.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), second);
-        assert_eq!(app.navigator.route_state().active_route, Some(0));
+        backwards.reverse();
+        assert_eq!(backwards, all);
+        a.turn_page(false);
+        settle(&mut a, None, &route);
+        assert!(a.rows[0].key > all[0]);
+    }
+    fn spec(lon: i32, subtype: u8, name: &str) -> PoiSpec {
+        PoiSpec { lat: 0, lon, subtype, name: name.into(), payload: u16::MAX }
     }
     #[test]
-    fn clock_refresh_removes_closed_unselected_rows_without_moving_the_selection() {
-        let bytes = route(false);
+    fn settlement_nodes_replace_duplicate_areas_and_keep_distinct_same_name_places() {
+        let route_bytes = route(false);
+        let route_source = SliceSource(&route_bytes);
+        let index = RouteIndex::read(&route_source).unwrap();
+        let route = RouteReader::new(&index, &route_source);
+        let mut bytes = build_poi_map(
+            (-20_000, -20_000, 160_000, 20_000),
+            512,
+            &[
+                (9, vec![spec(10_000, 22, "Waldkirch"), spec(12_000, 22, "Waldkirch"), spec(50_000, 22, "Waldkirch")]),
+                (1, vec![spec(11_900, 1, "Water"), spec(50_100, 1, "Other water")]),
+                (11, vec![spec(9_800, 26, "Cafe")]),
+            ],
+        );
+        let area = obcm_testkit::pack_poi_record(0, 12_000, 22, "Waldkirch", u16::MAX);
+        let offset = bytes.windows(area.len()).position(|record| record == area).unwrap();
+        bytes[offset + 36..offset + 44].copy_from_slice(&SourceId::osm(2, 99).0.to_le_bytes());
         let source = SliceSource(&bytes);
-        let index = RouteIndex::read(&source).unwrap();
-        let route = RouteReader::new(&index, &source);
-        let mut morning = [0; 29];
-        morning[2] = 4;
-        let pois = (1..=3)
-            .map(|i| PoiSpec {
-                lat: 100,
-                lon: i * 3000,
-                subtype: 1,
-                name: format!("Water {i}"),
-                payload: if i == 3 { u16::MAX } else { 0 },
-            })
-            .collect();
-        let bytes =
-            obcm_testkit::build_poi_map_with_hours((-1000, -1000, 150_000, 1000), 512, &[(1, pois)], &[morning]);
-        let source = obc_reader::SliceSource(&bytes);
         let tables = MapTables::parse(&source).unwrap();
         let cache = MapCache::new();
-        let map = Reader::new(&source, &tables, &cache);
-        let mut a = AheadState::new();
-        a.explore();
-        let mut scratch = CorridorScratch::new();
-        let scope = scope(UpAheadSource::MapPoisOnly);
-        scratch.clock_changed(Some((0, 30)), 0);
-        for _ in 0..100 {
-            a.prepare(Some(&map), Some(&route), &Climbs::default(), scope, &mut scratch, Some((0, 30)));
-            if !a.pending() {
+        let reader = Reader::new(&source, &tables, &cache);
+        let mut state = AheadState::new();
+        let mut towns = std::vec::Vec::new();
+        loop {
+            settle(&mut state, Some(&reader), &route);
+            towns.extend(state.rows.iter().filter(|r| matches!(r.item, Item::Settlement(..))).cloned());
+            if !state.has_next() {
                 break;
             }
+            state.turn_page(false);
         }
-        assert_eq!(a.rows.len(), 3);
-        let selected = a.rows[0].key;
-        let survivor = a.rows[2].key;
-        scratch.clock_changed(Some((0, 90)), 0);
-        a.prepare(Some(&map), Some(&route), &Climbs::default(), scope, &mut scratch, Some((0, 90)));
-        assert_eq!(a.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), [selected, survivor]);
-        assert_eq!(a.rows[a.selected].key, selected);
-        assert_eq!(scratch.entries()[0].poi.opening, OpeningStatus::Closed);
+        assert_eq!(towns.len(), 2, "the area is redundant, the distant place node is distinct");
+        assert!(towns[0].services.contains(PoiCategory::Water), "water nearest the area belongs to the town node");
+        assert!(towns[0].services.contains(PoiCategory::Cafe));
+        assert!(towns[1].services.contains(PoiCategory::Water));
+        state.turn_page(true);
+        settle(&mut state, Some(&reader), &route);
+        assert!(state
+            .rows
+            .iter()
+            .all(|r| !matches!(&r.item, Item::Settlement(p, _) if p.poi.metadata.source == SourceId::osm(2, 99))));
     }
 
     #[test]
-    fn back_keeps_the_overview_and_the_clock_takes_it_again_from_the_first_place() {
-        use crate::harness::support::Buf;
-        use crate::{settings::IdleReturn, App, AppState, Gesture, Settings};
-        use embedded_graphics::pixelcolor::Rgb888;
+    fn settlements_collect_only_near_route_services_and_hide_empty_places() {
         let bytes = route(false);
         let source = SliceSource(&bytes);
         let index = RouteIndex::read(&source).unwrap();
         let route = RouteReader::new(&index, &source);
-        // Monday 00:00 to 01:00 only.
-        let mut first_hour = [0; 29];
-        first_hour[2] = 4;
-        let pois = [(3_000, 0), (50_000, u16::MAX)]
-            .into_iter()
-            .map(|(lon, payload)| PoiSpec { lat: 100, lon, subtype: 1, name: format!("Water {lon}"), payload })
-            .collect();
-        let map =
-            obcm_testkit::build_poi_map_with_hours((-1000, -1000, 150_000, 1000), 512, &[(1, pois)], &[first_hour]);
-        let map_source = obc_reader::SliceSource(&map);
-        let tables = MapTables::parse(&map_source).unwrap();
+        let mut far = spec(10_000, 25, "Far restaurant");
+        far.lat = 2_000;
+        let mut village = spec(10_000, 23, "Village");
+        village.lat = 7_000;
+        let bytes = build_poi_map(
+            (-20_000, -20_000, 160_000, 20_000),
+            512,
+            &[
+                (9, vec![village, spec(90_000, 24, "Empty")]),
+                (1, vec![spec(10_100, 1, "Water"), spec(40_000, 1, "Fountain")]),
+                (10, vec![spec(10_200, 25, "Restaurant"), far]),
+                (11, vec![spec(10_300, 26, "Cafe")]),
+                (12, vec![spec(10_400, 27, "Fuel")]),
+            ],
+        );
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
         let cache = MapCache::new();
-        let map = Reader::new(&map_source, &tables, &cache);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut app = crate::App::new(crate::AppState::new(0, 0, 1.0));
         app.set_routes_with_ids(&[route.summary()], &[7]);
         app.navigator.set_active_route(Some(0));
         app.navigator.sync_route_state(Some(&route));
-        let now = 1_000;
-        app.advance_animations(obc_ports::InputClock(now));
-        app.stamp_clock_ble(1_727_051_400, 0); // Monday 00:30
         app.open_whats_next();
-        let mut frame = Buf::new(240, 320);
-        let mut settle = |app: &mut App| {
-            for _ in 0..100 {
-                app.render_map(None, &mut frame, &map, Some(&route), 240.0, 320.0, |c| {
-                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
-                    Rgb888::new(r, g, b)
-                });
-                if !app.ui.ahead.pending() {
-                    return;
+        let mut places = std::vec::Vec::new();
+        loop {
+            for _ in 0..20_000 {
+                app.prepare_ahead(Some(&reader), Some(&route));
+                if !app.ahead_preparing() {
+                    break;
                 }
             }
-            panic!("window did not settle");
-        };
-        settle(&mut app);
-        let near = app.ui.ahead.water;
-        assert!(near.is_some_and(|d| d < 400), "the near water is open in the first hour");
-        app.apply_gesture(Gesture::Press);
-        settle(&mut app);
-        for _ in 0..4 {
-            app.apply_gesture(Gesture::Step(1));
-        }
-        settle(&mut app);
-        assert!(app.ui.ahead.has_previous(), "the Timeline turned a page");
-        app.apply_gesture(Gesture::Back);
-        assert!(!app.ui.ahead.pending(), "Back takes no new query");
-        assert_eq!(app.ui.ahead.water, near);
-        let covered = crate::screen::Screen::Assistant(crate::screen::AssistantScreen::new());
-        crate::screen::apply(&mut app.ui.stack, crate::screen::Transition::Push(covered));
-        app.ui.map_dirty = false;
-        app.advance_animations(obc_ports::InputClock(now + 16 * 60_000));
-        assert!(!app.ui.map_dirty, "a covered Overview does not repaint");
-        crate::screen::apply(&mut app.ui.stack, crate::screen::Transition::Pop);
-        for (minutes, expired, water_is_near) in [(5, false, true), (16, true, true), (31, true, false)] {
-            app.ui.map_dirty = false;
-            app.advance_animations(obc_ports::InputClock(now + minutes * 60_000));
-            assert_eq!(app.ui.ahead.overview_expired(app.place_local_time()), expired);
-            if expired {
-                assert!(app.ui.map_dirty, "a new quarter hour repaints the kept Overview");
-                settle(&mut app);
+            assert!(!app.ahead_preparing(), "background work completes without drawing");
+            let a = &mut app.ui.ahead;
+            assert!(!matches!(a.status, QueryProgress::Failed(_)), "{:?}", a.status);
+            for r in &a.rows {
+                if matches!(r.item, Item::Settlement(..) | Item::Place(_)) {
+                    places.push(r.clone());
+                }
             }
-            assert_eq!(app.ui.ahead.water.is_some_and(|d| d < 400), water_is_near, "{minutes} min");
+            if !a.has_next() {
+                break;
+            }
+            a.turn_page(false);
+        }
+        assert_eq!(places.len(), 2);
+        let village = places.iter().find(|r| r.name() == "Village").unwrap();
+        assert!(village.services.contains(PoiCategory::Water));
+        assert!(village.services.contains(PoiCategory::Restaurant));
+        assert!(village.services.contains(PoiCategory::Cafe));
+        assert!(village.services.contains(PoiCategory::Fuel));
+        assert!(!village.services.contains(PoiCategory::Resupply));
+        assert_eq!(places[1].name(), "Fountain");
+        let a = &mut app.ui.ahead;
+        a.rows.clear();
+        a.rows.push(village.clone()).unwrap();
+        a.selected = 0;
+        a.open_detail();
+        settle(a, Some(&reader), &route);
+        assert_eq!(a.detail_rows.len(), 4);
+        assert!(a.detail_rows.iter().all(|p| p.poi.name != "Far restaurant"));
+    }
+    #[test]
+    fn grouping_keeps_two_visits_to_the_same_village_separate() {
+        let mut sink = Sink::default();
+        let gpx = br#"<gpx><trk><trkseg><trkpt lat="0" lon="0"/><trkpt lat="0" lon="0.01"/><trkpt lat="0" lon="0.04"/><trkpt lat="0" lon="0.01"/><trkpt lat="0" lon="0"/></trkseg></trk></gpx>"#;
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "Out and back", &mut sink).unwrap();
+        let source = SliceSource(&sink.0);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let bytes = build_poi_map(
+            (-20_000, -20_000, 60_000, 20_000),
+            512,
+            &[(9, vec![spec(10_000, 23, "Village")]), (1, vec![spec(10_100, 1, "Fountain")])],
+        );
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut a = AheadState::new();
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.len(), 3);
+        for selected in 0..2 {
+            assert_eq!(a.rows[selected].name(), "Village");
+            assert!(a.rows[selected].services.contains(PoiCategory::Water));
+            a.selected = selected;
+            a.open_detail();
+            settle(&mut a, Some(&reader), &route);
+            assert_eq!(a.detail_rows.len(), 1);
+            assert!(a.detail_rows[0].dist_along_m.abs_diff(a.rows[selected].key.0) < 20);
         }
     }
 
     #[test]
-    fn failed_route_bytes_are_not_reported_as_a_flat_or_empty_window() {
-        use obc_formats::io::ByteSource;
-        struct Source<'a> {
-            bytes: &'a [u8],
-            failed: core::cell::Cell<bool>,
-            geometry_end: u64,
+    fn water_ahead_of_a_passed_settlement_remains_a_standalone_stop() {
+        let bytes = route(false);
+        let source = SliceSource(&bytes);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let bytes = build_poi_map(
+            (-20_000, -20_000, 160_000, 20_000),
+            512,
+            &[(9, vec![spec(10_000, 23, "Passed village")]), (1, vec![spec(11_000, 1, "Water ahead")])],
+        );
+        let src = obc_reader::SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut a = AheadState::new();
+        a.open(1_200);
+        settle(&mut a, Some(&reader), &route);
+        assert!(a.rows.iter().any(|r| r.name() == "Water ahead" && matches!(r.item, Item::Place(_))));
+        assert!(!a.rows.iter().any(|r| matches!(r.item, Item::Settlement(..))));
+    }
+
+    #[test]
+    fn settlement_detail_pages_skip_neighbor_services_in_both_directions() {
+        let mut sink = Sink::default();
+        let gpx = br#"<gpx><trk><trkseg><trkpt lat="0" lon="0"/><trkpt lat="0" lon="0.025"/></trkseg></trk></gpx>"#;
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "Three villages", &mut sink).unwrap();
+        let source = SliceSource(&sink.0);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        for count in [1, 17] {
+            let mut water: std::vec::Vec<_> = (0..8)
+                .flat_map(|i| [spec(3_800 + i * 100, 1, "West water"), spec(15_800 + i * 100, 1, "East water")])
+                .collect();
+            water.extend((0..count).map(|i| spec(9_500 + i * 60, 1, &format!("Local water {i}"))));
+            let bytes = build_poi_map(
+                (-20_000, -20_000, 60_000, 20_000),
+                512,
+                &[
+                    (9, vec![spec(4_000, 23, "West"), spec(10_000, 23, "Village"), spec(16_000, 23, "East")]),
+                    (1, water),
+                ],
+            );
+            let src = SliceSource(&bytes);
+            let tables = MapTables::parse(&src).unwrap();
+            let cache = MapCache::new();
+            let reader = Reader::new(&src, &tables, &cache);
+            let mut a = AheadState::new();
+            settle(&mut a, Some(&reader), &route);
+            a.selected = a.rows.iter().position(|r| r.name() == "Village").unwrap();
+            a.open_detail();
+            let mut forward = std::vec::Vec::new();
+            loop {
+                settle(&mut a, Some(&reader), &route);
+                assert!(!a.detail_rows.is_empty());
+                assert!(a.detail_rows.iter().all(|p| p.poi.name.starts_with("Local water")));
+                forward.extend(a.detail_rows.iter().map(place_key));
+                assert!(forward.len() <= count as usize);
+                if !a.detail_more {
+                    break;
+                }
+                assert_eq!(a.detail_rows.len(), 8);
+                a.detail_page(false);
+            }
+            assert_eq!(forward.len(), count as usize);
+            let mut backward: std::vec::Vec<_> = a.detail_rows.iter().rev().map(place_key).collect();
+            while a.detail_previous {
+                a.detail_page(true);
+                settle(&mut a, Some(&reader), &route);
+                assert!(!a.detail_rows.is_empty());
+                backward.extend(a.detail_rows.iter().rev().map(place_key));
+                assert!(backward.len() <= count as usize);
+            }
+            backward.reverse();
+            assert_eq!(backward, forward);
         }
-        impl ByteSource for Source<'_> {
+    }
+
+    #[test]
+    fn backward_pages_keep_services_at_the_route_end() {
+        let mut sink = Sink::default();
+        let gpx = br#"<gpx><wpt lat="0" lon="0.002"><name>Earlier</name></wpt><trk><trkseg><trkpt lat="0" lon="0"/><trkpt lat="0" lon="0.01"/></trkseg></trk></gpx>"#;
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "End services", &mut sink).unwrap();
+        let source = SliceSource(&sink.0);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let water = (0..5)
+            .map(|i| {
+                let mut p = spec(10_000, 1, &format!("Water {i}"));
+                p.lat = (i - 2) * 100;
+                p
+            })
+            .collect();
+        let bytes = build_poi_map((-20_000, -20_000, 60_000, 20_000), 512, &[(1, water)]);
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut a = AheadState::new();
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.len(), 6);
+        assert!(matches!(a.rows[0].item, Item::Waypoint(_)));
+        assert!(a.rows[1..].iter().all(|r| matches!(r.item, Item::Place(_)) && r.key.0 == route.total_distance_m));
+        let first: std::vec::Vec<_> = a.rows.iter().map(|r| r.key).collect();
+        assert!(a.has_next());
+        a.turn_page(false);
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.len(), 1);
+        assert!(matches!(a.rows[0].item, Item::End));
+        assert!(a.has_previous());
+        a.turn_page(true);
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), first);
+    }
+
+    #[test]
+    fn stop_facts_read_geometry_only_when_details_open_and_are_reused() {
+        use core::cell::Cell;
+        use obc_formats::io::ByteSource;
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            geometry: core::ops::Range<u64>,
+            reads: Cell<usize>,
+        }
+        impl ByteSource for Counted<'_> {
             fn len(&self) -> u64 {
                 self.bytes.len() as u64
             }
             fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), Error> {
-                if self.failed.get()
-                    && offset >= obc_formats::obcr::HEADER_FULL_LEN as u64
-                    && offset < self.geometry_end
-                {
-                    Err(Error::Io)
-                } else {
-                    SliceSource(self.bytes).read_at(offset, out)
+                if offset < self.geometry.end && offset + out.len() as u64 > self.geometry.start {
+                    self.reads.set(self.reads.get() + 1);
                 }
+                SliceSource(self.bytes).read_at(offset, out)
             }
         }
         let bytes = route(false);
-        let source = Source {
+        let index = RouteIndex::read(&SliceSource(&bytes)).unwrap();
+        let chunk = index.chunks()[0];
+        let source = Counted {
             bytes: &bytes,
-            failed: core::cell::Cell::new(false),
-            geometry_end: obc_formats::io::rd_u32(&bytes, obc_formats::obcr::HEADER_LEN) as u64,
+            geometry: u64::from(chunk.byte_offset)..u64::from(chunk.byte_offset + chunk.byte_len),
+            reads: Cell::new(0),
         };
-        let index = RouteIndex::read(&source).unwrap();
         let route = RouteReader::new(&index, &source);
-        source.failed.set(true);
         let mut a = AheadState::new();
-        a.explore();
-        let mut scratch = CorridorScratch::new();
-        let mut cursor = route.waypoint_cursor().unwrap();
-        assert!(route.next_waypoint(&mut cursor).unwrap().is_some(), "authored bytes remain readable");
-        for _ in 0..3 {
-            settle(&mut a, None, &route, scope(UpAheadSource::WaypointsOnly), &mut scratch);
-            assert_eq!(a.status, QueryProgress::Failed(obc_reader::Error::Source(Error::Io)));
-            assert!(a.totals.is_none());
-            assert!(a.rows.is_empty());
-            assert!(a.next_waypoint.is_none());
-        }
-        source.failed.set(false);
-        settle(&mut a, None, &route, scope(UpAheadSource::WaypointsOnly), &mut scratch);
-        assert!(matches!(a.status, QueryProgress::Ready { .. }));
-        assert!(a.totals.is_some());
-        assert!(a.next_waypoint.is_some());
+        a.open(1_000);
+        settle(&mut a, None, &route);
+        assert_eq!(source.reads.get(), 0, "the timeline does not decode route geometry for elevation");
+        assert!(a.rows.iter().all(|r| r.facts.is_none()));
+        a.open_detail();
+        assert!(a.pending());
+        settle(&mut a, None, &route);
+        assert!(source.reads.get() > 0);
+        let row = &a.rows[a.selected];
+        let expected = route.interval_facts(1_000, row.key.0).unwrap();
+        assert_eq!(row.facts.unwrap().ascent_m, Some(expected.ascent_m));
+        assert!(row.facts.unwrap().elevation_m.is_some());
+        let reads = source.reads.get();
+        a.open_detail();
+        assert!(!a.pending());
+        settle(&mut a, None, &route);
+        assert_eq!(source.reads.get(), reads, "reopening details reuses the facts");
     }
+
     #[test]
-    fn production_frames_keep_the_active_route_and_back_selection() {
-        use crate::harness::support::Buf;
-        use crate::{App, AppState, Gesture};
-        use embedded_graphics::{pixelcolor::Rgb888, prelude::RgbColor};
-        let bytes = route(false);
+    fn missing_elevation_stays_unknown_and_changed_routes_invalidate_the_line() {
+        let bytes = route(true);
         let source = SliceSource(&bytes);
         let index = RouteIndex::read(&source).unwrap();
         let route = RouteReader::new(&index, &source);
-        let map = build_poi_map((-1000, -1000, 150_000, 1000), 512, &[]);
-        let source = obc_reader::SliceSource(&map);
-        let tables = MapTables::parse(&source).unwrap();
-        let cache = MapCache::new();
-        let map = Reader::new(&source, &tables, &cache);
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.set_routes_with_ids(&[route.summary()], &[7]);
-        app.navigator.set_active_route(Some(0));
-        app.navigator.sync_route_state(Some(&route));
-        app.open_whats_next();
-        let mut frame = Buf::new(240, 320);
-        for name in ["overview", "timeline"] {
-            for _ in 0..100 {
-                app.render_map(None, &mut frame, &map, Some(&route), 240.0, 320.0, |c| {
-                    let (r, g, b) = obc_reader::rgb565_to_rgb888(c);
-                    Rgb888::new(r, g, b)
-                });
-                if !app.ui.ahead.pending() {
-                    break;
-                }
-            }
-            assert!(!app.ui.ahead.pending());
-            assert_eq!(app.navigator.route_state().active_route, Some(0));
-            let (r, g, b) = obc_reader::rgb565_to_rgb888(crate::screen::palette::AMBER);
-            assert!(frame.count(Rgb888::new(r, g, b)) > 500);
-            if let Ok(dir) = std::env::var("OBC_AHEAD_FRAME_DIR") {
-                let mut bmp = vec![0u8; 54];
-                bmp[..2].copy_from_slice(b"BM");
-                let size = 54 + 240 * 320 * 3;
-                bmp[2..6].copy_from_slice(&(size as u32).to_le_bytes());
-                bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
-                bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
-                bmp[18..22].copy_from_slice(&240i32.to_le_bytes());
-                bmp[22..26].copy_from_slice(&(-320i32).to_le_bytes());
-                bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
-                bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
-                for p in &frame.px {
-                    bmp.extend_from_slice(&[p.b(), p.g(), p.r()]);
-                }
-                std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(std::path::Path::new(&dir).join(format!("{name}.bmp")), bmp).unwrap();
-            }
-            if name == "overview" {
-                app.apply_gesture(Gesture::Press);
-            }
+        let mut a = AheadState::new();
+        settle(&mut a, None, &route);
+        while a.has_next() {
+            a.turn_page(false);
+            settle(&mut a, None, &route);
         }
-        app.apply_gesture(Gesture::Step(1));
-        let selected = app.ui.ahead.rows[app.ui.ahead.selected].key;
-        app.apply_gesture(Gesture::Press);
-        assert_eq!(app.ui.ahead.page, Page::Detail);
-        app.apply_gesture(Gesture::Back);
-        assert_eq!(app.ui.ahead.rows[app.ui.ahead.selected].key, selected);
-        assert_eq!(app.navigator.route_state().active_route, Some(0));
+        assert!(a.rows.iter().all(|r| r.facts.is_none()));
+        a.selected = a.rows.len() - 1;
+        a.open_detail();
+        settle(&mut a, None, &route);
+        assert_eq!(a.rows.last().unwrap().facts.unwrap().ascent_m, None);
+        let replacement = RouteIndex::read(&source).unwrap();
+        let replacement = RouteReader::new(&replacement, &source);
+        settle(&mut a, None, &replacement);
+        assert!(a.stale && a.window.is_none() && a.rows.is_empty());
     }
 }

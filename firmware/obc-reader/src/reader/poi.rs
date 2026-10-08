@@ -11,10 +11,8 @@ use obc_formats::obcm::{
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox};
 
-/// POI directory categories: services 1..6 and 8, plus summit landmarks 7 and settlements 9. The
-/// parsed directory bounds its `Vec` at this, so a corrupt `category_count` cannot request an
-/// unbounded allocation.
-pub const POI_MAX_CATEGORIES: usize = 9;
+/// Bound the ten service categories, summit landmarks and settlements.
+pub const POI_MAX_CATEGORIES: usize = 12;
 
 /// Upper bound on the POI `chunk_size` the reader accepts. The packer writes 512-byte chunks, so
 /// this caps the on-wire `u16` well below the geometry [`super::MAX_CHUNK_BYTES`] and a corrupt
@@ -169,7 +167,7 @@ impl<'a> Reader<'a> {
             return Err(Error::BadOffset);
         }
         let mut blob = [0; POI_HOURS_BLOB_LEN];
-        self.src.read_at(offset, &mut blob).map_err(Error::Source)?;
+        self.read_poi_bytes(offset, &mut blob).map_err(Error::Source)?;
         crate::hours::WeeklySchedule::decode(&blob).map(Some).ok_or(Error::BadOffset)
     }
 
@@ -275,7 +273,7 @@ impl<'a> Reader<'a> {
         while done < record_cap {
             let take = (record_cap - done).min(RECS_PER_WINDOW);
             let win = &mut scratch[..take * POI_RECORD_LEN];
-            self.src.read_at(start + (done * POI_RECORD_LEN) as u64, win)?;
+            self.read_poi_bytes(start + (done * POI_RECORD_LEN) as u64, win)?;
             for r in 0..take {
                 let off = r * POI_RECORD_LEN;
                 let subtype = win[off + 8];
