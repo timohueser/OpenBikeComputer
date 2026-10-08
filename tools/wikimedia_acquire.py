@@ -171,10 +171,13 @@ class Acquisition:
         self.inputs = {}
         self.used = set()
         self.assets = {}
+        self.articles_by_revision = {}
         for record in inputs:
             value = verified(Path(record["path"]), record["sha256"])
             self.validate(record, value)
             self.inputs[(record["kind"], record["key"])] = (record, value)
+            if record["kind"] == "article" and record["status"] == "present":
+                self.articles_by_revision[(record["identity"], record["revision"])] = value
             if value.get("asset"):
                 asset = value["asset"]
                 asset_path = Path(record["asset_path"])
@@ -187,6 +190,8 @@ class Acquisition:
             value = verified(work / record["path"], record["sha256"])
             self.validate(record, value)
             self.records[(record["kind"], record["key"])] = record
+            if record["kind"] == "article" and record["status"] == "present":
+                self.articles_by_revision[(record["identity"], record["revision"])] = value
 
     def adopt(self, root: Path):
         if __package__:
@@ -195,8 +200,9 @@ class Acquisition:
             from wikimedia_adopt import RetainedCapture
         capture = RetainedCapture(root)
         for value in capture.facts():
-            if (value["kind"], value["key"]) not in self.records:
-                self.keep(value)
+            pair = (value["kind"], value["key"])
+            if pair not in self.records and pair not in self.inputs:
+                self.keep(value, input_only=True)
         for value, path in capture.files():
             asset = value["asset"]
             relative = f"assets/{asset['sha256']}{path.suffix}"
@@ -205,7 +211,9 @@ class Acquisition:
             if not target.exists():
                 os.link(path, target)
             self.assets[asset["sha256"]] = target
-            self.keep(dict(value, asset=dict(asset, path=relative)))
+            pair = (value["kind"], value["key"])
+            if pair not in self.records and pair not in self.inputs:
+                self.keep(dict(value, asset=dict(asset, path=relative)), input_only=True)
         self.used.clear()
 
     @staticmethod
@@ -237,7 +245,7 @@ class Acquisition:
             return True
         return False
 
-    def keep(self, value: dict):
+    def keep(self, value: dict, *, input_only=False):
         self.validate(value, value)
         data = encoded({key: item for key, item in value.items() if key != "checked_at"})
         if len(data) > 16 * 1024 * 1024:
@@ -253,6 +261,11 @@ class Acquisition:
         record = {field: value[field] for field in ("kind", "key", "status", "checked_at")}
         record.update({field: value[field] for field in ("identity", "revision") if field in value})
         record.update(path=relative, sha256=sha256)
+        if value["kind"] == "article" and value["status"] == "present":
+            self.articles_by_revision[(value["identity"], value["revision"])] = value
+        if input_only:
+            self.inputs[(value["kind"], value["key"])] = (dict(record, path=str(target)), value)
+            return
         write_json(self.work / "records" / self.check_id / (digest(f"{value['kind']}:{value['key']}".encode()) + ".json"), record)
         self.records[(value["kind"], value["key"])] = record
         self.used.add((value["kind"], value["key"]))
@@ -527,9 +540,11 @@ class Acquisition:
                         continue
                     revision = revisions[0]["revid"]
                     identity = f"{language}:{page['pageid']}"
-                    previous = self.inputs.get(("article", key))
-                    if previous and previous[0].get("identity") == identity and previous[0].get("revision") == revision:
-                        value = dict(previous[1], checked_at=datetime.now(timezone.utc).isoformat(), aliases=aliases)
+                    previous = self.articles_by_revision.get((identity, revision))
+                    if previous:
+                        value = dict(previous, key=key, checked_at=datetime.now(timezone.utc).isoformat(), aliases=aliases,
+                                     qid=page.get("pageprops", {}).get("wikibase_item"), title=page["title"],
+                                     url=f"https://{language}.wikipedia.org/w/index.php?" + urlencode(dict(title=page["title"], oldid=revision)))
                         self.keep(value)
                         continue
                     value = self.json(f"https://{language}.wikipedia.org/w/rest.php/v1/page/{quote(page['title'], safe='')}/with_html")

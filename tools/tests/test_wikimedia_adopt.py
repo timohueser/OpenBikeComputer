@@ -82,6 +82,33 @@ class AdoptionTests(unittest.TestCase):
             self.assertEqual(facts[0]["identity"], "Q2")
             self.assertEqual(facts[0]["proof"]["source_sha256"], outcome["sha256"])
 
+    def test_adopted_facts_receive_refresh_checks_and_changed_content_is_acquired(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            capture_root = root / "capture"
+            capture_root.mkdir()
+            self.capture(capture_root)
+            for revision in (12, 13):
+                with self.subTest(revision=revision):
+                    transport = Mock()
+                    responses = [{"entities": {"Q1": {"id": "Q1", "lastrevid": revision}}}]
+                    if revision == 13:
+                        responses.append({"entities": {"Q1": {"id": "Q1", "lastrevid": revision, "claims": {}, "labels": {}, "sitelinks": {}}}})
+                    transport.json.side_effect = responses
+                    operation = Acquisition(root / f"work-{revision}", root / f"out-{revision}", f"refresh-{revision}", [], transport=transport)
+                    operation.adopt(capture_root)
+                    self.assertIsNone(operation.value("entity", "Q1"))
+                    original_digest = operation.inputs[("entity", "Q1")][0]["sha256"]
+                    operation.entities(["Q1"], refresh=True)
+                    manifest = operation.finish()
+                    self.assertTrue(manifest["complete"])
+                    self.assertEqual(manifest["records"][0]["revision"], revision)
+                    self.assertEqual(transport.json.call_count, 1 if revision == 12 else 2)
+                    if revision == 12:
+                        self.assertEqual(manifest["records"][0]["sha256"], original_digest)
+                    else:
+                        self.assertNotEqual(manifest["records"][0]["sha256"], original_digest)
+
     def test_corrupt_sources_and_rendered_revision_mismatch_are_not_adopted(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

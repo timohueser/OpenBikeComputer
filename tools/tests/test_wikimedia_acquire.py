@@ -155,6 +155,35 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual([record["key"] for record in operation.finish()["records"]], ["Q1", "Q10", "Q11", "Q2", "Q20", "Q30"])
             self.assertEqual(operation.transport.json.call_count, 5)
 
+    def test_new_exact_alias_reuses_admitted_article_page_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = self.operation(root / "first", responses=[{"query": {"pages": [page()]}}, rendered()])
+            first.articles([dict(language="en", title="Hill", qid="Q1")])
+            inputs = self.inputs(first)
+            alias = {"query": {"normalized": [{"from": "Another_Hill", "to": "Another Hill"}],
+                               "redirects": [{"from": "Another Hill", "to": "Hill"}], "pages": [page()]}}
+            second = self.operation(root / "second", inputs=inputs, responses=[alias])
+            second.articles([dict(language="en", title="Another_Hill", qid="Q1")])
+            result = second.value("article", "en:Another_Hill")
+            self.assertEqual(second.transport.json.call_count, 1)
+            self.assertEqual(result["identity"], "en:7")
+            self.assertEqual(result["revision"], 10)
+            self.assertEqual(result["aliases"], alias["query"]["normalized"] + alias["query"]["redirects"])
+            self.assertEqual(result["lead_html"], first.value("article", "en:Hill")["lead_html"])
+            self.assertTrue(second.finish()["complete"])
+
+    def test_two_exact_aliases_in_one_operation_acquire_one_article(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            alias = {"query": {"normalized": [{"from": "Another_Hill", "to": "Another Hill"}],
+                               "redirects": [{"from": "Another Hill", "to": "Hill"}], "pages": [page()]}}
+            operation = self.operation(Path(temporary), responses=[alias, rendered()])
+            operation.articles([dict(language="en", title="Hill", qid="Q1"), dict(language="en", title="Another_Hill", qid="Q1")])
+            self.assertEqual(operation.transport.json.call_count, 2)
+            self.assertEqual(operation.value("article", "en:Hill")["aliases"], [])
+            self.assertEqual(len(operation.value("article", "en:Another_Hill")["aliases"]), 2)
+            self.assertTrue(operation.finish()["complete"])
+
     def test_entity_redirect_requires_exact_proof(self):
         with tempfile.TemporaryDirectory() as temporary:
             operation = self.operation(Path(temporary), responses=[{"entities": {"Q1": dict(entity("Q2"), redirects={"from": "Q1", "to": "Q2"}), "Q3": entity("Q4")}}])
