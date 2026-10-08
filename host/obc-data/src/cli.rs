@@ -1,13 +1,23 @@
 //! `obc data`: read the sources and the regions, fetch sources into the store, plan and build the
-//! releases of the products, and show runs. Read commands change nothing in `data/`. Without a
-//! command, a terminal gets the TUI.
+//! releases of the products, show what is live, and show runs. Read commands change nothing in
+//! `data/`. Without a command, a terminal gets the TUI.
 
 mod api;
+mod apply_cli;
 mod build_cli;
+pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
+mod dev_cli;
+mod edit_cli;
+mod freshness;
+pub mod operation_cli;
 mod r2_cli;
+mod regions_cli;
 mod runs_cli;
+mod status_cli;
 mod tui;
+mod versions;
 
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
@@ -17,100 +27,97 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::fetch::http::Http;
-use crate::fetch::upstream::{self, Upstream};
-use crate::fetch::{self, osm, Request};
+
+use crate::fetch::Request;
+use crate::live::{Live, Remote};
 use crate::product::Product;
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::sources::{self, FetchKind, Kind, Refresh, Registry, Source, State, VersionScheme};
-use crate::store::{self, gc, import, FileRecord, Snapshot, Store};
-use api::{print_json, Code, Error};
+use crate::sources::{Kind, Refresh, Registry, Source, State, VersionScheme};
+use crate::store::{gc, FileRecord, Snapshot, Store};
+use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
-#[command(name = "obc data", about = "Data sources, regions and pins")]
+#[command(name = "obc data", about = "Data sources, regions, environments and releases")]
 struct Cli {
     /// Write JSON to standard output, also when the command fails.
     #[arg(long, global = true)]
     json: bool,
-    /// Without a command: the TUI in a terminal, else what `sources` writes.
+    /// Without a command: the TUI in a terminal, else what `status` writes.
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Every source with licence, R2 copy, live pin, newest upstream version, age, policy and state.
+    #[command(hide = true)]
+    Perform {
+        #[arg(long)]
+        store: std::path::PathBuf,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        request: String,
+    },
+    /// What is live: the release of each product, the state of its layers, and what needs attention.
+    Status(status_cli::StatusArgs),
+    /// Every source with licence, R2 copy, live version, newest upstream version, age, policy and
+    /// state.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
         check_now: bool,
     },
+    /// Versions known for every active request of a source, with each request's availability.
+    Versions { source: String },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
-        /// SOURCE or SOURCE@VERSION. Without a version: the live pin, or else upstream's newest file.
+        /// SOURCE or SOURCE@VERSION. Without a version: upstream's newest file.
         target: String,
         /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
         params: Vec<String>,
     },
-    /// Fetch the newest upstream version of a source and pin it in an environment.
-    Refresh {
-        source: String,
-        /// NAME=VALUE for each `{name}` in the URL of the source.
-        params: Vec<String>,
-        #[arg(long, default_value = "live")]
-        env: String,
-    },
-    /// Set how old the pin of a source may get before it is stale: 7, 30, 90, 365 or manual.
+    /// Set how old the live version of a source may get before it is stale: 7, 30, 90, 365 or
+    /// manual. A manual source moves only with `--move`.
     Policy { source: String, refresh: Refresh },
-    /// The regions in data/regions/.
+    /// Saved regions and shipped presets. With ENV ID: select the environment region.
+    #[command(args_conflicts_with_subcommands = true)]
     Region {
         #[command(subcommand)]
-        action: Option<RegionAction>,
+        action: Option<regions_cli::Action>,
+        /// The environment whose region to set.
+        #[arg(requires = "id")]
+        env: Option<String>,
+        /// The region id.
+        id: Option<String>,
     },
+    /// Switch an optional layer of the environment on or off.
+    Layer { env: String, layer: String, switch: edit_cli::Switch },
+    /// Restore applied Live settings, or a committed environment file.
+    Undo { env: String },
     /// What a build of the environment would fetch and build, in groups that are independent.
     Plan(build_cli::PlanArgs),
-    /// Fetch and build the environment into the store, and write the release of each product
-    /// whose every layer is built. Nothing uploads.
+    /// Start durable input preparation and return its run handle. Nothing builds or uploads.
+    Prepare(build_cli::PlanArgs),
+    /// Start a durable build into the store and return its run handle. Nothing uploads.
     Build(build_cli::BuildArgs),
+    /// Review live, start its durable build and publication, and return a run handle.
+    /// Asks once; without a terminal, `--yes` or `--plan` is required.
+    Apply(apply_cli::ApplyArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
-    /// The local store.
-    Store {
-        #[command(subcommand)]
-        action: StoreAction,
-    },
-    /// Delete what nothing uses.
-    Gc {
-        #[command(subcommand)]
-        what: GcWhat,
+    /// Prepare and open the Local Web planner; serving does not hold the bake lock.
+    Dev(dev_cli::Dev),
+    /// Clean the local store: delete what no live release reaches, and empty `partial/`.
+    /// Shows the plan; `--apply` asks, then cleans.
+    Clean {
+        #[arg(long)]
+        apply: bool,
+        /// Do not ask. Required without a terminal.
+        #[arg(long, requires = "apply")]
+        yes: bool,
     },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
-}
-
-#[derive(Subcommand)]
-enum StoreAction {
-    /// Move the cache directories of the older bake tools into the store. Shows the plan; `--apply` moves.
-    Import {
-        #[arg(long)]
-        apply: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum GcWhat {
-    /// The objects and snapshot records that no environment, pin or fixture reaches. Shows the plan; `--apply` deletes.
-    Store {
-        #[arg(long)]
-        apply: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum RegionAction {
-    /// Every region with its kind and definition.
-    List,
-    /// One region, with the regions a union resolves to and its box.
-    Show { id: String },
 }
 
 /// Run `obc data` with the products whose steps this binary links.
@@ -128,128 +135,218 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
     };
     let json = cli.json;
     match run(cli, products) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => error.report(json),
     }
 }
 
-fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
+/// Report a launcher or worker startup failure with the command's existing error format.
+pub fn failed(message: String) -> ExitCode {
+    Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
+}
+
+fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
+    crate::worker::check(&root()?)?;
     let json = cli.json;
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let Some(command) = cli.command else {
-        let root = root()?;
-        return if terminal && !json { tui::run(&root) } else { print_sources(&registry(&root)?, false, json) };
+    let command = match cli.command {
+        None if terminal && !json => return tui::run(&root()?, products),
+        None => return status_cli::status(&root()?, products, false, json),
+        Some(command) => command,
     };
-    match command {
-        Command::Sources { check_now } => print_sources(&registry(&root()?)?, check_now, json),
+    let done = match command {
+        Command::Perform { store, run, request } => {
+            return operation_cli::perform(&Store::at(store), &run, &request, products).map(|()| ExitCode::SUCCESS);
+        }
+        Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
+        Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
+        Command::Versions { source } => {
+            let (rows, _) = source_listing(&root()?, products, false)?;
+            let row = rows
+                .iter()
+                .find(|row| row.source.id == source)
+                .ok_or_else(|| Code::Usage.error(format!("no source `{source}`")))?;
+            let versions = versions::read(&Store::open()?, row)?;
+            if json {
+                print_json(&versions)
+            } else {
+                versions.lines().iter().for_each(|line| println!("{line}"));
+                Ok(())
+            }
+        }
         Command::Fetch { target, params } => {
-            let registry = registry(&root()?)?;
+            let root = root()?;
+            let registry = registry(&root)?;
             let (id, version) = match target.split_once('@') {
                 Some((id, version)) => (id, Some(version.to_string())),
                 None => (target.as_str(), None),
             };
             let source = find(&registry, id)?;
-            let version = version.or_else(|| registry.pins.get(id).cloned());
             let store = Store::open()?;
-            let params = osm::with_base(source, &registry.pins, parse_params(&params)?).map_err(not_the_base)?;
-            let request = Request { source, version, params };
-            print_snapshot(&store, &fetched(source, fetch::fetch(&store, &Http::new(), &request))?, json)
+            let request = Request { source, version, params: parse_params(&params)? };
+            let missing = request
+                .version
+                .as_ref()
+                .map(|version| crate::engine::snapshot_files(&store, id, version, &request.params, &[]))
+                .transpose()?
+                .flatten()
+                .is_none();
+            let remote = (request.version.is_some() && source.r2_copy && missing).then(remote).transpose()?;
+            let live = remote
+                .as_ref()
+                .map(|remote| crate::live::Live::read(remote, products, &registry.sources, &store))
+                .transpose()?;
+            let copies =
+                remote.as_ref().zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
+            print_snapshot(
+                &store,
+                &fetched(
+                    source,
+                    crate::input_copy::fetch(&root, &store, &Http::new(), copies.as_ref(), &request, &[]),
+                )?,
+                json,
+            )
         }
-        Command::Refresh { source, params, env } => refresh(&root()?, &source, &params, &env, json),
         Command::Policy { source, refresh } => {
-            let source = policy(&root()?, &source, refresh)?;
-            eprintln!("obc data: the policy of {} is {refresh} in data/sources.toml", source.id);
+            let source = policy(&root()?, &Store::open()?, &source, refresh)?;
+            eprintln!("obc data: the policy of {} is {refresh} in pending Live settings", source.id);
             if json {
                 print_json(&source)?;
             }
             Ok(())
         }
-        Command::Region { action } => {
-            let regions = Regions::load(&root()?).map_err(|e| Code::InvalidData.error(e))?;
-            match action {
-                None | Some(RegionAction::List) => print_regions(&regions, json),
-                Some(RegionAction::Show { id }) => print_region(&regions, &id, json),
-            }
+        Command::Region { env: Some(env), id: Some(id), .. } => {
+            edit_cli::print(edit_cli::region(&root()?, &Store::open()?, products, &env, &id)?, json)
         }
+        Command::Region { action, .. } => regions_cli::run(&root()?, action, json),
+        Command::Layer { env, layer, switch } => {
+            edit_cli::print(edit_cli::layer(&root()?, &Store::open()?, products, &env, &layer, switch)?, json)
+        }
+        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &Store::open()?, &env)?, json),
         Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
-        Command::Build(args) => build_cli::build(&root()?, products, args, json),
+        Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
+        Command::Build(args) => operation_cli::build(&root()?, args, json),
+        Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
+        Command::Dev(args) => dev_cli::run(&root()?, products, args, json),
+
         Command::Runs(runs) => runs_cli::run(runs, json),
-        Command::Store { action: StoreAction::Import { apply } } => store_import(apply, json),
-        Command::Gc { what: GcWhat::Store { apply } } => gc_store(&root()?, apply, json),
+        Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),
+    };
+    done.map(|()| ExitCode::SUCCESS)
+}
+
+/// What `clean` removes from the store, or removed.
+#[derive(Debug, Default, Clone, Serialize, JsonSchema)]
+struct CleanPlan {
+    /// The snapshot records and the objects that nothing reaches, and what stays.
+    store: gc::Plan,
+}
+
+impl CleanPlan {
+    fn is_empty(&self) -> bool {
+        self.store.snapshots.is_empty() && self.store.objects.is_empty() && self.store.partial_bytes == 0
+    }
+
+    /// The one question before a clean.
+    fn question(&self) -> String {
+        let gc = &self.store;
+        match (gc.objects.len(), gc.snapshots.len(), gc.partial_bytes) {
+            (0, 0, 0) => "Nothing to clean.".into(),
+            (0, 1, 0) => "Remove 1 record from the local store?".into(),
+            (0, records, 0) => format!("Remove {records} records from the local store?"),
+            _ => format!("Remove {} from the local store?", bytes(gc.remove_bytes + gc.partial_bytes)),
+        }
     }
 }
 
-fn store_import(apply: bool, json: bool) -> Result<(), Error> {
-    let home = std::env::var_os("HOME").ok_or_else(|| Code::Usage.error("HOME is not set"))?;
-    let (store, dirs) = (Store::open()?, import::old_dirs(Path::new(&home)));
-    let plan = if apply { import::apply(&store, &dirs)? } else { import::plan(&store, &dirs)? };
-    if json {
-        return print_json(&plan);
-    }
-    let home = std::fs::canonicalize(&home).unwrap_or_else(|_| home.into());
-    let short =
-        |dir: &Path| dir.strip_prefix(&home).map_or(dir.display().to_string(), |dir| format!("~/{}", dir.display()));
-    println!("{} INTO {}", if apply { "MOVED" } else { "MOVE" }, store.root().display());
-    let mut table = Vec::new();
-    for dir in &plan.dirs {
-        let size = if dir.present { format!("{} files", dir.files) } else { "not present".into() };
-        table.push(vec![format!("  {}", short(&dir.dir)), size, bytes(dir.bytes)]);
-    }
-    print_table(&table);
-    println!("{} in; duplicates are kept once; the store grows by {}.", bytes(plan.bytes), bytes(plan.new_bytes));
-    let left: Vec<_> = plan.dirs.iter().flat_map(|dir| &dir.left).collect();
-    if !left.is_empty() {
-        println!("{}", if apply { "THESE STAY:" } else { "THESE STAY AFTER --apply:" });
-        left.iter().for_each(|path| println!("  {}", short(path)));
-    }
-    if !apply {
-        println!(
-            "`--apply` moves the files and deletes the directories that are then empty. Stop the bakes, the planner"
-        );
-        println!("and every fetch first. The older bake tools then fetch and build again.");
-    }
-    Ok(())
+fn remote() -> Result<Remote, Error> {
+    Remote::from_env().map_err(|e| Code::Blocked.error(e))
 }
 
-/// The plan of `gc store`.
-fn collect(root: &Path, store: &Store) -> Result<gc::Plan, Error> {
-    let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    Ok(gc::plan(store, &roots)?)
+/// What is live now.
+fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<Live, Error> {
+    Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
 }
 
-/// `gc store --apply`: what it deleted. With `confirmed`, only when that is still the plan.
-fn clean(root: &Path, store: &Store, confirmed: Option<&gc::Plan>) -> Result<gc::Plan, Error> {
-    let roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
+/// The one warning when the LIVE column is unknown.
+fn live_unknown(error: &Error) -> String {
+    format!("live is unknown (`?`): {}", error.message)
+}
+
+/// The roots of a collection: the live releases, and the checkout at `root`.
+fn roots(root: &Path, products: &[&dyn Product], store: &Store) -> Result<gc::Roots, Error> {
+    let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
+    roots.add_live(&read_live(&remote()?, &registry(root)?, products, store)?);
+    Ok(roots)
+}
+
+/// The plan of `clean`.
+fn clean_plan(root: &Path, products: &[&dyn Product], store: &Store) -> Result<CleanPlan, Error> {
+    let roots = roots(root, products, store)?;
+    Ok(CleanPlan { store: gc::plan(store, &roots)? })
+}
+
+/// Delete what nothing reaches, only when that is still `confirmed`.
+fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::Plan) -> Result<CleanPlan, Error> {
+    let roots = roots(root, products, store)?;
+    let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
         Code::Usage
-            .error("a fetch, a build or an import uses the store; nothing was deleted")
-            .fix("Run `obc data gc store --apply` again when the fetch, the build or the import ends.")
-    })
+            .error("a run or fetch uses the store; nothing was deleted")
+            .fix("Run `obc data clean --apply` again when the run or fetch ends.")
+    })?;
+    Ok(CleanPlan { store: removed })
 }
 
-fn gc_store(root: &Path, apply: bool, json: bool) -> Result<(), Error> {
+fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
-    let plan = if apply { clean(root, &store, None)? } else { collect(root, &store)? };
-    if json {
+    let plan = clean_plan(root, products, &store)?;
+    if json && !apply {
         return print_json(&plan);
     }
-    println!(
-        "Roots: the pins of {}/data/env/*.toml, its fixtures and planner recipes, the import records, and the newest record of each source and request.",
-        root.display()
-    );
-    println!("{} {}", if apply { "REMOVED FROM" } else { "REMOVE FROM" }, store.root().display());
-    plan.snapshots.iter().for_each(|snapshot| println!("  snapshot {snapshot}"));
-    plan.objects.iter().for_each(|(sha256, size)| println!("  object {sha256}  {}", bytes(*size)));
-    println!("  {} objects that nothing reaches, {}", plan.objects.len(), bytes(plan.remove_bytes));
-    println!("KEEP {} objects, {}", plan.keep_objects, bytes(plan.keep_bytes));
-    let kept =
-        plan.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
-    print_table(&kept.collect::<Vec<_>>());
-    if !apply {
-        println!("`--apply` deletes them. It refuses to start while a fetch, a build or an import runs.");
+    let text = clean_text(&store, &plan);
+    // With `--json`, the output is what the clean did.
+    if json {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
     }
+    if !apply {
+        if !plan.is_empty() {
+            println!("`--apply` asks once, then cleans.");
+        }
+        return Ok(());
+    }
+    if plan.is_empty() {
+        return if json { print_json(&plan) } else { Ok(()) };
+    }
+    confirm(&plan.question(), yes)?;
+    let done = clean(root, products, &store, &plan.store)?;
+    if json {
+        return print_json(&done);
+    }
+    println!("Removed {} from the store.", bytes(done.store.remove_bytes + done.store.partial_bytes));
     Ok(())
+}
+
+fn clean_text(store: &Store, plan: &CleanPlan) -> String {
+    if plan.is_empty() {
+        return "Nothing to clean.\n".into();
+    }
+    let (gc, mut text) = (&plan.store, String::new());
+    text += &format!("REMOVE FROM {}\n", store.root().display());
+    gc.snapshots.iter().for_each(|snapshot| text += &format!("  snapshot {snapshot}\n"));
+    gc.objects.iter().for_each(|(sha256, size)| text += &format!("  object {sha256}  {}\n", bytes(*size)));
+    text +=
+        &format!("  {} that nothing reaches, {}\n", gc::objects_text(gc.objects.len() as u64), bytes(gc.remove_bytes));
+    if gc.partial_bytes > 0 {
+        text += &format!("  partial/: unfinished downloads and stopped steps, {}\n", bytes(gc.partial_bytes));
+    }
+    text += &format!("KEEP {}, {}\n", gc::objects_text(gc.keep_objects), bytes(gc.keep_bytes));
+    let kept =
+        gc.kept.iter().map(|kept| vec![format!("  {}", kept.entry), bytes(kept.bytes), kept.because.join(" · ")]);
+    text += &table(&kept.collect::<Vec<_>>());
+    text
 }
 
 fn bytes(bytes: u64) -> String {
@@ -265,7 +362,7 @@ fn root() -> Result<std::path::PathBuf, Error> {
 }
 
 fn registry(root: &Path) -> Result<Registry, Error> {
-    Registry::load(root).map_err(|e| Code::InvalidData.error(e))
+    Registry::effective(root, &Store::open()?).map_err(|e| Code::InvalidData.error(e))
 }
 
 fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Error> {
@@ -282,65 +379,20 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
-/// `osm::with_base` refuses a `from=` that is not the pin of the base source.
-fn not_the_base(message: String) -> Error {
-    Code::Usage.error(message).fix("Leave out `from=`: the fetch takes the pin of the base source.")
-}
-
 /// A fetch that fails while the credential of its source is not on this machine is blocked.
 fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
     let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
     result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
 }
 
-fn refresh(root: &Path, id: &str, params: &[String], env: &str, json: bool) -> Result<(), Error> {
-    let registry = registry(root)?;
-    let source = find(&registry, id)?;
-    if !crate::is_kebab(env) {
-        return Err(Code::Usage.error(format!("`{env}` is not an environment name")));
-    }
-    let path = root.join("data/env").join(format!("{env}.toml"));
-    let text = std::fs::read_to_string(&path).map_err(|e| Code::Usage.error(format!("{}: {e}", path.display())))?;
-    let invalid = |e| Code::InvalidData.error(format!("{}: {e}", path.display()));
-    let pins = sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
-    let params = osm::with_base(source, &pins, parse_params(params)?).map_err(not_the_base)?;
-    let (store, http) = (Store::open()?, Http::new());
-    let version = upstream::newest(&store, &http, source, 0).version().map(str::to_string);
-    // The `geofabrik` fetcher finds the newest day of a URL with `{yymmdd}` itself.
-    let named = source.fetch.url.as_deref().is_some_and(|url| {
-        url.contains("{version}") || (source.fetch.kind == FetchKind::Http && url.contains("{yymmdd}"))
-    });
-    if version.is_none() && (named || matches!(source.version, VersionScheme::Release | VersionScheme::Commit)) {
-        let message = format!("the newest version of `{id}` is not known: fetch {id}@VERSION and pin it by hand");
-        return Err(Code::FetchFailed.error(message));
-    }
-    // The diffs of a source that starts at this pin end at its own pin, so they cannot start after it.
-    if let Some(version) = &version {
-        let starts_here = registry.sources.iter().filter(|s| s.fetch.from.as_deref() == Some(id));
-        let mut pinned = starts_here.filter_map(|s| Some((&s.id, pins.get(&s.id)?)));
-        if let Some((diffs, pin)) = pinned.find(|(_, pin)| version > *pin) {
-            let message = format!("`{id}` {version} is after the `{diffs}` pin {pin}");
-            return Err(Code::Usage.error(message).fix(format!("Refresh `{diffs}` first.")));
-        }
-    }
-    let snapshot = fetched(source, fetch::fetch(&store, &http, &Request { source, version, params }))?;
-    let text = sources::set_pin(&text, id, &snapshot.version);
-    sources::parse_pins(&text, &registry.sources).map_err(invalid)?;
-    store::write_atomic(&path, text.as_bytes())?;
-    eprintln!("obc data: pinned {id} = \"{}\" in data/env/{env}.toml", snapshot.version);
-    print_snapshot(&store, &snapshot, json)
-}
-
-/// Set the `refresh` of `id` in `data/sources.toml`.
-fn policy(root: &Path, id: &str, refresh: Refresh) -> Result<Source, Error> {
-    find(&registry(root)?, id)?;
-    let path = root.join("data/sources.toml");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = sources::set_refresh(&text, id, refresh).map_err(|e| Code::Usage.error(e))?;
-    let edited = sources::parse_sources(&text)
-        .map_err(|e| Code::Usage.error(e).fix(format!("Choose `manual`: `obc data policy {id} manual`.")))?;
-    store::write_atomic(&path, text.as_bytes())?;
-    Ok(edited.into_iter().find(|s| s.id == id).expect("the edit keeps the source"))
+/// Save a pending refresh policy in the data store.
+fn policy(root: &Path, store: &Store, id: &str, refresh: Refresh) -> Result<Source, Error> {
+    let mut source = find(&Registry::load(root)?, id)?.clone();
+    let mut settings = crate::settings::current(store)?;
+    settings.refresh.insert(id.into(), refresh);
+    settings.policies(std::slice::from_mut(&mut source)).map_err(|e| Code::Usage.error(e))?;
+    crate::settings::save(store, &settings)?;
+    Ok(source)
 }
 
 /// The requested files of a snapshot.
@@ -371,15 +423,18 @@ fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), 
 
 #[derive(Serialize, JsonSchema)]
 struct Sources<'a> {
+    /// R2 could not be read: `live` of each source is `null`.
+    live_unknown: bool,
     sources: &'a [SourceRow],
 }
 
-/// A source of `data/sources.toml` with its live pin, its snapshots and its state.
+/// A source of `data/sources.toml` with its live version, its snapshots and its state.
 #[derive(Clone, Serialize, JsonSchema)]
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
-    pin: Option<String>,
+    /// The versions that the live releases read, in order; `null` when R2 could not be read.
+    live: Option<Vec<String>>,
     /// The newest upstream version.
     upstream: Option<String>,
     age_days: Option<i64>,
@@ -387,6 +442,8 @@ struct SourceRow {
     reason: Option<String>,
     /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
+    requests: Vec<freshness::RequestStatus>,
+    credential_missing: bool,
 }
 
 /// A version of a source in the local store.
@@ -398,7 +455,7 @@ struct Stored {
 }
 
 impl SourceRow {
-    /// The pin or another version, short enough for a table.
+    /// A version, short enough for a table.
     fn short(&self, version: Option<&str>) -> String {
         version.map_or("—".into(), |version| match self.source.version {
             VersionScheme::Commit | VersionScheme::Digest => version.chars().take(12).collect(),
@@ -406,7 +463,7 @@ impl SourceRow {
         })
     }
 
-    /// Source, licence, R2 copy, live pin, age, policy and state.
+    /// Source, licence, R2 copy, live version, age, policy and state.
     fn cells(&self) -> Vec<String> {
         let s = &self.source;
         let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
@@ -414,7 +471,11 @@ impl SourceRow {
             s.id.clone(),
             s.licence.clone().unwrap_or_else(|| none.into()),
             if s.r2_copy { "yes" } else { "no" }.into(),
-            self.short(self.pin.as_deref()),
+            match &self.live {
+                None => "?".into(),
+                Some(live) if live.is_empty() => "—".into(),
+                Some(live) => live.iter().map(|version| self.short(Some(version))).collect::<Vec<_>>().join(", "),
+            },
             self.age_days.map_or("—".into(), |age| format!("{age} d")),
             s.refresh.to_string(),
             self.state.to_string(),
@@ -422,28 +483,39 @@ impl SourceRow {
     }
 }
 
-/// Every source in kind order, with its state from the newest upstream version.
-fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, Error> {
-    let max_age = if check_now { 0 } else { upstream::CACHE };
-    let today = crate::date::today();
+/// Source summaries use active requests. The live column also retains held provenance.
+fn source_rows(
+    registry: &Registry,
+    live: Option<&BTreeMap<String, Vec<String>>>,
+    inventory: Option<&crate::env::Env>,
+    check_now: bool,
+) -> Result<Vec<SourceRow>, Error> {
     let mut sorted: Vec<&Source> = registry.sources.iter().collect();
     sorted.sort_by_key(|source| source.kind);
     let (store, http) = (Store::open()?, Http::new());
-    let newest: Vec<Upstream> = std::thread::scope(|scope| {
-        let checks: Vec<_> =
-            sorted.iter().map(|source| scope.spawn(|| upstream::newest(&store, &http, source, max_age))).collect();
-        checks.into_iter().map(|check| check.join().unwrap_or(Upstream::Failed("panicked".into()))).collect()
-    });
     sorted
         .into_iter()
-        .zip(&newest)
-        .map(|(source, upstream)| {
-            let pin = registry.pins.get(&source.id).map(String::as_str);
-            let base = source.fetch.from.as_ref().and_then(|from| registry.pins.get(from)).map(String::as_str);
-            let present = source.credential.as_ref().is_none_or(|c| c.present());
-            let status = sources::status(source, pin, base, upstream, today, present);
+        .map(|source| {
+            let requests =
+                inventory.map(|env| freshness::requests(&store, &http, source, env, check_now)).unwrap_or_default();
+            let read = live.is_none_or(|live| live.get(&source.id).is_some_and(|versions| !versions.is_empty()));
+            let state = requests.iter().map(|r| r.state).min().unwrap_or_else(|| {
+                if source.kind != Kind::Tool && source.licence.is_none() {
+                    State::Blocked
+                } else if read {
+                    State::Ok
+                } else {
+                    State::Unused
+                }
+            });
+            let reason = requests
+                .iter()
+                .find(|r| r.state == state)
+                .and_then(|r| r.reason.clone())
+                .or_else(|| (state == State::Blocked && requests.is_empty()).then(|| "no licence recorded".into()));
+            let age_days = requests.iter().filter_map(|r| r.age_days).max();
+            let upstream = requests.iter().filter_map(|r| r.observation.result.version()).max().map(str::to_string);
             let mut snapshots = store.snapshots(&source.id)?;
-            // `retrieved` is `YYYY-MM-DDTHH:MM:SSZ`, so it sorts as text.
             snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
             let snapshots = snapshots
                 .into_iter()
@@ -451,23 +523,65 @@ fn source_rows(registry: &Registry, check_now: bool) -> Result<Vec<SourceRow>, E
                 .collect();
             Ok(SourceRow {
                 source: source.clone(),
-                pin: pin.map(str::to_string),
-                upstream: upstream.version().map(str::to_string),
-                age_days: status.age_days,
-                state: status.state,
-                reason: status.reason,
+                live: live.map(|live| live.get(&source.id).cloned().unwrap_or_default()),
+                upstream,
+                age_days,
+                state,
+                reason,
                 snapshots,
+                requests,
+                credential_missing: source.credential.as_ref().is_some_and(|credential| !credential.present()),
             })
         })
         .collect()
 }
 
-fn print_sources(registry: &Registry, check_now: bool, json: bool) -> Result<(), Error> {
-    let rows = source_rows(registry, check_now)?;
-    if json {
-        return print_json(&Sources { sources: &rows });
+type SourceListing = (Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>);
+
+fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Result<SourceListing, Error> {
+    let store = Store::open()?;
+    let mut registry = registry(root)?;
+    let remote = remote();
+    let live = match &remote {
+        Ok(remote) => read_live(remote, &registry, products, &store),
+        Err(error) => Err(Code::Blocked.error(error.message.clone())),
+    };
+    if let Ok(live) = &live {
+        crate::settings::observe(&store, live)?;
     }
-    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE PIN", "UPSTREAM", "AGE", "POLICY", "STATE"])];
+    let loaded = build_cli::load(root, "live", &store);
+    let inventory = if let (Ok(live), Ok(mut loaded)) = (&live, loaded) {
+        registry.sources = loaded.sources.clone();
+        loaded.env.live = live.versions();
+        loaded.env.retained = crate::input_copy::retained(live, &store)?;
+        let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
+        Some(freshness::discover(
+            root,
+            products,
+            &loaded.env,
+            &loaded.regions,
+            &store,
+            &Http::new(),
+            &loaded.sources,
+            Some(&copies),
+            None,
+        )?)
+    } else {
+        if let Err(error) = &live {
+            eprintln!("obc data: {}", live_unknown(error));
+        }
+        None
+    };
+    let versions = live.as_ref().ok().map(Live::by_source);
+    Ok((source_rows(&registry, versions.as_ref(), inventory.as_ref(), check_now)?, versions))
+}
+
+fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: bool) -> Result<(), Error> {
+    let (rows, live) = source_listing(root, products, check_now)?;
+    if json {
+        return print_json(&Sources { live_unknown: live.is_none(), sources: &rows });
+    }
+    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE", "UPSTREAM", "AGE", "POLICY", "STATE"])];
     let mut tools = false;
     for row in &rows {
         let s = &row.source;
@@ -489,9 +603,8 @@ fn print_sources(registry: &Registry, check_now: bool, json: bool) -> Result<(),
 
 fn definition(region: &Region) -> String {
     match &region.area {
-        Area::Geofabrik => "geofabrik".into(),
+        Area::Geofabrik { areas } => format!("geofabrik: {}", areas.join(" + ")),
         Area::Box { bbox } => format!("box {},{} → {},{}", bbox.west, bbox.south, bbox.east, bbox.north),
-        Area::Polygon { polygon } => format!("polygon {polygon}"),
         Area::Union { union } => format!("union: {}", union.join(" + ")),
     }
 }
@@ -604,18 +717,19 @@ redistribute = true
 "#;
 
     #[test]
-    fn a_policy_edits_its_source_in_place() {
+    fn a_policy_edits_pending_settings_and_leaves_the_source_declaration_unchanged() {
         let scratch = Scratch::new("cli-policy");
         let root = scratch.0.join("repository");
+        let store = Store::at(scratch.0.join("store"));
         write(&root.join("data/sources.toml"), SOURCES);
-        write(&root.join("data/env/live.toml"), "[pins]\n");
         let sources = || std::fs::read_to_string(root.join("data/sources.toml")).unwrap();
-        let refused = policy(&root, "planetiler", Refresh::Days(30)).unwrap_err();
-        assert!(refused.message.contains("needs `version = \"date\"`"), "{}", refused.message);
-        assert_eq!(policy(&root, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
+        let refused = policy(&root, &store, "planetiler", Refresh::Days(30)).unwrap_err();
+        assert!(refused.message.contains("needs a date version"), "{}", refused.message);
+        assert_eq!(policy(&root, &store, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
         assert_eq!(sources(), SOURCES, "a refused policy changes nothing");
 
-        assert_eq!(policy(&root, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
-        assert_eq!(sources(), SOURCES.replacen("refresh = 90", "refresh = \"manual\"", 1));
+        assert_eq!(policy(&root, &store, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
+        assert_eq!(sources(), SOURCES);
+        assert_eq!(crate::settings::current(&store).unwrap().refresh["osm-planet"], Refresh::Manual);
     }
 }

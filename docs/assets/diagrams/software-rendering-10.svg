@@ -1,0 +1,44 @@
+<svg viewBox="0 0 800 320" role="img" aria-label="Left: the frame's spans, sorted by z-index and drawn bottom-up — water, landuse and building fills at the bottom, then a dashed split line marking the first cased road line, then the road casings, then the road fills on top. The casing pass is inserted at that split: after the low-z fills, so they cannot paint over it, but under every road fill. Right: a junction where two roads cross — the road fills stay continuous through the crossing and the darker casing hugs only the outside of each road, with no casing line slicing across the junction." xmlns="http://www.w3.org/2000/svg" width="800" height="320" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">The casing pass goes at the z boundary — not before the frame</text>
+
+  <!-- LEFT: the sorted span stack -->
+  <text class="d-sub" x="150" y="52" text-anchor="middle" fill="#5c5a2e" font-size="12px">spans · sorted (z, seq) · drawn bottom-up</text>
+  <text class="d-sub" x="42" y="186" text-anchor="middle" transform="rotate(-90 42 186)" style="font-size:12px" fill="#5c5a2e" font-size="12px">z ↑ · paint order ↑</text>
+
+  <!-- bands: bottom (low z) drawn first -->
+  <rect x="90" y="248" width="110" height="26" rx="4" class="d-water" fill="#33575b" />
+  <text class="d-num" x="145" y="265" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">water</text>
+  <rect x="90" y="220" width="110" height="26" rx="4" class="d-forest" fill="#a4501e" />
+  <text class="d-num" x="145" y="237" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">landuse</text>
+  <rect x="90" y="192" width="110" height="26" rx="4" style="fill:#d6cda8;stroke:#3c6b39;stroke-width:0.8" />
+  <text class="d-sub" x="145" y="209" text-anchor="middle" fill="#5c5a2e" font-size="12px">buildings</text>
+
+  <!-- split line -->
+  <line x1="72" y1="186" x2="214" y2="186" stroke="#cf6a2a" stroke-width="2" stroke-dasharray="5 4" />
+
+  <!-- casing pass -->
+  <rect x="90" y="152" width="110" height="26" rx="4" style="fill:#5a4326" />
+  <text class="d-num" x="145" y="169" text-anchor="middle" fill="#fff" font-family="&#x27;Atkinson Mono&#x27;, ui-monospace, monospace" font-weight="700" font-size="12px">casings</text>
+  <!-- road fills -->
+  <rect x="90" y="124" width="110" height="26" rx="4" style="fill:#cdb894;stroke:#5a4326;stroke-width:0.8" />
+  <text class="d-sub" x="145" y="141" text-anchor="middle" fill="#5c5a2e" font-size="12px">road fills</text>
+
+  <!-- step annotations -->
+  <text class="d-sub" x="216" y="140" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">③ spans[split..) — road band, on top</text>
+  <text class="d-sub" x="216" y="168" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">② casing pass — wide color2, finest LOD</text>
+  <text class="d-sub" x="216" y="184" style="font-size:12px" fill="#5c5a2e" font-size="12px">split — first cased road line</text>
+  <text class="d-sub" x="216" y="230" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">① spans[0..split) — the base pass</text>
+
+  <!-- RIGHT: a junction -->
+  <text class="d-sub" x="620" y="52" text-anchor="middle" fill="#5c5a2e" font-size="12px">at a crossing</text>
+  <!-- casing (dark), drawn first -->
+  <rect x="520" y="162" width="200" height="36" style="fill:#5a4326" />
+  <rect x="602" y="100" width="36" height="160" style="fill:#5a4326" />
+  <!-- fills (tan), on top — cover the casing where the roads cross -->
+  <rect x="520" y="166" width="200" height="28" style="fill:#cdb894" />
+  <rect x="606" y="100" width="28" height="160" style="fill:#cdb894" />
+  <!-- callouts -->
+  <line class="d-stroke" x1="620" y1="180" x2="620" y2="180" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+  <text class="d-sub" x="620" y="284" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">fills continuous through the junction</text>
+  <text class="d-sub" x="620" y="298" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">casing hugs the outside of each road only</text>
+</svg>

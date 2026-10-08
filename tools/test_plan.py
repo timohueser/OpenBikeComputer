@@ -3,11 +3,11 @@
 
 Cargo's own graph decides Rust selection: every root-workspace package, its reverse
 dependencies and its test targets come from `cargo metadata`.  Only the facts Cargo
-cannot see live here — the job table below, and `testing/suites.toml`, which holds the
+cannot see live here — the job table below, and `tools/testing/suites.toml`, which holds the
 suites no Cargo package owns plus the per-package path triggers and platform limits.
 
 Selection is standard library only.  The structural workflow check in `validate-filters`
-is the one command that needs PyYAML (`tools/requirements-test.txt`).
+is the one command that needs PyYAML (the locked `dev` group).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ PRODUCT_ROOTS = (
     "firmware/obc-fw-nrf54l",
     "firmware/obc-boot",
     "firmware/obc-sensor-sim",
-    "apps/obc-desktop",
+    "builder/desktop",
 )
 
 @dataclass(frozen=True)
@@ -53,17 +53,17 @@ JOBS: dict[str, Job] = {
     "clippy": Job(needs=("selection",), roots=(ROOT_WORKSPACE,)),
     "test": Job(needs=("selection",), roots=(ROOT_WORKSPACE,), script="tools/ci/test.sh"),
     "ui-snapshots": Job(needs=("selection",), packages=("obc-sim",)),
-    "builder-python": Job(needs=("selection",), packages=("obc-pack",)),
+    "builder-python": Job(needs=("selection",), packages=("obc-bake", "obc-pack")),
     "embedded": Job(needs=("selection",), roots=("firmware/obc-fw-nrf54l", "firmware/obc-sensor-sim")),
     "boot": Job(needs=("selection",), roots=("firmware/obc-boot",)),
     "device": Job(needs=("selection",), packages=("obc-app", "obc-link")),
     "deny": Job(needs=("selection",)),
     # Trunk bundles the demo and the engine is built for wasm32 by hand; wasm-pack drives
-    # the four bridges.  No `cargo` argument list names them, so they are stated here.
+    # the builder core. No `cargo` argument list names it, so it is stated here.
     "wasm": Job(needs=("selection",), packages=("obc-web-demo", "obcm-assemble")),
     "wasm-bridges": Job(
         needs=("selection",),
-        packages=("obc-web-convert", "obc-web-assemble", "obc-skin-preview", "obc-flat-device"),
+        packages=("obc-builder-bridge",),
     ),
     "docs": Job(needs=("selection",)),
     "ios-unit": Job(needs=("selection",)),
@@ -74,7 +74,7 @@ JOBS: dict[str, Job] = {
     "verification": Job(needs=("selection",)),
     "planner-search": Job(needs=("selection",)),
     "desktop-frontend": Job(needs=("selection", "wasm-bridges")),
-    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("apps/obc-desktop",)),
+    "desktop": Job(needs=("selection", "desktop-frontend"), roots=("builder/desktop",)),
     "desktop-launch": Job(needs=("selection", "desktop")),
 }
 
@@ -111,12 +111,12 @@ RUST_FOUNDATION_PATHS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     ".cargo/config",
 }
-# A change to how this repository decides or executes verification selects every declared
-# suite: the decision itself is what changed. Agent prose (CLAUDE.md, AGENTS.md) is not on
+# Broad policy changes select unscoped suites. Scoped suites follow their own inputs and
+# the shared selector, aggregate and CI workflow. Agent prose (AGENTS.md) is not on
 # this list: it instructs an agent, it does not decide or execute anything. It is owned by the
 # documentation route so it is not an unowned path; the check that reads it is the
 # unconditional `guards` job, not a platform build.
@@ -124,19 +124,18 @@ TEST_POLICY_PATTERNS = (
     ".config/nextest.toml",
     ".github/workflows/**",
     ".github/actions/**",
-    "testing/**",
+    "tools/testing/**",
     "tools/ci/**",
     "tools/test_plan.py",
     "tools/ci_aggregate.py",
-    "tools/coverage_report.py",
-    "tools/requirements-coverage.txt",
     "docs/testing.md",
-    "CONTRIBUTING.md",
+    ".github/CONTRIBUTING.md",
+    "justfile",
     "tools/justfile",
     "tools/obc",
     "tools/obc-dev.sh",
 )
-# These workflows publish data or sites; they do not select or execute product tests.
+# These workflows publish reports, data or sites; they do not select or execute product tests.
 # Their workflow checks still run through python.repository-tools. Unknown workflows
 # stay on the full policy route.
 PUBLICATION_WORKFLOWS = {
@@ -144,6 +143,8 @@ PUBLICATION_WORKFLOWS = {
     ".github/workflows/deploy-site.yml",
     ".github/workflows/deploy-verification.yml",
 }
+SCOPED_POLICY_PATHS = {"tools/test_plan.py", "tools/ci_aggregate.py", ".github/workflows/ci.yml"}
+
 CODE_OR_POLICY_SUFFIXES = {
     ".c", ".h", ".js", ".json", ".py", ".rs", ".sh", ".swift", ".toml", ".ts", ".tsx", ".yaml", ".yml",
 }
@@ -170,6 +171,7 @@ class Package:
     ordinary_targets: tuple[str, ...]
     fixture_targets: tuple[str, ...]
     example_targets: tuple[str, ...]
+    build_dependencies: frozenset[str] = frozenset()
 
 @dataclass(frozen=True)
 class CargoGraph:
@@ -189,6 +191,19 @@ class CargoGraph:
                 reached[consumer] = dependency
                 pending.append(consumer)
         return reached
+
+    def build_closure(self, packages: Iterable[str]) -> frozenset[str]:
+        reached: set[str] = set()
+        pending = list(packages)
+        while pending:
+            name = pending.pop()
+            if name in reached:
+                continue
+            if name not in self.packages:
+                raise PlanError(f"suite links unknown Cargo package: {name}")
+            reached.add(name)
+            pending.extend(self.packages[name].build_dependencies)
+        return frozenset(reached)
 
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -245,6 +260,7 @@ def build_cargo_graph(
                 "manifest": relative,
                 "product_root": product_root,
                 "dependencies": {edge["name"] for edge in package.get("dependencies", [])},
+                "build_dependencies": {edge["name"] for edge in package.get("dependencies", []) if edge.get("kind") != "dev"},
                 "ordinary": ordinary,
                 "fixtures": fixtures,
                 "examples": examples,
@@ -263,6 +279,7 @@ def build_cargo_graph(
             entry["ordinary"],
             entry["fixtures"],
             entry["examples"],
+            frozenset(entry["build_dependencies"] & names),
         )
         for dependency in dependencies:
             reverse[dependency].add(name)
@@ -293,6 +310,9 @@ class Unit:
     foundation: bool = False
     ci_only: bool = False
     declared: bool = False
+    scoped: bool = False
+    rust_packages: frozenset[str] = frozenset()
+    rust_excludes: tuple[str, ...] = ()
     package: str = ""
     reasons: list[str] = field(default_factory=list)
 
@@ -308,9 +328,9 @@ def read_toml(path: Path) -> dict[str, Any]:
         raise PlanError(f"cannot parse {path}: {exc}") from exc
 
 def load_document(root: Path) -> dict[str, Any]:
-    document = read_toml(root / "testing/suites.toml")
+    document = read_toml(root / "tools/testing/suites.toml")
     if document.get("schema") != 2:
-        raise PlanError("testing/suites.toml: schema must be 2")
+        raise PlanError("tools/testing/suites.toml: schema must be 2")
     return document
 
 def carved_targets(document: Mapping[str, Any]) -> set[tuple[str, str]]:
@@ -353,6 +373,9 @@ def build_units(graph: CargoGraph, document: Mapping[str, Any]) -> list[Unit]:
                 foundation=bool(suite.get("foundation")),
                 ci_only=bool(suite.get("ci_only")),
                 declared=True,
+                scoped=bool(suite.get("scoped")),
+                rust_packages=graph.build_closure(suite.get("rust_packages", ())),
+                rust_excludes=tuple(suite.get("rust_excludes", ())),
                 package=suite.get("package", ""),
             )
         )
@@ -420,6 +443,29 @@ def working_tree_paths(root: Path) -> list[str]:
     lines += _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
     return sorted({value.strip() for value in lines if value.strip()})
 
+def changed_suite_ids(root: Path, base: str, document: Mapping[str, Any], head: str = "HEAD") -> set[str]:
+    ancestor = _git(root, "merge-base", base, head).strip()
+    paths = _git(root, "ls-tree", "--name-only", ancestor, "--", "tools/testing/suites.toml", "testing/suites.toml").splitlines()
+    if not paths:
+        raise PlanError("the base revision has no suite document")
+    before = tomllib.loads(_git(root, "show", f"{ancestor}:{paths[-1]}"))
+    previous = {suite["id"]: suite for suite in before.get("suite", [])}
+    return {suite["id"] for suite in document.get("suite", []) if suite != previous.get(suite["id"])}
+
+def package_build_input(path: str, package: Package) -> bool:
+    prefix = f"{package.root}/"
+    if not path.startswith(prefix):
+        return False
+    relative = path[len(prefix):]
+    parts = Path(relative).parts
+    return (
+        "tests" not in parts
+        and parts[-1] != "tests.rs"
+        and relative != "src/main.rs"
+        and not relative.endswith(".md")
+        and not relative.startswith(("examples/", "benches/", "src/bin/"))
+    )
+
 def is_policy_path(path: str) -> bool:
     return path not in PUBLICATION_WORKFLOWS and any(
         glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS
@@ -439,6 +485,7 @@ def select(
     changed_paths: Sequence[str],
     *,
     deleted: Iterable[str] = (),
+    changed_suites: Iterable[str] = (),
     base: str = "",
     head: str = "HEAD",
 ) -> Plan:
@@ -465,13 +512,17 @@ def select(
         if name in by_package:
             claim(by_package[name], reason)
 
+    for identifier in changed_suites:
+        if identifier in by_id:
+            claim(by_id[identifier], f"suite definition changed: {identifier}")
+
     orphaned: list[str] = []
     for path in sorted(set(changed_paths)):
         owned = False
         if is_policy_path(path):
             owned = True
             for unit in units:
-                if unit.declared:
+                if unit.declared and (not unit.scoped or path in SCOPED_POLICY_PATHS):
                     claim(unit, f"{POLICY_CHANGED} {path}")
 
         if path in RUST_FOUNDATION_PATHS:
@@ -482,7 +533,7 @@ def select(
                     continue
                 claim_package(name, reason)
             for unit in units:
-                if unit.foundation:
+                if unit.foundation or (unit.rust_packages and path != ".rustfmt.toml"):
                     claim(unit, reason)
 
         for name, package in sorted(graph.packages.items()):
@@ -490,6 +541,10 @@ def select(
             if path != package.manifest and not (prefix and path.startswith(prefix)):
                 continue
             owned = True
+            if package_build_input(path, package):
+                for unit in units:
+                    if name in unit.rust_packages and not any(glob_matches(path, pattern) for pattern in unit.rust_excludes):
+                        claim(unit, f"linked Rust package {name}: {path}")
             claim_package(name, f"changed Rust package {name}: {path}")
             for consumer, dependency in graph.reverse_closure(name).items():
                 claim_package(
@@ -516,11 +571,11 @@ def select(
         elif looks_like_production(path):
             errors.append(
                 f"changed production path has no owner: {path}; "
-                "add a trigger in testing/suites.toml or a Cargo package that contains it"
+                "add a trigger in tools/testing/suites.toml or a Cargo package that contains it"
             )
 
     # The owner may have been deleted with these paths, and the base tree's Cargo graph is
-    # not available here, so any unowned deletion runs the whole graph rather than nothing.
+    # not available here, so an unowned deletion selects the unscoped graph.
     # One reason covers them all, and names three: a reason per path multiplies by every
     # package and unit, and a branch that deletes a directory writes a plan too large for the
     # `ci` gate to read at all. The plan already lists every changed path.
@@ -533,7 +588,7 @@ def select(
         for name in graph.packages:
             claim_package(name, reason)
         for unit in units:
-            if unit.declared and unit.jobs:
+            if unit.declared and unit.jobs and not unit.scoped:
                 claim(unit, reason)
 
     # The snapshot sweep has an explicit rendering-input budget: broad policy and fixture
@@ -784,40 +839,6 @@ def _command_errors(root: Path, unit: Unit, graph: CargoGraph) -> list[str]:
             errors.append(f"{unit.id}: command path does not exist: {executable}")
     return errors
 
-def _coverage_errors(root: Path) -> list[str]:
-    document = read_toml(root / "testing/coverage-policy.toml")
-    errors: list[str] = []
-    if document.get("schema") != 1:
-        errors.append("testing/coverage-policy.toml: schema must be 1")
-    for exclusion in document.get("exclude", []):
-        if not isinstance(exclusion, dict) or not all(
-            isinstance(exclusion.get(key), str) and exclusion[key].strip() for key in ("path", "evidence")
-        ):
-            errors.append("coverage: every global exclusion needs path and replacement evidence")
-    identifiers = [component.get("id") for component in document.get("component", [])]
-    duplicates = sorted({value for value in identifiers if value and identifiers.count(value) > 1})
-    if duplicates:
-        errors.append(f"duplicate coverage component IDs: {', '.join(duplicates)}")
-    for component in document.get("component", []):
-        name = component.get("id", "<missing-id>")
-        if component.get("enforcement") not in {"ratchet", "report"}:
-            errors.append(f"coverage {name}: invalid enforcement {component.get('enforcement')!r}")
-        if name in SAFETY_COMPONENTS and component.get("enforcement") != "ratchet":
-            errors.append(f"coverage {name}: safety-critical component must be planned as ratchet")
-        if not component.get("include"):
-            errors.append(f"coverage {name}: include must name production paths")
-        for pattern in component.get("include", []):
-            if not any(root.glob(pattern)):
-                errors.append(f"coverage {name}: included path does not resolve: {pattern!r}")
-        for exclusion in component.get("exclude", []):
-            if not isinstance(exclusion, dict) or not exclusion.get("path") or not exclusion.get("evidence"):
-                errors.append(f"coverage {name}: every exclusion needs path and replacement evidence")
-        if component.get("baseline") in {None, "pending", ""} and "baseline" in component:
-            errors.append(f"coverage {name}: omit pending baseline instead of inventing a value")
-    return errors
-
-SAFETY_COMPONENTS = {"format-protocol-codecs", "crc", "storage", "dfu", "boot"}
-
 def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: Sequence[Unit]) -> list[str]:
     errors: list[str] = []
     identifiers = [unit.id for unit in units]
@@ -828,7 +849,7 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
         if entry["name"] not in graph.packages:
             errors.append(f"package facts name an unknown Cargo package: {entry['name']}")
     for unit in units:
-        for pattern in unit.triggers:
+        for pattern in unit.triggers + unit.rust_excludes:
             if not any(root.glob(pattern)):
                 errors.append(f"{unit.id}: trigger matches no maintained path: {pattern!r}")
         for platform in unit.platforms:
@@ -861,7 +882,6 @@ def validate(root: Path, graph: CargoGraph, document: Mapping[str, Any], units: 
             errors.append(f"job {name} names a missing script {job.script}")
         if not (job.unconditional or job.roots or job.packages or name in routed):
             errors.append(f"job {name} runs no declared suite")
-    errors.extend(_coverage_errors(root))
     errors.extend(_ui_frame_errors(root))
     return errors
 
@@ -891,7 +911,7 @@ def validate_workflow(root: Path) -> list[str]:
         import yaml
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on the environment
         raise PlanError(
-            "validate-filters needs PyYAML: pip install -r tools/requirements-test.txt"
+            "validate-filters needs PyYAML: uv run --locked --group dev python tools/test_plan.py validate-filters"
         ) from exc
     with (root / ".github/workflows/ci.yml").open("rb") as handle:
         workflow = yaml.safe_load(handle)
@@ -926,17 +946,17 @@ AUDITED_PATHS = (
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "rustfmt.toml",
+    ".rustfmt.toml",
     ".cargo/config.toml",
     "specs/vectors/obcm-v2.json",
     "tools/test_plan.py",
     "builder/server/nested/handler.py",
     "fixtures/catalog.toml",
     ".github/workflows/bake.yml",
-    "testing/suites.toml",
-    "builder/app/src/lib/example.ts",
+    "tools/testing/suites.toml",
+    "builder/web/src/lib/example.ts",
     "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
-    "apps/obc-desktop/src/main.rs",
+    "builder/desktop/src/main.rs",
     "docs/index.md",
 )
 
@@ -948,9 +968,10 @@ def load(root: Path) -> tuple[CargoGraph, dict[str, Any], list[Unit]]:
 
 def command_select(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
-    graph, _, units = load(root)
+    graph, document, units = load(root)
     changed, deleted = git_changed_paths(root, args.base, args.head)
-    plan = select(units, graph, changed, deleted=deleted, base=args.base, head=args.head)
+    definitions = changed_suite_ids(root, args.base, document, args.head) if "tools/testing/suites.toml" in changed else ()
+    plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     if args.release:
         plan = select_release(plan)
     data = plan_data(plan)
@@ -967,7 +988,9 @@ def command_run(args: argparse.Namespace) -> int:
     changed, deleted = git_changed_paths(root, args.base, args.head)
     if args.head == "HEAD":
         changed = sorted(set(changed) | set(working_tree_paths(root)))
-    plan = select(units, graph, changed, deleted=deleted, base=args.base, head=args.head)
+        deleted.update(path for path in changed if not (root / path).exists())
+    definitions = changed_suite_ids(root, args.base, document, args.head) if "tools/testing/suites.toml" in changed else ()
+    plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     return run_plan(plan, graph, root, carved_targets(document), dry_run=args.dry_run)
 
 def command_cargo_filter(args: argparse.Namespace) -> int:
@@ -1060,7 +1083,7 @@ def build_parser() -> argparse.ArgumentParser:
     gates_parser.add_argument("--unreproduced", action="store_true")
     gates_parser.set_defaults(func=command_gates)
 
-    check_parser = subparsers.add_parser("check", help="validate the plan documents and the coverage policy")
+    check_parser = subparsers.add_parser("check", help="validate the plan documents")
     check_parser.set_defaults(func=command_check)
 
     workflow_parser = subparsers.add_parser(

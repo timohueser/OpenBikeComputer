@@ -52,6 +52,11 @@ impl<T> Slot<T> {
         self.held.take_if(|value| pick(value))
     }
 
+    /// Inspect admission without consuming the operation that still waits.
+    pub fn as_ref(&self) -> Option<&T> {
+        self.held.as_ref()
+    }
+
     /// Whether the slot holds nothing: the admission test before issuing a new operation.
     pub fn is_empty(&self) -> bool {
         self.held.is_none()

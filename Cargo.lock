@@ -3486,14 +3486,24 @@ dependencies = [
  "image",
  "obc-data",
  "obc-dem",
+ "obc-draw",
+ "obc-elevation",
  "obc-file-source",
+ "obc-fixtures",
  "obc-formats",
+ "obc-map-core",
  "obc-map-scene",
+ "obc-network",
+ "obc-osm",
  "obc-pack",
+ "obc-pbf",
+ "obc-places",
  "obc-reader",
  "obc-render",
+ "obc-vectors",
  "obcm-assemble",
  "obcm-testkit",
+ "rayon",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3525,6 +3535,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-builder-bridge"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "obc-bake",
+ "obc-draw",
+ "obc-flat-device",
+ "obc-formats",
+ "obc-host-core",
+ "obc-link",
+ "obc-map-core",
+ "obc-map-scene",
+ "obc-network",
+ "obc-pack",
+ "obc-places",
+ "obc-ports",
+ "obc-reader",
+ "obc-render",
+ "obc-route",
+ "obc-storage",
+ "obc-vectors",
+ "obcm-assemble",
+ "obcm-testkit",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "obc-crc"
 version = "0.1.0"
 
@@ -3547,24 +3588,41 @@ dependencies = [
 name = "obc-data-steps"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "obc-bake",
  "obc-data",
  "obc-dem",
+ "obc-draw",
  "obc-elevation",
+ "obc-file-source",
  "obc-fixtures",
  "obc-formats",
+ "obc-map-core",
+ "obc-network",
+ "obc-osm",
  "obc-pack",
+ "obc-search-bake",
+ "obcm-assemble",
+ "planner-router",
+ "planner-router-build",
+ "rusqlite",
+ "serde",
  "serde_json",
+ "tempfile",
+ "toml",
+ "zip",
 ]
 
 [[package]]
 name = "obc-dem"
 version = "0.1.0"
 dependencies = [
+ "image",
  "obc-data",
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "rusqlite",
  "serde_json",
  "sha2 0.11.0",
  "tiff",
@@ -3586,6 +3644,28 @@ dependencies = [
  "obc-display",
  "obc-reader",
  "pollster",
+]
+
+[[package]]
+name = "obc-draw"
+version = "0.1.0"
+dependencies = [
+ "geos",
+ "obc-data",
+ "obc-elevation",
+ "obc-formats",
+ "obc-map-core",
+ "obc-map-scene",
+ "obc-pbf",
+ "obc-places",
+ "obc-reader",
+ "obc-render",
+ "obcm-testkit",
+ "osmpbf",
+ "rayon",
+ "serde_json",
+ "sha2 0.11.0",
+ "zip",
 ]
 
 [[package]]
@@ -3611,11 +3691,9 @@ version = "0.1.0"
 name = "obc-flat-device"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "obc-crc",
  "obc-link",
  "obc-storage",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -3634,14 +3712,19 @@ dependencies = [
  "getrandom 0.2.17",
  "heapless 0.8.0",
  "obc-app",
+ "obc-bake",
  "obc-crc",
+ "obc-draw",
  "obc-elevation",
  "obc-file-source",
  "obc-fixtures",
  "obc-formats",
  "obc-link",
+ "obc-map-core",
  "obc-map-scene",
+ "obc-network",
  "obc-pack",
+ "obc-places",
  "obc-ports",
  "obc-reader",
  "obc-render",
@@ -3674,9 +3757,12 @@ name = "obc-ios-host"
 version = "0.1.0"
 dependencies = [
  "obc-app",
+ "obc-crc",
  "obc-display",
+ "obc-flat-device",
  "obc-formats",
  "obc-host-core",
+ "obc-link",
  "obc-platform",
  "obc-ports",
  "obc-render",
@@ -3698,6 +3784,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-map-core"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "obc-elevation",
+ "obc-file-source",
+ "obc-formats",
+ "obc-reader",
+ "obc-tree-walk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+]
+
+[[package]]
 name = "obc-map-scene"
 version = "0.1.0"
 dependencies = [
@@ -3715,49 +3817,86 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-network"
+version = "0.1.0"
+dependencies = [
+ "obc-data",
+ "obc-elevation",
+ "obc-formats",
+ "obc-map-core",
+ "obc-map-scene",
+ "obc-pbf",
+ "obc-places",
+ "obc-tree-walk",
+ "serde_json",
+]
+
+[[package]]
+name = "obc-osm"
+version = "0.1.0"
+dependencies = [
+ "obc-data",
+ "obc-formats",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "obc-pack"
 version = "0.1.0"
 dependencies = [
  "boon",
  "geos",
- "heapless 0.8.0",
  "image",
- "indexmap",
  "obc-data",
  "obc-dem",
  "obc-elevation",
- "obc-file-source",
  "obc-fixtures",
  "obc-formats",
+ "obc-map-core",
  "obc-map-scene",
+ "obc-pbf",
  "obc-places",
  "obc-reader",
  "obc-render",
- "obc-tree-walk",
  "obc-vectors",
  "obcm-testkit",
  "osmpbf",
  "percent-encoding",
- "rayon",
  "schemars",
  "scraper",
  "serde",
  "serde_json",
- "serde_path_to_error",
  "sha1",
  "sha2 0.11.0",
- "unicode-normalization",
  "ureq",
  "url",
- "zip",
  "zlib-rs",
+]
+
+[[package]]
+name = "obc-pbf"
+version = "0.1.0"
+dependencies = [
+ "geos",
+ "libc",
+ "obc-map-core",
+ "osmpbf",
+ "rayon",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "obc-places"
 version = "0.1.0"
 dependencies = [
+ "obc-elevation",
  "obc-formats",
+ "obc-map-core",
+ "obc-pbf",
+ "obc-render",
+ "osmpbf",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -3822,12 +3961,15 @@ version = "0.1.0"
 dependencies = [
  "heapless 0.8.0",
  "libm",
+ "obc-bake",
  "obc-crc",
+ "obc-draw",
  "obc-elevation",
  "obc-fixtures",
  "obc-formats",
+ "obc-map-core",
  "obc-map-scene",
- "obc-pack",
+ "obc-network",
  "obc-ports",
  "obc-reader",
  "obcm-testkit",
@@ -3840,7 +3982,8 @@ dependencies = [
  "clap",
  "flate2",
  "geo",
- "obc-pack",
+ "obc-data",
+ "obc-map-core",
  "obc-places",
  "osmpbfreader",
  "regex",
@@ -3890,23 +4033,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "obc-skin-preview"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "obc-formats",
- "obc-host-core",
- "obc-map-scene",
- "obc-pack",
- "obc-reader",
- "obc-render",
- "obcm-assemble",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "obc-storage"
 version = "0.1.0"
 dependencies = [
@@ -3915,6 +4041,7 @@ dependencies = [
  "obc-formats",
  "obc-link",
  "obc-reader",
+ "obc-route",
  "obcm-testkit",
 ]
 
@@ -3928,6 +4055,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.2",
  "nusb",
+ "obc-flat-device",
  "obc-link",
  "serde",
  "tokio",
@@ -3963,35 +4091,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "obc-web-assemble"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "obc-formats",
- "obc-pack",
- "obc-reader",
- "obc-vectors",
- "obcm-assemble",
- "obcm-testkit",
- "serde_json",
- "sha2 0.11.0",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "obc-web-convert"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "obc-formats",
- "obc-ports",
- "obc-route",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "obc-web-demo"
 version = "0.1.0"
 dependencies = [
@@ -4019,14 +4118,19 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "obc-app",
+ "obc-bake",
  "obc-dem",
  "obc-display",
+ "obc-draw",
  "obc-elevation",
  "obc-file-source",
  "obc-formats",
  "obc-host-core",
+ "obc-map-core",
  "obc-map-scene",
+ "obc-network",
  "obc-pack",
+ "obc-places",
  "obc-reader",
  "obc-render",
  "obc-route",
@@ -4035,6 +4139,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -4659,6 +4764,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "planner-router"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "memmap2 0.9.11",
+ "postcard",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "planner-router-build"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "country-boundaries",
+ "obc-data",
+ "obc-dem",
+ "osmpbfreader",
+ "planner-router",
+ "postcard",
+ "rusqlite",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "planner-service"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "planner-router",
+ "planner-router-build",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tower-http",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5141,49 +5288,6 @@ name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
-
-[[package]]
-name = "route-build"
-version = "0.1.0"
-dependencies = [
- "clap",
- "country-boundaries",
- "image",
- "obc-data",
- "obc-dem",
- "osmpbfreader",
- "postcard",
- "route-engine",
- "rusqlite",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "route-engine"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "memmap2 0.9.11",
- "postcard",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "route-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "route-build",
- "route-engine",
- "serde_json",
- "tokio",
- "tower",
- "tower-http",
-]
 
 [[package]]
 name = "rsqlite-vfs"

@@ -1,5 +1,11 @@
 //! OSM place classification and coordinates shared by host builders.
 
+pub mod hours;
+pub mod metadata;
+pub mod name;
+pub mod osm;
+pub mod routing;
+
 use obc_formats::obcm::{
     poi_directory_category_of, poi_label_of, SETTLEMENT_SUBTYPE_CITY, SETTLEMENT_SUBTYPE_HAMLET,
     SETTLEMENT_SUBTYPE_TOWN, SETTLEMENT_SUBTYPE_VILLAGE, SUMMIT_SUBTYPE_ID,

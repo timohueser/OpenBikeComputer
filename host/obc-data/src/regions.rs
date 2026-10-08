@@ -1,11 +1,12 @@
-//! `data/regions/`: one file per region, `<id>.toml`. A region is a Geofabrik area, a box, a
-//! polygon file or a union of other regions.
+//! `data/regions/`: selected Geofabrik areas, a box, or a saved union in one `<id>.toml`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+pub mod geofabrik;
 
 /// Degrees, longitude first.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, JsonSchema)]
@@ -46,15 +47,13 @@ impl Bbox {
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Area {
-    /// The Geofabrik area whose path is the region id.
-    Geofabrik,
+    /// The selected Geofabrik source paths, independent of the saved region id.
+    Geofabrik {
+        areas: Vec<String>,
+    },
     Box {
         #[serde(rename = "box")]
         bbox: Bbox,
-    },
-    /// An Osmosis `.poly` file, relative to the region file.
-    Polygon {
-        polygon: String,
     },
     Union {
         union: Vec<String>,
@@ -67,6 +66,42 @@ pub struct Region {
     pub name: String,
     #[serde(flatten)]
     pub area: Area,
+    /// The ISO 3166-1 alpha-2 codes of its countries, such as `DE`. Empty when the file names none.
+    pub countries: Vec<String>,
+    /// The IANA time zone of the region, such as `Europe/Berlin`.
+    pub time_zone: Option<String>,
+}
+
+impl Region {
+    /// The complete editable TOML definition, without its file id.
+    pub fn definition(&self) -> Result<String, String> {
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let fields = value.as_object_mut().expect("region object");
+        fields.remove("id");
+        if fields.get("time_zone").is_some_and(serde_json::Value::is_null) {
+            fields.remove("time_zone");
+        }
+        if let Area::Box { bbox } = self.area {
+            fields.insert("box".into(), serde_json::json!([bbox.west, bbox.south, bbox.east, bbox.north]));
+        }
+        toml::to_string(&value).map_err(|e| e.to_string())
+    }
+
+    /// The source of a single-area definition. Box and union definitions need coverage resolution.
+    pub fn source_area(&self) -> Option<&str> {
+        match &self.area {
+            Area::Geofabrik { areas } if areas.len() == 1 => Some(&areas[0]),
+            _ => None,
+        }
+    }
+
+    /// The planner needs both. Selection checks them, so a region without them fails before a fetch.
+    pub fn selectable(&self) -> Result<(), String> {
+        if self.countries.is_empty() || self.time_zone.is_none() {
+            return Err(format!("region `{}` needs `countries` and `time_zone` in its file", self.id));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -76,8 +111,11 @@ struct RegionFile {
     kind: AreaKind,
     #[serde(rename = "box")]
     bbox: Option<[f64; 4]>,
-    polygon: Option<String>,
+    areas: Option<Vec<String>>,
     union: Option<Vec<String>>,
+    #[serde(default)]
+    countries: Vec<String>,
+    time_zone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -85,7 +123,6 @@ struct RegionFile {
 enum AreaKind {
     Geofabrik,
     Box,
-    Polygon,
     Union,
 }
 
@@ -99,18 +136,29 @@ pub fn parse_region(id: &str, text: &str) -> Result<Region, String> {
     if file.name.trim().is_empty() {
         return Err(fail("`name` is empty".into()));
     }
-    let area = match (file.kind, file.bbox, file.polygon, file.union) {
-        (AreaKind::Geofabrik, None, None, None) => Area::Geofabrik,
+    let area = match (file.kind, file.bbox, file.areas, file.union) {
+        (AreaKind::Geofabrik, None, Some(mut areas), None) if !areas.is_empty() => {
+            if areas.iter().any(|id| !id.split('/').all(crate::is_kebab)) {
+                return Err(fail("each source area path is lowercase kebab-case".into()));
+            }
+            areas.sort();
+            areas.dedup();
+            Area::Geofabrik { areas }
+        }
         (AreaKind::Box, Some(bbox), None, None) => Area::Box { bbox: Bbox::new(bbox).map_err(fail)? },
-        (AreaKind::Polygon, None, Some(polygon), None) => Area::Polygon { polygon },
         (AreaKind::Union, None, None, Some(union)) if union.len() >= 2 => Area::Union { union },
         _ => {
             return Err(fail(
-                "a region has the one key its kind names: `box`, `polygon` or `union` (two or more ids)".into(),
+                "a region names only its kind's key: nonempty `areas`, `box` or `union` (two or more ids)".into(),
             ))
         }
     };
-    Ok(Region { id: id.into(), name: file.name, area })
+    if let Some(code) =
+        file.countries.iter().find(|code| code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase()))
+    {
+        return Err(fail(format!("country `{code}` is not an ISO 3166-1 alpha-2 code, such as `DE`")));
+    }
+    Ok(Region { id: id.into(), name: file.name, area, countries: file.countries, time_zone: file.time_zone })
 }
 
 /// Every region, by id.
@@ -133,6 +181,11 @@ impl Regions {
 
     /// Read a directory laid out like `data/regions/`.
     pub fn load_dir(dir: &Path) -> Result<Self, String> {
+        Self::new(Self::definitions(dir)?)
+    }
+
+    /// Parse definitions before resolving references across multiple directories.
+    pub(crate) fn definitions(dir: &Path) -> Result<Vec<Region>, String> {
         let mut files = Vec::new();
         collect(dir, &mut files)?;
         let mut list = Vec::new();
@@ -141,14 +194,9 @@ impl Regions {
             let id = relative.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let region = parse_region(&id, &text)?;
-            if let Area::Polygon { polygon } = &region.area {
-                if !path.parent().expect("a file has a parent").join(polygon).is_file() {
-                    return Err(format!("region `{id}`: polygon file `{polygon}` is missing"));
-                }
-            }
             list.push(region);
         }
-        Self::new(list)
+        Ok(list)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Region> {
@@ -189,7 +237,7 @@ impl Regions {
         Ok(())
     }
 
-    /// The box around `id` when every part of it is a box. A Geofabrik area or a polygon has
+    /// The box around `id` when every part of it is a box. Geofabrik coverage has
     /// no box until its outline is fetched.
     pub fn bounds(&self, id: &str) -> Option<Bbox> {
         let leaves = self.leaves(id).ok()?;
@@ -245,17 +293,37 @@ mod tests {
 
     #[test]
     fn an_unknown_field_or_a_missing_key_is_rejected() {
-        assert!(parse_region("x", "name = \"x\"\nkind = \"geofabrik\"\nbounds = [1, 2, 3, 4]\n")
+        assert!(parse_region("x", "name = \"x\"\nkind = \"geofabrik\"\nareas = [\"x\"]\nbounds = [1, 2, 3, 4]\n")
             .unwrap_err()
             .contains("bounds"));
         assert!(parse_region("x", "name = \"x\"\nkind = \"box\"\n").is_err());
-        assert!(parse_region("Europe/x", "name = \"x\"\nkind = \"geofabrik\"\n").is_err());
+        assert!(parse_region("Europe/x", "name = \"x\"\nkind = \"geofabrik\"\nareas = [\"x\"]\n").is_err());
+        let countries = |list: &str| {
+            parse_region("x", &format!("name = \"x\"\nkind = \"geofabrik\"\nareas = [\"x\"]\ncountries = {list}\n"))
+        };
+        assert_eq!(countries("[\"DE\", \"CH\"]").unwrap().countries, ["DE", "CH"]);
+        assert!(countries("[\"de\"]").unwrap_err().contains("alpha-2"));
+    }
+
+    #[test]
+    fn one_saved_region_has_normalized_source_paths_and_no_polygon_workflow() {
+        let region = parse_region("ride/alps", "name = \"Alps\"\nkind = \"geofabrik\"\nareas = [\"europe/switzerland\",\"europe/germany\",\"europe/switzerland\"]\n").unwrap();
+        assert_eq!(region.area, Area::Geofabrik { areas: vec!["europe/germany".into(), "europe/switzerland".into()] });
+        assert_eq!(region.source_area(), None);
+        for invalid in [
+            "name = \"No source\"\nkind = \"geofabrik\"\n",
+            "name = \"Empty\"\nkind = \"geofabrik\"\nareas = []\n",
+            "name = \"Traversal\"\nkind = \"geofabrik\"\nareas = [\"../outside\"]\n",
+            "name = \"Polygon\"\nkind = \"polygon\"\npolygon = \"own.poly\"\n",
+        ] {
+            assert!(parse_region("ride/alps", invalid).is_err());
+        }
     }
 
     #[test]
     fn a_union_resolves_to_its_leaves_and_their_box() {
         let regions = Regions::new(vec![
-            region("europe/germany", "name = \"Germany\"\nkind = \"geofabrik\"\n"),
+            region("europe/germany", "name = \"Germany\"\nkind = \"geofabrik\"\nareas = [\"europe/germany\"]\n"),
             boxed("a", "[1.0, 1.0, 2.0, 2.0]"),
             boxed("b", "[3.0, 0.0, 4.0, 1.5]"),
             union("ab", "[\"a\", \"b\"]"),
@@ -278,8 +346,14 @@ mod tests {
     #[test]
     fn the_checked_in_regions_load() {
         let regions = Regions::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+        for region in regions.iter() {
+            region.selectable().unwrap();
+        }
         let dach = regions.leaves("dach").unwrap();
         assert_eq!(dach, ["europe/austria", "europe/germany", "europe/switzerland"]);
-        assert_eq!(regions.get("europe/germany/baden-wuerttemberg").unwrap().area, Area::Geofabrik);
+        assert_eq!(
+            regions.get("europe/germany/baden-wuerttemberg").unwrap().area,
+            Area::Geofabrik { areas: vec!["europe/germany/baden-wuerttemberg".into()] }
+        );
     }
 }

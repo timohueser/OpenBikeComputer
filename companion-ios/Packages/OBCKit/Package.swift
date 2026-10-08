@@ -29,6 +29,7 @@ let package = Package(
         .package(url: "https://github.com/maplibre/maplibre-gl-native-distribution", exact: "6.31.0"),
     ],
     targets: [
+        .binaryTarget(name: "OBCHost", path: ".swiftpm/OBCHost.xcframework"),
         .target(name: "OBCPlanner", dependencies: ["OBCDomain"], swiftSettings: languageMode),
         .testTarget(name: "OBCPlannerTests", dependencies: ["OBCPlanner"], swiftSettings: languageMode),
         .target(
@@ -41,12 +42,12 @@ let package = Package(
         // host-testable.
         .target(
             name: "OBCProtocolV4",
-            dependencies: ["OBCDomain"],
+            dependencies: ["OBCDomain", "OBCHost"],
             swiftSettings: languageMode
         ),
         .target(
             name: "OBCTransport",
-            dependencies: ["OBCDomain", "OBCProtocolV4"],
+            dependencies: ["OBCDomain", "OBCProtocolV4", "OBCHost"],
             swiftSettings: languageMode
         ),
 

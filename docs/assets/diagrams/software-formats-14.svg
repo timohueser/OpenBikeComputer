@@ -1,0 +1,57 @@
+<svg viewBox="0 0 720 268" role="img" aria-label="Power-of-two map cells align with an assembled map quadtree. The assembler copies geometry chunks and rebuilds global sections." xmlns="http://www.w3.org/2000/svg" width="720" height="268" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aCA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Subdivision lands on cell boundaries</text>
+
+  <!-- left: the lattice -->
+  <text class="d-label" x="30" y="52" fill="#1c1b14" font-size="14px">the catalog</text>
+  <text class="d-sub" x="30" y="67" fill="#5c5a2e" font-size="12px">one cell = one baked .obcm</text>
+  <g>
+    <rect class="d-panel-2" x="30" y="80" width="72" height="72" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <rect class="d-panel-2" x="102" y="80" width="72" height="72" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <rect class="d-panel-2" x="30" y="152" width="72" height="72" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <rect class="d-panel-2" x="102" y="152" width="72" height="72" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <rect class="d-panel-2" x="174" y="80" width="72" height="72" style="fill:#f2efe2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <rect class="d-panel-2" x="174" y="152" width="72" height="72" style="fill:#f2efe2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <!-- the selection -->
+    <path class="d-hot" d="M46 96 L152 96 L152 138 L128 138 L128 200 L46 200 Z" stroke-dasharray="5 3" fill="none" stroke="#ae4825" stroke-width="2.4" />
+    <text class="d-sub" x="38" y="118" style="font-size:12px" fill="#5c5a2e" font-size="12px">cell A</text>
+    <text class="d-sub" x="110" y="118" style="font-size:12px" fill="#5c5a2e" font-size="12px">cell B</text>
+    <text class="d-sub" x="182" y="118" style="font-size:12px;fill:#b9b09a" fill="#5c5a2e" font-size="12px">unused</text>
+  </g>
+  <text class="d-sub" x="30" y="243" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">selection (dashed) → the cells it touches</text>
+
+  <!-- arrow -->
+  <line class="d-flow" x1="256" y1="150" x2="360" y2="150" marker-end="url(#aCA)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="308" y="132" text-anchor="middle" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">chunk bytes</text>
+  <text class="d-sub" x="308" y="145" text-anchor="middle" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">copied verbatim</text>
+  <text class="d-sub" x="308" y="172" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">no decode</text>
+  <text class="d-sub" x="308" y="190" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">no GEOS</text>
+
+  <!-- right: the assembled tree -->
+  <text class="d-label" x="392" y="52" fill="#1c1b14" font-size="14px">the assembly</text>
+  <text class="d-sub" x="392" y="67" fill="#5c5a2e" font-size="12px">bbox = grid-aligned 2ⁿ square</text>
+  <circle cx="470" cy="92" r="11" class="d-forest" fill="#a4501e" />
+  <text class="d-sub" x="490" y="96" style="font-size:12px" fill="#5c5a2e" font-size="12px">root — rebuilt</text>
+  <line class="d-flow" x1="463" y1="101" x2="432" y2="126" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="477" y1="101" x2="508" y2="126" fill="none" stroke="#a4501e" stroke-width="2" />
+  <circle cx="426" cy="136" r="10" class="d-forest" fill="#a4501e" />
+  <circle cx="514" cy="136" r="10" class="d-forest" fill="#a4501e" />
+  <line class="d-flow" x1="420" y1="145" x2="400" y2="170" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="432" y1="145" x2="452" y2="170" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="508" y1="145" x2="488" y2="170" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="520" y1="145" x2="540" y2="170" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="376" y="176" width="48" height="30" rx="5" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <rect class="d-panel" x="432" y="176" width="48" height="30" rx="5" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <rect class="d-panel" x="488" y="176" width="48" height="30" rx="5" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <rect class="d-panel-2" x="544" y="176" width="48" height="30" rx="5" style="fill:#f2efe2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="400" y="196" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">cell</text>
+  <text class="d-sub" x="456" y="196" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">cell</text>
+  <text class="d-sub" x="512" y="196" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">cell</text>
+  <text class="d-sub" x="568" y="196" text-anchor="middle" style="font-size:12px;fill:#b9b09a" fill="#5c5a2e" font-size="12px">empty</text>
+  <path class="d-hot" d="M370 170 L598 170" stroke-dasharray="4 3" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-sub" x="604" y="174" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">cell depth</text>
+  <text class="d-sub" x="392" y="228" style="font-size:12px" fill="#5c5a2e" font-size="12px">rebuilt: header · style table · upper index</text>
+  <text class="d-sub" x="392" y="243" style="font-size:12px" fill="#5c5a2e" font-size="12px">rebuilt: POIs + hours · the navigation graph</text>
+</svg>

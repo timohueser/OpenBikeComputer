@@ -1,0 +1,39 @@
+<svg viewBox="0 0 720 467" role="img" aria-label="The main RRAM ribbon shows a 32 KiB bootloader, 1976 KiB application and small tail regions to scale. The final 28 KiB expands into a 20 KiB sEMMC stage, 4 KiB boot-state page and 4 KiB settings page. The card separately holds update and rollback objects." xmlns="http://www.w3.org/2000/svg" width="720" height="467" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<defs><marker id="r76arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Firmware storage · a proportional RRAM map and an enlarged tail</text>
+<text class="d-title" x="20" y="61" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Application layout · proportional regions</text>
+<rect x="28" y="92" width="10.373" height="52" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="38.373" y="92" width="640.55" height="52" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="678.923" y="92" width="6.483" height="52" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="685.407" y="92" width="1.297" height="52" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<rect x="686.703" y="92" width="1.297" height="52" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-title" x="350" y="115" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Application · 1976 KiB</text>
+<text class="d-sub" x="350" y="135" text-anchor="middle" fill="#5c5a2e" font-size="12px">Starts at 0x008000</text>
+<text class="d-sub" x="28" y="174" text-anchor="start" fill="#5c5a2e" font-size="12px">Bootloader · 32 KiB</text>
+<path d="M33 144 V154 H110 V161" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="28" y="80" text-anchor="start" fill="#5c5a2e" font-size="12px">0x000000</text>
+<text class="d-sub" x="688" y="80" text-anchor="end" fill="#5c5a2e" font-size="12px">end 0x1FD000</text>
+<path d="M679 144 V183 H130 V228" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<path d="M688 144 V228 H578" fill="none" stroke="#9aa884" stroke-width="1.3" />
+<text class="d-title" x="175" y="212" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Final 28 KiB · enlarged, same scale within this strip</text>
+<rect x="130" y="230" width="320" height="57" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="290.0" y="253" text-anchor="middle" fill="#5c5a2e" font-size="12px">sEMMC stage</text>
+<text class="d-sub" x="290.0" y="274" text-anchor="middle" fill="#5c5a2e" font-size="12px">20 KiB</text>
+<rect x="450" y="230" width="64" height="57" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="482.0" y="253" text-anchor="middle" fill="#5c5a2e" font-size="12px">State</text>
+<text class="d-sub" x="482.0" y="274" text-anchor="middle" fill="#5c5a2e" font-size="12px">4 KiB</text>
+<rect x="514" y="230" width="64" height="57" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="546.0" y="253" text-anchor="middle" fill="#5c5a2e" font-size="12px">Settings</text>
+<text class="d-sub" x="546.0" y="274" text-anchor="middle" fill="#5c5a2e" font-size="12px">4 KiB</text>
+<text class="d-sub" x="130" y="310" text-anchor="start" fill="#5c5a2e" font-size="12px">0x1F6000</text>
+<text class="d-sub" x="450" y="310" text-anchor="middle" fill="#5c5a2e" font-size="12px">0x1FB000</text>
+<text class="d-sub" x="550" y="331" text-anchor="middle" fill="#5c5a2e" font-size="12px">0x1FC000</text>
+<text class="d-title" x="20" y="370" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Card objects</text>
+<rect x="180" y="346" width="220" height="62" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" rx="7"/>
+<text class="d-label" x="290" y="371" text-anchor="middle" fill="#1c1b14" font-size="14px">Update package</text>
+<text class="d-sub" x="290" y="392" text-anchor="middle" fill="#5c5a2e" font-size="12px">kind 7</text>
+<rect x="450" y="346" width="220" height="62" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" rx="7"/>
+<text class="d-label" x="560" y="371" text-anchor="middle" fill="#1c1b14" font-size="14px">Rollback reserve</text>
+<text class="d-sub" x="560" y="392" text-anchor="middle" fill="#5c5a2e" font-size="12px">kind 8</text>
+<text class="d-sub" x="20" y="442" text-anchor="start" fill="#5c5a2e" font-size="12px">Boot state is the CRC-framed app ↔ bootloader handoff, and names the two card objects by block run.</text>
+</svg>

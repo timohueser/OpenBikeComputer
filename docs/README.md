@@ -11,30 +11,15 @@ posts are described in [BLOG.md](BLOG.md).
 
 ## Diagrams
 
-Diagrams are inline SVG in the Markdown; screen captures and hardware renders are image assets.
+Diagrams are SVG assets in `assets/diagrams/`. Use a relative
+`<img src="..." alt="..." data-inline-svg>` tag. The renderer embeds the asset in the page.
+Screen captures and hardware renders use normal image tags.
 Follow the existing diagrams in [formats](content/software/formats.md) and
 [ui](content/software/ui.md): a 720-unit viewBox, the `d-*` classes, forest for structure,
 coral for the hot path, amber for rider or route emphasis, colour never the only distinction.
 Every SVG has an `aria-label`, a caption outside the drawing, and a `diagram-scroll` wrapper with
 `--diagram-width` set to its viewBox width. After a change, check the rendered page at desktop and
 phone width.
-
-## Copy ownership
-
-Every page declares `copy: ai`, `mixed` or `human` in its front matter. On a `mixed` page, human
-prose sits between `<!-- human-copy:start -->` and `<!-- human-copy:end -->`. Do not rewrite
-human-owned prose. When it is stale, add a non-rendered note beside it with the current facts and
-their source, and report it in the pull request:
-
-```md
-<!-- copy-review:
-The device now reads terrain from the combined OBCM file. See firmware/obc-reader/src/...
--->
-```
-
-`obc docs` lists the pages by ownership and every pending note; `obc docs check` validates the
-front matter and markers. `obc docs review --base origin/develop` lists the pages that link to
-files a change touched.
 
 ## Check and preview
 

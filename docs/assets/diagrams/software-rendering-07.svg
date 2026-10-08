@@ -1,0 +1,58 @@
+<svg viewBox="0 0 720 412" role="img" aria-label="Four candidate shapes have priorities P1 to P4 and 4, 4, 3 and 4 points. A twelve-slot point budget retains P1, P2 and P3, using eleven slots. The last free slot cannot hold the complete P4 shape. Ring capacity is also checked." xmlns="http://www.w3.org/2000/svg" width="720" height="412" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<defs><marker id="r31arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Feature budgets · preserve whole shapes, drop lower priorities</text>
+<text class="d-title" x="20" y="60" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Candidates · illustrative priorities</text>
+<text class="d-title" x="420" y="60" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">Point budget · 12 slots</text>
+<path d="M45 95 L160 91 L128 135 L62 137 Z" fill="none" stroke="#33575b" stroke-width="2"/>
+<circle cx="45" cy="95" r="3" fill="#33575b"/>
+<circle cx="160" cy="91" r="3" fill="#33575b"/>
+<circle cx="128" cy="135" r="3" fill="#33575b"/>
+<circle cx="62" cy="137" r="3" fill="#33575b"/>
+<text class="d-sub" x="188" y="116" text-anchor="start" fill="#5c5a2e" font-size="12px">P1 · 4 points</text>
+<path d="M42 185 L71 159 L110 186 L155 160" fill="none" stroke="#3c6b39" stroke-width="2"/>
+<circle cx="42" cy="185" r="3" fill="#3c6b39"/>
+<circle cx="71" cy="159" r="3" fill="#3c6b39"/>
+<circle cx="110" cy="186" r="3" fill="#3c6b39"/>
+<circle cx="155" cy="160" r="3" fill="#3c6b39"/>
+<text class="d-sub" x="188" y="183" text-anchor="start" fill="#5c5a2e" font-size="12px">P2 · 4 points</text>
+<path d="M46 226 L150 224 L119 268 Z" fill="none" stroke="#a96930" stroke-width="2"/>
+<circle cx="46" cy="226" r="3" fill="#a96930"/>
+<circle cx="150" cy="224" r="3" fill="#a96930"/>
+<circle cx="119" cy="268" r="3" fill="#a96930"/>
+<text class="d-sub" x="188" y="250" text-anchor="start" fill="#5c5a2e" font-size="12px">P3 · 3 points</text>
+<path d="M45 317 L140 304 L153 335 L67 345 Z" fill="none" stroke="#9aa884" stroke-width="2"/>
+<circle cx="45" cy="317" r="3" fill="#9aa884"/>
+<circle cx="140" cy="304" r="3" fill="#9aa884"/>
+<circle cx="153" cy="335" r="3" fill="#9aa884"/>
+<circle cx="67" cy="345" r="3" fill="#9aa884"/>
+<text class="d-sub" x="188" y="317" text-anchor="start" fill="#5c5a2e" font-size="12px">P4 · 4 points</text>
+<rect x="420" y="82" width="51" height="36" fill="#33575b" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="445" y="105" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P1</text>
+<rect x="477" y="82" width="51" height="36" fill="#33575b" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="502" y="105" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P1</text>
+<rect x="534" y="82" width="51" height="36" fill="#33575b" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="559" y="105" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P1</text>
+<rect x="591" y="82" width="51" height="36" fill="#33575b" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="616" y="105" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P1</text>
+<rect x="420" y="126" width="51" height="36" fill="#3c6b39" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="445" y="149" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P2</text>
+<rect x="477" y="126" width="51" height="36" fill="#3c6b39" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="502" y="149" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P2</text>
+<rect x="534" y="126" width="51" height="36" fill="#3c6b39" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="559" y="149" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P2</text>
+<rect x="591" y="126" width="51" height="36" fill="#3c6b39" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="616" y="149" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P2</text>
+<rect x="420" y="170" width="51" height="36" fill="#a96930" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="445" y="193" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P3</text>
+<rect x="477" y="170" width="51" height="36" fill="#a96930" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="502" y="193" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P3</text>
+<rect x="534" y="170" width="51" height="36" fill="#a96930" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="559" y="193" text-anchor="middle" style="fill:#fff" fill="#5c5a2e" font-size="12px">P3</text>
+<rect x="591" y="170" width="51" height="36" fill="#f3f0df" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M326 171 H405" fill="none" stroke="#3c6b39" stroke-width="1.5" marker-end="url(#r31arrow)"/>
+<text class="d-sub" x="420" y="248" text-anchor="start" fill="#5c5a2e" font-size="12px">11 / 12 points used</text>
+<text class="d-sub" x="420" y="270" text-anchor="start" fill="#5c5a2e" font-size="12px">One free slot cannot hold P4.</text>
+<text class="d-sub" x="420" y="293" text-anchor="start" fill="#5c5a2e" font-size="12px">Keep the complete feature or drop it.</text>
+<text class="d-sub" x="420" y="325" text-anchor="start" fill="#5c5a2e" font-size="12px">Ring capacity is checked too.</text>
+<text class="d-sub" x="20" y="388" text-anchor="start" fill="#5c5a2e" font-size="12px">Priority decides admission across all visible chunks. Paint order is a separate sort.</text>
+</svg>

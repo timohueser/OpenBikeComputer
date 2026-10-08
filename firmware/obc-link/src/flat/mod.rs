@@ -15,6 +15,9 @@ pub mod records;
 pub mod store;
 pub mod wire;
 
+#[cfg(feature = "client")]
+pub mod client;
+
 #[cfg(any(test, feature = "std"))]
 pub mod vectors;
 

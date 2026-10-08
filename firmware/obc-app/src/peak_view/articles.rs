@@ -46,6 +46,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_scheduler::TEST_PERMIT as PERMIT;
     use crate::{
         peak_view::{PeakName, PeakViewPeak, PeakViewProfile},
         Chord, Gesture,
@@ -371,10 +372,10 @@ mod tests {
         assert_eq!(job.starts.len(), 3);
         for screen in [
             Screen::NavPlanning(crate::screen::NavPlanningScreen::new("Route")),
-            Screen::MapTransfer(crate::screen::MapTransferScreen::new(crate::screen::MapTransfer::Receiving {
-                received_kib: 0,
-                total_kib: 1,
-            })),
+            Screen::MapTransfer(crate::screen::MapTransferScreen::new(
+                PERMIT,
+                crate::screen::MapTransfer::Receiving { received_kib: 0, total_kib: 1 },
+            )),
         ] {
             assert!(app.ui.stack.push(screen).is_ok());
             lifecycle.update(&mut app, &mut job, 23);

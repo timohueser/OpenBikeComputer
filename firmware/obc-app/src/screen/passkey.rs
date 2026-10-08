@@ -14,6 +14,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::card_scheduler::CardPermit;
 use crate::input::Gesture;
 use crate::Msg;
 
@@ -27,7 +28,7 @@ pub struct PasskeyScreen {
 }
 
 impl PasskeyScreen {
-    pub fn new(passkey: u32) -> Self {
+    pub(crate) fn new(_permit: CardPermit, passkey: u32) -> Self {
         PasskeyScreen { passkey }
     }
 

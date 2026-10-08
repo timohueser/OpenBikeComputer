@@ -1,0 +1,66 @@
+<svg viewBox="0 0 720 570" role="img" aria-label="The 40-byte navigation directory addresses profiles, a node quadtree with junction chunks, an edge geometry pool, and a snap-anchor index. Search reads junctions; endpoint projection and route output also use geometry. Proportional rulers show a junction record and its 17-byte neighbor fields." xmlns="http://www.w3.org/2000/svg" width="720" height="570" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs><marker id="software-formats-9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+  <text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Navigation data · four regions addressed by one directory</text>
+  <rect class="d-panel" x="20" y="56" width="680" height="66" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="360" y="81" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Navigation directory · 40 bytes</text>
+  <text class="d-sub" x="360" y="101" text-anchor="middle" fill="#5c5a2e" font-size="12px">Offsets, counts, chunk size, and profile count</text>
+  <path class="d-flow" d="M360 122 L360 153" fill="none" stroke="#a4501e" stroke-width="2" />
+<path class="d-flow" d="M100 153 H625" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M100 153 L100 183" marker-end="url(#software-formats-9)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M275 153 L275 183" marker-end="url(#software-formats-9)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M450 153 L450 183" marker-end="url(#software-formats-9)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-flow" d="M625 153 L625 183" marker-end="url(#software-formats-9)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <rect class="d-panel" x="20" y="186" width="160" height="94" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="100" y="211" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Profiles</text>
+  <text class="d-sub" x="100" y="231" text-anchor="middle" fill="#5c5a2e" font-size="12px">1–8 profiles</text>
+  <text class="d-sub" x="100" y="248" text-anchor="middle" fill="#5c5a2e" font-size="12px">56 bytes each</text>
+  <rect class="d-panel" x="195" y="186" width="160" height="94" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="275" y="211" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Node index</text>
+  <text class="d-sub" x="275" y="231" text-anchor="middle" fill="#5c5a2e" font-size="12px">Quadtree + junctions</text>
+  <text class="d-sub" x="275" y="248" text-anchor="middle" fill="#5c5a2e" font-size="12px">512-byte chunks</text>
+  <rect class="d-panel" x="370" y="186" width="160" height="94" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="450" y="211" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Edge geometry</text>
+  <text class="d-sub" x="450" y="231" text-anchor="middle" fill="#5c5a2e" font-size="12px">Stored road shapes</text>
+  <text class="d-sub" x="450" y="248" text-anchor="middle" fill="#5c5a2e" font-size="12px">Exact projection</text>
+  <rect class="d-panel" x="545" y="186" width="155" height="94" rx="8" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-title" x="622.5" y="211" text-anchor="middle" fill="#1c1b14" font-weight="650" font-size="14px">Snap anchors</text>
+  <text class="d-sub" x="622.5" y="231" text-anchor="middle" fill="#5c5a2e" font-size="12px">Find long edges</text>
+  <text class="d-sub" x="622.5" y="248" text-anchor="middle" fill="#5c5a2e" font-size="12px">Near the endpoint</text>
+
+<text class="d-title" x="20" y="324" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">One junction · degree 3 example · 13 + 3 × 17 = 64 bytes</text>
+<rect x="40" y="341" width="130" height="48" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="105.0" y="361" text-anchor="middle" fill="#1c1b14" font-size="14px">Header</text>
+<text class="d-sub" x="105.0" y="379" text-anchor="middle" fill="#5c5a2e" font-size="12px">13 B</text>
+<rect x="170" y="341" width="170" height="48" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="255.0" y="361" text-anchor="middle" fill="#1c1b14" font-size="14px">Neighbor A</text>
+<text class="d-sub" x="255.0" y="379" text-anchor="middle" fill="#5c5a2e" font-size="12px">17 B</text>
+<rect x="340" y="341" width="170" height="48" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="425.0" y="361" text-anchor="middle" fill="#1c1b14" font-size="14px">Neighbor B</text>
+<text class="d-sub" x="425.0" y="379" text-anchor="middle" fill="#5c5a2e" font-size="12px">17 B</text>
+<rect x="510" y="341" width="170" height="48" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-label" x="595.0" y="361" text-anchor="middle" fill="#1c1b14" font-size="14px">Neighbor C</text>
+<text class="d-sub" x="595.0" y="379" text-anchor="middle" fill="#5c5a2e" font-size="12px">17 B</text>
+<path d="M255 389 V412 H40 V449" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-title" x="65" y="436" text-anchor="start" fill="#1c1b14" font-weight="650" font-size="14px">One 17-byte neighbor entry · fields to scale</text>
+<rect x="40" y="449" width="144" height="38" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="112.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Neighbor ID</text>
+<text class="d-sub" x="112.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">0–3</text>
+<rect x="184" y="449" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="220.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Δ lat</text>
+<text class="d-sub" x="220.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">4–5</text>
+<rect x="256" y="449" width="72" height="38" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="292.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Δ lon</text>
+<text class="d-sub" x="292.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">6–7</text>
+<rect x="328" y="449" width="144" height="38" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="400.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Edge ID</text>
+<text class="d-sub" x="400.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">8–11</text>
+<rect x="472" y="449" width="72" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="508.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Cost m</text>
+<text class="d-sub" x="508.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">12–13</text>
+<rect x="544" y="449" width="36" height="38" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="562.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Kind</text>
+<text class="d-sub" x="562.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">14</text>
+<rect x="580" y="449" width="72" height="38" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="616.0" y="474" text-anchor="middle" fill="#5c5a2e" font-size="12px">Ascent</text>
+<text class="d-sub" x="616.0" y="508" text-anchor="middle" fill="#5c5a2e" font-size="12px">15–16</text>
+<text class="d-sub" x="20" y="543" text-anchor="start" fill="#5c5a2e" font-size="12px">Header: lat, lon, node ID, degree. At degree 24, the 421-byte record still fits one 512-byte chunk.</text></svg>

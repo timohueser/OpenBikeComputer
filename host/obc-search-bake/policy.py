@@ -2,6 +2,7 @@
 import argparse
 import json
 from pathlib import Path
+import sys
 import zipfile
 
 import yaml
@@ -34,9 +35,24 @@ def export(archive, output):
         (output / 'country_osm_grid.sql.gz').write_bytes(bundle.read(prefix + 'country_osm_grid.sql.gz'))
 
 
-if __name__ == '__main__':
+def step():
+    """The `obc data` step `planner/search/policy`: the policy and the country grid of the
+    `nominatim-country-data` snapshot."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tools import step_request
+
+    request = step_request.read()
+    (archive,) = step_request.files(request, 'nominatim-country-data').values()
+    export(archive, Path(request['output']))
+
+
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', type=Path)
     parser.add_argument('output', type=Path)
     args = parser.parse_args()
     export(args.archive, args.output)
+
+
+if __name__ == '__main__':
+    step() if sys.argv[1:] == ['--step'] else main()

@@ -3,12 +3,21 @@
 # .osm.pbf / preset files you'd pass, drawn from the repo root, the maps/ dir, and the
 # web-builder cache. Works for `obc` and `./obc`.
 
-# The tools/ dir (holds obc + justfile), found from the `obc` on PATH (following symlinks).
+# Select the checkout as the installed entry point does.
 _obc_toolsdir() {
-  local o; o="$(command -v obc 2>/dev/null)" || return 1
-  o="$(readlink -f "$o" 2>/dev/null)" || return 1
-  local d; d="$(dirname "$o")"
-  [[ -f "$d/justfile" ]] && printf '%s\n' "$d"
+  local checkout; checkout="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$checkout" && -f "$checkout/tools/obc" && -d "$checkout/firmware/obc-app" &&
+        ( -f "$checkout/justfile" || -f "$checkout/tools/justfile" ) ]]; then
+    printf '%s\n' "$checkout/tools"
+    return
+  fi
+  local o d; o="$(command -v obc 2>/dev/null)" || return 1
+  while [[ -h "$o" ]]; do
+    d="$(cd -P "$(dirname "$o")" && pwd)" || return 1
+    o="$(readlink "$o")"; [[ "$o" != /* ]] && o="$d/$o"
+  done
+  d="$(cd -P "$(dirname "$o")" && pwd)" || return 1
+  [[ -f "$d/../justfile" || -f "$d/justfile" ]] && printf '%s\n' "$d"
 }
 
 # The repo root — the parent of tools/ — used for map/gpx/preset paths.
@@ -28,9 +37,11 @@ _obc_tasks() {
   local t; t="$(_obc_toolsdir)"
   if [[ -n "$t" ]]; then
     local scope=(); [[ "${OBC_COMPLETE_ALL:-}" == 1 ]] && scope=(--all)
-    python3 "$t/tasks.py" --justfile "$t/justfile" --names "${scope[@]}" 2>/dev/null && return
+    local justfile="$t/../justfile"
+    [[ -f "$justfile" ]] || justfile="$t/justfile"
+    python3 "$t/tasks.py" --justfile "$justfile" --names "${scope[@]}" 2>/dev/null && return
   fi
-  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop docs build test fmt licenses bench check check-device clean doctor setup"
+  echo "fixtures sim board flash flash-boot uart debug rtt pack bake web site desktop build test fmt licenses bench check check-device clean doctor setup"
 }
 
 _obc_fixture_ids() {
@@ -109,8 +120,6 @@ _obc() {
       (( idx == 0 )) && _obc_reply < <(compgen -W "check write" -- "$cur") ;;
     desktop)
       _obc_reply < <(compgen -W "dev build" -- "$cur") ;;
-    docs)
-      (( idx == 0 )) && _obc_reply < <(compgen -W "status check" -- "$cur") ;;
     board)
       (( idx == 0 )) && _obc_reply < <(compgen -W "doctor run download attach reset" -- "$cur") ;;
     flash-boot)
@@ -122,7 +131,7 @@ _obc() {
     test)
       _obc_reply < <(compgen -W "-p fixtures full --release --" -- "$cur") ;;
     clean)
-      _obc_reply < <(compgen -W "--apply --days --base --include-builds" -- "$cur") ;;
+      _obc_reply < <(compgen -W "--apply --days" -- "$cur") ;;
     fixtures)
       if (( idx == 0 )); then
         _obc_reply < <(compgen -W "list show sync verify prune pack publish" -- "$cur")

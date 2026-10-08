@@ -83,11 +83,7 @@ class BootChain:
 class BoardMeasurement:
     bss: int
     data: int
-    # `.uninit` — cortex-m-rt's NOLOAD section, placed after `.bss` and skipped by the reset
-    # handler's zeroing loop. It used to be 1 KB of `defmt_rtt::BUFFER` and nothing else, which is
-    # where the historical `uninit_max` came from. It is also where the ~117 KB
-    # **scratch arena** lives, so it is now the second-largest resident block in the image and is
-    # gated in earnest — see the `uninit_max` check in `check_board`.
+    # NOLOAD residents are gated separately from `.bss + .data` and reduce residual stack.
     uninit: int
     flash: int
     framebuffer_symbols: tuple[Symbol, ...]
@@ -114,21 +110,10 @@ class BoardMeasurement:
 
 
 def parse_size_output(output: str, extra_required: frozenset[str] = frozenset()) -> dict[str, int]:
-    """Section sizes from `llvm-size -A`, failing loudly on a section the caller says must be there.
+    """Required sections from `llvm-size -A`, with `.uninit` required only for board images.
 
-    `extra_required` is how the **board** legs demand `.uninit`, the section that has held the
-    scratch arena (~117 KB). It is not in the common set because the bootloader legitimately links none.
-
-    **What this catches, exactly:** llvm-size no longer printing the section (a stale parser) or the
-    board linking no `.uninit` at all — either of which would otherwise measure it as zero and leave
-    `uninit_max` green over an unaccounted-for section. It is a staleness tripwire, nothing more.
-
-    **What it does not catch:** the *arena's* `#[link_section]` being renamed away from `.uninit`.
-    The section has a second tenant (`defmt_rtt::BUFFER`, 1,024 B), so it survives the arena leaving
-    it and this required-set check still passes — as do all four RAM gates, because `uninit_max` is
-    a `<=` ceiling and `residual_stack_min` a `>=` floor that a *departing* arena only raises. The
-    gate for that is the arena-symbol check in [`check_board`], which pins the linked static's size
-    and requires the section to be big enough to contain it.
+    A surviving `.uninit` section does not prove arena membership.
+    `check_arena` checks the linked size and available section capacity.
     """
     sections: dict[str, int] = {}
     for line in output.splitlines():
@@ -177,13 +162,7 @@ def region_bytes(length: str) -> int:
 def parse_stack_bounds(output: str) -> tuple[int, int]:
     """(`_stack_start`, `__euninit`) from `llvm-nm`: the residual main stack's two ends.
 
-    The M33's stack starts at the top of the linker's `RAM` region and grows **down**; the resident
-    statics grow **up** and end at `__euninit` — which, as the name says, is the end of `.uninit`,
-    i.e. past `.bss` **and** the arena. Their difference is the whole stack the main task, every
-    `#[inline(never)]` boot constructor and MPSL's ISRs share — which is why growth in *either*
-    resident section is a stack cut, not just a RAM cost (the elevation epic's +3.7 KB of `.bss`
-    moved this from 52.3 to 48.6 KB; moving ~92 KB out of `.bss` into `.uninit` while
-    deleting ~76 KB net gave back exactly that net, not the 168 KB `.bss` alone suggests).
+    The shared downward-growing stack starts above all residents, including `.bss` and `.uninit`.
     """
     addresses: dict[str, int] = {}
     for line in output.splitlines():
@@ -249,11 +228,7 @@ ENTRY_STACK_MUTATION_RE = re.compile(
     r"^(?:sub\S*\s+sp\b|v?push\b|v?stmdb\S*\s+sp!|(?:mov|bic|and)\S*\s+sp\b)"
 )
 CALL_RE = re.compile(r"\bbl\s+0x[0-9a-fA-F]+ <([^>]+)>")
-# The embassy **out-of-line task body**. `#[embassy_executor::task]` expands to
-# `____embassy_<name>_task::____embassy_<name>_task_inner_function::{{closure}}` (demangled with
-# `_$u7b$$u7b$closure$u7d$$u7d$`), and that closure — not `TaskStorage<F>::poll` — is where a task's
-# real frame is allocated once codegen outlines it. `parse_poll_frames` never saw these, which is
-# how a 2 KB growth of the main task's frame once went unnoticed until it bricked boot.
+# Outlined embassy task bodies allocate their own frames outside `TaskStorage<F>::poll`.
 TASK_BODY_RE = re.compile(r"____embassy_\w*?_?task.*inner_function")
 
 
@@ -336,18 +311,12 @@ def parse_disassembly(disassembly: str) -> Disassembly:
         pair_save = PAIR_SAVE_RE.fullmatch(asm)
         if decrement:
             frames[function] = frames.get(function, 0) + int(decrement.group(1), 0)
-        elif push:
+        elif push or single_save or pair_save:
+            registers = push.group(2) if push else (
+                single_save.group(1) if single_save else ", ".join(pair_save.groups())
+            )
             try:
-                saved = saved_register_bytes(push.group(2), push.group(1) == "vpush")
-            except ValueError as error:
-                unsupported[function] = str(error)
-                entry = False
-            else:
-                pushes[function] = pushes.get(function, 0) + saved
-        elif single_save or pair_save:
-            try:
-                registers = single_save.group(1) if single_save else ", ".join(pair_save.groups())
-                saved = saved_register_bytes(registers, False)
+                saved = saved_register_bytes(registers, push is not None and push.group(1) == "vpush")
             except ValueError as error:
                 unsupported[function] = str(error)
                 entry = False
@@ -375,27 +344,10 @@ def parse_disassembly(disassembly: str) -> Disassembly:
 
 
 def canonical_symbol(name: str) -> str:
-    """One spelling of a path separator, so a scoped needle sees every symbol it names.
+    """Normalize legacy path and punctuation escapes for symbol matching.
 
-    llvm-objdump demangles a plain function to `obc_storage::flat::store::FlatStore<D>::mount`, but
-    a **trait impl** to `<obc_storage..flat..store..FlatStore<D> as obc_storage..flat..seam..Store>
-    ::commit` — legacy escaping renders the paths inside the `<... as ...>` brackets with `..`. A
-    needle written the way a Rust path is written therefore matched the inherent methods and silently
-    skipped every trait method, which is how `Store::commit`'s 2,812 B frame sat outside the
-    gate that was supposed to be watching it. Canonicalising here fixes it once for every scoped
-    needle rather than asking each caller to spell both forms.
-
-    It also decodes the **legacy escapes** the same renderer emits for punctuation: `$LT$` / `$GT$`
-    for the angle brackets of a generic, and `$u20$` for the space in `<A as B>`. That half was added
-    after the second bite of this class: FS7.5-c1 baselined a boot-chain root as
-    `FlatStore$LT$D$GT$::mount_in_place` — the spelling *one host's* demangler produced — and on CI
-    the symbol did not resolve. The guard went red as "stale", and the boot-chain walk fell back to a
-    ceiling with the entire mount missing from it, which is the exact blindness the root was added to
-    end. A needle should be spelled the way Rust spells it, `FlatStore<D>::mount_in_place`, and match
-    whatever the demangler in front of it renders.
-
-    Only the matching predicate sees this form; the reported names stay exactly as the tool emitted
-    them, because a diagnostic that renames the symbol it is complaining about is a worse diagnostic.
+    Trait impl paths use `..`; generic brackets and spaces can use `$LT$`, `$GT$` and `$u20$`.
+    Reported names retain the tool's original spelling.
     """
     return name.replace("..", "::").replace("$LT$", "<").replace("$GT$", ">").replace("$u20$", " ")
 
@@ -521,11 +473,7 @@ def resolve_symbol(parsed: Disassembly, needle: str, description: str) -> str:
     wanted = canonical_symbol(needle)
     matches = sorted(name for name in parsed.symbols if wanted in canonical_symbol(name))
     if not matches:
-        # **Show what the demangler in front of us actually rendered.** A bare "no symbol contains
-        # X" cannot distinguish "inlined away" from "spelled differently here", and the difference
-        # decides the fix. Retrying on the needle's last path segment is what turns a round of
-        # guessing at someone else's host into a one-shot correction: FS7.5-c1 burned a CI round
-        # because the message could not say whether the symbol was gone or merely renamed.
+        # Near matches distinguish a changed demangler spelling from a vanished root.
         tail = needle.rsplit("::", 1)[-1]
         near = sorted(name for name in parsed.symbols if tail and tail in canonical_symbol(name))
         hint = (
@@ -764,15 +712,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         f"{args.profile} resident RAM grew to {measured.resident} B (.bss + .data), above the "
         f"approved {ceiling} B baseline; itemize/approve the increase",
     )
-    # The other end of the same band, because a `<=` ceiling stays green on a link that *shrinks*.
-    # Without it every slice that saves RAM leaves the ceiling further above the real link, and the
-    # headroom the next slice reads off the baseline is fiction.
-    #
-    # The floor sits one slack below the PINNED link, not below the ceiling. Below the ceiling it
-    # would be exact equality with `measured_resident`, so one deleted byte — or a host toolchain
-    # linking a little less than CI — would fail a change for a reason outside itself. One slack of
-    # give in each direction lets an ordinary deletion ride until the next re-pin and still bounds
-    # the dead headroom at two slacks.
+    # The lower bound uses the pinned link minus slack, so savings cannot leave a stale ceiling.
     below = pinned - measured.resident
     require(
         below <= slack,
@@ -781,13 +721,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
         "measured_resident to the `embedded` CI job's figure and resident_ram_max to that figure "
         "plus resident_ram_slack, rather than leaving the saving as headroom nothing measured",
     )
-    # A plain ceiling, and it needs no more shape than that even now that it is a real budget: until
-    # `.uninit` once held only `defmt_rtt::BUFFER`, and the 1,024 B baseline was there to catch
-    # a NOLOAD section appearing by accident. It now also holds the ~117 KB scratch arena, so this is
-    # the growth gate for the arena's largest arm — pinned exactly, like `resident_ram_max`, so any
-    # arm crossing the max shows up here as a linked fact and not only as a `size_of` in the report.
-    # Being a ceiling, it says nothing about the arena *shrinking* or *leaving*; `check_arena` below
-    # is the gate for that, and the two are only tight together.
+    # The section ceiling catches growth; `check_arena` catches a smaller or departed arena.
     require(
         measured.uninit <= profile["uninit_max"],
         f"{args.profile} .uninit grew to {measured.uninit} B, above {profile['uninit_max']} B; "
@@ -807,14 +741,7 @@ def check_board(args: argparse.Namespace, baseline: dict[str, object]) -> None:
             f"{args.profile} framebuffer `{symbol.name}` is {symbol.size} B, expected "
             f"{framebuffer_bytes} B (240 x 320 x 1)",
         )
-    # Distinct from `framebuffer_count` (a *name*-matched count): this is the size-based
-    # "no accidental second framebuffer" net. It is not always 1 — the ~117 KB scratch `ARENA`
-    # legitimately exceeds a frame, so the expected count is pinned per profile and any *new*
-    # frame-sized allocation still trips the guard. Those bytes have moved twice and the count has
-    # stayed 2 throughout: they were inside `APP`, then they got their own `RENDER_SCRATCH`
-    # static, and then became the render arm of `arena::ARENA` in `.uninit`. Membership, not
-    # the count, is what says which — so read the `candidates:` list in the failure, not just the
-    # number: today it is `FB` + `ARENA`.
+    # Size-based counting also catches unnamed frame-sized statics and includes the scratch arena.
     expected_full_frame = profile.get("full_frame_sized_writable_count", expected_count)
     require(
         len(measured.full_frame_sized_writable) == expected_full_frame,
@@ -854,29 +781,10 @@ def check_app_slot(profile_name: str, measured: BoardMeasurement) -> None:
 
 
 def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMeasurement) -> None:
-    """The scratch arena as a linked symbol, not only as a section total.
+    """Pin one NOBITS arena to its reported size and require `.uninit` to contain that size.
 
-    `.uninit`'s size alone cannot say the arena is in it. The section has a second tenant
-    (`defmt_rtt::BUFFER`, 1,024 B), so an arena whose `#[link_section]` is renamed to anything else
-    lands in a section nothing gates and leaves every RAM gate green: `.bss + .data` unmoved (the
-    bytes did not go to `.bss`), `.uninit` back to 1,024 under a `<=` ceiling, and the residual main
-    stack *risen*, comfortably over its `>=` floor. 117 KB would go missing behind four passes.
-
-    So the three requirements here are the ones that actually pin it:
-
-    * the static exists exactly once, under its module path (a rename or a second `arena::ARENA` is
-      a hard error, never a silent max-over-matches);
-    * it is NOBITS and its size is **exactly** `compile_time_allocations.arena_total` — the same
-      number the `report` leg pins `size_of::<ScratchArena>()` against, so the linked image and the
-      target-side table cannot drift apart;
-    * `.uninit` is large enough to **contain** it. That is the membership half: it fails the moment
-      the arena's bytes are somewhere else, which is precisely what the required-section check
-      cannot see.
-
-    What is still *not* proven here is that those bytes sit at the arena's address rather than
-    merely fitting — a `.uninit` that grew by the arena's size for an unrelated reason while it moved
-    out would satisfy the arithmetic. `uninit_max` is pinned at the exact shipping total, so that
-    combination cannot pass both gates today.
+    A section ceiling alone misses an arena rename because the RTT buffer keeps `.uninit` present.
+    Size containment does not prove address membership; the section's growth gate is separate.
     """
     expected = profile.get("compile_time_allocations", {}).get("arena_total")
     require(
@@ -914,12 +822,9 @@ def check_arena(profile_name: str, profile: dict[str, object], measured: BoardMe
 
 
 def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
-    """The three boot-path stack gates (see `parse_task_body_frames`).
+    """Gate the task frame, residual stack, boot-chain ceiling and remaining headroom.
 
-    Two are exact — the out-of-line task frame and the residual stack — and between them they would
-    have failed a real overflow twice. The third, the chain ceiling, is a conservative over-approximation
-    ([`chain_cost`]) gated only against its own baseline, so it catches drift without pretending to
-    be a stack-safety proof; the on-glass high-water in ARCHITECTURE_RESOURCE_BASELINE.md is that.
+    The chain is a conservative direct-call estimate; measured deep-ride high-water guards the ride path.
     """
     print(
         f"{profile_name}: residual main stack {boot.residual_stack:,} B; largest task body "
@@ -962,26 +867,11 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
 
 
 def check_deep_ride_high_water(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
-    """**The gate that compares the residual stack to a RUN rather than to its own floor.**
+    """Require residual stack to clear the measured on-device high-water with a margin.
 
-    Every other stack check here is self-referential: `residual_stack_min` is whatever the last
-    approved build measured, so growing the residents and re-approving the floor is a green diff no
-    matter how little stack is left. `boot_chain_ceiling` is a static over-approximation of *one*
-    path — the boot chain — and says nothing about the deep ride path, which is where this board's
-    stack actually peaks.
-
-    So the baseline now carries the deepest **measured on-glass** high-water for each profile, and
-    the residual has to clear it with a margin. This exists because FS7.5-c1 walked straight through
-    the gap: +11,848 B of resident took the residual to 37,640 B, past a recorded 37,760 B peak on
-    the board profile, and every gate in this file went green.
-
-    `deep_ride_high_water` is a **measurement, not a budget**. It moves only when someone runs the
-    ride on glass and reads the stackmeter — never to make a build pass. If it is stale the honest
-    fix is to re-measure it, and `deep_ride_high_water_measured` records when it last was.
+    The high-water is a measurement, not a budget. It changes only after a new on-device run.
     """
-    # A missing key here used to die as a bare `KeyError` in a traceback, which reads as a crashed
-    # tool rather than as the stale baseline it is. v3 added these two, so a profile without them is
-    # a baseline that was hand-edited past its schema.
+    # Missing keys indicate a stale baseline, not a tool crash.
     missing = [key for key in ("deep_ride_high_water", "deep_ride_margin_min") if key not in profile]
     require(
         not missing,

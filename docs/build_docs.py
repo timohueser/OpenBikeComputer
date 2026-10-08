@@ -28,7 +28,7 @@ authoring notes: stripped from the output. The shared topo/header shell lives in
 `templates/_sitehead.html` and is injected into every page as `{{site_head}}`.
 
 Run directly (`python3 docs/build_docs.py`) or let the Trunk hook run it. Pass
-`--check-links` to additionally validate copy ownership and verify every internal anchor
+`--check-links` to verify every internal anchor
 link resolves to a real page and heading id (the cross-page `#anchor` audit CI runs).
 """
 
@@ -96,6 +96,17 @@ def slugify(text):
 CODE_RE = re.compile(r"`([^`]+)`")
 IMG_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+\"([^\"]*)\")?\)")
+
+
+def embed_diagrams(md, source):
+    """Embed marked SVG images. Paths are relative to the authored Markdown file."""
+    def embed(match):
+        href = re.search(r'\ssrc="([^"]+)"', match.group())
+        if not href or Path(href.group(1)).suffix != ".svg":
+            raise ValueError("%s: data-inline-svg needs an SVG src" % source)
+        return (source.parent / html.unescape(href.group(1))).read_text().rstrip("\n")
+
+    return re.sub(r'<img\b[^>]*\sdata-inline-svg\s*/?>', embed, md)
 
 
 def inline_lite(text):
@@ -301,7 +312,7 @@ def is_block_start(line, nxt):
     return False
 
 
-def render_blocks(md):
+def render_blocks(md, source=None):
     lines = md.split("\n")
     out = []
     toc = []
@@ -321,7 +332,7 @@ def render_blocks(md):
             continue
         if raw_tag(line):
             frag, i = consume_raw(lines, i)
-            out.append(frag)
+            out.append(embed_diagrams(frag, source) if source else frag)
             continue
         m = HEADING_RE.match(line)
         if m:
@@ -359,7 +370,7 @@ def render_blocks(md):
             while i < n and lines[i].startswith(">"):
                 buf.append(re.sub(r"^>\s?", "", lines[i]))
                 i += 1
-            inner, _ = render_blocks("\n".join(buf))
+            inner, _ = render_blocks("\n".join(buf), source)
             out.append('<blockquote class="callout">%s</blockquote>' % inner)
             continue
         if "|" in line and i + 1 < n and re.match(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$", lines[i + 1]) and "-" in lines[i + 1]:
@@ -614,7 +625,7 @@ def build_blog(rendered):
 
     rendered_posts = {}
     for idx, p in enumerate(posts):
-        content, _toc = render_blocks(p["body"])
+        content, _toc = render_blocks(p["body"], p["dir"] / "index.md")
         dest = BLOG_OUT / p["slug"]
         dest.mkdir(parents=True)
         for f in p["dir"].iterdir():          # images / .glb / .step live next to the md
@@ -677,7 +688,7 @@ def check_links(rendered):
     `#fragment`) a real heading id on that page. `rendered` maps each page's
     site-root-relative URL ('docs/' for the docs index, 'blog/…' for posts) to its
     content HTML, so cross-tree links (docs <-> blog) validate too. Returns the number
-    of broken links — the cross-page `../page/#anchor` check CLAUDE.md otherwise asks
+    of broken links — the cross-page `../page/#anchor` check AGENTS.md otherwise asks
     me to do by hand."""
     pages = set(rendered)
     slugs = {url: set(HEADING_ID_RE.findall(content)) for url, content in rendered.items()}
@@ -716,12 +727,6 @@ def check_links(rendered):
 
 def main():
     check = "--check-links" in sys.argv[1:]
-    if check:
-        sys.path.insert(0, str(ROOT.parent / "tools"))
-        import docs_copy
-
-        if docs_copy.main(["check"]):
-            sys.exit(1)
     if not TEMPLATE.exists():
         sys.exit("missing template: %s" % TEMPLATE)
     nav = json.loads((CONTENT / "nav.json").read_text())
@@ -744,7 +749,7 @@ def main():
             print("  ! skipping missing %s" % src, file=sys.stderr)
             continue
         fm, body = split_front_matter(src.read_text())
-        content, toc = render_blocks(body)
+        content, toc = render_blocks(body, src)
         url = page_url(path)
         base = base_for(url)
         title = fm.get("title") or nav_title_for(nav, path)

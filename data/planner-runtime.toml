@@ -1,0 +1,9 @@
+[target]
+triple = "x86_64-unknown-linux-gnu"
+python = "3.13"
+node = "24.21"
+
+[publication]
+site_origin = "https://openbikecomputer.com"
+api_origin = "https://releases.openbikecomputer.com"
+objects_origin = "https://maps.openbikecomputer.com"

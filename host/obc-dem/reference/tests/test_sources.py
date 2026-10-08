@@ -219,7 +219,7 @@ class Requests(unittest.TestCase):
             def request(self, box):
                 return None if box[0] < BOX[0] + 0.012 else b"II*\x00" + repr(box).encode()
 
-        fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "© fake", "EGM2008", (-180, -90, 180, 90))
+        fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
         boxes = list(request_boxes(BOX, 0.5))
         self.assertGreater(len(boxes), 2)
         with TemporaryDirectory() as directory:
@@ -506,8 +506,7 @@ class RemoteWindows(TempCase):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
         self.source = ingest.sources.cog.CogGrid(
-            "xx", "Nowhere", "DTM 1 m", 1.0, "CC BY 4.0", "(c) Nowhere", "DHHN2016",
-            (-180, -90, 180, 90),
+            "xx", "Nowhere", "DTM 1 m", 1.0, "CC BY 4.0", "DHHN2016",
             base=f"http://127.0.0.1:{self.httpd.server_address[1]}/",
             name="tile_{north}_{east}.tif", epsg=3035, tile_m=50000)
 
@@ -707,8 +706,7 @@ class BulkArchives(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             served = self.bundle(directory, {"dgm/tile_01.tif": b"II*\x00", "readme.txt": b"x"})
-            source = Fake("xx", "Nowhere", "DGM 1 m", 1.0, "CC BY 4.0", "© Nowhere",
-                          "DHHN2016", (-180, -90, 180, 90))
+            source = Fake("xx", "Nowhere", "DGM 1 m", 1.0, "CC BY 4.0", "DHHN2016")
             source.served = served
             work = Path(directory) / "work"
             rasters = source.fetch((0, 0, 1, 1), work)
@@ -717,16 +715,6 @@ class BulkArchives(unittest.TestCase):
             # The cache: the second run reads the downloaded zip and fetches nothing.
             served.unlink()
             self.assertEqual(source.fetch((0, 0, 1, 1), work), rasters)
-
-    def test_a_bulk_source_that_covers_nothing_says_so(self):
-        class Empty(ingest.sources.bulk.BulkSource):
-            def files(self, bbox):
-                return []
-
-        source = Empty("xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (-180, -90, 180, 90))
-        with self.assertRaises(ingest.Refuse) as refusal:
-            source.fetch((0, 0, 1, 1), Path("/nonexistent"))
-        self.assertIn("nothing published covers", str(refusal.exception))
 
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:
@@ -796,14 +784,15 @@ class Registry(unittest.TestCase):
             with self.subTest(key):
                 self.assertTrue(source.vertical_datum)
                 self.assertTrue(source.attribution and source.licence and source.product)
+                self.assertEqual(len(source.extent), 4, "data/sources.toml states the box of the row")
         for datum in ("", "NAD83 ellipsoidal heights", "Mystery Height 1997"):
             with self.subTest(datum):
                 with self.assertRaises(ingest.Refuse):
-                    ingest.Source("x", "Nowhere", "p", 1.0, "l", "a", datum, (0, 0, 1, 1))
+                    ingest.Source("x", "Nowhere", "p", 1.0, "l", datum)
 
     def test_a_source_with_no_adapter_says_to_pass_input(self):
         manual = ingest.sources.ManualSource(
-            "xx", "Nowhere", "p", 1.0, "l", "a", "NAP", (0, 0, 1, 1),
+            "xx", "Nowhere", "p", 1.0, "l", "NAP",
             why="the service needs a token")
         with self.assertRaises(ingest.Refuse) as refusal:
             manual.fetch(BOX, Path("/nonexistent"))

@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::plan::Plan;
-use super::{build_step, order, prepare, reusable, Built, Codes, InputKind, Receipt, Run as StepRun, Step};
+use super::{build_step, order, prepare, reusable, Built, Codes, InputKind, Receipt, Step};
 use crate::date;
 use crate::fetch::{self, http::Http};
 use crate::sources::Source;
@@ -55,6 +55,7 @@ pub struct Context<'a> {
     /// The sources of `data/sources.toml`: a fetch finds its source here.
     pub sources: &'a [Source],
     pub http: &'a Http,
+    pub copies: Option<&'a crate::input_copy::Restore<'a>>,
     pub limits: Limits,
 }
 
@@ -67,6 +68,12 @@ pub enum Event {
         /// `YYYY-MM-DDTHH:MM:SSZ`
         at: String,
     },
+    Phase {
+        phase: Phase,
+    },
+    Published {
+        mutation: Publication,
+    },
     FetchStarted {
         source: String,
         version: String,
@@ -76,6 +83,7 @@ pub enum Event {
         source: String,
         version: String,
         params: Vec<(String, String)>,
+        resolved: String,
         /// The size of the files that the fetch gave, downloaded or found in the store.
         bytes: u64,
         wall_ms: u64,
@@ -105,33 +113,68 @@ pub enum Event {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Prepare,
+    Build,
+    Verify,
+    Upload,
+    Switch,
+    Wait,
+    Cleanup,
+}
+
+/// A remote write that acknowledged success. Verification can still fail afterward.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Publication {
+    Uploaded { key: String },
+    Switched { product: String, release: String },
+    Removed { key: String, bytes: u64 },
+}
+
 /// A run that this process writes. The process that holds the lock of a run is the process that
 /// runs it, so a reader knows that a run without `finished` still runs.
+/// Its store stays in use through verification and publication, until finish or drop.
 pub struct Run {
     id: String,
     file: File,
     start: Instant,
     _lock: Lock,
+    _using: Lock,
+    codes: super::code::Context,
+    pub(crate) originals: BTreeMap<String, super::release::Layer>,
 }
 
 impl Run {
     /// Start a run with the id `YYYY-MM-DD-HHMMSS`, and a suffix `-N` when that id is taken.
     pub fn create(store: &Store, command: &str) -> Result<Run, String> {
+        let using = store.using()?;
         let at = date::timestamp(date::now());
         let base = format!("{}-{}", &at[..10], at[11..19].replace(':', ""));
         for n in 1.. {
             let id = if n == 1 { base.clone() } else { format!("{base}-{n}") };
             let Some(lock) = store.try_lock(&format!("run-{id}"))? else { continue };
             let path = store.run(&id);
-            std::fs::create_dir_all(path.parent().expect("a run file has a directory"))
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            crate::store::durable_directory(path.parent().expect("a run file has a directory"))?;
             let file = match OpenOptions::new().append(true).create_new(true).open(&path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("{}: {e}", path.display())),
             };
-            let mut run = Run { id, file, start: Instant::now(), _lock: lock };
+            let mut run = Run {
+                id,
+                file,
+                start: Instant::now(),
+                _lock: lock,
+                _using: using,
+                codes: Default::default(),
+                originals: BTreeMap::new(),
+            };
             run.record(&Event::Started { command: command.into(), at })?;
+            run.sync()?;
+            File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
             return Ok(run);
         }
         unreachable!("the ids never run out")
@@ -147,20 +190,92 @@ impl Run {
         self.file.write_all(line.as_bytes()).map_err(|e| format!("run {}: {e}", self.id))
     }
 
+    pub fn check_stop(&self, store: &Store) -> Result<(), String> {
+        crate::store::check_free(store.root(), 0)?;
+        if crate::operation::stopped(store, self.id())? {
+            return Err("stopped after the current work".into());
+        }
+        Ok(())
+    }
+
+    /// Flush the journal.
+    pub fn sync(&self) -> Result<(), String> {
+        self.file.sync_all().map_err(|e| format!("run {}: {e}", self.id))
+    }
+
+    /// Continue the unfinished run `id` in this process: the detached worker of an operation.
+    pub fn attach(store: &Store, id: &str, prefix: &[Event]) -> Result<Self, String> {
+        check_id(id)?;
+        if !matches!(prefix.first(), Some(Event::Started { .. }))
+            || prefix.iter().any(|event| matches!(event, Event::Finished { .. } | Event::Published { .. }))
+        {
+            return Err("the run is not unfinished".into());
+        }
+        let using = store.using()?;
+        let lock = store.try_lock(&format!("run-{id}"))?.ok_or("the originating run still has an owner")?;
+        let path = store.run(id);
+        crate::store::durable_directory(path.parent().unwrap())?;
+        if path.exists() {
+            let existing = events(store, id)?;
+            if !existing.starts_with(prefix) || existing.iter().any(|event| matches!(event, Event::Finished { .. })) {
+                return Err("the run journal differs from its start".into());
+            }
+        }
+        let file = OpenOptions::new().append(true).create(true).open(&path).map_err(|e| e.to_string())?;
+        let elapsed = match prefix.first() {
+            Some(Event::Started { at, .. }) => {
+                date::seconds(at).map(|at| Duration::from_secs(date::now().saturating_sub(at)))
+            }
+            _ => None,
+        };
+        let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
+        let mut run = Self {
+            id: id.into(),
+            file,
+            start,
+            _lock: lock,
+            _using: using,
+            codes: Default::default(),
+            originals: BTreeMap::new(),
+        };
+        if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
+            for event in prefix {
+                run.record(event)?;
+            }
+        }
+        run.sync()?;
+        File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
+        Ok(run)
+    }
+
+    /// Use only original layers returned by checked portable reuse for this operation.
+    pub fn reuse_layers(&mut self, layers: &BTreeMap<String, super::release::Layer>) {
+        self.originals = layers.clone();
+    }
+
     /// Fetch the fetches of `plan` one after another, then build its builds and reuse the layers
     /// that they read. After a fetch or a step fails, no other step starts; the steps that run
     /// finish. A later run reuses every layer that this one built.
     pub fn build(&mut self, context: &Context, steps: &[Step], plan: &Plan) -> Result<Vec<Built>, String> {
         let Context { store, root, limits, .. } = *context;
+        self.check_stop(store)?;
+        crate::worker::check(root)?;
         let _using = store.using()?;
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
         }
+        let estimated = plan
+            .builds()
+            .filter_map(|build| build.estimate)
+            .fold(0u64, |total, estimate| total.saturating_add(estimate.bytes_out));
+        let estimated = plan.fetches().iter().filter_map(|fetch| fetch.bytes).fold(estimated, u64::saturating_add);
+        crate::store::check_free(store.root(), estimated)?;
         let ordered = order(steps)?;
         if let Some(build) = plan.builds().find(|build| !ordered.iter().any(|step| step.name == build.step)) {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
         }
         self.fetch(context, plan)?;
+        crate::worker::check(root)?;
 
         // A step whose peak is not known reserves the whole memory, so it runs alone.
         let cost = |peak: Option<u64>| limits.memory_bytes.map_or(0, |memory| peak.unwrap_or(memory));
@@ -174,29 +289,44 @@ impl Run {
         // The planned steps and the layers that they read, in dependency order.
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
         for step in ordered.iter().rev() {
-            if needed.contains(step.name.as_str()) {
+            if needed.contains(step.name.as_str()) && !self.originals.contains_key(&step.name) {
                 needed.extend(step.layers());
             }
         }
         let position: HashMap<&str, usize> =
             ordered.iter().enumerate().map(|(i, step)| (step.name.as_str(), i)).collect();
         let mut pending: Vec<&Step> = ordered.into_iter().filter(|step| needed.contains(step.name.as_str())).collect();
-        let mut codes = Codes::default();
-        for step in &pending {
+        let mut codes = Codes { context: std::mem::take(&mut self.codes), ..Default::default() };
+        for step in pending.iter().filter(|step| !self.originals.contains_key(&step.name)) {
             let (hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-            store.put_code(hash, files)?;
+            store.put_code(hash, &files.files)?;
+            store.put_producer(hash, &super::release::Producer::from(files))?;
         }
+        crate::worker::check(root)?;
+        let checks = std::sync::Mutex::new(std::mem::take(&mut codes.context));
 
         let outdated = "the plan is outdated; plan again";
-        let mut done: HashMap<&str, Receipt> = HashMap::new();
+        let mut done: HashMap<&str, super::release::Layer> = HashMap::new();
         let mut built = Vec::new();
         let mut failure: Option<String> = None;
-        let (mut running, mut reserved, mut rust_running) = (0, 0, false);
+        let (mut running, mut reserved) = (0, 0);
         let (sender, receiver) = mpsc::channel();
         std::thread::scope(|scope| loop {
+            if failure.is_none() {
+                failure = self.check_stop(store).err();
+            }
             let mut i = 0;
             while failure.is_none() && i < pending.len() {
+                if let Err(error) = self.check_stop(store) {
+                    failure = Some(error);
+                    break;
+                }
                 let step = pending[i];
+                if let Some(original) = self.originals.get(&step.name) {
+                    pending.remove(i);
+                    done.insert(&step.name, original.clone());
+                    continue;
+                }
                 if !step.layers().all(|name| done.contains_key(name)) {
                     i += 1;
                     continue;
@@ -206,20 +336,25 @@ impl Run {
                     // A layer that a planned step reads: the store has it, unless the plan is old.
                     pending.remove(i);
                     let reused = prepare(store, step, &done, code)
-                        .and_then(|(receipt, _)| reusable(store, &receipt.key))
+                        .and_then(|(receipt, _)| {
+                            reusable(store, &receipt.key).map(|stored| {
+                                stored.map(|mut stored| {
+                                    stored.inputs = receipt.inputs;
+                                    stored
+                                })
+                            })
+                        })
                         .and_then(|stored| stored.ok_or(outdated.into()));
                     match reused {
                         Ok(receipt) => {
-                            done.insert(&step.name, receipt);
+                            done.insert(&step.name, super::release::Layer::new(&receipt, step));
                         }
                         Err(e) => failure = Some(format!("step `{}`: {e}", step.name)),
                     }
                     continue;
                 };
-                // In-process steps measure the whole process, so only one runs at a time.
-                let rust = matches!(step.run, StepRun::Rust(_));
                 let over = limits.memory_bytes.is_some_and(|memory| reserved + cost > memory);
-                if running >= limits.jobs || (running > 0 && over) || (rust && rust_running) {
+                if running >= limits.jobs || (running > 0 && over) {
                     i += 1;
                     continue;
                 }
@@ -232,16 +367,16 @@ impl Run {
                 match prepared.and_then(|prepared| started.map(|()| prepared)) {
                     Ok((receipt, request)) => {
                         let sender = sender.clone();
+                        let checks = &checks;
                         scope.spawn(move || {
                             // The loop waits for every step that it started, also one that panics.
                             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                                build_step(store, root, step, receipt, request)
+                                build_step(store, root, step, receipt, request, checks)
                             }));
                             let _ = sender.send((step, cost, result.unwrap_or_else(|payload| Err(panicked(payload)))));
                         });
                         running += 1;
                         reserved += cost;
-                        rust_running |= rust;
                     }
                     Err(e) => self.failed(step, e, &mut failure),
                 }
@@ -252,7 +387,6 @@ impl Run {
             let (step, cost, result) = receiver.recv().expect("a running step sends its result");
             running -= 1;
             reserved -= cost;
-            rust_running &= !matches!(step.run, StepRun::Rust(_));
             match result {
                 Ok(result) => {
                     let receipt = Box::new(result.receipt.clone());
@@ -260,12 +394,13 @@ impl Run {
                     if let Err(e) = self.record(&event) {
                         failure.get_or_insert(e);
                     }
-                    done.insert(&step.name, result.receipt.clone());
+                    done.insert(&step.name, super::release::Layer::new(&result.receipt, step));
                     built.push(result);
                 }
                 Err(e) => self.failed(step, e, &mut failure),
             }
         });
+        self.codes = checks.into_inner().unwrap_or_default();
         if let Some(failure) = failure {
             return Err(failure);
         }
@@ -273,42 +408,66 @@ impl Run {
             return Err(format!("step `{}` reads a layer that the run did not build; plan again", step.name));
         }
         built.sort_by_key(|built| position[built.receipt.step.as_str()]);
+        crate::worker::check(root)?;
         Ok(built)
     }
 
     fn fetch(&mut self, context: &Context, plan: &Plan) -> Result<(), String> {
         for planned in plan.fetches() {
-            let (source, version, params) = (planned.source.clone(), planned.version.clone(), planned.params.clone());
-            self.record(&Event::FetchStarted {
-                source: source.clone(),
-                version: version.clone(),
-                params: params.clone(),
+            self.check_stop(context.store)?;
+            let source = context.sources.iter().find(|known| known.id == planned.source).ok_or_else(|| {
+                format!(
+                    "fetch {}@{}: no source `{}` in data/sources.toml",
+                    planned.source, planned.version, planned.source
+                )
             })?;
-            let start = Instant::now();
-            let fetched = context
-                .sources
-                .iter()
-                .find(|known| known.id == source)
-                .ok_or_else(|| format!("no source `{source}` in data/sources.toml"))
-                .and_then(|known| {
-                    let request =
-                        fetch::Request { source: known, version: Some(version.clone()), params: params.clone() };
-                    fetch::fetch(context.store, context.http, &request)
-                });
-            match fetched {
-                Ok(snapshot) => {
-                    let bytes = snapshot.files.iter().map(|file| file.size).sum();
-                    let wall_ms = start.elapsed().as_millis() as u64;
-                    self.record(&Event::FetchFinished { source, version, params, bytes, wall_ms })?;
-                }
-                Err(error) => {
-                    let failed = format!("fetch {source}@{version}: {error}");
-                    self.record(&Event::FetchFailed { source, version, params, error })?;
-                    return Err(failed);
-                }
-            }
+            let request =
+                fetch::Request { source, version: Some(planned.version.clone()), params: planned.params.clone() };
+            self.fetch_request(context.root, context.store, context.http, context.copies, &request, &planned.files)?;
         }
         Ok(())
+    }
+
+    /// Record preparation and execution fetches through the same journal boundary.
+    pub fn fetch_request(
+        &mut self,
+        root: &Path,
+        store: &Store,
+        http: &Http,
+        copies: Option<&crate::input_copy::Restore<'_>>,
+        request: &fetch::Request<'_>,
+        files: &[String],
+    ) -> Result<crate::store::Snapshot, String> {
+        self.check_stop(store)?;
+        let (source, version, params) = (
+            request.source.id.clone(),
+            request.version.clone().unwrap_or_else(|| "newest".into()),
+            request.params.clone(),
+        );
+        self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
+        let start = Instant::now();
+        match crate::input_copy::fetch_checked(root, store, http, copies, request, files, Some(&mut self.codes)) {
+            Ok(snapshot) => {
+                let bytes = snapshot.files.iter().map(|file| file.size).sum();
+                let wall_ms = start.elapsed().as_millis() as u64;
+                self.record(&Event::FetchFinished {
+                    source,
+                    version,
+                    params,
+                    resolved: snapshot.version.clone(),
+                    bytes,
+                    wall_ms,
+                })?;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                let mut failed = format!("fetch {source}@{version}: {error}");
+                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error }) {
+                    failed += &format!("; the run journal could not record the failure: {journal}");
+                }
+                Err(failed)
+            }
+        }
     }
 
     fn failed(&mut self, step: &Step, error: String, failure: &mut Option<String>) {
@@ -321,7 +480,8 @@ impl Run {
 
     pub fn finish(mut self, error: Option<&str>) -> Result<(), String> {
         let wall_ms = self.start.elapsed().as_millis() as u64;
-        self.record(&Event::Finished { ok: error.is_none(), error: error.map(str::to_string), wall_ms })
+        self.record(&Event::Finished { ok: error.is_none(), error: error.map(str::to_string), wall_ms })?;
+        self.sync()
     }
 }
 
@@ -377,6 +537,8 @@ pub struct Details {
     #[serde(flatten)]
     pub summary: Summary,
     pub error: Option<String>,
+    pub phase: Option<Phase>,
+    pub published: Vec<Publication>,
     pub fetches: Vec<RunFetch>,
     /// In the order they started.
     pub steps: Vec<RunStep>,
@@ -387,6 +549,7 @@ pub struct Details {
 pub struct RunFetch {
     pub source: String,
     pub version: String,
+    pub resolved: Option<String>,
     pub params: Vec<(String, String)>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,
@@ -425,7 +588,7 @@ pub fn follow(store: &Store, id: &str, mut each: impl FnMut(&Event) -> Result<()
         if reader.read(&mut each)? {
             return Ok(());
         }
-        if store.try_lock(&format!("run-{id}"))?.is_some() {
+        if !store.is_locked(&format!("run-{id}"))? {
             // Its process ended without `finished`; read what it wrote before it ended.
             reader.read(&mut each)?;
             return Ok(());
@@ -491,10 +654,22 @@ fn all(store: &Store) -> Result<Vec<Details>, String> {
 /// A run file that cannot be read is a run that failed, unless its process still runs.
 fn read_run(store: &Store, id: String) -> Result<Details, String> {
     // The lock before the events: a run that ends after this has its `finished` in the file.
-    let running = store.try_lock(&format!("run-{id}"))?.is_none();
-    let mut run = Details {
+    let running = store.is_locked(&format!("run-{id}"))?;
+    let mut run = blank(&id, running);
+    let events = match events(store, &id) {
+        Ok(events) => events,
+        Err(e) => {
+            run.error = Some(e);
+            return Ok(run);
+        }
+    };
+    Ok(from_events(id, events, running))
+}
+
+fn blank(id: &str, running: bool) -> Details {
+    Details {
         summary: Summary {
-            id: id.clone(),
+            id: id.into(),
             command: String::new(),
             started: String::new(),
             outcome: if running { Outcome::Running } else { Outcome::Failed },
@@ -503,28 +678,27 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
             bytes_built: 0,
         },
         error: None,
+        phase: None,
+        published: Vec::new(),
         fetches: Vec::new(),
         steps: Vec::new(),
-    };
-    let events = match events(store, &id) {
-        Ok(events) => events,
-        Err(e) => {
-            run.error = Some(e);
-            return Ok(run);
-        }
-    };
+    }
+}
+
+fn from_events(id: String, events: Vec<Event>, running: bool) -> Details {
+    let mut run = blank(&id, running);
     let Some(Event::Started { command, at }) = events.first() else {
         if !running {
             run.error = Some(format!("run {id}: it does not start with `started`"));
         }
-        return Ok(run);
+        return run;
     };
     (run.summary.command, run.summary.started) = (command.clone(), at.clone());
     // A version fetched with two sets of params is two fetches.
     let fetch = |fetches: &mut Vec<RunFetch>, source: String, version: String, params: Vec<(String, String)>| {
         let same = |fetch: &RunFetch| (&fetch.source, &fetch.version, &fetch.params) == (&source, &version, &params);
         fetches.iter().position(same).unwrap_or_else(|| {
-            fetches.push(RunFetch { source, version, params, bytes: None, wall_ms: None, error: None });
+            fetches.push(RunFetch { source, version, params, resolved: None, bytes: None, wall_ms: None, error: None });
             fetches.len() - 1
         })
     };
@@ -545,13 +719,16 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
     for event in events {
         match event {
             Event::Started { .. } => {}
+            Event::Phase { phase } => run.phase = Some(phase),
+            Event::Published { mutation } => run.published.push(mutation),
             Event::FetchStarted { source, version, params } => {
                 fetch(&mut run.fetches, source, version, params);
             }
-            Event::FetchFinished { source, version, params, bytes, wall_ms } => {
+            Event::FetchFinished { source, version, params, resolved, bytes, wall_ms } => {
                 run.summary.bytes_fetched += bytes;
                 let i = fetch(&mut run.fetches, source, version, params);
                 (run.fetches[i].bytes, run.fetches[i].wall_ms) = (Some(bytes), Some(wall_ms));
+                run.fetches[i].resolved = Some(resolved);
             }
             Event::FetchFailed { source, version, params, error } => {
                 let i = fetch(&mut run.fetches, source, version, params);
@@ -578,7 +755,7 @@ fn read_run(store: &Store, id: String) -> Result<Details, String> {
             }
         }
     }
-    Ok(run)
+    run
 }
 
 /// Reads the complete lines of a run file, and keeps its place for the lines that follow.
@@ -618,7 +795,7 @@ mod tests {
     use super::*;
     use crate::engine::plan::Estimate;
     use crate::engine::tests::{fixture, pipeline, snapshot, step, steps_crate, summary, write, JOIN};
-    use crate::engine::{Code, Input, Request};
+    use crate::engine::{Code, Input, Request, Run as StepRun};
     use crate::store::Requested;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -697,6 +874,57 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_old_inputs_and_outputs_until_it_finishes() {
+        use crate::store::gc;
+
+        let fixture = fixture("run-gc-phases");
+        let steps = [step(
+            "test/upper",
+            vec![snapshot("head", "1", &["head.txt"])],
+            steps_crate(),
+            "upper.txt",
+            StepRun::Rust(crate::engine::tests::upper),
+        )];
+        let plan = fixture.plan(&steps).unwrap();
+        let mut run = Run::create(&fixture.store, "apply test").unwrap();
+        let (root, http) = (fixture.root(), Http::new());
+        let context = Context {
+            store: &fixture.store,
+            root: &root,
+            sources: &[],
+            http: &http,
+            copies: None,
+            limits: Limits { jobs: 1, memory_bytes: None },
+        };
+        let built = run.build(&context, &steps, &plan).unwrap();
+        let output = &built[0].receipt.files[0];
+        fixture.fetched_version("head", "2", "head.txt", b"newer head\n");
+        let mut newest = fixture.store.snapshot("head", "2").unwrap().unwrap();
+        newest.files.iter_mut().for_each(|file| file.retrieved = "2026-10-06T00:00:00Z".into());
+        fixture.store.put_snapshot(&newest).unwrap();
+        let roots = gc::Roots::default();
+        let cleanup = gc::plan(&fixture.store, &roots).unwrap();
+        assert!(cleanup.snapshots.contains(&"head@1".into()));
+        assert!(cleanup.objects.iter().any(|(sha256, _)| sha256 == &output.sha256));
+
+        run.record(&Event::Phase { phase: Phase::Verify }).unwrap();
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
+        assert!(fixture.store.snapshot("head", "1").unwrap().is_some());
+        let object = fixture.store.object(&output.sha256);
+        assert_eq!(std::fs::read(&object).unwrap(), b"HEAD\n");
+        run.record(&Event::Phase { phase: Phase::Upload }).unwrap();
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_none());
+
+        let id = run.id().to_string();
+        run.finish(None).unwrap();
+        let read = details(&fixture.store, &id).unwrap();
+        assert_eq!(read.summary.outcome, Outcome::Ok);
+        assert!(gc::apply(&fixture.store, &roots, &cleanup).unwrap().is_some());
+        assert!(fixture.store.snapshot("head", "1").unwrap().is_none());
+        assert!(!object.exists());
+    }
+
+    #[test]
     fn a_run_whose_process_ends_before_it_finishes_has_failed() {
         let fixture = fixture("runs-interrupted");
         let run = Run::create(&fixture.store, "build test").unwrap();
@@ -735,7 +963,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     fn together(name: &str, peaks: [Option<u64>; 2], memory_bytes: u64) -> bool {
         let fixture = fixture(name);
         write(&fixture.root().join("sleep.py"), SLEEP);
-        let sleep = || Code { paths: vec!["sleep.py".into()], crates: Vec::new() };
+        let sleep = || Code { paths: vec!["sleep.py".into()], crates: Vec::new(), ..Default::default() };
         let command = || StepRun::Command(vec!["python3".into(), "sleep.py".into()]);
         let steps: Vec<Step> = ["test/a", "test/b"]
             .map(|name| step(name, vec![snapshot("head", "1", &[])], sleep(), "out.txt", command()))
@@ -776,14 +1004,14 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
     }
 
     #[test]
-    fn two_steps_in_the_process_never_run_at_the_same_time() {
+    fn independent_rust_steps_run_in_parallel() {
         let fixture = fixture("runs-in-process");
         let steps: Vec<Step> = ["test/a", "test/b"]
             .map(|name| step(name, vec![snapshot("head", "1", &[])], steps_crate(), "out.txt", StepRun::Rust(tracked)))
             .into();
         let plan = fixture.plan(&steps).unwrap();
         fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: None }).unwrap();
-        assert_eq!(MOST.load(Ordering::SeqCst), 1);
+        assert_eq!(MOST.load(Ordering::SeqCst), 2);
     }
 
     fn first_file(request: &Request) -> Result<(), String> {
@@ -796,6 +1024,8 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
         let (url, log) = crate::fetch::tests::serve(|_, _| crate::fetch::tests::whole(b"tile a"));
         let land = crate::fetch::tests::source(&url.replace("file.bin", "{tile}-{version}.bin"), "release");
         let fixture = fixture("runs-fetch");
+        fixture.with_acquisition();
+        fixture.with_sources(std::slice::from_ref(&land));
         let tile = Input::Snapshot {
             source: "land".into(),
             version: "v1".into(),
@@ -819,6 +1049,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             root: &fixture.root(),
             sources: &sources,
             http: &http,
+            copies: None,
             limits: Limits::machine(),
         };
         let built = run.build(&context, &steps, &plan).unwrap();

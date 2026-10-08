@@ -8,6 +8,7 @@ mod locale;
 pub mod peaks;
 mod photo;
 mod policy;
+pub mod select;
 pub mod text;
 
 /// The shared UI language set, verbatim. It decides which articles are fetched and which places
@@ -368,7 +369,6 @@ fn compile_selected(
         include_bytes!("photo.rs"),
         include_bytes!("assets.rs"),
         include_bytes!("policy.rs"),
-        include_bytes!("../../../../Cargo.lock"),
     ] {
         policy_input.extend_from_slice(source);
     }
@@ -707,7 +707,7 @@ fn prepare_article(
         .or_else(|| variants.is_empty().then(ui_label).flatten())
         .or_else(|| place["name"].as_str())
         .ok_or("site name missing")?;
-    let name = crate::name::to_repertoire(&text::normalize(name));
+    let name = obc_places::name::to_repertoire(&text::normalize(name));
     if !text::supported(&name) {
         omit("site", "name_glyph".into());
         return Ok(None);

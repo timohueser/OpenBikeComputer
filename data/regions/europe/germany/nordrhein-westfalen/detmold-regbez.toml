@@ -1,2 +1,5 @@
 name = "Regierungsbezirk Detmold"
 kind = "geofabrik"
+areas = ["europe/germany/nordrhein-westfalen/detmold-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

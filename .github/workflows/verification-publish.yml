@@ -41,7 +41,7 @@ jobs:
           OBC_R2_BUCKET: ${{ secrets.OBC_R2_BUCKET }}
           OBC_R2_ACCESS_KEY_ID: ${{ secrets.OBC_R2_ACCESS_KEY_ID }}
           OBC_R2_SECRET_ACCESS_KEY: ${{ secrets.OBC_R2_SECRET_ACCESS_KEY }}
-        run: python3 apps/obc-verification/ops/publish.py
+        run: python3 tools/verification/ops/publish.py
   confirm:
     needs: publish
     runs-on: ubuntu-latest

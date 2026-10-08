@@ -29,13 +29,18 @@ def bounds(value):
 
 
 class Downloads:
-    def __init__(self, source, cache, max_cache_bytes, objects_url=None):
+    def __init__(self, source, cache, max_cache_bytes, objects_url=None, public_url=None):
         self.source, self.cache = source.resolve(), cache.resolve()
-        self.publication = json.loads((self.source / "catalog.json").read_bytes())
+        body = (self.source / "catalog.json").read_bytes()
+        self.publication = json.loads(body)
         if self.publication["format"] != 3:
             raise ValueError("Unsupported offline publication")
-        self.identity, self.manifest = planner_runtime.digest(self.source / "catalog.json"), self.publication["release"]
+        self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
         self.objects_url = objects_url.rstrip("/") if objects_url else None
+        origin = urlsplit(public_url or "")
+        if origin.scheme != "https" or not origin.netloc or origin.query or origin.fragment or origin.username or origin.password:
+            raise ValueError("Configure the pinned HTTPS download service URL")
+        self.public_url = public_url.rstrip("/")
         self.max_cache_bytes = max_cache_bytes
         self.cache.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
@@ -50,11 +55,11 @@ class Downloads:
         if not cells: raise ValueError("This area has no published map data.")
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 4, "source": self.identity, "bounds": actual})).hexdigest()
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 5, "source": self.identity, "bounds": actual, "objects_url": self.objects_url})).hexdigest()
         destination = self.cache / identity
         if not (destination / "bundle.json").exists():
             self.quote(destination, actual, cells, identity)
-        return {"id": identity, "state": "ready"}
+        return {"id": identity, "state": "ready", "source": f"{self.public_url}/bundles/{identity}"}
 
     @staticmethod
     def overlaps(a, b):
@@ -173,7 +178,7 @@ def handler(downloads):
         def do_GET(self):
             path = unquote(urlsplit(self.path).path)
             if path == "/catalog":
-                return self.json({"format": 1, "bounds": downloads.manifest["bounds"],
+                return self.json({"format": 1, "sha256": downloads.identity, "bounds": downloads.manifest["bounds"],
                                   "zoom": downloads.publication["zoom"]})
             match = re.fullmatch(r"/bundles/([0-9a-f]{64})/(bundle.json|release.json|objects/[0-9a-f]{64})", path)
             directory = match and downloads.selection(match[1])
@@ -237,11 +242,12 @@ def main():
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--max-cache-bytes", type=int, required=True)
     parser.add_argument("--port", type=int, default=8790)
+    parser.add_argument("--public-url", required=True, help="Pinned public URL of this download service")
     parser.add_argument("--objects-url", help="Public URL of the release's immutable object pool")
     args = parser.parse_args()
     if args.max_cache_bytes <= 0:
         parser.error("--max-cache-bytes must be positive")
-    downloads = Downloads(args.source, args.cache, args.max_cache_bytes, args.objects_url)
+    downloads = Downloads(args.source, args.cache, args.max_cache_bytes, args.objects_url, args.public_url)
     ThreadingHTTPServer(("127.0.0.1", args.port), handler(downloads)).serve_forever()
 
 

@@ -69,7 +69,11 @@ fn bake_then_publish_is_the_whole_loop() {
     .unwrap();
     let regions = dir.join("regions");
     std::fs::create_dir_all(regions.join("europe")).unwrap();
-    std::fs::write(regions.join("europe/testland.toml"), "name = \"Testland\"\nkind = \"geofabrik\"\n").unwrap();
+    std::fs::write(
+        regions.join("europe/testland.toml"),
+        "name = \"Testland\"\nkind = \"geofabrik\"\nareas = [\"europe/testland\"]\n",
+    )
+    .unwrap();
     let tree = dir.join("tree");
     let presets = fixture_presets(&dir);
 
@@ -112,7 +116,7 @@ fn bake_then_publish_is_the_whole_loop() {
     let out = obc_bake()
         .arg("publish")
         .arg(&tree)
-        .args(["--base-url", "https://maps.example/obc", "--dry-run", "--generated-at", "2026-07-29T00:00:00Z"])
+        .args(["--base-url", "https://maps.example/obc", "--dry-run"])
         .output()
         .expect("run publish");
     let log = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -142,7 +146,7 @@ fn all_checks_osmium_before_touching_the_planet_source() {
         .expect("run");
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("is required for `obc bake --all`"), "{err}");
+    assert!(err.contains("/definitely/not/an/osmium-binary is required for OSM preparation"), "{err}");
 }
 
 #[test]

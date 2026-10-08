@@ -1,2 +1,5 @@
 name = "Regierungsbezirk Köln"
 kind = "geofabrik"
+areas = ["europe/germany/nordrhein-westfalen/koeln-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

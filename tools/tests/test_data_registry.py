@@ -19,16 +19,16 @@ class DataRegistryTests(unittest.TestCase):
             data_registry.attribution("era5-land")
 
     def test_a_failed_fetch_names_the_error_and_its_fix(self):
-        error = '{"error": {"code": "fetch_failed", "message": "HTTP 404", "fix": "Check the pin."}}\n'
+        error = '{"error": {"code": "fetch_failed", "message": "HTTP 404", "fix": "Check the version."}}\n'
         failed = subprocess.CompletedProcess([], 4, stdout=error)
         with patch.object(data_registry.subprocess, "run", return_value=failed):
-            with self.assertRaisesRegex(RuntimeError, "obc data fetch tangrams-icons: HTTP 404\nCheck the pin."):
+            with self.assertRaisesRegex(RuntimeError, "obc data fetch tangrams-icons: HTTP 404\nCheck the version."):
                 data_registry.fetch("tangrams-icons")
 
     def test_the_static_page_footers_show_the_registry_credits(self):
         # These pages are HTML that no step generates, so they keep the text and this compares it.
         footers = {"docs/index.html": ["osm-planet", "copernicus-glo-30"], "docs/templates/page.html": ["osm-planet"],
-                   "docs/templates/blog_post.html": ["osm-planet"], "builder/app/src/App.svelte": ["osm-planet"]}
+                   "docs/templates/blog_post.html": ["osm-planet"], "builder/web/src/App.svelte": ["osm-planet"]}
         for path, sources in footers.items():
             text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", (data_registry.ROOT / path).read_text()))
             for source in sources:

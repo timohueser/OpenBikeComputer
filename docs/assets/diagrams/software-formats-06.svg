@@ -1,0 +1,69 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="A compact feature header is 7 bytes. A wide header is 12 bytes. Flags select delta width, polygon data, holes, and header width." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">A feature on disk — both rulers to scale, 1 byte = 40 px</text>
+
+  <!-- compact header ruler: 7 B -->
+  <text class="d-sub" x="140" y="52" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">style</text>
+  <text class="d-sub" x="180" y="52" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">flags</text>
+  <text class="d-sub" x="220" y="52" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">pts</text>
+  <text class="d-sub" x="280" y="52" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">anchor X</text>
+  <text class="d-sub" x="360" y="52" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">anchor Y</text>
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="60" width="40" height="32" class="d-forest" fill="#a4501e" />
+    <rect x="160" y="60" width="40" height="32" class="d-hot-fill" fill="#ae4825" />
+    <rect x="200" y="60" width="40" height="32" class="d-water" fill="#33575b" />
+    <rect x="240" y="60" width="80" height="32" class="d-muted" fill="#d6d5c8" />
+    <rect x="320" y="60" width="80" height="32" class="d-muted" fill="#d6d5c8" />
+  </g>
+  <text class="d-tag" x="110" y="80" text-anchor="end" style="font-size:12px" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">compact · 7 B</text>
+  <text class="d-sub" x="280" y="80" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">u16 · 2 B</text>
+  <text class="d-sub" x="360" y="80" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">u16 · 2 B</text>
+  <text class="d-sub" x="140" y="106" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">1 B</text>
+  <text class="d-sub" x="180" y="106" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">1 B</text>
+  <text class="d-sub" x="220" y="106" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">1 B</text>
+
+  <!-- wide header ruler: 12 B, same scale, same left edge -->
+  <g stroke="#20301d" stroke-width="1">
+    <rect x="120" y="122" width="40"  height="32" class="d-forest" fill="#a4501e" />
+    <rect x="160" y="122" width="40"  height="32" class="d-hot-fill" fill="#ae4825" />
+    <rect x="200" y="122" width="80"  height="32" class="d-water" fill="#33575b" />
+    <rect x="280" y="122" width="160" height="32" class="d-muted" fill="#d6d5c8" />
+    <rect x="440" y="122" width="160" height="32" class="d-muted" fill="#d6d5c8" />
+  </g>
+  <text class="d-tag" x="110" y="142" text-anchor="end" style="font-size:12px" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">wide · 12 B</text>
+  <text class="d-sub" x="240" y="142" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">pts · 2 B</text>
+  <text class="d-sub" x="360" y="142" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">anchor X · i32 · 4 B</text>
+  <text class="d-sub" x="520" y="142" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">anchor Y · i32 · 4 B</text>
+
+  <!-- flags expand: the byte that decides which ruler you are reading -->
+  <line x1="180" y1="154" x2="112" y2="182" stroke="#cf6a2a" stroke-width="1.2" />
+  <g>
+    <rect x="60"  y="182" width="104" height="22" rx="4" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <text class="d-sub" x="112" y="197" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">bit 0 · 16-bit Δ</text>
+    <rect x="170" y="182" width="96"  height="22" rx="4" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <text class="d-sub" x="218" y="197" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">bit 1 · polygon</text>
+    <rect x="272" y="182" width="82"  height="22" rx="4" class="d-panel-2" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+    <text class="d-sub" x="313" y="197" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">bit 2 · holes</text>
+    <rect x="360" y="182" width="80"  height="22" rx="4" class="d-hot-fill" fill="#ae4825" />
+    <text class="d-sub" x="400" y="197" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">bit 3 · wide</text>
+  </g>
+  <text class="d-sub" x="448" y="197" style="fill:#a9501c;font-size:12px" fill="#5c5a2e" font-size="12px">← picks the ruler</text>
+
+  <!-- holes layout ribbon -->
+  <text class="d-tag" x="20" y="232" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">…and a polygon with holes, laid out</text>
+  <g stroke="#3c6b39" stroke-width="1.2">
+    <rect x="24"  y="242" width="96"  height="34" class="d-hot-fill" fill="#ae4825" />
+    <rect x="120" y="242" width="150" height="34" class="d-muted" fill="#d6d5c8" />
+    <rect x="270" y="242" width="70"  height="34" class="d-amber" fill="#f4a81d" />
+    <rect x="340" y="242" width="64"  height="34" class="d-water" fill="#33575b" />
+    <rect x="404" y="242" width="130" height="34" class="d-muted" fill="#d6d5c8" />
+    <rect x="534" y="242" width="64"  height="34" class="d-water" fill="#33575b" />
+    <rect x="598" y="242" width="98"  height="34" class="d-muted" fill="#d6d5c8" />
+  </g>
+  <text class="d-sub" x="72"  y="263" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">7 or 12 B hdr</text>
+  <text class="d-sub" x="195" y="263" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">exterior deltas</text>
+  <text class="d-sub" x="305" y="263" text-anchor="middle" style="fill:#3a2c10;font-size:12px" fill="#5c5a2e" font-size="12px">hole cnt</text>
+  <text class="d-sub" x="372" y="263" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">h1 pts</text>
+  <text class="d-sub" x="469" y="263" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">hole 1 deltas</text>
+  <text class="d-sub" x="566" y="263" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">h2 pts</text>
+  <text class="d-sub" x="647" y="263" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">hole 2 …</text>
+</svg>

@@ -1,14 +1,170 @@
 """The sun index bounds every bilinear patch and retains unknown terrain."""
+import argparse
+import hashlib
 import io
+import json
+from pathlib import Path
+import sqlite3
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
 from tools import planner_sun as sun
 from tools import planner_sun_horizons as horizons
+from tools import planner_grid_maps as grid, planner_grid_index, planner_offline as offline, planner_runtime as runtime
 
 
 class SunIndexTest(unittest.TestCase):
+    def terrain(self, root, tiles=False):
+        source = root / "terrain.mbtiles"
+        with sqlite3.connect(source) as db:
+            db.executescript("CREATE TABLE metadata(name TEXT, value TEXT);"
+                             "CREATE TABLE tiles(zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);")
+            db.executemany("INSERT INTO metadata VALUES (?,?)", [("format", "webp"), ("minzoom", "0"),
+                ("maxzoom", "12"), ("bounds", "7,47,9,49"), ("attribution", "Terrain credit"),
+                ("source_sha256", '["dem"]')])
+            if tiles:
+                db.executemany("INSERT INTO tiles VALUES (12,?,0,?)",
+                               [(x, sun.encode(np.full((2, 2), x, np.int16))) for x in (0, 4)])
+        output = root / "output"
+        output.mkdir()
+        return source, {"output": str(output), "layers": {"planner/terrain": {source.name: str(source)}},
+            "options": {"bounds": [7.9,47.9,8.1,48.1], "time_zone": "Europe/Berlin", "distance_m": 30000,
+                        "horizon_samples": 32, "horizon_directions": 72}}
+
+    def grid_request(self, root, source, request):
+        packed = root / "terrain-grid"
+        packed.mkdir()
+        grid.step({"output": str(packed), "metrics": str(root / "terrain.metrics.json"),
+                   "layers": {"planner/terrain": {source.name: str(source)}},
+                   "options": {"kind": "terrain", "bounds": [7,47,9,49]}})
+        request["layers"] = {"planner/terrain/grid": {
+            path.relative_to(packed).as_posix(): str(path) for path in packed.rglob("*") if path.is_file()}}
+        index = json.loads((packed / "index.json").read_bytes())
+        source.unlink()
+        return packed, index
+
+    def test_empty_terrain_keeps_unknown_sun_coverage_without_an_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, request = self.terrain(root)
+            _, index = self.grid_request(root, source, request)
+            with patch.object(sun, "bake", side_effect=AssertionError("Empty terrain must not bake tiles")):
+                sun.step(request)
+            output = Path(request["output"])
+            self.assertEqual([path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()],
+                             ["sun/empty.json"])
+            metadata = json.loads((output / "sun/empty.json").read_bytes())
+            self.assertEqual((metadata["sun_format"], metadata["coverage"], metadata["terrain_grid_sha256"]),
+                             (3, [7,47,9,49], hashlib.sha256(runtime.encoded(index)).hexdigest()))
+            self.assertNotIn("terrain_sha256", metadata, "the step consumes grid bytes, not the original archive")
+            self.assertEqual((metadata["horizon_step"], metadata["attribution"]), (horizons.ANGLE_STEP, "Terrain credit"))
+            packed = root / "sun-grid"
+            packed.mkdir()
+            grid.step({"output": str(packed), "metrics": str(root / "sun.metrics.json"),
+                       "layers": {"planner/sun": {"sun/empty.json": str(output / "sun/empty.json")}},
+                       "options": {"kind": "sun", "bounds": request["options"]["bounds"]}})
+            self.assertEqual(set(json.loads((packed / "index.json").read_bytes())["files"]), {"maps/sun.json"})
+
+    def test_nonempty_step_reconstructs_verified_terrain_tile_bytes(self):
+        from pmtiles.convert import mbtiles_to_pmtiles
+        from pmtiles.reader import MmapSource, Reader, all_tiles
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, request = self.terrain(root, tiles=True)
+            expected = root / "expected.pmtiles"
+            mbtiles_to_pmtiles(source, expected, None)
+            with expected.open("rb") as stream:
+                read = MmapSource(stream)
+                original_header, tiles = Reader(read).header(), dict(all_tiles(read))
+            packed, index = self.grid_request(root, source, request)
+            self.assertEqual(sum(name.endswith(".pmtiles") for name in index["files"]), 2)
+            def bake(terrain, output, *options, terrain_grid_sha256):
+                with terrain.open("rb") as stream:
+                    read = MmapSource(stream)
+                    self.assertEqual(dict(all_tiles(read)), tiles)
+                    header = Reader(read).header()
+                    for key in ("tile_type", "tile_compression", "min_lon_e7", "min_lat_e7", "max_lon_e7", "max_lat_e7"):
+                        self.assertEqual(header[key], original_header[key])
+                self.assertEqual(terrain_grid_sha256, hashlib.sha256(runtime.encoded(index)).hexdigest())
+                self.assertEqual(output.relative_to(Path(request["output"])).as_posix(), "sun/sun.pmtiles")
+                output.write_bytes(b"baked archive")
+            with patch.object(sun, "bake", side_effect=bake):
+                sun.step(request)
+            self.assertEqual((Path(request["output"]) / "sun/sun.pmtiles").read_bytes(), b"baked archive")
+            self.assertEqual(list(Path(request["output"]).iterdir()), [Path(request["output"]) / "sun"])
+            entry = next(value for name, value in index["files"].items() if name.endswith(".pmtiles"))
+            (packed / "objects" / entry["transport"]["sha256"]).write_bytes(b"tampered")
+            request["output"] = str(root / "retry")
+            Path(request["output"]).mkdir()
+            with patch.object(sun, "bake", side_effect=AssertionError("Tampered grid must not bake")):
+                with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
+                    sun.step(request)
+            self.assertFalse((Path(request["output"]) / "sun/sun.pmtiles").exists())
+
+    def test_grid_composition_requires_the_exact_consumed_terrain_manifest(self):
+        from tools import planner_grid
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, request = self.terrain(root)
+            _, terrain = self.grid_request(root, source, request)
+            sun.step(request)
+            metadata = json.loads((Path(request["output"]) / "sun/empty.json").read_bytes())
+            options = {"bounds": request["options"]["bounds"], "region": "test"}
+            item = {"bytes": 0, "sha256": "a" * 64, "transport": {
+                "bytes": 0, "sha256": "a" * 64, "encoding": "identity"}}
+            cells = [{"id": name, "bounds": bounds, "files": []}
+                     for name, bounds in planner_grid.cells(options["bounds"])]
+            def index(kind, **values):
+                return {"format": 1, "kind": kind, "files": {}, **values}
+            indexes = {kind: index(kind, metadata={"bounds": options["bounds"]})
+                       for kind in ("basemap", "places", "overlays")}
+            indexes["places"]["metadata"]["osm_sha256"] = "osm"
+            indexes["overlays"]["metadata"]["routing_package"] = item["sha256"]
+            indexes.update(terrain=terrain, sun=index("sun", metadata=metadata),
+                           assets=index("assets"), fonts=index("fonts", aliases={}), model=index("model"))
+            indexes["routing"] = index("routing", cells=[], files={"routing/blocks.json": item,
+                **{f"routes/tiles/{cell['id']}.json": item for cell in cells}},
+                graph={"source": "routing", "data": {**options, "source_sha256": ["osm", "dem"], "metrics": ["bike"]}})
+            for component in ("pois", "addresses"):
+                indexes[component] = index(component, cells=cells, metadata={**options, "schema": 5,
+                    "time_zone": "Europe/Berlin", "osm_sha256": "osm", "component": component, "counts": {}})
+            planner_grid_index.compose(indexes, options)
+            terrain["source"]["sha256"] = "b" * 64
+            with self.assertRaisesRegex(ValueError, "Sun uses another terrain grid"):
+                planner_grid_index.compose(indexes, options)
+
+    def test_missing_or_invalid_empty_terrain_is_an_error(self):
+        for invalid in ("missing", "metadata", "format", "coverage", "bounds", "kind"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source, request = self.terrain(root)
+                packed, index = self.grid_request(root, source, request)
+                if invalid == "missing":
+                    entry = index["files"]["maps/terrain.json"]
+                    (packed / "objects" / entry["transport"]["sha256"]).unlink()
+                else:
+                    if invalid == "kind":
+                        index["kind"] = "sun"
+                    elif invalid == "metadata":
+                        index["metadata"]["attribution"] = "changed"
+                    else:
+                        metadata = dict(index["metadata"])
+                        if invalid == "format": metadata["format"] = "png"
+                        elif invalid == "bounds": metadata["bounds"] = "invalid"
+                        else: metadata["bounds"] = request["options"]["bounds"]
+                        path = root / "changed.json"
+                        path.write_bytes(runtime.encoded(metadata))
+                        index["files"]["maps/terrain.json"] = offline.pack_file(path, packed / "objects")
+                        index["metadata"] = metadata
+                    (packed / "index.json").write_bytes(runtime.encoded(index))
+                    request["layers"]["planner/terrain/grid"] = {
+                        path.relative_to(packed).as_posix(): str(path) for path in packed.rglob("*") if path.is_file()}
+                with self.assertRaises((FileNotFoundError, ValueError, argparse.ArgumentTypeError)):
+                    sun.step(request)
+
     def test_bounds_include_shared_far_edges_and_unknown_vertices(self):
         vertices = np.zeros((9, 9), np.int16)
         vertices[4, 4] = 1400

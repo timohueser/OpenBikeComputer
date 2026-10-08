@@ -297,7 +297,10 @@ pub(crate) fn source_layout(photo: bool, fields: &str, mut emit: impl FnMut(u16,
         let mut lines = 1;
         if let Some(value) = value {
             lines = 0;
-            super::vocab::chrome::wrap(value, 216, Font::Label, |_| lines += 1);
+            let mut wrapped = super::vocab::chrome::WrappedLines::new(value, 216, Font::Label);
+            while wrapped.next().is_some() {
+                lines += 1;
+            }
         }
         if y != TOP {
             y += GAP;
@@ -312,13 +315,14 @@ pub(crate) fn source_layout(photo: bool, fields: &str, mut emit: impl FnMut(u16,
             y += pitch;
             continue;
         };
-        super::vocab::chrome::wrap(value, 216, Font::Label, |line| {
+        let mut wrapped = super::vocab::chrome::WrappedLines::new(value, 216, Font::Label);
+        while let Some(line) = wrapped.next() {
             if y > LAST {
                 (screen, y) = (screen + 1, TOP);
             }
             emit(screen, y, SourceLine::Value(line));
             y += pitch;
-        });
+        }
     }
     screen + 1
 }

@@ -1,7 +1,6 @@
 ---
 title: Trips and rides
 description: How a rider plans a multi-day trip on the phone, rides it day by day on the device, and keeps the rides as a journal.
-copy: ai
 ---
 
 # Trips and rides
@@ -126,33 +125,7 @@ uses the same splice code as detours and visits
 
 <figure class="fig">
 <div class="diagram-scroll" role="region" aria-label="Diagram; scroll horizontally to see all content" tabindex="0" style="--diagram-width: 720px">
-<svg viewBox="0 0 720 262" role="img" aria-label="A trip line with three days and two day ends. The rider rides all of Day 1 and stops early on Day 2. The next route on the device starts at the early stop, runs through the rest of Day 2 and continues through all of Day 3. It is one ordinary route.">
-  <text class="d-tag" x="20" y="26" text-anchor="start">After an early stop on Day 2</text>
-  <text class="d-title" x="20" y="62" text-anchor="start">The trip line</text>
-  <text class="d-label" x="145" y="88" text-anchor="middle">Day 1</text>
-  <text class="d-label" x="360" y="88" text-anchor="middle">Day 2</text>
-  <text class="d-label" x="575" y="88" text-anchor="middle">Day 3</text>
-  <path class="d-stroke" d="M40 110 H680" />
-  <path class="d-flow" d="M40 110 H400" style="stroke-width: 6" />
-  <circle class="d-forest" cx="40" cy="110" r="5" />
-  <circle class="d-amber" cx="250" cy="110" r="7" />
-  <circle class="d-amber" cx="470" cy="110" r="7" />
-  <circle class="d-forest" cx="680" cy="110" r="5" />
-  <circle class="d-hot-fill" cx="400" cy="110" r="6" />
-  <text class="d-sub" x="40" y="136" text-anchor="middle">Start</text>
-  <text class="d-sub" x="250" y="136" text-anchor="middle">Day end</text>
-  <text class="d-sub" x="470" y="136" text-anchor="middle">Day end</text>
-  <text class="d-sub" x="680" y="136" text-anchor="middle">Trip end</text>
-  <text class="d-sub" x="145" y="156" text-anchor="middle">Ridden</text>
-  <text class="d-sub" x="392" y="156" text-anchor="end">Early stop, Finish</text>
-  <path class="d-stroke" d="M400 166 V196" stroke-dasharray="4 4" />
-  <path class="d-stroke" d="M470 146 V196" stroke-dasharray="4 4" />
-  <path class="d-stroke" d="M680 146 V196" stroke-dasharray="4 4" />
-  <text class="d-title" x="20" y="214" text-anchor="start">Next route</text>
-  <path class="d-hot" d="M400 210 H680" style="stroke-width: 6" />
-  <text class="d-sub" x="435" y="238" text-anchor="middle">Rest of Day 2</text>
-  <text class="d-sub" x="575" y="238" text-anchor="middle">Day 3</text>
-</svg>
+<img src="../../assets/diagrams/software-trips-01.svg" alt="A trip line with three days and two day ends. The rider rides all of Day 1 and stops early on Day 2. The next route on the device starts at the early stop, runs through the rest of Day 2 and continues through all of Day 3. It is one ordinary route." data-inline-svg>
 </div>
 <div class="diagram-hint" aria-hidden="true">Scroll horizontally to see the full diagram.</div>
 <figcaption>The device makes one ordinary route from the early stop to the end of Day 3. A stop within the last 500 m of a day, or a transfer after it, gives the next day as it is.</figcaption>

@@ -5,20 +5,20 @@ use std::collections::BTreeMap;
 use super::validate::parse_strict_id;
 
 /// An artifact, a verified-empty square, or no published coverage.
-pub(super) enum IndexedCoverage<'a, T> {
+pub enum IndexedCoverage<'a, T> {
     Artifact(&'a T),
     KnownEmpty,
 }
 
 /// The lookup mechanics shared by cell bands and terrain after each owner has
 /// validated its domain-specific documents, revisions, provenance, and ordering.
-pub(super) struct CoverageIndex<'a, T> {
+pub struct CoverageIndex<'a, T> {
     artifacts: BTreeMap<&'a str, &'a T>,
     empty_by_row: BTreeMap<i64, Vec<(i64, i64)>>,
 }
 
 impl<'a, T> CoverageIndex<'a, T> {
-    pub(super) fn new<'r>(
+    pub fn new<'r>(
         artifacts: impl IntoIterator<Item = (&'a str, &'a T)>,
         known_empty: impl IntoIterator<Item = (&'r str, &'r str)>,
     ) -> Result<Self, String> {
@@ -31,7 +31,7 @@ impl<'a, T> CoverageIndex<'a, T> {
         Ok(Self { artifacts: artifacts.into_iter().collect(), empty_by_row })
     }
 
-    pub(super) fn get(&self, id: &str) -> Result<Option<IndexedCoverage<'_, T>>, String> {
+    pub fn get(&self, id: &str) -> Result<Option<IndexedCoverage<'_, T>>, String> {
         if let Some(artifact) = self.artifacts.get(id) {
             return Ok(Some(IndexedCoverage::Artifact(artifact)));
         }
@@ -43,7 +43,7 @@ impl<'a, T> CoverageIndex<'a, T> {
 }
 
 /// The cells an inclusive-row-run list covers.
-pub(super) fn inclusive_run_count<'a>(runs: impl Iterator<Item = (&'a str, &'a str)>) -> Result<u32, String> {
+pub fn inclusive_run_count<'a>(runs: impl Iterator<Item = (&'a str, &'a str)>) -> Result<u32, String> {
     let mut total = 0u32;
     for (start, end) in runs {
         let start = parse_strict_id(start)?;

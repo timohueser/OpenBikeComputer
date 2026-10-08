@@ -20,5 +20,13 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    obc_search_bake::bake(&args.osm, &args.output, &args.default_country, args.country_grid.as_deref(), &args.policy)
+    let report = obc_search_bake::bake(
+        &args.osm,
+        &args.output,
+        &args.default_country,
+        args.country_grid.as_deref(),
+        &args.policy,
+    )?;
+    println!("{report}");
+    Ok(())
 }

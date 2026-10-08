@@ -1,11 +1,9 @@
 //! Join compiled content to explicit OSM approaches and encode one map section.
 
-use crate::{
-    hours::Schedule,
-    landmarks::{Content, Photo},
-    poi::LandmarkLink,
-};
+use crate::landmarks::{Content, Photo};
 use obc_formats::obcm::{landmarks::*, POI_HOURS_REF_NONE};
+use obc_map_core::grid::CellId;
+use obc_places::{hours::Schedule, metadata::LandmarkLink};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -46,7 +44,6 @@ pub fn fingerprint(paths: &[PathBuf]) -> Result<String, String> {
     hash.update(include_bytes!("landmarks/credit.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/obcm/landmarks.rs"));
     hash.update(include_bytes!("../../../firmware/obc-formats/src/articles.rs"));
-    hash.update(include_bytes!("../../../Cargo.lock"));
     Ok(hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -246,6 +243,40 @@ pub fn load(paths: &[PathBuf], links: &[LandmarkLink], bbox: (i64, i64, i64, i64
         return Err("landmark record budget".into());
     }
     Ok(output)
+}
+
+/// The landmark artifact of each of `cells` that owns a landmark (OBCC §14.3): the §9 section of
+/// the landmarks whose display coordinate is in the cell, then the §7.5 hours pool that their hours
+/// references index. A cell without a landmark has no artifact.
+pub fn artifacts(
+    paths: &[PathBuf],
+    links: &[LandmarkLink],
+    cells: &[CellId],
+) -> Result<BTreeMap<CellId, Vec<u8>>, String> {
+    let Some(bounds) =
+        cells.iter().map(|cell| cell.square()).reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let wanted: BTreeSet<CellId> = cells.iter().copied().collect();
+    let mut owned: BTreeMap<CellId, Vec<Landmark>> = BTreeMap::new();
+    for landmark in load(paths, links, bounds)? {
+        let cell = CellId::containing(cells[0].log2, landmark.record.lat.into(), landmark.record.lon.into());
+        if wanted.contains(&cell) {
+            owned.entry(cell).or_default().push(landmark);
+        }
+    }
+    let artifact = |landmarks: Vec<Landmark>| {
+        let (pool, refs) = obc_places::hours::build_hours_pool(&landmarks, |landmark| landmark.hours.as_ref());
+        if pool.len() >= POI_HOURS_REF_NONE as usize {
+            return Err("landmark hours pool budget".to_string());
+        }
+        let refs: Vec<u16> = refs.into_iter().map(|index| index.unwrap_or(POI_HOURS_REF_NONE)).collect();
+        let mut bytes = serialize(&landmarks, &refs)?;
+        bytes.extend(obc_map_core::serialize::pack_hours_pool(&pool));
+        Ok(bytes)
+    };
+    owned.into_iter().map(|(cell, landmarks)| Ok((cell, artifact(landmarks)?))).collect()
 }
 
 /// Which of two records for one QID is kept: the lower encoding wins.

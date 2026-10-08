@@ -8,11 +8,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Why a command failed, and what to do about it.
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Error {
     pub code: Code,
     pub message: String,
     pub fix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
 }
 
 /// What `--json` writes when a command fails.
@@ -25,6 +27,8 @@ pub struct Failure<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
+    /// Another admitted operation owns the environment. No work waits for it.
+    Busy,
     /// An argument is not valid, an id names nothing, the command runs outside the repository, or
     /// another command must run first.
     Usage,
@@ -37,11 +41,12 @@ pub enum Code {
     /// A fetch or an upstream check failed.
     FetchFailed,
     /// A credential is missing: a fetch failed without the credential of its source, or the R2
-    /// variables are not set.
+    /// variables are not set. Or `build` has no product that suits the environment.
     Blocked,
     /// R2 or rclone failed, or refused a key.
     R2Failed,
-    /// After an upload, the object in the bucket is not the file.
+    /// A release failed its check before an apply, or after an upload the object in the bucket is
+    /// not the file.
     VerifyFailed,
     /// A run failed: the build, or the run that `runs RUN --follow` shows.
     RunFailed,
@@ -54,7 +59,7 @@ pub enum Code {
 impl Code {
     pub fn exit(self) -> u8 {
         match self {
-            Code::Usage | Code::NoTerminal => 2,
+            Code::Busy | Code::Usage | Code::NoTerminal => 2,
             Code::PlanOutdated => 3,
             Code::Blocked => 4,
             Code::VerifyFailed => 5,
@@ -67,14 +72,19 @@ impl Code {
         }
     }
 
-    fn fix(self) -> &'static str {
+    /// The fix of an error that gives no other.
+    pub(super) fn fix(self) -> &'static str {
         match self {
+            Code::Busy => "Observe the current run or retry after it drains. No work is queued.",
             Code::Usage => "Correct the command. `obc data --help` lists the commands and their arguments.",
             Code::NoTerminal => "Show the plan to a person. When they agree, run the command again with `--yes`.",
             Code::NotConfirmed => "Nothing changed. Run the command again when you want the change.",
             Code::InvalidData => "Correct the file that the message names. `specs/obc-data.md` gives its format.",
             Code::FetchFailed => "Run the command again. A download continues where it stopped.",
-            Code::Blocked => "Set the credential that the message or `obc data sources` names, then run again.",
+            Code::Blocked => {
+                "Set the credential that the message or `obc data sources` names, or correct what the message \
+                 says a product needs, then run again."
+            }
             Code::R2Failed => "Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again.",
             Code::VerifyFailed => "Upload the file again.",
             Code::RunFailed => "`obc data runs RUN` shows the step that failed and its error.",
@@ -86,8 +96,35 @@ impl Code {
     }
 
     pub fn error(self, message: impl Into<String>) -> Error {
-        Error { code: self, message: message.into(), fix: self.fix().into() }
+        Error { code: self, message: message.into(), fix: self.fix().into(), run: None }
     }
+}
+
+impl Error {
+    pub(super) fn with_run(mut self, run: &str) -> Self {
+        self.run = Some(run.into());
+        self
+    }
+}
+
+/// Finish the caller's journal once, while retaining the original operation failure.
+pub(super) fn finish_run<T>(
+    run: crate::engine::runs::Run,
+    mut result: Result<T, Error>,
+    incomplete: Option<&str>,
+) -> Result<T, Error> {
+    let id = run.id().to_string();
+    let finished = run.finish(result.as_ref().err().map(|error| error.message.as_str()).or(incomplete));
+    if let Err(message) = finished {
+        match &mut result {
+            Err(error) => error.message += &format!("; the run journal could not finish: {message}"),
+            Ok(_) => result = Err(Code::Failed.error(message)),
+        }
+    }
+    result.map_err(|mut error| {
+        error.run = Some(id);
+        error
+    })
 }
 
 impl From<String> for Error {
@@ -110,9 +147,22 @@ impl Error {
             println!("{}", serde_json::to_string(&Failure { error: self }).expect("an error serializes"));
         } else {
             eprintln!("obc data: {}\n{}", self.message, self.fix);
+            if let Some(run) = &self.run {
+                eprintln!("run {run}; `obc data runs {run}` shows its events");
+            }
         }
         ExitCode::from(self.code.exit())
     }
+}
+
+pub(super) fn start_run(store: &crate::store::Store, command: &str) -> Result<crate::engine::runs::Run, Error> {
+    let run = match super::operation_cli::resume(store, command)? {
+        Some(run) => run,
+        None => crate::engine::runs::Run::create(store, command)?,
+    };
+    let id = run.id();
+    eprintln!("obc data: run {id}; `obc data runs {id} --follow` shows its events");
+    Ok(run)
 }
 
 /// The rule of every command that changes live: it asks in a terminal. Without a terminal it
@@ -149,7 +199,7 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
-    use crate::cli::{build_cli, r2_cli, runs_cli};
+    use crate::cli::{apply_cli, build_cli, edit_cli, r2_cli, regions_cli, runs_cli, status_cli};
     use crate::engine::runs::{Details, Event};
 
     const UPDATE: &str = "OBC_UPDATE_DATA_SPEC";
@@ -159,16 +209,31 @@ mod tests {
         let schema = |commands, schema: schemars::Schema| (commands, schema.to_value());
         vec![
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`fetch`, `refresh`", generator.subschema_for::<crate::cli::Fetched>()),
+            schema("`versions SOURCE`", generator.subschema_for::<crate::cli::versions::Versions>()),
+            schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
             schema("`policy`", generator.subschema_for::<crate::sources::Source>()),
             schema("`region`, `region list`", generator.subschema_for::<crate::cli::RegionList>()),
             schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
-            schema("`store import`", generator.subschema_for::<crate::store::import::Plan>()),
-            schema("`gc store`", generator.subschema_for::<crate::store::gc::Plan>()),
-            schema("`plan`", generator.subschema_for::<build_cli::EnvPlan>()),
-            schema("`build`", generator.subschema_for::<build_cli::Built>()),
+            schema("`region areas`", generator.subschema_for::<regions_cli::Suggestions>()),
+            schema("`region create`", generator.subschema_for::<crate::regions::Region>()),
+            schema("`region delete`", generator.subschema_for::<regions_cli::Deletion>()),
+            schema("`region ENV ID`, `layer`, `undo`", generator.subschema_for::<edit_cli::Edited>()),
+            schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
+            schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
+            schema("`plan`, `dev --check`", generator.subschema_for::<build_cli::EnvPlan>()),
+            schema(
+                "`prepare`, `build`, `apply`, `dev --prepare`",
+                generator.subschema_for::<crate::cli::operation_cli::Handle>(),
+            ),
+            schema("`dev --start`, `dev --stop`, `dev --status`", generator.subschema_for::<crate::dev::Observed>()),
+            schema("`dev --logs`", generator.subschema_for::<crate::dev::Logs>()),
+            schema("`dev`, completed dev preparation", generator.subschema_for::<crate::dev::Prepared>()),
+            schema("Completed prepare output, `dev --inputs`", generator.subschema_for::<build_cli::Prepared>()),
+            schema("Completed build output", generator.subschema_for::<build_cli::Built>()),
+            schema("Completed apply output", generator.subschema_for::<apply_cli::Applied>()),
             schema("`runs`", generator.subschema_for::<runs_cli::RunList>()),
-            schema("`runs RUN`", generator.subschema_for::<Details>()),
+            schema("`runs RUN` for a detached operation", generator.subschema_for::<crate::cli::operation_cli::View>()),
+            schema("`runs RUN` for other journals", generator.subschema_for::<Details>()),
             schema("`runs RUN --follow`, one per line", generator.subschema_for::<Event>()),
             schema("`r2 list`, `r2 stat`, `r2 delete`", generator.subschema_for::<r2_cli::Objects>()),
             schema("`r2 get`", generator.subschema_for::<r2_cli::Downloaded>()),

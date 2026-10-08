@@ -1,0 +1,34 @@
+<svg viewBox="0 0 720 270" role="img" aria-label="The map reader keeps small tables in memory. It streams map indexes and geometry through bounded caches. The route reader keeps its small index and streams route chunks." xmlns="http://www.w3.org/2000/svg" width="720" height="270" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aF4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">What stays in RAM, what streams from the card</text>
+
+  <!-- file on card -->
+  <rect class="d-panel-2" x="36" y="48" width="128" height="180" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-tag" x="52" y="68" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">OBCM object</text>
+  <rect x="48" y="78" width="104" height="16" class="d-forest" fill="#a4501e" /><text class="d-sub" x="100" y="90" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">header·styles·LOD</text>
+  <rect x="48" y="96" width="104" height="56" class="d-muted" fill="#d6d5c8" /><text class="d-sub" x="100" y="128" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">quadtree index</text>
+  <rect x="48" y="154" width="104" height="66" class="d-water" fill="#33575b" /><text class="d-sub" x="100" y="190" text-anchor="middle" style="fill:#fff;font-size:12px" fill="#5c5a2e" font-size="12px">geometry chunks</text>
+  <text class="d-sub" x="100" y="244" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">megabytes ≫ RAM</text>
+
+  <!-- arrows -->
+  <line class="d-flow" x1="170" y1="86"  x2="318" y2="86"  marker-end="url(#aF4)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="170" y1="170" x2="318" y2="170" marker-end="url(#aF4)" fill="none" stroke="#a4501e" stroke-width="2" />
+
+  <!-- resident box -->
+  <rect class="d-panel" x="324" y="60" width="360" height="48" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="340" y="80" fill="#1c1b14" font-size="14px">resident — read once at open</text>
+  <text class="d-sub" x="340" y="98" fill="#5c5a2e" font-size="12px">header · style table · LOD table  (a few hundred bytes)</text>
+
+  <!-- streamed box -->
+  <rect class="d-panel" x="324" y="124" width="360" height="64" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="340" y="144" fill="#1c1b14" font-size="14px">streamed — pulled on demand</text>
+  <text class="d-sub" x="340" y="162" fill="#5c5a2e" font-size="12px">index nodes → 512 B blocks + bounded leaf lists</text>
+  <text class="d-sub" x="340" y="178" fill="#5c5a2e" font-size="12px">geometry chunks → five 4 KiB working slots</text>
+
+  <!-- route contrast -->
+  <rect class="d-panel-2" x="324" y="200" width="360" height="40" rx="10" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-sub" x="340" y="218" style="font-size:12px" fill="#5c5a2e" font-size="12px"><tspan style="fill:#a9501c">OBCR:</tspan> header + the whole (small, flat) index resident;</text>
+  <text class="d-sub" x="340" y="232" style="font-size:12px" fill="#5c5a2e" font-size="12px">only geometry chunks stream. The list is cheap to keep.</text>
+</svg>

@@ -79,6 +79,7 @@ def materialize(source, destination, document, prefixes):
         path.parent.mkdir(parents=True, exist_ok=True)
         transport = entry["transport"]
         original = source / "objects" / transport["sha256"]
+        verify(original, transport)
         temporary = path.with_suffix(path.suffix + ".partial")
         try:
             if transport["encoding"] == "identity":

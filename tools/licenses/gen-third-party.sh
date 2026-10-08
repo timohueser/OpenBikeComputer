@@ -9,14 +9,14 @@
 # licence files already.
 #
 # The web bundle is NOT here. Its notices are generated from the emitted chunks at build
-# time (builder/app/vite/third-party-licenses.ts) and ship beside it, because only the
+# time (builder/web/vite/third-party-licenses.ts) and ship beside it, because only the
 # bundler knows which npm packages actually made it into the output.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT="$ROOT/THIRD-PARTY.md"
+OUT="$ROOT/tools/licenses/THIRD-PARTY.md"
 TPL="$ROOT/tools/licenses/third-party.hbs"
-CFG="$ROOT/about.toml"
+CFG="$ROOT/tools/licenses/about.toml"
 
 check=0
 [ "${1:-}" = "--check" ] && check=1
@@ -41,8 +41,10 @@ fi
 ARTIFACTS=(
     "Device firmware (\`UPDATE.BIN\`)|firmware/obc-fw-nrf54l/Cargo.toml|the image the device runs, and the one served from updates.openbikecomputer.com"
     "Bootloader (\`obc-boot\`)|firmware/obc-boot/Cargo.toml|flashed once at manufacture; it installs the image above"
-    "Desktop application|apps/obc-desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
-    "iOS route library (\`route-server\`)|apps/route-server/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
+    "Desktop application|builder/desktop/Cargo.toml|the Rust half of the desktop app — its web half ships its own notices beside the bundle"
+    "iOS route library (\`planner-service\`)|planner/service/Cargo.toml|the static library that the iOS companion links for offline routing. The app carries this file. The list has all crates of the library, also the crates that the app link removes|aarch64-apple-ios|--no-default-features"
+    "Linux routing service (\`planner-service\`, \`x86_64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|x86_64-unknown-linux-gnu"
+    "Linux routing service (\`planner-service\`, \`aarch64-unknown-linux-gnu\`)|planner/service/Cargo.toml|the HTTP executable in the stored routing runtime|aarch64-unknown-linux-gnu"
 )
 
 # Make the output byte-stable across machines. cargo-about fills gaps in a crate's own licence
@@ -52,7 +54,7 @@ ARTIFACTS=(
 # trailing spaces removes that class of difference while leaving every word intact; the
 # alternative, --offline, would drop the enrichment and with it real copyright lines.
 canonicalize() {
-    awk '{ sub(/[ \t]+$/, ""); if ($0 == "") { if (!blank) print ""; blank = 1 } else { print; blank = 0 } }'
+    awk '{ sub(/\r$/, ""); sub(/[ \t]+$/, ""); if ($0 == "") { if (!blank) print ""; blank = 1 } else { print; blank = 0 } }'
 }
 
 tmp="$(mktemp)"
@@ -61,7 +63,7 @@ trap 'rm -f "$tmp"' EXIT
 {
     echo "# Third-party licences"
     echo
-    echo "OpenBikeComputer is GPL-3.0 (see [\`LICENSE\`](LICENSE)). It is built on other people's"
+    echo "OpenBikeComputer is GPL-3.0 (see [\`LICENSE\`](../../LICENSE)). It is built on other people's"
     echo "work, and the permissive licences that work is under all ask the same thing in return:"
     echo "the copyright notice and the permission text must be handed over with the binary. This"
     echo "file is that hand-over, one section per distributed artifact."

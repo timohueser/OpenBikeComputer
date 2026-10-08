@@ -49,3 +49,10 @@ pub mod source;
 pub mod terrain;
 mod util;
 pub mod verify;
+
+pub mod cut;
+pub mod ingest;
+pub mod pipeline;
+pub mod serialize;
+#[cfg(test)]
+mod step;

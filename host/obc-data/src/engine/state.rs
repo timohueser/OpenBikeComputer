@@ -6,14 +6,14 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::release::Layer;
-use super::{digest, order, selection, Code, Codes, Input, InputKind, Selection, Step};
+use super::{digest, layer_digest, order, selection, Code, Codes, Input, InputKind, Selection, Step};
 use crate::sources::{State, Status};
 use crate::store::{sorted, Store};
 
 /// What the state of a layer depends on besides the steps and the store.
 pub struct Environment {
-    /// The status of each source, from `sources::status`.
-    pub sources: BTreeMap<String, Status>,
+    /// The status of each active acquisition request, from `sources::status`.
+    pub sources: BTreeMap<crate::env::RequestKey, Status>,
     /// Each layer that live has, from the live release manifests.
     pub live: BTreeMap<String, Layer>,
 }
@@ -44,26 +44,91 @@ pub struct Read {
 }
 
 /// The state of each layer of `steps`, in dependency order. When more than one state applies, the
-/// first of not applied, code changed, input changed, stale and blocked is the state.
+/// first in the order of `State` is the state.
 pub fn state(store: &Store, root: &Path, steps: &[Step], environment: &Environment) -> Result<Vec<LayerState>, String> {
+    let mut codes = Codes::default();
+    resolved(
+        store,
+        steps,
+        environment,
+        |step| {
+            let (hash, identity) = codes.get(root, &step.code)?;
+            Ok((hash.clone(), identity.files.clone(), false))
+        },
+        false,
+    )
+}
+
+/// Compare published source/config at its recorded target. Execution providers are not admitted.
+pub fn published(
+    store: &Store,
+    root: &Path,
+    steps: &[Step],
+    environment: &Environment,
+    producers: &BTreeMap<String, super::release::Producer>,
+) -> Result<Vec<LayerState>, String> {
+    let mut witnesses = crate::local::Witnesses::default();
+    resolved(
+        store,
+        steps,
+        environment,
+        |step| {
+            let Some(layer) = environment.live.get(&step.name) else {
+                return Ok((String::new(), BTreeMap::new(), false));
+            };
+            let producer = producers.get(&layer.code).ok_or("published producer witness is unavailable")?;
+            let same = witnesses.matches(root, &step.code, &layer.code, producer)?;
+            Ok((layer.code.clone(), producer.files.clone(), !same))
+        },
+        true,
+    )
+}
+
+fn resolved<'a>(
+    store: &Store,
+    steps: &'a [Step],
+    environment: &Environment,
+    mut code: impl FnMut(&'a Step) -> Result<(String, BTreeMap<String, String>, bool), String>,
+    observation: bool,
+) -> Result<Vec<LayerState>, String> {
     let mut users: HashMap<&str, Vec<String>> = HashMap::new();
     for step in steps {
         for name in step.layers() {
             users.entry(name).or_default().push(step.name.clone());
         }
     }
-    let mut codes = Codes::default();
     let mut states: HashMap<&str, State> = HashMap::new();
     let mut layers = Vec::new();
     for step in order(steps)? {
-        let (code_hash, files) = codes.get(root, &step.code).map_err(|e| format!("step `{}`: {e}", step.name))?;
-        let (state, reason) = judge(store, step, code_hash, files, environment, &states)?;
+        let (code_hash, files, changed, unavailable) = match code(step) {
+            Ok((hash, files, changed)) => (hash, files, changed, None),
+            Err(error) if observation => (
+                environment.live.get(&step.name).map(|layer| layer.code.clone()).unwrap_or_default(),
+                BTreeMap::new(),
+                false,
+                Some(error),
+            ),
+            Err(error) => return Err(format!("step `{}`: {error}", step.name)),
+        };
+        let (mut state, mut reason) = judge(store, step, &code_hash, &files, environment, &states, changed)?;
+        if state == State::CodeChanged
+            && changed
+            && code_differs(step, &code_hash, &environment.live[&step.name]).is_none()
+        {
+            reason = Some("source/config differs at the published target and profile".into());
+        }
+        if let Some(error) = unavailable {
+            if !matches!(state, State::NotApplied | State::CodeChanged | State::InputChanged) {
+                state = State::Blocked;
+                reason = Some(error);
+            }
+        }
         states.insert(&step.name, state);
         let reads = step.inputs.iter().map(|input| match input {
             Input::Snapshot { source, version, .. } => {
                 Read { kind: InputKind::Snapshot, name: source.clone(), version: Some(version.clone()) }
             }
-            Input::Layer(name) => Read { kind: InputKind::Layer, name: name.clone(), version: None },
+            Input::Layer { name, .. } => Read { kind: InputKind::Layer, name: name.clone(), version: None },
         });
         layers.push(LayerState {
             layer: step.name.clone(),
@@ -86,6 +151,7 @@ fn judge(
     files: &BTreeMap<String, String>,
     environment: &Environment,
     states: &HashMap<&str, State>,
+    source_changed: bool,
 ) -> Result<(State, Option<String>), String> {
     let found = |state, reason: String| Ok((state, Some(reason)));
     let Some(live) = environment.live.get(&step.name) else {
@@ -97,52 +163,24 @@ fn judge(
         return found(State::NotApplied, "options".into());
     }
     for input in &step.inputs {
-        let Input::Snapshot { source, version, params, files } = input else { continue };
+        let Input::Snapshot { source, version, .. } = input else { continue };
         // A source that live did not read is a new input: the inputs below differ.
-        let Some(read_live) = live.snapshots.get(source) else { continue };
-        let digest = match selection(store, source, version, params, files)? {
-            Selection::Present(files) => {
-                Some(digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str()))))
-            }
-            Selection::Lacks(_) => None,
-        };
-        let other = &read_live.version != version || sorted(&read_live.params) != sorted(params);
-        let other_files = digest
-            .as_ref()
-            .is_some_and(|digest| read(InputKind::Snapshot, source).is_some_and(|input| &input.digest != digest));
-        if other || other_files {
-            let fetched = if digest.is_some() { "" } else { " (not fetched)" };
+        if let Some((true, fetched)) = other_read(store, live, input)? {
+            let fetched = if fetched { "" } else { " (not fetched)" };
             return found(State::NotApplied, format!("{source}@{version} not in live{fetched}"));
         }
     }
-
-    let declared: BTreeSet<(InputKind, &str)> = step
-        .inputs
-        .iter()
-        .map(|input| match input {
-            Input::Snapshot { source, .. } => (InputKind::Snapshot, source.as_str()),
-            Input::Layer(name) => (InputKind::Layer, name.as_str()),
-        })
-        .collect();
-    let built: BTreeSet<(InputKind, &str)> =
-        live.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
-    if declared != built {
-        return found(State::CodeChanged, "inputs".into());
-    }
-    if live.command != step.command() {
-        return found(State::CodeChanged, "command".into());
-    }
-    if live.outputs != step.sorted_outputs() {
-        return found(State::CodeChanged, "outputs".into());
-    }
-    if live.code != code_hash {
-        return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?);
+    match code_differs(step, code_hash, live).or(source_changed.then_some("code")) {
+        Some("code") => return found(State::CodeChanged, changed_code(store, &live.code, files, &step.code)?),
+        Some(what) => return found(State::CodeChanged, what.into()),
+        None => {}
     }
 
-    for name in step.layers() {
-        let rebuilds = matches!(states[name], State::NotApplied | State::CodeChanged | State::InputChanged);
-        let rebuilt = environment.live.get(name).map(|layer| &layer.digest)
-            != read(InputKind::Layer, name).map(|input| &input.digest);
+    for input in &step.inputs {
+        let Input::Layer { name, files } = input else { continue };
+        let rebuilds = matches!(states[name.as_str()], State::NotApplied | State::CodeChanged | State::InputChanged);
+        let rebuilt = environment.live.get(name).map(|layer| layer_digest(&layer.files, files))
+            != read(InputKind::Layer, name).map(|input| input.digest.clone());
         if rebuilds || rebuilt {
             return found(State::InputChanged, name.into());
         }
@@ -150,14 +188,60 @@ fn judge(
 
     for wanted in [State::Stale, State::Blocked] {
         for input in &step.inputs {
-            let Input::Snapshot { source, .. } = input else { continue };
-            if let Some(status) = environment.sources.get(source).filter(|status| status.state == wanted) {
+            let Input::Snapshot { source, params, .. } = input else { continue };
+            if let Some(status) =
+                environment.sources.get(&(source.clone(), sorted(params))).filter(|status| status.state == wanted)
+            {
                 let reason = status.reason.as_deref().map_or(source.clone(), |reason| format!("{source}: {reason}"));
                 return found(wanted, reason);
             }
         }
     }
     Ok((State::Ok, None))
+}
+
+/// Whether the live layer read the snapshot input with another version, other `params` (in any
+/// order) or, when the store has the files that it reads, other files; and whether the store has
+/// them. `None` for a layer input, or a source that the live layer did not read.
+pub(super) fn other_read(store: &Store, live: &Layer, input: &Input) -> Result<Option<(bool, bool)>, String> {
+    let Input::Snapshot { source, version, params, files } = input else { return Ok(None) };
+    let Some(read) = live.snapshots.get(source) else { return Ok(None) };
+    let digest = match selection(store, source, version, params, files)? {
+        Selection::Present(files) => Some(digest(files.iter().map(|file| (file.name.as_str(), file.sha256.as_str())))),
+        Selection::Lacks(_) => None,
+    };
+    let other = &read.version != version || sorted(&read.params) != sorted(params);
+    let recorded = live.inputs.iter().find(|input| input.kind == InputKind::Snapshot && &input.name == source);
+    let other_files = digest.as_ref().is_some_and(|digest| recorded.is_some_and(|input| &input.digest != digest));
+    Ok(Some((other || other_files, digest.is_some())))
+}
+
+/// What of the code of `step` is not that of its live layer: `inputs` (kind and name), `command`,
+/// `outputs`, `client` (whether a client reads the layer) or `code` (the code hash).
+pub(super) fn code_differs(step: &Step, code_hash: &str, live: &Layer) -> Option<&'static str> {
+    let declared: BTreeSet<(InputKind, &str)> = step
+        .inputs
+        .iter()
+        .map(|input| match input {
+            Input::Snapshot { source, .. } => (InputKind::Snapshot, source.as_str()),
+            Input::Layer { name, .. } => (InputKind::Layer, name.as_str()),
+        })
+        .collect();
+    let built: BTreeSet<(InputKind, &str)> =
+        live.inputs.iter().map(|input| (input.kind, input.name.as_str())).collect();
+    if declared != built {
+        Some("inputs")
+    } else if live.command != step.command() {
+        Some("command")
+    } else if live.outputs != step.sorted_outputs() {
+        Some("outputs")
+    } else if live.client != step.client.sorted() {
+        Some("client")
+    } else if live.code != code_hash {
+        Some("code")
+    } else {
+        None
+    }
 }
 
 /// The code files that differ from the code that built the live layer: the first, and how many
@@ -167,8 +251,11 @@ fn changed_code(store: &Store, before: &str, now: &BTreeMap<String, String>, cod
         return Ok(code.paths.iter().chain(&code.crates).cloned().collect::<Vec<_>>().join(", "));
     };
     let paths: BTreeSet<&String> = before.keys().chain(now.keys()).collect();
-    let changed: Vec<&String> = paths.into_iter().filter(|path| before.get(*path) != now.get(*path)).collect();
+    let binding = super::code::SOURCE_BINDING;
+    let changed: Vec<&String> =
+        paths.into_iter().filter(|path| path.as_str() != binding && before.get(*path) != now.get(*path)).collect();
     Ok(match changed.as_slice() {
+        [] if before.get(binding) != now.get(binding) => "source/config".into(),
         [] => "the code hash".into(),
         [one] => one.to_string(),
         [first, rest @ ..] => format!("{first} and {} more", rest.len()),
@@ -207,6 +294,12 @@ mod tests {
         let ok = [("test/upper", State::Ok, None), ("test/join", State::Ok, None), ("test/count", State::Ok, None)];
         assert_eq!(states(&fixture, &pipeline(), &environment), expect(&ok));
 
+        let binding = super::super::code::SOURCE_BINDING;
+        let before = BTreeMap::from([(binding.into(), "old witness".into())]);
+        fixture.store.put_code("binding-only", &before).unwrap();
+        let now = BTreeMap::from([(binding.into(), "new witness".into())]);
+        assert_eq!(changed_code(&fixture.store, "binding-only", &now, &Code::default()).unwrap(), "source/config");
+
         write(&fixture.root().join("join.py"), &format!("# A comment.\n{JOIN}"));
         assert_eq!(
             states(&fixture, &pipeline(), &environment),
@@ -234,8 +327,11 @@ mod tests {
         let fixture = fixture("state-each");
         let mut environment = live(&fixture);
         let status = |state, reason: &str| Status { state, reason: Some(reason.into()), age_days: None };
-        environment.sources.insert("head".into(), status(State::Stale, "14 d > 7 d, upstream 2026-10-04"));
-        environment.sources.insert("tail".into(), status(State::Blocked, "no licence recorded"));
+        environment
+            .sources
+            .insert(("head".into(), Vec::new()), status(State::Stale, "14 d > 7 d, upstream 2026-10-04"));
+        environment.sources.insert(("tail".into(), Vec::new()), status(State::Blocked, "no licence recorded"));
+        let all_live = environment.live.clone();
         environment.live.remove("test/count");
         assert_eq!(
             states(&fixture, &pipeline(), &environment),
@@ -246,8 +342,18 @@ mod tests {
             ])
         );
 
+        let mut unrelated = Environment { sources: BTreeMap::new(), live: all_live };
+        unrelated.sources.insert(
+            ("head".into(), vec![("area".into(), "another".into())]),
+            status(State::Stale, "another area is due"),
+        );
+        assert!(
+            states(&fixture, &pipeline(), &unrelated).iter().all(|(_, state, _)| *state == State::Ok),
+            "held snapshots and unrelated requests do not inherit source-wide freshness"
+        );
+
         fixture.fetched_version("head", "2", "head.txt", b"head 2\n");
-        // The environment pins a version or params that live was not built from.
+        // The environment reads a version or params that live was not built from.
         let tile = Input::Snapshot {
             source: "head".into(),
             version: "1".into(),

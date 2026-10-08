@@ -10,4 +10,4 @@ description = "OBCT terrain reader, bilinear sampling, tile cache and the shared
 # grid they sit on — never about maps (OBCM), routes (OBCR) or the UI. Every consumer depends on
 # *it* (obc-route, obc-pack, obc-app), so a dependency in the other direction would be a cycle
 # waiting to happen and would drag map concepts into the elevation seam.
-obc-formats = { path = "../obc-formats" }
+obc-formats = { workspace = true }

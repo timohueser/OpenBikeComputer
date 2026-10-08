@@ -105,14 +105,14 @@ repack() { # repack <name> <source_pbf> <bbox> [terrain_obcd]
       grimsel) output="$BUILD_DIR/sim-grimsel/grimsel.obcm" ;;
       monaco) output="$BUILD_DIR/sim-monaco/monaco.obcm" ;;
       freiburg) output="$BUILD_DIR/sim-freiburg/freiburg.obcm" ;;
-      grimsel-demo) output="$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" ;;
+      grimsel-demo) output="$REPO_ROOT/sim/desktop/assets/grimsel-demo.obcm" ;;
       *) echo "unknown map package $name" >&2; exit 2 ;;
     esac
     echo "packing $output (bbox $bbox${terrain:+, terrain $(basename "$terrain")}) ..."
     # `${extra[@]+…}`, not a bare `"${extra[@]}"`: under `set -u` the bash 3.2 that ships
     # with macOS treats an EMPTY array expansion as an unbound variable, so the terrain-less
     # targets (monaco, grimsel-demo) died on the guard meant to protect them.
-    (cd "$REPO_ROOT" && cargo run --release --bin obc-pack -- \
+    (cd "$REPO_ROOT" && cargo run --release -p obc-bake --bin obc-pack -- \
         "$src" "$PRESET" "$output" --bbox "$bbox" ${extra[@]+"${extra[@]}"})
     (cd "$REPO_ROOT" && cargo run --release --bin obcm-assemble -- restamp \
         --map "$output" --schema "$PRESET" \
@@ -156,7 +156,7 @@ do_grimsel_demo() {
     fi
     repack grimsel-demo "$src" "$GRIMSEL_DEMO_BBOX" "$surface"
     # obc-pack samples terrain for contours/ascent but leaves the terrain region empty.
-    python3 - "$REPO_ROOT/apps/obc-sim/assets/grimsel-demo.obcm" "$surface" \
+    python3 - "$REPO_ROOT/sim/desktop/assets/grimsel-demo.obcm" "$surface" \
       "$REPO_ROOT/firmware/obc-formats/src/obcm.rs" <<'PY_EMBED'
 from pathlib import Path
 import re

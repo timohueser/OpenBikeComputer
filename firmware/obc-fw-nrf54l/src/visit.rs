@@ -734,7 +734,9 @@ impl Executor {
                 self.published = Some((id, Revision(1)));
                 self.phase = Phase::Stopped;
                 if !releasing {
-                    crate::flat_store::load_routes(store, app);
+                    if let Some(mut catalogs) = crate::arena::claim_catalogs(guard.as_mut()) {
+                        crate::flat_store::load_routes(store, app, &mut catalogs);
+                    }
                     let context = app.assistant_review_context()?;
                     let Some(fingerprint) = crate::flat_store::route_fingerprint(store, id.0) else {
                         self.uncertain = true;
@@ -769,7 +771,9 @@ impl Executor {
             (After::Remove, Ok(Outcome::Done) | Err(StoreError::NotFound)) => {
                 self.published = None;
                 self.phase = Phase::Stopped;
-                crate::flat_store::load_routes(store, app);
+                if let Some(mut catalogs) = crate::arena::claim_catalogs(guard.as_mut()) {
+                    crate::flat_store::load_routes(store, app, &mut catalogs);
+                }
             }
             (After::Publish, Err(StoreError::Media | StoreError::ReadOnly)) => {
                 self.uncertain = true;

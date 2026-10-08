@@ -1,0 +1,40 @@
+<svg viewBox="0 0 720 300" role="img" aria-label="The shared render code in the middle connects through two pluggable seams — a DrawTarget for pixels and a colour function — to two hosts: the simulator and the device." xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aS" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">Everything device-specific lives at two seams</text>
+
+  <!-- shared core -->
+  <rect class="d-hot" x="244" y="116" width="232" height="74" rx="13" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-title" x="360" y="148" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-weight="650" font-size="14px">obc-render</text>
+  <text class="d-sub" x="360" y="168" text-anchor="middle" fill="#5c5a2e" font-size="12px">one no_std code path · zero-alloc</text>
+
+  <!-- inputs left -->
+  <text class="d-sub" x="232" y="100" text-anchor="end" fill="#5c5a2e" font-size="12px">scene · viewport · bg →</text>
+
+  <!-- seam 1: DrawTarget -->
+  <rect class="d-panel-2" x="300" y="36" width="120" height="40" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="360" y="54" text-anchor="middle" fill="#1c1b14" font-size="14px">DrawTarget</text>
+  <text class="d-sub" x="360" y="68" text-anchor="middle" fill="#5c5a2e" font-size="12px">where pixels go</text>
+  <line class="d-stroke" x1="360" y1="116" x2="360" y2="78" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+
+  <!-- seam 2: color_fn -->
+  <rect class="d-panel-2" x="300" y="228" width="120" height="40" rx="9" fill="#e7ecdf" stroke="rgba(92, 90, 46, 0.32)" stroke-width="1.2" />
+  <text class="d-label" x="360" y="246" text-anchor="middle" fill="#1c1b14" font-size="14px">color_fn</text>
+  <text class="d-sub" x="360" y="260" text-anchor="middle" fill="#5c5a2e" font-size="12px">RGB565 → pixel</text>
+  <line class="d-stroke" x1="360" y1="190" x2="360" y2="226" fill="none" stroke="#1c1b14" stroke-width="1.6" />
+
+  <!-- host: simulator -->
+  <rect class="d-panel" x="40" y="120" width="150" height="66" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="115" y="146" text-anchor="middle" fill="#1c1b14" font-size="14px">obc-sim</text>
+  <text class="d-sub" x="115" y="164" text-anchor="middle" fill="#5c5a2e" font-size="12px">RGB222 framebuffer</text>
+  <text class="d-sub" x="115" y="178" text-anchor="middle" fill="#5c5a2e" font-size="12px">64 colours</text>
+  <line class="d-flow" x1="244" y1="153" x2="192" y2="153" marker-end="url(#aS)" fill="none" stroke="#a4501e" stroke-width="2" />
+
+  <!-- host: device -->
+  <rect class="d-panel" x="530" y="120" width="150" height="66" rx="11" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="605" y="146" text-anchor="middle" fill="#1c1b14" font-size="14px">device</text>
+  <text class="d-sub" x="605" y="164" text-anchor="middle" fill="#5c5a2e" font-size="12px">LS021B7DD02 panel</text>
+  <text class="d-sub" x="605" y="178" text-anchor="middle" fill="#5c5a2e" font-size="12px">64 colours (RGB222)</text>
+  <line class="d-flow" x1="476" y1="153" x2="528" y2="153" marker-end="url(#aS)" fill="none" stroke="#a4501e" stroke-width="2" />
+</svg>

@@ -1,0 +1,19 @@
+[package]
+name = "obc-replay"
+version = "0.1.0"
+edition = "2021"
+publish = false  # internal firmware crate — not published to crates.io
+description = "Host-only GPX replay core: parse a recorded track and play it back through the obc-ports LocationSource / AltimeterSource contracts a real GPS + barometer would implement. Shared by the desktop simulator (obc-sim) and the USB feeder (obc-usb-host) so both drive the device from real rides via one tested code path."
+
+[dependencies]
+# The dependency-light semantic HAL the player + barometer implement (`Fix`, `LocationSource`,
+# `AltimeterSource`), so replay is reusable without importing the application/UI layer.
+obc-ports = { workspace = true }
+
+[dev-dependencies]
+obc-elevation = { workspace = true }
+obc-formats = { workspace = true }
+
+[[example]]
+name = "gpx_to_ride"
+test = true

@@ -1,0 +1,128 @@
+<svg viewBox="0 0 720 502" role="img" aria-label="Three byte rulers show all 65 bytes with equal byte widths: magic, version, four bounds, style offset, LOD count and table offset, marker color, POI and navigation offsets, scale, terrain, landmark and peak offsets and lengths." xmlns="http://www.w3.org/2000/svg" width="720" height="502" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+<defs><marker id="r10arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker></defs>
+<text class="d-tag" x="20" y="26" text-anchor="start" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">OBCM header · every byte in order and to scale</text>
+<text class="d-sub" x="20" y="53" text-anchor="start" fill="#5c5a2e" font-size="12px">65 bytes · three consecutive rows · equal width per byte</text>
+<rect x="40" y="102" width="96" height="36" fill="#d6cda8" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M64 102 L64 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M88 102 L88 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M112 102 L112 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="88.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">OBCM</text>
+<text class="d-sub" x="88.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">0–3</text>
+<rect x="136" y="102" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="148.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">17</text>
+<text class="d-sub" x="148.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">4</text>
+<rect x="160" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M184 102 L184 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M208 102 L208 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M232 102 L232 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="208.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">Min lat</text>
+<text class="d-sub" x="208.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">5–8</text>
+<rect x="256" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M280 102 L280 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M304 102 L304 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M328 102 L328 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="304.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">Min lon</text>
+<text class="d-sub" x="304.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">9–12</text>
+<rect x="352" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M376 102 L376 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M400 102 L400 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M424 102 L424 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="400.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">Max lat</text>
+<text class="d-sub" x="400.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">13–16</text>
+<rect x="448" y="102" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M472 102 L472 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M496 102 L496 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M520 102 L520 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="496.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">Max lon</text>
+<text class="d-sub" x="496.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">17–20</text>
+<rect x="544" y="102" width="96" height="36" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M568 102 L568 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M592 102 L592 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M616 102 L616 138" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="592.0" y="125" text-anchor="middle" fill="#5c5a2e" font-size="12px">Style off</text>
+<text class="d-sub" x="592.0" y="157" text-anchor="middle" fill="#5c5a2e" font-size="12px">21–24</text>
+<text class="d-sub" x="88" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">Magic</text>
+<text class="d-sub" x="164" y="70" text-anchor="middle" fill="#5c5a2e" font-size="12px">Version</text>
+<path d="M164 75 H148 V100" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="352" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">Bounds · four i32 coordinates in µdeg</text>
+<text class="d-sub" x="590" y="84" text-anchor="middle" fill="#5c5a2e" font-size="12px">u32 offset</text>
+<rect x="40" y="242" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="52.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">N</text>
+<text class="d-sub" x="52.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">25</text>
+<rect x="64" y="242" width="96" height="36" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M88 242 L88 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M112 242 L112 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M136 242 L136 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="112.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">LOD table off</text>
+<text class="d-sub" x="112.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">26–29</text>
+<rect x="160" y="242" width="48" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M184 242 L184 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="184.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">RGB</text>
+<text class="d-sub" x="184.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">30–31</text>
+<rect x="208" y="242" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M232 242 L232 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M256 242 L256 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M280 242 L280 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="256.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">POI off</text>
+<text class="d-sub" x="256.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">32–35</text>
+<rect x="304" y="242" width="96" height="36" fill="#cbdadb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M328 242 L328 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M352 242 L352 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M376 242 L376 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="352.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">Nav off</text>
+<text class="d-sub" x="352.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">36–39</text>
+<rect x="400" y="242" width="24" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<text class="d-sub" x="412.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">s</text>
+<text class="d-sub" x="412.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">40</text>
+<rect x="424" y="242" width="96" height="36" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M448 242 L448 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M472 242 L472 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M496 242 L496 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="472.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">Terrain off</text>
+<text class="d-sub" x="472.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">41–44</text>
+<rect x="520" y="242" width="96" height="36" fill="#d5dfc6" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M544 242 L544 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M568 242 L568 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M592 242 L592 278" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="568.0" y="265" text-anchor="middle" fill="#5c5a2e" font-size="12px">Terrain len</text>
+<text class="d-sub" x="568.0" y="297" text-anchor="middle" fill="#5c5a2e" font-size="12px">45–48</text>
+<text class="d-sub" x="40" y="197" text-anchor="start" fill="#5c5a2e" font-size="12px">N: LOD count</text>
+<path d="M52 203 V240" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="184" y="226" text-anchor="middle" fill="#5c5a2e" font-size="12px">RGB565</text>
+<text class="d-sub" x="412" y="207" text-anchor="middle" fill="#5c5a2e" font-size="12px">s: offset scale</text>
+<path d="M412 213 V240" fill="none" stroke="#3c6b39" stroke-width="1.5" />
+<text class="d-sub" x="40" y="455" text-anchor="start" fill="#5c5a2e" font-size="12px">Rows: bytes 0–24, 25–48, then 49–70. All multi-byte values are little-endian.</text>
+<text class="d-sub" x="40" y="477" text-anchor="start" fill="#5c5a2e" font-size="12px">Section address = stored offset × 2ˢ. Region lengths use the same units; writers set s = 4.</text>
+<rect x="40" y="362" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M64 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M88 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M112 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="88" y="385" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Landmark off</text>
+<text class="d-sub" x="88" y="417" text-anchor="middle" fill="#5c5a2e" font-size="12px">49–52</text>
+<rect x="136" y="362" width="96" height="36" fill="#f1cfb4" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M160 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M184 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M208 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="184" y="385" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Landmark len</text>
+<text class="d-sub" x="184" y="417" text-anchor="middle" fill="#5c5a2e" font-size="12px">53–56</text>
+<rect x="232" y="362" width="96" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M256 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M280 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M304 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="280" y="385" text-anchor="middle" fill="#5c5a2e" font-size="12px">Peak off</text>
+<text class="d-sub" x="280" y="417" text-anchor="middle" fill="#5c5a2e" font-size="12px">57–60</text>
+<rect x="328" y="362" width="96" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M352 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M376 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<path d="M400 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="376" y="385" text-anchor="middle" fill="#5c5a2e" font-size="12px">Peak len</text>
+<text class="d-sub" x="376" y="417" text-anchor="middle" fill="#5c5a2e" font-size="12px">61–64</text>
+<rect x="424" y="362" width="96" height="36" fill="#eae4cb" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M448 362 V398 M472 362 V398 M496 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="472" y="385" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Dark style off</text>
+<text class="d-sub" x="472" y="417" text-anchor="middle" fill="#5c5a2e" font-size="12px">65–68</text>
+<rect x="520" y="362" width="48" height="36" fill="#e3ad33" stroke="#3c6b39" stroke-width="1.2" />
+<path d="M544 362 V398" fill="none" stroke="#9aa884" stroke-width="1.3" opacity=".18"/>
+<text class="d-sub" x="544" y="385" text-anchor="middle" style="font-size:12px" fill="#5c5a2e" font-size="12px">Dark RGB</text>
+<text class="d-sub" x="544" y="417" text-anchor="middle" fill="#5c5a2e" font-size="12px">69–70</text>
+</svg>

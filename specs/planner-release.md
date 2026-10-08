@@ -1,8 +1,9 @@
 # Planner release
 
-A release joins map, routing, search, model, and device catalogue data.
-`release.json` is UTF-8 JSON. Its SHA-256 is the release ID. The release and
-its files are immutable.
+A release joins map, routing, search and model data.
+`release.json` is UTF-8 JSON. The release and its files are immutable.
+An applied publication uses the ID of the [`obc data` release manifest](obc-data.md#releases).
+The standalone publisher uses the SHA-256 of `release.json`.
 
 ## Manifest
 
@@ -10,6 +11,7 @@ its files are immutable.
 | --- | --- |
 | `format` | `1` |
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
+| `name` | Region display name for an applied grid publication |
 | `bounds` | `[west,south,east,north]` in degrees |
 | `osm_sha256` | Hash of the common OSM PBF |
 | `routing_package` | Hash of `routing/manifest.json` or `routing/blocks.json` |
@@ -18,16 +20,14 @@ its files are immutable.
 | `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Older releases have none |
 | `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
-| `sources` | Recipe hash, source identities, tool identities, and input provenance |
-| `device_catalog_source` | Original device catalogue URL |
 | `files` | Relative file names, each with `bytes` and `sha256` |
-| `source_files` | Local source mirror names, each with `bytes` and `sha256` |
-| `probe` | Regional route points, search query, and view for service deployment |
 
 File paths stay inside the release directory. File hashes use lowercase
 64-character hex. Maps, search, and routing have the same OSM hash and bounds.
 The terrain inputs cover every routing elevation input. Search metadata contains
-the OSM hash. The map manifest contains terrain input hashes.
+the OSM hash. Terrain TileJSON contains terrain input hashes. The
+[`obc data` release manifest](obc-data.md#releases) records source versions, tool
+identities and layer receipts. These are not client files.
 
 ## Objects and services
 
@@ -78,7 +78,7 @@ at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
 without tile quantization. The feature ID is `(type << 44) | osm_id`, where type
 is 1 for nodes, 2 for ways, and 3 for relations. OSM IDs are positive and below
 2^44. Categories are defined in the
-[place categories](../builder/app/src/lib/planner/poi-kinds.json).
+[place categories](../builder/web/src/lib/planner/poi-kinds.json).
 Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
 except that an empty archive contains one empty tile at the southwest bound.
 
@@ -121,8 +121,25 @@ The online services and `deploy` serve grid releases only. A regional release
 without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
 entries retain logical paths and decoded `bytes` and `sha256`. Each also has
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
-R2 stores each distinct transport once at `planner/releases/ID/objects/SHA256`.
+R2 stores each distinct transport once at `planner/objects/SHA256`.
 The online services and offline installer consume this same pool.
+Named metadata stays at `planner/releases/ID/`: `release.json`, `public/`, and
+`indexes/GRID_STEP/index.json` for each selected grid. Applied release manifests
+bind each named path to its size and SHA-256. Producer directories and source
+archives are not part of these verification indexes.
+
+Before publication, the verifier checks the packed bytes and named metadata
+against their receipts. It composes the indexes with the same source and coverage
+checks as the producer. It reads changed decoded map archives, search shards and
+routing graphs with their format validators. Unchanged binary payloads retain their
+previous verification. The Python group and Node reader dependencies must be
+prepared from their locks. A fresh store can restore the named
+indexes and client objects without the producer files. Verification does not
+install tools, download data or build runtimes.
+
+The planner release binds service source and locked dependencies in its final index.
+The VPS builds services from the pushed commit. Publication requires successful local
+and public probes against the release's routing, search, model and offline catalog hashes.
 
 `public/grid.json` contains `format: 2` and `map_zoom`. Each map pack, asset,
 TileJSON, route catalog cell, and device catalog has a small pointer at

@@ -1,0 +1,35 @@
+<svg viewBox="0 0 720 264" role="img" aria-label="One runtime cycle processes sensors and input. Dirty flags control map and overlay rendering." xmlns="http://www.w3.org/2000/svg" width="720" height="264" font-family="&#x27;Atkinson&#x27;, system-ui, sans-serif">
+  <defs>
+    <marker id="aC" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
+    <marker id="aCm" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
+  </defs>
+  <text class="d-tag" x="20" y="24" fill="#5c5a2e" font-size="11px" font-weight="650" letter-spacing="0.04em">One frame — then redraw only what changed</text>
+
+  <rect class="d-panel" x="28" y="74" width="128" height="52" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="92" y="98" text-anchor="middle" fill="#1c1b14" font-size="14px">stage_input</text>
+  <text class="d-sub" x="92" y="113" text-anchor="middle" fill="#5c5a2e" font-size="12px">sensors · gestures</text>
+
+  <rect class="d-panel" x="186" y="74" width="150" height="52" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="261" y="98" text-anchor="middle" fill="#1c1b14" font-size="14px">the domains</text>
+  <text class="d-sub" x="261" y="113" text-anchor="middle" fill="#5c5a2e" font-size="12px">one bounded effect each</text>
+
+  <rect class="d-panel" x="366" y="74" width="126" height="52" rx="10" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="429" y="98" text-anchor="middle" fill="#1c1b14" font-size="14px">stage_plan</text>
+  <text class="d-sub" x="429" y="113" text-anchor="middle" fill="#5c5a2e" font-size="12px">what changed?</text>
+
+  <rect class="d-hot" x="544" y="48" width="150" height="40" rx="9" style="fill:#f8efe4" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-label" x="619" y="73" text-anchor="middle" style="fill:#a9501c" fill="#1c1b14" font-size="14px">render_map</text>
+  <rect class="d-panel" x="544" y="110" width="150" height="40" rx="9" fill="#fff" stroke="#a4501e" stroke-width="1.5" />
+  <text class="d-label" x="619" y="135" text-anchor="middle" fill="#1c1b14" font-size="14px">render_overlay</text>
+
+  <line class="d-flow" x1="156" y1="100" x2="184" y2="100" marker-end="url(#aC)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <line class="d-flow" x1="336" y1="100" x2="364" y2="100" marker-end="url(#aC)" fill="none" stroke="#a4501e" stroke-width="2" />
+  <path class="d-hot" d="M492 92 C 516 80, 520 70, 542 68" marker-end="url(#aCm)" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <path class="d-hot" d="M492 108 C 516 120, 520 128, 542 130" marker-end="url(#aCm)" fill="none" stroke="#ae4825" stroke-width="2.4" />
+  <text class="d-sub" x="466" y="56" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">if map dirty</text>
+  <text class="d-sub" x="452" y="158" style="font-size:12px;fill:#a9501c" fill="#5c5a2e" font-size="12px">if overlay dirty</text>
+
+  <!-- loop back -->
+  <path class="d-flow" d="M619 150 C 619 208, 300 214, 92 214 C 60 214, 60 160, 64 130" marker-end="url(#aC)" stroke-dasharray="3 4" fill="none" stroke="#a4501e" stroke-width="2" />
+  <text class="d-sub" x="340" y="208" text-anchor="middle" fill="#5c5a2e" font-size="12px">next frame</text>
+</svg>

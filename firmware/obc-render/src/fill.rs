@@ -23,9 +23,8 @@ pub(crate) struct PackedEdge {
 const _: () = assert!(core::mem::size_of::<PackedEdge>() == core::mem::size_of::<Point>());
 const _: () = assert!(core::mem::align_of::<PackedEdge>() <= core::mem::align_of::<Point>());
 
-/// Scan-convert retained screen-space rings after building their non-horizontal edges once, which
-/// takes ring partitioning, horizontal-edge rejection and point loads out of every scanline while
-/// keeping the crossing expression and the half-open edge rule bit for bit.
+/// Fill retained rings with an active-edge table in the phase-shared point buffer. Crossings keep
+/// the exact f32 expression and half-open row rule; equal adjacent spans share one rectangle.
 pub(crate) fn fill_polygon_edges<D, L>(
     target: &mut D,
     points: &[ScreenPoint],
@@ -73,30 +72,72 @@ pub(crate) fn fill_polygon_edges<D, L>(
         return;
     }
 
+    if let [a, b] = edges.as_slice() {
+        if a.xi == a.xj && b.xi == b.xj && a.yi.min(a.yj) == b.yi.min(b.yj) && a.yi.max(a.yj) == b.yi.max(b.yj) {
+            let left = i32::from(a.xi.min(b.xi)).max(0);
+            let right = i32::from(a.xi.max(b.xi)).min(w - 1);
+            let top = ymin.max(i32::from(a.yi.min(a.yj)));
+            let bottom = ymax.min(i32::from(a.yi.max(a.yj)) - 1);
+            if left <= right && top <= bottom {
+                let _ = target.fill_solid(
+                    &Rectangle::new(
+                        Point::new(left, top),
+                        Size::new((right - left + 1) as u32, (bottom - top + 1) as u32),
+                    ),
+                    color,
+                );
+            }
+            return;
+        }
+    }
+
+    edges.sort_unstable_by_key(|edge| edge.yi.min(edge.yj));
+    // The active prefix shares the sorted pending table; expired slots receive new edges.
+    let mut pending = 0;
+    let mut active = 0;
+    let mut run = None;
     for y in ymin..=ymax {
         let yc = y as f32 + 0.5;
+        while pending < edges.len() && i32::from(edges[pending].yi.min(edges[pending].yj)) <= y {
+            edges.swap(active, pending);
+            active += 1;
+            pending += 1;
+        }
         xs.clear();
         let mut saturated = false;
-        for edge in edges.iter() {
+        let mut i = 0;
+        while i < active {
+            let edge = edges[i];
+            if i32::from(edge.yi.max(edge.yj)) <= y {
+                active -= 1;
+                edges.swap(i, active);
+                continue;
+            }
             let (xi, yi) = (edge.xi as f32, edge.yi as f32);
             let (xj, yj) = (edge.xj as f32, edge.yj as f32);
-            if ((yi <= yc && yc < yj) || (yj <= yc && yc < yi))
-                && xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err()
-            {
+            if xs.push(xi + (yc - yi) / (yj - yi) * (xj - xi)).is_err() {
                 saturated = true;
                 break;
             }
+            i += 1;
         }
         if saturated || xs.len() < 2 {
             continue;
         }
-        xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        if xs.len() == 2 {
+            let (a, b) = (xs[0], xs[1]);
+            let (left, right) = if a < b { (a, b) } else { (b, a) };
+            extend_span(target, &mut run, left, right, y, w, color);
+            continue;
+        }
+        xs.sort_unstable_by(crate::sort::crossings);
         let mut k = 0;
         while k + 1 < xs.len() {
-            fill_span(target, xs[k], xs[k + 1], y, w, color);
+            extend_span(target, &mut run, xs[k], xs[k + 1], y, w, color);
             k += 2;
         }
     }
+    flush_span(target, &mut run, color);
 }
 
 /// Project a feature's microdegree rings into `screen` and scanline-fill them. Retained as the
@@ -207,7 +248,7 @@ pub(crate) fn fill_polygon<D, L>(
         if saturated || xs.len() < 2 {
             continue;
         }
-        xs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        xs.sort_unstable_by(crate::sort::crossings);
         let mut k = 0;
         while k + 1 < xs.len() {
             // Spans round outward, per [`fill_span`]. A feature clipped across a chunk boundary
@@ -232,6 +273,51 @@ where
     let x1 = (libm::ceilf(right) as i32).min(w - 1);
     if x1 >= x0 {
         let _ = target.fill_solid(&Rectangle::new(Point::new(x0, y), Size::new((x1 - x0 + 1) as u32, 1)), color);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SpanRun {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+}
+
+#[inline]
+fn extend_span<D: DrawTarget>(
+    target: &mut D,
+    run: &mut Option<SpanRun>,
+    left: f32,
+    right: f32,
+    y: i32,
+    w: i32,
+    color: D::Color,
+) {
+    let left = (libm::floorf(left) as i32).max(0);
+    let right = (libm::ceilf(right) as i32).min(w - 1);
+    if let Some(prior) = run {
+        if prior.left == left && prior.right == right && prior.bottom + 1 == y {
+            prior.bottom = y;
+            return;
+        }
+    }
+    flush_span(target, run, color);
+    if left <= right {
+        *run = Some(SpanRun { left, right, top: y, bottom: y });
+    }
+}
+
+#[inline]
+fn flush_span<D: DrawTarget>(target: &mut D, run: &mut Option<SpanRun>, color: D::Color) {
+    if let Some(span) = run.take() {
+        let _ = target.fill_solid(
+            &Rectangle::new(
+                Point::new(span.left, span.top),
+                Size::new((span.right - span.left + 1) as u32, (span.bottom - span.top + 1) as u32),
+            ),
+            color,
+        );
     }
 }
 
@@ -328,7 +414,7 @@ where
             // A rounded quad presenting 3 or 4 crossings on this row is non-convex, so mirror
             // `fill_polygon` exactly and the specialized filler can never diverge from it.
             let s = &mut xs4[..n];
-            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            s.sort_unstable_by(crate::sort::crossings);
             let mut k = 0;
             while k + 1 < n {
                 fill_span(target, s[k], s[k + 1], y, w, color);
@@ -350,14 +436,22 @@ mod tests {
 
         let mut state = 0x51f1_5e1du32;
         for case in 0..1_000 {
-            let len = 3 + (state as usize % 29);
+            let len = if case % 100 == 0 { MAX_SCREEN_POINTS } else { 3 + (state as usize % 29) };
             let mut points: std::vec::Vec<Point> = std::vec::Vec::with_capacity(len);
             let mut packed: std::vec::Vec<ScreenPoint> = std::vec::Vec::with_capacity(len);
             for _ in 0..len {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let x = (state as i32).rem_euclid(96) - 16;
+                let x = if case % 11 == 0 {
+                    (state as i32).rem_euclid(65536) - 32768
+                } else {
+                    (state as i32).rem_euclid(96) - 16
+                };
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                let y = (state as i32).rem_euclid(96) - 16;
+                let y = if case % 11 == 0 {
+                    (state as i32).rem_euclid(65536) - 32768
+                } else {
+                    (state as i32).rem_euclid(96) - 16
+                };
                 points.push(Point::new(x, y));
                 packed.push(ScreenPoint::checked((x, y)).unwrap());
             }
@@ -367,9 +461,49 @@ mod tests {
             actual.set_allow_overdraw(true);
             let mut xs: Vec<f32, MAX_CROSSINGS> = Vec::new();
             let mut edges: Vec<PackedEdge, MAX_SCREEN_POINTS> = Vec::new();
-            fill_polygon(&mut expected, &points, &[len as u16], BinaryColor::On, 64, 64, &mut xs);
-            fill_polygon_edges(&mut actual, &packed, &[len as u16], BinaryColor::On, (64, 64), &mut edges, &mut xs);
+            let rings: std::vec::Vec<u16> = if case % 3 == 0 && len >= 6 {
+                std::vec![(len / 2) as u16, (len - len / 2) as u16]
+            } else {
+                std::vec![len as u16]
+            };
+            fill_polygon(&mut expected, &points, &rings, BinaryColor::On, 64, 64, &mut xs);
+            fill_polygon_edges(&mut actual, &packed, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
             assert_eq!(actual, expected, "scan conversion drift in case {case}");
+        }
+    }
+
+    #[test]
+    fn packed_rectangles_keep_clipping_holes_and_collapsed_widths() {
+        use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor, prelude::*};
+        for (left, right) in [(-20, 90), (3, 3), (-30, -20), (64, 65)] {
+            for (top, bottom) in [(-30, 100), (10, 20), (70, 100)] {
+                for hole in [false, true] {
+                    let mut points = std::vec![
+                        Point::new(left, top),
+                        Point::new(right, top),
+                        Point::new(right, bottom),
+                        Point::new(left, bottom)
+                    ];
+                    let mut rings = std::vec![4u16];
+                    if hole {
+                        points.extend([Point::new(12, 12), Point::new(44, 12), Point::new(44, 44), Point::new(12, 44)]);
+                        rings.push(4);
+                    }
+                    points.extend([Point::new(10, 0), Point::new(20, 0), Point::new(30, 0)]);
+                    rings.push(3);
+                    let packed: std::vec::Vec<_> =
+                        points.iter().map(|p| ScreenPoint::checked((p.x, p.y)).unwrap()).collect();
+                    let mut expected = MockDisplay::<BinaryColor>::new();
+                    let mut actual = MockDisplay::<BinaryColor>::new();
+                    expected.set_allow_overdraw(true);
+                    actual.set_allow_overdraw(true);
+                    let mut xs = Vec::new();
+                    let mut edges = Vec::new();
+                    fill_polygon(&mut expected, &points, &rings, BinaryColor::On, 64, 64, &mut xs);
+                    fill_polygon_edges(&mut actual, &packed, &rings, BinaryColor::On, (64, 64), &mut edges, &mut xs);
+                    assert_eq!(actual, expected);
+                }
+            }
         }
     }
 

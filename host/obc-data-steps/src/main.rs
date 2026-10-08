@@ -1,7 +1,10 @@
-//! `obc data` with the products whose steps make the releases.
+//! Build and launch the producer worker from the current checkout.
 
-use std::process::ExitCode;
+mod launcher;
 
-fn main() -> ExitCode {
-    obc_data::cli::main(obc_data_steps::PRODUCTS)
+fn main() -> std::process::ExitCode {
+    match launcher::run() {
+        Ok(code) => std::process::ExitCode::from(code),
+        Err(error) => obc_data::cli::failed(error),
+    }
 }

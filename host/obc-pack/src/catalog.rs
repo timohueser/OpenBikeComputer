@@ -29,19 +29,20 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::config::Config;
-use crate::grid::UBox;
 use obc_formats::io::rd_i32;
 use obc_formats::obcm::{HEADER_LEN, MAGIC};
+use obc_map_core::config::Config;
+use obc_map_core::grid::UBox;
 
 pub mod boundary;
+pub mod engine;
 
 /// This module's envelope version. A consumer MUST reject a `schema_version` it does not implement.
 pub const CATALOG_SCHEMA_VERSION: u32 = 3;
 pub const DEFAULT_MANIFEST_NAME: &str = "catalog.json";
 
 mod cells;
-mod coverage;
+pub mod coverage;
 mod landmarks;
 mod model;
 mod regions;
@@ -72,14 +73,11 @@ pub struct CatalogOptions {
     /// Where the tree gets published: every `url` is this plus the object's digest-addressed publish
     /// path. Local bake-tree paths stay stable.
     pub base_url: String,
-    /// The root's `generated_at`, RFC 3339 UTC. Passed in so the generator is a pure function of
-    /// (tree, options).
-    pub generated_at: String,
 }
 
 impl CatalogOptions {
-    pub fn new(base_url: impl Into<String>, generated_at: impl Into<String>) -> CatalogOptions {
-        CatalogOptions { base_url: base_url.into(), generated_at: generated_at.into() }
+    pub fn new(base_url: impl Into<String>) -> CatalogOptions {
+        CatalogOptions { base_url: base_url.into() }
     }
 }
 
@@ -157,7 +155,6 @@ const KNOWN_EMPTY_STATE_NAME: &str = ".known-empty.json";
 /// generator has already visited is normal and its own output is skipped by name.
 pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, String> {
     let base_url = normalize_base_url(&opts.base_url)?;
-    validate_timestamp(&opts.generated_at).map_err(|e| format!("generated_at: {e}"))?;
 
     let schema = read_schema_doc(&tree.join(SCHEMA_DOC))?;
     let mut warnings = Vec::new();
@@ -192,7 +189,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         }
         let doc = CellIndexDocument {
             schema_version: CATALOG_SCHEMA_VERSION,
-            schema_revision: schema.revision,
+            schema_sha256: schema.sha256.clone(),
             band: band.id.clone(),
             cells: entries.to_vec(),
             known_empty: known_empty.to_vec(),
@@ -223,7 +220,6 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         Some(store) => {
             let doc = TerrainIndexDocument {
                 schema_version: CATALOG_SCHEMA_VERSION,
-                terrain_revision: store.doc.revision,
                 dataset_id: store.doc.dataset_id.clone(),
                 dataset_version: store.doc.dataset_version.clone(),
                 posting_log2: store.doc.posting_log2,
@@ -238,7 +234,6 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
                 dataset_version: store.doc.dataset_version.clone(),
                 posting_log2: store.doc.posting_log2,
                 cell_log2: store.doc.cell_log2,
-                terrain_revision: store.doc.revision,
                 attribution: store.doc.attribution.clone(),
                 references: (!store.references.is_empty()).then(|| store.references.clone()),
                 cell_index: TerrainIndexRef {
@@ -260,17 +255,17 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
     // The one coupling between the two revision tracks: reported, never silently reconciled. The
     // bake guard turns this into a refusal to publish, while the generator still produces the
     // document so an operator can see what drifted.
-    match (&terrain_entry, cells.terrain_revision) {
-        (Some(t), Some(baked)) if baked != t.terrain_revision => warnings.push(format!(
+    match (terrain.as_ref().map(|store| store.doc.revision), cells.terrain_revision) {
+        (Some(t), Some(baked)) if baked != t => warnings.push(format!(
             "the network band was baked against terrain revision {baked}, but this catalog publishes terrain \
              revision {} — the router's baked ascents and the published raster are two different surfaces. Re-bake \
              the network band against the current terrain (OBCC_Spec.md §13.4).",
-            t.terrain_revision
+            t
         )),
         (Some(t), None) => warnings.push(format!(
             "this catalog publishes terrain revision {} but the cell store was baked without terrain — every nav \
              edge's ascent is zero, so climb-aware routing is off while the raster the device draws is not",
-            t.terrain_revision
+            t
         )),
         (None, Some(baked)) => warnings.push(format!(
             "the cell store was baked against terrain revision {baked}, but this catalog publishes no terrain — the \
@@ -293,11 +288,10 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
 
     let root = Catalog {
         schema_version: CATALOG_SCHEMA_VERSION,
-        generated_at: opts.generated_at.clone(),
         source: Some(osm_source()),
         schema: SchemaEntry {
             id: schema.id,
-            revision: schema.revision,
+            sha256: schema.sha256,
             name: schema.name,
             description: schema.description,
             obcm_version,
@@ -314,7 +308,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         terrain: terrain_entry,
         landmarks: landmarks
             .map(|store| LandmarkEntry { attribution: crate::landmarks::attribution(), artifacts: store.artifacts }),
-        network_terrain_revision: cells.terrain_revision,
+        articles: None,
     };
     pinned_artifacts.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(GeneratedCatalog { root, satellites, pinned_artifacts, warnings })
@@ -350,6 +344,12 @@ pub fn license_txt(root: &Catalog) -> String {
         license = source.license,
         url = source.license_url,
     );
+    if root.articles.is_some() {
+        text.push_str(&format!(
+            "\nThe detached landmark and peak content carries per-record credits.\n{}\n",
+            crate::landmarks::attribution()
+        ));
+    }
     if let Some(landmarks) = &root.landmarks {
         text.push_str(&format!(
             "\nThe landmark content the cells carry is a separate artifact class,\n{attribution}\n",

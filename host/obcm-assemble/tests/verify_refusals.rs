@@ -16,17 +16,19 @@
 //! small the table is banded and the claims spill through the scratch seam in many runs. A refusal
 //! that only fires in one of the two shapes is the failure mode this file exists to catch.
 
+use obc_bake::serialize::serialize_lods;
+use obc_draw::geom::Geom;
+use obc_draw::quadtree::build_lod_with;
+use obc_draw::serialize::LodLayer;
 use obc_elevation::NullElevation;
 use obc_formats::obcm::{BRANCH_BIT, CHUNK_END, EMPTY_LEAF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN};
-use obc_pack::config::default_profiles;
-use obc_pack::config::LineStyle as PackLineStyle;
-use obc_pack::geom::Geom;
-use obc_pack::nav::DEFAULT_MIN_COMPONENT_EDGES;
-use obc_pack::nav::{build_graph_with, RoutableWay};
-use obc_pack::progress::Progress;
-use obc_pack::quadtree::build_lod_with;
-use obc_pack::serialize::Style;
-use obc_pack::{serialize_lods, LodLayer};
+use obc_map_core::config::default_profiles;
+use obc_map_core::config::LineStyle as PackLineStyle;
+use obc_map_core::nav::DEFAULT_MIN_COMPONENT_EDGES;
+use obc_map_core::progress::Progress;
+use obc_map_core::serialize::Style;
+use obc_network::nav::build_graph_with;
+use obc_places::routing::RoutableWay;
 use obc_reader::{MapCache, MapTables, NavDirectory, Reader};
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::verify::verify_map;

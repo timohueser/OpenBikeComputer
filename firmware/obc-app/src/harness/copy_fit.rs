@@ -10,6 +10,7 @@ use embedded_graphics::{pixelcolor::Rgb888, prelude::*};
 use obc_ports::InputClock;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
 
+use crate::card_scheduler::TEST_PERMIT as PERMIT;
 use crate::device_core::StoreIdentity;
 use crate::dfu::{DfuFailure, DfuScanError, DfuScanReport};
 use crate::host::DetourPreview;
@@ -109,13 +110,13 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::RouteOverview(RouteOverviewScreen::new(0, None)),
         Screen::StartAway(StartAwayScreen::sample(false)),
         Screen::StartAway(StartAwayScreen::sample(true)),
-        Screen::Arrival(ArrivalScreen::new(ArrivalView { route: 0, day: Some(1), next: Some(1) })),
-        Screen::Arrival(ArrivalScreen::new(ArrivalView { route: 0, day: None, next: None })),
+        Screen::Arrival(ArrivalScreen::new(PERMIT, ArrivalView { route: 0, day: Some(1), next: Some(1) })),
+        Screen::Arrival(ArrivalScreen::new(PERMIT, ArrivalView { route: 0, day: None, next: None })),
         Screen::RouteSwap(RouteSwapScreen::new(0)),
-        Screen::RouteReceived(RouteReceivedScreen::new(0, 0, None)),
-        Screen::RouteUpdated(RouteUpdatedScreen::new(0, 0)),
-        Screen::TripReceived(TripReceivedScreen::new(7, 0)),
-        Screen::Passkey(PasskeyScreen::new(123_456)),
+        Screen::RouteReceived(RouteReceivedScreen::new(PERMIT, 0, 0, None)),
+        Screen::RouteUpdated(RouteUpdatedScreen::new(PERMIT, 0, 0)),
+        Screen::TripReceived(TripReceivedScreen::new(PERMIT, 7, 0)),
+        Screen::Passkey(PasskeyScreen::new(PERMIT, 123_456)),
         Screen::Hello(HelloScreen),
         Screen::SetupLanguage(SetupLanguageScreen::new(language)),
         Screen::SetupUnits(SetupUnitsScreen(crate::settings::Units::Metric)),
@@ -129,8 +130,11 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::SetupSensorScan(SetupSensorScanScreen::new(1)),
         Screen::SetupSensorScan(SetupSensorScanScreen::new(2)),
         Screen::SetupAllSet(SetupAllSetScreen),
-        Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 })),
-        Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Installed)),
+        Screen::MapTransfer(MapTransferScreen::new(
+            PERMIT,
+            MapTransfer::Receiving { received_kib: 1_024, total_kib: 65_536 },
+        )),
+        Screen::MapTransfer(MapTransferScreen::new(PERMIT, MapTransfer::Installed)),
         Screen::Settings(SettingsPage::hub()),
         Screen::Ride(SettingsPage::new(&page::RIDE)),
         Screen::Display(SettingsPage::new(&page::DISPLAY)),
@@ -148,11 +152,11 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::About(AboutScreen::new()),
         Screen::Reset(ResetScreen::new()),
         Screen::DfuCheck(DfuCheckScreen::new()),
-        Screen::DfuConfirm(DfuConfirmScreen::new(DfuScanReport::new("1.4.0", "1.5.0", false))),
-        Screen::DfuConfirm(DfuConfirmScreen::new(DfuScanReport::new("1.4.0", "1.4.0", true))),
+        Screen::DfuConfirm(DfuConfirmScreen::new(PERMIT, DfuScanReport::new("1.4.0", "1.5.0", false))),
+        Screen::DfuConfirm(DfuConfirmScreen::new(PERMIT, DfuScanReport::new("1.4.0", "1.4.0", true))),
         Screen::DfuProgress(DfuProgressScreen::new()),
-        Screen::DfuInstalling(DfuInstallingScreen::new()),
-        Screen::DfuUpdated(DfuUpdatedScreen::new("1.5.0")),
+        Screen::DfuInstalling(DfuInstallingScreen::new(PERMIT)),
+        Screen::DfuUpdated(DfuUpdatedScreen::new(PERMIT, "1.5.0")),
     ]);
     v.extend(plain(
         [
@@ -167,7 +171,7 @@ fn seeds(language: Language) -> Vec<Seed> {
     ));
     v.extend(plain(
         [MapTransferError::Storage, MapTransferError::Damaged, MapTransferError::NotAMap, MapTransferError::Refused]
-            .map(|e| Screen::MapTransfer(MapTransferScreen::new(MapTransfer::Failed(e))))
+            .map(|e| Screen::MapTransfer(MapTransferScreen::new(PERMIT, MapTransfer::Failed(e))))
             .into(),
     ));
     v.extend(plain(
@@ -180,7 +184,7 @@ fn seeds(language: Language) -> Vec<Seed> {
             Alert::SettingsNotSaved,
             Alert::StorageLost,
         ]
-        .map(|alert| Screen::Warning(WarningScreen::new(alert.into())))
+        .map(|alert| Screen::Warning(WarningScreen::new(PERMIT, alert.into())))
         .into(),
     ));
     v.extend(plain(
@@ -192,12 +196,12 @@ fn seeds(language: Language) -> Vec<Seed> {
             DfuScanError::TooFragmented,
             DfuScanError::Untrusted,
         ]
-        .map(|e| Screen::DfuError(DfuErrorScreen::new(e)))
+        .map(|e| Screen::DfuError(DfuErrorScreen::new(PERMIT, e)))
         .into(),
     ));
     v.extend(plain(
         [DfuFailure::NotStarted, DfuFailure::Reverted]
-            .map(|why| Screen::DfuFailed(DfuFailedScreen::new(why, Some("1.5.0"))))
+            .map(|why| Screen::DfuFailed(DfuFailedScreen::new(PERMIT, why, Some("1.5.0"))))
             .into(),
     ));
     // The button lesson changes its foot hint once all four buttons are pressed.

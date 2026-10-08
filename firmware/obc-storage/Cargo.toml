@@ -7,15 +7,15 @@ description = "Board-agnostic no_std flat-store mechanics over a generic block d
 
 [dependencies]
 # Shared object codecs and byte-source traits used by flat-store readers and metadata.
-obc-formats = { path = "../obc-formats" }
+obc-formats = { workspace = true }
 
-obc-crc = { path = "../obc-crc" }
+obc-crc = { workspace = true }
 
 # Bounded mutation batches for the flat-store wire adapter.
-heapless = "0.8"
+heapless = { workspace = true }
 
 # The transport-free v4 store seam implemented by `flat::wire`.
-obc-link = { path = "../obc-link" }
+obc-link = { workspace = true }
 
 [dev-dependencies]
 # The read cutover's pin (FS7.5-c2, #1420): `flat::map_read` commits a real OBCM map into a flat
@@ -24,8 +24,10 @@ obc-link = { path = "../obc-link" }
 # image resolves `obc-storage` without either, and the alternative (asserting field values instead
 # of comparing two paths over one array of bytes) would be a weaker check that still needed the
 # reader to write.
-obc-reader = { path = "../obc-reader" }
-obcm-testkit = { path = "../../host/obcm-testkit" }
+obc-reader = { workspace = true }
+obcm-testkit = { workspace = true }
+# Catalog-load equivalence uses the production route and trip decoders.
+obc-route = { workspace = true }
 
 [features]
 default = []

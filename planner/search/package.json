@@ -1,0 +1,22 @@
+{
+  "name": "@obc/planner-search",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:query": "UV_PROJECT_ENVIRONMENT=\"$PWD/.venv\" uv run --locked --project ../.. --group search-test python -m pytest -q query/test_decode.py query/test_artifacts.py",
+    "test:data": "node test/data.mjs",
+    "test:model": "UV_PROJECT_ENVIRONMENT=\"$PWD/.venv\" uv run --locked --project ../.. --group search-runtime python query/evaluate.py runtime:data/model"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "0.5.1",
+    "opening_hours": "3.11.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

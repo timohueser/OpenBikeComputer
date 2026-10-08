@@ -8,6 +8,7 @@ use obc_render::{
     Surface,
 };
 
+use crate::card_scheduler::CardPermit;
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Version};
 use crate::input::Gesture;
 use crate::Msg;
@@ -76,7 +77,7 @@ pub struct DfuConfirmScreen {
 }
 
 impl DfuConfirmScreen {
-    pub fn new(report: DfuScanReport) -> Self {
+    pub(crate) fn new(_permit: CardPermit, report: DfuScanReport) -> Self {
         DfuConfirmScreen { report, actions: ActionRows::new(0) }
     }
 
@@ -205,12 +206,14 @@ impl DfuProgressScreen {
 /// The last frame the app paints before the arm's warm reset. The bootloader does not draw, but it
 /// keeps the COM wave alive, so the Memory-in-Pixel panel holds this frame through the whole flash.
 /// Everything on the card is static: a spinner would freeze at the reset and read as a wedge.
-#[derive(Debug, Default)]
-pub struct DfuInstallingScreen;
+#[derive(Debug)]
+pub struct DfuInstallingScreen {
+    _permit: CardPermit,
+}
 
 impl DfuInstallingScreen {
-    pub fn new() -> Self {
-        DfuInstallingScreen
+    pub(crate) fn new(_permit: CardPermit) -> Self {
+        DfuInstallingScreen { _permit }
     }
 
     pub fn handle(&mut self, _g: Gesture, _cx: &mut Ctx) -> Transition {
@@ -245,13 +248,13 @@ pub struct DfuErrorScreen {
 
 impl DfuErrorScreen {
     /// A scan rejection card.
-    pub fn new(error: DfuScanError) -> Self {
+    pub(crate) fn new(_permit: CardPermit, error: DfuScanError) -> Self {
         DfuErrorScreen { reason: DfuErrorReason::Scan(error) }
     }
 
     /// An install-drain failure card. A re-scan bucket normalises to a scan reason, so both paths
     /// share the scan copy.
-    pub fn new_install(error: DfuInstallError) -> Self {
+    pub(crate) fn new_install(_permit: CardPermit, error: DfuInstallError) -> Self {
         let reason = match error {
             DfuInstallError::Scan(e) => DfuErrorReason::Scan(e),
             other => DfuErrorReason::Install(other),
@@ -303,7 +306,7 @@ pub struct DfuUpdatedScreen {
 }
 
 impl DfuUpdatedScreen {
-    pub fn new(version: &str) -> Self {
+    pub(crate) fn new(_permit: CardPermit, version: &str) -> Self {
         let mut v = Version::new();
         for ch in version.chars() {
             if v.push(ch).is_err() {
@@ -340,7 +343,7 @@ pub struct DfuFailedScreen {
 }
 
 impl DfuFailedScreen {
-    pub fn new(why: DfuFailure, staged: Option<&str>) -> Self {
+    pub(crate) fn new(_permit: CardPermit, why: DfuFailure, staged: Option<&str>) -> Self {
         DfuFailedScreen { why, staged: staged.map(crate::dfu::clamp) }
     }
 
@@ -375,6 +378,7 @@ impl DfuFailedScreen {
 mod tests {
     use super::*;
     use crate::activity::{Activity, DfuAction};
+    use crate::card_scheduler::TEST_PERMIT as PERMIT;
     use crate::screen::test_ctx;
     use crate::settings::Settings;
     use crate::{AppState, Mode};
@@ -412,7 +416,7 @@ mod tests {
 
     #[test]
     fn confirm_install_posts_and_shows_progress() {
-        let mut scr = DfuConfirmScreen::new(report("v1", "v2", false));
+        let mut scr = DfuConfirmScreen::new(PERMIT, report("v1", "v2", false));
         let (t, posted) = run(&mut |cx| scr.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Replace(Screen::DfuProgress(_))), "Install swaps to progress");
         assert_eq!(posted, Some(DfuAction::Install), "and arms via the install one-shot");
@@ -420,13 +424,13 @@ mod tests {
 
     #[test]
     fn confirm_cancel_and_back_pop_without_arming() {
-        let mut scr = DfuConfirmScreen::new(report("v1", "v2", false));
+        let mut scr = DfuConfirmScreen::new(PERMIT, report("v1", "v2", false));
         let (_, _) = run(&mut |cx| scr.handle(Gesture::Step(1), cx));
         let (t, posted) = run(&mut |cx| scr.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop), "Cancel pops");
         assert_eq!(posted, None, "and arms nothing");
 
-        let mut scr = DfuConfirmScreen::new(report("v1", "v2", false));
+        let mut scr = DfuConfirmScreen::new(PERMIT, report("v1", "v2", false));
         let (t, posted) = run(&mut |cx| scr.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop), "Back cancels");
         assert_eq!(posted, None);
@@ -434,21 +438,21 @@ mod tests {
 
     #[test]
     fn error_card_dismisses() {
-        let mut scr = DfuErrorScreen::new(DfuScanError::TooFragmented);
+        let mut scr = DfuErrorScreen::new(PERMIT, DfuScanError::TooFragmented);
         assert_eq!(scr.reason(), DfuErrorReason::Scan(DfuScanError::TooFragmented));
         let (t, _) = run(&mut |cx| scr.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
 
-        let scr = DfuErrorScreen::new_install(DfuInstallError::Recording);
+        let scr = DfuErrorScreen::new_install(PERMIT, DfuInstallError::Recording);
         assert_eq!(scr.reason(), DfuErrorReason::Install(DfuInstallError::Recording));
 
-        let scr = DfuErrorScreen::new_install(DfuInstallError::Scan(DfuScanError::Damaged));
+        let scr = DfuErrorScreen::new_install(PERMIT, DfuInstallError::Scan(DfuScanError::Damaged));
         assert_eq!(scr.reason(), DfuErrorReason::Scan(DfuScanError::Damaged));
     }
 
     #[test]
     fn toast_dismisses() {
-        let mut scr = DfuUpdatedScreen::new("v2.0.0-0-gccc");
+        let mut scr = DfuUpdatedScreen::new(PERMIT, "v2.0.0-0-gccc");
         let (t, _) = run(&mut |cx| scr.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop));
     }

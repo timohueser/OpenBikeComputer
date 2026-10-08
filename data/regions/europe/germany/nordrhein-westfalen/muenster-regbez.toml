@@ -1,2 +1,5 @@
 name = "Regierungsbezirk Münster"
 kind = "geofabrik"
+areas = ["europe/germany/nordrhein-westfalen/muenster-regbez"]
+countries = ["DE"]
+time_zone = "Europe/Berlin"

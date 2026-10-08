@@ -3,7 +3,7 @@
 //! ```text
 //! obc-bake regions [--regions DIR]
 //! obc-bake bake --out TREE --base-url URL [REGION…] [--skin ID]… [flags]
-//! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--generated-at TS] [--dry-run]
+//! obc-bake publish TREE --base-url URL [--target dir:PATH|r2] [--dry-run]
 //! obc-bake verify TREE [--sample N]
 //! obc-bake check-obcm-version [--catalog-url URL]
 //! ```
@@ -12,7 +12,6 @@
 //! re-run, or done on a different machine from the one holding the credentials. The tree in between
 //! is the interface, and it is exactly the tree `obc-pack catalog` walks.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -21,12 +20,9 @@ use obc_pack::catalog::CatalogOptions;
 
 const USAGE: &str = "\
 usage:
-  obc-bake landmark-candidates --osm FILE --out FILE
-  obc-bake landmark-content --snapshot FILE --boundary GEOJSON --out DIR
-  obc-bake landmark-photo-requests --snapshot FILE --boundary GEOJSON --out DIR [--qids FILE]
-  obc-bake peak-candidates --osm FILE --boundary GEOJSON --out FILE
-  obc-bake peaks --snapshot FILE --boundary GEOJSON --out DIR
-      Compile pinned article and image captures offline for the map content stage.
+  obc-bake landmark-candidates | landmark-content | landmark-photo-requests | peak-candidates
+           | peaks | boundary
+      The offline selection and compile commands that tools/landmark_capture.py calls back.
 
   obc-bake regions [--regions DIR]
       List the Geofabrik regions in data/regions/: the regions a bake can select.
@@ -38,13 +34,12 @@ usage:
         --schema-revision N  store revision (default: 1)
         --bands FILE         band table (default: OBCA recommendation)
         --skin ID            skin to publish (repeatable; default: all skins/)
-        --generated-at TS    pin the catalog's generated_at
         --base-url URL       catalog object base (default: /obc-bake while staging)
         --regions DIR        region files (default: data/regions/ of the repository)
         --presets-dir DIR    schema.json + skins/ (default: builder/presets)
         --source SOURCE      directory of extracts (default: Geofabrik from the store), or planet
-                             PBF file with --all (default: osm-planet and osm-replication)
-        --cache DIR          planet with its diffs applied, shards and DEM tile links
+                             PBF file with --all (required)
+        --cache DIR          planet shards and DEM tile links
         --force              re-bake even when unchanged
         --no-land            skip land generation
         --chunk-size N       override schema chunk_size
@@ -90,7 +85,6 @@ usage:
         --allow-short-reference publish such cells anyway, and warn
         --regions DIR           region files (default: data/regions/ of the repository)
         --base-url URL          catalog object base
-        --generated-at TS       pin the catalog's generated_at
         --cache DIR             DEM tile links
         --source DIR            directory of .poly files (default: Geofabrik from the store)
         --force                 re-bake even when unchanged
@@ -115,7 +109,6 @@ usage:
   obc-bake publish TREE --base-url URL [flags]
       Regenerate and publish content first, then replace catalog.json last.
         --target TARGET      `dir:PATH` (default: dry run) or `r2`
-        --generated-at TS    pin generated_at (RFC 3339 UTC)
         --dry-run            generate + plan, upload nothing
         --verbose            report per-object upload and verification progress
 
@@ -130,25 +123,23 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("");
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
-    let result = match command {
-        "landmark-candidates" => run_landmark_candidates(rest),
-        "landmark-content" => run_landmark_content(rest),
-        "landmark-photo-requests" => run_landmark_photo_requests(rest),
-        "landmarks" => run_landmark_stage(rest),
-        "peaks" => run_peaks(rest),
-        "peak-candidates" => run_peak_candidates(rest),
-        "regions" => run_regions(rest),
-        "bake" => run_bake(rest),
-        "terrain" => run_terrain(rest),
-        "publish" => run_publish(rest),
-        "verify" => run_verify(rest),
-        "check-obcm-version" => run_guard(rest),
-        "--help" | "-h" | "help" => {
-            println!("{USAGE}");
-            return ExitCode::SUCCESS;
-        }
-        "" => Err(USAGE.to_string()),
-        other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+    let result = match (command, obc_pack::landmarks::select::run(&args)) {
+        (_, Some(result)) => result,
+        (command, None) => match command {
+            "landmarks" => run_landmark_stage(rest),
+            "regions" => run_regions(rest),
+            "bake" => run_bake(rest),
+            "terrain" => run_terrain(rest),
+            "publish" => run_publish(rest),
+            "verify" => run_verify(rest),
+            "check-obcm-version" => run_guard(rest),
+            "--help" | "-h" | "help" => {
+                println!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            "" => Err(USAGE.to_string()),
+            other => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -238,7 +229,6 @@ fn run_bake(args: &[String]) -> Result<(), String> {
             "schema-revision",
             "bands",
             "skin",
-            "generated-at",
             "regions",
             "presets-dir",
             "source",
@@ -292,8 +282,8 @@ fn run_cell_bake(
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
 
     let bands = match flags.get("bands") {
-        Some(path) => obc_pack::grid::BandTable::load(path)?,
-        None => obc_pack::grid::BandTable::recommended(),
+        Some(path) => obc_map_core::grid::BandTable::load(path)?,
+        None => obc_map_core::grid::BandTable::recommended(),
     };
     let revision: u32 = match flags.get("schema-revision") {
         Some(v) => v.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
@@ -342,7 +332,7 @@ fn run_cell_bake(
                 allow_short_reference: flags.has("allow-short-reference"),
             },
         }
-        .run(&obc_pack::progress::Progress::stdout())?;
+        .run(&obc_map_core::progress::Progress::stdout())?;
         print!("{}", summary.render());
         // The credit is a licence obligation, printed wherever the dataset was used.
         println!("{}\n", obc_data::sources::attribution("copernicus-glo-30"));
@@ -377,7 +367,7 @@ fn run_cell_bake(
             peaks: flags.get("peaks").map(PathBuf::from),
         },
     };
-    let summary = bakery.run(&obc_pack::progress::Progress::stdout())?;
+    let summary = bakery.run(&obc_map_core::progress::Progress::stdout())?;
     print!("{}", summary.render());
     if let Some(path) = flags.get("summary-json") {
         let json = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
@@ -411,25 +401,25 @@ fn run_planet_bake(
     let loaded = obc_bake::presets::load_skins(presets_dir, (!skin_ids.is_empty()).then_some(&skin_ids))?;
     let skins: Vec<&obc_bake::presets::StyleDoc> = loaded.iter().collect();
     let bands = match flags.get("bands") {
-        Some(path) => obc_pack::grid::BandTable::load(path)?,
-        None => obc_pack::grid::BandTable::recommended(),
+        Some(path) => obc_map_core::grid::BandTable::load(path)?,
+        None => obc_map_core::grid::BandTable::recommended(),
     };
     let revision: u32 = match flags.get("schema-revision") {
         Some(value) => value.parse().map_err(|_| "--schema-revision needs a number".to_string())?,
         None => 1,
     };
     let cache = flags.get("cache").map(PathBuf::from).unwrap_or_else(default_cache_dir);
-    let progress = obc_pack::progress::Progress::stdout();
-    // Fail before an 80+ GB transfer when Osmium, which applies the diffs and shards the planet, is
-    // unavailable. Tests inject the runner at the library boundary; the CLI uses the real executable.
+    let progress = obc_map_core::progress::Progress::stdout();
+    // Fail before the planet is read when Osmium, which shards it, is unavailable. Tests inject the
+    // runner at the library boundary; the CLI uses the real executable.
     let runner = obc_bake::planet::OsmiumRunner::default();
     runner.check()?;
-    obc_bake::planet::check_pinned(flags.get("source"))?;
+    let source = flags.get("source").ok_or("`--all` needs a planet PBF file: give --source FILE")?;
     let polygons = obc_bake::source::GeofabrikExtracts;
     let region_presets = obc_bake::planet::resolve_region_presets(&regions, &polygons, &bands, &progress)?;
     // Held until the bake has read the planet: the sharder below reads it too.
     let _planet = obc_bake::planet::lock_cache(&cache, &progress)?;
-    let input = obc_bake::planet::resolve_planet(flags.get("source"), &cache, &runner, &progress)?;
+    let input = obc_bake::planet::resolve_planet(source, &progress)?;
     let shards = obc_bake::planet::PlanetSharder { input: &input, cache: &cache, runner: &runner }.run(&progress)?;
     let cutter = obc_bake::cells::ObcCutter {
         no_land: flags.has("no-land"),
@@ -484,7 +474,7 @@ fn ensure_dem_sources(
     cache: &Path,
     cell_log2: u8,
 ) -> Result<PathBuf, String> {
-    let progress = obc_pack::progress::Progress::stdout();
+    let progress = obc_map_core::progress::Progress::stdout();
     let mut coverages = Vec::new();
     for region in regions {
         let poly = source.fetch_poly(region, &progress)?;
@@ -511,7 +501,7 @@ fn ensure_dem_sources(
 /// The source box of the terrain cells the coverages select.
 fn terrain_source_bbox(coverages: &[obc_bake::coverage::Coverage], cell_log2: u8) -> Result<obc_dem::BboxUdeg, String> {
     let log2 = u32::from(cell_log2);
-    obc_pack::grid::CellId::new(log2, 0, 0)?;
+    obc_map_core::grid::CellId::new(log2, 0, 0)?;
     obc_bake::terrain::source_bbox(coverages.iter().flat_map(|coverage| coverage.cells(log2)))
         .ok_or_else(|| "no region resolved to a terrain cell".into())
 }
@@ -543,7 +533,6 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
             "source",
             "cache",
             "base-url",
-            "generated-at",
         ],
     )?;
     let out = PathBuf::from(flags.get("out").unwrap_or("obc-bake"));
@@ -596,7 +585,7 @@ fn run_terrain(args: &[String]) -> Result<(), String> {
             allow_short_reference: flags.has("allow-short-reference"),
         },
     }
-    .run(&obc_pack::progress::Progress::stdout())?;
+    .run(&obc_map_core::progress::Progress::stdout())?;
     print!("{}", summary.render());
 
     // The catalog generator reads the tree's `schema.json`, the cell store's document, which a tree
@@ -623,10 +612,7 @@ fn finish_tree(flags: &Flags, out: &Path) -> Result<(), String> {
         .map(str::to_owned)
         .or_else(|| std::env::var("OBC_MAPS_BASE_URL").ok().filter(|value| !value.trim().is_empty()))
         .unwrap_or_else(|| "/obc-bake".into());
-    let opts = obc_pack::catalog::CatalogOptions::new(
-        &base_url,
-        flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string),
-    );
+    let opts = obc_pack::catalog::CatalogOptions::new(&base_url);
     let seed = obc_pack::catalog::generate(out, &opts)?;
     let previews = obc_bake::previews::generate(out, &seed.root)?;
     let generated = obc_pack::catalog::generate(out, &opts)?;
@@ -669,7 +655,7 @@ fn run_verify(args: &[String]) -> Result<(), String> {
 }
 
 fn run_publish(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["dry-run", "verbose"], &["base-url", "target", "generated-at"])?;
+    let (flags, positional) = Flags::parse(args, &["dry-run", "verbose"], &["base-url", "target"])?;
     let tree = positional.first().ok_or_else(|| format!("publish needs a bake tree\n\n{USAGE}"))?;
     let base_url = flags
         .get("base-url")
@@ -690,12 +676,11 @@ fn run_publish(args: &[String]) -> Result<(), String> {
         other => return Err(format!("unknown --target `{other}` (expected `r2` or `dir:PATH`)")),
     };
 
-    let generated_at = flags.get("generated-at").map_or_else(obc_pack::catalog::now_timestamp, str::to_string);
     println!("publishing {tree} → {}{}", store.describe(), if dry_run { " (dry run)" } else { "" });
     // R2 publishes are long enough that silence looks like a hang. Local directory publishes stay
     // quiet unless explicitly requested.
     let publish_opts = PublishOptions { dry_run, verbose: flags.has("verbose") || target == "r2" };
-    let opts = CatalogOptions::new(&base_url, generated_at);
+    let opts = CatalogOptions::new(&base_url);
     let report = obc_bake::publish::publish(Path::new(tree), store.as_ref(), &opts, publish_opts)?;
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
@@ -752,7 +737,7 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
         capture: &capture,
         opts: obc_bake::landmarks::LandmarkBakeOptions { out, cache, force: flags.has("force"), no_capture },
     }
-    .run(&obc_pack::progress::Progress::stdout())?;
+    .run(&obc_map_core::progress::Progress::stdout())?;
     print!("{}", summary.render());
     if summary.ok() {
         return Ok(());
@@ -772,104 +757,6 @@ fn run_landmark_stage(args: &[String]) -> Result<(), String> {
         problems.push(format!("{} region(s) failed — see the warning(s) above", summary.warnings.len()));
     }
     Err(problems.join("; "))
-}
-
-fn run_landmark_content(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("landmark-content accepts named flags only".into());
-    }
-    let snapshot = flags.get("snapshot").ok_or("landmark-content requires --snapshot FILE")?;
-    let boundary = flags.get("boundary").ok_or("landmark-content requires --boundary GEOJSON")?;
-    let output = flags.get("out").ok_or("landmark-content requires --out DIR")?;
-    let content = obc_pack::landmarks::compile(
-        Path::new(snapshot),
-        Path::new(boundary),
-        Path::new(output),
-        flags.has("photo-requests"),
-    )?;
-    println!(
-        "{} candidates, {} texts, {} photos ({} RGB222 bytes); {} omissions",
-        content.counts.candidates,
-        content.counts.texts,
-        content.counts.images,
-        content.counts.photo_bytes,
-        content.omissions.len()
-    );
-    Ok(())
-}
-
-fn run_landmark_photo_requests(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["snapshot", "boundary", "out", "qids"])?;
-    if !positional.is_empty() {
-        return Err("landmark-photo-requests accepts named flags only".into());
-    }
-    let qids = flags
-        .get("qids")
-        .map(|path| {
-            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            let values: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
-            let qids: BTreeSet<_> = values.iter().cloned().collect();
-            if qids.len() != values.len()
-                || qids
-                    .iter()
-                    .any(|qid| qid.len() < 2 || !qid.starts_with('Q') || !qid[1..].chars().all(|c| c.is_ascii_digit()))
-            {
-                return Err(String::from("photo request QIDs must be unique Q followed by digits"));
-            }
-            Ok(qids)
-        })
-        .transpose()?;
-    let snapshot = Path::new(flags.get("snapshot").ok_or("landmark-photo-requests requires --snapshot FILE")?);
-    let boundary = Path::new(flags.get("boundary").ok_or("landmark-photo-requests requires --boundary GEOJSON")?);
-    let output = Path::new(flags.get("out").ok_or("landmark-photo-requests requires --out DIR")?);
-    let result = obc_pack::landmarks::photo_requests(snapshot, boundary, output, qids.as_ref())?;
-    println!("{} photo request(s)", result.requests.len());
-    Ok(())
-}
-
-fn run_landmark_candidates(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["osm", "out"])?;
-    if !positional.is_empty() {
-        return Err("landmark-candidates accepts named flags only".into());
-    }
-    obc_pack::landmarks::discover::discover(
-        Path::new(flags.get("osm").ok_or("landmark-candidates requires --osm FILE")?),
-        Path::new(flags.get("out").ok_or("landmark-candidates requires --out FILE")?),
-    )
-}
-
-fn run_peak_candidates(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &[], &["osm", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("peak-candidates accepts named flags only".into());
-    }
-    obc_pack::landmarks::peaks::discover(
-        Path::new(flags.get("osm").ok_or("peak-candidates requires --osm FILE")?),
-        Path::new(flags.get("boundary").ok_or("peak-candidates requires --boundary GEOJSON")?),
-        Path::new(flags.get("out").ok_or("peak-candidates requires --out FILE")?),
-    )
-}
-fn run_peaks(args: &[String]) -> Result<(), String> {
-    let (flags, positional) = Flags::parse(args, &["photo-requests"], &["snapshot", "boundary", "out"])?;
-    if !positional.is_empty() {
-        return Err("peaks accepts named flags only".into());
-    }
-    let content = obc_pack::landmarks::peaks::compile(
-        Path::new(flags.get("snapshot").ok_or("peaks requires --snapshot FILE")?),
-        Path::new(flags.get("boundary").ok_or("peaks requires --boundary GEOJSON")?),
-        Path::new(flags.get("out").ok_or("peaks requires --out DIR")?),
-        flags.has("photo-requests"),
-    )?;
-    println!(
-        "{} peak candidates, {} articles, {} photos, {} associations; {} omissions",
-        content.counts.candidates,
-        content.counts.texts,
-        content.counts.images,
-        content.associations.len(),
-        content.omissions.len()
-    );
-    Ok(())
 }
 
 #[cfg(test)]

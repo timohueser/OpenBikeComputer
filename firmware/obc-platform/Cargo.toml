@@ -33,7 +33,7 @@ input-wait = ["dep:embedded-hal-async", "dep:embassy-futures"]
 [dependencies]
 # The dependency-light semantic HAL the button debouncer and source/handoff adapters speak.
 # Adapters depend on the port contract directly, never upward on application/UI policy.
-obc-ports = { path = "../obc-ports" }
+obc-ports = { workspace = true }
 
 # The GPIO trait the debouncer is generic over (`InputPin`). 1.0 — embassy-nrf's
 # `gpio::Input` implements this, so `ButtonInput` is board-agnostic.
@@ -50,9 +50,9 @@ embassy-futures = { version = "0.1", optional = true }
 
 # The small event ring the debouncer buffers between `update` and the app's drain.
 # Same 0.8 the rest of the OBC stack uses.
-heapless = "0.8"
+heapless = { workspace = true }
 
-obc-map-scene = { path = "../obc-map-scene" }
+obc-map-scene = { workspace = true }
 
 # `Signal` for the `debug-link` fresh-fix hand-off (transport task → app poll). Pinned to the 0.8 the
 # nRF board crate already resolves so the board build shares one embassy-sync. Optional — only

@@ -1,0 +1,47 @@
+[package]
+name = "obc-builder-bridge"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The builder's shared Rust core and browser bindings"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+test-device = ["dep:obc-flat-device", "obc-link/std", "dep:obc-storage"]
+
+[dependencies]
+obc-route = { workspace = true }
+obc-formats = { workspace = true }
+obcm-assemble = { workspace = true }
+obc-map-scene = { workspace = true }
+obc-reader = { workspace = true, features = ["alloc"] }
+obc-render = { workspace = true }
+obc-host-core = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true }
+obc-flat-device = { workspace = true, optional = true }
+obc-link = { workspace = true, features = ["client"] }
+obc-storage = { workspace = true, features = ["std"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+console_error_panic_hook = { workspace = true }
+
+[dev-dependencies]
+obc-draw = { workspace = true }
+obc-network = { workspace = true }
+obc-bake = { workspace = true }
+obc-places = { workspace = true }
+obc-map-core = { workspace = true }
+obc-ports = { workspace = true }
+obcm-testkit = { workspace = true }
+# The fixture cutter uses GEOS and must stay outside the production graph.
+obc-pack = { workspace = true }
+obc-vectors = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-Oz']

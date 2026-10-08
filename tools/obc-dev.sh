@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared helpers for the `obc` dev tasks (sourced by the recipes in ../justfile).
+# Shared helpers for the `obc` dev tasks (sourced by the recipes in justfile).
 # Not meant to be run directly. Relies on $OBC_ROOT being exported by the justfile.
 
 # ---- pretty output (only colorize a real terminal) --------------------------

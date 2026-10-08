@@ -3,6 +3,7 @@
 use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 use crate::engine::runs::{self, Details, Event, Outcome, RunStep, Summary};
 use crate::store::Store;
@@ -16,16 +17,45 @@ pub struct Runs {
     /// Write the events of RUN as they come, until it ends. The exit status is 1 when it failed.
     #[arg(long, requires = "run")]
     follow: bool,
+    /// Stop admitting work and drain current work. An apply stops before its next phase.
+    #[arg(long, requires = "run", conflicts_with_all = ["follow", "result"])]
+    stop: bool,
+    /// Show the completed operation output. An unresolved run has no result.
+    #[arg(long, requires = "run", conflicts_with = "follow")]
+    result: bool,
 }
 
 pub fn run(args: Runs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let Some(id) = args.run else {
-        return list(&runs::list(&store)?, json);
+        return list(&store, json);
     };
     runs::check_id(&id).map_err(|e| Code::Usage.error(e))?;
     if !store.run(&id).is_file() {
         return Err(Code::Usage.error(format!("no run `{id}`")));
+    }
+    if crate::operation::read(&store, &id)?.is_some() {
+        if args.stop {
+            crate::operation::stop(&store, &id).map_err(|message| Code::Blocked.error(message).with_run(&id))?;
+        }
+        if args.follow {
+            return watch(&store, &id, json);
+        }
+        let view = super::operation_cli::view(&store, &id)?;
+        if args.result {
+            if !matches!(view.operation, Some(crate::operation::Status::Finished { .. })) {
+                return Err(Code::Blocked.error("the operation has no final result yet").with_run(&id));
+            }
+            return print_json(
+                &view.result.ok_or_else(|| {
+                    Code::Blocked.error("the final worker has not sealed its output yet").with_run(&id)
+                })?,
+            );
+        }
+        return show_view(&view, json);
+    }
+    if args.stop || args.result {
+        return Err(Code::Usage.error("this run has no detached operation"));
     }
     if args.follow {
         return follow(&store, &id, json);
@@ -37,16 +67,35 @@ pub fn run(args: Runs, json: bool) -> Result<(), Error> {
 #[derive(Serialize, JsonSchema)]
 pub struct RunList<'a> {
     runs: &'a [Summary],
+    operations: BTreeMap<String, crate::operation::Status>,
+    observation_errors: BTreeMap<String, String>,
 }
 
-fn list(runs: &[Summary], json: bool) -> Result<(), Error> {
+fn list(store: &Store, json: bool) -> Result<(), Error> {
+    let mut summaries = runs::list(store)?;
+    let mut operations = BTreeMap::new();
+    let mut observation_errors = BTreeMap::new();
+    for summary in &mut summaries {
+        if crate::operation::read(store, &summary.id)?.is_some() {
+            let view = super::operation_cli::view(store, &summary.id)?;
+            *summary = view.run.summary;
+            if let Some(status) = view.operation {
+                operations.insert(summary.id.clone(), status);
+            }
+            if let Some(error) = view.observation_error {
+                observation_errors.insert(summary.id.clone(), error);
+            }
+        }
+    }
+    let runs = summaries.as_slice();
     if json {
-        return print_json(&RunList { runs });
+        return print_json(&RunList { runs, operations, observation_errors });
     }
     let mut table = vec![cells(["RUN", "COMMAND", "", "TOOK", "FETCHED", "BUILT"])];
     for run in runs {
         let took = run.wall_ms.map_or("—".into(), duration);
-        let (command, mark) = (run.command.clone(), mark(run.outcome).into());
+        let (command, mark) =
+            (run.command.clone(), operations.get(&run.id).map_or_else(|| mark(run.outcome).into(), state));
         table.push(vec![run.id.clone(), command, mark, took, bytes(run.bytes_fetched), bytes(run.bytes_built)]);
     }
     print_table(&table);
@@ -60,6 +109,9 @@ fn show(run: &Details, json: bool) -> Result<(), Error> {
     let summary = &run.summary;
     let took = summary.wall_ms.map_or("—".into(), duration);
     println!("{}  {}  {}  {took}", summary.id, summary.command, mark(summary.outcome));
+    if let Some(phase) = run.phase {
+        println!("phase {phase:?}; {} remote writes acknowledged", run.published.len());
+    }
     if let Some(error) = &run.error {
         println!("{error}");
     }
@@ -115,6 +167,8 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
             "{}",
             match event {
                 Event::Started { command, at } => format!("started {command} at {at}"),
+                Event::Phase { phase } => format!("phase {phase:?}"),
+                Event::Published { mutation } => serde_json::to_string(mutation).unwrap(),
                 Event::StepStarted { step } => format!("{step} started"),
                 Event::StepFinished { step, reused: true, .. } => format!("{step} reused"),
                 Event::StepFinished { step, receipt, .. } => {
@@ -124,8 +178,13 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
                 Event::FetchStarted { source, version, params } => {
                     format!("{} fetch started", fetched(source, version, params))
                 }
-                Event::FetchFinished { source, version, params, bytes: size, wall_ms } => {
-                    format!("{} fetched in {}, {}", fetched(source, version, params), duration(*wall_ms), bytes(*size))
+                Event::FetchFinished { source, version, params, resolved, bytes: size, wall_ms } => {
+                    format!(
+                        "{} fetched {resolved} in {}, {}",
+                        fetched(source, version, params),
+                        duration(*wall_ms),
+                        bytes(*size)
+                    )
                 }
                 Event::FetchFailed { source, version, params, error } => {
                     format!("{} fetch failed: {error}", fetched(source, version, params))
@@ -141,6 +200,55 @@ fn follow(store: &Store, id: &str, json: bool) -> Result<(), Error> {
         return Err(Code::RunFailed.error(format!("run {id} failed")));
     }
     Ok(())
+}
+
+fn state(status: &crate::operation::Status) -> String {
+    use crate::operation::Status;
+    match status {
+        Status::Starting => "starting",
+        Status::Running => "running",
+        Status::Stopping => "stopping after current work",
+        Status::Stopped => "stopped",
+        Status::Interrupted => "interrupted",
+        Status::Finished { ok: true } => "complete",
+        Status::Finished { ok: false } => "failed",
+    }
+    .into()
+}
+
+fn show_view(view: &super::operation_cli::View, json: bool) -> Result<(), Error> {
+    if json {
+        return print_json(view);
+    }
+    if let Some(status) = &view.operation {
+        println!("{}: {}", view.run.summary.id, state(status));
+    }
+    if let Some(error) = &view.observation_error {
+        println!("{error}");
+    }
+    show(&view.run, false)
+}
+
+fn watch(store: &Store, run: &str, json: bool) -> Result<(), Error> {
+    let mut previous = String::new();
+    loop {
+        let view = super::operation_cli::view(store, run)?;
+        let current = serde_json::to_string(&view).map_err(|e| e.to_string())?;
+        if current != previous {
+            show_view(&view, json)?;
+            previous = current;
+        }
+        match view.operation {
+            Some(crate::operation::Status::Finished { ok: true }) => return Ok(()),
+            Some(
+                crate::operation::Status::Finished { ok: false }
+                | crate::operation::Status::Stopped
+                | crate::operation::Status::Interrupted,
+            ) => return Err(Code::RunFailed.error("operation did not complete").with_run(run)),
+            _ => {}
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 }
 
 /// The time of a step, its change since the last run that built it, its peak RAM and its output.

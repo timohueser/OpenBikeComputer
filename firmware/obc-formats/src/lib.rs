@@ -15,6 +15,7 @@ pub mod articles;
 pub mod assistant;
 pub mod bike;
 pub mod cache;
+pub mod grid;
 pub mod io;
 pub mod obcm;
 pub mod obcr;

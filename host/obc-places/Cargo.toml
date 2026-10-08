@@ -7,4 +7,10 @@ license = "GPL-3.0-only"
 description = "Shared OSM place selection and coordinates for planner and device builders"
 
 [dependencies]
-obc-formats = { path = "../../firmware/obc-formats" }
+obc-pbf = { workspace = true }
+osmpbf = "0.3.8"
+obc-formats = { workspace = true }
+obc-render = { workspace = true }
+unicode-normalization = { workspace = true }
+obc-map-core = { workspace = true }
+obc-elevation = { workspace = true }

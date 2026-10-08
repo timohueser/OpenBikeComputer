@@ -20,6 +20,7 @@ mod collect;
 mod fill;
 mod font_data;
 mod overlay;
+mod sort;
 
 mod stroke;
 pub mod surface;
