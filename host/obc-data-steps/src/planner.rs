@@ -359,6 +359,23 @@ impl Planner {
                 &["pois.jsonl.zst", "addresses.jsonl.zst"],
             )
         };
+        let content = crate::maps::content_declarations(env, store, &selection, &obc_pack::step::geos_libraries())?;
+        let content_inputs = || {
+            content
+                .steps
+                .iter()
+                .map(|step| step.name.clone())
+                .chain(content.blocked.iter().map(|layer| layer.layer.clone()))
+                .map(|name| Input::Layer {
+                    files: vec![if name.contains("landmark-content") {
+                        "landmarks/content.json".into()
+                    } else {
+                        "peaks/peaks.json".into()
+                    }],
+                    name,
+                })
+                .collect::<Vec<_>>()
+        };
         // One search database per component: the POIs and the addresses.
         let search = |component: &str| {
             // writer.py imports pois.py or addresses.py by the component.
@@ -368,7 +385,9 @@ impl Planner {
             let files: Vec<&str> = files.iter().map(String::as_str).chain(RECORDS).collect();
             python(
                 &format!("planner/search/{component}"),
-                vec![Input::layer(records.name.clone())],
+                std::iter::once(Input::layer(records.name.clone()))
+                    .chain((component == "pois").then(content_inputs).into_iter().flatten())
+                    .collect(),
                 json!({
                     "component": component,
                     "region": name,
@@ -392,6 +411,7 @@ impl Planner {
             &["places.pmtiles"],
         );
         let mut steps = source_steps;
+        steps.extend(content.steps);
         steps.extend([
             osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
         ]);
@@ -538,7 +558,10 @@ impl Planner {
         match wanted.is_empty() {
             true => {
                 publish::bind(steps.last_mut().unwrap());
-                Ok(steps.into())
+                let mut listed: Steps = steps.into();
+                listed.blocked.extend(content.blocked);
+                listed.block_dependents();
+                Ok(listed)
             }
             false => Err(Unplanned::NeedsFetch(wanted)),
         }
@@ -827,7 +850,32 @@ mod tests {
         let area = [("area".into(), "europe/second".into())];
         let shape = "second\n1\n 7.82 47.99\n 7.85 47.99\n 7.85 48.02\n 7.82 48.02\n 7.82 47.99\nEND\nEND\n";
         fetched(&store, "geofabrik-poly", "2026-10-02", &area, &[("europe/second.poly".into(), shape.into())]);
-        fetched(&store, EXTRACTS, "2026-10-02", &area, &[("europe/second.osm.pbf".into(), "second".into())]);
+        let bytes = include_bytes!("../../obc-pack/tests/data/peak-discovery.osm.pbf");
+        let sha256 = obc_data::store::sha256_hex(bytes);
+        let file = store.partial("file");
+        obc_data::store::write_atomic(&file, bytes).unwrap();
+        store.insert(&file, &sha256).unwrap();
+        let name = "europe/second.osm.pbf";
+        let files = vec![obc_data::store::FileRecord {
+            name: name.into(),
+            url: format!("https://example.org/{name}"),
+            size: bytes.len() as u64,
+            sha256,
+            retrieved: String::new(),
+        }];
+        store
+            .put_snapshot(&obc_data::store::Snapshot { source: EXTRACTS.into(), version: "2026-10-02".into(), files })
+            .unwrap();
+        store
+            .put_requested(
+                EXTRACTS,
+                &obc_data::store::Requested {
+                    version: "2026-10-02".into(),
+                    params: area.to_vec(),
+                    files: vec![name.into()],
+                },
+            )
+            .unwrap();
         let region = parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/test','europe/second']\ncountries=['DE']\ntime_zone='Europe/Berlin'\n").unwrap();
         let env = env("ride", &[]);
         let steps = Planner
@@ -904,7 +952,9 @@ mod tests {
             "fonts/grid",
             "index",
         ];
-        assert_eq!(names, layers.map(|layer| format!("planner/{layer}")), "no optional layer is on");
+        let mut expected = layers.map(|layer| format!("planner/{layer}")).to_vec();
+        expected.splice(1..1, ["maps/landmark-content".into(), "maps/peak-content".into()]);
+        assert_eq!(names, expected, "content uses the same producers as device maps");
         let intermediate: Vec<&str> =
             steps.iter().filter(|step| step.client.is_none()).map(|step| step.name.as_str()).collect();
         assert_eq!(
@@ -926,11 +976,16 @@ mod tests {
                 "planner/basemap"
             ]
         );
-        let [source, osm, terrain, routing, ..] = &steps[..] else { unreachable!() };
+        let get = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
+        let (source, osm, terrain, routing) =
+            (get("planner/source/europe/test"), get("planner/osm"), get("planner/terrain"), get("planner/routing"));
         assert!(
             matches!(&osm.inputs[0], Input::Layer { name, files } if name == "planner/source/europe/test" && files == &["source.osm.pbf"])
         );
         let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
+        for name in ["maps/landmark-content", "maps/peak-content"] {
+            assert!(pois.inputs.iter().any(|input| matches!(input,Input::Layer {name:found,..} if found == name)));
+        }
         let Input::Snapshot { source, version, params, .. } = &source.inputs[0] else { panic!("not a snapshot") };
         assert_eq!((source.as_str(), version.as_str(), params), (EXTRACTS, "2026-10-02", &area));
         // `terrain_coverage` of `tools/planner_bake.py` with a sun layer of 30 km.
