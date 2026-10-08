@@ -117,9 +117,10 @@ impl Scan {
             self.status = self.query.step(reader, Some(route), 0, &mut self.hits);
         }
     }
-    fn take(&mut self) -> Option<CorridorPoi> {
+    fn take(&mut self, backwards: bool) -> Option<CorridorPoi> {
         if matches!(self.status, QueryProgress::Ready { .. }) {
-            let hit = self.hits.get(self.at)?.clone();
+            let index = if backwards { self.hits.len().checked_sub(self.at + 1)? } else { self.at };
+            let hit = self.hits.get(index)?.clone();
             self.at += 1;
             Some(hit)
         } else {
@@ -521,8 +522,17 @@ impl AheadState {
             let mut q =
                 query(standalone, window.start_m, window.end_m, 100, local).with_settlements(SETTLEMENT_CORRIDOR_M);
             if let Some(b) = self.boundary {
+                // At equal distance, authored waypoints precede map stops and the route end follows them.
                 q = q.starting_after(
-                    PlaceKey { distance_m: b.0.saturating_sub(window.start_m), source: SourceId(b.2), occurrence: b.0 },
+                    PlaceKey {
+                        distance_m: b.0.saturating_sub(window.start_m),
+                        source: SourceId(match b.1 {
+                            0 => 0,
+                            1 => b.2,
+                            _ => u64::MAX,
+                        }),
+                        occurrence: if b.1 == 2 { u32::MAX } else { b.0 },
+                    },
                     self.backwards,
                 );
             }
@@ -595,7 +605,7 @@ impl AheadState {
                 QueryProgress::Failed(e) => return Err(e),
                 _ => {}
             }
-            while let Some(p) = work.take() {
+            while let Some(p) = work.take(false) {
                 let row = self.candidate.as_mut().unwrap();
                 let Item::Settlement(stop, _) = &row.item else { unreachable!() };
                 if service_on_route(&p)
@@ -624,13 +634,7 @@ impl AheadState {
             QueryProgress::Failed(e) => return Err(e),
             _ => {}
         }
-        let hit = if self.backwards && scan.at < scan.hits.len() {
-            let p = scan.hits[scan.hits.len() - 1 - scan.at].clone();
-            scan.at += 1;
-            Some(p)
-        } else {
-            scan.take()
-        };
+        let hit = scan.take(self.backwards);
         if let Some(p) = hit {
             let key = Key(p.dist_along_m, 1, p.poi.metadata.source.0);
             if !self.keep(key) {
@@ -719,18 +723,27 @@ impl AheadState {
             QueryProgress::Failed(e) => return Err(e),
             _ => {}
         }
-        while let Some(p) = work.take() {
+        let mut more = false;
+        while let Some(p) = work.take(self.detail_backwards) {
             if service_on_route(&p)
                 && owner(&mut self.owners, reader, route, &p, self.anchor)?
                     == Some((stop.poi.metadata.source, stop.dist_along_m))
             {
-                let _ = self.detail_rows.push(p);
+                if self.detail_rows.is_full() {
+                    more = true;
+                    break;
+                }
+                if self.detail_backwards {
+                    let _ = self.detail_rows.insert(0, p);
+                } else {
+                    let _ = self.detail_rows.push(p);
+                }
             }
         }
-        if self.detail_rows.is_empty() && work.advance(self.detail_backwards) {
+        // Only an eligible service beyond this page proves that another page exists.
+        if !more && work.advance(self.detail_backwards) {
             return Ok(());
         }
-        let more = matches!(work.status, QueryProgress::Ready { more: true, .. });
         self.detail_more = if self.detail_backwards { self.detail_boundary.is_some() } else { more };
         self.detail_previous = if self.detail_backwards { more } else { self.detail_boundary.is_some() };
         self.detail_selected = if self.detail_backwards { self.detail_rows.len().saturating_sub(1) } else { 0 };
@@ -1010,6 +1023,99 @@ mod tests {
         settle(&mut a, Some(&reader), &route);
         assert!(a.rows.iter().any(|r| r.name() == "Water ahead" && matches!(r.item, Item::Place(_))));
         assert!(!a.rows.iter().any(|r| matches!(r.item, Item::Settlement(..))));
+    }
+
+    #[test]
+    fn settlement_detail_pages_skip_neighbor_services_in_both_directions() {
+        let mut sink = Sink::default();
+        let gpx = br#"<gpx><trk><trkseg><trkpt lat="0" lon="0"/><trkpt lat="0" lon="0.025"/></trkseg></trk></gpx>"#;
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "Three villages", &mut sink).unwrap();
+        let source = SliceSource(&sink.0);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        for count in [1, 17] {
+            let mut water: std::vec::Vec<_> = (0..8)
+                .flat_map(|i| [spec(3_800 + i * 100, 1, "West water"), spec(15_800 + i * 100, 1, "East water")])
+                .collect();
+            water.extend((0..count).map(|i| spec(9_500 + i * 60, 1, &format!("Local water {i}"))));
+            let bytes = build_poi_map(
+                (-20_000, -20_000, 60_000, 20_000),
+                512,
+                &[
+                    (9, vec![spec(4_000, 23, "West"), spec(10_000, 23, "Village"), spec(16_000, 23, "East")]),
+                    (1, water),
+                ],
+            );
+            let src = SliceSource(&bytes);
+            let tables = MapTables::parse(&src).unwrap();
+            let cache = MapCache::new();
+            let reader = Reader::new(&src, &tables, &cache);
+            let mut a = AheadState::new();
+            settle(&mut a, Some(&reader), &route);
+            a.selected = a.rows.iter().position(|r| r.name() == "Village").unwrap();
+            a.open_detail();
+            let mut forward = std::vec::Vec::new();
+            loop {
+                settle(&mut a, Some(&reader), &route);
+                assert!(!a.detail_rows.is_empty());
+                assert!(a.detail_rows.iter().all(|p| p.poi.name.starts_with("Local water")));
+                forward.extend(a.detail_rows.iter().map(place_key));
+                assert!(forward.len() <= count as usize);
+                if !a.detail_more {
+                    break;
+                }
+                assert_eq!(a.detail_rows.len(), 8);
+                a.detail_page(false);
+            }
+            assert_eq!(forward.len(), count as usize);
+            let mut backward: std::vec::Vec<_> = a.detail_rows.iter().rev().map(place_key).collect();
+            while a.detail_previous {
+                a.detail_page(true);
+                settle(&mut a, Some(&reader), &route);
+                assert!(!a.detail_rows.is_empty());
+                backward.extend(a.detail_rows.iter().rev().map(place_key));
+                assert!(backward.len() <= count as usize);
+            }
+            backward.reverse();
+            assert_eq!(backward, forward);
+        }
+    }
+
+    #[test]
+    fn backward_pages_keep_services_at_the_route_end() {
+        let mut sink = Sink::default();
+        let gpx = br#"<gpx><wpt lat="0" lon="0.002"><name>Earlier</name></wpt><trk><trkseg><trkpt lat="0" lon="0"/><trkpt lat="0" lon="0.01"/></trkseg></trk></gpx>"#;
+        obc_route::gpx_to_obcr(&SliceSource(gpx), "End services", &mut sink).unwrap();
+        let source = SliceSource(&sink.0);
+        let index = RouteIndex::read(&source).unwrap();
+        let route = RouteReader::new(&index, &source);
+        let water = (0..5)
+            .map(|i| {
+                let mut p = spec(10_000, 1, &format!("Water {i}"));
+                p.lat = (i - 2) * 100;
+                p
+            })
+            .collect();
+        let bytes = build_poi_map((-20_000, -20_000, 60_000, 20_000), 512, &[(1, water)]);
+        let src = SliceSource(&bytes);
+        let tables = MapTables::parse(&src).unwrap();
+        let cache = MapCache::new();
+        let reader = Reader::new(&src, &tables, &cache);
+        let mut a = AheadState::new();
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.len(), 6);
+        assert!(matches!(a.rows[0].item, Item::Waypoint(_)));
+        assert!(a.rows[1..].iter().all(|r| matches!(r.item, Item::Place(_)) && r.key.0 == route.total_distance_m));
+        let first: std::vec::Vec<_> = a.rows.iter().map(|r| r.key).collect();
+        assert!(a.has_next());
+        a.turn_page(false);
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.len(), 1);
+        assert!(matches!(a.rows[0].item, Item::End));
+        assert!(a.has_previous());
+        a.turn_page(true);
+        settle(&mut a, Some(&reader), &route);
+        assert_eq!(a.rows.iter().map(|r| r.key).collect::<std::vec::Vec<_>>(), first);
     }
 
     #[test]
