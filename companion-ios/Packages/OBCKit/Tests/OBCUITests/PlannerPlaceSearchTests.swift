@@ -6,6 +6,24 @@ import Testing
 
 @MainActor
 struct PlannerPlaceSearchTests {
+    @Test func searchUsesTheRouteThatFinishesBeforeItsReply() async throws {
+        let source = SearchSource(), model = PlannerPreviewModel(service: source)
+        model.setStart(.init(id: "start", name: "Start", coordinate: .init(latitude: 48, longitude: 8)))
+        model.setFinish(.init(id: "finish", name: "Finish", coordinate: .init(latitude: 48.2, longitude: 8.2)))
+        let search = PlannerPlaceSearch(model: model, debounce: {})
+        search.begin(query: "cafe", viewBounds: [7, 47, 9, 49], isInMapView: { _ in true })
+        await source.waitForRequest(1)
+        #expect(model.routeLine.length == 0 && search.draft.request?.area == .route)
+
+        await model.calculateRoute()
+        #expect(model.routeLine.length > 0)
+        await source.finish(0, places: [place("n1", kind: "cafe")])
+        await search.searchTask?.value
+        let result = try #require(search.result.places.first)
+        #expect(result.id == "n1" && result.alongRouteMeters > 0 && result.alongRouteMeters < model.routeLine.length)
+        #expect(search.searchError == nil && search.canSubmit)
+    }
+
     @Test func staleSuccessAndFailureCannotReplaceTheLatestSearch() async throws {
         let source = SearchSource(), search = makeSearch(source)
         search.begin(query: "cafe", viewBounds: nil, isInMapView: { _ in true })
@@ -135,7 +153,11 @@ private actor SearchSource: PlannerDataSource {
                               routing: host, manifest: host, overlays: host)
     }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity,
-               preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath { throw PlannerFailure.unavailable }
+               preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
+        let route = points.map { RoutePoint(coordinate: $0) }, line = MeasuredLine(coordinates: points)
+        return PlannedPath(points: route, distance: line.length, ascent: 0, seconds: line.length / 4,
+                           pointIndices: Array(points.indices), elapsed: line.vertices.map { $0.distance / 4 })
+    }
     func search(_ query: PlannerSearchQuery, release: PlannerRelease) async throws -> [PlannerPlace] {
         try await withCheckedThrowingContinuation { continuation in
             replies[requests.count] = continuation

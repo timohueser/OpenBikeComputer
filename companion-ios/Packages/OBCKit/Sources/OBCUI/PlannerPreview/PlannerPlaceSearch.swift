@@ -97,7 +97,7 @@ final class PlannerPlaceSearch {
         let revision = searchRevision, request = draft.request
         let query = request?.serverQuery(text: draft.text, view: viewBounds, model: model)
             ?? PlannerSearchQuery(text: draft.text, view: viewBounds)
-        let model = model, debounce = debounce, isInMapView = isInMapView, length = model.routeLine.length
+        let model = model, debounce = debounce, isInMapView = isInMapView
         searchTask = Task { [weak self] in
             do {
                 try await debounce()
@@ -105,7 +105,7 @@ final class PlannerPlaceSearch {
                 let found = try await model.searchPlaces(query)
                 try Task.checkCancellation()
                 guard let self, revision == self.searchRevision else { return }
-                let places = request?.filter(found, routeLengthMeters: length, isInMapView: isInMapView, matchesName: false) ?? found
+                let places = request?.filter(found, routeLengthMeters: model.routeLine.length, isInMapView: isInMapView, matchesName: false) ?? found
                 self.remote = .init(title: request.map { $0.kinds.isEmpty ? $0.name : $0.kindLabel } ?? "Places",
                                     explanation: "", places: places, action: nil)
                 self.isSearching = false
