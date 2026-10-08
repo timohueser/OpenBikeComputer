@@ -91,14 +91,16 @@ npm run test:query --prefix planner/search
 npm run test:data --prefix planner/search
 npm run test:model --prefix planner/search
 node planner/search/benchmark.mjs PACKAGE.sqlite REFERENCE.sqlite
+node planner/search/address-parity.mjs CANDIDATE.sqlite REFERENCE.sqlite 500 --require-equivalent
 ```
 
 The first two suites run in CI without large downloads. The last two use local packages
 and model weights. Model evaluation uses the hand-written EN, DE, FR, and IT testsets.
 For the shared BW cache, pass `OBC_SEARCH_DATA` and
 `OBC_SEARCH_REGIONS=baden-wuerttemberg` to the data suite.
-The benchmark checks exact stored records and search results against a reference package.
-It reports host query times and combined process memory. It does not measure phone performance.
+The benchmark reports record agreement, host query times, and process memory.
+Address parity requires the same source snapshot. It rejects missing or extra houses,
+field differences beyond one metre, and sampled lookup differences.
 
 ## Model development
 
