@@ -173,11 +173,18 @@ pub(super) fn run(
             .stdout(std::io::stderr())
             .status()
             .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err(format!("Wikimedia revision check failed with {status}; retained work: {}", staging.display()));
-        }
-        let refreshed = read(&out.join("manifest.json"))?;
+        let refreshed = read(&out.join("manifest.json")).unwrap_or(Value::Null);
         count_api(&mut acquisition, &refreshed);
+        if let Some(checks) = checks.as_deref_mut() {
+            checks.acquisition = Some(acquisition.clone());
+        }
+        if !status.success() {
+            return Err(format!(
+                "Wikimedia revision check failed with {status}: {}; retained work: {}",
+                refreshed["failures"],
+                staging.display()
+            ));
+        }
         let mut refreshed_inputs = admitted;
         for pin in refreshed["records"].as_array().ok_or("refresh lacks records")? {
             let mut pin = pin.clone();
@@ -201,6 +208,10 @@ pub(super) fn run(
                 manifest["failures"],
                 work.display()
             ));
+        }
+        count_api(&mut acquisition, &Value::Null);
+        if let Some(checks) = checks.as_deref_mut() {
+            checks.acquisition = Some(acquisition);
         }
         return Err(format!(
             "Wikimedia acquisition failed with {status}; successful facts remain in {}",
@@ -248,6 +259,11 @@ fn runner(
     inputs: &Path,
     adopt: &[std::path::PathBuf],
 ) -> Result<std::process::Command, String> {
+    match fs::remove_file(out.join("manifest.json")) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
     let mut command = capture::python(root, None)?;
     command
         .arg("tools/wikimedia_acquire.py")
