@@ -28,12 +28,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = ROOT / "testing" / "prose-baseline.json"
+BASELINE = ROOT / "tools/testing/prose-baseline.json"
 
 # `policy` is capped hardest because an agent loads those files on every turn.
 CAPS = {"guide": 2500, "readme": 800, "guard": 150, "policy": 2000}
 
-POLICY = ("AGENTS.md", "CONTRIBUTING.md", "docs/testing.md", "docs/README.md")
+POLICY = ("AGENTS.md", ".github/CONTRIBUTING.md", "docs/testing.md", "docs/README.md")
 
 SVG = re.compile(r"<svg.*?</svg>|<img\b[^>]*\sdata-inline-svg\s*/?>", re.S)
 FENCE = re.compile(r"```.*?```", re.S)

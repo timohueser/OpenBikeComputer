@@ -2,7 +2,7 @@
 """`obc ready` — the gates a change selects, before a push.
 
 The rule table below maps the changed paths to gates, and every gate prints `run` or `skip` with one
-reason. A gate whose work is a declared suite of `testing/suites.toml` is skipped, and its line
+reason. A gate whose work is a declared suite of `tools/testing/suites.toml` is skipped, and its line
 names the suite that does it, so nothing runs twice.
 
 A foundation input or the test policy selects the graph as a whole. That run is CI's, so the plan
@@ -373,7 +373,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         graph, document, units = test_plan.load(root)
         committed, deleted = test_plan.git_changed_paths(root, args.base, "HEAD")
         changed = sorted(set(committed) | set(test_plan.working_tree_paths(root)))
-        definitions = test_plan.changed_suite_ids(root, args.base, document) if "testing/suites.toml" in changed else ()
+        deleted.update(path for path in changed if not (root / path).exists())
+        definitions = test_plan.changed_suite_ids(root, args.base, document) if "tools/testing/suites.toml" in changed else ()
         selection = test_plan.select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base)
         # An unowned path selects nothing, so the plan would otherwise report a quiet all-clear.
         for error in selection.errors:

@@ -12,7 +12,7 @@ class ObcTests(unittest.TestCase):
     def test_documentation_recipe_uses_checkout_root_and_propagates_failure(self):
         source = Path(__file__).parents[2]
         with tempfile.TemporaryDirectory(prefix="obc docs ") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / "docs").mkdir()
             (root / "tools").mkdir()
             caller = root / "nested caller"
@@ -36,7 +36,7 @@ class ObcTests(unittest.TestCase):
 
     def test_installed_command_selects_worktree_and_preserves_global_fallback(self):
         with tempfile.TemporaryDirectory(prefix="obc entry ") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             main = root / "main"
             (main / "tools").mkdir(parents=True)
             (main / "firmware/obc-app").mkdir(parents=True)
@@ -85,7 +85,7 @@ class ObcTests(unittest.TestCase):
     def test_native_and_installed_entry_points_preserve_root_and_caller_paths(self):
         source = Path(__file__).parents[2]
         with tempfile.TemporaryDirectory(prefix="obc native ") as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / "tools").mkdir()
             (root / "firmware/obc-app").mkdir(parents=True)
             caller = root / "nested caller"

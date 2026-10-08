@@ -54,7 +54,7 @@ targets:
         type: folder
         buildPhase: resources
       # Carries the licence texts of the linked planner-service crates.
-      - path: ../THIRD-PARTY.md
+      - path: ../tools/licenses/THIRD-PARTY.md
         buildPhase: resources
     preBuildScripts:
       - name: Rust store client

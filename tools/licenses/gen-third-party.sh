@@ -14,7 +14,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT="$ROOT/THIRD-PARTY.md"
+OUT="$ROOT/tools/licenses/THIRD-PARTY.md"
 TPL="$ROOT/tools/licenses/third-party.hbs"
 CFG="$ROOT/tools/licenses/about.toml"
 
@@ -63,14 +63,14 @@ trap 'rm -f "$tmp"' EXIT
 {
     echo "# Third-party licences"
     echo
-    echo "OpenBikeComputer is GPL-3.0 (see [\`LICENSE\`](LICENSE)). It is built on other people's"
+    echo "OpenBikeComputer is GPL-3.0 (see [\`LICENSE\`](../../LICENSE)). It is built on other people's"
     echo "work, and the permissive licences that work is under all ask the same thing in return:"
     echo "the copyright notice and the permission text must be handed over with the binary. This"
     echo "file is that hand-over, one section per distributed artifact."
     echo
     echo "**Generated — do not edit.** \`obc licenses\` rewrites it from the dependency graph;"
     echo "the \`deny\` CI job fails if it is out of date. Which licences are *allowed* in the tree"
-    echo "is a separate question, answered by [\`deny.toml\`](tools/licenses/deny.toml)."
+    echo "is a separate question, answered by [\`deny.toml\`](deny.toml)."
     echo
     echo "Each text is reproduced as the crate ships it, with one normalisation: runs of blank"
     echo "lines are collapsed to one and trailing spaces are dropped. cargo-about enriches some"

@@ -122,7 +122,7 @@ class ReadyPlanTests(unittest.TestCase):
         )
 
     def test_test_policy_and_test_sources_select_the_suites_check(self):
-        for path in ("testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
+        for path in ("tools/testing/suites.toml", "tools/test_plan.py", "firmware/ui-frames.toml", "tools/tests/test_ready.py"):
             self.assertIn("obc suites check", self.running(path), path)
         self.assertNotIn("obc suites check", self.running("firmware/obc-app/src/app.rs"))
 
