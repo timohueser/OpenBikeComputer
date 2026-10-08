@@ -5,16 +5,6 @@ description: Embassy, a RISC-V worker, and the OpenBikeComputer memory LCD.
 copy: mixed
 ---
 
-<!--
-- Opening: introduce OpenBikeComputer and its Sharp LS021B7DD02 memory LCD.
-- Explain the problem: the M33 renders maps and handles other tasks; the panel needs a timed GPIO sequence.
-- State the result: the M33 renders pixels; the FLPR packs pixels and generates the display signals.
-- Assume embedded experience, but no knowledge of this chip, Embassy, or the FLPR.
-- Use the companion example project for complete files. It still needs to be created; add its URL and a fixed release tag before publication.
-- The snippets below are excerpts. Do not describe the post alone as a complete buildable project.
-- The original full draft and complete examples remain in flpr-display-tutorial.md at the checkout root.
--->
-
 <!-- human-copy:start -->
 ## So what is this actually about now?
 As you, the critical reader, have probably already gathered from the title, this is about how we drive the display of the OpenBikeComputer (OBC). Now you might say, display drivers are a dime a dozen these days, even my 5 year old STM32 comes with built in LTDC to drive all kinds of LCDs. And heck, if your nRF54 does not have that, just use a SPI or I2C display. The issue is that as much as I'd have loved to do that, one of the very early key design requirements for the OBC was that is has to use a MIP (**M**emory **I**n **P**ixel) display. In fact, Garmin moving away from MIP technology more and more on both their bike computers and watches, was one of the reasons that made me consider building my own in the first place.
@@ -22,7 +12,7 @@ As you, the critical reader, have probably already gathered from the title, this
 MIP panels are awesome, they draw basically zero power while showing a static image, which allows days of battery life and an always-on display. They also typically are reflective, meaning they require no active backlight as long as there is an external light source (While riding your bike the sun is a common one). What is not so awesome is how hard they are to come by. There really is only one panel that fits the bill for my basic requirements, of at least 8 colors, a resolution that is not atrociously low, and a size of about 2-3 inches: The [LS021B7DD02 by Sharp Microelectronics](https://www.digikey.de/en/products/detail/sharp-microelectronics/LS021B7DD02/23347701). The only driver IC that can let you drive this display over a SPI bus (the [Epson S1D13C00F00C100 ](https://www.mouser.de/en/ProductDetail/Epson-Timing/S1D13C00F00C100?qs=Wj%2FVkw3K%252BMB3ATL0uFFMGA%3D%3D)) is really hard to source, and was not available anywhere when I built the prototype. So we are stuck with writing a bare metal driver for the display ourselves.
 
 ## What is the FLPR, and why should we care?
-So we established we need a bare metal driver for the MIP panel. It uses a completely custom parallel data protocol, so there is of course no hardware support built into our processor. This leaves bit-banging it as the only option. And here's the big issue with that: A refresh of the entire display takes about 80 ms. Assuming we get a GPS fix every second, which of course means redrawing the map with our updated position, we would spend almost 10% of our total available processing time on updating the display. That first of all makes for a potentially very laggy and frustrating user experience, but it also drains our battery. The more time the main Cortex-M33 core can spend in sleep mode, the better.
+So we established we need a bare metal driver for the MIP panel. It uses a completely custom parallel data protocol, so there is of course no hardware support built into our processor. This leaves bit-banging it as the only option. And here's the big issue with that: A refresh of the entire display takes about 80 ms. Assuming we get a GPS fix every second, which of course means redrawing the map with our updated position, we would spend almost 10% of our total available processing time on updating the display. That makes for a potentially very laggy and frustrating user experience and the processor can't handle any other tasks during that time.
 
 Luckily the nRF54 has a trick up its sleeve for exactly this purpose: a second RISC-V coprocessor, called the FLPR (Fast Lightweight Peripheral Processor). This second core is purpose made to execute time-ciritical I/O operations. Maybe the simplest way to think of it is that it takes a similar role to the hardware SPI or I2C peripherals you are used to, but you get to decide what runs on it. Similar to those this allows us to offload the time consuming bit-banging communication with the display, and frees up the main core for other work while that communication is running in the background.
 
