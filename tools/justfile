@@ -327,7 +327,7 @@ data *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"
-    _run cargo run --quiet --locked -p obc-data-steps -- "$@"
+    _run cargo run --release --quiet --locked -p obc-data-steps -- "$@"
 
 [doc("Prepare, publish, deploy or preview regional planner data. See the planner README.")]
 [group('maps')]

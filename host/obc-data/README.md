@@ -52,8 +52,15 @@ Publication also requires its own bucket credentials.
 | `obc data runs RUN --stop` | Drain admitted work; an apply stops before its next phase |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data dev` | Prepare Local from working-tree code and saved source versions |
+| `obc data dev REGION --check --json` | Review pending Local work without source requests |
+| `obc data dev REGION --prepare --json` | Return a retained Local preparation handle |
+| `obc data dev --app map-builder --start` | Start the prepared Local Map builder |
+| `obc data dev --app simulator --start` | Start the prepared Local Simulator |
 
-Preparation fetches missing Wikimedia captures and refreshes stale requests by policy.
+Preparation acquires missing Wikimedia facts and checks stale identities by policy.
+Pinned content compilation makes no Wikimedia requests. Fetch results report current HTTP
+attempts and response body bytes; retained output bytes are separate. Historical transfers
+are unknown. `dev --refresh-live` selects published Live versions; it does not check Wikimedia freshness.
 Preparation leaves stopped apps stopped. Use the Local app commands to start one.
 An incomplete plan needs preparation and a new review. Apply does not commit configuration.
 A failed or stopped apply leaves live as it was until its pointer switch. Apply the plan again:

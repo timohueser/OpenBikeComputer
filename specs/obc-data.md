@@ -532,6 +532,8 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   Cargo validates these raw values and applies its override precedence.
   Errors identify the setting, not its value. Discovery does not install a toolchain.
 - `LD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` stay in the worker runtime environment.
+  Compiler commands remove inherited `CARGO_PKG_*` and `CARGO_MANIFEST_*` package metadata.
+  They preserve the selected target directory and build configuration.
   Native tool discovery, Cargo metadata and worker builds clear loader search paths in their
   child environment, including the refused `DYLD_LIBRARY_PATH` priority override. A declared native Rust
   `cargo` or `rustc` command uses the same policy. Ordinary runtime commands, Python commands
