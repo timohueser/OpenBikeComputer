@@ -410,8 +410,8 @@ pub(super) struct File {
 /// a client finds by name, and the input copies.
 pub(super) fn files(store: &Store, scratch: &Scratch, next: &Live) -> Result<Vec<File>, Error> {
     let mut files = Vec::new();
-    for (prefix, _, release) in next.releases() {
-        files.extend(release.publication().files().map(|(kind, file)| {
+    for (prefix, id, release) in next.releases() {
+        files.extend(release.publication(id).files().map(|(kind, file)| {
             let manifest = kind == Published::Manifest;
             File {
                 key: format!("{prefix}/{}", file.path),

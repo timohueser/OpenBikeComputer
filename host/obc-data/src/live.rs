@@ -226,10 +226,10 @@ impl Live {
     /// record of an input copy.
     pub fn expected(&self) -> BTreeMap<String, Option<u64>> {
         let mut keys = BTreeMap::new();
-        for (prefix, _, release) in self.releases() {
+        for (prefix, id, release) in self.releases() {
             keys.insert(format!("{prefix}/catalog.json"), None);
             keys.extend(
-                release.publication().files().map(|(_, file)| (format!("{prefix}/{}", file.path), Some(file.size))),
+                release.publication(id).files().map(|(_, file)| (format!("{prefix}/{}", file.path), Some(file.size))),
             );
         }
         for (key, record) in &self.inputs {
@@ -249,10 +249,10 @@ impl Live {
     /// The layers of the live releases whose files `keys` hold.
     pub fn owners(&self, keys: &[String]) -> BTreeSet<String> {
         let mut owners = BTreeSet::new();
-        for (prefix, _, release) in self.releases() {
+        for (prefix, id, release) in self.releases() {
             let (mut named, mut objects) = (BTreeSet::new(), BTreeSet::new());
             for (kind, file) in
-                release.publication().files().filter(|(_, file)| keys.contains(&format!("{prefix}/{}", file.path)))
+                release.publication(id).files().filter(|(_, file)| keys.contains(&format!("{prefix}/{}", file.path)))
             {
                 match kind {
                     Published::Named(_) => {
@@ -276,8 +276,8 @@ impl Live {
     /// Restore missing local publication metadata from its exact immutable remote key.
     pub fn restore_named(&self, remote: &Remote, store: &Store) -> Result<(), String> {
         let _using = store.using()?;
-        for (prefix, _, release) in self.releases() {
-            for (_, file) in release.publication().files().filter(|(kind, _)| matches!(kind, Published::Named(_))) {
+        for (prefix, id, release) in self.releases() {
+            for (_, file) in release.publication(id).files().filter(|(kind, _)| matches!(kind, Published::Named(_))) {
                 let key = format!("{prefix}/{}", file.path);
                 let object = store.object(&file.sha256);
                 let _lock = store.lock(&format!("named-{}", file.sha256))?;
@@ -335,7 +335,9 @@ impl Live {
             for id in ids.filter(|id| !live.contains(id) && is_sha256(id)) {
                 // Bytes that are not a manifest of this product belong to another publisher.
                 let Ok(release) = manifest(remote, store, &product.product, &product.prefix, id) else { continue };
-                keys.extend(release.publication().files().map(|(_, file)| format!("{}/{}", product.prefix, file.path)));
+                keys.extend(
+                    release.publication(id).files().map(|(_, file)| format!("{}/{}", product.prefix, file.path)),
+                );
                 reads.extend(input_copy::reads_release(&release)?.into_iter().map(|read| read.key));
             }
         }
@@ -624,25 +626,45 @@ pub(crate) mod tests {
         let (dir, store) = (scratch.0.join("bucket"), Store::at(scratch.0.join("store")));
         let remote = Remote::Bucket(Bucket::local(&dir));
         let sources = parse_sources(LAND).unwrap();
-        let earlier = release(b"earlier");
+        let named = |bytes: &[u8]| {
+            let mut release = release(bytes);
+            release.layers[0].options = serde_json::json!({"longitude": -93.31137037688033});
+            release
+                .name_files(vec![LayerFile { path: "index.json".into(), ..release.layers[0].files[0].clone() }])
+                .unwrap();
+            release
+        };
+        let earlier = named(b"earlier");
         publish(&dir, &earlier);
+        let earlier_named = format!("test-catalog/releases/{}/index.json", earlier.id());
+        write(&dir.join(&earlier_named), "earlier");
         write(&dir.join(format!("test-catalog/objects/{}", sha256_hex(b"earlier"))), "earlier");
-        let release = release(b"layer");
+        let release = named(b"layer");
         publish(&dir, &release);
+        let current_named = format!("test-catalog/releases/{}/index.json", release.id());
+        write(&dir.join(&current_named), "layer");
         write(&dir.join("test-catalog/objects/old"), "an older publisher");
         write(&dir.join("test-catalog/releases/old.json"), "an older publisher");
         let read = || Live::read(&remote, &[&Test], &sources, &store).unwrap();
 
         let live = read();
-        assert_eq!(live.products[0].release, Some((release.id(), release.clone())));
+        let decoded = serde_json::from_slice(&release.canonical()).unwrap();
+        assert_eq!(live.products[0].release, Some((release.id(), decoded)));
         assert!(store.release("test", &release.id()).is_file(), "the store keeps the manifest");
+        assert_eq!(live.owners(&[current_named]), BTreeSet::from([release.layers[0].step.clone()]));
+        live.restore_named(&remote, &store).unwrap();
+        assert_eq!(std::fs::read(store.object(&sha256_hex(b"layer"))).unwrap(), b"layer");
         let check = live.check(&remote, &store).unwrap();
         assert_eq!(check.prefixes, ["test-catalog", "inputs"]);
         assert!(check.drift.is_empty(), "{check:?}");
         let leftovers: Vec<&str> = check.leftovers.iter().map(|object| object.key.as_str()).collect();
         let earlier_object = format!("test-catalog/objects/{}", sha256_hex(b"earlier"));
         let earlier_manifest = format!("test-catalog/releases/{}.json", earlier.id());
-        assert_eq!(leftovers, [earlier_object.as_str(), earlier_manifest.as_str()], "the input copy is still read");
+        assert_eq!(
+            leftovers,
+            [earlier_object.as_str(), earlier_named.as_str(), earlier_manifest.as_str()],
+            "the input copy is still read"
+        );
 
         let object = format!("inputs/objects/{}", sha256_hex(b"land"));
         std::fs::remove_file(dir.join(&object)).unwrap();

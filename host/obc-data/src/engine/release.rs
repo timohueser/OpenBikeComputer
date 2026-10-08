@@ -261,10 +261,10 @@ impl Release {
         sha256_hex(&self.canonical())
     }
 
-    pub fn publication(&self) -> Publication<'_> {
+    /// Use the written or verified manifest id; decoding JSON numbers can change their representation.
+    pub fn publication(&self, id: &str) -> Publication<'_> {
         let bytes = self.canonical();
-        let sha256 = sha256_hex(&bytes);
-        let manifest = LayerFile { path: format!("releases/{sha256}.json"), sha256, size: bytes.len() as u64 };
+        let manifest = LayerFile { path: format!("releases/{id}.json"), sha256: id.into(), size: bytes.len() as u64 };
         Publication { release: self, manifest }
     }
 
@@ -436,7 +436,7 @@ mod tests {
             .unwrap();
         let before = selected.canonical();
         let id = selected.id();
-        let publication = selected.publication();
+        let publication = selected.publication(&id);
         let published: Vec<_> = publication.files().collect();
         let payload = selected.layers[0].files.iter().find(|file| file.path == "published/a").unwrap();
         assert_eq!(

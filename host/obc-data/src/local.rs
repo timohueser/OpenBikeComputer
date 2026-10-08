@@ -55,7 +55,7 @@ pub fn plan(
         Compatibility { root, store, release, steps, checked: BTreeMap::new(), codes: Witnesses::default() };
     let mut plan =
         Plan { product: release.product.clone(), release: release.id(), layers: Vec::new(), blocked: Vec::new() };
-    let publication = release.publication();
+    let publication = release.publication(&plan.release);
     for (name, extra) in required {
         let mut select = || -> Result<Selection, String> {
             let step = steps.iter().find(|step| &step.name == name).ok_or("no current producer declaration")?;
@@ -391,7 +391,7 @@ fn transfer(
     if &current != confirmed || !current.blocked.is_empty() || current.layers.is_empty() {
         return Err("portable adoption changed or is blocked; review it again".into());
     }
-    let publication = release.publication();
+    let publication = release.publication(&current.release);
     for selection in &current.layers {
         let layer = release.layers.iter().find(|layer| layer.step == selection.step).expect("planned layer");
         for file in &selection.files {

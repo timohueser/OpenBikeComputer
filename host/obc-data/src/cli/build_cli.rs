@@ -917,10 +917,10 @@ fn against<'a>(
     let drift = drift.map(|drift| {
         let keys: Vec<String> = drift.iter().map(|drift| drift.key.clone()).collect();
         let mut local_named = BTreeSet::new();
-        for (prefix, _, release) in live.releases() {
+        for (prefix, id, release) in live.releases() {
             local_named.extend(
                 release
-                    .publication()
+                    .publication(id)
                     .files()
                     .filter(|(kind, file)| {
                         matches!(kind, release::Published::Named(_)) && store.object(&file.sha256).is_file()

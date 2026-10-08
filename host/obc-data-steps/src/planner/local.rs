@@ -479,7 +479,7 @@ pub(super) fn prepare(root: &Path, store: &Store, request: &Request, run: &mut r
 }
 
 fn link_release(store: &Store, release: &release::Release, directory: &Path) -> Result<(), String> {
-    for (kind, file) in release.publication().files() {
+    for (kind, file) in release.publication(&release.id()).files() {
         let relative = match kind {
             release::Published::Manifest => continue,
             release::Published::Named("release.json") if release.product == "planner" => "release.json",
