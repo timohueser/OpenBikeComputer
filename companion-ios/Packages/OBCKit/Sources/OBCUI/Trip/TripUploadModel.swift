@@ -142,7 +142,7 @@ public final class TripUploadModel: Identifiable {
     private func updatePlan(_ plan: TripUploadPlan) {
         precheck = plan.precheck
         steps = plan.days.map(Step.day)
-        if !plan.allDaysSkip || main.tripOnDeviceState(tripID) != .upToDate {
+        if !plan.allDaysSkip || main.tripContentOnDeviceState(tripID) != .upToDate {
             steps.append(.trip)
         }
     }

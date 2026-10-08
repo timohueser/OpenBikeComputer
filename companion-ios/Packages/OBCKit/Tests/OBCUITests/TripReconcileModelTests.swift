@@ -121,6 +121,7 @@ struct TripReconcileModelTests {
         upload.start()
         try await waitFor("cleanup failure") { upload.phase == .failed }
         #expect(upload.failure == .cleanup(.writeFailed))
+        #expect(model.tripOnDeviceState(tripID) == .outdated, "the trip page must still offer Update")
         #expect(model.trip(tripID)?.dayCopies.last??.link.objectID == dropped)
         #expect(!control.deletedRouteObjectIDs.contains(dropped))
         #expect(control.deviceTripStageIDs(control.deviceTripObjectIDs[0]).count == 1)
@@ -131,6 +132,7 @@ struct TripReconcileModelTests {
         #expect(retry.committedCount == 0)
         #expect(control.deletedRouteObjectIDs.contains(dropped))
         #expect(model.trip(tripID)?.dayCopies.count == 1)
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
         #expect(control.deviceTripCount == 1)
     }
 

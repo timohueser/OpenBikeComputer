@@ -63,9 +63,17 @@ extension MainScreenModel {
         return days
     }
 
-    /// The trip badge: up to date only when the trip object itself is proven current and every
-    /// day route is up to date. A trip the phone never pushed reads `.notOnDevice`.
+    /// Pending cleanup keeps Update available even when the trip's current bytes are stored.
     public func tripOnDeviceState(_ id: TripID) -> OnDeviceState {
+        let state = tripContentOnDeviceState(id)
+        guard state == .upToDate, let trip = trip(id), let scope = connectedScope else { return state }
+        let needsCleanup = trip.dayCopies.dropFirst(trip.dayCount).contains { copy in
+            copy?.link.matches(scope) == true
+        }
+        return needsCleanup ? .outdated : state
+    }
+
+    func tripContentOnDeviceState(_ id: TripID) -> OnDeviceState {
         guard let trip = trip(id) else { return .notOnDevice }
         let tripSelf = OnDeviceState.determine(
             provenCommittedCRC: provenTripCommittedCRC(for: trip),
