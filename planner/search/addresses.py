@@ -1,5 +1,6 @@
 """Address records own their street names and house-number index."""
 import hashlib
+import json
 from dataclasses import dataclass
 from index import norm
 
@@ -12,8 +13,7 @@ class Street:
     lat: float
     bbox: list
     context: str
-    aliases: set
-    country: str
+    aliases: set | None = None
 
 
 def add(writer, p, record):
@@ -23,29 +23,32 @@ def add(writer, p, record):
     if kind == 'street' and ns:
         street = ns[0]
     if street and (house or kind == 'street'):
-        key = (street, city, postcode, region)
+        key = (street, city, postcode, region, country)
         group = writer.streets.get(key)
-        priority = (kind != 'street', p['object_type'], p['object_id'], house)
-        aliases = set(ns if kind == 'street' else [street])
+        priority = (kind != 'street', p['object_type'], p['object_id'], house, lon, lat, context)
         if group is None:
-            stable = 's' + hashlib.sha1('|'.join(key).encode()).hexdigest()[:20]
+            stable = 's' + hashlib.sha1(json.dumps(key, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()[:20]
             sid = writer.place(stable, street, street, 'street', lon, lat, city, postcode,
                              0.05, bbox, region, context, country)
-            group = Street(sid, priority, lon, lat, list(bbox), context, aliases, country)
+            group = Street(sid, priority, lon, lat, list(bbox), context)
             writer.streets[key] = group
         else:
-            group.aliases.update(aliases)
             group.bbox = [min(group.bbox[0], bbox[0]), min(group.bbox[1], bbox[1]),
                           max(group.bbox[2], bbox[2]), max(group.bbox[3], bbox[3])]
             if priority < group.representative:
                 group.representative, group.lon, group.lat, group.context = priority, lon, lat, context
+        if kind == 'street' and any(name != street for name in ns):
+            if group.aliases is None:
+                group.aliases = {street}
+            group.aliases.update(ns)
         if house:
             writer.db.execute('INSERT INTO addresses VALUES (?,?,?,?,?)', (group.id, norm(house), lon, lat, source))
 
 
 def finish(writer):
-    for (street, city, postcode, region), group in writer.streets.items():
-        aliases = ';'.join(sorted(group.aliases))
+    for (street, city, postcode, region, country), group in writer.streets.items():
+        aliases = ';'.join(sorted(group.aliases)) if group.aliases else None
         writer.db.execute('UPDATE place_records SET aliases=?,lon=?,lat=?,context_id=?,west=?,south=?,east=?,north=? WHERE id=?',
-                          (None if aliases == street else aliases, group.lon, group.lat,
-                           writer.context_id(city, postcode, region, group.context, group.country), *group.bbox, group.id))
+                          (aliases, group.lon, group.lat,
+                           writer.context_id(city, postcode, region, group.context, country), *group.bbox, group.id))
+    writer.db.execute('DELETE FROM place_contexts WHERE id NOT IN (SELECT context_id FROM place_records)')
