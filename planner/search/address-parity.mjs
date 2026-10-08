@@ -97,7 +97,7 @@ export function compareAddresses(candidate,reference,{sampleSize=500,coordinateM
 }
 
 export function equivalent(report) {
-  return report.identity.missing===0&&report.fields.agreement.all===report.referenceRows&&
+  return report.identity.missing===0&&report.identity.extra===0&&report.fields.agreement.all===report.referenceRows&&
     report.forward.sameTopResult===report.forward.count&&report.reverse.sameLabel===report.reverse.count;
 }
 

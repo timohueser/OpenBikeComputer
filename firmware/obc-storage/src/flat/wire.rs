@@ -215,12 +215,8 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
         FlatStore::close(self, handle);
     }
 
-    fn entries(&self) -> impl Iterator<Item = v4::EntryMeta> + '_ {
-        Store::entries(self).map(meta_out)
-    }
-
-    fn entries_ok(&self) -> bool {
-        FlatStore::entries_ok(self)
+    fn entries(&self) -> impl Iterator<Item = Result<v4::EntryMeta, v4::StoreError>> + '_ {
+        Store::entries(self).map(|entry| entry.map(meta_out).map_err(error_out))
     }
 
     fn archive_ride(&self, source: v4::ArchiveSource) -> Result<v4::ArchiveResult, v4::ArchiveError> {

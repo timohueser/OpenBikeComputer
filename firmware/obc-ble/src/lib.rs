@@ -1,11 +1,11 @@
-//! Radio-free BLE codecs shared by the board firmware and host tests: the live GATT config,
-//! command/status and sensor layouts, plus the CRC-32 seam used by persisted link settings.
+//! Radio-free BLE policy and codecs shared by the board firmware and host tests.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 pub mod crc32;
 pub mod descriptor;
+pub mod radio_policy;
 pub mod sensors;
 
 pub use crc32::Crc32;

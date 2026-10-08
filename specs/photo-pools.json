@@ -1,1 +1,11 @@
-["P18", "wikipedia-lead", "commons-category", "P4291", "P8592", "P5252"]
+{
+  "sources": [
+    "P18",
+    "wikipedia-lead",
+    "commons-category"
+  ],
+  "fallback": {
+    "categories": 1,
+    "files": 100
+  }
+}

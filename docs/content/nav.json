@@ -27,6 +27,7 @@
       "title": "Hardware",
       "pages": [
         { "path": "hardware/index", "title": "Hardware" },
+        { "path": "hardware/bom", "title": "BOM and schematics" },
         { "path": "hardware/display-protocol", "title": "The display protocol" }
       ]
     },

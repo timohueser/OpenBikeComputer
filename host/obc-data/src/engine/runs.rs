@@ -84,6 +84,8 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         resolved: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acquisition: Option<serde_json::Value>,
         /// The size of the files that the fetch gave, downloaded or found in the store.
         bytes: u64,
         wall_ms: u64,
@@ -93,6 +95,8 @@ pub enum Event {
         version: String,
         params: Vec<(String, String)>,
         error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acquisition: Option<serde_json::Value>,
     },
     StepStarted {
         step: String,
@@ -421,8 +425,12 @@ impl Run {
                     planned.source, planned.version, planned.source
                 )
             })?;
-            let request =
-                fetch::Request { source, version: Some(planned.version.clone()), params: planned.params.clone() };
+            let request = fetch::Request {
+                refresh: false,
+                source,
+                version: Some(planned.version.clone()),
+                params: planned.params.clone(),
+            };
             self.fetch_request(context.root, context.store, context.http, context.copies, &request, &planned.files)?;
         }
         Ok(())
@@ -446,15 +454,18 @@ impl Run {
         );
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
+        self.codes.acquisition = None;
         match crate::input_copy::fetch_checked(root, store, http, copies, request, files, Some(&mut self.codes)) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
+                let acquisition = self.codes.acquisition.take();
                 self.record(&Event::FetchFinished {
                     source,
                     version,
                     params,
                     resolved: snapshot.version.clone(),
+                    acquisition,
                     bytes,
                     wall_ms,
                 })?;
@@ -462,7 +473,8 @@ impl Run {
             }
             Err(error) => {
                 let mut failed = format!("fetch {source}@{version}: {error}");
-                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error }) {
+                let acquisition = self.codes.acquisition.take();
+                if let Err(journal) = self.record(&Event::FetchFailed { source, version, params, error, acquisition }) {
                     failed += &format!("; the run journal could not record the failure: {journal}");
                 }
                 Err(failed)
@@ -550,6 +562,8 @@ pub struct RunFetch {
     pub source: String,
     pub version: String,
     pub resolved: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<serde_json::Value>,
     pub params: Vec<(String, String)>,
     /// `None` while it runs, and when it failed.
     pub bytes: Option<u64>,
@@ -698,7 +712,16 @@ fn from_events(id: String, events: Vec<Event>, running: bool) -> Details {
     let fetch = |fetches: &mut Vec<RunFetch>, source: String, version: String, params: Vec<(String, String)>| {
         let same = |fetch: &RunFetch| (&fetch.source, &fetch.version, &fetch.params) == (&source, &version, &params);
         fetches.iter().position(same).unwrap_or_else(|| {
-            fetches.push(RunFetch { source, version, params, resolved: None, bytes: None, wall_ms: None, error: None });
+            fetches.push(RunFetch {
+                source,
+                version,
+                params,
+                resolved: None,
+                acquisition: None,
+                bytes: None,
+                wall_ms: None,
+                error: None,
+            });
             fetches.len() - 1
         })
     };
@@ -724,15 +747,17 @@ fn from_events(id: String, events: Vec<Event>, running: bool) -> Details {
             Event::FetchStarted { source, version, params } => {
                 fetch(&mut run.fetches, source, version, params);
             }
-            Event::FetchFinished { source, version, params, resolved, bytes, wall_ms } => {
+            Event::FetchFinished { source, version, params, resolved, acquisition, bytes, wall_ms } => {
                 run.summary.bytes_fetched += bytes;
                 let i = fetch(&mut run.fetches, source, version, params);
                 (run.fetches[i].bytes, run.fetches[i].wall_ms) = (Some(bytes), Some(wall_ms));
                 run.fetches[i].resolved = Some(resolved);
+                run.fetches[i].acquisition = acquisition;
             }
-            Event::FetchFailed { source, version, params, error } => {
+            Event::FetchFailed { source, version, params, error, acquisition } => {
                 let i = fetch(&mut run.fetches, source, version, params);
                 run.fetches[i].error = Some(error);
+                run.fetches[i].acquisition = acquisition;
             }
             Event::StepStarted { step: name } => {
                 step(&mut run.steps, &name);

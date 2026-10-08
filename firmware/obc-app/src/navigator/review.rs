@@ -2,6 +2,7 @@
 use super::NavigatorError;
 use crate::device_core::{MetadataTag, OperationToken, StoreIdentity};
 use crate::settings::BikeType;
+use crate::CatalogObjectId;
 use obc_formats::assistant::{NavigatorCheckpoint, PayloadFingerprint};
 use obc_formats::obcr::RouteSourceKey;
 
@@ -168,7 +169,7 @@ pub struct CheckpointChange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AfterCheckpoint {
     Activate { route: u64, record: bool },
-    Select(Option<usize>),
+    Select(Option<CatalogObjectId>),
     Restore { route: u64, progress_m: u32 },
     Phase,
     Selected,
@@ -180,7 +181,7 @@ pub(super) struct ReviewState {
     /// The request measures its legs only; nothing is composed, published or previewed.
     pub measure: bool,
     pub preview: Option<ReviewedRoute>,
-    pub preview_index: Option<usize>,
+    pub preview_route: Option<CatalogObjectId>,
     pub unaccepted: u64,
     pub internal_routes: u64,
     pub temporary_routes: u64,
@@ -202,7 +203,7 @@ impl ReviewState {
             context: None,
             measure: false,
             preview: None,
-            preview_index: None,
+            preview_route: None,
             unaccepted: 0,
             internal_routes: 0,
             temporary_routes: 0,
@@ -275,50 +276,48 @@ impl NavigatorMachine {
     pub(crate) fn set_unaccepted_routes(&mut self, mask: u64) {
         self.review.unaccepted = mask;
     }
-    pub(crate) fn review_index(&mut self, index: Option<usize>) {
-        self.review.preview_index = index;
+    pub(crate) fn review_route(&mut self, route: Option<CatalogObjectId>) {
+        self.review.preview_route = route;
     }
     /// Take the selection the rider made. An ordinary route then owes a checkpoint of its own, so
     /// a restart can offer Resume for it exactly as it does for an accepted Assistant plan.
-    pub(super) fn select_now(&mut self, index: Option<usize>) {
-        self.following.active_route = index;
-        self.review.owed = index.is_some();
+    pub(super) fn select_now(&mut self, route: Option<CatalogObjectId>) {
+        self.following.active_route = route;
+        self.review.owed = route.is_some();
     }
-    pub(crate) fn select_after_checkpoint(&mut self, index: Option<usize>) -> bool {
+    pub(crate) fn select_after_checkpoint(&mut self, route: Option<CatalogObjectId>) -> bool {
         if self.review.status == ReviewStatus::Unresolved {
             if self.review.change.is_some() {
                 self.review.cancel_after = true;
-                self.review.after = AfterCheckpoint::Select(index);
+                self.review.after = AfterCheckpoint::Select(route);
             }
             return false;
         }
-        if index.is_some_and(|index| self.route_unaccepted(index))
-            || (index.is_some() && index == self.review.preview_index)
-        {
+        if route.is_some() && route == self.review.preview_route {
             return false;
         }
         if self.review.submitted {
             self.review.cancel_after = true;
-            self.review.after = AfterCheckpoint::Select(index);
+            self.review.after = AfterCheckpoint::Select(route);
             return false;
         }
         if self.review.checkpoint.is_some() {
             if self.review.checkpoint.is_some_and(|standing| standing.selection) {
                 // A plain selection is replaced by the next one, or cleared behind it. Only an
                 // accepted plan holds guidance up until the card says it is no longer accepted.
-                if index.is_none() {
+                if route.is_none() {
                     self.review.change = Some(None);
                     self.review.after = AfterCheckpoint::Phase;
                 }
                 return true;
             }
             self.review.change = Some(None);
-            self.review.after = AfterCheckpoint::Select(index);
+            self.review.after = AfterCheckpoint::Select(route);
             return false;
         }
         true
     }
-    pub(crate) fn remap_review_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
+    pub(crate) fn remap_route_flags(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
         for mask in [&mut self.review.unaccepted, &mut self.review.internal_routes, &mut self.review.temporary_routes] {
             let mut next = 0;
             for old in 0..64 {
@@ -329,10 +328,6 @@ impl NavigatorMachine {
                 }
             }
             *mask = next;
-        }
-        self.review.preview_index = self.review.preview_index.and_then(remap);
-        if let AfterCheckpoint::Select(index) = &mut self.review.after {
-            *index = index.and_then(remap);
         }
     }
 
@@ -455,7 +450,7 @@ impl NavigatorMachine {
         self.supersede(PlanFamily::Route);
         self.route = PlanPhase::Idle;
         self.review.preview = None;
-        self.review.preview_index = None;
+        self.review.preview_route = None;
         self.review.context = None;
         self.review.measure = false;
     }
@@ -593,7 +588,7 @@ impl NavigatorMachine {
         // card, which a restart must not offer for a route the rider is no longer following.
         self.review.owed &= !selection;
         self.review.preview = None;
-        self.review.preview_index = None;
+        self.review.preview_route = None;
         self.review.context = None;
         if !selection {
             self.route = PlanPhase::Active;
@@ -736,7 +731,7 @@ impl crate::App {
             && !self.assistant_needs_recovery();
         let checkpoint = self.assistant_checkpoint();
         let active = self.active_route_index().and_then(|i| self.route_ids().get(i).copied());
-        let ending = self.navigator.ride_end.and_then(|end| self.route_ids().get(end.route).copied());
+        let ending = self.navigator.ride_end.map(|end| end.route);
         let held = [
             checkpoint.map(|c| c.route.object),
             checkpoint.and_then(|c| c.original.map(|o| o.object)),
@@ -995,9 +990,9 @@ impl crate::App {
             Some(AfterCheckpoint::Activate { route: id, record }) => {
                 if let Some(index) = self.route_ids().iter().position(|&candidate| candidate == id) {
                     self.navigator.review.unaccepted &= !(1u64 << index);
-                    self.navigator.following.active_route = Some(index);
+                    self.navigator.following.active_route = Some(id);
                     if let Some(checkpoint) = self.navigator.review.checkpoint {
-                        self.navigator.request_seam(index, checkpoint.progress_m);
+                        self.navigator.request_seam(id, checkpoint.progress_m);
                     }
                     if self.recorder.session().is_none() {
                         // A route is active, so the mode and the camera follow whatever opened it.
@@ -1017,9 +1012,9 @@ impl crate::App {
                 }
             }
             Some(AfterCheckpoint::Restore { route, progress_m }) => {
-                if let Some(index) = self.route_ids().iter().position(|&id| id == route) {
-                    self.navigator.following.active_route = Some(index);
-                    self.navigator.request_seam(index, progress_m);
+                if self.route_ids().contains(&route) {
+                    self.navigator.following.active_route = Some(route);
+                    self.navigator.request_seam(route, progress_m);
                     self.ui.map_dirty = true;
                 } else {
                     self.navigator.review_failed(NavigatorError::SourceChanged);
@@ -1073,7 +1068,7 @@ mod tests {
             visit_costs: None,
             easier: None,
         });
-        nav.review_index(Some(1));
+        nav.review_route(Some(1));
         nav.route = PlanPhase::PreviewReady;
         nav
     }
@@ -1104,6 +1099,8 @@ mod tests {
                 };
                 app.set_routes_with_ids(&[summary.clone(), summary], &[4, 5]);
                 app.navigator = preview();
+                app.navigator.following.active_route = Some(4);
+                app.navigator.review_route(Some(5));
                 if mode == Mode::Idle {
                     app.navigator.following.active_route = None;
                     app.navigator.review.context.as_mut().unwrap().original = None;
@@ -1173,7 +1170,7 @@ mod tests {
             assert!(app.easier.phase == if recovery.is_some() { Phase::Ready } else { Phase::Stale });
             app.apply_gesture(crate::Gesture::Press);
             assert_ne!(app.assistant_review_status(), ReviewStatus::Saving);
-            assert_eq!(app.active_route_index(), Some(0));
+            assert_eq!(app.navigator.following.active_route, Some(0));
             if let Some(committed) = recovery {
                 assert_eq!(app.assistant_review_status(), ReviewStatus::Unresolved);
                 assert!(app.navigator.checkpoint_change().is_none());
@@ -1268,7 +1265,7 @@ mod tests {
         assert_eq!(nav.review.checkpoint.unwrap().original, None, "a destination replaces the previous goal");
         assert_eq!(nav.review.status, ReviewStatus::Accepted);
         assert!(nav.checkpoint_answer(MetadataOutcome::CheckpointWritten { token }).is_none());
-        assert_eq!(nav.review.preview_index, None);
+        assert_eq!(nav.review.preview_route, None);
         assert!(!nav.select_after_checkpoint(None));
         let token = issued(&mut nav, &mut tokens);
         nav.checkpoint_submission(token);
@@ -1343,6 +1340,8 @@ mod tests {
                 };
                 app.set_routes_with_ids(&[summary.clone(), summary], &[4, 5]);
                 app.navigator = preview();
+                app.navigator.following.active_route = Some(4);
+                app.navigator.review_route(Some(5));
                 app.navigator.review.recovery_seen = true;
                 app.navigator.accept_review(origin(), crate::settings::BikeType::Road);
                 let next = app.navigator.review.change.unwrap();

@@ -205,18 +205,13 @@ public final class RouteDetailModel {
 
         case .imported(let route, let fileName):
             let stats = RouteStats.compute(from: route.points)
-            name = route.name ?? fileName
+            let summary = RouteSummary(route: route, id: importedID, bikeType: bikeType, sourceFileName: fileName)
+            name = summary.name
             subtitle = Self.sourceLine(creator: route.creator, fileName: fileName)
-            preview = TrackPreview.normalizing(route.points.map(\.coordinate))
-            // The header figures, which are what the device shows for this route.
-            if let totals = RouteObjectCodec.totals(points: route.points) {
-                distanceMeters = Double(totals.distanceMeters)
-                climbMeters = Double(totals.ascentMeters)
-            } else {
-                distanceMeters = stats.distanceMeters
-                climbMeters = stats.elevationGainMeters
-            }
-            pointCount = route.points.count
+            preview = summary.trackPreview
+            distanceMeters = summary.distanceMeters
+            climbMeters = summary.elevationGainMeters
+            pointCount = summary.pointCount
             waypoints = route.waypoints
             elevationProfile = stats.elevationProfile
             maxGradePercent = stats.maxGradePercent

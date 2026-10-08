@@ -109,7 +109,7 @@ impl Planner {
             self.call(|token| NavigatorEffect::Acquire {
                 token,
                 work: PlannerWork::Detour(obc_app::DetourRequest {
-                    route: 0,
+                    route: source.id(),
                     from: (500_000, 500_000),
                     progress_m: 0,
                     target_m: index.total_distance_m,

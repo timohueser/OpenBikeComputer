@@ -65,7 +65,7 @@ conn.exec("INSERT INTO addresses VALUES (10,'12',7.851,47.991,'w123')");
 conn.exec("INSERT INTO addresses VALUES (14,'10',7.854,48.01,'w14'),(14,'10',7.854,48.03,'w141'),(15,'10',11.57,48.13,'w15')");
 conn.exec(readFileSync(new URL('../indexes.sql',import.meta.url),'utf8'));
 const metadata=conn.prepare('INSERT INTO metadata VALUES (?,?)');
-for(const [key,value] of Object.entries({schema:5,time_zone:'Europe/Berlin',attribution:['OSM contributors']}))
+for(const [key,value] of Object.entries({schema:6,time_zone:'Europe/Berlin',attribution:['OSM contributors']}))
   metadata.run(key,JSON.stringify(value));
 conn.exec('COMMIT');
 

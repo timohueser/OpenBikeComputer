@@ -1171,6 +1171,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "country-boundaries"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a949524fd9d83cd48e5046cd6212c1e533477d376b82570b6c0bcc4c6775625"
+
+[[package]]
 name = "cpal"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3456,6 +3462,7 @@ dependencies = [
  "embedded-graphics",
  "heapless 0.8.0",
  "libm",
+ "obc-crc",
  "obc-data",
  "obc-elevation",
  "obc-fixtures",
@@ -4775,6 +4782,7 @@ name = "planner-router-build"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "country-boundaries",
  "obc-data",
  "obc-dem",
  "osmpbfreader",

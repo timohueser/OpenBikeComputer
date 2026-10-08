@@ -123,7 +123,7 @@ fn actual_store_replace_reopen_reconcile_and_identity_guards() {
     let second = publish_image(&store, &mut image, Some(ride), None).unwrap();
     assert_eq!(first.id, second.id);
     assert_eq!(second.revision, Revision(2));
-    assert_eq!(store.entries().filter(|e| e.kind == ObjectKind::Metadata).count(), 1);
+    assert_eq!(store.entries().map(Result::unwrap).filter(|e| e.kind == ObjectKind::Metadata).count(), 1);
 
     let mut other_bytes = [0; MAX_LEN];
     let mut rival_image = load_image(&store, &mut other_bytes).unwrap();
@@ -448,7 +448,7 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
     assert_eq!(read_checkpoint(&store), Ok(Some(cp)));
     assert_eq!(check_route_change(&store, original.id), Err(Error::Store(StoreError::Busy)));
     assert!(crate::flat::route_cleanup::next(&store, 20, None).unwrap().is_none());
-    let accepted = store.entries().find(|entry| entry.id == route.id).unwrap();
+    let accepted = store.entries().map(Result::unwrap).find(|entry| entry.id == route.id).unwrap();
     assert_eq!(
         store.commit(&[Mutation::Put {
             meta: EntryMeta { payload_crc: accepted.payload_crc ^ 1, ..accepted },
@@ -460,7 +460,13 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
     let mut rows = Vec::new();
     read_rows(&store, |row| rows.push(row)).unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED));
+    assert!(store
+        .entries()
+        .map(Result::unwrap)
+        .find(|entry| entry.id == route.id)
+        .unwrap()
+        .flags
+        .has(EntryFlags::ASSISTANT_ACCEPTED));
     assert_eq!(rows.iter().find(|r| r.id == ride.id).unwrap().timestamp, 0);
     let mut observed = Vec::new();
     assert_eq!(census(&store, |row| observed.push(row)), Ok(CARD), "the proof names the card it lives on");
@@ -474,7 +480,13 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
     let mut after = Vec::new();
     read_rows(&store, |row| after.push(row)).unwrap();
     assert_eq!(after, rows);
-    assert!(store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED));
+    assert!(store
+        .entries()
+        .map(Result::unwrap)
+        .find(|entry| entry.id == route.id)
+        .unwrap()
+        .flags
+        .has(EntryFlags::ASSISTANT_ACCEPTED));
     let mut allocation = store.allocate(3).unwrap();
     store.write(&mut allocation, b"new").unwrap();
     let replacement = EntryMeta {
@@ -490,7 +502,13 @@ fn archive_and_checkpoint_writes_share_current_image_and_exact_target_validation
         ])
         .unwrap();
     assert!(
-        !store.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED),
+        !store
+            .entries()
+            .map(Result::unwrap)
+            .find(|entry| entry.id == route.id)
+            .unwrap()
+            .flags
+            .has(EntryFlags::ASSISTANT_ACCEPTED),
         "a new fingerprint never inherits acceptance"
     );
 }
@@ -528,8 +546,13 @@ fn every_checkpoint_publication_cut_recovers_a_complete_prior_or_accepted_image(
         let mut rows = Vec::new();
         read_rows(&reopened, |row| rows.push(row)).unwrap();
         assert_eq!(rows.iter().find(|row| row.id == ride.id).unwrap().timestamp, 0);
-        let accepted =
-            reopened.entries().find(|entry| entry.id == route.id).unwrap().flags.has(EntryFlags::ASSISTANT_ACCEPTED);
+        let accepted = reopened
+            .entries()
+            .map(Result::unwrap)
+            .find(|entry| entry.id == route.id)
+            .unwrap()
+            .flags
+            .has(EntryFlags::ASSISTANT_ACCEPTED);
         assert_eq!(
             accepted,
             clear || recovered.is_some(),

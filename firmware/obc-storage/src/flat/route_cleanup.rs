@@ -16,16 +16,17 @@ pub fn candidate_removals<D: BlockDevice>(
         _ => StoreError::Invalid,
     })?;
     let mut batch = heapless::Vec::new();
-    for entry in store.entries().filter(|e| e.kind == ObjectKind::Route && e.flags.is_route_head()) {
+    for entry in store.entries() {
+        let entry = entry?;
+        if entry.kind != ObjectKind::Route || !entry.flags.is_route_head() {
+            continue;
+        }
         if heads.contains(&(entry.id, entry.revision))
             && !entry.flags.has(EntryFlags::ASSISTANT_ACCEPTED)
             && !protected.contains(&Some(entry.id))
         {
             batch.push(Mutation::Remove { id: entry.id, revision: entry.revision }).map_err(|_| StoreError::Invalid)?;
         }
-    }
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
     }
     Ok(batch)
 }
@@ -40,24 +41,22 @@ pub fn next<D: BlockDevice>(
         super::metadata::Error::RemountRequired => StoreError::ReadOnly,
         _ => StoreError::Invalid,
     })?;
-    let head = store.entries().find(|e| {
+    let head = store.find_entry(|e| {
         e.kind == ObjectKind::Route
             && e.flags.is_route_head()
             && !protected.contains(&Some(e.id))
             && Some(e.id) != active
             && e.added_at_utc != 0
             && e.added_at_utc < before_utc
-    });
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
-    }
+    })?;
     let Some(head) = head else { return Ok(None) };
     let mut batch = heapless::Vec::new();
-    for entry in store.entries().filter(|e| e.id == head.id) {
+    for entry in store.entries() {
+        let entry = entry?;
+        if entry.id != head.id {
+            continue;
+        }
         batch.push(Mutation::Remove { id: entry.id, revision: entry.revision }).map_err(|_| StoreError::Invalid)?;
-    }
-    if !store.entries_ok() {
-        return Err(StoreError::Media);
     }
     Ok(Some((head.id, batch)))
 }
@@ -82,7 +81,7 @@ mod tests {
             added_at_utc: 0,
         };
         store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).unwrap();
-        store.entries().find(|e| e.id == meta.id).unwrap()
+        store.entries().map(Result::unwrap).find(|e| e.id == meta.id).unwrap()
     }
 
     #[test]
@@ -100,8 +99,8 @@ mod tests {
         assert_eq!(id, old.id);
         store.commit(&batch).unwrap();
         assert!(next(&store, 100, Some(active.id)).unwrap().is_none());
-        assert!(store.entries().any(|e| e.id == recent.id));
-        assert!(store.entries().any(|e| e.id == future.id));
+        assert!(store.entries().map(Result::unwrap).any(|e| e.id == recent.id));
+        assert!(store.entries().map(Result::unwrap).any(|e| e.id == future.id));
     }
 
     #[test]
@@ -149,6 +148,6 @@ mod tests {
             .commit(&[Mutation::Put { meta: EntryMeta { added_at_utc: 0, ..old }, source: PutSource::Amend }])
             .unwrap();
         let reopened = FlatStore::mount(&disk);
-        assert_eq!(reopened.entries().find(|e| e.id == old.id).unwrap().added_at_utc, 123);
+        assert_eq!(reopened.entries().map(Result::unwrap).find(|e| e.id == old.id).unwrap().added_at_utc, 123);
     }
 }

@@ -916,16 +916,18 @@ fn against<'a>(
     });
     let drift = drift.map(|drift| {
         let keys: Vec<String> = drift.iter().map(|drift| drift.key.clone()).collect();
-        let local_named: BTreeSet<String> = live
-            .releases()
-            .flat_map(|(prefix, id, release)| {
+        let mut local_named = BTreeSet::new();
+        for (prefix, id, release) in live.releases() {
+            local_named.extend(
                 release
-                    .named
-                    .iter()
-                    .filter(|file| store.object(&file.sha256).is_file())
-                    .map(move |file| format!("{prefix}/releases/{id}/{}", file.path))
-            })
-            .collect();
+                    .publication(id)
+                    .files()
+                    .filter(|(kind, file)| {
+                        matches!(kind, release::Published::Named(_)) && store.object(&file.sha256).is_file()
+                    })
+                    .map(|(_, file)| format!("{prefix}/{}", file.path)),
+            );
+        }
         let unavailable: Vec<_> = keys.iter().filter(|key| !local_named.contains(*key)).cloned().collect();
         let owners = live.owners(&unavailable);
         (keys, owners)
@@ -1098,6 +1100,7 @@ pub(super) fn fetcher_recorded<'a>(
     mut run: Option<&'a mut Run>,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     let moved: BTreeSet<String> = env.moves.keys().cloned().collect();
+    let refresh: BTreeSet<String> = moved.iter().filter(|source| !env.stale.contains(*source)).cloned().collect();
     let reads = env.live.iter().flat_map(|((source, _), read)| read.iter().map(move |version| (source, version)));
     let live: BTreeSet<(String, String)> = reads.map(|(source, version)| (source.clone(), version.clone())).collect();
     move |wanted| {
@@ -1111,7 +1114,12 @@ pub(super) fn fetcher_recorded<'a>(
             let message = format!("source `{}` is fetched per `{name}=`: it has no one newest version", source.id);
             return Err(Code::Usage.error(message).fix(pick));
         }
-        let request = Request { source, version: wanted.version.clone(), params: wanted.params.clone() };
+        let request = Request {
+            refresh: refresh.contains(&source.id),
+            source,
+            version: wanted.version.clone(),
+            params: wanted.params.clone(),
+        };
         let of_live =
             |version: &String| !moved.contains(&source.id) && live.contains(&(source.id.clone(), version.clone()));
         let snapshot = match run.as_deref_mut() {
@@ -1756,19 +1764,11 @@ pub(crate) mod tests {
         let error = fetch(&Wanted {
             source: "wikipedia".into(),
             version: None,
-            params: [
-                ("collection", "landmarks"),
-                ("area", "europe/test"),
-                ("osm", "invalid-digest"),
-                ("poly", "invalid-digest"),
-                ("code", "capture-code"),
-            ]
-            .map(|(name, value)| (name.into(), value.into()))
-            .into(),
+            params: vec![("content".into(), "invalid-json".into())],
         })
         .unwrap_err();
         assert_eq!(error.code, Code::FetchFailed);
-        assert!(error.message.contains("is not sha256:"), "the capture validates its own arguments: {error:?}");
+        assert!(error.message.contains("content request:"), "the capture validates its own arguments: {error:?}");
     }
 
     #[test]

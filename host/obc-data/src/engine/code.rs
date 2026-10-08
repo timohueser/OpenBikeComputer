@@ -50,6 +50,7 @@ pub(crate) struct Context {
     build: build::Context,
     native: Option<(PathBuf, String)>,
     include_engine: bool,
+    pub acquisition: Option<serde_json::Value>,
 }
 
 impl Context {

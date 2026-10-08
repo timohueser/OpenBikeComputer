@@ -49,7 +49,7 @@ and `model/`. Local combined packages use `REGION.sqlite`. `routes/` contains `R
 [route catalog contract](route-catalog.md). `device/catalog.json` is a snapshot. Its file references are absolute
 URLs to the original immutable cell objects.
 
-Search packages use schema `5`. Each place stores `website`, `phone`, and
+Search packages use schema `6`. Each place stores `website`, `phone`, and
 `description` as UTF-8 text. Empty values are empty strings. Each place stores
 `country`, the lowercase ISO 3166-1 code of its source record, and `region`, its
 state. A Swiss `region` is the German canton name of the opening hours library,
@@ -60,8 +60,29 @@ empty values. A description uses `description`, then `description:en`, then
 `description:de`, then the first nonempty `description:*` key in sorted order.
 The producer trims outer whitespace and keeps the description's internal text.
 The search query accepts an optional `source` with an OSM identity such as
-`n123`, `w123`, or `r123`. It returns that place without name matching or model
+`n123`, `w123`, or `r123`, or a curated Wikidata identity such as `Q123`. It returns that place without name matching or model
 inference. An absent identity returns an empty result.
+
+`place_identities` maps place ids to explicit Wikidata and Wikipedia identities. `place_content`
+contains `place_id`, `content` (UTF-8 JSON), and nullable `landmark_id`. The `places`
+view joins this content. A landmark reuses matching OSM places, including explicit
+Wikidata redirects and validated Wikipedia title redirects. Search results deduplicate their `landmark_id`. A landmark
+without a match uses its Wikidata identity and prepared coordinate. Peak articles
+join by OSM node id. Distinct summits that share an article stay distinct places.
+
+Content contains `default_language` and `variants`. Each variant contains `language`,
+`text_pages`, and `attribution` (`source_url`, string `revision`, `license_url`). Optional
+`photo` contains `online_url`, four complete `credit` strings, those attribution
+fields, `file_identity` (`filename`, `page_id`), `page_revision`, and `file_revision`
+(`timestamp`, `sha1`). Missing photo identity fields are null. Content excludes
+original notice envelopes, device paths, hashes, byte counts, and image payloads.
+Grid shards retain the content of their selected places.
+
+Planner details select English, then the prepared default language. Photo details
+make one bounded Commons metadata request when opened. A photo appears only when
+its page identity, description revision, file revision, and 500 px thumbnail URL
+match the prepared reference. A failed request or mismatch retains the article and
+source links. A missing online URL never falls back to an original image.
 
 The overlay database has SQLite `user_version=2`. `features` stores stable IDs,
 layer kinds, cycling and walking minimum zooms, geometry IDs, and attribute IDs.
@@ -75,9 +96,9 @@ uses checked addition. Shared geometry retains every source point.
 `places.pmtiles` holds rider places from the POI search database. It has gzip MVT
 at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
 `kind` and `name`. String properties `lon` and `lat` retain the search coordinates
-without tile quantization. The feature ID is `(type << 44) | osm_id`, where type
-is 1 for nodes, 2 for ways, and 3 for relations. OSM IDs are positive and below
-2^44. Categories are defined in the
+without tile quantization. The feature ID is `(type << 44) | source_id`, where type
+is 1 for nodes, 2 for ways, 3 for relations, and 4 for curated Wikidata items.
+Source IDs are positive and below 2^44; a Wikidata item uses the digits after `Q`. Categories are defined in the
 [place categories](../builder/web/src/lib/planner/poi-kinds.json).
 Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
 except that an empty archive contains one empty tile at the southwest bound.
@@ -199,7 +220,7 @@ Each file entry has `bytes` and `sha256`. Cost fields are `elapsed_seconds`,
 includes a component that builds at the same time.
 `sources.grid_components` records the partition and transport receipts.
 
-Search schema 5 metadata `component` is `pois`, `addresses`, or `all`. Metadata
+Search schema 6 metadata `component` is `pois`, `addresses`, or `all`. Metadata
 `time_zone` is the IANA time zone of the region recipe. All components and cells
 of a release have the same `time_zone`.
 Addresses own street records and house records. POIs own the other searchable

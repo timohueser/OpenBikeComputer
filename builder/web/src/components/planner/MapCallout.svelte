@@ -10,6 +10,7 @@
     import Icon from './PlannerIcon.svelte';
     import PlaceRow from './PlaceRow.svelte';
     import OpeningHours from './OpeningHours.svelte';
+    import PlaceContent from './PlaceContent.svelte';
     import { kindLabel } from '../../lib/planner/search/presentation';
     import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
     import Segmented from './Segmented.svelte';
@@ -171,6 +172,7 @@
                 {#if place}<p class="kind">{place.placeKind ? kindLabel(place.placeKind) : placeCategories[place.category].label}{place.locality ? ` · ${place.locality}` : ''}</p>{/if}
             </div>
         </div>
+        {#if place?.content}<PlaceContent content={place.content} name={place.label} />{/if}
         {#if place?.description && place.description !== placeCategories[place.category].label}<p class="place-note">{place.description}</p>{/if}
         {#if website || place?.website || phones.length}
             <div class="contacts">

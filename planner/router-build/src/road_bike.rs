@@ -1,5 +1,6 @@
 //! OSM preferences adapted from BRouter fastbike, trekking and gravel (see LICENSE.brouter).
-use crate::source::Tags;
+use crate::country::Country;
+use crate::source::{self, Oneway, Tags};
 use planner_router::{
     cost::CostBasis,
     model::{Road, RoadBike},
@@ -9,7 +10,7 @@ pub fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
     tags.get(key).map(String::as_str).unwrap_or("")
 }
 
-pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
+pub fn way(road: &Road, tags: &Tags, country: Country, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
     let highway = tag(tags, "highway");
     let ferry = tag(tags, "route") == "ferry";
     if matches!(highway, "motorway" | "motorway_link" | "construction" | "proposed" | "abandoned") {
@@ -43,7 +44,8 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
     let rough = matches!(smoothness, "bad" | "very_bad" | "horrible" | "very_horrible" | "impassable");
     let unpaved = !(paved || matches!(surface, "fine_gravel" | "cobblestone") || smoothness == "intermediate")
         && (explicit_unpaved || rough);
-    let cycleway = crate::source::cycleway(|key| tags.get(key).map(String::as_str), road.reversed);
+    let get = |key: &str| tags.get(key).map(String::as_str);
+    let cycleway = source::cycleway(get, road.reversed, country.left_hand());
     let designated = tag(tags, "bicycle") == "designated" || tag(tags, "bicycle_road") == "yes";
     let mut factor: f64 = match highway {
         "trunk" | "trunk_link" => 10.0,
@@ -129,12 +131,11 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
         factor = factor.max(surface_floor) * roughness;
     }
     if pushing {
-        let oneway = tags
-            .get("oneway:bicycle")
-            .or_else(|| tags.get("oneway"))
-            .map(String::as_str)
-            .unwrap_or(if tag(tags, "junction") == "roundabout" { "yes" } else { "no" });
-        let wrong_way = (road.reversed && matches!(oneway, "yes" | "true" | "1")) || (!road.reversed && oneway == "-1");
+        let wrong_way = match source::oneway(get, "bicycle") {
+            Oneway::Forward => road.reversed,
+            Oneway::Backward => !road.reversed,
+            _ => false,
+        };
         factor += if wrong_way {
             match highway {
                 _ if matches!(tag(tags, "junction"), "roundabout" | "circular") => 60.0,
@@ -164,6 +165,11 @@ pub fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option
 mod tests {
     use super::*;
     use planner_router::model::{Point, Surface, BIKE, FOOT, PUSH};
+
+    /// Tests use the worldwide rules.
+    fn way(road: &Road, tags: &Tags, variant: RoadBike, pushing: bool) -> Option<CostBasis> {
+        super::way(road, tags, Country::default(), variant, pushing)
+    }
 
     fn road() -> Road {
         Road {

@@ -33,6 +33,7 @@ export interface SearchPlace {
     distance: number; position?: { along: number; distance: number }; precision: 'place' | 'street' | 'house';
     opening_hours?: string; opening?: string; hoursStatus?: HoursStatus;
     website?: string; phone?: string; description?: string;
+    content?: import('../place-content').PlaceContent;
 }
 export interface ResolvedPoint { coordinate: Coordinate; label: string; source?: string; kind?: string; detail?: string; along?: number; alternatives?: ResolvedPoint[] }
 export interface QueryChange {

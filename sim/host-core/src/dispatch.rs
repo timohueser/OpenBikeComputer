@@ -963,8 +963,7 @@ impl HostLoop {
             }
             PlannerWork::Detour(request) => {
                 let Some(source) = routes.pin_active() else { return failed(NavigatorError::Workspace) };
-                if app.route_ids().get(request.route) != Some(&source.id())
-                    || !routes.pin_active().is_some_and(|current| source.matches(&current))
+                if request.route != source.id() || !routes.pin_active().is_some_and(|current| source.matches(&current))
                 {
                     return failed(NavigatorError::SourceChanged);
                 }

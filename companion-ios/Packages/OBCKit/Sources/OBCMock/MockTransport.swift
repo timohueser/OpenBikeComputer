@@ -125,6 +125,7 @@ public struct MockTransport: DeviceTransport {
 
     public func deleteRoute(_ id: DeviceObjectID) async throws {
         try await preludeThrowing()
+        try control.takeRouteDeleteFailure()
         control.recordRouteObjectDelete(id)
         control.removeRoute(id)
     }

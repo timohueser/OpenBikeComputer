@@ -1,5 +1,7 @@
 """Shared source classification for independently built search components."""
 import json
+import re
+from urllib.parse import parse_qs, unquote, urlsplit
 from pathlib import Path
 
 RIDER_KINDS = {kind for category in json.loads((Path(__file__).resolve().parents[2] /
@@ -61,3 +63,21 @@ def has_poi(p):
     kind, ns = category(p), names(p.get('name', {}))
     return kind != 'street' and (bool(ns) or kind in SERVICES | RIDER_KINDS) and not (
         p['osm_key'] == 'building' and p.get('housenumber') and not ns)
+
+
+def wikipedia_identity(value, language=''):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if value.startswith(('https://', 'http://')):
+        url = urlsplit(value)
+        host = url.hostname or ''
+        if not host.endswith('.wikipedia.org') or url.fragment:
+            return None
+        language = host.removesuffix('.wikipedia.org')
+        value = unquote(url.path.removeprefix('/wiki/')) if url.path.startswith('/wiki/') else parse_qs(url.query).get('title', [''])[0]
+    elif not language:
+        language, _, value = value.partition(':')
+    if not re.fullmatch(r'[a-z][a-z0-9-]*', language) or not value or '#' in value:
+        return None
+    return f"{language}:{value.replace('_', ' ').strip()}"

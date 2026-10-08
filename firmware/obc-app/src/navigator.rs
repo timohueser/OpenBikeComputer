@@ -339,21 +339,21 @@ pub struct NavigatorMachine {
     following: RouteState,
     /// Resident per-route caches, each with its own build key.
     profile: Profile,
-    profile_route: Option<usize>,
+    profile_route: Option<CatalogObjectId>,
     climbs: Climbs,
-    climbs_route: Option<usize>,
+    climbs_route: Option<CatalogObjectId>,
     waypoints: Waypoints,
-    waypoints_route: Option<usize>,
+    waypoints_route: Option<CatalogObjectId>,
     waypoints_from_m: u32,
     /// The loaded route whose bike type the settings do not have yet; see
     /// [`take_loaded_bike_type`](Self::take_loaded_bike_type).
-    bike_type_owed: Option<usize>,
+    bike_type_owed: Option<CatalogObjectId>,
     climb_profile: ClimbProfile,
     #[cfg(test)]
     climb_fill_count: u32,
     /// The one route matcher and the active-route key it last locked to.
     route_match: RouteMatch,
-    matched_route: Option<usize>,
+    matched_route: Option<CatalogObjectId>,
     /// Where the rider stood on the route at Finish, which unloads it before the store confirms the
     /// save.
     ride_end: Option<following::RideEnd>,
@@ -732,13 +732,6 @@ impl NavigatorMachine {
         } else {
             self.note_answer(PlanFamily::Route, PlanPhase::Idle, mode)
         }
-    }
-
-    /// Follow the undelivered detour request through a route-catalog rescan by durable identity. A
-    /// vanished route drops it, exactly as it drops the caches keyed on that route.
-    pub(crate) fn remap_detour_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.detour_request =
-            self.detour_request.and_then(|req| remap(req.route).map(|route| DetourRequest { route, ..req }));
     }
 
     /// A fresh tracking session drops the product and requests cleanup of any held preview.

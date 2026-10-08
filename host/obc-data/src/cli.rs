@@ -183,7 +183,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             };
             let source = find(&registry, id)?;
             let store = Store::open()?;
-            let request = Request { source, version, params: parse_params(&params)? };
+            let request = Request { refresh: false, source, version, params: parse_params(&params)? };
             let missing = request
                 .version
                 .as_ref()

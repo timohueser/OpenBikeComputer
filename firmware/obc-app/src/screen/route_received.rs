@@ -61,11 +61,10 @@ const SPARK_W: i32 = 180;
 const SPARK_H: i32 = 52;
 const SPARK_TOP: i32 = 62;
 
-/// The idle "ROUTE RECEIVED" prompt. The route is a remappable catalog index, `None` once a rescan
-/// removed it.
+/// The idle "ROUTE RECEIVED" prompt. The route identity survives catalog changes.
 #[derive(Debug)]
 pub struct RouteReceivedScreen {
-    route: Option<usize>,
+    route: crate::CatalogObjectId,
     actions: ActionRows,
     /// Map-plane millis when the popup opened: the auto-close anchor.
     opened_ms: u32,
@@ -78,16 +77,11 @@ impl RouteReceivedScreen {
     /// A prompt for catalog route `route`, opened at `now_ms`.
     pub(crate) fn new(
         _permit: CardPermit,
-        route: usize,
+        route: crate::CatalogObjectId,
         now_ms: u32,
         elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
     ) -> Self {
-        RouteReceivedScreen { route: Some(route), actions: ActionRows::new(0), opened_ms: now_ms, elevation }
-    }
-
-    /// Re-point the received route after a live catalog rescan, or mark it vanished.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.route = self.route.and_then(remap);
+        RouteReceivedScreen { route, actions: ActionRows::new(0), opened_ms: now_ms, elevation }
     }
 
     pub(crate) fn expired(&self, now_ms: u32) -> bool {
@@ -102,13 +96,10 @@ impl RouteReceivedScreen {
         match self.actions.handle(g, &ACTION_GUARDS) {
             // A route deleted while the popup was up dismisses, instead of opening a stranger. The
             // advisory popup gives way to the overview, so Back returns to what the card covered.
-            CardEvent::Activate(VIEW) => match self.route.filter(|&i| i < cx.routes.len()) {
-                Some(i) => {
-                    let prev = cx.navigator.replace_active_route(i);
-                    Transition::Replace(Screen::RouteOverview(RouteOverviewScreen::new(i, prev)))
-                }
-                None => Transition::Pop,
-            },
+            CardEvent::Activate(VIEW) if cx.route_available(self.route) => {
+                let prev = cx.navigator.replace_active_route(self.route);
+                Transition::Replace(Screen::RouteOverview(RouteOverviewScreen::new(self.route, prev)))
+            }
             CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop,
             CardEvent::None => Transition::None,
         }
@@ -120,7 +111,7 @@ impl RouteReceivedScreen {
 
         title_frame(cv, w, h, rx.t(Msg::RouteReceivedTitle), "");
         let mut drew_spark = false;
-        match self.route.and_then(|i| rx.routes.get(i)) {
+        match rx.route(self.route) {
             Some(route) => {
                 let name_row = rect(12, TITLE_BAR_H + 14, w - 24, Font::Body.line_height() as i32);
                 let name = rx.marquee.fit(&route.name, w - 24, Font::Body, Some(name_row));
@@ -266,20 +257,15 @@ impl TripReceivedScreen {
 /// The active-route-replaced info card. It has no options: the new version is already adopted.
 #[derive(Debug)]
 pub struct RouteUpdatedScreen {
-    route: Option<usize>,
+    route: crate::CatalogObjectId,
     /// Map-plane millis when the card opened: the auto-close anchor.
     opened_ms: u32,
 }
 
 impl RouteUpdatedScreen {
     /// A card for the still-navigated catalog route `route`, opened at `now_ms`.
-    pub(crate) fn new(_permit: CardPermit, route: usize, now_ms: u32) -> Self {
-        RouteUpdatedScreen { route: Some(route), opened_ms: now_ms }
-    }
-
-    /// Re-point the subject after a live catalog rescan; display-only here.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.route = self.route.and_then(remap);
+    pub(crate) fn new(_permit: CardPermit, route: crate::CatalogObjectId, now_ms: u32) -> Self {
+        RouteUpdatedScreen { route, opened_ms: now_ms }
     }
 
     pub(crate) fn expired(&self, now_ms: u32) -> bool {
@@ -305,7 +291,7 @@ impl RouteUpdatedScreen {
         title_frame(cv, w, h, rx.t(Msg::RouteReceivedUpdatedTitle), "");
         card_check(cv, Point::new(w / 2, TITLE_BAR_H + 40), 24);
         let name_top = h * 35 / 100;
-        match self.route.and_then(|i| rx.routes.get(i)) {
+        match rx.route(self.route) {
             Some(route) => {
                 let name_row = rect(12, name_top, w - 24, Font::Body.line_height() as i32);
                 let name = rx.marquee.fit(&route.name, w - 24, Font::Body, Some(name_row));

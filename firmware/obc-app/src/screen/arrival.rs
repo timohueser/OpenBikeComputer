@@ -19,14 +19,14 @@ use crate::{Msg, RecorderIntent};
 /// What the view offers, fixed when it opens. The card scheduler holds one, so it stays small.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ArrivalView {
-    /// The catalog index of the route the view is named for: the loaded route, or its trip day's
+    /// The durable id of the route the view is named for: the loaded route, or its trip day's
     /// own route when the loaded one is derived.
-    pub(crate) route: u16,
+    pub(crate) route: crate::CatalogObjectId,
     /// The loaded route's trip day, from 0.
     pub(crate) day: Option<u16>,
-    /// The next trip day's catalog index, when it starts where this day ends. The rider stands at
+    /// The next trip day's durable route id, when it starts where this day ends. The rider stands at
     /// the end of the day, so it loads as it is.
-    pub(crate) next: Option<u16>,
+    pub(crate) next: Option<crate::CatalogObjectId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,17 +52,10 @@ impl ArrivalScreen {
         self.view
     }
 
-    /// Follow the routes through a catalog rescan. A next day that vanished takes its row away.
-    pub(crate) fn remap_routes(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        let remap = |i: u16| remap(usize::from(i)).and_then(|i| u16::try_from(i).ok());
-        self.view.route = remap(self.view.route).unwrap_or(u16::MAX);
-        self.view.next = self.view.next.and_then(remap);
-    }
-
-    fn rows(&self) -> heapless::Vec<Row, 3> {
+    fn rows(&self, route_ids: &[crate::CatalogObjectId]) -> heapless::Vec<Row, 3> {
         let mut rows = heapless::Vec::new();
         let _ = rows.push(Row::Finish);
-        if self.view.next.is_some() {
+        if self.view.next.is_some_and(|id| route_ids.contains(&id)) {
             let _ = rows.push(Row::RideOn);
         }
         let _ = rows.push(Row::KeepRiding);
@@ -74,17 +67,17 @@ impl ArrivalScreen {
     }
 
     /// True when the highlighted row fills for a hold, which makes the app repaint that fill.
-    pub fn selection_is_guarded(&self) -> bool {
-        self.rows.selection_is_guarded(&Self::guards(&self.rows()))
+    pub fn selection_is_guarded(&self, route_ids: &[crate::CatalogObjectId]) -> bool {
+        self.rows.selection_is_guarded(&Self::guards(&self.rows(route_ids)))
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let rows = self.rows();
+        let rows = self.rows(cx.route_ids);
         match self.rows.handle(g, &Self::guards(&rows)) {
             CardEvent::Activate(i) => match rows.get(i) {
                 Some(Row::Finish) => super::ride_control::end_ride(cx, RecorderIntent::Save),
                 Some(Row::RideOn) => {
-                    if let Some(next) = self.view.next.map(usize::from).filter(|&i| i < cx.routes.len()) {
+                    if let Some(next) = self.view.next.filter(|&id| cx.route_available(id)) {
                         cx.navigator.load_route(next);
                     }
                     Transition::Pop
@@ -99,7 +92,7 @@ impl ArrivalScreen {
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::ArrivalTitle), "");
-        let name = |i: u16| rx.routes.get(usize::from(i)).map_or("", |r| obc_route::original_name(&r.name));
+        let name = |i| rx.route(i).map_or("", |r| obc_route::original_name(&r.name));
         let day_word = rx.t(Msg::RouteMenuDay);
 
         let here = name(self.view.route);
@@ -116,7 +109,7 @@ impl ArrivalScreen {
 
         let mut ride_on: heapless::String<32> = heapless::String::new();
         let mut ride_on_hint: heapless::String<80> = heapless::String::new();
-        if let (Some(day), Some(next)) = (self.view.day, self.view.next.and_then(|i| rx.routes.get(usize::from(i)))) {
+        if let (Some(day), Some(next)) = (self.view.day, self.view.next.and_then(|i| rx.route(i))) {
             let number = day + 2;
             let _ = write!(ride_on, "{}{day_word} {number}", rx.t(Msg::ArrivalRideOn));
             let units = rx.settings.units;
@@ -126,7 +119,7 @@ impl ArrivalScreen {
             let _ = write!(ride_on_hint, "{figure} {unit}{}{to}", rx.t(Msg::ArrivalTo));
         }
 
-        let rows = self.rows();
+        let rows = self.rows(rx.route_ids);
         let mut options: heapless::Vec<PromptOption, 3> = heapless::Vec::new();
         for row in &rows {
             let option = match row {

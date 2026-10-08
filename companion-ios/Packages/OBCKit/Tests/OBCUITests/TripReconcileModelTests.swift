@@ -106,6 +106,36 @@ struct TripReconcileModelTests {
         #expect(control.deviceTripCount == 1)
     }
 
+    @Test
+    func aFailedDroppedDayDeleteStaysLinkedAndRetryFinishesCleanup() async throws {
+        let (model, control, library) = try await makeMainWithLibrary()
+        try await uploadTrip(model)
+        let dropped = try #require(dayObjectID(model, 1))
+        var trip = try #require(model.trip(tripID))
+        trip.dayEnds.removeFirst()
+        library.saveTrip(trip)
+        model.reloadTrips()
+
+        control.failNextRouteDelete()
+        let upload = try #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        upload.start()
+        try await waitFor("cleanup failure") { upload.phase == .failed }
+        #expect(upload.failure == .cleanup(.writeFailed))
+        #expect(model.tripOnDeviceState(tripID) == .outdated, "the trip page must still offer Update")
+        #expect(model.trip(tripID)?.dayCopies.last??.link.objectID == dropped)
+        #expect(!control.deletedRouteObjectIDs.contains(dropped))
+        #expect(control.deviceTripStageIDs(control.deviceTripObjectIDs[0]).count == 1)
+
+        let retry = try #require(await model.prepareTripUpload(tripID, timing: Self.fastTiming))
+        retry.start()
+        try await waitFor("cleanup retried") { retry.phase == .done }
+        #expect(retry.committedCount == 0)
+        #expect(control.deletedRouteObjectIDs.contains(dropped))
+        #expect(model.trip(tripID)?.dayCopies.count == 1)
+        #expect(model.tripOnDeviceState(tripID) == .upToDate)
+        #expect(control.deviceTripCount == 1)
+    }
+
     /// A route already on the device that moves into a trip hands its device copy to its day,
     /// so the trip upload replaces that object and the device keeps no orphan.
     @Test

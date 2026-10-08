@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def search_metadata(database, full=False):
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
         metadata = {k: json.loads(v) for k, v in db.execute("SELECT key,value FROM metadata")}
-        if metadata.get("schema") != 5:
+        if metadata.get("schema") != 6:
             raise ValueError(f"Rebuild search package {database}: incompatible schema.")
         try:
             db.execute('SELECT rowid FROM addresses INDEXED BY address_cells LIMIT 0')
@@ -59,6 +59,8 @@ def search_shard(source, lookup, output, bounds, metadata):
         db.execute("INSERT OR IGNORE INTO selected SELECT DISTINCT street_id FROM addresses")
         db.execute("INSERT INTO place_records SELECT * FROM original.place_records WHERE id IN selected ORDER BY id")
         db.execute("INSERT INTO place_contexts SELECT * FROM original.place_contexts WHERE id IN (SELECT context_id FROM place_records) ORDER BY id")
+        db.execute("INSERT INTO place_content SELECT * FROM original.place_content WHERE place_id IN selected ORDER BY place_id")
+        db.execute("INSERT INTO place_identities SELECT * FROM original.place_identities WHERE place_id IN selected ORDER BY place_id")
         db.commit()
         db.execute("DETACH DATABASE original"); db.execute("DETACH DATABASE lookup")
         finish(db, output, {**metadata, "bounds": bounds})

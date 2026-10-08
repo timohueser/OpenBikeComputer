@@ -103,7 +103,7 @@ pub(crate) struct CatalogState {
     /// The staleness key for [`detour_preview`](CatalogState::detour_preview): a route swap or
     /// rescan mid-preview blanks the overlay rather than drawing a stale detour over different
     /// geometry.
-    detour_preview_route: Option<usize>,
+    detour_preview_route: Option<CatalogObjectId>,
     /// One operation is in flight at a time, so one token source is all the domain needs.
     ops: crate::device_core::TokenSource<crate::device_core::CatalogTag>,
     /// An admitted [`CatalogIntent`] that has not become an effect yet. Capacity one: later work
@@ -200,7 +200,7 @@ impl CatalogState {
 
     /// Replace the route catalog from the host's store (`ids` pairwise with `summaries`; entries
     /// past [`MAX_ROUTES`] are ignored), re-resolve the trip folders against the new ids, and
-    /// return the old id column so the caller can remap every held index by identity
+    /// return the old id column so positional flags can follow their objects
     /// ([`remap_route`](CatalogState::remap_route)).
     pub(crate) fn replace_routes(&mut self, summaries: &[RouteSummary], ids: &[CatalogObjectId]) -> OldRouteIds {
         let old_ids = self.route_ids.clone();
@@ -220,7 +220,7 @@ impl CatalogState {
     }
 
     /// Old route index to new route index by durable identity, or `None` when that route vanished.
-    /// Every held index — `active_route`, cache keys, open screens — follows a rescan through this.
+    /// Only positional catalog flags need this translation; long-lived subjects hold durable ids.
     pub(crate) fn remap_route(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.route_index_of(id)
@@ -508,7 +508,7 @@ impl CatalogState {
 
     /// Hand in a planned detour's decimated polyline, keyed to the route it was planned against.
     /// [`detour_preview_for`](CatalogState::detour_preview_for) gates on the same key.
-    pub(crate) fn set_detour_preview(&mut self, pts: &[(i32, i32)], active_route: Option<usize>) {
+    pub(crate) fn set_detour_preview(&mut self, pts: &[(i32, i32)], active_route: Option<CatalogObjectId>) {
         self.detour_preview.clear();
         for &p in pts.iter().take(NAV_PREVIEW_MAX) {
             let _ = self.detour_preview.push(p);
@@ -517,7 +517,7 @@ impl CatalogState {
     }
 
     /// The detour-preview polyline for `active_route`, or the empty slice when missing or stale.
-    pub(crate) fn detour_preview_for(&self, active_route: Option<usize>) -> &[(i32, i32)] {
+    pub(crate) fn detour_preview_for(&self, active_route: Option<CatalogObjectId>) -> &[(i32, i32)] {
         if self.detour_preview_route.is_some() && self.detour_preview_route == active_route {
             &self.detour_preview
         } else {

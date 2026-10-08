@@ -352,7 +352,7 @@ fn a_card_built_from_the_vectors_mounts_to_the_vectors() {
     assert_eq!(store.store_id(), STORE);
     assert_eq!(store.sequence(), 7);
     assert_eq!(store.next_object_id(), ObjectId(3));
-    assert_eq!(store.entries().collect::<Vec<_>>(), std::vec![route().meta, ride().meta]);
+    assert_eq!(store.entries().map(Result::unwrap).collect::<Vec<_>>(), std::vec![route().meta, ride().meta]);
     assert_eq!(store.free_extents(), EXTENTS - 33, "extent 12 and the ride's 32-extent reserve");
 
     // The worked example, through the seam this time: payload offset 40,960 of the route.

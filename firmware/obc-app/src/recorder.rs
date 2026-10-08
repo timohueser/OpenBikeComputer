@@ -10,6 +10,7 @@
 //! them.
 
 pub mod continuation;
+pub mod writer;
 
 use obc_elevation::DeadBand;
 use obc_formats::bike::BikeType;

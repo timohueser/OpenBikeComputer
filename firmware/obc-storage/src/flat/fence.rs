@@ -128,10 +128,11 @@ fn uncertain_publication_fences_every_mutation_and_preserves_pinned_reads() {
             );
             assert_eq!(store.format_media(StoreId([0x99; 16])), Err(StoreError::ReadOnly));
             assert!(matches!(store.open(ObjectId(1), Some(Revision(1))), Err(StoreError::ReadOnly)));
-            assert!(pending_list.next().is_none());
+            assert_eq!(pending_list.next(), Some(Err(StoreError::Media)));
+            assert_eq!(pending_list.next(), None);
             assert!(exhausted_list.next().is_none());
-            assert_eq!(store.entries().count(), 0);
-            assert!(!store.entries_ok());
+            assert_eq!(store.entries().collect::<std::vec::Vec<_>>(), [Err(StoreError::Media)]);
+
             store.close(clone);
             assert_eq!(disk.ops(), ops, "the fenced paths must not access media");
             assert_eq!(store.free_extents(), free);
@@ -171,9 +172,9 @@ fn uncertain_empty_catalog_cannot_authorize_default_metadata() {
     assert_eq!(store.commit(&[mutation]), Err(StoreError::Media));
     assert!(faulty.fired.get());
     assert!(empty.next().is_none());
-    assert!(!store.entries_ok());
-    assert_eq!(store.entries().count(), 0);
-    assert!(!store.entries_ok());
+
+    assert_eq!(store.entries().collect::<std::vec::Vec<_>>(), [Err(StoreError::Media)]);
+
     assert!(super::metadata::read_checkpoint(&store).is_err());
 }
 

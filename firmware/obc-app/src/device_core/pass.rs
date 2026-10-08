@@ -462,10 +462,9 @@ impl App {
         self.advance_animations(now.ui);
 
         if self.pass.connections.ui_catalog.is_empty() {
-            // A vanished subject consumes the request and yields nothing, which is why the index is
-            // resolved to a durable id here.
-            let intent = if let Some(idx) = self.activity.take_route_delete() {
-                self.catalogs.route_id_at(idx).map(|id| CatalogIntent::DeleteRoute { id })
+            // A vanished subject consumes the request without producing an effect.
+            let intent = if let Some(id) = self.activity.take_route_delete() {
+                self.catalogs.route_index_of(id).map(|_| CatalogIntent::DeleteRoute { id })
             } else if let Some(idx) = self.activity.take_ride_delete() {
                 self.catalogs.ride_entry(idx).map(|entry| CatalogIntent::DeleteRide { id: entry.id })
             } else {
@@ -550,7 +549,7 @@ impl App {
     fn admit_catalog_intent(&mut self, intent: CatalogIntent) -> Result<(), SlotFull<CatalogIntent>> {
         self.catalogs.admit_intent(intent)?;
         if let CatalogIntent::DeleteRoute { id } = intent {
-            if self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx)) == Some(id) {
+            if self.navigator.route_state().active_route == Some(id) {
                 let _ = self.pass.connections.active_route_removed.try_put(ActiveRouteRemoved { route: id });
             }
         }
@@ -638,7 +637,7 @@ impl App {
                     .active_route_index()
                     .filter(|&index| self.route_ids().get(index) == Some(&checkpoint.route.object))
                 {
-                    self.navigator.request_seam(index, checkpoint.progress_m);
+                    self.navigator.request_seam(self.route_ids()[index], checkpoint.progress_m);
                 }
             }
         }
@@ -662,15 +661,13 @@ impl App {
     fn stage_navigator(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Navigator);
         if let Some(removed) = self.pass.connections.active_route_removed.take() {
-            if self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx))
-                == Some(removed.route)
-            {
+            if self.navigator.route_state().active_route == Some(removed.route) {
                 self.navigator.set_active_route(None);
                 self.drop_route_derived_state();
                 self.ui.map_dirty = true;
             }
         }
-        let active = self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx));
+        let active = self.navigator.route_state().active_route;
         if active != self.pass.active_route {
             self.pass.active_route = active;
         }
@@ -1100,7 +1097,7 @@ mod tests {
     fn a_ui_delete_reaches_the_catalog_in_the_same_pass() {
         let mut app = navigating();
         quiet(&mut app, 10); // settle the boot pass
-        app.activity.request_route_delete(1);
+        app.activity.request_route_delete(app.route_ids()[1]);
 
         let plan = quiet(&mut app, 20);
         let mut effects = plan.effects;
@@ -1117,7 +1114,7 @@ mod tests {
         quiet(&mut app, 10);
         assert_eq!(app.active_route_index(), Some(0));
 
-        app.activity.request_route_delete(0);
+        app.activity.request_route_delete(app.route_ids()[0]);
         quiet(&mut app, 20);
 
         assert_eq!(app.active_route_index(), None, "Navigator dropped the route in the delete's own pass");
@@ -1343,7 +1340,7 @@ mod tests {
         assert!(plan.effects.catalog.is_empty(), "one commit, one refresh");
 
         // A busy catalog delays the refresh rather than losing it: the rider's delete goes first.
-        app.activity.request_route_delete(1);
+        app.activity.request_route_delete(app.route_ids()[1]);
         let mut next = committed(5);
         let plan = pass_with(&mut app, 40, &[], &mut OutcomeSlots::new(), &mut next);
         let mut effects = plan.effects;
@@ -1406,7 +1403,7 @@ mod tests {
         let mut app = navigating();
         quiet(&mut app, 10);
 
-        app.activity.request_route_delete(1);
+        app.activity.request_route_delete(app.route_ids()[1]);
         let plan = quiet(&mut app, 20);
         let mut effects = plan.effects;
         let delete = effects.catalog.take().expect("the rider's delete");
@@ -1435,7 +1432,7 @@ mod tests {
         let mut app = navigating();
         quiet(&mut app, 10);
 
-        app.activity.request_route_delete(1);
+        app.activity.request_route_delete(app.route_ids()[1]);
         let mut facts = committed(4);
         let plan = pass_with(&mut app, 20, &[], &mut OutcomeSlots::new(), &mut facts);
         let mut effects = plan.effects;
@@ -1482,13 +1479,13 @@ mod tests {
         let mut app = navigating();
         quiet(&mut app, 10);
 
-        app.activity.request_route_delete(1);
+        app.activity.request_route_delete(app.route_ids()[1]);
         let plan = quiet(&mut app, 20);
         let mut effects = plan.effects;
         let first = effects.catalog.take().expect("the delete went out");
 
         // A second delete while the first is unanswered: it waits, and no second effect is issued.
-        app.activity.request_route_delete(0);
+        app.activity.request_route_delete(app.route_ids()[0]);
         let plan = quiet(&mut app, 30);
         assert!(plan.effects.catalog.is_empty(), "one catalog operation in flight at a time");
 

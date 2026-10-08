@@ -128,7 +128,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
     }
     let mut attributes = HashMap::new();
     for way in osm.ways.values() {
-        let access = access::feature(way);
+        let access = access::feature(way, osm.country(way));
         let memberships = members.get(&way.id).map_or(&[][..], Vec::as_slice);
         if access.is_none() && memberships.is_empty() {
             continue;

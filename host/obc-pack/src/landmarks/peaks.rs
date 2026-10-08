@@ -140,6 +140,15 @@ fn identity(
     resolution: &Resolution,
 ) -> Result<(String, Option<Value>), String> {
     let raw = json_pinned(root, sources, resolution.path.as_deref().ok_or("link_resolution_missing")?)?;
+    if raw["kind"] == "link" {
+        let tag = summit.tags.get(&resolution.kind).ok_or("invalid_explicit_link")?;
+        if raw["key"] != format!("{}:{tag}", resolution.kind) || raw["status"] != "present" {
+            return Err("link_resolution_mismatch".into());
+        }
+        let id = string(&raw, "identity")?.to_owned();
+        let entity = (!is_qid(&id)).then(|| serde_json::json!({"id":id,"sitelinks":raw["sitelinks"],"labels":{}}));
+        return Ok((id, entity));
+    }
     match resolution.kind.as_str() {
         "wikidata" => {
             let original = summit.tags.get("wikidata").filter(|id| is_qid(id)).ok_or("invalid_wikidata_link")?;

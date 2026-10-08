@@ -156,6 +156,20 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
 .prose tbody tr:hover { background: var(--parchment-2); }
 .prose td code { white-space: nowrap; }
 
+body.wide { --content-max: 1320px; }
+body.wide .layout { max-width: 1660px; }
+body.wide .prose p { max-width: 720px; }
+.hardware-bom table { min-width: 1000px; table-layout: fixed; font-size: 13px; font-variant-numeric: tabular-nums; }
+.prose .hardware-bom th { white-space: normal; }
+.hardware-bom th:nth-child(1) { width: 12%; }
+.hardware-bom th:nth-child(2) { width: 6%; }
+.hardware-bom th:nth-child(3) { width: 21%; }
+.hardware-bom th:nth-child(4) { width: 25%; }
+.hardware-bom th:nth-child(5), .hardware-bom th:nth-child(6) { width: 12%; }
+.hardware-bom th:nth-child(7) { width: 12%; }
+.hardware-bom small { display: block; margin-top: 6px; color: var(--ink-soft); }
+.hardware-bom .table-wrap { scrollbar-color: var(--line-strong) var(--parchment); }
+
 .prose hr { border: 0; border-top: 1px solid var(--line); margin: 34px 0; }
 
 /* ----------------------------------------------------------------- figures */

@@ -514,13 +514,13 @@ impl CardScheduler {
         }
         let card = match ev {
             PendingUpload::Route(ev) => {
-                let Some(i) = ctx.catalogs.route_index_of(ev.id) else { return false };
+                let Some(_i) = ctx.catalogs.route_index_of(ev.id) else { return false };
                 if ev.active_replace {
-                    Screen::RouteUpdated(screen::RouteUpdatedScreen::new(PERMIT, i, ctx.now_ms))
+                    Screen::RouteUpdated(screen::RouteUpdatedScreen::new(PERMIT, ev.id, ctx.now_ms))
                 } else if ctx.tracking {
-                    Screen::RouteSwap(screen::RouteSwapScreen::received(PERMIT, i, ctx.now_ms))
+                    Screen::RouteSwap(screen::RouteSwapScreen::received(PERMIT, ev.id, ctx.now_ms))
                 } else {
-                    Screen::RouteReceived(screen::RouteReceivedScreen::new(PERMIT, i, ctx.now_ms, ev.elevation))
+                    Screen::RouteReceived(screen::RouteReceivedScreen::new(PERMIT, ev.id, ctx.now_ms, ev.elevation))
                 }
             }
             // The trip card is the same whether idle or tracking, because a trip is a folder and

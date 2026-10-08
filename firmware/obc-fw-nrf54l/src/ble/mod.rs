@@ -23,12 +23,9 @@ pub use state::app_ble_status;
 pub use state::wait_status_change;
 
 pub(crate) use state::set_usb_radio_inhibited;
-pub use state::{set_radio_enabled, take_bond_outcome, try_forget_bond};
+pub use state::{set_radio_enabled, set_sensor_discovery, take_bond_outcome, try_forget_bond};
 
-pub use sensors::{
-    cancel_scan, request_forget_sensor, request_save_sensor, request_scan, sensor_scan_hits, sensor_slot_status,
-    SensorSlotState,
-};
+pub use sensors::{request_forget_sensor, request_save_sensor, sensor_scan_hits, sensor_slot_status, SensorSlotState};
 
 use core::mem::MaybeUninit;
 

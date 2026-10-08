@@ -81,7 +81,13 @@ house numbers. A missing number returns a clearly labelled street location.
 
 `POST /api/planner-search/reverse` accepts `[longitude, latitude]` in `coordinate`.
 It returns `label` for the nearest mapped house within 100 metres, or `null`.
-Search packages use schema 5. Rebuild with `build.py` after a schema change.
+Search packages use schema 6. Rebuild with `build.py` after a schema change.
+Pass `--landmarks CONTENT.json` and `--peaks PEAKS.json` to include prepared content.
+The normal `obc data` POI step reads both content layers. Search matches explicit
+Wikidata and Wikipedia links and returns one result per curated landmark. Summit links keep OSM
+coordinates. The planners retain short articles offline. Photos load from Commons
+only after current file and credit revisions match. A failed check leaves the text
+and photo source link available. Search and routing packages contain no photo bytes.
 
 ## Checks
 
@@ -91,14 +97,16 @@ npm run test:query --prefix planner/search
 npm run test:data --prefix planner/search
 npm run test:model --prefix planner/search
 node planner/search/benchmark.mjs PACKAGE.sqlite REFERENCE.sqlite
+node planner/search/address-parity.mjs CANDIDATE.sqlite REFERENCE.sqlite 500 --require-equivalent
 ```
 
 The first two suites run in CI without large downloads. The last two use local packages
 and model weights. Model evaluation uses the hand-written EN, DE, FR, and IT testsets.
 For the shared BW cache, pass `OBC_SEARCH_DATA` and
 `OBC_SEARCH_REGIONS=baden-wuerttemberg` to the data suite.
-The benchmark checks exact stored records and search results against a reference package.
-It reports host query times and combined process memory. It does not measure phone performance.
+The benchmark reports record agreement, host query times, and process memory.
+Address parity requires the same source snapshot. It rejects missing or extra houses,
+field differences beyond one metre, and sampled lookup differences.
 
 ## Model development
 

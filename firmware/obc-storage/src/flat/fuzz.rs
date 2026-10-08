@@ -199,8 +199,7 @@ fn the_seam_never_panics_on_hostile_arguments() {
             let _ = store.read(&handle, edge(&mut rng), &mut [0u8; 64]);
             store.close(handle);
         }
-        let listed = store.entries().count();
-        assert!(store.entries_ok(), "the listing failed on a card with no faults armed");
+        let listed = store.entries().map(Result::unwrap).count();
         assert_eq!(listed, store.entry_count() as usize);
     }
 

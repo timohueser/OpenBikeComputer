@@ -3,12 +3,14 @@ import { baseKind, resolve } from './resolver.mjs';
 import { validateRequest, RequestError } from './validation.mjs';
 import { localQuery } from './local-query.mjs';
 
+const withContent = place => ({ ...place, content: place.content ? JSON.parse(place.content) : undefined });
+
 export async function answerQuery(db, input, parser, hours) {
   if (input.source) {
     const now = input.now === undefined ? Date.now() : Date.parse(input.now);
     const results = db.rows({sql: 'SELECT p.* FROM {c}.places p WHERE p.source = ?', params: [input.source], limit: 1, bounds: input.view});
     return {type:'places', request:{type:'place',name:input.q}, results:results.map(place=>({
-      ...place, precision:'place', distance:0, hoursStatus:hours.currentOpening(place,now),
+      ...withContent(place), precision:'place', distance:0, hoursStatus:hours.currentOpening(place,now),
     }))};
   }
   let canRetry = false;
@@ -68,6 +70,6 @@ export async function answerQuery(db, input, parser, hours) {
     answer = { type: 'unresolved', results: [], note: error.message };
   }
   const now = input.now === undefined ? Date.now() : Date.parse(input.now);
-  if (answer.results) answer.results = answer.results.map(place => ({ ...place, hoursStatus: hours.currentOpening(place, now) }));
+  if (answer.results) answer.results = answer.results.map(place => ({ ...withContent(place), hoursStatus: hours.currentOpening(place, now) }));
   return { ...answer, request, notice, canRetry, parserMs: elapsed };
 }

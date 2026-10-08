@@ -23,7 +23,7 @@ class ReleaseTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE metadata(key TEXT,value TEXT)')
                 db.execute("INSERT INTO metadata VALUES('schema','1')")
-            for schema in [1, 2, 3, 4, 5]:
+            for schema in [1, 2, 3, 4, 5, 6]:
                 with sqlite3.connect(database) as db:
                     db.execute("UPDATE metadata SET value=? WHERE key='schema'", (str(schema),))
                 with self.assertRaisesRegex(ValueError, 'Rebuild search package'):
@@ -35,7 +35,7 @@ class ReleaseTests(unittest.TestCase):
             with sqlite3.connect(database) as db:
                 db.execute('CREATE TABLE addresses(lat REAL,lon REAL)')
                 db.execute('CREATE INDEX address_cells ON addresses(CAST((lat+90)*200 AS INTEGER)*72001+CAST((lon+180)*200 AS INTEGER))')
-            self.assertEqual(release.search_metadata(database, full=True)['schema'], 5)
+            self.assertEqual(release.search_metadata(database, full=True)['schema'], 6)
 
     def test_changed_or_missing_bytes_fail_release_verification(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -136,13 +136,6 @@ class ReleaseTests(unittest.TestCase):
                     "files": {"maps/snow.json": {}}}
         active = release.endpoints("a" * 64, document, "Test region", "https://maps.example", "https://tiles.example", "https://api.example")
         self.assertEqual(active["layers"], {"snow": "https://tiles.example/releases/" + "a" * 64 + "/snow.json"})
-
-    def test_region_recipe_refuses_unsupported_country_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "region.json"
-            path.write_text(json.dumps({"format": 1, "region": "test", "access": "FR"}))
-            with self.assertRaisesRegex(ValueError, "German access defaults"):
-                planner_prepare.recipe(path)
 
     def test_each_region_recipe_is_valid_and_named_by_its_file(self):
         for path in (release.maps.ROOT / "tools/planner-regions").glob("*.json"):

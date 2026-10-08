@@ -53,9 +53,17 @@ pub fn capture_code() -> Result<String, String> {
 pub fn landmark_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = capture_view(request)?;
     crate::landmarks::discover::discover(&extract, &view.join("candidates.json"))?;
-    check_pins(&view, &boundary, "candidates")?;
-    crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)
-        .map(drop)
+    if view.join("recipe.json").is_file() {
+        check_pins(&view, &boundary, "candidates")?;
+    } else {
+        let candidates: crate::landmarks::discover::Candidates =
+            serde_json::from_slice(&std::fs::read(view.join("candidates.json")).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let files = shared_files(request);
+        crate::landmarks::shared::landmark_view(&files, &view, &candidates.qids)?;
+    }
+    crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)?;
+    crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
 }
 
 /// The compiled peaks of a region: `peaks/peaks.json` and its photos, as [`landmark_content`]
@@ -63,9 +71,13 @@ pub fn landmark_content(request: &Request) -> Result<(), String> {
 pub fn peak_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = capture_view(request)?;
     crate::landmarks::peaks::discover(&extract, &boundary, &view.join("summits.json"))?;
-    check_pins(&view, &boundary, "summits")?;
-    crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)
-        .map(drop)
+    if view.join("recipe.json").is_file() {
+        check_pins(&view, &boundary, "summits")?;
+    } else {
+        crate::landmarks::shared::peak_view(&shared_files(request), &view)?;
+    }
+    crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)?;
+    crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
 }
 
 /// Refuse a capture whose recipe pinned another boundary, or other `candidates` or `summits`, than
@@ -99,7 +111,11 @@ fn capture_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String
                 continue;
             }
             // A capture file is `#<query>/<path in the capture>`.
-            let path = name.strip_prefix('#').and_then(|name| name.split_once('/')).map(|(_, path)| path);
+            let path = if name.starts_with("#content/") {
+                Some(name.trim_start_matches('#'))
+            } else {
+                name.strip_prefix('#').and_then(|name| name.split_once('/')).map(|(_, path)| path)
+            };
             capture.insert(path.ok_or(format!("{source}: {name} is not a capture file"))?.to_string(), object.clone());
         }
     }
@@ -109,12 +125,27 @@ fn capture_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String
     };
     let (poly, extract) = (one(".poly")?, one(".osm.pbf")?);
     let view = request.output.with_file_name("view");
-    copied_view(&capture, &view)?;
+    if capture.keys().any(|name| name.starts_with("content/")) {
+        std::fs::create_dir_all(&view).map_err(|e| e.to_string())?;
+    } else {
+        copied_view(&capture, &view)?;
+    }
     let boundary = request.output.with_file_name("boundary.geojson");
     let poly = std::fs::read_to_string(&poly).map_err(|e| format!("{}: {e}", poly.display()))?;
     std::fs::write(&boundary, crate::catalog::boundary::geojson(&poly)?)
         .map_err(|e| format!("{}: {e}", boundary.display()))?;
     Ok((view, boundary, extract))
+}
+
+fn shared_files(request: &Request) -> BTreeMap<String, PathBuf> {
+    request
+        .snapshots
+        .iter()
+        .filter(|(source, _)| CAPTURES.contains(&source.as_str()))
+        .flat_map(|(_, files)| files.iter())
+        .filter(|(name, _)| name.starts_with("#content/"))
+        .map(|(name, path)| (name.trim_start_matches('#').into(), path.clone()))
+        .collect()
 }
 
 /// The landmark artifacts of one leaf: `landmarks/<i>/<j>.bin` for each cell of the option `cells`
@@ -203,6 +234,7 @@ fn write_artifacts(request: &Request, dir: &str, artifacts: BTreeMap<CellId, Vec
 /// Each file of `files` in the new directory `dir`, as a hard link or else a copy: the compiler
 /// refuses a symbolic link, which could name a file outside its directory.
 fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     for (path, object) in files {
         if path.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
             return Err(format!("{path} is not a relative path"));
@@ -221,6 +253,39 @@ fn copied_view(files: &BTreeMap<String, PathBuf>, dir: &Path) -> Result<(), Stri
 mod tests {
     use super::*;
     use crate::landmarks::peaks::{discover, PeakContent};
+
+    #[test]
+    fn regions_without_content_identities_compile_empty_landmarks_and_peaks() {
+        let dir = obcm_testkit::scratch::scratch_dir("step", "empty-content");
+        let osm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../obc-data-steps/tests/data/planner.osm.pbf");
+        let poly = dir.join("area.poly");
+        std::fs::write(&poly, "test\n1\n 7.79 47.99\n 7.82 47.99\n 7.82 48.02\n 7.79 48.02\n 7.79 47.99\nEND\nEND\n")
+            .unwrap();
+        for (collection, compile, document) in [
+            ("landmarks", landmark_content as fn(&Request) -> Result<(), String>, "content.json"),
+            ("peaks", peak_content, "peaks.json"),
+        ] {
+            let request = Request {
+                step: format!("maps/{collection}-content"),
+                snapshots: BTreeMap::from([
+                    ("geofabrik-poly".into(), BTreeMap::from([("area.poly".into(), poly.clone())])),
+                    ("geofabrik-extracts".into(), BTreeMap::from([("area.osm.pbf".into(), osm.clone())])),
+                ]),
+                layers: BTreeMap::new(),
+                layer_files: BTreeMap::new(),
+                libraries: Vec::new(),
+                options: serde_json::json!({}),
+                output: dir.join(collection).join("output"),
+                metrics: dir.join(collection).join("metrics.json"),
+            };
+            compile(&request).unwrap();
+            let content: Value =
+                serde_json::from_slice(&std::fs::read(request.output.join(collection).join(document)).unwrap())
+                    .unwrap();
+            assert!(content["records"].as_array().unwrap().is_empty());
+            assert_eq!(std::fs::read_dir(request.output.join("shared-content")).unwrap().count(), 0);
+        }
+    }
 
     #[test]
     fn area_content_with_the_same_relative_path_preserves_unique_and_overlapping_articles() {

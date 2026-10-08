@@ -139,7 +139,7 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
     {
         let owner = owner.0.lock().unwrap();
         let store = owner.ready().unwrap();
-        let metadata = store.entries().find(|entry| entry.kind == ObjectKind::Metadata).unwrap();
+        let metadata = store.entries().map(Result::unwrap).find(|entry| entry.kind == ObjectKind::Metadata).unwrap();
         let handle = store.open(metadata.id, Some(metadata.revision)).unwrap();
         store.close(handle);
         let HostMedia::Memory(pages) = store.device() else { unreachable!() };
@@ -153,7 +153,11 @@ fn retained_recording_and_replaced_heads_cannot_inherit_proof_or_be_recorded_int
 fn stamp_proof(owner: &HostStore, utc: u32) {
     let owner = owner.0.lock().unwrap();
     let store = owner.ready().unwrap();
-    let head = store.entries().find(|entry| entry.kind == obc_storage::flat::ObjectKind::Metadata).unwrap();
+    let head = store
+        .entries()
+        .map(Result::unwrap)
+        .find(|entry| entry.kind == obc_storage::flat::ObjectKind::Metadata)
+        .unwrap();
     let mut bytes = vec![0; head.payload_len as usize];
     let handle = store.open(head.id, Some(head.revision)).unwrap();
     assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), bytes.len());

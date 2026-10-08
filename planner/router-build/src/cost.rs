@@ -60,7 +60,7 @@ impl<'a> Costing<'a> {
                 match &profile.weighting {
                     Weighting::RoadBike(variant) => {
                         let source = graph.osm.ways.get(&road.way).ok_or("Road lacks source OSM way")?;
-                        road_bike::way(road, &source.tags, *variant, mode == PUSH)
+                        road_bike::way(road, &source.tags, graph.osm.country(source), *variant, mode == PUSH)
                     }
                     Weighting::Weighted { surface, road: weights, .. } => Some(CostBasis {
                         factor: surface[road.surface as usize]

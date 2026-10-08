@@ -163,13 +163,9 @@ pub trait Store {
     /// Close an open object. Mandatory: a dropped handle leaks its row and its extents.
     fn close(&self, handle: Self::Handle);
 
-    /// The read-only catalog view, in the catalog's own `(ObjectId, Revision)` order.
-    fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
-
-    /// True when the last [`entries`](Store::entries) listing ran to the end of the array. A short
-    /// listing is a media failure with nowhere else to report itself, so every caller that treats a
-    /// listing as the catalog asks here first.
-    fn entries_ok(&self) -> bool;
+    /// The read-only catalog view, in `(ObjectId, Revision)` order. A failed read or changed
+    /// catalog returns one error, then ends.
+    fn entries(&self) -> impl Iterator<Item = Result<EntryMeta, StoreError>> + '_;
 
     /// Persist exact archive possession without starting a retention countdown. An existing exact
     /// proof is idempotent. Success requires validated durable metadata, never GET completion.

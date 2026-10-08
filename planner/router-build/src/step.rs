@@ -17,8 +17,6 @@ pub struct Build {
     /// OSM PBF files.
     pub inputs: Vec<PathBuf>,
     pub region: String,
-    /// The country whose access defaults the import applies.
-    pub country: String,
     /// West, south, east, north in degrees. Routes are exact within this clipped graph.
     pub bounds: [f64; 4],
     /// Profile ids, or `all`.
@@ -56,7 +54,7 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
         identities.push(format!("{:x}", hash.finalize()));
     }
     eprintln!("Importing {}", args.region);
-    let mut graph = crate::osm::import(&args.inputs, args.bounds, &args.country)?;
+    let mut graph = crate::osm::import(&args.inputs, args.bounds)?;
     if let Some(mut terrain) = terrain {
         eprintln!("Sampling terrain");
         crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon))?;
@@ -87,7 +85,7 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
 
 /// The planner routing step. It reads the OSM files of its input layers and the GLO-30 tiles of
 /// its bounds. The options are `region`, `bounds`, `profiles` and `countries`, as in [`Build`].
-/// The import applies the German access defaults, the only ones it knows. The layer:
+/// The import applies each way's country access defaults. The layer:
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
 /// - `blocks/`: the routing blocks of the grid cells (`blocks::publish`);
@@ -111,8 +109,7 @@ pub fn step(request: &Request) -> Result<(), String> {
         return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
     }
     let inputs = request.layers.values().flat_map(|files| files.values().cloned()).collect();
-    let args =
-        Build { inputs, region: text("region")?, country: "DE".into(), bounds, profiles: list("profiles")?, countries };
+    let args = Build { inputs, region: text("region")?, bounds, profiles: list("profiles")?, countries };
     let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), None, bounds)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;

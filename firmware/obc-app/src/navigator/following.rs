@@ -1,33 +1,16 @@
 //! Active-route state and route-following policy owned by [`NavigatorMachine`](super::NavigatorMachine).
 
-use core::num::NonZeroUsize;
-
 use obc_route::{Climbs, RouteReader, Waypoints};
 
 use super::arrival::Arrival;
 use super::NavigatorMachine;
-
-/// A route-catalog index stored as `index + 1`, so [`Option`] gets a compact empty state. Catalog
-/// indices are bounded by [`crate::MAX_ROUTES`], so the nonzero form preserves every valid value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RouteIndex(NonZeroUsize);
-
-impl RouteIndex {
-    fn new(index: usize) -> Self {
-        debug_assert!(index < crate::MAX_ROUTES);
-        RouteIndex(NonZeroUsize::new(index + 1).expect("a route-catalog index is bounded"))
-    }
-
-    const fn get(self) -> usize {
-        self.0.get() - 1
-    }
-}
+use crate::CatalogObjectId;
 
 /// Where the rider stood on the loaded route when the ride ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RideEnd {
-    /// The route's catalog index.
-    pub(crate) route: usize,
+    /// The route's durable object id.
+    pub(crate) route: CatalogObjectId,
     pub(crate) progress_m: u32,
     /// The rider had arrived at the route's end.
     pub(crate) arrived: bool,
@@ -38,7 +21,7 @@ pub(crate) struct RideEnd {
 /// A seam re-anchor waiting for the next tick with matching route geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SeamRequest {
-    route: RouteIndex,
+    route: CatalogObjectId,
     anchor_m: u32,
 }
 
@@ -46,7 +29,7 @@ struct SeamRequest {
 /// from Navigator; they do not read a copied mirror from [`crate::Activity`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RouteState {
-    pub(crate) active_route: Option<usize>,
+    pub(crate) active_route: Option<CatalogObjectId>,
     pub(crate) route_total_m: u32,
     pub(crate) progress_m: u32,
     pub(crate) off_route: bool,
@@ -80,15 +63,8 @@ impl RouteState {
         self.dist_to_route_m = result.dist_m;
     }
 
-    fn request_seam(&mut self, route: usize, anchor_m: u32) {
-        self.seam_request = Some(SeamRequest { route: RouteIndex::new(route), anchor_m });
-    }
-
-    fn remap_seam(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.seam_request = self.seam_request.and_then(|request| {
-            remap(request.route.get())
-                .map(|route| SeamRequest { route: RouteIndex::new(route), anchor_m: request.anchor_m })
-        });
+    fn request_seam(&mut self, route: CatalogObjectId, anchor_m: u32) {
+        self.seam_request = Some(SeamRequest { route, anchor_m });
     }
 
     #[cfg(test)]
@@ -179,12 +155,12 @@ impl NavigatorMachine {
     }
 
     #[cfg(test)]
-    pub(crate) fn cache_keys(&self) -> (Option<usize>, Option<usize>) {
+    pub(crate) fn cache_keys(&self) -> (Option<CatalogObjectId>, Option<CatalogObjectId>) {
         (self.climbs_route, self.waypoints_route)
     }
 
     /// Select or clear the active catalog route. Route-keyed caches reconcile on the next tick.
-    pub(crate) fn set_active_route(&mut self, route: Option<usize>) {
+    pub(crate) fn set_active_route(&mut self, route: Option<CatalogObjectId>) {
         if self.select_after_checkpoint(route) {
             self.select_now(route);
         }
@@ -195,13 +171,13 @@ impl NavigatorMachine {
         self.following.active_route = None;
     }
 
-    pub(crate) fn replace_active_route(&mut self, route: usize) -> Option<usize> {
+    pub(crate) fn replace_active_route(&mut self, route: CatalogObjectId) -> Option<CatalogObjectId> {
         let previous = self.following.active_route;
         self.set_active_route(Some(route));
         previous
     }
 
-    pub(crate) fn request_seam(&mut self, route: usize, anchor_m: u32) {
+    pub(crate) fn request_seam(&mut self, route: CatalogObjectId, anchor_m: u32) {
         self.following.request_seam(route, anchor_m);
     }
 
@@ -291,7 +267,7 @@ impl NavigatorMachine {
         if self.following.active_route != self.waypoints_route {
             let loaded = self.following.active_route.zip(route);
             self.waypoints = loaded.map_or_else(Waypoints::new, |(_, r)| r.load_waypoints(0));
-            self.waypoints_route = loaded.map(|(index, _)| index);
+            self.waypoints_route = loaded.map(|(id, _)| id);
             self.waypoints_from_m = 0;
             self.following.next_waypoint = None; // a fresh table — re-derive the next waypoint on the next match
         }
@@ -340,7 +316,7 @@ impl NavigatorMachine {
     /// geometry.
     pub(crate) fn apply_pending_seam(&mut self, route: Option<&RouteReader>) -> bool {
         let Some(req) = self.following.seam_request else { return false };
-        if self.following.active_route != Some(req.route.get()) {
+        if self.following.active_route != Some(req.route) {
             self.following.seam_request = None;
             return false;
         }
@@ -419,7 +395,7 @@ impl NavigatorMachine {
     /// Load catalog route `route`: activate it, and owe the settings its bike type. Only a rider's
     /// start or swap, and a phone replace of the active route, are loads. A browse preview, a
     /// detour, a visit and a resume change the active route without changing the rider's type.
-    pub(crate) fn load_route(&mut self, route: usize) {
+    pub(crate) fn load_route(&mut self, route: CatalogObjectId) {
         self.set_active_route(Some(route));
         self.bike_type_owed = Some(route);
     }
@@ -445,7 +421,7 @@ impl NavigatorMachine {
             let loaded = self.following.active_route.zip(route);
             self.climbs =
                 loaded.map_or_else(Climbs::new, |(_, r)| r.elevation_profile_and_climbs_into(&mut self.profile));
-            self.profile_route = loaded.map(|(index, _)| index);
+            self.profile_route = loaded.map(|(id, _)| id);
             self.climbs_route = self.profile_route;
             self.following.active_climb = None;
         }
@@ -453,8 +429,8 @@ impl NavigatorMachine {
 
     /// Drop everything derived from the active route's geometry — matcher lock, elevation profile,
     /// climbs, waypoints and the match-derived readouts in [`RouteState`] — so the next tick and
-    /// render re-derive it. New bytes under a kept route id are exactly the case the same-id remap
-    /// would otherwise treat as unchanged state. The recording session is untouched.
+    /// render re-derive it. A replacement can keep its durable id, so identity alone does not detect
+    /// new geometry. The recording session is untouched.
     pub(crate) fn drop_route_derived_state(&mut self) {
         // `reset` also clears any wide re-lock armed by a freeze: an unstarted matcher scans the
         // whole route on its next fix, which is wider still.
@@ -476,41 +452,36 @@ impl NavigatorMachine {
         self.following.seam_request = None;
     }
 
-    /// Re-point every route-keyed cache after a catalog replacement: each build key follows its
-    /// route's identity through `remap`, and a key whose route vanished drops its cache. The
-    /// active-route remap lives here too, so a caller cannot forget the matcher reset.
-    pub(crate) fn remap_route_keys(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        // When the identity survives, the navigated route and its caches all move together, so
-        // nothing resets. When it vanished, navigation unloads and the per-route state goes with it.
+    /// Remove subjects absent from the complete catalog. Surviving identities keep their caches.
+    pub(crate) fn retain_routes(&mut self, ids: &[CatalogObjectId]) {
+        let retained = |id: &CatalogObjectId| ids.contains(id);
         let old_active = self.following.active_route;
-        self.following.active_route = old_active.and_then(remap);
-        self.ride_end = self.ride_end.and_then(|end| Some(RideEnd { route: remap(end.route)?, ..end }));
-        // A queued seam re-anchor follows the same durable route identity as `active_route`, or is
-        // cancelled if that route vanished. So does Navigator's undelivered detour request.
-        self.following.remap_seam(remap);
-        if old_active.is_some() && self.following.active_route.is_none() {
-            self.route_match.reset();
+        self.following.active_route = old_active.filter(retained);
+        self.ride_end = self.ride_end.filter(|end| retained(&end.route));
+        self.following.seam_request = self.following.seam_request.filter(|request| retained(&request.route));
+        self.detour_request = self.detour_request.filter(|request| retained(&request.route));
+        self.review.preview_route = self.review.preview_route.filter(retained);
+        if let super::review::AfterCheckpoint::Select(route) = &mut self.review.after {
+            *route = route.filter(retained);
         }
-        self.matched_route = self.matched_route.and_then(remap);
-        self.bike_type_owed = self.bike_type_owed.and_then(remap);
-        let old_profile = self.profile_route;
-        self.profile_route = old_profile.and_then(remap);
-        // Clearing the active-climb state with the cache keeps a stale "on climb" flag from
-        // stranding the rider on a gone route.
-        let old_climbs = self.climbs_route;
-        self.climbs_route = old_climbs.and_then(remap);
-        if old_climbs.is_some() && self.climbs_route.is_none() {
+        if old_active.is_some() && self.following.active_route.is_none() {
+            self.drop_route_derived_state();
+        }
+        self.matched_route = self.matched_route.filter(retained);
+        self.bike_type_owed = self.bike_type_owed.filter(retained);
+        self.profile_route = self.profile_route.filter(retained);
+        if self.climbs_route.is_some_and(|id| !retained(&id)) {
             self.climbs = Climbs::new();
             self.following.active_climb = None;
         }
-        let old_wpts = self.waypoints_route;
-        self.waypoints_route = old_wpts.and_then(remap);
-        if old_wpts.is_some() && self.waypoints_route.is_none() {
+        self.climbs_route = self.climbs_route.filter(retained);
+        if self.waypoints_route.is_some_and(|id| !retained(&id)) {
             self.waypoints = Waypoints::new();
             self.waypoints_from_m = 0;
             self.following.next_waypoint = None;
             self.following.waypoint_count = 0;
         }
+        self.waypoints_route = self.waypoints_route.filter(retained);
     }
 }
 

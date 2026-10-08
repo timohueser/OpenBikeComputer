@@ -62,26 +62,26 @@ enum Row {
 }
 
 /// The identity of the highlighted row, so the highlight can follow it across a live catalog
-/// rescan. A route or a day is pinned by its catalog index, a folder by its trip's durable id.
+/// rescan. Routes, days and folders keep their durable object ids.
 #[derive(Debug, Clone, Copy)]
 enum SelId {
     Folder(crate::CatalogObjectId),
-    Route(usize),
+    Route(crate::CatalogObjectId),
 }
 
 impl Row {
-    /// This row's [`SelId`] — a folder resolves to its trip's durable id, a route to its index.
-    fn identity(self, trips: &[TripSummary]) -> Option<SelId> {
+    /// This row's [`SelId`] — a folder resolves to its trip's durable id, a route to its durable id.
+    fn identity(self, trips: &[TripSummary], route_ids: &[crate::CatalogObjectId]) -> Option<SelId> {
         match self {
             Row::Folder(ti) => trips.get(ti).map(|t| SelId::Folder(t.id)),
-            Row::Route(ri) | Row::Day { route: ri, .. } => Some(SelId::Route(ri)),
+            Row::Route(ri) | Row::Day { route: ri, .. } => route_ids.get(ri).copied().map(SelId::Route),
         }
     }
 
-    fn is(self, id: SelId, trips: &[TripSummary]) -> bool {
+    fn is(self, id: SelId, trips: &[TripSummary], route_ids: &[crate::CatalogObjectId]) -> bool {
         match (self, id) {
             (Row::Folder(ti), SelId::Folder(tid)) => trips.get(ti).is_some_and(|t| t.id == tid),
-            (Row::Route(ri) | Row::Day { route: ri, .. }, SelId::Route(i)) => ri == i,
+            (Row::Route(ri) | Row::Day { route: ri, .. }, SelId::Route(i)) => route_ids.get(ri) == Some(&i),
             _ => false,
         }
     }
@@ -124,32 +124,27 @@ impl RouteMenuScreen {
         let selected = t.next_day(progress).map_or(0, |next| t.days().take_while(|&(day, _)| day < next).count());
         RouteMenuScreen { selected, sel_id: None, scope: RouteMenuScope::Trip { trip_id: t.id } }
     }
-    /// Re-point the highlight after a live catalog rescan: map the pinned identity across the
-    /// rescan and find it again in the rebuilt list. A route that vanished clamps near its old
-    /// position, never to a dangling index.
-    pub(crate) fn remap_routes(
+    /// Resolve the highlighted subject in the rebuilt rows. A removed subject clamps the cursor.
+    pub(crate) fn refresh_rows(
         &mut self,
-        remap: &dyn Fn(usize) -> Option<usize>,
+        route_ids: &[crate::CatalogObjectId],
         trips: &[TripSummary],
         routes_len: usize,
         internal_routes: u64,
     ) {
-        let mapped = self.sel_id.and_then(|id| match id {
-            SelId::Route(i) => remap(i).map(SelId::Route),
-            SelId::Folder(tid) => Some(SelId::Folder(tid)),
-        });
+        let mapped = self.sel_id;
         let mut rows: heapless::Vec<Row, ROW_CAP> = heapless::Vec::new();
         self.build_rows(trips, routes_len, internal_routes, &mut rows);
-        self.selected = match mapped.and_then(|id| rows.iter().position(|r| r.is(id, trips))) {
+        self.selected = match mapped.and_then(|id| rows.iter().position(|r| r.is(id, trips, route_ids))) {
             Some(row) => row,
             None => self.selected.min(rows.len().saturating_sub(1)),
         };
-        self.sel_id = rows.get(self.selected).and_then(|r| r.identity(trips));
+        self.sel_id = rows.get(self.selected).and_then(|r| r.identity(trips, route_ids));
     }
 
-    /// Pin the identity of the current selection, so the next rescan-remap can follow it.
-    fn pin(&mut self, rows: &[Row], trips: &[TripSummary]) {
-        self.sel_id = rows.get(self.selected).and_then(|r| r.identity(trips));
+    /// Pin the identity of the current selection, so rebuilt rows can restore the cursor.
+    fn pin(&mut self, rows: &[Row], trips: &[TripSummary], route_ids: &[crate::CatalogObjectId]) {
+        self.sel_id = rows.get(self.selected).and_then(|r| r.identity(trips, route_ids));
     }
 
     /// Build the current scope's rows into `out`. Internal Assistant routes are omitted, but the
@@ -194,11 +189,11 @@ impl RouteMenuScreen {
         if len > 0 {
             self.selected = self.selected.min(len - 1);
         }
-        self.pin(&rows, cx.trips);
+        self.pin(&rows, cx.trips, cx.route_ids);
         match g {
             Gesture::Step(n) => {
                 let t = list::on_step(&mut self.selected, n, len);
-                self.pin(&rows, cx.trips);
+                self.pin(&rows, cx.trips, cx.route_ids);
                 t
             }
             Gesture::Press if len > 0 => match rows[self.selected.min(len - 1)] {
@@ -228,14 +223,15 @@ impl RouteMenuScreen {
         if cx.navigator.route_unaccepted(i) {
             return Transition::None;
         }
+        let Some(&id) = cx.route_ids.get(i) else { return Transition::None };
         if cx.recorder.recording() {
-            if cx.navigator.route_state().active_route == Some(i) {
+            if cx.navigator.route_state().active_route == Some(id) {
                 return Transition::Root(Screen::Map(MapScreen::new()));
             }
-            return Transition::Push(Screen::RouteSwap(RouteSwapScreen::new(i)));
+            return Transition::Push(Screen::RouteSwap(RouteSwapScreen::new(id)));
         }
-        let prev = cx.navigator.replace_active_route(i);
-        Transition::Push(Screen::RouteOverview(RouteOverviewScreen::new(i, prev)))
+        let prev = cx.navigator.replace_active_route(id);
+        Transition::Push(Screen::RouteOverview(RouteOverviewScreen::new(id, prev)))
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -550,10 +546,10 @@ mod tests {
         menu.build_rows(&[], routes.len(), 0b010, &mut rows);
         assert!(matches!(rows.as_slice(), [Row::Route(0), Row::Route(2)]));
         menu.selected = 1;
-        menu.pin(&rows, &[]);
-        menu.remap_routes(&|index| Some(index + 1), &[], 4, 0b0011);
+        menu.pin(&rows, &[], &[10, 20, 30]);
+        menu.refresh_rows(&[5, 10, 20, 30], &[], 4, 0b0011);
         assert_eq!(menu.selected, 1);
-        assert!(matches!(menu.sel_id, Some(SelId::Route(3))));
+        assert!(matches!(menu.sel_id, Some(SelId::Route(30))));
 
         let trips = [trip(9, "Tour", &[0, 1, 2], &routes)];
         RouteMenuScreen::trip(&trips[0], None).build_rows(&trips, routes.len(), 0b010, &mut rows);

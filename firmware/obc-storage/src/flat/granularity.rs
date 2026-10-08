@@ -149,10 +149,9 @@ impl ReentrantCard {
         // The catalog view. It should need no borrow at all, which is what lets a `LIST` page be
         // drained while a commit runs.
         let ok = catch_unwind(AssertUnwindSafe(|| {
-            let count = Store::entries(store).count();
-            (count, store.entries_ok())
+            Store::entries(store).try_fold(0, |count, entry| entry.map(|_| count + 1))
         }));
-        tick(&mut phase.listing, matches!(ok, Ok((_, true))));
+        tick(&mut phase.listing, matches!(ok, Ok(Ok(_))));
 
         // Free space: the shared half of the free map, which is what a `PUT` admission asks.
         let ok = catch_unwind(AssertUnwindSafe(|| store.free_extents()));

@@ -381,7 +381,7 @@ mod tests {
         let mut app = recording_on(&[(route.summary(), 7), (back_route.summary(), 8)], &[trip], 0, |_| {});
 
         ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
-        assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next: Some(1) }));
+        assert_eq!(view(&app), Some(ArrivalView { route: 7, day: Some(0), next: Some(8) }));
         press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
         assert_eq!(app.active_route_index(), Some(1), "Day 2 is loaded");
         assert!(matches!(app.top_screen(), Screen::Map(_)));
@@ -418,7 +418,7 @@ mod tests {
         press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
         assert_eq!(app.active_route_index(), Some(1), "Day 2 is loaded");
         ride(&mut app, &back_route, &[(0, 10_000), (0, 5_000), (0, 100)]);
-        assert_eq!(view(&app), Some(ArrivalView { route: 1, day: Some(1), next: Some(2) }));
+        assert_eq!(view(&app), Some(ArrivalView { route: 8, day: Some(1), next: Some(9) }));
         press(&mut app, &back_route, &[Gesture::Hold]);
 
         let written = save(&mut app, &back_route);
@@ -517,8 +517,8 @@ mod tests {
             let mut app = recording_on(&[(route.summary(), 7), (next_route.summary(), 8)], &[trip], 0, |_| {});
 
             ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
-            let next = offered.then_some(1);
-            assert_eq!(view(&app), Some(ArrivalView { route: 0, day: Some(0), next }), "{gap} µdeg");
+            let next = offered.then_some(8);
+            assert_eq!(view(&app), Some(ArrivalView { route: 7, day: Some(0), next }), "{gap} µdeg");
             press(&mut app, &route, &[Gesture::Step(1), Gesture::Press]);
             let loaded = if offered { 1 } else { 0 };
             assert_eq!(app.active_route_index(), Some(loaded), "the second row is Ride on only below a transfer");
@@ -543,7 +543,7 @@ mod tests {
         });
 
         ride(&mut app, &route, &[(0, 0), (0, 5_000), (0, 9_900)]);
-        assert_eq!(view(&app), Some(ArrivalView { route: 1, day: Some(1), next: None }), "named for Day 2's route");
+        assert_eq!(view(&app), Some(ArrivalView { route: 8, day: Some(1), next: None }), "named for Day 2's route");
         assert_eq!(obc_route::original_name("From stop · Day 2 Ulrichen"), "Day 2 Ulrichen");
         assert_eq!(obc_route::original_name("Detour · Grimsel"), "Grimsel");
         assert_eq!(obc_route::original_name("To start · Grimsel"), "Grimsel");

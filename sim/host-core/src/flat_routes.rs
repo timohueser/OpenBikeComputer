@@ -203,7 +203,11 @@ impl RouteRepository for FlatRouteStore {
         let mut internal_routes = 0u64;
         let mut temporary_routes = 0u64;
         let mut built_day = 0u64;
-        for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route && entry.flags.is_route_head()) {
+        for entry in store.entries() {
+            let entry = entry.map_err(|_| obc_app::metadata::MetadataError::WriteFailed)?;
+            if entry.kind != ObjectKind::Route || !entry.flags.is_route_head() {
+                continue;
+            }
             if ids.len() == obc_app::MAX_ROUTES {
                 break;
             }
@@ -228,7 +232,7 @@ impl RouteRepository for FlatRouteStore {
             ids.push(entry.id.0);
             revisions.push(entry.revision);
         }
-        if !store.entries_ok() || scope(store) != start {
+        if scope(store) != start {
             return Err(obc_app::metadata::MetadataError::Stale);
         }
         self.catalog = catalog;

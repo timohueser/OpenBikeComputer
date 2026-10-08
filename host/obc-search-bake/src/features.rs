@@ -129,6 +129,7 @@ fn address_tags(mut tags: Tags) -> Tags {
         .filter(|(k, _)| {
             k.starts_with("contact:")
                 || k.starts_with("description")
+                || k.starts_with("wikipedia:")
                 || k.starts_with("addr:")
                 || k.starts_with("name:")
                 || matches!(
@@ -146,6 +147,7 @@ fn address_tags(mut tags: Tags) -> Tags {
                         | "area"
                         | "building"
                         | "wikidata"
+                        | "wikipedia"
                         | "postal_code"
                         | "landuse"
                         | "capital"

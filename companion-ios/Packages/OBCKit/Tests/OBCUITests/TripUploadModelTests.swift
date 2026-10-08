@@ -68,19 +68,47 @@ struct TripUploadModelTests {
         #expect(control.deviceTripCount == 1)
     }
 
+    @Test
+    func aChangedDeviceCannotReceiveThePreparedTrip() async throws {
+        let (model, control) = try await makeMain()
+        try await waitFor("identity settled") { model.connectedScope != nil }
+        let upload = try #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        control.connection = .disconnected
+        try await waitFor("disconnected") { model.connection == .disconnected }
+        control.deviceInfo = DeviceInfo(
+            name: "Second OBC", firmwareVersion: "1.0.0", serial: "OBC-B",
+            storeID: FixtureSet.defaultStoreID)
+        control.connection = .connected
+        try await waitFor("replacement identity") { model.connectedScope?.serial == "OBC-B" }
+
+        upload.start()
+        try await waitFor("old queue rejected") { upload.phase == .failed }
+        #expect(upload.committedCount == 0)
+        #expect(control.deviceTripCount == 0)
+        #expect(model.trip(tripID)?.dayCopies.compactMap { $0 }.isEmpty == true)
+    }
+
+    @Test
+    func aFailedCatalogReadStopsPreparationBeforeAnyWrite() async throws {
+        let (model, control) = try await makeMain()
+        try await waitFor("identity settled") { model.connectedScope != nil }
+        control.failNextTripCatalog()
+        let upload = try #require(await model.prepareTripUpload(tripID, timing: Self.fastTiming))
+        upload.start()
+        #expect(upload.phase == .failed)
+        #expect(upload.failure == .device(.readFailed))
+        #expect(upload.committedCount == 0)
+        #expect(control.deviceTripCount == 0)
+        #expect(model.trip(tripID)?.dayCopies.compactMap { $0 }.isEmpty == true)
+    }
+
     // MARK: Flat catalog vs. resident menu capacity
 
     @Test
     func anUnavailableRequiredTransferFailsInsteadOfReportingDone() async throws {
         let (model, control) = try await makeMain()
-        let plan = try #require(model.planTripUpload(tripID))
-        let upload = TripUploadModel(
-            transport: MockTransport(control: control),
-            card: DeviceTripCard(name: "Trip", days: []), deviceName: "OBC",
-            precheck: plan.precheck,
-            steps: [.transfer(title: "Trip details", makeTransfer: { nil }, commit: { _, _ in
-                Issue.record("an unavailable transfer cannot commit")
-            })], timing: Self.fastTiming)
+        let upload = try #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
+        model.deleteTrip(tripID)
         upload.start()
         try await waitFor("required transfer fails", timeout: .seconds(20)) { upload.phase == .failed }
         #expect(upload.committedCount == 0)

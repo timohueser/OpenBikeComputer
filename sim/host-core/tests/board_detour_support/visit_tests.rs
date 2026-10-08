@@ -235,7 +235,7 @@ fn visit_uses_real_legs_and_cancel_retracts_only_candidate() {
         h.h.app.cancel_assistant();
         h.settle(ReviewStatus::Idle);
         h.h.assert_clean();
-        assert_eq!(h.h.store.entries().count(), 2);
+        assert_eq!(h.h.store.entries().map(Result::unwrap).count(), 2);
     }
 }
 
@@ -256,7 +256,7 @@ fn visit_cancellation_drains_owned_tickets_before_releasing_arena() {
         assert!(h.visit.immediate(h.h.reply, false));
         h.settle(ReviewStatus::Idle);
         h.h.assert_clean();
-        assert_eq!(h.h.store.entries().count(), 2);
+        assert_eq!(h.h.store.entries().map(Result::unwrap).count(), 2);
     }
 }
 
@@ -294,7 +294,7 @@ fn find_ranks_from_leg_searches_without_touching_the_card() {
             h.h.free = h.h.store.free_extents();
         }
         let checkpoint = h.h.app.assistant_checkpoint();
-        let entries = h.h.store.entries().count();
+        let entries = h.h.store.entries().map(Result::unwrap).count();
         let writes = h.h.writer.transport().completed.borrow().len();
         h.h.app.bind_place_map(Some(flat_store::planner_map_key(h.h.store)));
         h.h.app.open_find_place();
@@ -326,7 +326,7 @@ fn find_ranks_from_leg_searches_without_touching_the_card() {
         assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
         assert_eq!(h.h.app.find_place_result_count(), 1);
         assert_eq!(h.h.writer.transport().completed.borrow().len(), writes, "ranking asks the card for nothing");
-        assert_eq!(h.h.store.entries().count(), entries);
+        assert_eq!(h.h.store.entries().map(Result::unwrap).count(), entries);
         h.h.app.apply_gesture(obc_app::Gesture::Back);
         assert_eq!(h.h.app.find_place_state(), obc_app::find_place::State::Ready);
         for _ in 0..2 {
@@ -346,14 +346,14 @@ fn find_ranks_from_leg_searches_without_touching_the_card() {
             let candidate = h.h.app.assistant_preview().unwrap().source.object;
             h.h.app.cancel_assistant();
             h.settle(ReviewStatus::Accepted);
-            assert!(!h.h.store.entries().any(|entry| entry.id.0 == candidate));
+            assert!(!h.h.store.entries().map(Result::unwrap).any(|entry| entry.id.0 == candidate));
         }
         assert_eq!(h.h.app.assistant_checkpoint(), checkpoint);
         assert_eq!(
             h.h.app.assistant_review_status(),
             if accepted { ReviewStatus::Accepted } else { ReviewStatus::Idle }
         );
-        assert_eq!(h.h.store.entries().count(), if accepted { 3 } else { 2 });
+        assert_eq!(h.h.store.entries().map(Result::unwrap).count(), if accepted { 3 } else { 2 });
         h.h.assert_clean();
     }
 }
@@ -390,7 +390,7 @@ fn visit_rejects_changed_sources_and_keeps_uncertain_publication_fenced() {
     let original = h.h.original.as_ref().unwrap();
     put(h.h.store, ObjectKind::Route, &route(), Some((original.id(), original.revision())));
     h.settle(ReviewStatus::Failed(NavigatorError::SourceChanged));
-    assert_eq!(h.h.store.entries().count(), 2);
+    assert_eq!(h.h.store.entries().map(Result::unwrap).count(), 2);
     assert_eq!(h.h.app.active_route_index(), Some(0));
     let mut h = VisitHarness::new();
     h.until_ticket(Kind::Publish);

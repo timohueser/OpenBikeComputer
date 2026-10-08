@@ -195,7 +195,7 @@ impl Harness {
             self.accept(Effect::Acquire {
                 token,
                 work: PlannerWork::Detour(obc_app::DetourRequest {
-                    route: 0,
+                    route: self.app.route_ids()[0],
                     from: (500_000, 500_000),
                     progress_m: 0,
                     target_m: 2226,
@@ -285,7 +285,7 @@ impl Drop for Harness {
 fn real_preview_releases_arena_and_commit_publishes_fresh_route() {
     let mut h = Harness::new();
     h.preview();
-    assert_eq!(h.store.entries().count(), 2);
+    assert_eq!(h.store.entries().map(Result::unwrap).count(), 2);
     assert!(h.store.free_extents() < h.free, "preview retains sealed leg");
     h.commit();
     let Outcome::DetourCommitted { route, .. } = h.next_outcome() else { panic!("commit failed") };
@@ -295,7 +295,7 @@ fn real_preview_releases_arena_and_commit_publishes_fresh_route() {
     assert!(matches!(h.next_outcome(), Outcome::Released { .. }));
     assert!(h.guard.is_none());
     assert!(h.original.as_ref().unwrap().is_current());
-    assert_eq!(h.store.entries().count(), 3);
+    assert_eq!(h.store.entries().map(Result::unwrap).count(), 3);
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn canceled_tickets_drain_before_arena_release_and_retract_publication() {
             }
         }
         h.assert_clean();
-        assert_eq!(h.store.entries().count(), 2);
+        assert_eq!(h.store.entries().map(Result::unwrap).count(), 2);
     }
 }
 
@@ -379,7 +379,7 @@ fn retained_source_replacement_cannot_authorize_preview_commit() {
     h.release(false);
     assert!(matches!(h.next_outcome(), Outcome::Released { .. }));
     assert!(h.guard.is_none());
-    assert_eq!(h.store.entries().filter(|e| e.flags == EntryFlags::NONE).count(), 2);
+    assert_eq!(h.store.entries().map(Result::unwrap).filter(|e| e.flags == EntryFlags::NONE).count(), 2);
 }
 
 #[test]
@@ -439,7 +439,11 @@ fn full_hold_table_shares_exact_original_reader_and_map_removal_cancels_publicat
     h.release(false);
     assert!(matches!(h.next_outcome(), Outcome::Released { .. }));
     assert_eq!(
-        h.store.entries().filter(|e| e.kind == ObjectKind::Route && e.flags == EntryFlags::NONE).count(),
+        h.store
+            .entries()
+            .map(Result::unwrap)
+            .filter(|e| e.kind == ObjectKind::Route && e.flags == EntryFlags::NONE)
+            .count(),
         obc_storage::flat::store::MAX_OPEN_OBJECTS
     );
 }
@@ -449,7 +453,7 @@ fn assistant_board_admission_and_terminal_release_preserve_original_ownership() 
     use obc_app::navigator::{ReviewContext, ReviewPurpose, REVIEW_FACTS_POLICY};
     let h = Harness::new();
     let id = h.original.as_ref().unwrap().id();
-    let entry = h.store.entries().find(|entry| entry.id == id).unwrap();
+    let entry = h.store.entries().map(Result::unwrap).find(|entry| entry.id == id).unwrap();
     let context = ReviewContext {
         purpose: ReviewPurpose::Destination,
         map: obc_formats::obcr::RouteSourceKey { store: h.store.store_id().0, object: 2, revision: 1 },
@@ -476,7 +480,7 @@ fn assistant_board_admission_and_terminal_release_preserve_original_ownership() 
     h.original.as_ref().unwrap().read_at(0, &mut bytes).unwrap();
     bytes[5] |= obc_formats::obcr::FLAG_UNRESOLVED_AVOIDANCE;
     let replacement = put(h.store, ObjectKind::Route, &bytes, Some((id, entry.revision)));
-    let entry = h.store.entries().find(|entry| entry.id == replacement).unwrap();
+    let entry = h.store.entries().map(Result::unwrap).find(|entry| entry.id == replacement).unwrap();
     assert!(!assistant::original_allowed(
         h.store,
         ReviewContext { original: Some(metadata::fingerprint(entry)), ..context },

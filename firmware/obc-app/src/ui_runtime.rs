@@ -293,7 +293,7 @@ impl UiRuntime {
         reader: Option<&Reader>,
         route: Option<&obc_route::RouteReader>,
         user_fix: Option<Fix>,
-        active_route: Option<usize>,
+        active_route: Option<crate::CatalogObjectId>,
         progress_m: u32,
         route_total_m: u32,
         detour_preview: &[(i32, i32)],
@@ -365,7 +365,7 @@ impl UiRuntime {
         &mut self,
         settings: &Settings,
         scope: crate::corridor::UpAheadScope,
-        active_route: Option<usize>,
+        active_route: Option<crate::CatalogObjectId>,
         progress_m: u32,
     ) {
         let mut placed = obc_reader::PoiCategorySet::EMPTY;

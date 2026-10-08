@@ -336,7 +336,7 @@ impl<D: BlockDevice> Device<D> {
 
     /// Every entry, in catalog order — what a complete `LIST` would page out.
     pub fn catalog(&self) -> Vec<EntryMeta> {
-        Store::entries(&self.store).collect()
+        Store::entries(&self.store).collect::<Result<_, _>>().expect("a readable test catalog")
     }
 
     /// The bytes behind one entry, read through the store. `revision` of zero means the head.
@@ -390,9 +390,10 @@ impl<D: BlockDevice> Device<D> {
     /// from the card rather than from the caller. It is the one catalog state no opcode produces,
     /// which is why a test that needs one needs this.
     pub fn seed_retained(&mut self, id: u64, bytes: &[u8], name: &str) -> EntryMeta {
-        let previous = Store::entries(&self.store)
-            .find(|meta| meta.id == ObjectId(id) && !meta.flags.has(EntryFlags::RETAINED))
-            .expect("the object to retain is on the card");
+        let previous =
+            Store::find_entry(&self.store, |meta| meta.id == ObjectId(id) && !meta.flags.has(EntryFlags::RETAINED))
+                .expect("a readable test catalog")
+                .expect("the object to retain is on the card");
         let mut allocation = Store::allocate(&self.store, bytes.len() as u64).expect("the revision allocates");
         Store::write(&self.store, &mut allocation, bytes).expect("the revision writes");
         let head = EntryMeta {

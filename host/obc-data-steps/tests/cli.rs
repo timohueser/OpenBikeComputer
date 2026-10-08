@@ -112,7 +112,13 @@ fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
         }
     }
     let out = obc_data(&temp, &["plan", "live", "--json"]);
-    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{} {}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
     let response: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(response["needs_prepare"], true);
     assert!(response["blocked"].as_array().unwrap().iter().any(|product| {

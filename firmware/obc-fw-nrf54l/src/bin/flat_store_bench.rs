@@ -538,6 +538,10 @@ fn measure_boot(label: &str, plan: Option<u64>) -> Boot {
 
     let mut recording = None;
     for entry in store.entries() {
+        let Ok(entry) = entry else {
+            error!("BOOT catalog read failed");
+            break;
+        };
         if entry.flags.has(EntryFlags::RECORDING) {
             recording = Some(entry);
         }
@@ -777,6 +781,10 @@ fn measure_opens(store: &FlatStore<Card>, entries: u16) {
     let step = (entries as usize / MAX_OPEN_OBJECTS).max(1);
     let mut found = 0usize;
     for (index, meta) in store.entries().enumerate() {
+        let Ok(meta) = meta else {
+            error!("OPEN catalog read failed");
+            return;
+        };
         if index.is_multiple_of(step) && found < MAX_OPEN_OBJECTS {
             ids[found] = meta.id;
             found += 1;
@@ -1410,7 +1418,7 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
 
     // The read-path object phase one published, spot-checked rather than swept: the sweep is phase
     // one's measurement, and phase two asks only whether it survived the reset.
-    let big = store.entries().find(|entry| entry.kind == ObjectKind::MapShard);
+    let big = store.find_entry(|entry| entry.kind == ObjectKind::MapShard).ok()?;
     if let Some(meta) = big {
         spot_check(&store, &meta);
     }

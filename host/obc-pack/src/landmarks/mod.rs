@@ -9,6 +9,7 @@ pub mod peaks;
 mod photo;
 mod policy;
 pub mod select;
+pub mod shared;
 pub mod text;
 
 /// The shared UI language set, verbatim. It decides which articles are fetched and which places
@@ -78,7 +79,11 @@ const COMPILER_POLICY: &str = "landmarks-1;lead-2-sentences;latin-extended-a;lab
 pub const PHOTO_POOL_BYTES: &[u8] = include_bytes!("../../../../specs/photo-pools.json");
 
 fn photo_pools() -> Vec<String> {
-    serde_json::from_slice(PHOTO_POOL_BYTES).expect("checked photo pool order")
+    serde_json::from_value(photo_policy()["sources"].clone()).expect("checked photo pool order")
+}
+
+fn photo_policy() -> Value {
+    serde_json::from_slice(PHOTO_POOL_BYTES).expect("checked photo selection policy")
 }
 
 /// A camera this close to a summit looks out from it rather than at it. The radius is the owner's,
@@ -109,6 +114,10 @@ struct Snapshot {
     sources: Vec<Source>,
     places: Vec<Value>,
     #[serde(default)]
+    aliases: BTreeMap<String, String>,
+    #[serde(default)]
+    omissions: Vec<Omission>,
+    #[serde(default)]
     coverage: Value,
     #[serde(default)]
     peaks: Option<peaks::PeakCapture>,
@@ -116,6 +125,10 @@ struct Snapshot {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Content {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub aliases: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub wikipedia_aliases: BTreeMap<String, String>,
     pub schema: u32,
     pub input_sha256: String,
     pub policy_sha256: String,
@@ -179,7 +192,29 @@ pub struct Attribution {
     pub original_notices: String,
 }
 #[derive(Debug, Serialize, Deserialize)]
+pub struct PhotoIdentity {
+    pub filename: String,
+    pub page_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileRevision {
+    pub timestamp: String,
+    pub sha1: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Photo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_identity: Option<PhotoIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_revision: Option<FileRevision>,
+    #[serde(default)]
+    pub credit: credit::Credit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_url: Option<String>,
     pub path: String,
     pub sha256: String,
     pub bytes: usize,
@@ -259,8 +294,34 @@ fn read_pinned(root: &Path, sources: &[Source], path: &str, limit: u64) -> Resul
 const MAX_JSON_SOURCE: u64 = 16 * 1024 * 1024;
 
 fn json_pinned(root: &Path, sources: &[Source], path: &str) -> Result<Value, String> {
-    serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
-        .map_err(|e| format!("invalid source {path}: {e}"))
+    let value: Value = serde_json::from_slice(&read_pinned(root, sources, path, MAX_JSON_SOURCE)?)
+        .map_err(|e| format!("invalid source {path}: {e}"))?;
+    if value["kind"] == "entity" {
+        let key = string(&value, "key")?;
+        let entity = if value["status"] == "missing" {
+            serde_json::json!({"id":key,"missing":true})
+        } else {
+            value["entity"].clone()
+        };
+        let canonical = entity["id"].as_str().unwrap_or(key).to_owned();
+        Ok(serde_json::json!({"entities":{key:entity.clone(),canonical:entity}}))
+    } else if value["kind"] == "commons" {
+        let mut info = value["imageinfo"].clone();
+        info["description_revision"] = value["revision"].clone();
+        Ok(
+            serde_json::json!({"query":{"pages":{"compact":{"title":format!("File:{}",string(&value,"filename")?),"pageid":value["pageid"],"revisions":[{"revid":value["revision"]}],"imageinfo":[info],"categories":value["categories"].as_array().into_iter().flatten().map(|title|serde_json::json!({"title":title})).collect::<Vec<_>>()}}}}),
+        )
+    } else if value["kind"] == "mediainfo" {
+        Ok(serde_json::json!({"entities":{string(&value,"key")?:{"statements":value["statements"]}}}))
+    } else if value["kind"] == "category" {
+        let mut raw = serde_json::json!({"query":{"categorymembers":value["members"]}});
+        if value["continuation"].is_object() {
+            raw["continue"] = value["continuation"].clone();
+        }
+        Ok(raw)
+    } else {
+        Ok(value)
+    }
 }
 fn claims<'a>(entity: &'a Value, property: &str) -> impl Iterator<Item = &'a Value> {
     let claims = entity["claims"][property].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -273,7 +334,7 @@ fn entity_ids(entity: &Value, property: &str) -> Vec<String> {
         .collect()
 }
 fn class_ancestors(id: &str, entity: &Value) -> Result<Vec<String>, String> {
-    if let Some(redirect) = entity.get("redirects") {
+    if let Some(redirect) = entity.get("redirects").filter(|_| entity["id"] != id) {
         let target = string(redirect, "to")?;
         if redirect["from"] != id || entity["id"] != target || !is_qid(target) {
             return Err(format!("invalid captured class redirect: {id}"));
@@ -379,6 +440,8 @@ fn compile_selected(
     let mut input = raw;
     input.extend_from_slice(&boundary_bytes);
     let mut content = Content {
+        aliases: snapshot.aliases,
+        wikipedia_aliases: BTreeMap::new(),
         schema: 2,
         input_sha256: hash(&input),
         policy_sha256: hash(&policy_input),
@@ -388,7 +451,7 @@ fn compile_selected(
         counts: Counts { captured: snapshot.places.len(), ..Counts::default() },
         candidate_qids: Vec::new(),
         records: Vec::new(),
-        omissions: Vec::new(),
+        omissions: snapshot.omissions,
         photo_requests: Vec::new(),
     };
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
@@ -480,6 +543,27 @@ fn compile_selected(
         if let Some(image) = &photo {
             content.counts.images += 1;
             content.counts.photo_bytes += image.bytes;
+        }
+        for article in place["articles"].as_array().into_iter().flatten().filter(|article| article["compact"] == true) {
+            let language = string(article, "language")?;
+            if !variants.iter().any(|variant| {
+                variant.language == language
+                    && variant
+                        .attribution
+                        .revision
+                        .parse::<u64>()
+                        .ok()
+                        .is_some_and(|revision| Some(revision) == article["revision"].as_u64())
+            }) {
+                continue;
+            }
+            let mut titles = vec![string(article, "title")?, string(article, "requested_title")?];
+            for alias in article["aliases"].as_array().into_iter().flatten() {
+                titles.extend([alias["from"].as_str(), alias["to"].as_str()].into_iter().flatten());
+            }
+            for title in titles {
+                content.wikipedia_aliases.insert(format!("{language}:{}", title.replace('_', " ")), qid.clone());
+            }
         }
         content.records.push(Record {
             qid,
@@ -604,7 +688,10 @@ fn category_members(
     snapshot_schema: u32,
 ) -> Result<BTreeSet<String>, String> {
     let mut members = BTreeSet::new();
-    for listing in place["commons_categories"].as_array().into_iter().flatten() {
+    let limits = photo_policy()["fallback"].clone();
+    let max_files = limits["files"].as_u64().expect("checked file limit") as usize;
+    let max_categories = limits["categories"].as_u64().expect("checked category limit") as usize;
+    for listing in place["commons_categories"].as_array().into_iter().flatten().take(max_categories) {
         let title = string(listing, "title")?;
         if !categories.iter().any(|name| name == title) {
             return Err(format!("unclaimed commons category: {title}"));
@@ -612,15 +699,20 @@ fn category_members(
         if snapshot_schema == 1 {
             return Err(format!("schema 1 cannot prove complete commons category coverage: {title}"));
         }
+        let bounded = listing["limit"].as_u64() == Some(max_files as u64);
         let complete = listing["complete"].as_bool().ok_or("missing category completeness")?;
-        if !complete {
+        if !complete && !bounded {
             continue;
         }
         let pages = listing["pages"].as_array().ok_or("missing category pages")?;
         if pages.is_empty() {
             return Err(format!("empty commons category page set: {title}"));
         }
+        if bounded && pages.len() != 1 {
+            return Err(format!("bounded commons category must have one page: {title}"));
+        }
         let mut expected = Value::Null;
+        let mut selected = 0;
         let mut paths = BTreeSet::new();
         for (index, page) in pages.iter().enumerate() {
             if index > 0 && expected == Value::Null {
@@ -639,14 +731,17 @@ fn category_members(
                 let file = string(member, "title")?
                     .strip_prefix("File:")
                     .ok_or_else(|| format!("invalid category member: {title}"))?;
-                members.insert(file.replace('_', " "));
+                if index == 0 && selected < max_files {
+                    members.insert(file.replace('_', " "));
+                    selected += 1;
+                }
             }
             expected = raw.get("continue").cloned().unwrap_or(Value::Null);
             if expected != Value::Null && (!expected.is_object() || expected["cmcontinue"].as_str().is_none()) {
                 return Err(format!("invalid commons category continuation: {title}"));
             }
         }
-        if expected != Value::Null {
+        if expected != Value::Null && !bounded {
             return Err(format!("unconsumed commons category continuation: {title}"));
         }
     }
@@ -753,7 +848,17 @@ fn prepare_article(
         let near = summit.zip(signals.camera).is_some_and(|(summit, camera)| metres(summit, camera) <= CAMERA_METRES);
         let of = signals.views(&categories, "Views of ");
         let depicts = signals.depicts.contains(qid);
-        ranked.push((((near, !of, !depicts, tier), signals.filename), image, allowed));
+        if !allowed.contains(&signals.filename) {
+            omit("photo", "photo_identity_mismatch".into());
+            continue;
+        }
+        let metadata = json_pinned(root, sources, string(image, "metadata_path")?)?;
+        let (page, _) = assets::described(&metadata)?;
+        if let Err(reason) = assets::photo_attribution(&page["imageinfo"][0]) {
+            omit("photo", reason);
+            continue;
+        }
+        ranked.push((((tier, near, !of, !depicts), signals.filename), image, allowed));
     }
     ranked.sort_by(|a, b| a.0.cmp(&b.0));
     let mut photo = None;
