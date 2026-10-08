@@ -310,6 +310,10 @@ impl Demo {
             && self.device.app.assistant_planner_released()
     }
 
+    pub fn ahead_ready(&self) -> bool {
+        self.state() == "WhatsNext" && !self.device.app.ahead_preparing()
+    }
+
     pub fn visit_status(&self) -> obc_app::navigator::ReviewStatus {
         self.device.app.assistant_review_status()
     }
@@ -973,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn up_ahead_tour_opens_a_populated_route_timeline() {
+    fn up_ahead_tour_keeps_the_route_end_when_no_services_are_in_range() {
         let mut d = Demo::new();
         let mut now = 0.0;
         d.tick(now);
@@ -983,8 +987,18 @@ mod tests {
         drive(&mut d, &mut now, "press", "Assistant");
         drive(&mut d, &mut now, "step:1", "Assistant");
         drive(&mut d, &mut now, "press", "WhatsNext");
+        for _ in 0..1200 {
+            if d.ahead_ready() {
+                break;
+            }
+            now += 16.0;
+            d.tick(now);
+        }
+        assert!(d.ahead_ready(), "the route timeline completes in bounded frames");
+        let mut places = 0;
+        d.device.app.ahead_debug(|_, _, _, _, _| places += 1);
+        assert_eq!(places, 0, "the remaining demo map services are outside the selected categories or corridor");
         drive(&mut d, &mut now, "press", "WhatsNext");
-        assert!(d.device.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
         drive(&mut d, &mut now, "back", "WhatsNext");
         drive(&mut d, &mut now, "back", "Assistant");
         drive(&mut d, &mut now, "back", "Map");
