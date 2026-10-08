@@ -359,16 +359,31 @@ impl Planner {
                 &["pois.jsonl.zst", "addresses.jsonl.zst"],
             )
         };
+        let content = crate::maps::content_declarations(env, store, &selection, &obc_pack::step::geos_libraries())?;
+        let content_inputs = content
+            .steps
+            .iter()
+            .map(|step| Input::Layer {
+                name: step.name.clone(),
+                files: vec![if step.name.contains("landmark-content") {
+                    "landmarks/content.json".into()
+                } else {
+                    "peaks/peaks.json".into()
+                }],
+            })
+            .collect::<Vec<_>>();
         // One search database per component: the POIs and the addresses.
         let search = |component: &str| {
             // writer.py imports pois.py or addresses.py by the component.
-            let files = ["build.py", "writer.py", "storage.py", "index.py", "pois.py", "addresses.py"];
+            let files = ["build.py", "writer.py", "storage.py", "index.py", "pois.py", "addresses.py", "content.py"];
             let data = ["schema.sql", "indexes.sql", "web/address-terms.json"];
             let files: Vec<String> = files.iter().chain(&data).map(|file| format!("{SEARCH}/{file}")).collect();
             let files: Vec<&str> = files.iter().map(String::as_str).chain(RECORDS).collect();
             python(
                 &format!("planner/search/{component}"),
-                vec![Input::layer(records.name.clone())],
+                std::iter::once(Input::layer(records.name.clone()))
+                    .chain((component == "pois").then_some(content_inputs.clone()).into_iter().flatten())
+                    .collect(),
                 json!({
                     "component": component,
                     "region": name,
@@ -392,6 +407,7 @@ impl Planner {
             &["places.pmtiles"],
         );
         let mut steps = source_steps;
+        steps.extend(content.steps);
         steps.extend([
             osm, terrain, routing, overlays, assets, model, policy, dump, records, pois, addresses, places, basemap,
         ]);
@@ -538,7 +554,10 @@ impl Planner {
         match wanted.is_empty() {
             true => {
                 publish::bind(steps.last_mut().unwrap());
-                Ok(steps.into())
+                let mut listed: Steps = steps.into();
+                listed.blocked.extend(content.blocked);
+                listed.block_dependents();
+                Ok(listed)
             }
             false => Err(Unplanned::NeedsFetch(wanted)),
         }

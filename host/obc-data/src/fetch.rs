@@ -7,6 +7,7 @@ pub mod http;
 pub mod osm;
 mod tools;
 pub mod upstream;
+pub mod wikimedia;
 
 pub use tools::basemap_jar;
 

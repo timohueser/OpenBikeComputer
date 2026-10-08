@@ -53,9 +53,19 @@ pub fn capture_code() -> Result<String, String> {
 pub fn landmark_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = capture_view(request)?;
     crate::landmarks::discover::discover(&extract, &view.join("candidates.json"))?;
-    check_pins(&view, &boundary, "candidates")?;
-    crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)
-        .map(drop)
+    if view.join("recipe.json").is_file() {
+        check_pins(&view, &boundary, "candidates")?;
+    } else {
+        let candidates: crate::landmarks::discover::Candidates =
+            serde_json::from_slice(&std::fs::read(view.join("candidates.json")).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let files = shared_files(request);
+        let facts = crate::landmarks::shared::facts(&files)?;
+        let ids = crate::landmarks::shared::selected(&facts, &candidates.qids).into_iter().collect::<Vec<_>>();
+        crate::landmarks::shared::view(&files, &view, &ids)?;
+    }
+    crate::landmarks::compile(&view.join("manifest.json"), &boundary, &request.output.join("landmarks"), false)?;
+    crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
 }
 
 /// The compiled peaks of a region: `peaks/peaks.json` and its photos, as [`landmark_content`]
@@ -63,9 +73,13 @@ pub fn landmark_content(request: &Request) -> Result<(), String> {
 pub fn peak_content(request: &Request) -> Result<(), String> {
     let (view, boundary, extract) = capture_view(request)?;
     crate::landmarks::peaks::discover(&extract, &boundary, &view.join("summits.json"))?;
-    check_pins(&view, &boundary, "summits")?;
-    crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)
-        .map(drop)
+    if view.join("recipe.json").is_file() {
+        check_pins(&view, &boundary, "summits")?;
+    } else {
+        crate::landmarks::shared::peak_view(&shared_files(request), &view)?;
+    }
+    crate::landmarks::peaks::compile(&view.join("manifest.json"), &boundary, &request.output.join("peaks"), false)?;
+    crate::landmarks::shared::bundles(&shared_files(request), &request.output.join("shared-content"))
 }
 
 /// Refuse a capture whose recipe pinned another boundary, or other `candidates` or `summits`, than
@@ -99,7 +113,11 @@ fn capture_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String
                 continue;
             }
             // A capture file is `#<query>/<path in the capture>`.
-            let path = name.strip_prefix('#').and_then(|name| name.split_once('/')).map(|(_, path)| path);
+            let path = if name.starts_with("#content/") {
+                Some(name.trim_start_matches('#'))
+            } else {
+                name.strip_prefix('#').and_then(|name| name.split_once('/')).map(|(_, path)| path)
+            };
             capture.insert(path.ok_or(format!("{source}: {name} is not a capture file"))?.to_string(), object.clone());
         }
     }
@@ -109,12 +127,27 @@ fn capture_view(request: &Request) -> Result<(PathBuf, PathBuf, PathBuf), String
     };
     let (poly, extract) = (one(".poly")?, one(".osm.pbf")?);
     let view = request.output.with_file_name("view");
-    copied_view(&capture, &view)?;
+    if capture.keys().any(|name| name.starts_with("content/")) {
+        std::fs::create_dir_all(&view).map_err(|e| e.to_string())?;
+    } else {
+        copied_view(&capture, &view)?;
+    }
     let boundary = request.output.with_file_name("boundary.geojson");
     let poly = std::fs::read_to_string(&poly).map_err(|e| format!("{}: {e}", poly.display()))?;
     std::fs::write(&boundary, crate::catalog::boundary::geojson(&poly)?)
         .map_err(|e| format!("{}: {e}", boundary.display()))?;
     Ok((view, boundary, extract))
+}
+
+fn shared_files(request: &Request) -> BTreeMap<String, PathBuf> {
+    request
+        .snapshots
+        .iter()
+        .filter(|(source, _)| CAPTURES.contains(&source.as_str()))
+        .flat_map(|(_, files)| files.iter())
+        .filter(|(name, _)| name.starts_with("#content/"))
+        .map(|(name, path)| (name.trim_start_matches('#').into(), path.clone()))
+        .collect()
 }
 
 /// The landmark artifacts of one leaf: `landmarks/<i>/<j>.bin` for each cell of the option `cells`

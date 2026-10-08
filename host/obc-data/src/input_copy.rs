@@ -471,6 +471,13 @@ pub(crate) fn fetch_checked(
     {
         return Ok(snapshot);
     }
+    if ["wikidata", "wikipedia", "commons"].contains(&request.source.id.as_str())
+        && request.params.iter().any(|(name, _)| name == "content")
+    {
+        if let Some(copies) = copies {
+            crate::fetch::wikimedia::restore_published(store, copies)?;
+        }
+    }
     fetch::fetch_checked(root, store, http, request, checks)
 }
 

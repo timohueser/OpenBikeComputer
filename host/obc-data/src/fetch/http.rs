@@ -77,6 +77,7 @@ fn no_answer(method: &str, url: &str, error: ureq::Error) -> String {
 pub struct Http {
     agent: ureq::Agent,
     backoff: Duration,
+    bytes_per_second: Option<u64>,
 }
 
 enum Failure {
@@ -103,7 +104,7 @@ impl Http {
                 },
             )
             .build();
-        Self { agent: config.into(), backoff: Duration::ZERO }
+        Self { agent: config.into(), backoff: Duration::ZERO, bytes_per_second: None }
     }
 
     pub fn new() -> Self {
@@ -119,7 +120,13 @@ impl Http {
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(BODY))
             .build();
-        Self { agent: config.into(), backoff }
+        Self { agent: config.into(), backoff, bytes_per_second: None }
+    }
+
+    /// Bound the transfer rate of this serial downloader.
+    pub fn limited(mut self, bytes_per_second: u64) -> Self {
+        self.bytes_per_second = Some(bytes_per_second);
+        self
     }
 
     /// The `Last-Modified` day of `url`, after redirects. A 404 is an error that [`not_found`] knows.
@@ -259,6 +266,8 @@ impl Http {
         let mut reader = response.body_mut().as_reader();
         let mut buffer = vec![0; 1 << 16];
         let mut grew = false;
+        let started = std::time::Instant::now();
+        let mut received = 0u64;
         let retry = |grew: bool, why: String| if append && grew { Failure::Grew(why) } else { Failure::Retry(why) };
         loop {
             stopped(url)?;
@@ -268,6 +277,13 @@ impl Http {
             }
             file.write_all(&buffer[..read]).map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
             grew = true;
+            received += read as u64;
+            if let Some(rate) = self.bytes_per_second {
+                let required = Duration::from_secs_f64(received as f64 / rate.max(1) as f64);
+                if let Some(delay) = required.checked_sub(started.elapsed()) {
+                    std::thread::sleep(delay);
+                }
+            }
         }
         file.sync_all().map_err(|e| Failure::Final(format!("{}: {e}", part.display())))?;
         let length = fs::metadata(part).map_or(0, |metadata| metadata.len());

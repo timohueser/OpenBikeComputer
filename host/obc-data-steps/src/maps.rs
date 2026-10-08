@@ -25,6 +25,7 @@ use obc_osm::LeafId;
 use obc_pack::step::CAPTURES;
 
 pub(crate) mod catalog;
+mod shared_content;
 
 /// The cell of the planet bake, and of every device-map layer.
 const LEAF_LOG2: u32 = obc_osm::SOURCE_LEAF_LOG2;
@@ -154,38 +155,18 @@ impl Maps {
             return Err(Unplanned::NeedsFetch(wanted));
         }
         let land_polygons = land_polygons.ok_or_else(|| Unplanned::Failed("land polygons were not fetched".into()))?;
-        let mut content_steps = Vec::new();
+        let content = content_declarations(env, store, &selection, &libraries)?;
+        blocked.extend(content.blocked);
         let mut content_names: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for source in &selection.sources {
-            let area = vec![("area".to_string(), source.id.clone())];
             for collection in ["landmarks", "peaks"] {
                 let name = if selection.direct {
                     content_layer(collection)
                 } else {
                     format!("{}/{}", content_layer(collection), source.id)
                 };
-                content_names.entry(collection).or_default().push(name.clone());
-                if let Err(reason) = &libraries {
-                    blocked.push(BlockedLayer { layer: name, reason: reason.clone() });
-                    continue;
-                }
-                let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
-                    Ok(capture) => capture,
-                    Err(Unplanned::NeedsFetch(fetches)) => {
-                        wanted.extend(fetches);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                };
-                for (_, inputs) in capture {
-                    let mut step = content(collection, inputs);
-                    step.name = name.clone();
-                    add_geos(step, &libraries, &mut content_steps, &mut blocked);
-                }
+                content_names.entry(collection).or_default().push(name);
             }
-        }
-        if !wanted.is_empty() {
-            return Err(Unplanned::NeedsFetch(wanted));
         }
         let source_coverage = &selection.coverage;
         let mut osm_leaves = BTreeSet::new();
@@ -213,7 +194,7 @@ impl Maps {
                 }
             }
         }
-        steps.extend(content_steps);
+        steps.extend(content.steps);
         for collection in ["landmarks", "peaks"] {
             for (&leaf, cells) in &network {
                 let mut step = artifacts(collection, leaf, cells);
@@ -284,6 +265,49 @@ impl Maps {
     }
 }
 
+pub(crate) fn content_declarations(
+    env: &Env,
+    store: &Store,
+    selection: &crate::region_sources::Selection,
+    libraries: &Result<Vec<obc_data::engine::Library>, String>,
+) -> Result<Steps, Unplanned> {
+    let mut content_steps = Vec::new();
+    let mut wanted = Vec::new();
+    let mut blocked = Vec::new();
+    for source in &selection.sources {
+        let area = vec![("area".to_string(), source.id.clone())];
+        for collection in ["landmarks", "peaks"] {
+            let name = if selection.direct {
+                content_layer(collection)
+            } else {
+                format!("{}/{}", content_layer(collection), source.id)
+            };
+
+            if let Err(reason) = libraries {
+                blocked.push(BlockedLayer { layer: name, reason: reason.clone() });
+                continue;
+            }
+            let capture = match captures_at(env, store, &source.extract, &area, &mut blocked, (collection, &name)) {
+                Ok(capture) => capture,
+                Err(Unplanned::NeedsFetch(fetches)) => {
+                    wanted.extend(fetches);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            for (_, inputs) in capture {
+                let mut step = content(collection, inputs);
+                step.name = name.clone();
+                add_geos(step, libraries, &mut content_steps, &mut blocked);
+            }
+        }
+    }
+    if !wanted.is_empty() {
+        return Err(Unplanned::NeedsFetch(wanted));
+    }
+    Ok(Steps { steps: content_steps, blocked })
+}
+
 fn add_geos(
     mut step: Step,
     libraries: &Result<Vec<obc_data::engine::Library>, String>,
@@ -316,6 +340,18 @@ fn captures_at(
     let (osm, poly) = (osm?, poly?);
     let (collection, layer) = selected;
     let layer = layer.to_string();
+    let legacy = store.requests_of(CAPTURES[0]).map_err(Unplanned::Failed)?.iter().any(|request| {
+        request.params.iter().any(|(key, value)| key == "area" && value == &area[0].1)
+            && request.params.iter().any(|(key, value)| key == "collection" && value == collection)
+    });
+    if CAPTURES.iter().any(|source| env.moves.contains_key(*source))
+        || !legacy
+            && !env.live.keys().chain(env.planned.iter().flat_map(|planned| planned.keys())).any(|(source, params)| {
+                CAPTURES.contains(&source.as_str()) && params.iter().any(|(key, _)| key == "area")
+            })
+    {
+        return shared_content::captures(env, store, collection, &osm, &poly, extract, area);
+    }
     let (params, read) = match capture_params_at(env, store, collection, area, (&osm, &poly), &layer) {
         Ok(params) => params,
         Err(Unplanned::Invalid(reason)) => {
@@ -362,7 +398,7 @@ fn captures_at(
         }
     }
     if !missing.is_empty() {
-        return Err(Unplanned::NeedsFetch(missing));
+        return shared_content::captures(env, store, collection, &osm, &poly, extract, area);
     }
     inputs.extend(read);
     Ok(vec![(collection, inputs)])
@@ -595,9 +631,9 @@ fn content(collection: &str, inputs: Vec<Input>) -> Step {
         inputs,
         options: serde_json::json!({}),
         code: Code { paths: Vec::new(), crates: vec!["obc-pack".into()], ..Default::default() },
-        outputs: vec![collection.into()],
+        outputs: vec![collection.into(), "shared-content".into()],
         run: Run::Rust(run),
-        client: Client::None,
+        client: Client::Paths(vec!["shared-content".into()]),
     }
 }
 
