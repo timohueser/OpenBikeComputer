@@ -213,3 +213,9 @@ Online photo credits omit device transform notices. A photo reference includes
 `file_identity`, `page_revision` and `file_revision`; incomplete provenance gives a
 source-page link. Consumers recheck that identity before displaying online photos.
 A mutable CDN URL is not a permanent certificate for future bytes.
+
+Operation fetch results report newly issued HTTP attempts and newly read response
+body bytes. API body bytes are counted before gzip decoding. Media body bytes
+are counted as the HTTP client reads them. These are payload bytes, not total
+network traffic. Cached and adopted historical totals remain unknown. The existing
+fetch `bytes` field reports retained output size and does not measure transfer.
