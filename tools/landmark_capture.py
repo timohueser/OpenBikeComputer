@@ -42,7 +42,9 @@ MAX_JSON_SOURCE = 16 * 1024 * 1024
 # Every tagged object contributes its own types, so the closure is wider than a policy-root sweep
 # makes it. The bound is here to stop a runaway traversal, not to size the closure.
 MAX_CLASSES = 65536
-REQUESTS_PER_SECOND = 10
+REQUESTS_PER_SECOND = 4
+# Commons permits 25 Mbps. Serial media reads stay below that limit.
+MEDIA_BYTES_PER_SECOND = 3_000_000
 # `wbgetentities` accepts fifty ids per call.
 BATCH = 50
 MAXLAG = 5
@@ -106,6 +108,22 @@ def batches(items: list, size: int = BATCH):
         yield items[start:start + size]
 
 
+def read_source(response, media: bool) -> bytes:
+    if not media:
+        return response.read(MAX_SOURCE + 1)
+    data = bytearray()
+    start = time.monotonic()
+    while len(data) <= MAX_SOURCE:
+        chunk = response.read(min(64 * 1024, MAX_SOURCE + 1 - len(data)))
+        if not chunk:
+            break
+        data.extend(chunk)
+        delay = len(data) / MEDIA_BYTES_PER_SECOND - (time.monotonic() - start)
+        if delay > 0:
+            time.sleep(delay)
+    return bytes(data)
+
+
 class Capture:
     """Each request is an immutable outcome; restart verifies and reuses its bytes."""
 
@@ -154,7 +172,7 @@ class Capture:
                     outcome["headers"] = {k: response.headers[k] for k in ("ETag", "Last-Modified", "Content-Type", "Retry-After") if k in response.headers}
                     if int(response.headers.get("Content-Length", 0)) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
-                    data = response.read(MAX_SOURCE + 1)
+                    data = read_source(response, urlparse(url).hostname == "upload.wikimedia.org")
                     if len(data) > MAX_SOURCE:
                         raise ValueError("source exceeds 32 MiB acquisition bound")
                     if response.headers.get("Content-Encoding", "").lower() == "gzip":
