@@ -32,13 +32,15 @@ import OBCTransport
 
         let edited = ImportedRoute(name: "Kettle Loop", points: Array(points.prefix(2)))
         let record = PlannedRouteRecord(
-            summary: RouteSummary(id: RouteID("fresh"), name: "Kettle Loop", distanceMeters: 1_400, elevationGainMeters: 0),
-            route: edited, bikeType: .touring, sourceFileName: "Kettle Loop.gpx", sourceFileData: Data(), plan: plan)
+            route: edited, id: RouteID("fresh"), bikeType: .touring,
+            sourceFileName: "Kettle Loop.gpx", sourceFileData: Data(), plan: plan)
+        let totals = try #require(RouteObjectCodec.totals(points: edited.points))
         model.saveRouteChanges(id, to: record)
         let saved = try #require(library.plannedRoutes().first { $0.id == id })
         #expect(library.plannedRoutes().count == 1 && model.routes.map(\.id) == [id])
-        #expect(saved.route == edited && saved.plan == plan && saved.summary.distanceMeters == 1_400)
+        #expect(saved.route == edited && saved.plan == plan && saved.summary.distanceMeters == Double(totals.distanceMeters))
         #expect(saved.summary.name == "Kettle Loop" && saved.sourceFileName == "loop.gpx")
+        #expect(saved.sourceFileData == Data("<gpx/>".utf8))
         #expect(saved.deviceLink == link && saved.uploadedCRC32 == 7)
 
         model.addImportedRoute(record)

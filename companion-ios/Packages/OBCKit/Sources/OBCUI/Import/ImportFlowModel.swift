@@ -357,13 +357,14 @@ public struct PendingImport: Identifiable, Sendable {
         return copy
     }
 
-    /// The library record the import lands: `detail`'s summary over the route, its plan and the
-    /// original file. A replace keeps the route it replaces on the device, with its device link under
-    /// its old fingerprint, so the badge honestly reads out of date until the next push.
-    public func record(for detail: RouteDetail) -> PlannedRouteRecord {
+    /// Save and upload share the import's identity. A replacement keeps the saved route's id.
+    public var routeID: RouteID { replacing?.id ?? RouteID("imported-\(id.uuidString.lowercased())") }
+
+    /// A replacement keeps the device link and its old fingerprint until the next upload.
+    public func record() -> PlannedRouteRecord {
         PlannedRouteRecord(
-            summary: detail.summary,
             route: route,
+            id: routeID,
             bikeType: bikeType,
             sourceFileName: fileName,
             sourceFileData: fileData,

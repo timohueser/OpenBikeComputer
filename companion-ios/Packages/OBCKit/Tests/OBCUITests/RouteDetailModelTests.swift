@@ -259,21 +259,41 @@ final class RouteDetailModelTests: XCTestCase {
         XCTAssertEqual(summary.source, .gpx)
         XCTAssertEqual(summary.pointCount, 10)
         XCTAssertEqual(summary.distanceMeters, model.distanceMeters)
+        let record = PlannedRouteRecord(
+            route: importedRoute, id: summary.id,
+            sourceFileName: "schwarzwald.gpx", sourceFileData: Data("<gpx/>".utf8))
+        XCTAssertEqual(summary, record.summary, "save and preview use the same figures")
+        XCTAssertEqual(model.makeDetail(), record.detail())
         XCTAssertNotNil(summary.trackPreview)
         XCTAssertTrue(summary.id.rawValue.hasPrefix("imported-"))
     }
 
     func testMakeDetailKeepsWaypointsAndProfileForTheSave() {
-        let model = RouteDetailModel(
-            transport: MockTransport(control: makeControl()),
-            dressing: .imported(importedRoute, fileName: "schwarzwald.gpx")
-        )
-        let detail = model.makeDetail()
+        let record = PlannedRouteRecord(
+            route: importedRoute, sourceFileName: "schwarzwald.gpx", sourceFileData: Data("<gpx/>".utf8))
+        let detail = record.detail()
+
+        XCTAssertEqual(record.route, importedRoute)
+        XCTAssertEqual(record.sourceFileName, "schwarzwald.gpx")
+        XCTAssertEqual(record.sourceFileData, Data("<gpx/>".utf8))
 
         XCTAssertEqual(detail.waypoints.count, 2)
         XCTAssertEqual(detail.elevationProfile.count, 10)
         XCTAssertEqual(detail.summary.name, "Schwarzwald Tour · Tag 2")
         XCTAssertNotNil(detail.maxGradePercent)
+    }
+
+    func testRecordSummaryUsesSourceNameAndEmptyGeometryFallback() {
+        let record = PlannedRouteRecord(
+            route: ImportedRoute(points: []), sourceFileName: "Course.TCX", sourceFileData: Data())
+
+        XCTAssertEqual(record.summary.name, "Course.TCX")
+        XCTAssertEqual(record.summary.source, .tcx)
+        XCTAssertEqual(record.summary.distanceMeters, 0)
+        XCTAssertEqual(record.summary.elevationGainMeters, 0)
+        XCTAssertEqual(record.summary.pointCount, 0)
+        XCTAssertTrue(record.detail().elevationProfile.isEmpty)
+        XCTAssertNil(record.detail().maxGradePercent)
     }
 
     // MARK: Upload blob
@@ -321,12 +341,13 @@ final class RouteDetailModelTests: XCTestCase {
     }
 
     func testUploadBlobAndSaveDetailShareTheImportedID() {
+        let pending = PendingImport(route: importedRoute, fileName: "schwarzwald.gpx", fileData: Data())
         let model = RouteDetailModel(
             transport: MockTransport(control: makeControl()),
-            dressing: .imported(importedRoute, fileName: "schwarzwald.gpx")
+            dressing: .imported(pending.route, fileName: pending.fileName), importedRouteID: pending.routeID
         )
-        // Uploading saves it too: the device copy and the library copy must be the same route.
-        XCTAssertEqual(model.makeUploadBlob().summary.id, model.makeDetail().summary.id)
+        XCTAssertEqual(model.makeUploadBlob().summary, pending.record().summary)
+        XCTAssertEqual(model.makeDetail(), pending.record().detail())
     }
 
     func testPreloadedDetailRendersAtOnce() {

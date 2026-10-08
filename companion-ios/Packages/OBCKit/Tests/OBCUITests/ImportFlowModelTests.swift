@@ -57,13 +57,6 @@ final class ImportFlowModelTests: XCTestCase {
         DeviceRouteLink(serial: "OBC-24-000317", storeID: "0000000000000000000000000000002a", objectID: DeviceObjectID(objectID))
     }
 
-    private func detail(named name: String, id: String) -> RouteDetail {
-        RouteDetail(
-            summary: RouteSummary(id: RouteID(id), name: name, distanceMeters: 42_000, elevationGainMeters: 800),
-            waypoints: [], elevationProfile: [], maxGradePercent: nil
-        )
-    }
-
     // MARK: Keep the file's line
 
     /// The choice comes first; keeping lands the file at once with its line, its heights and a plan
@@ -80,12 +73,17 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNil(model.pendingChoice)
         XCTAssertEqual(landed.route.points, Self.line)
         XCTAssertEqual(landed.fileData, Data("<gpx/>".utf8), "the original bytes ride into the library record")
-        let plan = try XCTUnwrap(landed.record(for: detail(named: "Alpine Loop", id: "new")).plan)
+        let record = landed.record()
+        XCTAssertEqual(record.id, landed.routeID)
+        XCTAssertEqual(landed.record().id, record.id, "the import has one stable saved id")
+        XCTAssertEqual(record.summary.name, "Alpine Loop")
+        XCTAssertEqual(record.sourceFileName, "Alpine Loop.gpx")
+        let plan = try XCTUnwrap(record.plan)
         XCTAssertEqual(plan.routePoints.map(\.kind), [.start, .finish])
         XCTAssertEqual(plan.routePoints.last?.leg, .drawn)
         XCTAssertEqual(plan.routePoints.last?.drawn?.last?.elevationMeters, 600, "the drawn leg keeps the heights")
         XCTAssertEqual(plan.markers.map(\.label), ["Spring"])
-        XCTAssertEqual(landed.record(for: detail(named: "Alpine Loop", id: "new")).route.waypoints, [Self.spring])
+        XCTAssertEqual(landed.record().route.waypoints, [Self.spring])
         XCTAssertEqual(plan.bike, RouteActivity(landed.bikeType).rawValue)
     }
 
@@ -203,7 +201,7 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertEqual(model.collision?.existing.id, existing.id)
     }
 
-    /// Replace pins the import to the saved record, and `record(for:)` carries its `deviceLink` and
+    /// Replace pins the import to the saved record, and `record()` carries its `deviceLink` and
     /// `uploadedCRC32` through: the device still holds the old copy. It never mints a new link.
     func testReplaceCarriesTheDeviceFingerprintThroughRecordFor() throws {
         let library = InMemoryLibraryStore()
@@ -217,10 +215,11 @@ final class ImportFlowModelTests: XCTestCase {
         XCTAssertNil(model.collision)
         let landed = try XCTUnwrap(model.landed)
         XCTAssertEqual(landed.replacing?.id, existing.id, "the import reuses the saved id")
-        let record = landed.record(for: detail(named: "Schwarzwald Tour · Tag 2", id: existing.id.rawValue))
+        let record = landed.record()
         XCTAssertEqual(record.id, existing.id)
         XCTAssertEqual(record.deviceLink, link(7))
         XCTAssertEqual(record.uploadedCRC32, 0xDEAD_BEEF)
+        XCTAssertEqual(record.sourceFileName, "tag2-v2.gpx")
         XCTAssertEqual(record.sourceFileData, Data("<gpx2/>".utf8), "the record keeps the NEW file's bytes")
         XCTAssertNotNil(record.plan)
     }
@@ -261,7 +260,11 @@ final class ImportFlowModelTests: XCTestCase {
         let landed = try XCTUnwrap(model.landed)
         XCTAssertEqual(landed.route.name, "Schwarzwald Tour · Tag 3")
         XCTAssertNil(landed.replacing, "a renamed add is not a replace")
-        XCTAssertNil(landed.record(for: detail(named: "Schwarzwald Tour · Tag 3", id: "new-route")).deviceLink)
+        let record = landed.record()
+        XCTAssertNil(record.deviceLink)
+        XCTAssertNil(record.uploadedCRC32)
+        XCTAssertEqual(record.summary.name, "Schwarzwald Tour · Tag 3")
+        XCTAssertNotEqual(record.id, savedRecord().id)
     }
 
     func testCancelingTheRenamePromptDropsTheImport() {
