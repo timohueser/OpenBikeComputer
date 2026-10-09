@@ -64,6 +64,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(element.exists, "\(label) row missing")
     }
 
+    @MainActor
+    func testBundledNoticesOpenFromSettings() {
+        let app = launch()
+        openSettings(app)
+        reveal(app, "Acknowledgements")
+        app.buttons["settings.acknowledgements"].tap()
+        for (title, content) in [("Native libraries", "Third-party licences"),
+                                 ("Planner search", "OpenBikeComputer native search"),
+                                 ("MapLibre", "BSD 2-Clause License")] {
+            app.buttons[title].tap()
+            let text = app.textViews["acknowledgements.text"]
+            XCTAssertTrue(text.waitForExistence(timeout: 5), "\(title) notice missing")
+            XCTAssertTrue((text.value as? String)?.contains(content) == true, "\(title) notice has wrong contents")
+            app.navigationBars.buttons.firstMatch.tap()
+        }
+    }
+
     /// Rename through the rename sheet; the new name shows in Settings and on the main top bar.
     @MainActor
     func testRenameDeviceShowsAcrossTheApp() {
