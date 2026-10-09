@@ -13,19 +13,19 @@ The [data contract](src:specs/obc-data.md) defines these boundaries.
 
 ## Shared landmark and peak content
 
-Landmarks and peaks use the same acquired Wikimedia facts and selection policy. Exact OSM
-links identify subjects. A subject can serve several regions without another download.
-Source revisions identify acquired bytes; compiler changes rebuild outputs from retained inputs.
-Pinned compilation works offline. Freshness checks remain separate network work.
+Landmarks and peaks share a manually prepared content version. An operator reads compressed
+Wikidata and Wikipedia snapshots on a machine with enough disk space, prepares selected images
+and publishes the result. Scheduled bakes select that version from R2. This lets road data
+change often without repeated Wikimedia requests. Exact OSM links identify subjects across regions.
 
 The device keeps short articles, photos and credits in its map. Planner detail views keep
 articles and source links, then load credited photos online. Routing packages carry photo
 references without image payloads. An unavailable photo leaves useful text available.
 Landmarks are selectable route stops. Peaks keep their summit coordinates and separate device collection.
 
-An absent optional article or photo does not block a map. A failed source request remains
-unresolved work and blocks preparation. This distinction prevents server pressure from appearing
-as missing content. The [shared content contract](src:specs/wikimedia-content.md) defines
+An absent optional article or photo does not block a map. A failed import or uncovered identity
+remains unresolved work and blocks preparation. This prevents missing inputs from appearing
+as absent content. The [shared content contract](src:specs/wikimedia-content.md) defines
 identity, retained inputs and selection outcomes.
 
 ## One plan before work

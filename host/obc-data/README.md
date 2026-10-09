@@ -44,6 +44,11 @@ Publication also requires its own bucket credentials.
 | Command | Action |
 | --- | --- |
 | `obc data` | Open the interface |
+| `obc data content configure FILE` | Save compressed archive inputs and OSM coverage |
+| `obc data content prepare --json` | Start a retained manual content preparation |
+| `obc data content plan SHA --json` | Review content publication |
+| `obc data content publish SHA --yes` | Publish the reviewed immutable content version |
+| `obc data content use SHA --from-r2` | Pin published content for scheduled bakes |
 | `obc data plan live --json > PLAN` | Save the current review after required input preparation |
 | `obc data prepare live --json` | Return a retained input-preparation handle |
 | `obc data runs RUN --follow` | Observe progress |
@@ -57,8 +62,11 @@ Publication also requires its own bucket credentials.
 | `obc data dev --app map-builder --start` | Start the prepared Local Map builder |
 | `obc data dev --app simulator --start` | Start the prepared Local Simulator |
 
-Preparation acquires missing Wikimedia facts and checks stale identities by policy.
-Pinned content compilation makes no Wikimedia requests. Fetch results report current HTTP
+Before a landmark or peak bake, select prepared content in Content (`6`) or with `content use`.
+The [content contract](../../specs/wikimedia-content.md#manual-snapshot-preparation) defines
+archive configuration. Enterprise downloads require `OBC_WIKIMEDIA_ENTERPRISE_TOKEN`.
+Manual preparation can fetch Commons images. Scheduled bakes use the selected pin and make
+no Wikimedia requests. Missing coverage blocks preparation. Fetch results report current HTTP
 attempts and response body bytes; retained output bytes are separate. Historical transfers
 are unknown. `dev --refresh-live` selects published Live versions; it does not check Wikimedia freshness.
 Preparation leaves stopped apps stopped. Use the Local app commands to start one.
@@ -75,6 +83,7 @@ the terminal. Run controls remain usable after checkout edits.
 | View | Keys |
 | --- | --- |
 | Local | `2` opens it; `r` selects its region; Space changes optional layers |
+| Content | `6` opens it; `c` configures; `f` prepares; Enter selects a version; `p` reviews publication; `y` publishes that review |
 | Local inputs | `R` checks saved data; `f` checks Live inputs over the network; `b` reviews work |
 | Local apps | arrows select an app; `s` starts or stops; `o` opens a browser; `l` reads logs |
 | Live region | `r` opens saved regions; `/` filters; Enter selects |
