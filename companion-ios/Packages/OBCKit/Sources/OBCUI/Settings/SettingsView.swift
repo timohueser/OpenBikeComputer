@@ -18,6 +18,7 @@ public struct SettingsView: View {
     @State private var renameShown = false
     @State private var forgetShown = false
     @State private var versionTaps = 0
+    @State private var acknowledgementsShown = false
     @Environment(\.openURL) private var openURL
     @Environment(\.obcOfflineMaps) private var offlineMaps
     @State private var offlineShown = false
@@ -74,6 +75,9 @@ public struct SettingsView: View {
             duration: .seconds(4)
         )
         .task { model.start() }
+        .navigationDestination(isPresented: $acknowledgementsShown) {
+            AcknowledgementsView()
+        }
         #if os(iOS)
         .navigationDestination(isPresented: $offlineShown) {
             if let offlineMaps { OfflineMapsView(model: offlineMaps) }
@@ -224,6 +228,14 @@ public struct SettingsView: View {
                 showsChevron: true,
                 action: { openURL(Self.gitHubURL) }
             )
+            OBCListRow(
+                icon: "doc.text",
+                iconColor: OBCTheme.tint,
+                label: "Acknowledgements",
+                showsChevron: true,
+                action: { acknowledgementsShown = true }
+            )
+            .accessibilityIdentifier("settings.acknowledgements")
             OBCListRow(
                 icon: "info.circle",
                 iconColor: OBCTheme.tint,
