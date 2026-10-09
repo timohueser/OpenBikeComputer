@@ -40,11 +40,13 @@ npm run deploy --prefix planner/tiles
 | `/releases/ID/terrain.json` | Terrain TileJSON |
 | `/releases/ID/terrain/Z/X/Y.webp` | Terrarium tile |
 | `/releases/ID/LAYER.json` | TileJSON of a data layer of the release, such as `snow` |
-| `/releases/ID/LAYER/Z/X/Y` | Data layer tile; a tile that is not MVT or WebP keeps its gzip encoding, `application/octet-stream` |
+| `/releases/ID/LAYER/Z/X/Y` | Data layer tile; `application/octet-stream` for a type other than MVT or WebP |
 | `/releases/ID/routes/tiles/9-X-Y.json` | Route catalog cell of a grid release; 404 for a cell outside the grid |
 
 The pack header gives the zoom levels and the tile type. A tile extension is
 optional and must match the tile type. TileJSON tile URLs have no extension.
+Tiles keep stored gzip bytes when the client accepts gzip. Other clients receive
+decoded bytes. The edge cache stores these responses separately.
 
 `ID` is the SHA-256 of `release.json`. Packs come from the canonical object pool
 through its small public pointers. The
