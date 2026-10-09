@@ -114,6 +114,8 @@ function baseLayers(dark: boolean): LayerSpecification[] {
     base.splice(base.findIndex((layer) => layer.id === "water_river") + 1, 0, ...cliffAndFerryLayers(dark));
     const river = base.find((layer) => layer.id === "water_river");
     if (river?.type === "line") river.filter = ["in", ["get", "kind"], ["literal", ["river", "canal"]]];
+    const waterwayLabel = base.find((layer) => layer.id === "water_waterway_label");
+    if (waterwayLabel?.type === "symbol") waterwayLabel.filter = ["in", ["get", "kind"], ["literal", ["river", "stream", "canal"]]];
     // A region view loads one glyph stack: below zoom 10 the Medium and Italic labels draw in Regular.
     for (const layer of base) {
         if (layer.type !== "symbol" || !layer.layout?.["text-font"]) continue;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createPropertyExpression, latest, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec';
+import { createPropertyExpression, featureFilter, latest, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec';
 import type { LayerSpecification } from 'maplibre-gl';
 import { testConfig } from '../../../test-support/planner/config';
 
@@ -105,6 +105,21 @@ describe('planner label fonts', () => {
         }));
         expect([...fonts(9.9)]).toEqual(['Noto Sans Regular']);
         expect([...fonts(10)].sort()).toEqual(['Noto Sans Italic', 'Noto Sans Medium', 'Noto Sans Regular']);
+    });
+});
+
+describe('waterway labels', () => {
+    it.each(['light', 'dark'] as const)('labels canals, rivers and streams in both map styles (%s)', async (theme) => {
+        const { basemapStyle, mapStyle } = await import('./map-style');
+        for (const style of [basemapStyle(theme, testConfig), mapStyle(theme, testConfig, 'dem://tiles', 'contours://tiles')]) {
+            const label = style.layers.find((layer) => layer.id === 'water_waterway_label');
+            if (label?.type !== 'symbol') throw new Error('Missing waterway label layer');
+            expect(label).toMatchObject({ type: 'symbol', source: 'basemap', 'source-layer': 'water', minzoom: 13, layout: { 'symbol-placement': 'line' } });
+            const { filter } = featureFilter(label.filter, label.id);
+            for (const kind of ['canal', 'river', 'stream', 'lake']) {
+                expect(filter({ zoom: 14 }, { type: 'LineString', properties: { kind } }), kind).toBe(kind !== 'lake');
+            }
+        }
     });
 });
 
