@@ -4,6 +4,7 @@
 //! and writes.
 
 pub mod cli;
+pub mod content;
 pub mod date;
 pub mod dev;
 pub mod engine;

@@ -62,6 +62,12 @@ impl Roots {
     }
 
     fn add_local(&mut self, store: &Store) -> Result<(), String> {
+        if let Some(selected) = crate::content::selected(store)? {
+            self.local
+                .entry((crate::content::SOURCE.into(), selected.sha256))
+                .or_default()
+                .push("selected content".into());
+        }
         for adoption in crate::local::saved(store)? {
             self.name(
                 adoption.plan.layers.iter().flat_map(|layer| &layer.files).map(|file| file.sha256.clone()),
@@ -320,6 +326,9 @@ pub fn apply(store: &Store, roots: &Roots, confirmed: &Plan) -> Result<Option<Pl
 }
 
 fn resumable(path: &Path) -> bool {
+    if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("content-snapshot-")) {
+        return path.join("config.json").is_file() && !path.join("complete.json").is_file();
+    }
     path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("wikimedia-"))
         && ["work/records", "refresh/records"].into_iter().any(|records| path.join(records).is_dir())
 }

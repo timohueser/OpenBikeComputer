@@ -42,6 +42,13 @@ pub(super) fn captures(
     }
     let mut query =
         serde_json::json!({"entities":qids,"links":links,"articles":[],"commons":[],"files":[],"categories":[]});
+    if let Some(snapshot) = obc_data::content::selected(store).map_err(fail)? {
+        query["snapshot"] = serde_json::json!(snapshot.sha256);
+    } else if !qids.is_empty() || !links.is_empty() {
+        return Err(Unplanned::Invalid(
+            "select a prepared content snapshot with obc data content use before baking landmarks or peaks".into(),
+        ));
+    }
     let mut inputs = Vec::new();
     let mut phase = 0;
     let mut subjects = BTreeSet::new();
@@ -198,6 +205,14 @@ pub(super) fn captures(
             files: Vec::new(),
         },
     ]);
+    if let Some(snapshot) = query["snapshot"].as_str() {
+        inputs.push(Input::Snapshot {
+            source: obc_data::content::SOURCE.into(),
+            version: snapshot.into(),
+            params: Vec::new(),
+            files: vec!["manifest.json".into()],
+        });
+    }
     Ok(vec![(collection, inputs)])
 }
 
@@ -217,6 +232,14 @@ mod tests {
         obc_data::store::write_atomic(&file, &bytes).unwrap();
         store.insert(&file, &digest).unwrap();
         let osm = format!("sha256:{digest}");
+        assert!(
+            matches!(captures(&Env::default(), &store, "landmarks", &osm, &format!("sha256:{}", "0".repeat(64)), "1", &[]), Err(Unplanned::Invalid(reason)) if reason.contains("prepared content snapshot"))
+        );
+        obc_data::store::durable(
+            &store.root().join("settings/content-source.json"),
+            serde_json::json!({"sha256":"1".repeat(64)}).to_string().as_bytes(),
+        )
+        .unwrap();
         let wanted = |env: &Env, area: &str| match captures(
             env,
             &store,
@@ -236,6 +259,7 @@ mod tests {
         assert_eq!(first.len(), 3);
         let query: Value = serde_json::from_str(&first[0].params[0].1).unwrap();
         assert_eq!(query["entities"], serde_json::json!(["Q1"]));
+        assert_eq!(query["snapshot"], "1".repeat(64));
         assert!(query.get("area").is_none());
         assert!(query.get("code").is_none());
         env.fetch_failures.push((first[0].clone(), "server pressure".into()));

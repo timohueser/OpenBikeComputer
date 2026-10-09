@@ -128,6 +128,7 @@ impl Http {
     pub fn with_backoff(backoff: Duration) -> Self {
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
             .user_agent(concat!("OpenBikeComputer obc-data/", env!("CARGO_PKG_VERSION")))
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(60)))

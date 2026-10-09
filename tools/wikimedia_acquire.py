@@ -684,9 +684,19 @@ def main() -> int:
     parser.add_argument("--requests", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--adopt", type=Path, action="append", default=[])
+    parser.add_argument("--catalog", type=Path)
+    parser.add_argument("--allow-media", action="store_true")
     args = parser.parse_args()
     requests = json.loads(args.requests.read_bytes())
-    operation = Acquisition(args.work, args.out, requests["check_id"], json.loads(args.inputs.read_bytes()))
+    if args.catalog:
+        if __package__:
+            from .wikimedia_snapshot import SnapshotAcquisition
+        else:
+            from wikimedia_snapshot import SnapshotAcquisition
+        operation = SnapshotAcquisition(args.work, args.out, requests["check_id"], json.loads(args.inputs.read_bytes()),
+                                        catalog=args.catalog, allow_media=args.allow_media)
+    else:
+        operation = Acquisition(args.work, args.out, requests["check_id"], json.loads(args.inputs.read_bytes()))
     try:
         for capture_root in args.adopt:
             operation.adopt(capture_root)
@@ -699,7 +709,13 @@ def main() -> int:
         for filename in requests.get("files", []):
             key = "File:" + filename.removeprefix("File:").replace("_", " ")
             if not operation.reuse("file", key, False):
-                operation.fail("file", key, "image-input-not-retained")
+                if args.catalog and args.allow_media:
+                    if operation.db.execute("SELECT 1 FROM facts WHERE kind='file' AND key=?", (key,)).fetchone():
+                        operation.load("file", [key])
+                elif args.catalog:
+                    operation.load("file", [key])
+                else:
+                    operation.fail("file", key, "image-input-not-retained")
     except (RuntimeError, ValueError, KeyError, TypeError) as error:
         operation.fail("operation", requests["check_id"], str(error))
     return 0 if operation.finish()["complete"] else 1

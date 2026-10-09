@@ -30,6 +30,8 @@ fn run_bound(args: &[String], expected: Option<&str>) -> Option<Result<(), Strin
             | "peak-candidates"
             | "peaks"
             | "boundary"
+            | "content-query"
+            | "content-photo"
     ) {
         return None;
     }
@@ -55,6 +57,12 @@ fn run_bound(args: &[String], expected: Option<&str>) -> Option<Result<(), Strin
             let poly = std::fs::read_to_string(flags.get("poly")?).map_err(|e| format!("--poly: {e}"))?;
             std::fs::write(flags.get("out")?, crate::catalog::boundary::geojson(&poly)?).map_err(|e| e.to_string())
         }),
+        "content-query" => content_query(command, rest),
+        "content-photo" => Flags::parse(command, rest, &["input", "out"], &[]).and_then(|flags| {
+            let bytes = std::fs::read(flags.get("input")?).map_err(|e| e.to_string())?;
+            let pixels = super::photo::prepare(&bytes).map_err(str::to_owned)?;
+            std::fs::write(flags.get("out")?, pixels).map_err(|e| e.to_string())
+        }),
         _ => unreachable!("recognized selector"),
     };
     Some(result.and_then(|()| {
@@ -63,6 +71,124 @@ fn run_bound(args: &[String], expected: Option<&str>) -> Option<Result<(), Strin
         }
         Ok(())
     }))
+}
+
+fn content_query(command: &str, args: &[String]) -> Result<(), String> {
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    let flags = Flags::parse(command, args, &["files", "roots", "phase", "out"], &[])?;
+    let read = |path: &str| -> Result<Value, String> {
+        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    };
+    let files: BTreeMap<String, std::path::PathBuf> =
+        serde_json::from_value(read(flags.get("files")?)?).map_err(|e| e.to_string())?;
+    let roots = read(flags.get("roots")?)?;
+    let mut ids: Vec<String> = serde_json::from_value(roots["entities"].clone()).map_err(|e| e.to_string())?;
+    let facts = super::shared::facts(&files)?;
+    for link in roots["links"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if let Some(id) = facts.get(&("link".into(), link.into())).and_then(|fact| fact["identity"].as_str()) {
+            if super::is_qid(id) {
+                ids.push(id.into());
+            }
+        }
+    }
+    let mut subjects = super::shared::selected(&facts, &ids);
+    for peak in roots["peaks"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if super::is_qid(peak) {
+            subjects.insert(peak.to_owned());
+        } else if let Some(link) = facts.get(&("link".into(), peak.into())) {
+            if let Some(id) = link["identity"].as_str() {
+                subjects.insert(id.into());
+            }
+        }
+    }
+    let mut query = json!({"entities":roots["entities"],"links":roots["links"],"articles":[],"commons":[],"categories":[],"files":[]});
+    let mut articles = BTreeSet::new();
+    let mut categories = BTreeSet::new();
+    let mut commons = BTreeSet::new();
+    for id in &subjects {
+        if let Some(entity) = super::shared::subject(&facts, id) {
+            for (wiki, link) in entity["sitelinks"].as_object().into_iter().flatten() {
+                if let Some(language) = wiki.strip_suffix("wiki") {
+                    if let Some(title) = link["title"].as_str() {
+                        articles.insert((language.to_owned(), title.to_owned()));
+                    }
+                }
+            }
+            categories.extend(super::shared::categories(&entity));
+            for claim in entity["claims"]["P18"].as_array().into_iter().flatten() {
+                if let Some(name) = claim["mainsnak"]["datavalue"]["value"].as_str() {
+                    commons.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    query["articles"] = json!(articles
+        .into_iter()
+        .map(|(language, title)| json!({"language":language,"title":title}))
+        .collect::<Vec<_>>());
+    query["categories"] = json!(categories);
+    let phase = flags.get("phase")?.parse::<u8>().map_err(|e| e.to_string())?;
+    if phase > 0 {
+        for fact in facts.values() {
+            if fact["kind"] == "article" {
+                if let Some(name) = super::shared::lead_image(fact) {
+                    commons.insert(name);
+                }
+            } else if fact["kind"] == "category" {
+                commons.extend(
+                    fact["members"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|member| member["title"].as_str())
+                        .filter_map(|name| name.strip_prefix("File:"))
+                        .map(str::to_owned),
+                );
+            }
+        }
+        query["commons"] = json!(commons);
+    }
+    if phase > 1 {
+        let out = Path::new(flags.get("out")?);
+        let view = out.with_extension("view");
+        if view.exists() {
+            std::fs::remove_dir_all(&view).map_err(|e| e.to_string())?;
+        }
+        std::fs::create_dir_all(&view).map_err(|e| e.to_string())?;
+        let boundary = view.join("boundary.json");
+        std::fs::write(
+            &boundary,
+            br#"{"type":"Polygon","coordinates":[[[-180,-90],[180,-90],[180,90],[-180,90],[-180,-90]]]}"#,
+        )
+        .map_err(|e| e.to_string())?;
+        let landmarks = super::shared::selected(&facts, &ids).into_iter().collect::<Vec<_>>();
+        super::shared::view(&files, &view, &landmarks)?;
+        let mut requested =
+            super::photo_requests(&view.join("manifest.json"), &boundary, &view.join("landmarks"), None)?.requests;
+        if roots["summits"].as_array().is_some_and(|values| !values.is_empty()) {
+            std::fs::write(
+                view.join("summits.json"),
+                serde_json::to_vec(&json!({"schema":1,"osm_sha256":roots["osm_sha256"],"summits":roots["summits"]}))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            super::shared::peak_view(&files, &view)?;
+            requested.extend(
+                super::peaks::compile(&view.join("manifest.json"), &boundary, &view.join("peaks"), true)?
+                    .photo_requests,
+            );
+        }
+        let mut wanted = facts
+            .values()
+            .filter(|fact| fact["kind"] == "file")
+            .filter_map(|fact| fact["filename"].as_str())
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        wanted.extend(requested.into_iter().map(|request| request.filename));
+        query["files"] = json!(wanted);
+    }
+    std::fs::write(flags.get("out")?, serde_json::to_vec(&query).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 fn landmark_content(command: &str, args: &[String]) -> Result<(), String> {

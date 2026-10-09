@@ -200,7 +200,10 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
                 }
                 if let Some(file) = facts.get(&("file".into(), key.1.clone())) {
                     image["path"] = serde_json::json!(format!("content/assets/{}", string(&file["asset"], "sha256")?));
-                    if file["asset"]["input"] == "thumbnail500" {
+                    if file["asset"]["input"] == "rgb222" {
+                        image["prepared_rgb222"] = file["asset"]["transform_sha256"].clone();
+                    }
+                    if matches!(file["asset"]["input"].as_str(), Some("thumbnail500" | "rgb222")) {
                         for witness in ["revision_before", "revision_after"] {
                             let data = serde_json::to_vec(&file[witness]).map_err(|e| e.to_string())?;
                             if file[witness].is_null() {

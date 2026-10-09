@@ -34,6 +34,10 @@ struct Session {
 
 static SESSION: OnceLock<Session> = OnceLock::new();
 
+pub(crate) fn current_run() -> Option<String> {
+    SESSION.get().map(|session| session.control.run.clone())
+}
+
 fn file(path: &Path, name: &str) -> Result<LayerFile, String> {
     let (sha256, size) = hash_file(path)?;
     Ok(LayerFile { path: name.into(), size, sha256 })
@@ -163,11 +167,17 @@ pub fn start(root: &Path, store: &Store, mut request: Request, plan: Option<&Env
 }
 
 fn command(request: &Request) -> String {
+    match request.kind {
+        Kind::ContentPrepare => return "content prepare".into(),
+        Kind::ContentPublish => return "content publish".into(),
+        _ => (),
+    }
     let kind = match request.kind {
         Kind::Prepare => "prepare",
         Kind::Build => "build",
         Kind::Apply => "apply",
         Kind::DevPrepare => "dev",
+        Kind::ContentPrepare | Kind::ContentPublish => unreachable!("content commands have no environment suffix"),
     };
     format!("{kind} {}", request.env)
 }
@@ -286,6 +296,16 @@ pub(super) fn perform(
     let request = request()?;
     let root = super::root()?;
     let result = match request.kind {
+        Kind::ContentPrepare => {
+            crate::content::prepare(&root, store, run, request.content.as_ref().expect("checked content request"))
+                .map_err(|message| Code::RunFailed.error(message))
+                .and_then(|value| super::print_json(&value))
+        }
+        Kind::ContentPublish => {
+            crate::content::publish_operation(store, run, request.content.as_ref().expect("checked content request"))
+                .map_err(|message| Code::R2Failed.error(message))
+                .and_then(|value| super::print_json(&value))
+        }
         Kind::DevPrepare => {
             super::dev_cli::prepare(&root, store, products, run, request.dev.as_ref().expect("checked Local request"))
         }
@@ -349,15 +369,29 @@ pub(super) fn print_handle(handle: &Handle, json: bool) -> Result<(), Error> {
 }
 
 pub(super) fn prepare(root: &Path, args: super::build_cli::PlanArgs, json: bool) -> Result<(), Error> {
-    let request =
-        Request { kind: Kind::Prepare, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Prepare,
+        env: args.env,
+        only: args.only,
+        moves: args.moves,
+        plan: None,
+        dev: None,
+        content: None,
+    };
     print_handle(&start(root, &Store::open()?, request, None)?, json)
 }
 
 pub(super) fn build(root: &Path, args: super::build_cli::BuildArgs, json: bool) -> Result<(), Error> {
     let plan = args.plan.as_deref().map(super::build_cli::read_plan).transpose()?;
-    let request =
-        Request { kind: Kind::Build, env: args.env, only: args.only, moves: args.moves, plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Build,
+        env: args.env,
+        only: args.only,
+        moves: args.moves,
+        plan: None,
+        dev: None,
+        content: None,
+    };
     print_handle(&start(root, &Store::open()?, request, plan.as_ref())?, json)
 }
 
@@ -389,7 +423,14 @@ pub(super) fn apply(
         super::build_cli::print_plan(&plan);
     }
     super::api::confirm(&super::apply_cli::question(&plan), consent)?;
-    let request =
-        Request { kind: Kind::Apply, env: args.env, only: Vec::new(), moves: Vec::new(), plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Apply,
+        env: args.env,
+        only: Vec::new(),
+        moves: Vec::new(),
+        plan: None,
+        dev: None,
+        content: None,
+    };
     print_handle(&start(root, &store, request, Some(&plan))?, json)
 }

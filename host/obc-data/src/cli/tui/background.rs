@@ -182,6 +182,9 @@ pub(super) fn run_loop(
             if app.screen == Screen::Store && app.store.is_none() && !app.busy && effect == Effect::None {
                 effect = Effect::PlanClean;
             }
+            if app.screen == Screen::Content && app.content.status.is_none() && !app.busy && effect == Effect::None {
+                effect = Effect::ContentRead;
+            }
         }
     })
 }
@@ -202,6 +205,20 @@ impl App {
         let selected = self.sources.get(self.source).map(|row| row.source.id.clone());
         self.saved = updated.saved.clone();
         match effect {
+            Effect::ContentRead | Effect::ContentConfigure(_) | Effect::ContentUse(_) => {
+                self.content.status = updated.content.status
+            }
+            Effect::ContentReview(_) => self.content.review = updated.content.review,
+            Effect::ContentPrepare | Effect::ContentPublish(_) => {
+                self.content.status = None;
+                self.content.review = None;
+                if let Some(handle) = updated.execution.handle {
+                    self.execution.selected = Some(handle.run.clone());
+                    self.execution.handle = Some(handle);
+                    self.execution.view = None;
+                    self.overlay = Some(super::Overlay::Run);
+                }
+            }
             Effect::Initial => {
                 self.regions = updated.regions;
                 self.sources = updated.sources;
@@ -401,6 +418,36 @@ pub(super) fn perform(
         })?;
     }
     match effect {
+        Effect::ContentRead => {
+            app.content.status =
+                Some(serde_json::to_value(crate::cli::content_cli::status(store)?).map_err(|e| e.to_string())?);
+            Ok(())
+        }
+        Effect::ContentConfigure(path) => {
+            crate::content::configure(store, Path::new(&path))?;
+            app.content.status =
+                Some(serde_json::to_value(crate::cli::content_cli::status(store)?).map_err(|e| e.to_string())?);
+            Ok(())
+        }
+        Effect::ContentUse(digest) => {
+            crate::content::use_local(store, &digest)?;
+            app.content.status =
+                Some(serde_json::to_value(crate::cli::content_cli::status(store)?).map_err(|e| e.to_string())?);
+            Ok(())
+        }
+        Effect::ContentReview(digest) => {
+            app.content.review =
+                Some(serde_json::to_value(crate::cli::content_cli::plan(store, &digest)?).map_err(|e| e.to_string())?);
+            Ok(())
+        }
+        Effect::ContentPrepare => {
+            app.execution.handle = Some(crate::cli::content_cli::start(root, store)?);
+            Ok(())
+        }
+        Effect::ContentPublish(digest) => {
+            app.execution.handle = Some(crate::cli::content_cli::publish(root, store, &digest)?);
+            Ok(())
+        }
         Effect::None | Effect::Quit | Effect::Reload => Ok(()),
         Effect::Versions(id) => {
             let row = app

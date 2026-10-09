@@ -348,7 +348,8 @@ fn captures_at(
         request.params.iter().any(|(key, value)| key == "area" && value == &area[0].1)
             && request.params.iter().any(|(key, value)| key == "collection" && value == collection)
     });
-    if CAPTURES.iter().any(|source| env.moves.contains_key(*source))
+    if obc_data::content::selected(store).map_err(Unplanned::Failed)?.is_some()
+        || CAPTURES.iter().any(|source| env.moves.contains_key(*source))
         || !legacy
             && !env.live.keys().chain(env.planned.iter().flat_map(|planned| planned.keys())).any(|(source, params)| {
                 CAPTURES.contains(&source.as_str()) && params.iter().any(|(key, _)| key == "area")

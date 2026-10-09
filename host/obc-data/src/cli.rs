@@ -5,6 +5,7 @@
 mod api;
 mod apply_cli;
 mod build_cli;
+mod content_cli;
 pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
 mod dev_cli;
 mod edit_cli;
@@ -118,6 +119,8 @@ enum Command {
     },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
+    /// Manually prepare and publish reusable Wikimedia content snapshots.
+    Content(content_cli::Content),
 }
 
 /// Run `obc data` with the products whose steps this binary links.
@@ -232,6 +235,7 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),
+        Command::Content(args) => content_cli::run(&root()?, &Store::open()?, args, json),
     };
     done.map(|()| ExitCode::SUCCESS)
 }
