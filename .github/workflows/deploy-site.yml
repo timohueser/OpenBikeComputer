@@ -75,6 +75,7 @@ on:
       - "hardware/**"
       - "firmware/**"
       - "builder/**"
+      - "planner/search/place-kinds.json"
       - "apps/obc-web-assemble/**"
       - "apps/obc-web-convert/**"
       - "apps/obc-skin-preview/**"
