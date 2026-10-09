@@ -1,11 +1,9 @@
 """Shared source classification for independently built search components."""
 import json
+from functools import cache
 import re
 from urllib.parse import parse_qs, unquote, urlsplit
 from pathlib import Path
-
-RIDER_KINDS = {kind for category in json.loads((Path(__file__).resolve().parents[2] /
-    'builder/web/src/lib/planner/poi-kinds.json').read_text()).values() for kind in category['kinds']}
 
 def values(d, keys):
     out = []
@@ -39,9 +37,14 @@ def category(p):
             'ferry_terminal': 'ferry', 'public_bath': 'shower'}.get(v, v)
 
 
-# A place that the query language finds by kind stays without a name; a settlement does not.
-_CONTRACT = json.loads((Path(__file__).parent / 'query/contract.json').read_text())
-SERVICES = set(_CONTRACT['data']) - set(_CONTRACT['kinds']['town']['data'])
+@cache
+def unnamed_kinds():
+    """Kinds retained without a name; settlements require a name."""
+    root = Path(__file__).parent
+    contract = json.loads((root / 'query/contract.json').read_text())
+    rider = json.loads((root / 'place-kinds.json').read_text())
+    return (set(contract['data']) - set(contract['kinds']['town']['data'])) | {
+        kind for kinds in rider.values() for kind in kinds}
 
 
 def usable(p):
@@ -61,7 +64,7 @@ def has_poi(p):
     if not usable(p):
         return False
     kind, ns = category(p), names(p.get('name', {}))
-    return kind != 'street' and (bool(ns) or kind in SERVICES | RIDER_KINDS) and not (
+    return kind != 'street' and (bool(ns) or kind in unnamed_kinds()) and not (
         p['osm_key'] == 'building' and p.get('housenumber') and not ns)
 
 

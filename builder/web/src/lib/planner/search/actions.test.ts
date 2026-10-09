@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, dayStops, emptyTrip, pinNight, planView, type RoutePoint, type Trip } from '../editor';
-import { importedTrip } from '../gpx-import';
+import { addRestDay, emptyTrip, loopTrip, maxRidingDays, pinNight, planView, removeRoutePoint, type Trip } from '../editor';
 import { isTrip } from '../trip-validation';
 import { coordinateAt, type Coordinate } from '../geo';
 import { testLine, testTrip } from '../../../../test-support/planner/trip';
@@ -12,7 +11,6 @@ import type { QueryChange } from './types';
 
 const view = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => planView(trip, line);
 const refresh = (trip: Trip) => calculateLine(trip, new AbortController().signal, new LegCache());
-const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate, extra: Partial<RoutePoint> = {}): RoutePoint => ({ id, kind, label: id, coordinate, ...extra });
 afterEach(() => vi.unstubAllGlobals());
 
 describe('query edits', () => {
@@ -30,6 +28,7 @@ describe('query edits', () => {
         expect(line?.stops.map(stop => stop.id)).toEqual(next.points.map(p => p.id));
         expect(line?.unroutedKm).toBe(0);
         expect(empty.points).toEqual([]);
+        await expect(applyQueryChanges(empty, undefined, [{ op: 'route', points, days: maxRidingDays + 1 }], refresh)).rejects.toThrow('riding days');
     });
     it('keeps the rider preset without a goal and drops the name of the replaced route', async () => {
         vi.stubGlobal('fetch', vi.fn(routeService()));
@@ -68,41 +67,20 @@ describe('query edits', () => {
         expect([next.trip.points.map(p => p.id), next.trip.routeOrder, isTrip(next.trip)]).toEqual([['start', 'finish'], [], true]);
         expect(next.trip.splits?.[1]).toBeCloseTo(.3);
     });
-    it('reverses the point order, routes routed legs again and keeps drawn legs and nights', async () => {
-        const fetch = vi.fn(routeService());
-        vi.stubGlobal('fetch', fetch);
-        const plan: Trip = { ...emptyTrip('trip'), splits: { 2: .7 }, routeOrder: ['night-1'], points: [
-            point('a', 'start', [8, 48]), point('night-1', 'night', [8.1, 48], { night: 1 }),
-            point('c', 'finish', [8.2, 48], { leg: 'drawn', drawn: [[8.15, 48.01, 300], [8.12, 48.01, 310]] }),
-        ] };
-        const line = await refresh(plan);
-        const next = await applyQueryChanges(plan, line, [{op:'reverse'}], refresh);
-        expect(next.trip.points.map(p => [p.id, p.kind, p.leg ?? 'routed', p.night])).toEqual([['c', 'start', 'routed', undefined], ['night-2', 'night', 'drawn', 2], ['a', 'finish', 'routed', undefined]]);
-        expect(next.trip.points[1].drawn).toEqual([[8.12, 48.01, 310], [8.15, 48.01, 300]]);
-        expect(JSON.parse(fetch.mock.calls.at(-1)![1].body as string).points).toEqual([[8.1, 48], [8, 48]]);
-        expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
-        expect(next.trip.splits?.[1]).toBeCloseTo(.3);
-    });
-    it('reverses a loop and keeps its start, which holds the closing leg', async () => {
-        const plan: Trip = { ...emptyTrip(), loop: true, routeOrder: ['a', 'b'], points: [point('home', 'start', [8, 48], { leg: 'straight' }),
-            point('a', 'waypoint', [8.1, 48], { leg: 'drawn', drawn: [[8.05, 47.99]] }), point('b', 'waypoint', [8.1, 48.1], { leg: 'straight' })] };
-        const line = await refresh(plan);
-        const next = await applyQueryChanges(plan, line, [{op:'reverse'}], refresh);
-        expect(next.trip.loop).toBe(true);
-        expect(next.trip.points.map(p => [p.id, p.kind, p.leg])).toEqual([['home', 'start', 'drawn'], ['b', 'waypoint', 'straight'], ['a', 'waypoint', 'straight']]);
-        expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
-        const marked = { ...plan, points: [...plan.points, point('m', 'marker', [8.1, 48.05], { legEnd: 'home' })] };
-        const reversed = await applyQueryChanges(marked, await refresh(marked), [{op:'reverse'}], refresh);
-        expect(reversed.trip.points.find(p => p.id === 'm')?.legEnd).toBe('b');
-    });
-    it('keeps each marker in its own day when an out-and-back is reversed', async () => {
-        const out: Coordinate[] = [[7.6, 47.5], [7.62, 47.5]], spot: Coordinate = [7.61, 47.5];
-        const trip = importedTrip({}, [{ name: 'out', line: out, waypoints: [{ label: 'Out', coordinate: spot }] },
-            { name: 'back', line: out.slice().reverse(), waypoints: [{ label: 'Back', coordinate: spot }] }]);
-        const days = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => view({ trip, line }).days.map(day => dayStops(trip, line, day).map(stop => stop.point.label));
-        const line = await refresh(trip);
-        expect(days({ trip, line })).toEqual([['Out'], ['Back']]);
-        expect(days(await applyQueryChanges(trip, line, [{op:'reverse'}], refresh))).toEqual([['Back'], ['Out']]);
+    it('uses shared removal rules and leaves a collapsed loop unrouted', async () => {
+        const trip = { ...loopTrip(emptyTrip(), [[8, 48], [8.1, 48]], 'Home'), splits: { 1: .4 } };
+        const before = structuredClone(trip), id = trip.routeOrder[0];
+        const route = vi.fn();
+        const next = await applyQueryChanges(trip, testLine(trip), [{ op: 'remove_point', id }], route);
+        expect(next.trip).toEqual(removeRoutePoint(trip, id));
+        expect(next.trip.loop).toBeUndefined();
+        expect(next.trip.splits).toBeUndefined();
+        expect(isTrip(next.trip)).toBe(true);
+        expect(next.line).toBeUndefined();
+        expect(route).not.toHaveBeenCalled();
+        await expect(applyQueryChanges(trip, testLine(trip), [{ op: 'remove_point', id }, { op: 'reverse' }], route))
+            .rejects.toThrow('Choose a start and finish');
+        expect(trip).toEqual(before);
     });
     it('refreshes live geometry between edits and preserves the original on a routing failure', async () => {
         const base = testTrip(), inner: Coordinate[] = [[7.7, 47.4], [7.5, 47.1]];

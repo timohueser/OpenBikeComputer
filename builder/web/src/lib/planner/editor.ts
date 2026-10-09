@@ -153,6 +153,34 @@ export function removeRoutePoint(trip: Trip, id: string, placeName?: (coordinate
     return { ...next, loop: undefined, points: points.map(p => p.kind === 'start' ? { ...p, leg: undefined, drawn: undefined } : p) };
 }
 
+/** Reverses the route and its itinerary, preserving each leg's drawing and each marker's pass of the line. */
+export function reverseTrip(trip: Trip): Trip {
+    if (trip.restAfter?.includes(trip.days)) throw new Error('Move the rest day at the finish before reversing this trip.');
+    // A point holds the leg that ends at it. A loop keeps its start and moves its closing leg there.
+    const before = orderedRoutePoints(trip), order = before.slice().reverse();
+    const kept = trip.loop ? order.slice(0, -1) : order;
+    const renamed = (p: RoutePoint) => p.night ? `night-${trip.days - p.night}` : p.id;
+    const legEnd = (marker: RoutePoint) => {
+        const end = before.findIndex((p, i) => i > 0 && p.id === marker.legEnd);
+        return end > 0 ? renamed(before[end - 1]) : marker.legEnd;
+    };
+    const legInto = (i: number) => ({ leg: order[i - 1].leg, drawn: order[i - 1].drawn?.slice().reverse() });
+    const points = kept.map((p, i): RoutePoint => ({
+        ...p,
+        ...(i ? legInto(i) : trip.loop ? legInto(order.length - 1) : { leg: undefined, drawn: undefined }),
+        kind: i === 0 ? 'start' : !trip.loop && i === kept.length - 1 ? 'finish' : p.kind,
+        ...(p.night ? { id: renamed(p), night: trip.days - p.night } : {}),
+    }));
+    return {
+        ...trip,
+        points: [...points, ...trip.points.filter(p => p.kind === 'marker').map(p => ({ ...p, legEnd: legEnd(p) }))],
+        routeOrder: points.slice(1, trip.loop ? undefined : -1).map(p => p.id),
+        splits: Object.fromEntries(Object.entries(trip.splits ?? {}).map(([n, p]) => [trip.days - Number(n), 1 - p])),
+        restAfter: (trip.restAfter ?? []).map(n => trip.days - n).reverse(),
+        restNames: trip.restNames?.slice().reverse(),
+    };
+}
+
 /** The start, the points of `routeOrder`, then the finish; a loop ends at its start again. */
 export function orderedRoutePoints(trip: Trip): RoutePoint[] {
     const byId = new Map(trip.points.map(p => [p.id, p]));
@@ -376,6 +404,18 @@ export function setSplit(trip: Trip, line: RoutingLine | undefined, night: numbe
     const gap = minDayKm / (total || 1);
     const clamped = Math.max(days[night - 1].from + gap, Math.min(days[night].to - gap, progress));
     return { ...trip, splits: { ...trip.splits, [night]: clamped } };
+}
+
+/** Replaces the day ends strictly inside a route range with `boundaries`, all in kilometres. */
+export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from, to]: [number, number], boundaries: number[]): Trip {
+    if (trip.points.some(p => p.kind === 'night')) throw new Error('Unpin the overnight places before changing the day count.');
+    if (trip.restAfter?.length) throw new Error('Remove rest days before changing the day count.');
+    const { days, total } = planView(trip, line);
+    const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
+    ends.sort((a, b) => a - b);
+    if (ends.length >= maxRidingDays) throw new Error(`The plan can have at most ${maxRidingDays} riding days.`);
+    return { ...trip, mode: 'trip', days: ends.length + 1, budget: 'days', target: ends.length + 1,
+        splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }
 
 /** How far a day goes over the rider's targets; 0 when under or without a target. */
