@@ -80,7 +80,7 @@ export async function serve(root, port) {
       const pending = [];
       let result;
       if (url.pathname.startsWith('/cell-catalog/')) result = await catalog(bucket, request, url.pathname.slice(1));
-      else result = await tiles(new Request(url, {method: request.method}), {BUCKET: bucket},
+      else result = await tiles(new Request(url, {method: request.method, headers: request.headers}), {BUCKET: bucket},
         {waitUntil(value) { pending.push(value); }}, null);
       response.writeHead(result.status, Object.fromEntries(result.headers));
       if (result.body) await pipeline(Readable.fromWeb(result.body), response);

@@ -12,6 +12,17 @@ const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Meth
 
 const contentTypes = { [TileType.Mvt]: 'application/x-protobuf', [TileType.Webp]: 'image/webp' };
 const keep = async bytes => bytes;
+function acceptsGzip(request) {
+  // Cloudflare can replace the header; cf preserves the client's original value.
+  const acceptEncoding = request.cf?.clientAcceptEncoding ?? request.headers.get('Accept-Encoding') ?? '';
+  const encodings = new Map(acceptEncoding.toLowerCase().split(',').map(value => {
+    const [name, ...parameters] = value.trim().split(';').map(part => part.trim());
+    const quality = parameters.find(part => part.startsWith('q='));
+    return [name, quality === undefined ? 1 : Number(quality.slice(2))];
+  }));
+  const quality = encodings.get('gzip') ?? encodings.get('*') ?? 0;
+  return quality > 0 && quality <= 1;
+}
 // A body with a Content-Encoding is stored that way. Without `encodeBody: 'manual'`, the runtime would
 // compress it again, also when the cache stores or returns a copy.
 export function reply(body, { status, headers }) {
@@ -47,7 +58,10 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
     let asset;
     try { asset = assetRoute(decodeURIComponent(url.pathname)); } catch { asset = null; }
     if ((!route && !asset) || url.search) return notFound();
-    const cacheKey = new Request(url.href);
+    const gzip = acceptsGzip(request), cacheUrl = new URL(url);
+    // The edge cache does not separate representations by Vary: Accept-Encoding.
+    if (route?.tile) cacheUrl.searchParams.set('encoding', gzip ? 'gzip' : 'identity');
+    const cacheKey = new Request(cacheUrl);
     const cached = await cache?.match(cacheKey);
     if (cached) return reply(request.method === 'HEAD' ? null : cached.body, cached);
     // Only a cache miss reads the bucket, so only a miss counts against the limit.
@@ -71,7 +85,7 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
         // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
         const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))
           .catch(error => { if (error instanceof MissingArchive) return null; throw error; });
-        let data, tileHeaders = {};
+        let data, tileHeaders = { Vary: 'Accept-Encoding' };
         if (pointer) {
           if (pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');
           const source = new R2Source(env.BUCKET, pointer.path);
@@ -79,11 +93,10 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
           const header = await archive.getHeader();
           if (route.ext !== undefined && route.ext !== tileTypeExt(header.tileType)) return notFound();
           if (route.tile[0] >= header.minZoom && route.tile[0] <= header.maxZoom) {
-            // Edge compression skips unknown content types, so these tiles keep their stored encoding.
-            const raw = !(header.tileType in contentTypes);
-            data = await (raw ? new PMTiles(source, directories, keep) : archive).getZxy(...route.tile);
-            tileHeaders = { 'Content-Type': contentTypes[header.tileType] ?? 'application/octet-stream',
-              ...(raw && header.tileCompression === Compression.Gzip ? { 'Content-Encoding': 'gzip' } : {}) };
+            const encoded = gzip && header.tileCompression === Compression.Gzip;
+            data = await (encoded ? new PMTiles(source, directories, keep) : archive).getZxy(...route.tile);
+            Object.assign(tileHeaders, { 'Content-Type': contentTypes[header.tileType] ?? 'application/octet-stream',
+              ...(encoded ? { 'Content-Encoding': 'gzip' } : {}) });
           }
         }
         response = reply(data?.data, { status: data ? 200 : 204, headers: { ...headers, ...tileHeaders } });
@@ -91,7 +104,7 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
       if (cache) ctx.waitUntil(cache.put(cacheKey, reply(response.clone().body, response)));
       if (request.method === 'HEAD') {
         if (!cache) await response.body?.cancel();
-        return new Response(null, response);
+        return reply(null, response);
       }
       return response;
     } catch (error) {

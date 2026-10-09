@@ -25,8 +25,8 @@ test('invalid requests perform no bucket access', async () => {
 });
 
 // One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam.
-function archive(tileType = 1, meta = { attribution: 'Test data' }) {
-  const tile = gzipSync(new Uint8Array([26, 0]));
+function archive(tileType = 1, meta = { attribution: 'Test data' }, tileCompression = 2) {
+  const bytes = new Uint8Array([26, 0]), tile = tileCompression === 2 ? gzipSync(bytes) : bytes;
   const directory = gzipSync(new Uint8Array([1, 0, 1, tile.length, 1]));
   const metadata = gzipSync(Buffer.from(JSON.stringify(meta)));
   const header = Buffer.alloc(127);
@@ -35,7 +35,7 @@ function archive(tileType = 1, meta = { attribution: 'Test data' }) {
     127 + directory.length + metadata.length, 0, 127 + directory.length + metadata.length,
     tile.length, 1, 1, 1];
   values.forEach((v, i) => header.writeBigUInt64LE(BigInt(v), 8 + i * 8));
-  header.set([1, 2, 2, tileType, 0, 0], 96);
+  header.set([1, 2, tileCompression, tileType, 0, 0], 96);
   header.writeInt32LE(-1800000000, 102); header.writeInt32LE(-850000000, 106);
   header.writeInt32LE(1800000000, 110); header.writeInt32LE(850000000, 114);
   return Buffer.concat([header, directory, metadata, tile]);
@@ -89,7 +89,6 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   const emptyUrl = `https://tiles.example${base}/basemap/1/0/0.mvt`;
   assert.equal((await worker.fetch(new Request(emptyUrl), env, ctx)).status, 204);
   await Promise.all(pending);
-  assert.equal(cached.get(emptyUrl).status, 204);
   const readsBeforeEmpty = reads.count;
   assert.equal((await worker.fetch(new Request(emptyUrl), env, ctx)).status, 204);
   assert.equal(reads.count, readsBeforeEmpty);
@@ -98,7 +97,7 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
     `https://tiles.example${base}/sun.json`, `https://tiles.example${base}/sun/0/0/0`]) {
     const response = await worker.fetch(new Request(missing), env, ctx);
     assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'no-store');
-    assert.ok(!cached.has(missing));
+    assert.ok(![...cached.keys()].some(key => key.split('?')[0] === missing));
   }
   // Valid empty sunlight has metadata, while each absent shard is unknown coverage.
   const sun = Buffer.from('{"tilejson":"3.0.0","sun_format":3,"minzoom":0,"maxzoom":12}');
@@ -146,29 +145,80 @@ test('grid archives share download objects and assets stream from their pointers
   await Promise.all(pending); delete globalThis.caches;
 });
 
-test('tiles of an unknown type keep their gzip encoding through the edge cache', async () => {
+test('gzip tile bytes and runtime encoding survive the edge cache for every tile type', async () => {
   const id = 'd'.repeat(64), prefix = `planner/releases/${id}`;
   // Node ignores `encodeBody`; the Workers runtime compresses again without 'manual'.
   const NodeResponse = globalThis.Response;
   globalThis.Response = class extends NodeResponse { constructor(body, init) { super(body, init); this.encodeBody = init?.encodeBody; } };
   const cached = new Map();
-  globalThis.caches = { default: { async match(key) { return cached.get(key.url); }, async put(key, value) { cached.set(key.url, value); } } };
-  const env = { BUCKET: bucket(new Map(grid(prefix, { snow: archive(0, { seasons: 9 }) }))) };
+  const cache = { async match(key) { return cached.get(key.url)?.clone(); }, async put(key, value) { cached.set(key.url, value); } };
+  const env = { BUCKET: bucket(new Map(grid(prefix, { snow: archive(0), basemap: archive(1), terrain: archive(4),
+    places: archive(1, {}, 1) }))) };
   const pending = [], ctx = { waitUntil(promise) { pending.push(promise); } };
-  const url = `https://tiles.example/releases/${id}/snow/0/0/0`;
   try {
-    const tile = await worker.fetch(new Request(url), env, ctx);
-    await Promise.all(pending);
-    const hit = await worker.fetch(new Request(url), env, ctx);
-    for (const response of [tile, cached.get(url), hit]) {
-      assert.equal(response.headers.get('Content-Type'), 'application/octet-stream');
-      assert.equal(response.headers.get('Content-Encoding'), 'gzip');
-      assert.equal(response.encodeBody, 'manual');
+    for (const [name, type] of [['snow', 'application/octet-stream'], ['basemap', 'application/x-protobuf'], ['terrain', 'image/webp']]) {
+      const request = method => new Request(`https://tiles.example/releases/${id}/${name}/0/0/0`,
+        { method, headers: { 'Accept-Encoding': 'gzip' } });
+      const tile = await worker.fetch(request('GET'), env, ctx, cache);
+      await Promise.all(pending);
+      const hit = await worker.fetch(request('GET'), env, ctx, cache);
+      const stored = [...cached.values()].at(-1);
+      for (const response of [tile, stored, hit]) {
+        assert.equal(response.headers.get('Content-Type'), type);
+        assert.equal(response.headers.get('Content-Encoding'), 'gzip');
+        assert.equal(response.headers.get('Vary'), 'Accept-Encoding');
+        assert.equal(response.encodeBody, 'manual');
+        assert.deepEqual(Buffer.from(await response.clone().arrayBuffer()), gzipSync(new Uint8Array([26, 0])));
+      }
+      const head = await worker.fetch(request('HEAD'), env, ctx, cache);
+      const coldHead = await worker.fetch(request('HEAD'), env, ctx, null);
+      for (const response of [head, coldHead]) {
+        assert.equal(response.headers.get('Content-Encoding'), 'gzip');
+        assert.equal(response.encodeBody, 'manual');
+        assert.equal(await response.text(), '');
+      }
     }
-    assert.deepEqual(gunzipSync(new Uint8Array(await hit.arrayBuffer())), Buffer.from([26, 0]));
+    const plain = await worker.fetch(new Request(`https://tiles.example/releases/${id}/places/0/0/0`,
+      { headers: { 'Accept-Encoding': 'gzip' } }), env, ctx, null);
+    assert.equal(plain.headers.get('Content-Encoding'), null);
+    assert.deepEqual(Buffer.from(await plain.arrayBuffer()), Buffer.from([26, 0]));
   } finally {
     globalThis.Response = NodeResponse;
-    delete globalThis.caches;
+  }
+});
+
+test('gzip negotiation separates cache entries and bypasses tile inflation', async () => {
+  const id = '1'.repeat(64), prefix = `planner/releases/${id}`, reads = { count: 0 };
+  const env = { BUCKET: bucket(new Map(grid(prefix, { basemap: archive(1, { attribution: 'Negotiation fixture' }) })), reads) };
+  const cached = new Map(), pending = [], ctx = { waitUntil(promise) { pending.push(promise); } };
+  const cache = { async match(key) { return cached.get(key.url)?.clone(); }, async put(key, value) { cached.set(key.url, value); } };
+  const NativeDecompressionStream = globalThis.DecompressionStream;
+  let inflations = 0;
+  globalThis.DecompressionStream = class extends NativeDecompressionStream { constructor(format) { super(format); inflations++; } };
+  try {
+    const encodings = [['gzip', true], ['', false], ['br, GZIP;q=0.5', true], ['gzip;q=0, *;q=1', false],
+      ['identity', false], ['br', false], ['*;q=0.3', true], ['gzip;q=0', false], ['gzip;q=bogus', false],
+      ['br, gzip', false, 'gzip;q=0'], ['br', true, 'gzip'], ['br, gzip', false, '']];
+    let warmReads;
+    for (const [index, [encoding, compressed, original]] of encodings.entries()) {
+      const request = new Request(`https://tiles.example/releases/${id}/basemap/0/0/0.mvt`,
+        { headers: { 'Accept-Encoding': encoding } });
+      if (original !== undefined) request.cf = { clientAcceptEncoding: original };
+      const response = await worker.fetch(request, env, ctx, cache);
+      await Promise.all(pending);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('Content-Encoding'), compressed ? 'gzip' : null);
+      assert.equal(response.headers.get('Vary'), 'Accept-Encoding');
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.deepEqual(compressed ? gunzipSync(bytes) : bytes, Buffer.from([26, 0]));
+      // The first gzip request inflates the directory; the first identity request also inflates its tile.
+      assert.equal(inflations, index === 0 ? 1 : 2);
+      if (index === 1) warmReads = reads.count;
+      if (index > 1) assert.equal(reads.count, warmReads);
+    }
+    assert.equal(cached.size, 2);
+  } finally {
+    globalThis.DecompressionStream = NativeDecompressionStream;
   }
 });
 
@@ -215,6 +265,18 @@ test('Local files serve the same grid bytes over loopback without an R2 cache', 
     const origin = `http://127.0.0.1:${server.address().port}`;
     const tile = `${origin}/releases/${id}/basemap/0/0/0.mvt`;
     assert.deepEqual(Buffer.from(await (await fetch(tile)).arrayBuffer()), Buffer.from([26, 0]));
+    // Node fetch decodes HTTP gzip; use the HTTP client to check the bytes on the wire.
+    const { get } = await import('node:http');
+    const encoded = await new Promise((resolve, reject) => {
+      get(tile, { headers: { 'Accept-Encoding': 'gzip' } }, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => resolve({ headers: response.headers, bytes: Buffer.concat(chunks) }));
+        response.on('error', reject);
+      }).on('error', reject);
+    });
+    assert.equal(encoded.headers['content-encoding'], 'gzip');
+    assert.deepEqual(encoded.bytes, gzipSync(new Uint8Array([26, 0])));
     assert.equal((await fetch(tile, {method:'HEAD'})).status, 200);
     const info = await (await fetch(`${origin}/releases/${id}/basemap.json`)).json();
     assert.equal(info.attribution, 'Local data');
