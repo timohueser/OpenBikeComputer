@@ -30,6 +30,7 @@ mod day_done;
 mod detour;
 mod dfu;
 mod find_place;
+pub(crate) mod help;
 mod home;
 mod journey;
 mod landmark_photo;
@@ -80,6 +81,7 @@ pub use dfu::{
     DfuProgressScreen, DfuUpdatedScreen,
 };
 pub use find_place::{FindPlaceScreen, VisitReviewScreen};
+pub use help::HelpScreen;
 pub use home::HomeScreen;
 pub(crate) use journey::JourneyError;
 pub use journey::JourneyScreen;
@@ -652,6 +654,8 @@ pub enum BaseContent {
 pub enum ReaderNeed {
     /// Selected article text, attribution, or Peak View availability.
     Articles,
+    /// Nearby settlement for the emergency position.
+    Help,
     /// Never needs the `Reader` (all chrome and live-riding non-map screens).
     Never,
     /// Always needs it — any [`Map`](BaseContent::Map) base screen.
@@ -926,6 +930,7 @@ screens! {
     Home(HomeScreen) => Caps::nav().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map(),
     Assistant(AssistantScreen) => Caps::nav(),
+    Help(HelpScreen) => Caps::modal().reader(ReaderNeed::Help),
     Journey(JourneyScreen) => Caps::nav(),
     Landmarks(LandmarksScreen) => Caps::map(),
     PeakArticle(PeakArticleScreen) => Caps::nav().reader(ReaderNeed::Articles),
@@ -1167,6 +1172,7 @@ impl Screen {
     /// Intentionally partial: the other screens have no preparation.
     pub(crate) fn prepare(&mut self, px: &mut Prepare) {
         match self {
+            Screen::Help(s) => s.prepare(px),
             Screen::PoiList(s) => s.prepare(px),
             Screen::PoiDetail(s) => s.prepare(px),
             Screen::Detour(s) => s.prepare(px),
@@ -1435,7 +1441,7 @@ mod tests {
                 ReaderNeed::Always => assert_eq!(c.base, BaseContent::Map, "{name}: Always-reader ⟺ Map base"),
                 ReaderNeed::Never => assert_ne!(c.base, BaseContent::Map, "{name}: a Map base must read Always"),
                 ReaderNeed::Articles => assert_ne!(c.base, BaseContent::Map, "{name}: article reads do not draw a map"),
-                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo => {
+                ReaderNeed::PoiSnapshot | ReaderNeed::PoiHours | ReaderNeed::Photo | ReaderNeed::Help => {
                     assert_eq!(c.base, BaseContent::Chrome, "{name}: a POI reader screen is chrome-based");
                 }
             }

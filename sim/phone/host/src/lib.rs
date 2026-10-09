@@ -242,7 +242,12 @@ impl Host {
     /// The newest cue as mono samples at `sample_rate`, once: `None` until a pass raises the next.
     pub fn take_sound(&mut self, sample_rate: u32) -> Option<&[f32]> {
         let sound = self.sound.take()?;
-        self.samples = obc_host_core::tone::render(obc_platform::sound::pattern(sound.cue), sound.volume, sample_rate);
+        self.samples = match sound {
+            obc_app::device_core::Sound::Play { cue, volume } => {
+                obc_host_core::tone::render(obc_platform::sound::pattern(cue), volume, sample_rate)
+            }
+            obc_app::device_core::Sound::Stop => Vec::new(),
+        };
         Some(&self.samples)
     }
 

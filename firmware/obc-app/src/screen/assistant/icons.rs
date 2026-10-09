@@ -41,6 +41,7 @@ pub(super) fn draw(cv: &mut impl Surface, question: Msg, at: Point, ink: u16) {
             &[(20, 11), (20, 19)],
             &[(16, 15), (23, 15)],
         ],
+        Msg::HelpTitle => &[&[(11, 1), (22, 20), (0, 20), (11, 1)], &[(11, 7), (11, 12)], &[(11, 16), (11, 17)]],
         _ => return,
     };
     for path in paths {

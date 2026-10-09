@@ -625,8 +625,14 @@ impl SimGui {
             );
         }
         if let Some(sound) = plan.sound {
-            obc_ports::Sounder::play(&mut self.sounder, obc_platform::sound::pattern(sound.cue), sound.volume);
-            self.last_cue = Some(sound.cue);
+            let (notes, volume) = match sound {
+                obc_app::device_core::Sound::Play { cue, volume } => {
+                    self.last_cue = Some(cue);
+                    (obc_platform::sound::pattern(cue), volume)
+                }
+                obc_app::device_core::Sound::Stop => (&[][..], obc_ports::Volume::Loud),
+            };
+            obc_ports::Sounder::play(&mut self.sounder, notes, volume);
         }
         // The map-referenced altimeter's terrain read, drained once per frame behind the pass, as
         // the board's ride loop does. A fresh fix arms it, so it reads at most one tile per fix.

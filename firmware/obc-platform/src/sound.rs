@@ -1,14 +1,14 @@
 //! The cue-to-pattern table: the one table every [`Sounder`](obc_ports::Sounder) plays, on the
 //! board, in the simulator and on the phone.
 //!
-//! Cues in the same [`Family`] share one pattern. Rhythm carries the meaning and stays audible in
+//! Automatic cues in the same [`Family`] share one pattern. Rhythm carries the meaning and stays audible in
 //! wind; pitch direction is the second signal. Alert notes sit near the piezo's 2.7 to 4 kHz band.
 //!
 //! These values are a start. The owner tunes them by ear on the real part.
 
 use obc_ports::{Cue, Family, Note};
 
-/// One representative cue for each distinct pattern in developer sound controls.
+/// One representative cue for each automatic family in developer sound controls.
 pub const AUDITION_CUES: [(Cue, &str); 5] = [
     (Cue::KeyClick, "Tick"),
     (Cue::ClimbStarts, "Heads-up"),
@@ -40,8 +40,13 @@ const PROBLEM: &[Note] = &[tone(HIGH, 250), rest(80), tone(LOW, 400)];
 const URGENT: &[Note] =
     &[tone(HIGH, 55), rest(25), tone(3_200, 170), rest(140), tone(HIGH, 55), rest(25), tone(LOW, 330)];
 
+const DISTRESS: &[Note] = &[tone(HIGH, 1_000)];
+
 /// The notes `cue` plays.
 pub fn pattern(cue: Cue) -> &'static [Note] {
+    if cue == Cue::Distress {
+        return DISTRESS;
+    }
     match cue.family() {
         Family::Tick => TICK,
         Family::HeadsUp => HEADS_UP,
@@ -54,6 +59,11 @@ pub fn pattern(cue: Cue) -> &'static [Note] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distress_beep_is_a_one_second_four_kilohertz_tone() {
+        assert_eq!(pattern(Cue::Distress), &[Note { hz: 4_000, ms: 1_000 }]);
+    }
 
     const ALL: [Cue; 14] = [
         Cue::KeyClick,
@@ -72,7 +82,7 @@ mod tests {
         Cue::BatteryCritical,
     ];
 
-    /// Every cue sounds, no step has zero length, and a family is one pattern, not one per cue.
+    /// Automatic cues sound, with positive note lengths and one pattern per family.
     #[test]
     fn every_cue_plays_its_familys_one_pattern() {
         for a in ALL {

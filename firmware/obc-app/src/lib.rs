@@ -34,6 +34,7 @@ pub mod device_core;
 mod device_status;
 pub mod dfu;
 pub mod dirty;
+mod distress;
 mod easier;
 pub mod effort;
 pub mod fault;

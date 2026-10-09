@@ -111,7 +111,7 @@ and stays latched until both buttons are released.
 | Up + Select, released before 500 ms | Open or close the universal quick drawer |
 | Up + Select, held for 500 ms | Open Ride Assistant |
 | Down + Back | Open or close the current screen's contextual drawer |
-| Up + Down | Reserved |
+| Up + Down, held for 2 seconds | Open Help |
 | Select + Back | Reserved |
 
 Reserved chords consume both presses. The first Up or Down step waits for the chord
@@ -198,6 +198,18 @@ Delete lives on one row. A hold anywhere else deletes nothing.
 Hold **Up + Select** to open Ride Assistant over the riding view. It closes previous
 pages and cancels their searches or pending detours. Back returns to the ride.
 Find a place, What is next, Nearby landmarks, and Easier routes use installed offline data.
+
+### Help
+
+Open **Help** in Assistant, or hold **Up + Down** for two seconds. Help shows 112 and
+the GPS position in WGS84 decimal degrees and degrees, minutes and seconds. The fix age
+and status distinguish a current position from the last known position. Coordinates work
+without a map. A map can add a nearby settlement and a calibrated height.
+
+Help stays open until the rider leaves. Select starts or stops the distress signal.
+The signal plays at Loud, even with Sound off. Leaving Help stops it. It sounds six
+times in one minute, then stays quiet for one minute, and repeats. Use a phone to call;
+the device does not contact emergency services.
 
 ### Find a place
 

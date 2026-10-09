@@ -117,7 +117,7 @@ struct Args {
     /// holds Select, `b` is back, `B` is back-hold, `H` and `M` leave Select and Back held partway
     /// to snapshot the long-press hint, `w` waits for an in-flight animation to settle, `f` draws
     /// one throwaway frame so draw-time lazy state fills, `T` runs one route-aware tick, `Q` opens
-    /// the quick drawer with its slide settled, `A` holds Up and Select to open Assistant, and `I`
+    /// the quick drawer with its slide settled, `A` opens Assistant, `E` holds Up + Down for Help, and `I`
     /// elapses 5 minutes with no input so the idle-return timeout fires.
     script: Option<String>,
     /// Normal button input after GPX replay, before the final render.
@@ -986,15 +986,16 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                     feed(app, now, vec![]);
                 }
             }
-            // Hold the same raw button pair past the Assistant threshold.
-            'A' => {
+            // Hold a raw pair until its Assistant or Help threshold.
+            token @ ('A' | 'E') => {
                 feed(app, now, vec![down(Button::Up)]);
                 now += 30;
-                feed(app, now, vec![down(Button::Select)]);
-                now += hold;
+                let partner = if token == 'E' { Button::Down } else { Button::Select };
+                feed(app, now, vec![down(partner)]);
+                now += if token == 'E' { obc_app::input::HELP_HOLD_MS } else { hold };
                 feed(app, now, vec![]);
                 now += 30;
-                feed(app, now, vec![up(Button::Select), up(Button::Up)]);
+                feed(app, now, vec![up(partner), up(Button::Up)]);
                 now += 30;
             }
             // The contextual drawer's Down and Back squeeze, then its slide settled.
@@ -1067,7 +1068,7 @@ Scripted snapshots:
   --script-after TOKENS  Apply button input after GPX replay, before rendering
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
-                           Q quick-drawer tap, A held Up+Select (Assistant), C context-drawer squeeze,
+                           Q quick-drawer tap, A held Up+Select (Assistant), E held Up+Down (Help), C context-drawer squeeze,
                            w wait, f frame, T tick, I idle, P a phone bonds)
   --trip-progress D:M:L   The first trip's progress: day D (from 0), M metres into it, and the
                           last finished day L (or -)

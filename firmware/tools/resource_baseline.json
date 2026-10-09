@@ -26,7 +26,7 @@
       "compile_time_allocations": {
         "framebuffer": 76800,
         "row_diff": 1284,
-        "app": 63304,
+        "app": 63320,
         "map_cache": 37084,
         "map_tables": 7600,
         "route_cache": 5396,
@@ -60,6 +60,11 @@
         "flat_route_read": 48,
         "flat_engine": 768,
         "ble_v4_adapter": 763
+      },
+      "_help_allocation_measurement": {
+        "source_commit": "376d5c972c6a57246fcc74a71c25d3be7dc2f010",
+        "build": "GitHub Actions run 37846564731, embedded job 113549444306, resource-report head build",
+        "changes": "App 63,320 B. The distress signal stores a start time and a last-played slot, 16 B. RAM, stack and flash limits stay unchanged."
       },
       "_route_service_line_allocation_measurement": {
         "source_commit": "76d5852a8",

@@ -15,9 +15,8 @@ use obc_render::{
     Surface,
 };
 
-/// The live questions, then the placeholders. A placeholder stays in the list, inert, as a
-/// reminder of what the Assistant will answer.
-pub(crate) const QUESTIONS: [Msg; 7] = [
+/// The questions, including inert placeholders, followed by Help.
+pub(crate) const QUESTIONS: [Msg; 8] = [
     Msg::AssistantFind,
     Msg::AssistantNext,
     Msg::AssistantEasier,
@@ -25,8 +24,8 @@ pub(crate) const QUESTIONS: [Msg; 7] = [
     Msg::AssistantBlocked,
     Msg::AssistantBackRoute,
     Msg::AssistantDetour,
+    Msg::HelpTitle,
 ];
-const LIVE_QUESTIONS: usize = 4;
 const ROW_H: i32 = 36;
 const ROW_PITCH: i32 = 38;
 const TEXT_X: i32 = 52;
@@ -64,12 +63,14 @@ impl AssistantScreen {
             cv.text(rx.t(Msg::AssistantRetry), Point::new(rx.w / 2, 164), Font::Label, TextAlign::Center, SUBTEXT);
             return;
         }
-        for (i, question) in QUESTIONS.iter().enumerate() {
-            let y = LIST_TOP + i as i32 * ROW_PITCH;
+        let visible = ((rx.h - LIST_TOP - 6) / ROW_PITCH).max(1) as usize;
+        let first = list::window_start(self.selected, visible, QUESTIONS.len());
+        for (i, question) in QUESTIONS.iter().enumerate().skip(first).take(visible) {
+            let y = LIST_TOP + (i - first) as i32 * ROW_PITCH;
             let area = rows::row_rect(y, rx.w, ROW_H);
             let selected = i == self.selected;
             rows::row_cursor(cv, area, selected, false);
-            let ink = if i >= LIVE_QUESTIONS {
+            let ink = if matches!(question, Msg::AssistantBlocked | Msg::AssistantBackRoute | Msg::AssistantDetour) {
                 CONTOUR
             } else if selected {
                 ON_ACCENT

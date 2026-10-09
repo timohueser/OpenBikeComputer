@@ -65,6 +65,7 @@ fn seeds(language: Language) -> Vec<Seed> {
         Screen::Home(HomeScreen::new()),
         Screen::Map(MapScreen::new()),
         Screen::Assistant(AssistantScreen::new()),
+        Screen::Help(HelpScreen::new()),
         Screen::Journey(JourneyScreen::new(false)),
         Screen::Journey(JourneyScreen::new(true)),
         Screen::Landmarks(LandmarksScreen),
@@ -338,6 +339,25 @@ fn every_screen_is_seeded() {
     let seeded: Vec<&str> = seeds(Language::En).iter().map(|(s, _)| s.name()).collect();
     let missing: Vec<&&str> = Screen::NAMES.iter().filter(|n| !seeded.contains(n) && !NO_SEED.contains(n)).collect();
     assert!(missing.is_empty(), "a new screen needs a seed in the copy-fit gate: {missing:?}");
+}
+
+#[test]
+fn emergency_readouts_fit_all_languages_at_coordinate_and_age_limits() {
+    let bytes = build_min_obcm(0xF800);
+    for language in Language::ALL {
+        for (lat, lon, live, age) in [(-90_000_000, -180_000_000, true, 0), (46_590_800, 8_327_300, false, 4_294_967)] {
+            for signal in [false, true] {
+                let mut help = HelpScreen::new();
+                help.refresh(Some(obc_ports::Fix::at(lat, lon)), Some(age), live, Some(-430));
+                help.signal = signal;
+                for (name, drawn) in
+                    walk((Screen::Help(help), vec![]), language, &bytes, |app| app.set_sound_available(true))
+                {
+                    assert!(complaint(name, language, &drawn).is_none(), "{:?}", complaint(name, language, &drawn));
+                }
+            }
+        }
+    }
 }
 
 #[test]

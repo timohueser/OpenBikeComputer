@@ -2878,3 +2878,57 @@ name = "dark-assistant"
 map = "{grimsel}"
 script = "{theme_dark} A"
 expect = "Assistant"
+
+[[frame]]
+name = "assistant-help"
+map = "{grimsel}"
+script = "A u w"
+expect = "Assistant"
+
+[[frame]]
+name = "help"
+map = "{grimsel}"
+script = "E w T"
+expect = "Help"
+args = ["--gpx", "{gpx}", "--at", "10"]
+
+[[frame]]
+name = "help"
+map = "{grimsel}"
+script = "E w T"
+expect = "Help"
+langs = ["de", "fr", "es"]
+args = ["--gpx", "{gpx}", "--at", "10"]
+
+[[frame]]
+name = "help-signal"
+map = "{grimsel}"
+script = "E w T p"
+expect = "Help"
+args = ["--gpx", "{gpx}", "--at", "10"]
+
+[[frame]]
+name = "help-no-fix"
+map = "{grimsel}"
+script = "A u p w"
+expect = "Help"
+
+[[frame]]
+name = "help-stale"
+map = "{grimsel}"
+expect = "Help"
+args = ["--gpx", "{gpx}", "--at", "10", "--script-after", "E I"]
+
+[[frame]]
+name = "help-no-sound"
+map = "{grimsel}"
+script = "E w T"
+expect = "Help"
+args = ["--gpx", "{gpx}", "--at", "10", "--no-sound"]
+
+[[frame]]
+name = "dark-help"
+map = "{grimsel}"
+script = "{theme_dark} E w T"
+expect = "Help"
+args = ["--gpx", "{gpx}", "--at", "10"]

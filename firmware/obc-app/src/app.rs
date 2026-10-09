@@ -1897,9 +1897,6 @@ impl App {
         if changed && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
-        if status.paired {
-            self.close_pairing_code();
-        }
         self.ui.cards.set_passkey(status.passkey);
         self.sweep_cards();
     }
@@ -1975,6 +1972,12 @@ impl App {
     /// it needs. Called once per pass, and again after any host fact is posted, so an arriving
     /// card lands in the same frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
+        if self.help_is_open() {
+            return;
+        }
+        if self.state.device.ble_paired {
+            self.close_pairing_code();
+        }
         let arrival = self.arrival_view();
         let in_setup = self.settings.in_setup() || self.factory_reset_pending();
         self.ui.run_card_sweep(&self.catalogs, self.recorder.recording(), self.state.pan.is_some(), arrival, in_setup);
@@ -2014,10 +2017,17 @@ impl App {
             return;
         }
         let utc = self.clock_trusted().then(|| self.wall_unix_now());
-        screen::apply(
-            &mut self.ui.stack,
-            screen::Transition::Push(Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store))),
-        );
+        let cleanup = Screen::RouteCleanup(screen::RouteCleanupScreen::new(utc, store));
+        if self.help_is_open() {
+            // Keep Help and any drawer visible; the cleanup becomes its return target.
+            if self.ui.stack.is_full() {
+                self.ui.stack.remove(1);
+            }
+            let at = screen::base_index(&self.ui.stack);
+            let _ = self.ui.stack.insert(at, cleanup);
+            return;
+        }
+        screen::apply(&mut self.ui.stack, screen::Transition::Push(cleanup));
         self.ui.cancel_holds();
         self.ui.map_dirty = true;
     }
@@ -2236,14 +2246,18 @@ impl App {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
 
-    /// Apply one device-wide [`Chord`]: a drawer toggle or direct Assistant entry. Returns
+    /// Apply one device-wide [`Chord`]: a drawer toggle, Assistant or Help entry. Returns
     /// whether it moved anything.
     ///
     /// It is resolved here, not in a screen, because the recogniser already swallowed the
     /// chord's constituents and the sheet must open over whatever the rider is on. Two rules
     /// live here only: a modal that declares [`Caps::blocks_chords`](crate::screen::Caps) stops
-    /// every chord, and one drawer is open at a time, so the same chord again closes it.
+    /// ordinary chords, and one drawer is open at a time, so the same chord again closes it.
+    /// Help overrides modal gates and keeps the interrupted page as its return target.
     pub fn apply_chord(&mut self, chord: Chord) -> bool {
+        if chord == Chord::Help {
+            return self.open_help();
+        }
         if self.factory_reset_pending() {
             return false;
         }
@@ -2261,6 +2275,7 @@ impl App {
             return false;
         }
         let acted = match chord {
+            Chord::Help => unreachable!("Help is admitted before modal gates"),
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::opening())),
             // The Assistant is a place of its own, not a page over the descent the squeeze came
             // from: it lands on the root pair, like the drawer's settings row, so the depth it
@@ -2293,6 +2308,38 @@ impl App {
             self.key_click();
         }
         acted
+    }
+
+    /// Help keeps GPS awake while the rider reads their position.
+    pub fn help_is_open(&self) -> bool {
+        matches!(screen::base_screen(&self.ui.stack), Some(Screen::Help(_)))
+    }
+
+    fn open_help(&mut self) -> bool {
+        if matches!(self.top_screen(), Screen::Help(_)) || self.power_off_requested() {
+            return false;
+        }
+        if self.ui.stack.is_full() {
+            // Keep the current page as Help's return target, even at maximum nesting.
+            self.ui.stack.remove(1);
+        }
+        screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::Help(screen::HelpScreen::new())));
+        self.ui.map_dirty = true;
+        self.ui.last_input_ms = self.ui.now_ms;
+        self.ui.cancel_holds();
+        self.refresh_help();
+        true
+    }
+
+    fn refresh_help(&mut self) {
+        let age = self.tick_state.last_fix_ms.map(|at| self.ui.now_ms.wrapping_sub(at) / 1_000);
+        let live = self.has_live_fix(self.ui.now_ms);
+        let elevation = self.recorder.fused_elevation_m().map(|m| libm::roundf(m) as i32);
+        if let Some(Screen::Help(help)) = self.ui.stack.last_mut() {
+            self.ui.map_dirty |= help.refresh(self.state.user_fix, age, live, elevation);
+            let wake = 1_000 - self.ui.now_ms % 1_000;
+            self.ui.next_wake_ms = Some(self.ui.next_wake_ms.map_or(wake, |w| w.min(wake)));
+        }
     }
 
     /// What the Up-ahead timeline is scoped to right now: the live category filter and the
@@ -2796,6 +2843,9 @@ impl App {
                         }
                     }
                     Msg::AssistantLandmarks => self.open_landmarks(),
+                    Msg::HelpTitle => {
+                        self.open_help();
+                    }
                     _ => {}
                 }
                 return self.ui.stack.len() != before;
@@ -2920,6 +2970,7 @@ impl App {
         let tracking = self.recorder.recording();
         // The timer poll is the UI runtime's; this method sequences the per-pass sweeps around it.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
+        self.refresh_help();
         if matches!(self.top_screen(), Screen::Map(_)) {
             if let Some(delay) = self.ui.map_icons.wake_in(clock.0) {
                 if delay == 0 {
@@ -4008,7 +4059,123 @@ mod tests {
         assert!(app.sheet_only(), "…owes it nothing");
     }
 
-    /// The default 1 s fix interval gives the 5 s floor window.
+    #[test]
+    fn help_enters_from_menu_and_modal_and_defers_automatic_cards() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_chord(Chord::Assistant);
+        app.apply_gesture(Gesture::Step(-1));
+        app.apply_gesture(Gesture::Press);
+        assert!(matches!(app.top_screen(), Screen::Help(_)));
+        app.settings.idle_return = crate::settings::IdleReturn::S15;
+        app.ui.cards.set_passkey(Some(123_456));
+        app.advance_animations(InputClock(60_000));
+        assert!(matches!(app.top_screen(), Screen::Help(_)), "neither idle nor passkey may replace Help");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Assistant(_)));
+        app.advance_animations(InputClock(60_001));
+        assert!(matches!(app.top_screen(), Screen::Passkey(_)));
+        assert!(app.apply_chord(Chord::Help), "Help overrides a modal's chord gate");
+        assert!(!app.apply_chord(Chord::Help), "the shortcut never nests Help");
+        app.apply_gesture(Gesture::Back);
+        assert!(matches!(app.top_screen(), Screen::Passkey(_)), "Back restores the interrupted modal");
+    }
+
+    #[test]
+    fn help_defers_pairing_completion_until_dismissed() {
+        use crate::ble::{BleLink, BleStatus};
+        use crate::device_core::Sound;
+        use crate::settings::SetupStep;
+        use obc_ports::{Cue, Volume};
+        for setup in [false, true] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            if setup {
+                app.set_settings(Settings { setup: SetupStep::Qr, ..Settings::FACTORY });
+            } else {
+                let page = crate::screen::SettingsPage::new(&crate::screen::settings::page::CONNECTIONS);
+                let _ = app.ui.stack.push(Screen::Connections(page));
+                for g in [Gesture::Step(1), Gesture::Step(1), Gesture::Press] {
+                    app.apply_gesture(g);
+                }
+                assert!(matches!(app.top_screen(), Screen::PairPhone(_)));
+            }
+            app.set_sound_available(true);
+            app.apply_chord(Chord::Help);
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.plan_sound(), Some(Sound::Play { cue: Cue::Distress, volume: Volume::Loud }));
+            app.set_ble_status(BleStatus { link: BleLink::Connected, passkey: None, paired: true });
+            app.advance_animations(InputClock(10_000));
+            assert!(matches!(app.top_screen(), Screen::Help(_)));
+            assert_eq!(app.plan_sound(), Some(Sound::Play { cue: Cue::Distress, volume: Volume::Loud }));
+            app.apply_gesture(Gesture::Back);
+            app.advance_animations(InputClock(10_001));
+            assert_eq!(app.plan_sound(), Some(Sound::Stop));
+            assert!(if setup {
+                app.settings().setup == SetupStep::Sensors && matches!(app.top_screen(), Screen::SetupPaired(_))
+            } else {
+                matches!(app.top_screen(), Screen::Connections(_))
+            });
+        }
+    }
+
+    #[test]
+    fn help_defers_cleanup_and_releases_overrides_on_menu_escape() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_chord(Chord::Help);
+        app.offer_route_cleanup(crate::device_core::StoreIdentity::new(1));
+        assert!(matches!(app.top_screen(), Screen::Help(_)));
+        app.apply_chord(Chord::Quick);
+        app.advance_animations(InputClock(300));
+        assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+        assert!(app.help_is_open(), "a drawer keeps Help as the visible base");
+        app.apply_chord(Chord::Quick);
+        app.apply_gesture(Gesture::Back);
+        app.advance_animations(InputClock(600));
+        assert!(matches!(app.top_screen(), Screen::RouteCleanup(_)), "cleanup waits for dismissal");
+
+        app.apply_gesture(Gesture::Back);
+        app.apply_chord(Chord::Help);
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)));
+        assert!(!app.help_is_open(), "a hidden Help page does not demand GPS");
+        app.set_ble_status(crate::ble::BleStatus {
+            link: crate::ble::BleLink::Connected,
+            passkey: Some(123_456),
+            paired: false,
+        });
+        assert!(matches!(app.top_screen(), Screen::Passkey(_)), "normal cards resume on Menu");
+    }
+
+    #[test]
+    fn distress_overrides_mute_and_stops_on_every_exit() {
+        use crate::device_core::Sound;
+        use obc_ports::{Cue, Volume};
+        for exit in [None, Some(Chord::Quick), Some(Chord::Assistant)] {
+            let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+            app.set_sound_available(true);
+            app.settings.sound = crate::settings::SoundLevel::Off;
+            app.apply_chord(Chord::Help);
+            assert_eq!(app.plan_sound(), None, "opening Help never starts the signal");
+            app.apply_gesture(Gesture::Press);
+            assert_eq!(app.plan_sound(), Some(Sound::Play { cue: Cue::Distress, volume: Volume::Loud }));
+            app.ui.now_ms = 100;
+            if let Some(chord) = exit {
+                app.apply_chord(chord);
+            } else {
+                app.apply_gesture(Gesture::Back);
+            }
+            assert_eq!(app.plan_sound(), Some(Sound::Stop));
+            if exit == Some(Chord::Quick) {
+                app.apply_chord(Chord::Quick);
+            }
+            app.advance_animations(InputClock(10_000));
+            assert_eq!(app.plan_sound(), None, "returning to Help cannot restart the stopped signal");
+        }
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_chord(Chord::Help);
+        app.apply_gesture(Gesture::Press);
+        assert_eq!(app.plan_sound(), None, "an unsupported platform cannot claim to sound");
+    }
+
     #[test]
     fn has_live_fix_tracks_freshness_within_the_window() {
         let mut app = App::new(AppState::new(0, 0, 1.0));

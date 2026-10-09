@@ -90,15 +90,12 @@ impl InputPlane {
         self.enc_progress = self.gestures.select_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
         let chord = self.gestures.take_chord();
-        let assistant_progress = self
-            .gestures
-            .chord_remaining_ms(now_ms)
-            .map_or(0.0, |remaining| 1.0 - remaining as f32 / DEFAULT_HOLD_MS as f32);
+        let assistant_progress = self.gestures.chord_progress(now_ms);
         self.hold_hints.update(
             now_ms,
             (self.enc_progress, enc_fired),
             (self.back_progress, back_fired),
-            (assistant_progress, chord == Some(Chord::Assistant)),
+            (assistant_progress, matches!(chord, Some(Chord::Assistant | Chord::Help))),
         );
         chord
     }
@@ -133,12 +130,12 @@ impl InputPlane {
         self.gestures.cancel_holds();
     }
 
-    /// Whether an ordinary hold or the Assistant chord is waiting for its threshold.
+    /// Whether a button hold or timed chord is waiting for its threshold.
     pub fn hold_charging(&self) -> bool {
         self.enc_progress > 0.0 || self.back_progress > 0.0 || self.gestures.chord_remaining_ms(self.now_ms).is_some()
     }
 
-    /// Time until a pending Assistant chord reaches its hold threshold.
+    /// Time until a pending chord reaches its hold threshold.
     pub fn chord_remaining_ms(&self, now_ms: u32) -> Option<u32> {
         self.gestures.chord_remaining_ms(now_ms)
     }

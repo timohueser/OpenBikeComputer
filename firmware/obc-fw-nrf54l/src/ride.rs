@@ -499,6 +499,7 @@ fn chord_name(c: obc_app::Chord) -> &'static str {
         obc_app::Chord::Quick => "Quick",
         obc_app::Chord::Assistant => "Assistant",
         obc_app::Chord::Context => "Context",
+        obc_app::Chord::Help => "Help",
     }
 }
 
@@ -626,7 +627,7 @@ fn desired_sensor_power(app: &App) -> SensorDemand {
     SensorDemand::for_demand(
         app.recording(),
         app.settings().power_saver,
-        app.peak_view_needs_position(),
+        app.peak_view_needs_position() || app.help_is_open(),
         app.peak_view_is_base(),
     )
 }
@@ -2617,10 +2618,14 @@ pub(crate) async fn run_app(
             } = plan;
             #[cfg(feature = "debug-uart")]
             let sound = obc_platform::debug_link::take_sound()
-                .map(|(cue, volume)| obc_app::device_core::Sound { cue, volume })
+                .map(|(cue, volume)| obc_app::device_core::Sound::Play { cue, volume })
                 .or(sound);
-            if let Some(obc_app::device_core::Sound { cue, volume }) = sound {
-                obc_ports::Sounder::play(&mut buzzer, obc_platform::sound::pattern(cue), volume);
+            if let Some(sound) = sound {
+                let (notes, volume) = match sound {
+                    obc_app::device_core::Sound::Play { cue, volume } => (obc_platform::sound::pattern(cue), volume),
+                    obc_app::device_core::Sound::Stop => (&[][..], obc_ports::Volume::Loud),
+                };
+                obc_ports::Sounder::play(&mut buzzer, notes, volume);
             }
             peak_view.reconcile(app);
 

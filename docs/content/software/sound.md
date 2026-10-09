@@ -48,3 +48,7 @@ The Sound page has two rows. **Sound** is Off, Quiet or Loud. Loud drives the pi
 opposite phase, which is louder in wind. A change to Quiet or Loud plays a preview at the new level.
 **Key tones** clicks on every button press, and it is off by default. A platform that has no buzzer
 does not show the page.
+
+The rider-started distress signal on **Help** is separate from automatic cues. It plays at Loud
+even with Sound off. Select stops it; leaving Help also stops it. Its six beeps and one quiet
+minute repeat until stopped. Other cues stay silent while the signal runs.

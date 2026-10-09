@@ -886,3 +886,15 @@ saved_route = "Ruta guardada"
 [find_context]
 hide_closed = "Ocultar\ncerrados"
 results = "Resultados"
+
+[help]
+title = "Ayuda"
+emergency = "Emergencia"
+phone = "Llame por teléfono"
+current = "Actual"
+last_known = "Última posición"
+acquiring = "Buscando GPS..."
+no_position = "Sin posición aún"
+signal = "Señal de socorro"
+stop = "Parar señal"
+no_sound = "Sonido no disponible"
