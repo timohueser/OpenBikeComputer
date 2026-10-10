@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 import {mkdtempSync,rmSync,mkdirSync,writeFileSync,copyFileSync,readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname,join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {answerQuery} from '../query.mjs';
 import {openRegion} from '../installation.mjs';
@@ -72,6 +72,36 @@ test('Swiss places keep the German canton name that selects cantonal holidays',(
     const goodFriday={openDate:'2026-04-03'};
     for(const place of places)assert.equal(openingHours('Europe/Zurich').openingState(place,{},goodFriday),'closed');
   } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
+});
+
+test('each search component builds without the other writer or its policy files',()=>{
+  for(const component of ['pois','addresses']) {
+    const directory=mkdtempSync(join(tmpdir(),'obc-search-writer-'));
+    let db;
+    try {
+      const files=['build.py','writer.py','records.py',`${component}.py`,'storage.py','index.py','schema.sql','indexes.sql','web/address-terms.json'];
+      if(component==='pois')files.push('content.py','query/contract.json','place-kinds.json');
+      for(const file of files) {
+        mkdirSync(dirname(join(directory,file)),{recursive:true});
+        copyFileSync(new URL('../'+file,import.meta.url),join(directory,file));
+      }
+      execFileSync('uv',['run','--locked','--project',new URL('../../..',import.meta.url).pathname,'--group','planner-search','python','-c',`import json,sys,zstandard
+from pathlib import Path
+from zoneinfo import ZoneInfo
+sys.path.insert(0,sys.argv[1])
+from build import build
+root=Path(sys.argv[1])
+records=[{'type':'NominatimDumpFile','content':{'data_timestamp':'2026-01-01T00:00:00Z'}},
+ {'type':'Place','content':[{'object_type':'N','object_id':1,'osm_key':'tourism','osm_value':'camp_site',
+  'centroid':[8,48],'country_code':'de','address':{'street':'Main','city':'Town'},'housenumber':'12'}]}]
+dump=root/'source.jsonl.zst'
+dump.write_bytes(zstandard.ZstdCompressor().compress(('\\n'.join(map(json.dumps,records))+'\\n').encode()))
+build(dump,dump.name,root,sys.argv[2],'test',[7,47,9,49],['de'],ZoneInfo('Europe/Berlin'),'OSM')`,directory,component]);
+      db=openCells([join(directory,'test.sqlite')]);
+      if(component==='pois')assert.deepEqual(db.rows({sql:'SELECT kind FROM {c}.places'}).map(p=>p.kind),['campsite']);
+      else assert.equal(reverseAddress(db,[8,48]),'Main 12, Town');
+    } finally {db?.close();rmSync(directory,{recursive:true,force:true});}
+  }
 });
 
 test('independent POI and address inputs preserve search, locality ownership and disjoint numeric identities',()=>{

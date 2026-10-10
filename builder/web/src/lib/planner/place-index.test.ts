@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import membership from '../../../../../planner/search/place-kinds.json';
+import presentation from './poi-kinds.json';
 import { corridorTiles, placeSource, poiPlace } from './place-index';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 
 describe('place identities', () => {
+    it('gives every rider-place kind one category and a presentation label', () => {
+        const kinds = Object.values(membership).flat();
+        expect(new Set(kinds).size).toBe(kinds.length);
+        expect(Object.keys(presentation.categories).sort()).toEqual(Object.keys(membership).sort());
+        expect(Object.keys(presentation.labels).sort()).toEqual(kinds.sort());
+        for (const [category, values] of Object.entries(membership)) {
+            for (const kind of values) expect(poiPlace('n1', kind, undefined, [8, 48])).toMatchObject({ category,
+                label: presentation.labels[kind as keyof typeof presentation.labels] });
+        }
+    });
     it('keeps OSM elements and curated Wikidata identities distinct for detail lookup', () => {
         for (const [type, letter] of [[1,'n'],[2,'w'],[3,'r'],[4,'Q']] as const) {
             const id = type * 2 ** 44 + 123;

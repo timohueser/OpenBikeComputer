@@ -1,0 +1,66 @@
+{
+  "hotel": [
+    "hotel",
+    "hostel",
+    "guest_house",
+    "motel",
+    "chalet",
+    "hut"
+  ],
+  "camp": [
+    "campsite",
+    "caravan_site"
+  ],
+  "water": [
+    "drinking_water",
+    "fountain",
+    "spring",
+    "water_tap",
+    "water_point"
+  ],
+  "shop": [
+    "supermarket",
+    "convenience",
+    "bakery",
+    "greengrocer",
+    "marketplace",
+    "fuel"
+  ],
+  "food": [
+    "restaurant",
+    "cafe",
+    "fast_food",
+    "pub",
+    "biergarten",
+    "ice_cream"
+  ],
+  "bike": [
+    "bike_shop",
+    "repair_station",
+    "bicycle_rental"
+  ],
+  "pharmacy": [
+    "pharmacy",
+    "hospital"
+  ],
+  "station": [
+    "train_station",
+    "bus_station"
+  ],
+  "shelter": [
+    "shelter"
+  ],
+  "rest": [
+    "picnic_site"
+  ],
+  "toilets": [
+    "toilets"
+  ],
+  "viewpoint": [
+    "viewpoint"
+  ],
+  "peak": [
+    "summit",
+    "pass"
+  ]
+}

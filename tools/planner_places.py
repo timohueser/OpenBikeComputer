@@ -11,14 +11,14 @@ from pathlib import Path
 
 from . import planner_mvt as mvt, step_request
 
-KINDS = Path(__file__).resolve().parents[1] / "builder/web/src/lib/planner/poi-kinds.json"
+KINDS = Path(__file__).resolve().parents[1] / "planner/search/place-kinds.json"
 # The only zoom: a route corridor reads few tiles, and rider places keep each tile small.
 ZOOM = 11
 
 
 def rider_kinds():
-    """The `pois` kinds the planner shows: the keys of every category's `kinds` in the web planner."""
-    return {kind for category in json.loads(KINDS.read_text()).values() for kind in category["kinds"]}
+    """The rider-place kinds included in the archive."""
+    return {kind for kinds in json.loads(KINDS.read_text()).values() for kind in kinds}
 
 
 def pois(tile):

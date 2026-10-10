@@ -99,7 +99,7 @@ at zoom 11, extent 4096, and one `pois` layer. Each point has the database's
 without tile quantization. The feature ID is `(type << 44) | source_id`, where type
 is 1 for nodes, 2 for ways, 3 for relations, and 4 for curated Wikidata items.
 Source IDs are positive and below 2^44; a Wikidata item uses the digits after `Q`. Categories are defined in the
-[place categories](../builder/web/src/lib/planner/poi-kinds.json).
+[place categories](../planner/search/place-kinds.json).
 Archive metadata includes the source `osm_sha256`. Empty tiles are absent,
 except that an empty archive contains one empty tile at the southwest bound.
 

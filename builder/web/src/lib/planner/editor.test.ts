@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, setDrawnLeg, setLegMode, setSplit, type Place, type RoutePoint, type Trip } from './editor';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightCandidates, overnightWindow, pinNight, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, setDrawnLeg, setLegMode, setSplit, type Place, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
-import { routingKey } from './routing';
+import { calculateLine, routingKey, type RoutingLine } from './routing';
+import { LegCache } from './route-legs';
+import { importedTrip } from './gpx-import';
+import { routeService } from '../../../test-support/planner/route-service';
 import { isTrip } from './trip-validation';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
@@ -497,5 +500,67 @@ describe('loops', () => {
         const shaped = setLegMode(made, made.points[0].id, 'straight');
         expect(removeRoutePoint(shaped, made.points[1].id)).toMatchObject({ loop: undefined, points: [{ kind: 'start', leg: undefined }] });
         expect(loopTrip(emptyTrip(), [[7.8, 48]])).toEqual(emptyTrip());
+    });
+});
+
+
+describe('Trip structural edits', () => {
+    const refresh = (trip: Trip) => calculateLine(trip, new AbortController().signal, new LegCache());
+    const view = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => planView(trip, line);
+    const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate, extra: Partial<RoutePoint> = {}): RoutePoint => ({ id, kind, label: id, coordinate, ...extra });
+    afterEach(() => vi.unstubAllGlobals());
+    it('reverses the point order, routes routed legs again and keeps drawn legs and nights', async () => {
+        const fetch = vi.fn(routeService());
+        vi.stubGlobal('fetch', fetch);
+        const plan: Trip = { ...emptyTrip('trip'), splits: { 2: .7 }, routeOrder: ['night-1'], points: [
+            point('a', 'start', [8, 48]), point('night-1', 'night', [8.1, 48], { night: 1 }),
+            point('c', 'finish', [8.2, 48], { leg: 'drawn', drawn: [[8.15, 48.01, 300], [8.12, 48.01, 310]] }),
+        ] };
+        const line = await refresh(plan);
+        const trip = reverseTrip(plan), next = { trip, line: await refresh(trip) };
+        expect(next.trip.points.map(p => [p.id, p.kind, p.leg ?? 'routed', p.night])).toEqual([['c', 'start', 'routed', undefined], ['night-2', 'night', 'drawn', 2], ['a', 'finish', 'routed', undefined]]);
+        expect(next.trip.points[1].drawn).toEqual([[8.12, 48.01, 310], [8.15, 48.01, 300]]);
+        expect(JSON.parse(fetch.mock.calls.at(-1)![1].body as string).points).toEqual([[8.1, 48], [8, 48]]);
+        expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
+        expect(next.trip.splits?.[1]).toBeCloseTo(.3);
+    });
+    it('reverses a loop and keeps its start, which holds the closing leg', async () => {
+        const plan: Trip = { ...emptyTrip(), loop: true, routeOrder: ['a', 'b'], points: [point('home', 'start', [8, 48], { leg: 'straight' }),
+            point('a', 'waypoint', [8.1, 48], { leg: 'drawn', drawn: [[8.05, 47.99]] }), point('b', 'waypoint', [8.1, 48.1], { leg: 'straight' })] };
+        const line = await refresh(plan);
+        const trip = reverseTrip(plan), next = { trip, line: await refresh(trip) };
+        expect(next.trip.loop).toBe(true);
+        expect(next.trip.points.map(p => [p.id, p.kind, p.leg])).toEqual([['home', 'start', 'drawn'], ['b', 'waypoint', 'straight'], ['a', 'waypoint', 'straight']]);
+        expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
+        const marked = { ...plan, points: [...plan.points, point('m', 'marker', [8.1, 48.05], { legEnd: 'home' })] };
+        const reversed = { trip: reverseTrip(marked) };
+        expect(reversed.trip.points.find(p => p.id === 'm')?.legEnd).toBe('b');
+    });
+    it('keeps each marker in its own day when an out-and-back is reversed', async () => {
+        const out: Coordinate[] = [[7.6, 47.5], [7.62, 47.5]], spot: Coordinate = [7.61, 47.5];
+        const trip = importedTrip({}, [{ name: 'out', line: out, waypoints: [{ label: 'Out', coordinate: spot }] },
+            { name: 'back', line: out.slice().reverse(), waypoints: [{ label: 'Back', coordinate: spot }] }]);
+        const days = ({ trip, line }: { trip: Trip; line?: RoutingLine }) => view({ trip, line }).days.map(day => dayStops(trip, line, day).map(stop => stop.point.label));
+        const line = await refresh(trip);
+        expect(days({ trip, line })).toEqual([['Out'], ['Back']]);
+        const reversed = reverseTrip(trip);
+        expect(days({ trip: reversed, line: await refresh(reversed) })).toEqual([['Back'], ['Out']]);
+    });
+    it('repartitions only the requested day range and preserves the original plan', () => {
+        const trip = { ...testTrip(), splits: { 1: .3, 2: .7 } }, before = structuredClone(trip);
+        const line = testLine(trip), total = planView(trip, line).total;
+        const next = repartitionDays(trip, line, [.3 * total, .7 * total], [.5 * total]);
+        expect(next.days).toBe(4);
+        expect(next.splits).toEqual({ 1: .3, 2: .5, 3: .7 });
+        expect(repartitionDays(next, line, [0, total], []).days).toBe(1);
+        expect(trip).toEqual(before);
+        expect(() => repartitionDays(trip, line, [0, total], Array.from({ length: maxRidingDays }, (_, i) => total * (i + 1) / (maxRidingDays + 1))))
+            .toThrow('at most');
+    });
+    it('keeps pinned nights and rest days out of repartition and refuses a reversal with a final rest day', () => {
+        const trip = testTrip(), line = testLine(trip), total = planView(trip, line).total;
+        expect(() => repartitionDays(pinNight(trip, line, 1, along(.3), 'Camp'), line, [0, total], [])).toThrow('Unpin');
+        expect(() => repartitionDays(addRestDay(trip, 1), line, [0, total], [])).toThrow('rest days');
+        expect(() => reverseTrip(addRestDay(trip, trip.days))).toThrow('rest day at the finish');
     });
 });

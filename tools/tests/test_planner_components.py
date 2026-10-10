@@ -85,7 +85,12 @@ class ComponentTests(unittest.TestCase):
         digest = components.digest
         cases = {
             "tools/planner_places.py": {"places"},
-            "builder/web/src/lib/planner/poi-kinds.json": {"source-records", "pois", "addresses", "places"},
+            "builder/web/src/lib/planner/poi-kinds.json": set(),
+            "planner/search/query/contract.json": {"source-records", "pois", "addresses", "places"},
+            "planner/search/place-kinds.json": {"source-records", "pois", "addresses", "places"},
+            "planner/search/content.py": {"pois", "places"},
+            "planner/search/pois.py": {"pois", "places"},
+            "planner/search/addresses.py": {"addresses"},
             "tools/planner_overlays.py": {"overlays"},
             "tools/planner_map_archive.py": {"terrain", "sun"},
             # Shared place metadata reads elevation through its normal Rust closure.

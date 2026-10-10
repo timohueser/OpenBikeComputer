@@ -1,7 +1,10 @@
 import {
   addPointNear,
   hasEndpoints,
-  orderedRoutePoints,
+  maxRidingDays,
+  removeRoutePoint,
+  reverseTrip,
+  repartitionDays,
   pinNight,
   planView,
   setSplit,
@@ -37,6 +40,7 @@ export async function applyQueryChanges(
 ): Promise<{ trip: Trip; line: RoutingLine | undefined }> {
   let routed = original;
   async function refresh(next: Trip): Promise<Trip> {
+    if (!hasEndpoints(next)) { line = undefined; routed = next; return next; }
     if (line && routingKey(next) === routingKey(routed)) return next;
     if (!refreshRoute) throw new Error('The routing engine must refresh the edited route.');
     line = await refreshRoute(next);
@@ -64,11 +68,7 @@ export async function applyQueryChanges(
         )
       )
         throw new Error('The selected point has changed. Search again.');
-      trip = {
-        ...trip,
-        points: trip.points.filter((p) => p.id !== change.id),
-        routeOrder: trip.routeOrder.filter((id) => id !== change.id),
-      };
+      trip = removeRoutePoint(trip, change.id!);
     } else if (change.op === 'end_day') {
       const n = ridingDay(change.day!),
         p = change.point!;
@@ -92,80 +92,12 @@ export async function applyQueryChanges(
         trip.points.find((point) => point.night === n)!.placeKind = p.kind;
       }
     } else if (change.op === 'split' || change.op === 'join') {
-      if (trip.points.some((p) => p.kind === 'night'))
-        throw new Error(
-          'Unpin the overnight places before changing the day count.',
-        );
-      if (trip.restAfter?.length)
-        throw new Error('Remove rest days before changing the day count.');
-      let boundaries = planView(trip, line).days
-        .slice(0, -1)
-        .map((d) => d.to * total);
       const [from, to] = change.range!;
-      boundaries = boundaries.filter((k) => k <= from + 1e-6 || k >= to - 1e-6);
-      if (change.op === 'split')
-        boundaries.push(
-          ...(change.boundaries ??
-            Array.from(
-              { length: change.count! - 1 },
-              (_, i) => from + ((to - from) * (i + 1)) / change.count!,
-            )),
-        );
-      boundaries.sort((a, b) => a - b);
-      if (boundaries.length >= 14)
-        throw new Error('The plan can have at most 14 riding days.');
-      trip = {
-        ...trip,
-        mode: 'trip',
-        days: boundaries.length + 1,
-        budget: 'days',
-        target: boundaries.length + 1,
-        splits: Object.fromEntries(
-          boundaries.map((km, i) => [i + 1, km / total]),
-        ),
-      };
+      const boundaries = change.op === 'join' ? [] : change.boundaries ??
+        Array.from({ length: change.count! - 1 }, (_, i) => from + ((to - from) * (i + 1)) / change.count!);
+      trip = repartitionDays(trip, line, [from, to], boundaries);
     } else if (change.op === 'reverse') {
-      if (trip.restAfter?.includes(trip.days))
-        throw new Error(
-          'Move the rest day at the finish before reversing this trip.',
-        );
-      // A point holds the leg that ends at it, so each leg moves to the point it now ends at.
-      // A loop keeps its start, which lists last again and holds the closing leg.
-      const before = orderedRoutePoints(trip), order = before.slice().reverse();
-      const kept = trip.loop ? order.slice(0, -1) : order;
-      // Pinning finds a night by its id `night-N`.
-      const renamed = (p: RoutePoint) => (p.night ? `night-${trip.days - p.night}` : p.id);
-      // A marker's leg now ends at the point that started it.
-      const legEnd = (marker: RoutePoint) => {
-        const end = before.findIndex((p, i) => i > 0 && p.id === marker.legEnd);
-        return end > 0 ? renamed(before[end - 1]) : marker.legEnd;
-      };
-      const legInto = (i: number) => ({
-        leg: order[i - 1].leg,
-        drawn: order[i - 1].drawn?.slice().reverse(),
-      });
-      const points = kept.map((p, i): RoutePoint => ({
-        ...p,
-        ...(i ? legInto(i) : trip.loop ? legInto(order.length - 1) : { leg: undefined, drawn: undefined }),
-        kind: i === 0 ? 'start' : !trip.loop && i === kept.length - 1 ? 'finish' : p.kind,
-        ...(p.night ? { id: renamed(p), night: trip.days - p.night } : {}),
-      }));
-      trip = {
-        ...trip,
-        points: [
-          ...points,
-          ...trip.points.filter((p) => p.kind === 'marker').map((p) => ({ ...p, legEnd: legEnd(p) })),
-        ],
-        routeOrder: points.slice(1, trip.loop ? undefined : -1).map((p) => p.id),
-        splits: Object.fromEntries(
-          Object.entries(trip.splits ?? {}).map(([n, p]) => [
-            trip.days - Number(n),
-            1 - p,
-          ]),
-        ),
-        restAfter: (trip.restAfter ?? []).map((n) => trip.days - n).reverse(),
-        restNames: trip.restNames?.slice().reverse(),
-      };
+      trip = reverseTrip(trip);
     } else if (change.op === 'route') {
       if (change.perDay?.unit === 'h')
         throw new Error(
@@ -189,9 +121,9 @@ export async function applyQueryChanges(
       });
       const days = Math.max(1, change.days ??
         (change.perDay ? Math.ceil(planView(trip, line).total / change.perDay.value) : 1));
-      if (days > 14)
+      if (days > maxRidingDays)
         throw new Error(
-          'This request needs more than 14 riding days. Increase the daily distance.',
+          `This request needs more than ${maxRidingDays} riding days. Increase the daily distance.`,
         );
       trip = {
         ...trip,

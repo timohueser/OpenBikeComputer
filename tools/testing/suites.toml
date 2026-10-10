@@ -107,7 +107,7 @@ triggers = [
   "planner/search/query/*.py",
   "planner/search/query/contract.json",
   "host/obc-search-bake/policy.py",
-  "builder/web/src/lib/planner/poi-kinds.json",
+  "planner/search/place-kinds.json",
 ]
 
 [[package]]
@@ -178,7 +178,7 @@ platforms = ["linux"]
 [[package]]
 name = "obc-desktop"
 command = "cargo test --manifest-path builder/desktop/Cargo.toml --release --locked"
-triggers = ["builder/web/**"]
+triggers = ["builder/web/**", "planner/search/place-kinds.json"]
 
 # ── Suites no Cargo package owns ────────────────────────────────────────────
 
@@ -198,6 +198,7 @@ command = "cd builder/web && npm test"
 jobs = ["web"]
 fixtures = ["checked-in-web-fixtures"]
 triggers = [
+  "planner/search/place-kinds.json",
   "docs/assets/theme.css", "docs/assets/fonts/**",
   "builder/web/**/*.test.ts",
   "builder/web/src/**",
@@ -241,6 +242,7 @@ command = "npm run test:planner --prefix builder/web/tests/browser"
 jobs = ["web-browser"]
 platforms = ["linux", "macos"]
 triggers = [
+  "planner/search/place-kinds.json",
   "builder/web/src/components/planner/**",
   "builder/web/src/lib/planner/**",
   "builder/web/src/planner.ts",
@@ -262,6 +264,7 @@ route = "required"
 command = "rm -rf .artifacts/python/repository-tools && uv run --locked --group dev --group planner-snow --group planner-sun python -m xmlrunner discover -s tools/tests -v -o .artifacts/python/repository-tools"
 jobs = ["guards", "selection"]
 triggers = [
+  "planner/search/place-kinds.json",
   "pyproject.toml", "uv.lock",
   "tools/*.py",
   "tools/**/*.py",
@@ -332,7 +335,7 @@ route = "ordinary"
 command = "npm ci --prefix companion-ios/ReplayAssets && npm test --prefix companion-ios/ReplayAssets"
 jobs = ["ios-unit"]
 platforms = ["linux", "macos"]
-triggers = ["companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**",
+triggers = ["builder/web/src/lib/planner/poi-kinds.*", "planner/search/place-kinds.json", "companion-ios/ReplayAssets/**", "companion-ios/Packages/OBCKit/Sources/OBCUI/Resources/Replay/**",
   # The replay-assets prepare step transpiles the web map style.
   "builder/web/src/lib/planner/map-style.ts", "data/sources.toml"]
 
@@ -347,6 +350,7 @@ jobs = ["ios-unit"]
 fixtures = ["captured-met", "legacy-library"]
 platforms = ["macos"]
 triggers = [
+  "builder/web/src/lib/planner/poi-kinds.*", "planner/search/place-kinds.json",
   "companion-ios/Packages/OBCKit/Package.swift",
   "tools/build-ios-host.sh",
   "companion-ios/Packages/OBCKit/Sources/**",
@@ -492,7 +496,7 @@ id = "ci.web-build"
 route = "ordinary"
 command = "obc check frontend"
 jobs = ["desktop-frontend", "web"]
-triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
+triggers = ["planner/search/place-kinds.json", "docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/package.json", "builder/web/package-lock.json", "builder/web/src/**"]
 
 [[suite]]
 id = "ci.docs"
@@ -560,6 +564,7 @@ command = "tools/build-ios-host.sh --sim-only && xcodebuild build-for-testing -p
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
+  "planner/search/place-kinds.json",
   "companion-ios/scripts/generate-website-fixture.py",
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
@@ -605,6 +610,7 @@ command = "tools/build-ios-host.sh --sim-only && xcodebuild build -project compa
 jobs = ["ios-release"]
 platforms = ["macos"]
 triggers = [
+  "planner/search/place-kinds.json",
   "companion-ios/OBCCompanion/**",
   "companion-ios/project.yml",
   "companion-ios/ReplayAssets/**",
@@ -648,6 +654,7 @@ command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -schem
 jobs = ["ios-app"]
 platforms = ["macos"]
 triggers = [
+  "planner/search/place-kinds.json",
   "sim/phone/app/**",
   "companion-ios/OBCCompanion/Assets.xcassets/**",
   "companion-ios/project.yml",

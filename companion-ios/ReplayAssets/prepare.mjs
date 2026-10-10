@@ -14,8 +14,10 @@ for (const name of ['LICENSE.md', 'ThirdParty.json']) {
 const cache = new URL('node_modules/.cache/', import.meta.url);
 await mkdir(cache, { recursive: true });
 await cp(new URL('../../builder/web/src/lib/planner/poi-kinds.json', import.meta.url), new URL('poi-kinds.json', cache));
+await cp(new URL('../../planner/search/place-kinds.json', import.meta.url), new URL('place-kinds.json', cache));
 for (const name of ['poi-kinds', 'map-style']) {
   let text = await readFile(new URL(`../../builder/web/src/lib/planner/${name}.ts`, import.meta.url), 'utf8');
+  text = text.replace('../../../../../planner/search/place-kinds.json', './place-kinds.json');
   text = text.replaceAll('"./poi-kinds"', '"./poi-kinds.mjs"');
   await writeFile(new URL(`${name}.mjs`, cache), ts.transpileModule(text, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },

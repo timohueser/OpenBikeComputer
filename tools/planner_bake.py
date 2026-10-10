@@ -182,18 +182,17 @@ def specifications(config, prepared=None):
         config.get("auxiliary", {}), functions=[sources.basemap, sources.download])
     add("source-search", source_search, {"osm": osm, "country_data": sources.COUNTRY_DATA_SHA, "country_data_version": sources.VERSIONS["nominatim-country-data"]}, {"country": config["countries"][0]},
         paths=[*components.rust_sources("host/obc-search-bake"), maps.ROOT / "host/obc-search-bake/policy.py", maps.ROOT / "uv.lock"], functions=[sources.search_dump, sources.download])
-    data_kinds = sorted(json.loads((SEARCH / "query/contract.json").read_bytes())["data"])
-    add("source-records", source_records, {"data_kinds": data_kinds}, dependencies=["source-search"],
-        paths=[SEARCH / "split.py", SEARCH / "records.py", maps.ROOT / "uv.lock", maps.ROOT / "builder/web/src/lib/planner/poi-kinds.json"])
+    add("source-records", source_records, {}, dependencies=["source-search"],
+        paths=[SEARCH / "split.py", SEARCH / "records.py", SEARCH / "query/contract.json", maps.ROOT / "uv.lock", SEARCH / "place-kinds.json"])
     common = [SEARCH / path for path in ["build.py", "writer.py", "records.py", "storage.py", "index.py", "schema.sql", "indexes.sql", "web/address-terms.json"]] + [maps.ROOT / "uv.lock"]
     for component in ["pois", "addresses"]:
         add(component, build_search, {"osm": osm, **credits("osm-planet")}, {"region": config["region"], "countries": config["countries"],
             "time_zone": config["time_zone"], "component": component, "schema": 6},
-            ["source-records"], [*common, SEARCH / f"{component}.py"])
+            ["source-records"], [*common, SEARCH / f"{component}.py", *([SEARCH / "content.py", SEARCH / "place-kinds.json", SEARCH / "query/contract.json"] if component == "pois" else [])])
     add("basemap", build_basemap, {}, dependencies=["source-basemap"])
     map_requirements = maps.ROOT / "uv.lock"
     add("places", build_places, {}, dependencies=["pois"], paths=[maps.ROOT / path for path in
-        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "builder/web/src/lib/planner/poi-kinds.json")])
+        ("tools/planner_maps.py", "tools/planner_mvt.py", "tools/planner_places.py", "uv.lock", "planner/search/place-kinds.json")])
     rust_manifests = [maps.ROOT / path for path in ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "host/obc-dem/Cargo.toml"]]
     elevation_paths = components.rust_sources("host/obc-dem")
     elevation = {"sources": config["terrain"], "producer": components.implementation(paths=elevation_paths)}

@@ -25,10 +25,9 @@ use crate::maps::{invalid, text, TILE_LIST};
 use crate::python;
 
 const SEARCH: &str = "planner/search";
-/// `planner/search/records.py` and the files that it reads: the data kinds of the query
-/// contract, and the POI kinds of the web planner, which the places also read.
+/// Classification code and POI membership inputs of the shared record split.
 const RECORDS: [&str; 3] = ["planner/search/records.py", "planner/search/query/contract.json", POI_KINDS];
-const POI_KINDS: &str = "builder/web/src/lib/planner/poi-kinds.json";
+const POI_KINDS: &str = "planner/search/place-kinds.json";
 const BASEMAP_SOURCES: [&str; 7] = [
     "protomaps-basemaps",
     "natural-earth",
@@ -379,13 +378,29 @@ impl Planner {
         // One search database per component: the POIs and the addresses.
         let search = |component: &str| {
             // writer.py imports pois.py or addresses.py by the component.
-            let files = ["build.py", "writer.py", "storage.py", "index.py", "content.py", "pois.py", "addresses.py"];
-            let data = ["schema.sql", "indexes.sql", "web/address-terms.json"];
-            let files: Vec<String> = files.iter().chain(&data).map(|file| format!("{SEARCH}/{file}")).collect();
-            let files: Vec<&str> = files.iter().map(String::as_str).chain(RECORDS).collect();
+            let common = [
+                "build.py",
+                "writer.py",
+                "records.py",
+                "storage.py",
+                "index.py",
+                "schema.sql",
+                "indexes.sql",
+                "web/address-terms.json",
+            ];
+            let mut files: Vec<String> = common.iter().map(|file| format!("{SEARCH}/{file}")).collect();
+            files.push(format!("{SEARCH}/{component}.py"));
+            if component == "pois" {
+                files.extend([
+                    format!("{SEARCH}/content.py"),
+                    format!("{SEARCH}/query/contract.json"),
+                    POI_KINDS.into(),
+                ]);
+            }
+            let files: Vec<&str> = files.iter().map(String::as_str).collect();
             python(
                 &format!("planner/search/{component}"),
-                std::iter::once(Input::layer(records.name.clone()))
+                std::iter::once(layer_files(&records.name, &[&format!("{component}.jsonl.zst")]))
                     .chain((component == "pois").then(content_inputs).into_iter().flatten())
                     .collect(),
                 json!({
@@ -1061,6 +1076,16 @@ mod tests {
             assert!(!files.contains_key("Cargo.lock"), "{} declares Cargo.lock", step.name);
             let planner_router_build = files.keys().any(|path| path.starts_with("planner/router-build/src/"));
             assert_eq!(planner_router_build, step.name == "planner/routing", "{}", step.name);
+            if let Some(component @ ("pois" | "addresses")) = step.name.strip_prefix("planner/search/") {
+                assert!(step.inputs.iter().any(|input| matches!(input, Input::Layer { name, files } if name == "planner/search/records" && files == &[format!("{component}.jsonl.zst")])));
+                assert!(files.contains_key(&format!("planner/search/{component}.py")));
+                assert_eq!(files.contains_key("planner/search/content.py"), component == "pois");
+                assert_eq!(files.contains_key(POI_KINDS), component == "pois");
+                assert_eq!(files.contains_key("planner/search/query/contract.json"), component == "pois");
+                let other = if component == "pois" { "addresses" } else { "pois" };
+                assert!(!files.contains_key(&format!("planner/search/{other}.py")));
+            }
+            assert!(!files.contains_key("builder/web/src/lib/planner/poi-kinds.json"));
             if step.name == "planner/terrain" {
                 assert!(files.keys().any(|path| path.starts_with("host/obc-dem/src/")));
                 assert!(
@@ -1192,7 +1217,16 @@ mod tests {
             let (mut pending, mut seen) = (vec![entry], BTreeSet::new());
             while let Some(file) = pending.pop() {
                 if seen.insert(file.clone()) {
-                    pending.extend(imports(&file));
+                    // Search loads each component's writer and POI content conditionally.
+                    // The search build tests run with the unused modules and policy files absent.
+                    pending.extend(imports(&file).into_iter().filter(|import| {
+                        !matches!(
+                            (file.as_str(), step.options["component"].as_str(), import.as_str()),
+                            ("planner/search/writer.py", Some("pois"), "planner/search/addresses.py")
+                                | ("planner/search/writer.py", Some("addresses"), "planner/search/pois.py")
+                                | ("planner/search/build.py", Some("addresses"), "planner/search/content.py")
+                        )
+                    }));
                 }
             }
             // `tools/planner_maps.py` runs the processes of the older planner bake. A step gets its
