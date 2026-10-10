@@ -43,7 +43,7 @@ pub fn run() -> Result<u8, String> {
 }
 
 fn reload_screen(exit: u8) -> Option<String> {
-    (worker::RELOAD_EXIT..worker::RELOAD_EXIT + 5).contains(&exit).then(|| (exit - worker::RELOAD_EXIT + 1).to_string())
+    (worker::RELOAD_EXIT..worker::RELOAD_EXIT + 6).contains(&exit).then(|| (exit - worker::RELOAD_EXIT + 1).to_string())
 }
 
 fn build(root: &Path, code: &str) -> Result<PathBuf, String> {
@@ -111,10 +111,10 @@ mod tests {
 
     #[test]
     fn relaunch_status_preserves_only_known_terminal_screens() {
-        for (offset, screen) in ["1", "2", "3", "4", "5"].iter().enumerate() {
+        for (offset, screen) in ["1", "2", "3", "4", "5", "6"].iter().enumerate() {
             assert_eq!(reload_screen(worker::RELOAD_EXIT + offset as u8).as_deref(), Some(*screen));
         }
-        for exit in [0, 1, 2, 3, 4, 5, worker::RELOAD_EXIT - 1, worker::RELOAD_EXIT + 5, 255] {
+        for exit in [0, 1, 2, 3, 4, 5, worker::RELOAD_EXIT - 1, worker::RELOAD_EXIT + 6, 255] {
             assert_eq!(reload_screen(exit), None);
         }
     }

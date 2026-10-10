@@ -31,6 +31,32 @@ const SOURCES: &str = r#"
 
 const REGION: &str = "europe/germany/baden-wuerttemberg";
 
+#[test]
+fn content_screen_requires_a_publication_review_and_keeps_its_exact_version() {
+    let mut app = app();
+    let first = "a".repeat(64);
+    let second = "b".repeat(64);
+    app.content.status = Some(
+        json!({"configured":true,"selected":{"sha256":first},"versions":[{"snapshot":first,"records":2,"bytes":100},{"snapshot":second,"records":3,"bytes":200}]}),
+    );
+    app.key(KeyCode::Char('6'));
+    assert_eq!(app.screen, Screen::Content);
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::None, "a prepared version alone does not authorize publication");
+    assert_eq!(app.key(KeyCode::Char('f')), Effect::ContentPrepare);
+    assert_eq!(app.key(KeyCode::Char('p')), Effect::ContentReview(first.clone()));
+    app.content.review = Some(json!({"snapshot":first,"objects":[],"bytes":0,"origins":[]}));
+    app.key(KeyCode::Down);
+    assert_eq!(app.key(KeyCode::Char('y')), Effect::ContentPublish(first));
+    assert_eq!(app.key(KeyCode::Enter), Effect::ContentUse(second));
+    assert!(app.content.review.is_none());
+    assert!(screen(&mut app, 90, 20).iter().any(|line| line.contains("Manual Wikimedia content refresh")));
+    app.key(KeyCode::Char('c'));
+    for character in "inputs.json".chars() {
+        app.key(KeyCode::Char(character));
+    }
+    assert_eq!(app.key(KeyCode::Enter), Effect::ContentConfigure("inputs.json".into()));
+}
+
 /// What `status --json` writes: `maps` is unknown, and `planner` has the optional layer `sun`
 /// on, which live lacks.
 fn status() -> Status {
@@ -506,8 +532,15 @@ fn the_run_stop_action_uses_the_shared_draining_boundary_without_a_checkout() {
     let store = Store::at(&scratch.0);
     let run = runs::Run::create(&store, "prepare live").unwrap();
     let id = run.id().to_string();
-    let request =
-        Request { kind: Kind::Prepare, env: LIVE.into(), only: Vec::new(), moves: Vec::new(), plan: None, dev: None };
+    let request = Request {
+        kind: Kind::Prepare,
+        env: LIVE.into(),
+        only: Vec::new(),
+        moves: Vec::new(),
+        plan: None,
+        dev: None,
+        content: None,
+    };
     let digest = request.digest().unwrap();
     operation::reserve(
         &store,
@@ -589,7 +622,7 @@ fn live_shows_each_product_the_optional_layers_and_what_needs_attention() {
     let mut app = app();
     let drawn = screen(&mut app, 80, 18);
     let live = [
-        " 1 Live   2 Local   3 Sources   4 Store   5 Runs",
+        " 1 Live   2 Local   3 Sources   4 Store   5 Runs   6 Content",
         "",
         "LIVE from https://maps.openbikecomputer.com",
         "region  europe/germany/baden-wuerttemberg",

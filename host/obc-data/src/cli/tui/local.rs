@@ -180,6 +180,7 @@ pub(super) fn start(root: &Path, store: &Store, request: Request) -> Result<crat
             only: Vec::new(),
             moves: Vec::new(),
             plan: None,
+            content: None,
             dev: Some(request),
         },
         None,

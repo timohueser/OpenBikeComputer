@@ -488,6 +488,19 @@ r2_copy = false
 # ── Climate and snow ─────────────────────────────────────────────────────────
 
 [[source]]
+id = "wikimedia-content"
+kind = "data"
+licence = "LicenseRef-Wikimedia-per-record"
+attribution = "Wikipedia contributors and Wikimedia Commons photographers"
+obligations = "Each record preserves its source revision, licence and required credits"
+fetch = { kind = "by-hand", url = "https://enterprise.wikimedia.com/docs/snapshot/" }
+hosts = ["api.enterprise.wikimedia.com", "dumps.wikimedia.org"]
+version = "digest"
+refresh = "manual"
+redistribute = true
+r2_copy = false
+
+[[source]]
 id = "era5-land"
 kind = "data"
 licence = "CC-BY-4.0"

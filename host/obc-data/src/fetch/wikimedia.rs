@@ -129,6 +129,15 @@ pub(super) fn run(
             return Ok(Snapshot { source: request.source.id.clone(), version, files });
         }
     }
+    if requested["snapshot"].is_string() {
+        super::check_owner(root, request.source, checks.as_deref_mut())?;
+        let key = store::sha256_hex(body.as_bytes());
+        let _lock = store.lock(&format!("wikimedia-{key}"))?;
+        let staging = std::path::absolute(store.partial(&format!("wikimedia-{key}"))).map_err(|e| e.to_string())?;
+        let catalog = crate::content::resolve(root, store, &staging, &requested)?;
+        let manifest = archive(root, store, &staging, &catalog, &requested, false)?;
+        return admit(store, &staging.join("out"), &manifest, &request.params, &version, &request.source.id);
+    }
     if version != date::format(date::today()) {
         return Err(format!("Wikimedia {version} facts are not pinned in the Store"));
     }
@@ -243,6 +252,44 @@ pub(super) fn run(
         checks.acquisition = Some(acquisition);
     }
     Ok(snapshot)
+}
+
+/// Resolve a manual or published archive without Wikidata/Wikipedia API requests.
+pub(crate) fn archive(
+    root: &Path,
+    store: &Store,
+    staging: &Path,
+    catalog: &Path,
+    requested: &Value,
+    allow_media: bool,
+) -> Result<Value, String> {
+    fs::create_dir_all(staging).map_err(|e| e.to_string())?;
+    let out = staging.join("out");
+    fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let inputs = staging.join("inputs.json");
+    fs::write(&inputs, b"[]").map_err(|e| e.to_string())?;
+    let request = staging.join("requests.json");
+    let mut requested = requested.clone();
+    requested["check_id"] = json!(format!("archive-{}", &store::sha256_hex(requested.to_string().as_bytes())[..32]));
+    fs::write(&request, serde_json::to_vec(&requested).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut command = runner(root, &staging.join("work"), &out, &request, &inputs, &[])?;
+    command.arg("--catalog").arg(catalog);
+    if allow_media {
+        command.arg("--allow-media");
+    }
+    let status = command.stdout(std::io::stderr()).status().map_err(|e| e.to_string())?;
+    let mut manifest = read(&out.join("manifest.json"))?;
+    if !status.success() || manifest["complete"] != true {
+        return Err(format!("content snapshot acquisition incomplete: {}", manifest["failures"]));
+    }
+    if allow_media {
+        let mut acquisition = json!({"requests":0,"api_response_body_bytes":0,"media_response_body_bytes":0});
+        media(root, store, &out, &requested, &mut manifest, &mut acquisition)?;
+        crate::content::transform_images(root, &out, &mut manifest)?;
+    }
+    fs::write(out.join("manifest.json"), serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(manifest)
 }
 
 fn count_api(total: &mut Value, manifest: &Value) {

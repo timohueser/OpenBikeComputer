@@ -2,6 +2,7 @@
 //! through the shared command API. Preparation, build and apply retain their worker after exit.
 
 mod background;
+mod content;
 mod execution;
 mod host;
 mod live;
@@ -46,15 +47,17 @@ enum Screen {
     Sources,
     Store,
     Runs,
+    Content,
 }
 
 /// Each screen has a stable keyboard number.
-const SCREENS: [(char, &str, Screen); 5] = [
+const SCREENS: [(char, &str, Screen); 6] = [
     ('1', "Live", Screen::Live),
     ('2', "Local", Screen::Local),
     ('3', "Sources", Screen::Sources),
     ('4', "Store", Screen::Store),
     ('5', "Runs", Screen::Runs),
+    ('6', "Content", Screen::Content),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +123,11 @@ enum Action {
     LoadAreas,
     Close,
     Quit,
+    ContentConfigure,
+    ContentPrepare,
+    ContentReview,
+    ContentPublish,
+    ContentUse,
 }
 
 /// What the loop does after a key or a click.
@@ -167,6 +175,12 @@ enum Effect {
     StopRun(String),
     Versions(String),
     Reload,
+    ContentRead,
+    ContentConfigure(String),
+    ContentPrepare,
+    ContentReview(String),
+    ContentPublish(String),
+    ContentUse(String),
 }
 
 /// A key that works now, with its label and what it does when the bar shows it.
@@ -205,6 +219,14 @@ fn screen_keys(screen: Screen) -> &'static [(KeyCode, Action, &'static str, &'st
         ],
         Screen::Store => &[(KeyCode::Char('c'), Action::Open(Overlay::Clean), "c", "clean")],
         Screen::Runs => &[(KeyCode::Enter, Action::OpenRun, "enter", "run")],
+        Screen::Content => &[
+            (KeyCode::Char('c'), Action::ContentConfigure, "c", "configure inputs"),
+            (KeyCode::Char('f'), Action::ContentPrepare, "f", "prepare snapshot"),
+            (KeyCode::Char('R'), Action::CheckNow, "R", "reload"),
+            (KeyCode::Char('p'), Action::ContentReview, "p", "review publication"),
+            (KeyCode::Char('y'), Action::ContentPublish, "y", "publish reviewed version"),
+            (KeyCode::Enter, Action::ContentUse, "enter", "use version"),
+        ],
     }
 }
 
@@ -218,6 +240,7 @@ enum Hit {
 
 #[derive(Clone)]
 struct App {
+    content: content::View,
     host: String,
     screen: Screen,
     overlay: Option<Overlay>,
@@ -350,6 +373,7 @@ fn list_runs(store: &Store) -> Result<Vec<Details>, Error> {
 impl App {
     fn new(sources: Vec<SourceRow>, runs: Vec<Details>) -> Self {
         Self {
+            content: content::View::default(),
             host: host::current(),
             screen: Screen::Live,
             overlay: None,
@@ -414,6 +438,7 @@ impl App {
                 .as_ref()
                 .map_or(0, |plan| plan.store.kept.len() + usize::from(!plan.store.objects.is_empty())),
             Screen::Runs => self.runs.len(),
+            Screen::Content => self.content.versions().len(),
         }
     }
 
@@ -442,6 +467,7 @@ impl App {
             (None, Screen::Sources) => &mut self.source,
             (None, Screen::Store) => &mut self.kept,
             (None, Screen::Runs) => &mut self.run,
+            (None, Screen::Content) => &mut self.content.row,
         }
     }
 
@@ -482,6 +508,26 @@ impl App {
 
     /// Whether a key does something for the selected row.
     fn works(&self, action: Action) -> bool {
+        if matches!(
+            action,
+            Action::ContentConfigure
+                | Action::ContentPrepare
+                | Action::ContentReview
+                | Action::ContentPublish
+                | Action::ContentUse
+        ) {
+            if self.busy || self.content.draft.is_some() {
+                return false;
+            }
+            return match action {
+                Action::ContentPrepare => {
+                    self.content.status.as_ref().is_some_and(|status| status["configured"] == true)
+                }
+                Action::ContentReview | Action::ContentUse => self.content.digest().is_some(),
+                Action::ContentPublish => self.content.review.is_some(),
+                _ => true,
+            };
+        }
         if self.busy
             && matches!(
                 action,
@@ -724,6 +770,9 @@ impl App {
     }
 
     fn key(&mut self, key: KeyCode) -> Effect {
+        if self.screen == Screen::Content && self.overlay.is_none() && self.content.draft.is_some() {
+            return self.content.key(key, self.busy);
+        }
         if self.overlay == Some(Overlay::Policy) && self.policy_days.is_some() {
             match key {
                 KeyCode::Esc => self.policy_days = None,
@@ -810,6 +859,26 @@ impl App {
             None => self.rows().saturating_sub(1),
         };
         match action {
+            Action::ContentConfigure => self.content.draft = Some(String::new()),
+            Action::ContentPrepare => return Effect::ContentPrepare,
+            Action::ContentReview => {
+                if let Some(digest) = self.content.digest() {
+                    return Effect::ContentReview(digest);
+                }
+            }
+            Action::ContentPublish => {
+                if let Some(review) = &self.content.review {
+                    if let Some(digest) = review["snapshot"].as_str() {
+                        return Effect::ContentPublish(digest.into());
+                    }
+                }
+            }
+            Action::ContentUse => {
+                if let Some(digest) = self.content.digest() {
+                    self.content.review = None;
+                    return Effect::ContentUse(digest);
+                }
+            }
             Action::Reload if self.works(Action::Reload) => {
                 self.reload = true;
                 return Effect::Reload;
@@ -910,6 +979,7 @@ impl App {
                 }
             }
             Action::CheckNow if self.screen == Screen::Runs => return self.act(Action::OpenRun),
+            Action::CheckNow if self.screen == Screen::Content => return Effect::ContentRead,
             Action::CheckNow if self.screen == Screen::Live => return Effect::Status { check: true },
             Action::CheckNow => return Effect::CheckNow,
             Action::Ask => self.asking = true,
@@ -1122,6 +1192,7 @@ impl App {
             Screen::Sources => self.draw_sources(frame, body),
             Screen::Store => self.draw_store(frame, body),
             Screen::Runs => self.draw_runs(frame, body),
+            Screen::Content => self.content.draw(frame, body),
         }
         self.draw_bar(frame, bar);
         if let Some(overlay) = self.overlay {

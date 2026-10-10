@@ -258,7 +258,17 @@ pub(super) fn photo(
     if !thumbnail && info["sha1"].as_str() != Some(&sha1) {
         return Err("photo_revision_mismatch".into());
     }
-    let pixels = photo::prepare(&bytes).map_err(str::to_owned)?;
+    let pixels = if let Some(transform) = capture.get("prepared_rgb222") {
+        if !thumbnail || transform != &Value::String(hash(include_bytes!("photo.rs"))) {
+            return Err("prepared_photo_transform_changed".into());
+        }
+        if bytes.len() != (photo::WIDTH * photo::HEIGHT) as usize || bytes.iter().any(|&pixel| pixel >= 64) {
+            return Err("prepared_photo_pixels_invalid".into());
+        }
+        bytes
+    } else {
+        photo::prepare(&bytes).map_err(str::to_owned)?
+    };
     let path = format!("{qid}.rgb222");
     Ok((
         Photo {

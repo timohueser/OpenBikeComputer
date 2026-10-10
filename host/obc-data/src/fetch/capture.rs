@@ -313,7 +313,7 @@ fn parse_bbox(text: &str) -> Result<String, String> {
 }
 
 /// Use the same selected interpreter as the capture's code identity.
-pub(super) fn python(root: &Path, group: Option<&str>) -> Result<Command, String> {
+pub(crate) fn python(root: &Path, group: Option<&str>) -> Result<Command, String> {
     let executable = crate::engine::code::python_executable(root)?;
     let mut command = match group {
         None => Command::new(&executable),

@@ -205,12 +205,35 @@ fn photo_revision_and_required_creator_come_from_captured_metadata() {
     let proven = json!({"path":"image.png","metadata_path":"metadata.json",
         "revision_before_path":"before.json","revision_after_path":"after.json"});
     assert!(assets::photo(&root, &sources, &proven, &allowed, "Q1").is_ok());
+    let pixels = photo::prepare(&bytes).unwrap();
+    fs::write(root.join("prepared.rgb222"), &pixels).unwrap();
+    sources.push(Source {
+        path: "prepared.rgb222".into(),
+        url: "https://upload.wikimedia.org/image.png".into(),
+        bytes: pixels.len() as u64,
+        sha256: hash(&pixels),
+    });
+    let mut prepared = proven.clone();
+    prepared["path"] = json!("prepared.rgb222");
+    prepared["prepared_rgb222"] = json!(hash(include_bytes!("photo.rs")));
+    assert_eq!(
+        assets::photo(&root, &sources, &prepared, &allowed, "Q1").unwrap().1,
+        pixels,
+        "a published device image is reused without a second resize/dither"
+    );
+    prepared["prepared_rgb222"] = json!("outdated-transform");
+    assert_eq!(
+        assets::photo(&root, &sources, &prepared, &allowed, "Q1").unwrap_err(),
+        "prepared_photo_transform_changed"
+    );
+    prepared["prepared_rgb222"] = json!(hash(include_bytes!("photo.rs")));
     metadata["query"]["pages"]["1"]["imageinfo"][0]["sha1"] = json!("1111111111111111111111111111111111111111");
     let changed = serde_json::to_vec(&metadata).unwrap();
     fs::write(root.join("after.json"), &changed).unwrap();
     sources[2].bytes = changed.len() as u64;
     sources[2].sha256 = hash(&changed);
     assert_eq!(assets::photo(&root, &sources, &proven, &allowed, "Q1").unwrap_err(), "photo_revision_mismatch");
+    assert_eq!(assets::photo(&root, &sources, &prepared, &allowed, "Q1").unwrap_err(), "photo_revision_mismatch");
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -1507,7 +1507,11 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `status`, and `obc data` without a terminal | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan`, `dev --check` | `EnvPlan` |
-| `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |
+| `prepare`, `build`, `apply`, `dev --prepare`, `content prepare`, `content publish` | `Handle` |
+| `content configure` | `Request2` |
+| `content status` | `ContentStatus` |
+| `content plan` | `ContentPlan` |
+| `content use` | `Selected` |
 | `dev --start`, `dev --stop`, `dev --status` | `Observed` |
 | `dev --logs` | `Logs` |
 | `dev`, completed dev preparation | `Prepared` |
@@ -1998,6 +2002,99 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "ContentPlan": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "coverage": true,
+        "manifest_key": {
+          "type": "string"
+        },
+        "objects": {
+          "items": true,
+          "type": "array"
+        },
+        "origins": true,
+        "removes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "snapshot": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot",
+        "manifest_key",
+        "objects",
+        "bytes",
+        "coverage",
+        "origins",
+        "removes"
+      ],
+      "type": "object"
+    },
+    "ContentStatus": {
+      "properties": {
+        "configured": {
+          "type": "boolean"
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Selected"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "versions": {
+          "items": {
+            "$ref": "#/$defs/ContentVersion"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "configured",
+        "selected",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "ContentVersion": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "coverage": true,
+        "origins": true,
+        "records": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "snapshot": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot",
+        "records",
+        "coverage",
+        "origins",
+        "bytes"
+      ],
+      "type": "object"
     },
     "Credential": {
       "additionalProperties": false,
@@ -4214,6 +4311,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Request2": {
+      "additionalProperties": false,
+      "properties": {
+        "config": true
+      },
+      "required": [
+        "config"
+      ],
+      "type": "object"
+    },
     "RequestStatus": {
       "properties": {
         "age_days": {
@@ -4458,6 +4565,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "object"
         }
       ]
+    },
+    "Selected": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "type": "object"
     },
     "Settings": {
       "additionalProperties": false,

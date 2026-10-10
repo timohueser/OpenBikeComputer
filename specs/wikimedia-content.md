@@ -21,6 +21,76 @@ Both collection compilers use it. Acquisition records facts and API outcomes;
 compilation applies these rules. A policy edit recompiles retained facts. Only a
 missing fact requires acquisition. There is no separate acquisition rule language.
 
+## Manual snapshot preparation
+
+`obc data content` prepares the reusable source on the operator's machine. The Content
+screen in the terminal interface uses the same commands. Preparation is a retained operation.
+Closing the terminal leaves it running. Stop preserves successful imports and images.
+
+`content configure FILE` saves a JSON configuration. Relative paths refer to the directory
+of that file. Each archive has `date` and either `path` or an HTTPS `url`. Optional `sha256`
+and `bytes` require that exact compressed input. A remote Wikidata JSON archive also needs
+`suffix: ".json.bz2"`; remote SQL archives need `suffix: ".sql.gz"`.
+
+```json
+{
+  "wikidata": {"path": "wikidata.json.bz2", "date": "2026-01-01"},
+  "wikipedia": {
+    "en": {"path": "enwiki-NS0.json.tar.gz", "date": "2026-01-01"},
+    "de": {"path": "dewiki-NS0.json.tar.gz", "date": "2026-01-01"},
+    "fr": {"path": "frwiki-NS0.json.tar.gz", "date": "2026-01-01"},
+    "es": {"path": "eswiki-NS0.json.tar.gz", "date": "2026-01-01"}
+  },
+  "wikidata_pages": {"path": "wikidatawiki-page.sql.gz", "date": "2026-01-01"},
+  "wikidata_redirects": {"path": "wikidatawiki-redirect.sql.gz", "date": "2026-01-01"},
+  "langlinks": {
+    "en": {"path": "enwiki-langlinks.sql.gz", "date": "2026-01-01"},
+    "de": {"path": "dewiki-langlinks.sql.gz", "date": "2026-01-01"},
+    "fr": {"path": "frwiki-langlinks.sql.gz", "date": "2026-01-01"},
+    "es": {"path": "eswiki-langlinks.sql.gz", "date": "2026-01-01"}
+  },
+  "osm": ["planet.osm.pbf"]
+}
+```
+
+Wikipedia inputs are Wikimedia Enterprise namespace-zero HTML snapshots. Wikidata inputs
+are the full JSON dump. SQL inputs supply item redirects and language links without page API
+calls. The page table must match the redirect table. Small scopes can use `entities` and
+`links` arrays instead of `osm`. OSM discovery requires `osmium`.
+
+`content prepare` streams compressed records into a disk-backed temporary index. It never
+extracts full archives. The compressed inputs and this index need local disk space together.
+Downloads resume only with the same upstream length and ETag. Processing retains a 4 GiB
+disk reserve. A changed local file or producer starts a separate preparation. An updated
+remote snapshot needs an updated configuration date or URL.
+
+Native selection rules choose the articles and images. Only manual preparation can call
+Commons for metadata, bounded categories and selected 500 px thumbnails. The native photo
+converter produces the standard 216 × 240 RGB222 bytes. A preparation retains their source
+identity, revision witnesses, credits and transform-code digest. It publishes no thumbnail,
+full archive, request log or temporary projection.
+
+The complete manifest has `schema: 1`, `complete: true`, source `origins`, root `coverage`,
+`coverage_sha256`, `records`, producer identity, acquisition-code identity,
+`photo_transform_sha256` and `files`.
+An origin retains the compressed input SHA-256, size and source date where available.
+Each file has `name`, `sha256`, `bytes` and `kind`: `index`, `bundle` or `image`.
+There is one SQLite lookup index. JSON fact bundles are at most 16 MiB. Each image is
+51,840 bytes. The manifest SHA-256 is the content version.
+
+`content plan SHA` reviews publication. `content publish SHA` uploads immutable objects to
+`content/objects/SHA` and verifies them. It publishes `content/manifests/SHA.json` last.
+No pointer changes and no objects are removed. Interrupted publication can be repeated.
+
+Preparation selects its completed version locally. `content use SHA --from-r2` restores
+the manifest and index on a bake machine. It downloads only required bundles and images
+as requests need them. Source dates remain explicit; a scheduled bake never refreshes these
+inputs through Wikimedia. New OSM identities outside prepared coverage block preparation.
+Invalid page proof and failed imports remain unresolved. Confirmed absence needs a complete
+source scan; item absence also needs the complete page and redirect inputs.
+No-item identities require the source language's complete langlinks table. Their canonical
+page follows supported-language order. A changed image transform requires a new preparation.
+
 ## Identity and source pins
 
 A subject id is the resolved Wikidata QID. An exact Wikipedia link without a
@@ -56,10 +126,13 @@ subject id; supported labels; coordinates; relevant claims and sitelinks; class
 and locale dependency pins; exact link proofs; and per-asset outcomes.
 Each article retains language, canonical title, page id, revision id, revision
 source URL, compact lead HTML, licence and required original notices.
-The article API representation must bind that input to its stated revision.
+The article representation must bind that input to its stated revision.
 The REST page `with_html` response supplies HTML, page id, current revision and
 licence together. Retain its lead and required notices, not its full envelope.
 A rendered lead or a later API response must not inherit an earlier revision id.
+Snapshot HTML supplies its own page id and revision in the Parsoid header. That rendered
+revision owns the article pin. A different envelope revision is retained as a separate
+declared revision; its timestamp is not attributed to the rendered text.
 
 Each image candidate retains its source claim or eligible article identity,
 Commons identity, metadata/file pins, thumbnail URL, dimensions, relevant subject
@@ -201,10 +274,9 @@ Local image inputs are excluded. The Wikimedia source declarations set
 `r2_copy=false`; ownership for Store reachability does not select a source mirror.
 Final device images remain publication outputs of the device cell layers.
 
-A warm pinned bake needs no network. In the same Store, a transform rebuild reuses
-reachable local conversion inputs. A new machine can restore compact facts from
-publication bundles. It needs image acquisition when conversion pixels are absent.
-An available final device image does not promise an offline source-pixel rebuild.
+A warm pinned bake needs no network. A new machine restores the prepared manifest, index,
+required facts and RGB222 images from R2. It makes no Wikimedia request. A changed photo
+transform refuses the old prepared image until the operator prepares a new content version.
 
 Expired identity inputs remain available for revision checks. A separate refresh
 stage checks those roots and their bounded dependencies. Unchanged revisions reuse

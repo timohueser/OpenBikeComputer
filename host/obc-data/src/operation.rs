@@ -18,6 +18,8 @@ pub enum Kind {
     Build,
     Apply,
     DevPrepare,
+    ContentPrepare,
+    ContentPublish,
 }
 
 /// The saved plan and worker live in the operation's private directory.
@@ -31,10 +33,35 @@ pub struct Request {
     pub plan: Option<LayerFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev: Option<crate::dev::Request>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<crate::content::Request>,
 }
 
 impl Request {
     pub fn check(&self) -> Result<(), String> {
+        if matches!(self.kind, Kind::ContentPrepare | Kind::ContentPublish) != self.content.is_some() {
+            return Err("content preparation needs its immutable snapshot configuration".into());
+        }
+        if let Some(content) = &self.content {
+            if self.kind == Kind::ContentPublish {
+                let Some(digest) = content.config["snapshot"].as_str() else {
+                    return Err("content publication needs a reviewed snapshot".into());
+                };
+                if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                    return Err("invalid content publication digest".into());
+                }
+            } else {
+                crate::content::check_request(content)?;
+            }
+            if self.env != "content"
+                || self.plan.is_some()
+                || self.dev.is_some()
+                || !self.only.is_empty()
+                || !self.moves.is_empty()
+            {
+                return Err("content preparation takes only its snapshot configuration".into());
+            }
+        }
         if !crate::is_kebab(&self.env) {
             return Err("operation environment is not a normalized name".into());
         }
@@ -286,6 +313,7 @@ mod tests {
             moves: Vec::new(),
             plan: None,
             dev: None,
+            content: None,
         };
         Control {
             run: run.into(),
