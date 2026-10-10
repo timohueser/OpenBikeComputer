@@ -6,7 +6,7 @@ test('reading pages share the theme preference and fit a narrow phone', async ({
   await page.goto('/docs/');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.getByRole('button', { name: 'Dark mode', exact: true }).click();
-  for (const path of ['/blog/', '/blog/the-site-has-a-log-now/', '/docs/software/formats/', '/docs/impressum/', '/docs/datenschutz/']) {
+  for (const path of ['/blog/', '/blog/welcome-to-openbikecomputer/', '/docs/software/formats/', '/docs/impressum/', '/docs/datenschutz/']) {
     await page.goto(path);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     await expect(page.getByRole('button', { name: 'Dark mode', exact: true })).toHaveAttribute('aria-pressed', 'false');
@@ -40,7 +40,7 @@ test('mobile docs navigation closes with Escape and exposes section links', asyn
 });
 
 test('blog images open from the keyboard and restore focus after closing', async ({ page }) => {
-  await page.goto('/blog/the-site-has-a-log-now/');
+  await page.goto('/blog/nrf54-flpr-display/');
   const image = page.getByRole('button', { name: /^Enlarge image:/ }).first();
   await image.focus();
   await page.keyboard.press('Enter');
