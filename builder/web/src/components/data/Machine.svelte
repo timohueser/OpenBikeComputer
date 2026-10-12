@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { hardware, size, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
+    import { free, hardware, size, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
 
@@ -17,11 +17,11 @@
     const facts = $derived([machine && hardware(machine), checked && `checked at ${checked}`].filter(Boolean).join(" · "));
 </script>
 
-<!-- A name breaks only at a space or after `_`, never inside a word. -->
+<!-- A name breaks only at a space or after `_` or `/`, never inside a word. -->
 {#snippet head(state: Readiness, name: string)}
     <span class="head">
         <span class="mark {state}" role="img" aria-label={state}>{MARK[state]}</span>
-        <b class="name">{#each name.split("_") as part, i}{#if i}_<wbr />{/if}{part}{/each}</b>
+        <b class="name">{#each name.split(/(?<=[_/])/) as part}{part}<wbr />{/each}</b>
     </span>
 {/snippet}
 
@@ -64,7 +64,7 @@
     <div class="pair">
         <section class="card" aria-labelledby="store">
             <h2 id="store">Store</h2>
-            <p><code>{report.store.path}</code> · {size(report.store.used_bytes)} used · {size(report.store.free_bytes)} free</p>
+            <p><code>{report.store.path}</code> · {size(report.store.used_bytes)} used · {free(report.store.free_bytes)}</p>
         </section>
 
         <section class="card first" aria-labelledby="first">
