@@ -48,7 +48,7 @@ fn local(store: &Store, run: &str) -> Result<View, Error> {
     Ok(view)
 }
 
-pub(crate) fn tail(path: &std::path::Path) -> Result<Vec<String>, String> {
+fn tail(path: &std::path::Path) -> Result<Vec<String>, String> {
     use std::io::{Read, Seek, SeekFrom};
     const BYTES: u64 = 16 * 1024;
     let metadata = match std::fs::metadata(path) {
@@ -140,7 +140,6 @@ mod tests {
             only: Vec::new(),
             moves: Vec::new(),
             plan: None,
-            dev: None,
         };
         let control = operation::Control {
             run: id.clone(),
@@ -148,7 +147,6 @@ mod tests {
             request,
             root: "/checkout".into(),
             worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
-            code: "b".repeat(64),
             state: State::Reserved,
         };
         operation::reserve(&store, &control).unwrap();
@@ -177,7 +175,6 @@ mod tests {
             only: Vec::new(),
             moves: Vec::new(),
             plan: None,
-            dev: None,
         };
         for (id, fails) in [("2026-10-06-120000", false), ("2026-10-06-120001", true)] {
             let control = operation::Control {
@@ -186,7 +183,6 @@ mod tests {
                 request: request.clone(),
                 root: "/checkout".into(),
                 worker: crate::engine::LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
-                code: "b".repeat(64),
                 state: State::Reserved,
             };
             operation::reserve(&store, &control).unwrap();

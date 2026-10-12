@@ -840,11 +840,19 @@ mod tests {
         assert_eq!((graph.node_access[point(2)], graph.node_access[point(3)]), (BIKE | FOOT | PUSH, FOOT | PUSH));
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         let mut objects = HashMap::new();
-        let manifest = crate::prepare(&graph, "nodes".into(), [9.0, 46.0, 11.0, 48.0], &[profile], vec![], |bytes| {
-            let key = planner_router::package::digest(bytes);
-            objects.insert(key.clone(), bytes.to_vec());
-            Ok(key)
-        })
+        let manifest = crate::prepare(
+            &graph,
+            "nodes".into(),
+            [9.0, 46.0, 11.0, 48.0],
+            &[profile],
+            vec![],
+            "test".into(),
+            |bytes| {
+                let key = planner_router::package::digest(bytes);
+                objects.insert(key.clone(), bytes.to_vec());
+                Ok(key)
+            },
+        )
         .unwrap();
         struct Memory(HashMap<String, Vec<u8>>);
         impl planner_router::package::Source for Memory {

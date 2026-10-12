@@ -3,11 +3,20 @@
 use super::*;
 use obc_data::product::{Pointer, PointerFn};
 use obc_pack::catalog::boundary::{simplified_rings, DEFAULT_TOLERANCE_UDEG};
-use obc_pack::catalog::engine::{Options, Pick};
+use obc_pack::catalog::engine::{Credits, Options, Pick};
 use obc_pack::catalog::{Boundary, CellSource};
 
 pub const INDEX: &str = "geofabrik-index";
 pub const LAYER: &str = "maps/catalog";
+
+/// The catalog that lists every map, terrain and landmark file of the device layers.
+pub static DEVICE_CATALOG: Layer = Layer {
+    name: "device/catalog",
+    shape: obc_data::engine::Shape::Whole,
+    format: obc_pack::catalog::CATALOG_SCHEMA_VERSION,
+    revision: 1,
+    readers: &["map builder", "desktop app"],
+};
 
 #[allow(clippy::too_many_arguments)]
 pub fn step(
@@ -145,6 +154,7 @@ pub fn step(
         posting_log2: V1_POSTING_LOG2,
         terrain_cell_log2: V1_CELL_LOG2,
         dataset_version: glo30.into(),
+        credits: Credits::of_sources(),
     };
     let mut inputs: Vec<Input> = listed
         .iter()
@@ -154,15 +164,10 @@ pub fn step(
         .collect();
     inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
     Ok(Step {
+        layer: &DEVICE_CATALOG,
         name: LAYER.into(),
         inputs,
         options: serde_json::to_value(options).map_err(|e| Unplanned::Failed(e.to_string()))?,
-        code: Code {
-            paths: vec!["builder/presets".into()],
-            crates: vec!["obc-pack".into()],
-            sources: vec!["osm-planet".into(), "copernicus-glo-30".into()],
-            ..Default::default()
-        },
         outputs: ["catalog.json", "schema.json", "terrain.json", "LICENSE.txt", "regions", "objects"]
             .map(String::from)
             .into(),
@@ -202,5 +207,4 @@ pub fn pointer() -> PointerFn {
 }
 
 mod verify;
-pub(crate) use verify::assemble;
 pub use verify::verify;

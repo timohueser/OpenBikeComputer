@@ -56,8 +56,7 @@ curl http://127.0.0.1:8788/v1/route \
 
 ## Planner
 
-`obc planner` runs this service with the maps and search of one local data
-directory. The planner calls the `routing` prefix of its config. See the
+The planner calls the `routing` prefix of its config. See the
 [planner README](../../builder/web/src/components/planner/README.md).
 
 ```sh

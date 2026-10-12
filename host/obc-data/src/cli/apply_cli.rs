@@ -1041,6 +1041,7 @@ mod tests {
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         write(&fixture.scratch.0.join("bucket/test/objects/old"), "old");
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&fixture.root().join("revised"), "test/join");
         commit(&fixture);
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Failing]).unwrap_err();
@@ -1091,6 +1092,7 @@ mod tests {
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let old = checked(&fixture, &remote).unwrap();
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&fixture.root().join("revised"), "test/join");
         commit(&fixture);
         let root = fixture.root();
         let log = fixture.scratch.0.join("bucket/removed.jsonl");
@@ -1177,6 +1179,7 @@ mod tests {
         let (fixture, remote) = repository("apply-partial");
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&fixture.root().join("revised"), "test/join");
         commit(&fixture);
         let before = keys(&fixture);
         let error = apply(&fixture, &remote, &[&super::super::build_cli::tests::Partial]).unwrap_err();
@@ -1286,6 +1289,7 @@ mod tests {
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let original = checked(&fixture, &remote).unwrap();
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&fixture.root().join("revised"), "test/join");
         commit(&fixture);
         let pointer = fixture.scratch.0.join("bucket/test/catalog.json");
         let result = apply_live(
@@ -1356,6 +1360,7 @@ mod tests {
         apply(&fixture, &remote, &[&Versioned]).unwrap();
         let old = checked(&fixture, &remote).unwrap();
         write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&fixture.root().join("revised"), "test/join");
         commit(&fixture);
         let (root, http) = (fixture.root(), Http::new());
         let mut plan = build_cli::plan_live(&root, &fixture.store, &http, &remote, &[&Versioned], &[], true).unwrap();
@@ -1388,12 +1393,14 @@ mod tests {
         assert!(pushed_commit(&root).is_err(), "tracked presets are code");
         std::fs::remove_file(root.join("data/regions/new.toml")).unwrap();
         write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&root.join("revised"), "test/join");
         let before = keys(&fixture);
         let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
-        let message = "Live publishes from a pushed commit: 1 files are uncommitted (join.py)";
+        let message = "Live publishes from a pushed commit: 2 files are uncommitted (join.py, revised)";
         assert_eq!((err.code, err.message.as_str()), (Code::Usage, message));
         let git = ["-c", "user.name=test", "-c", "user.email=test@example.org", "-c", "commit.gpgsign=false"];
-        let committed = Command::new("git").args(git).args(["commit", "-qam", "local"]).current_dir(&root).status();
+        assert!(Command::new("git").args(["add", "."]).current_dir(&root).status().unwrap().success());
+        let committed = Command::new("git").args(git).args(["commit", "-qm", "local"]).current_dir(&root).status();
         assert!(committed.unwrap().success());
         let err = apply(&fixture, &remote, &[&Versioned]).unwrap_err();
         assert!(err.message.ends_with("is not on GitHub"), "{}", err.message);

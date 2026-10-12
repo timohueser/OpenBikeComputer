@@ -1,11 +1,11 @@
 //! Running a step and measuring what it cost.
 
 use std::io::{ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Instant;
 
-use super::{Code, Request};
+use super::Request;
 
 pub struct Usage {
     pub wall_ms: u64,
@@ -27,29 +27,45 @@ pub fn in_process(step: impl FnOnce() -> Result<(), String>) -> Result<Usage, St
     })
 }
 
-pub(super) fn command(root: &Path, argv: &[String], code: Option<(&Code, &str)>) -> Result<Command, String> {
+/// The interpreter of a Python step: the system Python that `uv python find` selects for the
+/// project, offline, with an explicit `UV_PYTHON` request when set.
+pub fn python_executable(root: &Path) -> Result<PathBuf, String> {
+    let mut find = Command::new("uv");
+    find.current_dir(root).args(["python", "find", "--system", "--offline", "--no-python-downloads"]);
+    if let Some(request) = std::env::var_os("UV_PYTHON") {
+        find.arg(request);
+    }
+    let output = find.output().map_err(|e| format!("uv offline interpreter: {e}; prepare the Python runtime first"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "uv offline interpreter: {}; prepare the selected offline Python runtime first",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let path = String::from_utf8(output.stdout).map_err(|e| format!("uv offline interpreter: {e}"))?;
+    Ok(PathBuf::from(path.trim()))
+}
+
+/// The command `argv` in `root`. A `python` command runs under `uv run` with the interpreter of
+/// [`python_executable`].
+fn command(root: &Path, argv: &[String], python: bool) -> Result<Command, String> {
     let (program, args) = argv.split_first().ok_or("the command is empty")?;
     let mut command = Command::new(program);
     command.args(args).current_dir(root);
-    if let Some((code, expected)) = code {
-        if code.python.is_some() {
-            super::code::python_command(root, code, expected, &mut command)?;
-        } else if !code.crates.is_empty()
-            && !matches!(code.rust, Some(super::Rust::Prepared { .. }))
-            && matches!(Path::new(program).file_stem().and_then(|name| name.to_str()), Some("cargo" | "rustc"))
-        {
-            crate::worker::compiler_command(&mut command);
-        }
+    if python {
+        command.env("UV_PYTHON", python_executable(root)?);
+        // A no-sync override can make uv keep a project interpreter of another version.
+        command.env("UV_NO_SYNC", "0");
     }
     Ok(command)
 }
 
-/// Run `argv` in `root` with the request as JSON on standard input. Its standard output goes to
-/// standard error. The usage is that of the process and the children it waited for.
-pub fn run(root: &Path, argv: &[String], request: &Request, code: Option<(&Code, &str)>) -> Result<Usage, String> {
-    let mut command = command(root, argv, code)?;
-    command.stdin(Stdio::piped()).stdout(std::io::stderr());
+/// Run the [`command`] `argv` in `root` with the request as JSON on standard input. Its standard
+/// output goes to standard error. The usage is that of the process and the children it waited for.
+pub fn run(root: &Path, argv: &[String], request: &Request, python: bool) -> Result<Usage, String> {
+    let mut command = command(root, argv, python)?;
     let program = &argv[0];
+    command.stdin(Stdio::piped()).stdout(std::io::stderr());
     let start = Instant::now();
     let mut child = command.spawn().map_err(|e| format!("cannot start `{program}`: {e}"))?;
     let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
@@ -113,4 +129,52 @@ fn measure(usage: &libc::rusage) -> (u64, u64) {
     // macOS counts the peak in bytes; Linux and the BSDs in KiB.
     let unit = if cfg!(target_os = "macos") { 1 } else { 1024 };
     (ms(usage.ru_utime) + ms(usage.ru_stime), usage.ru_maxrss as u64 * unit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::tests::write;
+    use crate::store::tests::Scratch;
+
+    #[test]
+    fn a_python_step_runs_the_discovered_interpreter_despite_active_and_project_environments() {
+        let scratch = Scratch::new("python-interpreter");
+        let root = &scratch.0;
+        write(&root.join(".python-version"), "3.12\n");
+        write(
+            &root.join("pyproject.toml"),
+            "[project]\nname = \"runtime-fixture\"\nversion = \"0\"\nrequires-python = \">=3.12\"\ndependencies = []\n\
+             [tool.uv]\npackage = false\ndefault-groups = []\n",
+        );
+        write(
+            &root.join("uv.lock"),
+            "version = 1\nrevision = 3\nrequires-python = \">=3.12\"\n[[package]]\nname = \"runtime-fixture\"\n\
+             version = \"0\"\nsource = { virtual = \".\" }\n",
+        );
+        let base = python_executable(root).unwrap();
+        let (active, project) = (root.join("active"), root.join("project"));
+        for path in [&active, &project] {
+            let result = Command::new(&base).args(["-m", "venv", "--without-pip"]).arg(path).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        }
+        let script = "import json,sys; print(json.dumps([sys._base_executable, sys.prefix]))";
+        let argv = ["uv", "run", "--locked", "--offline", "--no-default-groups", "--no-python-downloads"];
+        let argv: Vec<String> = argv.iter().chain(&["python", "-c", script]).map(|arg| arg.to_string()).collect();
+        for override_project in [false, true] {
+            let mut command = command(root, &argv, true).unwrap();
+            let no_sync = command.get_envs().find(|(key, _)| *key == "UV_NO_SYNC").and_then(|(_, value)| value);
+            assert_eq!(no_sync, Some(std::ffi::OsStr::new("0")));
+            command.env_remove("UV_PROJECT_ENVIRONMENT").env("VIRTUAL_ENV", &active);
+            if override_project {
+                command.env("UV_PROJECT_ENVIRONMENT", &project);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let [used, prefix]: [PathBuf; 2] = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(used.canonicalize().unwrap(), base.canonicalize().unwrap());
+            let expected = if override_project { project.clone() } else { root.join(".venv") };
+            assert_eq!(prefix.canonicalize().unwrap(), expected.canonicalize().unwrap());
+        }
+    }
 }

@@ -71,6 +71,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         [-1.0, -1.0, 1.0, 1.0],
         &Profile::presets()[..1],
         vec![],
+        "test".into(),
         |bytes| writer.write(bytes),
     )
     .unwrap();

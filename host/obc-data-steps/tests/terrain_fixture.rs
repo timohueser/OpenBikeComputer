@@ -124,7 +124,7 @@ fn layer(store: &Store, root: &Path, regions: &Regions, env: &Env) -> BTreeMap<S
     assert!(listed.blocked.iter().any(|blocked| blocked.layer == "maps/catalog"), "terrain alone cannot publish");
     let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("maps/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
-    let plan = obc_data::engine::plan::plan(store, root, &steps).unwrap();
+    let plan = obc_data::engine::plan::plan(store, &steps).unwrap();
     let mut run = Run::create(store, "build test").unwrap();
     let context = Context { store, root, sources: &[], http: &Http::new(), copies: None, limits: Limits::machine() };
     let built = run.build(&context, &steps, &plan).unwrap();

@@ -12,7 +12,7 @@ use super::{cells, print_json, print_table, Code, Error};
 
 #[derive(Args)]
 pub struct Runs {
-    /// A run id: show its steps with their inputs, code and users.
+    /// A run id: show its steps with their layers, inputs and users.
     run: Option<String>,
     /// Write the events of RUN as they come, until it ends. The exit status is 1 when it failed.
     #[arg(long, requires = "run")]
@@ -131,19 +131,19 @@ fn show(run: &Details, json: bool) -> Result<(), Error> {
         }
         print_table(&table);
     }
-    let mut table = vec![cells(["STEP", "TOOK", "Δ LAST RUN", "PEAK RAM", "OUTPUT", "READS", "CODE", "USED BY"])];
+    let mut table = vec![cells(["STEP", "LAYER", "TOOK", "Δ LAST RUN", "PEAK RAM", "OUTPUT", "READS", "USED BY"])];
     for step in &run.steps {
         let receipt = step.receipt.as_ref();
         let [took, change, ram, output] = step_cells(step);
         let reads = receipt.map(|r| r.inputs.iter().map(|input| input.name.as_str()).collect::<Vec<_>>().join(", "));
         table.push(vec![
             step.step.clone(),
+            receipt.map(|receipt| receipt.layer.clone()).unwrap_or_default(),
             took,
             change,
             ram,
             output,
             reads.unwrap_or_default(),
-            receipt.map(|receipt| receipt.code[..12].to_string()).unwrap_or_default(),
             step.users.join(", "),
         ]);
     }

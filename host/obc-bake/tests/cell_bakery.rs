@@ -533,7 +533,7 @@ fn the_landmark_class_is_published_credited_and_verified() {
     assert_eq!(artifact.languages, ["en", "de", "fr", "es"]);
 
     // The licence obligation reaches the document a person reads.
-    let license = obc_pack::catalog::license_txt(&generated.root);
+    let license = obc_pack::catalog::license_txt(&generated.root, &obc_pack::landmarks::attribution());
     assert!(license.contains(&obc_pack::landmarks::attribution()), "{license}");
     assert!(license.contains(PHOTO_LICENSE), "every licence the artifact uses:\n{license}");
 
@@ -588,7 +588,8 @@ fn the_landmark_class_is_published_credited_and_verified() {
     // of these thirty cells holds the section, so a sampled check would pass the store.
     let regenerated = f.catalog();
     assert!(regenerated.root.landmarks.is_none());
-    assert!(!obc_pack::catalog::license_txt(&regenerated.root).contains(&obc_pack::landmarks::attribution()));
+    assert!(!obc_pack::catalog::license_txt(&regenerated.root, &obc_pack::landmarks::attribution())
+        .contains(&obc_pack::landmarks::attribution()));
     let report = obc_bake::verify::verify_cell_tree(&f.tree, Default::default()).expect("verify runs");
     let named: Vec<&String> = report.problems.iter().filter(|p| p.contains("carries a landmark section")).collect();
     assert_eq!(named.len(), 1, "a cell's landmark bytes with no catalog credit: {:?}", report.problems);
@@ -801,7 +802,7 @@ fn a_terrain_bake_publishes_cells_ocean_runs_and_a_priced_region_selection() {
     .expect("parses");
     assert_eq!(sidecar["reference_sources"], serde_json::json!(["ch"]));
     assert_eq!(terrain.references.as_deref(), Some(&[fake_reference_entry()][..]));
-    let license = obc_pack::catalog::license_txt(root);
+    let license = obc_pack::catalog::license_txt(root, &obc_pack::landmarks::attribution());
     assert!(license.contains("© swisstopo"), "the notice reaches LICENSE.txt too:\n{license}");
     assert_eq!((terrain.cell_index.cell_count, terrain.cell_index.known_empty_count), (5, 1));
     assert!(terrain.cell_index.url.contains(&terrain.cell_index.sha256), "the index is addressed by its own digest");

@@ -557,7 +557,10 @@ pub(crate) mod tests {
         let file = LayerFile { path: "out".into(), size: bytes.len() as u64, sha256: sha256_hex(bytes) };
         let read = SnapshotRead { version: "2026-10-01".into(), params: Vec::new() };
         let layer = Layer {
+            layer: "test".into(),
             step: "test/one".into(),
+            format: 1,
+            revision: 1,
             key: "key".into(),
             inputs: vec![crate::engine::InputRecord {
                 kind: crate::engine::InputKind::Snapshot,
@@ -566,9 +569,6 @@ pub(crate) mod tests {
                 files: vec!["land.zip".into()],
             }],
             options: serde_json::json!({}),
-            code: String::new(),
-            command: None,
-            outputs: vec!["out".into()],
             digest: String::new(),
             files: vec![file],
             snapshots: [("land".to_string(), read)].into(),
@@ -581,7 +581,6 @@ pub(crate) mod tests {
             optional: Vec::new(),
             layers: vec![layer],
             named: Vec::new(),
-            producers: BTreeMap::new(),
         }
     }
 

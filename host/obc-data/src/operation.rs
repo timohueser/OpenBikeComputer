@@ -17,7 +17,6 @@ pub enum Kind {
     Prepare,
     Build,
     Apply,
-    DevPrepare,
 }
 
 /// The saved plan and worker live in the operation's private directory.
@@ -29,20 +28,12 @@ pub struct Request {
     pub only: Vec<String>,
     pub moves: Vec<String>,
     pub plan: Option<LayerFile>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dev: Option<crate::dev::Request>,
 }
 
 impl Request {
     pub fn check(&self) -> Result<(), String> {
         if !crate::is_kebab(&self.env) {
             return Err("operation environment is not a normalized name".into());
-        }
-        if (self.kind == Kind::DevPrepare) != self.dev.is_some()
-            || self.dev.is_some()
-                && (self.env != "local" || self.plan.is_some() || !self.only.is_empty() || !self.moves.is_empty())
-        {
-            return Err("Local preparation takes only its explicit region and source".into());
         }
         if self.kind == Kind::Apply
             && (self.env != "live" || self.plan.is_none() || !self.only.is_empty() || !self.moves.is_empty())
@@ -117,7 +108,6 @@ pub struct Control {
     pub request_sha256: String,
     pub root: PathBuf,
     pub worker: LayerFile,
-    pub code: String,
     pub state: State,
 }
 
@@ -142,7 +132,6 @@ pub fn read(store: &Store, run: &str) -> Result<Option<Control>, String> {
         || control.request.digest()? != control.request_sha256
         || control.worker.path != "worker"
         || !digest(&control.worker.sha256)
-        || !digest(&control.code)
         || matches!(&control.state, State::Finished { result, .. } if result.path != "result.json" || !digest(&result.sha256))
     {
         return Err("operation control differs from its run or immutable request".into());
@@ -279,21 +268,14 @@ mod tests {
     use crate::store::tests::Scratch;
 
     fn control(run: &str) -> Control {
-        let request = Request {
-            kind: Kind::Build,
-            env: "local".into(),
-            only: Vec::new(),
-            moves: Vec::new(),
-            plan: None,
-            dev: None,
-        };
+        let request =
+            Request { kind: Kind::Build, env: "local".into(), only: Vec::new(), moves: Vec::new(), plan: None };
         Control {
             run: run.into(),
             request_sha256: request.digest().unwrap(),
             request,
             root: "/checkout".into(),
             worker: LayerFile { path: "worker".into(), size: 1, sha256: "a".repeat(64) },
-            code: "b".repeat(64),
             state: State::Reserved,
         }
     }
@@ -326,7 +308,7 @@ mod tests {
     #[test]
     fn stop_drains_a_started_producer_and_prevents_the_next_step() {
         use crate::engine::{
-            tests::{fixture, step, steps_crate},
+            tests::{fixture, step},
             Request as StepRequest, Run as Producer,
         };
         fn stop_after_output(request: &StepRequest) -> Result<(), String> {
@@ -347,14 +329,8 @@ mod tests {
         reserve(&fixture.store, &first).unwrap();
         let using = claim(&fixture.store, &id, &first.request_sha256).unwrap();
         let mut steps = vec![
-            step("test/first", Vec::new(), steps_crate(), "first.txt", Producer::Rust(stop_after_output)),
-            step(
-                "test/next",
-                vec![crate::engine::Input::layer("test/first")],
-                steps_crate(),
-                "next.txt",
-                Producer::Rust(next),
-            ),
+            step("test/first", Vec::new(), "first.txt", Producer::Rust(stop_after_output)),
+            step("test/next", vec![crate::engine::Input::layer("test/first")], "next.txt", Producer::Rust(next)),
         ];
         steps[0].options = serde_json::json!({"store":fixture.store.root(), "run":id});
         let plan = fixture.plan(&steps).unwrap();

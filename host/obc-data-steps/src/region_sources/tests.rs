@@ -126,7 +126,7 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
     let steps = inputs("maps", &selected);
     assert_eq!(steps.len(), 2);
     let root = root();
-    let plan = plan(&store, &root, &steps).unwrap();
+    let plan = plan(&store, &steps).unwrap();
     assert!(plan.fetches().is_empty());
     let http = Http::new();
     let mut journal = Journal::create(&store, "build inputs").unwrap();
@@ -138,7 +138,7 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
         )
         .unwrap();
     journal.finish(None).unwrap();
-    let release = obc_data::engine::release::release(&store, &root, "maps", "ride", &[], &steps).unwrap().unwrap();
+    let release = obc_data::engine::release::release(&store, "maps", "ride", &[], &steps).unwrap().unwrap();
     assert!(release.objects().is_empty(), "raw input files remain private");
     let live = obc_data::live::Live {
         products: vec![obc_data::live::LiveProduct {

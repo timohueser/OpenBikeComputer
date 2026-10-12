@@ -101,24 +101,21 @@ Each kind of change goes out in one way:
 - **New catalogue field.** Deploy the release from the branch first. Merge the
   branch second.
 
-## Local preview
+## Local data
 
 For `obc data`, configure the [runtime target](../../../../../specs/obc-data.md#service-runtimes)
 in [`data/planner-runtime.toml`](../../../../../data/planner-runtime.toml).
 Set `OBC_PLANNER_HOST=USER@HOST`. Live apply builds services on that VPS from the pushed
 commit and probes the new data before it switches the catalog. Allow an outage.
-Local apps need the [Local setup](../../../../../host/obc-data-steps/src/planner/README.md).
 
 ```sh
 obc planner setup
-obc planner
 obc planner verify
 ```
 
-Open `http://127.0.0.1:4175/planner.html`. Setup runs `prepare` with the
-region recipe and `~/obc-reference`; run `prepare` directly for other inputs.
-Normal launch has no downloads. `verify` checks map hashes, SQLite integrity,
-and routing object closure.
+Setup runs `prepare` with the region recipe and `~/obc-reference`; run `prepare`
+directly for other inputs. `verify` checks map hashes, SQLite integrity, and
+routing object closure.
 
 Seed the cache from Geofabrik extracts of one date:
 
@@ -135,17 +132,13 @@ cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 | `--data-dir` | `OBC_PLANNER_DATA/REGION` for every command; `OBC_PLANNER_DATA` is `~/.cache/obc/planner` |
 | `--recipe` | The recipe of `--region` |
 | `--host` or `OBC_PLANNER_HOST` | VPS of `deploy` and `finalize` |
-| `--port` | Planner `4175` |
-| `--tile-port` | Terrain `8789` |
-| `--route-port` | Routing `8787` |
-| `--search-port` | Search `8786` |
 | `--pmtiles` or `PMTILES` | `pmtiles` |
 
 ## Client configuration
 
 The planner reads the `active`
 [catalogue](../../../../../specs/planner-release.md#catalogue) entry at page load.
-`obc planner` builds with `VITE_PLANNER_CONFIG`, the same entry with local URLs.
+`VITE_PLANNER_CONFIG` replaces it with one entry, for example with local URLs.
 `VITE_CATALOG_URL` gives the map builder another device catalogue.
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain

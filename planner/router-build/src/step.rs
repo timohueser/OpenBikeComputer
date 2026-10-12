@@ -24,6 +24,8 @@ pub struct Build {
     /// The ISO codes of the countries of the region. With them, the build also writes the route
     /// catalog.
     pub countries: Vec<String>,
+    /// The credit of the OSM data.
+    pub attribution: String,
 }
 
 /// Write the package, its overlay index and, with countries, its route catalog into the empty
@@ -65,11 +67,16 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
     crate::layout::spatial_order(&mut graph)?;
     let mut writer = Writer::create(output).map_err(|e| e.to_string())?;
     // Only the bytes outlive this statement, not the decoded manifest.
-    let manifest =
-        serde_json::to_vec(&crate::prepare(&graph, args.region, args.bounds, &profiles, identities, |bytes| {
-            writer.write(bytes)
-        })?)
-        .map_err(|e| e.to_string())?;
+    let manifest = serde_json::to_vec(&crate::prepare(
+        &graph,
+        args.region,
+        args.bounds,
+        &profiles,
+        identities,
+        args.attribution,
+        |bytes| writer.write(bytes),
+    )?)
+    .map_err(|e| e.to_string())?;
     writer.finish().map_err(|e| e.to_string())?;
     fs::write(output.join("manifest.json"), &manifest).map_err(|e| e.to_string())?;
     // The overlay index and the route catalog read only the source objects. The road graph is
@@ -84,7 +91,8 @@ pub fn build(args: Build, terrain: Option<Terrain>, output: &Path) -> Result<Opt
 }
 
 /// The planner routing step. It reads the OSM files of its input layers and the GLO-30 tiles of
-/// its bounds. The options are `region`, `bounds`, `profiles` and `countries`, as in [`Build`].
+/// its bounds. The options are `region`, `bounds`, `profiles`, `countries` and `attribution`, as
+/// in [`Build`], and `terrain_attribution`, the credit of GLO-30.
 /// The import applies each way's country access defaults. The layer:
 ///
 /// - `routing/`: the package, `overlays.sqlite` and `route-catalog.json`;
@@ -109,8 +117,10 @@ pub fn step(request: &Request) -> Result<(), String> {
         return Err("option `countries` is empty: the routes of each cell come from the route catalog".into());
     }
     let inputs = request.layers.values().flat_map(|files| files.values().cloned()).collect();
-    let args = Build { inputs, region: text("region")?, bounds, profiles: list("profiles")?, countries };
-    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), None, bounds)?;
+    let (region, profiles, attribution) = (text("region")?, list("profiles")?, text("attribution")?);
+    let args = Build { inputs, region, bounds, profiles, countries, attribution };
+    let credit = text("terrain_attribution")?;
+    let terrain = Terrain::open(&obc_dem::step::glo30(request, bounds), &credit, None, bounds)?;
     let routing = request.output.join("routing");
     fs::create_dir(&routing).map_err(|e| format!("{}: {e}", routing.display()))?;
     let report = build(args, Some(terrain), &routing)?.expect("a build with countries writes the route catalog");

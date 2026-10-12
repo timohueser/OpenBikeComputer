@@ -32,13 +32,20 @@ fn routing(source: Memory, manifest: &[u8]) -> Selection<Memory> {
 fn package_with_profiles(graph: &Graph, profiles: &[Profile]) -> (Memory, Vec<u8>) {
     let graph = with_sources(graph.clone());
     let mut objects = HashMap::new();
-    let manifest =
-        planner_router_build::prepare(&graph, "test".into(), [-1.0, -1.0, 1.0, 1.0], profiles, vec![], |bytes| {
+    let manifest = planner_router_build::prepare(
+        &graph,
+        "test".into(),
+        [-1.0, -1.0, 1.0, 1.0],
+        profiles,
+        vec![],
+        "test".into(),
+        |bytes| {
             let key = digest(bytes);
             objects.insert(key.clone(), bytes.to_vec());
             Ok(key)
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     (Memory(Arc::new(objects)), serde_json::to_vec(&manifest).unwrap())
 }
 /// One value for each edge of the route, from the runs of one edge channel of its answer.

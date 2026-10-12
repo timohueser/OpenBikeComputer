@@ -29,12 +29,14 @@ pub struct Terrain {
     /// The SHA-256 of each GLO-30 file, then of each reference tile that `bounds` reaches.
     pub identities: Vec<String>,
     used: BTreeSet<String>,
+    /// The credit of GLO-30.
+    credit: String,
 }
 
 impl Terrain {
-    /// The GLO-30 files `glo30`, in the order of [`tiles`], and the reference archive at
-    /// `reference`, for heights in `bounds`.
-    pub fn open(glo30: &[PathBuf], reference: Option<&Path>, bounds: [f64; 4]) -> Result<Self, String> {
+    /// The GLO-30 files `glo30`, in the order of [`tiles`], with their `credit`, and the reference
+    /// archive at `reference`, for heights in `bounds`.
+    pub fn open(glo30: &[PathBuf], credit: &str, reference: Option<&Path>, bounds: [f64; 4]) -> Result<Self, String> {
         let mut fallback = DemMosaic::default();
         let mut identities = Vec::new();
         for path in glo30 {
@@ -51,7 +53,8 @@ impl Terrain {
             };
             identities.extend(archive.held_digests(window).into_iter().map(|(_, _, hash)| hash.to_owned()));
         }
-        Ok(Self { fallback, reference, cache: VecDeque::new(), identities, used: BTreeSet::new() })
+        let (cache, used, credit) = (VecDeque::new(), BTreeSet::new(), credit.into());
+        Ok(Self { fallback, reference, cache, identities, used, credit })
     }
 
     /// The height in metres at `lat`, `lon` in microdegrees, or `None` where no source has one.
@@ -101,7 +104,7 @@ impl Terrain {
             );
         }
         if !self.fallback.is_empty() {
-            credits.push(obc_data::sources::attribution(crate::step::GLO30).into());
+            credits.push(self.credit.clone());
         }
         credits
     }

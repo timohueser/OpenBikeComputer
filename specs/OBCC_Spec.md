@@ -709,13 +709,13 @@ pool, and copies the content into the landmark and peak regions of the map.
 
 ### 14.4 Keys
 
-An artifact has no revision number. Its key is content, as
-[obc-data.md](obc-data.md) defines it: the compiled capture, and for landmarks
-the OSM of the cell's leaf, which gives the OSM link and the hours of a landmark;
-the options; and the code. The key of the compiled capture is the capture, the
-region's `.poly` and extract, and the compiler code. A capture names the extract
-and the `.poly` that it read by their SHA-256, so its version says which OSM it
-found its places in.
+An artifact has the version of the layer `device/landmarks`. Its key is as
+[obc-data.md](obc-data.md) defines it: the version, the compiled capture, and for
+landmarks the OSM of the cell's leaf, which gives the OSM link and the hours of a
+landmark; and the options. The key of the compiled capture is the version, the
+capture, and the region's `.poly` and extract. A capture names the extract and the
+`.poly` that it read by their SHA-256, so its version says which OSM it found its
+places in.
 
 ### 14.5 Detached article index
 

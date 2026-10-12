@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, publish, deploy, or preview regional planner data."""
+"""Prepare, publish or deploy regional planner data."""
 
 import argparse
 from contextlib import closing
@@ -11,22 +11,19 @@ import signal
 import sqlite3
 import subprocess
 import sys
-import time
-from urllib.request import urlopen
 
 if not __package__:  # `obc planner` runs this file as a script.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools import data_registry, planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
+from tools import planner_bake, planner_cleanup, planner_deploy, planner_maps as maps, planner_prepare, r2
 from tools import planner_release as releases
-from tools.planner_runtime import DATA_LAYERS
 from tools.planner_components import Cache
 
 ROOT = maps.ROOT
 SEARCH = ROOT / "planner/search"
 REGION = "baden-wuerttemberg-switzerland"
 RECIPES = ROOT / "tools/planner-regions"
-# The local preview commands. Each holds the lock of its data directory.
-LOCAL = {"setup", "serve", "verify"}
+# The local data commands. Each holds the lock of its data directory.
+LOCAL = {"setup", "verify"}
 
 
 def run(*command, **kwargs):
@@ -35,7 +32,7 @@ def run(*command, **kwargs):
 
 def setup(args):
     planner_bake.prepare(args)
-    print(f"Setup complete. Run: obc planner serve --region {args.region}", flush=True)
+    print("Setup complete.", flush=True)
 
 
 def current_overlays(data):
@@ -81,70 +78,6 @@ def verify_local(args):
     print("Local planner data verified.")
 
 
-def preview_config(args, manifest):
-    """The planner config of the local services: the fields of a catalogue entry, with root-relative
-    paths that the planner resolves against its page, so localhost and 127.0.0.1 both stay on one origin."""
-    files = f"/@fs{args.data_dir}/maps"
-    return {"name": args.name, "region": args.region, "bounds": manifest["bounds"],
-            "basemap": f"pmtiles://{files}/basemap.pmtiles", "places": files + "/places.pmtiles",
-            "overlays": files + "/overlays.pmtiles", "terrain": "/tiles/terrain/{z}/{x}/{y}.webp",
-            "attribution": data_registry.attribution("osm-planet"),
-            "landcover_attribution": data_registry.attribution("daylight-landcover"), "terrain_attribution": manifest["terrain_attribution"],
-            # Without its archive, the planner offers no such data layer.
-            "layers": {layer: f"{files}/{layer}.pmtiles" for layer in DATA_LAYERS if f"{layer}.pmtiles" in manifest["files"]},
-            "glyphs": files + "/assets/fonts/{fontstack}/{range}.pbf", "sprites": files + "/assets/sprites/v4",
-            "routing": "/routing", "search": "/api/planner-search",
-            # The routing step bakes the route catalog of the region, which the planner reads as one file.
-            "routes": f"/@fs{args.data_dir}/routing/route-catalog.json"}
-
-
-def serve(args):
-    manifest = verify(args)
-    ports = [args.port, args.tile_port, args.route_port, args.search_port]
-    if len(set(ports)) != len(ports):
-        raise ValueError("Each planner service needs a different port.")
-    for port in ports:
-        maps.check_port(port)
-    tiles, routing = f"http://127.0.0.1:{args.tile_port}", f"http://127.0.0.1:{args.route_port}"
-    env = {
-        **os.environ,
-        "VITE_PLANNER_CONFIG": json.dumps(preview_config(args, manifest)),
-        # Vite serves the map files and the route catalog, and proxies terrain and routing.
-        "OBC_PLANNER_MAPS_DIR": str(args.data_dir / "maps"),
-        "OBC_PLANNER_ROUTES_FILE": str(args.data_dir / "routing/route-catalog.json"),
-        "OBC_PLANNER_TILES_URL": tiles,
-        "OBC_PLANNER_ROUTING_URL": routing,
-        "ROUTE_LISTEN": f"127.0.0.1:{args.route_port}",
-        "OBC_SEARCH_PORT": str(args.search_port),
-        "OBC_SEARCH_DATA": str(args.data_dir / "search"),
-        "OBC_SEARCH_PYTHON": str(SEARCH / ".venv/bin/python"),
-        "OBC_SEARCH_REGIONS": args.region,
-    }
-    commands = [([str(ROOT / "target/release/planner-service"), str(args.data_dir / "routing")], ROOT),
-                (["node", "server.mjs"], SEARCH),
-                ([args.pmtiles, "serve", str(args.data_dir / "maps"), "--interface=127.0.0.1",
-                  f"--port={args.tile_port}", f"--public-url={tiles}"], ROOT),
-                (["npm", "run", "dev", "--", "--mode", "web", "--host", "127.0.0.1", "--port", str(args.port), "--strictPort"], maps.APP)]
-
-    def ready(children):
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline and all(p.poll() is None for p in children):
-            try:
-                with urlopen(f"http://127.0.0.1:{args.port}/api/planner-search/status", timeout=1) as response:
-                    status = json.load(response)
-                with urlopen(routing + "/health", timeout=1):
-                    pass
-                if status["parser"]["ready"] and [r["id"] for r in status["regions"]] == [args.region]:
-                    print(f"Ready: http://127.0.0.1:{args.port}/planner.html ({args.region}, local)", flush=True)
-                    return
-            except (OSError, ValueError, KeyError):
-                pass
-            time.sleep(0.25)
-        raise RuntimeError("Planner services did not become ready. Check the service output above.")
-
-    maps.supervise(commands, env, ready)
-
-
 def inventory(args):
     print(json.dumps(list(Cache(args.source_cache).inventory()), indent=2))
 
@@ -159,21 +92,17 @@ def grid(args):
         raise ValueError(f"grid step failed with exit status {error.returncode}") from None
 
 
-COMMANDS = {"serve": serve, "setup": setup, "verify": verify_local, "prepare": planner_bake.prepare,
+COMMANDS = {"setup": setup, "verify": verify_local, "prepare": planner_bake.prepare,
             "plan": planner_bake.prepare, "inventory": inventory, "grid": grid, "publish": releases.publish,
             "deploy": planner_deploy.deploy, "finalize": planner_cleanup.finalize}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=COMMANDS, nargs="?", default="serve")
+    parser.add_argument("command", choices=COMMANDS)
     parser.add_argument("--region", default=REGION, choices=sorted(p.stem for p in RECIPES.glob("*.json")))
     parser.add_argument("--recipe", type=Path, help="Default: the recipe of --region")
     parser.add_argument("--data-dir", type=Path, help="Default: OBC_PLANNER_DATA/REGION")
-    parser.add_argument("--port", type=int, default=4175)
-    parser.add_argument("--tile-port", type=int, default=8789)
-    parser.add_argument("--route-port", type=int, default=8787)
-    parser.add_argument("--search-port", type=int, default=8786)
     parser.add_argument("--input-release", type=Path, help="Verified regional bake to update or to partition with grid")
     parser.add_argument("--source-cache", type=Path, default=Path.home() / ".cache/obc/planner/sources")
     parser.add_argument("--component", action="append", help="Update one component and its dependencies; repeat for multiple components")
@@ -211,7 +140,7 @@ def main(argv=None):
         if routing.exists() and json.loads(routing.read_text())["region"] != args.region:
             parser.error(f"{args.data_dir} holds another region. Choose a data directory for {args.region}.")
         recipe = planner_prepare.recipe(args.recipe)
-        args.bounds, args.name = recipe["bounds"], recipe["name"]
+        args.bounds = recipe["bounds"]
         # The lock sits beside the data directory: setup needs that directory fresh.
         args.data_dir.parent.mkdir(parents=True, exist_ok=True)
         with (args.data_dir.parent / f".{args.data_dir.name}.lock").open("w") as lock:

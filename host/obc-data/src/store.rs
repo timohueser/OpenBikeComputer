@@ -4,7 +4,6 @@
 
 pub mod gc;
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,19 +49,98 @@ pub struct Store {
 
 const STORE_LOCK: &str = "store";
 
+/// The number in `layout`. A change of the layout of the store changes it.
+const LAYOUT: &str = "1";
+
+/// The directories that a store without `layout` holds in an older format. Its snapshot records
+/// and objects keep their format.
+const OLDER: [&str; 7] = ["layers", "releases", "runs", "operations", "code", "producers", "local"];
+
+const FAILED: &str = "Correct the directory that the message names, then run the command again.";
+
+/// Why `Store::open` refuses the store, and what to do.
+#[derive(Debug)]
+pub struct Refused {
+    pub message: String,
+    pub fix: String,
+}
+
+impl From<Refused> for String {
+    fn from(refused: Refused) -> String {
+        format!("{}. {}", refused.message, refused.fix)
+    }
+}
+
 /// Held while it lives; the operating system releases it when the process ends.
 pub struct Lock(#[allow(dead_code)] File);
 
 impl Store {
     /// The store at `OBC_DATA_STORE`, or else at `~/.cache/openbikecomputer/store`.
-    pub fn open() -> Result<Self, String> {
+    pub fn open() -> Result<Self, Refused> {
         match std::env::var_os("OBC_DATA_STORE").filter(|dir| !dir.is_empty()) {
-            Some(dir) => Ok(Self::at(dir)),
+            Some(dir) => Self::open_at(dir),
             None => {
-                let home = std::env::var_os("HOME").ok_or("HOME is not set; set OBC_DATA_STORE")?;
-                Ok(Self::at(Path::new(&home).join(".cache/openbikecomputer/store")))
+                let home = std::env::var_os("HOME").ok_or_else(|| Refused {
+                    message: "HOME is not set".into(),
+                    fix: "Set OBC_DATA_STORE to the directory of the store.".into(),
+                })?;
+                Self::open_at(Path::new(&home).join(".cache/openbikecomputer/store"))
             }
         }
+    }
+
+    /// The store at `root`, when its `layout` is [`LAYOUT`]. An empty or new store gets the file.
+    pub fn open_at(root: impl Into<PathBuf>) -> Result<Self, Refused> {
+        let store = Self::at(root);
+        let marker = store.root.join("layout");
+        let read = || match fs::read_to_string(&marker) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            read => read
+                .map(Some)
+                .map_err(|e| Refused { message: format!("{}: {e}", marker.display()), fix: FAILED.into() }),
+        };
+        let root = store.root.display();
+        let layout = match read()? {
+            None if store.is_new() => {
+                let written = write_atomic(&marker, format!("{LAYOUT}\n").as_bytes());
+                written.map_err(|message| Refused { message, fix: FAILED.into() })?;
+                return Ok(store);
+            }
+            // Another process can have written the marker since the first read.
+            None => match read()? {
+                None => {
+                    let older = OLDER.map(|dir| format!("{root}/{dir}")).join(" ");
+                    return Err(Refused {
+                        message: format!("the store {root} has records of an older `obc data`"),
+                        fix: format!(
+                            "Remove them and mark the store, then run the command again: `rm -rf {older} && \
+                             printf '{LAYOUT}\\n' > {root}/layout`. Its snapshots and objects stay."
+                        ),
+                    });
+                }
+                Some(layout) => layout,
+            },
+            Some(layout) => layout,
+        };
+        match layout.trim() == LAYOUT {
+            true => Ok(store),
+            false => Err(Refused {
+                message: format!(
+                    "the store {root} has the layout {}, and this `obc data` reads {LAYOUT}",
+                    layout.trim()
+                ),
+                fix: format!("Use the `obc data` of that layout, or move the store aside with `mv {root} {root}.old`."),
+            }),
+        }
+    }
+
+    /// Whether the store directory is missing or holds nothing but temporary markers.
+    fn is_new(&self) -> bool {
+        let Ok(entries) = fs::read_dir(&self.root) else { return true };
+        entries.flatten().all(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(".layout.") && name.ends_with(".tmp")
+        })
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -201,43 +279,6 @@ impl Store {
     /// Every receipt in the store.
     pub fn layers(&self) -> Result<Vec<Receipt>, String> {
         read_records(&self.root.join("layers"), read_receipt)
-    }
-
-    fn code_path(&self, hash: &str) -> PathBuf {
-        self.root.join("code").join(format!("{hash}.json"))
-    }
-
-    /// The code files of a code hash: path to SHA-256.
-    pub fn code(&self, hash: &str) -> Result<Option<BTreeMap<String, String>>, String> {
-        read_record(&self.code_path(hash))
-    }
-
-    pub fn put_code(&self, hash: &str, files: &BTreeMap<String, String>) -> Result<(), String> {
-        let path = self.code_path(hash);
-        if path.is_file() {
-            return Ok(());
-        }
-        write_record(&path, files)
-    }
-
-    pub fn producer(&self, code: &str) -> Result<Option<crate::engine::release::Producer>, String> {
-        if code.len() != 64 || !code.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-            return Ok(None);
-        }
-        read_record(&self.root.join("producers").join(format!("{code}.json")))
-    }
-
-    pub fn put_producer(&self, code: &str, producer: &crate::engine::release::Producer) -> Result<(), String> {
-        producer.check(code)?;
-        write_record(&self.root.join("producers").join(format!("{code}.json")), producer)
-    }
-
-    pub(crate) fn adoptions(&self) -> Result<Vec<crate::local::Adoption>, String> {
-        read_records(&self.root.join("local"), read_record)
-    }
-
-    pub(crate) fn put_adoption(&self, adoption: &crate::local::Adoption) -> Result<(), String> {
-        write_record(&self.root.join("local").join(format!("{}.json", adoption.plan.product)), adoption)
     }
 
     /// The manifest of a release.
@@ -477,6 +518,26 @@ pub(crate) mod tests {
                 let _ = fs::set_permissions(&path, permissions);
             }
         }
+    }
+
+    #[test]
+    fn a_store_without_the_current_layout_is_refused_and_a_new_one_gets_it() {
+        let scratch = Scratch::new("store-layout");
+        let store = Store::open_at(scratch.0.join("new")).unwrap();
+        assert_eq!(fs::read_to_string(store.root().join("layout")).unwrap(), "1\n");
+        assert!(Store::open_at(store.root()).is_ok());
+
+        let old = scratch.0.join("old");
+        for record in ["layers/key.json", "snapshots/osm/1.json"] {
+            write_atomic(&old.join(record), b"{}").unwrap();
+        }
+        let Err(refused) = Store::open_at(&old) else { panic!("an old store is refused") };
+        let command = refused.fix.split('`').nth(1).unwrap();
+        assert!(std::process::Command::new("sh").args(["-c", command]).status().unwrap().success());
+        assert!(!old.join("layers").exists() && old.join("snapshots/osm/1.json").exists(), "{command}");
+        assert!(Store::open_at(&old).is_ok());
+        write_atomic(&old.join("layout"), b"2\n").unwrap();
+        assert!(Store::open_at(&old).is_err(), "another layout");
     }
 
     #[test]

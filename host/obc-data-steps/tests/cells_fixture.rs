@@ -148,14 +148,14 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     fetched(&store, "land-polygons", &[], "land-polygons-split-3857.zip", &zip);
     // The Wikimedia captures, which only the compiles read, and this test has none.
     let [osm, poly] = [&pbf, &poly].map(|path| format!("sha256:{}", hash_file(path).unwrap().0));
-    let code = obc_pack::step::capture_code().unwrap();
+    let code = obc_pack::step::CAPTURE_REVISION;
     for collection in ["landmarks", "peaks"] {
         let params = [
             ("collection", collection),
             ("area", AREA),
             ("osm", osm.as_str()),
             ("poly", poly.as_str()),
-            ("code", code.as_str()),
+            ("code", code),
         ];
         for source in obc_pack::step::CAPTURES {
             fetched(&store, source, &params, &format!("#{collection}=0/recipe.json"), &zip);
@@ -172,28 +172,14 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &temp.0);
     let listed = Maps
-        .steps_with_tool(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
-            &env,
-            &regions,
-            &store,
-            Ok(obc_data::engine::Library {
-                version: None,
-                name: "osmium".into(),
-                path: std::path::PathBuf::from("/authored-copy-osmium"),
-                sha256: "0".repeat(64),
-            }),
-        )
+        .steps_with_tool(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &env, &regions, &store, Ok(()))
         .unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
 
     for step in &mut steps {
         match step.name.as_str() {
-            "maps/osm" => {
-                step.run = Run::Rust(copy);
-                step.code.libraries.clear();
-            }
+            "maps/osm" => step.run = Run::Rust(copy),
             name if name.starts_with("maps/landmark-content/") => step.run = Run::Rust(landmark_content),
             name if name.starts_with("maps/peak-content/") => step.run = Run::Rust(peak_content),
             name if name.starts_with("maps/coarse/") || name.starts_with("maps/mid/") => {
@@ -202,7 +188,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             _ => {}
         }
     }
-    let plan = obc_data::engine::plan::plan(&store, &root, &steps).unwrap();
+    let plan = obc_data::engine::plan::plan(&store, &steps).unwrap();
     let mut run = RunLog::create(&store, "build test").unwrap();
     let context = Context {
         store: &store,
@@ -220,8 +206,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
 
-    let mut release =
-        obc_data::engine::release::release(&store, &root, "maps", &env.region, &[], &steps).unwrap().unwrap();
+    let mut release = obc_data::engine::release::release(&store, "maps", &env.region, &[], &steps).unwrap().unwrap();
     release.name_files(Maps.named(&release).unwrap()).unwrap();
     Maps.verify(&root, None, &release, &store).unwrap();
     let pointer = Maps.pointer().unwrap()(&root, &release, &store).unwrap();
@@ -349,11 +334,11 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             step.run = Run::Rust(malformed_network);
         }
     }
-    let changed = obc_data::engine::plan::plan(&store, &root, &steps).unwrap();
+    let changed = obc_data::engine::plan::plan(&store, &steps).unwrap();
     let mut run = RunLog::create(&store, "build changed fixture").unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
-    let next = obc_data::engine::release::release(&store, &root, "maps", &env.region, &[], &steps).unwrap().unwrap();
+    let next = obc_data::engine::release::release(&store, "maps", &env.region, &[], &steps).unwrap().unwrap();
     let error = Maps.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
 }

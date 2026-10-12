@@ -13,12 +13,7 @@ use crate::store::{self, FileRecord, Snapshot, Store};
 /// Archive tile `tile=<ti>-<tj>` of a national terrain model, from the adapter of the reference
 /// ingest (`ingest.py fetch`): the pooled tile `<ti>-<tj>.tif`, or the empty `<ti>-<tj>.none` where
 /// the model has no height. The raw rasters stay in the work directory, which the program removes.
-pub(crate) fn dtm(
-    root: &Path,
-    store: &Store,
-    request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
-) -> Result<Snapshot, String> {
+pub(crate) fn dtm(root: &Path, store: &Store, request: &Request) -> Result<Snapshot, String> {
     let source = request.source;
     let [tile] = values(request, ["tile"])?;
     let digits = |part: &str| part.len() == 4 && part.bytes().all(|b| b.is_ascii_digit());
@@ -27,10 +22,8 @@ pub(crate) fn dtm(
     }
     let key = source.id.strip_prefix("dtm-").unwrap_or(&source.id).to_string();
     capture(
-        root,
         store,
         request,
-        checks,
         &format!("tile={tile}"),
         &[source],
         |_| &[0],
@@ -51,13 +44,13 @@ pub(crate) fn run(
     root: &Path,
     store: &Store,
     request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
+    acquisition: Option<crate::fetch::Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
         "wikidata" | "wikipedia" | "commons" => {
             if request.params.iter().any(|(name, _)| name == "content") {
-                super::wikimedia::run(root, store, request, checks)
+                super::wikimedia::run(root, store, request, acquisition)
             } else {
                 legacy(store, request)
             }
@@ -69,10 +62,8 @@ pub(crate) fn run(
             let (first, last) = years.ok_or_else(|| format!("`seasons={seasons}` is not FIRST-LAST, two years"))?;
             let kind = if source.id == "hr-wsi" { "copernicus-hr-wsi" } else { "nasa-modis" };
             capture(
-                root,
                 store,
                 request,
-                checks,
                 &format!("bbox={bbox}&seasons={seasons}"),
                 &[source],
                 |_| &[0],
@@ -90,10 +81,8 @@ pub(crate) fn run(
             let [bbox] = values(request, ["bbox"])?;
             let bbox = parse_bbox(bbox)?;
             capture(
-                root,
                 store,
                 request,
-                checks,
                 &format!("bbox={bbox}"),
                 &[source],
                 |_| &[0],
@@ -112,10 +101,8 @@ pub(crate) fn run(
                 return Err(format!("`first-year={first}` is not a year"));
             }
             capture(
-                root,
                 store,
                 request,
-                checks,
                 &format!("bbox={bbox}&first-year={first}"),
                 &[source],
                 |_| &[0],
@@ -158,10 +145,8 @@ fn legacy(store: &Store, request: &Request) -> Result<Snapshot, String> {
 /// that writes no file gives a fetch without files; else it fails.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
-    root: &Path,
     store: &Store,
     request: &Request,
-    checks: Option<crate::fetch::Checks<'_>>,
     query: &str,
     sources: &[&Source],
     owners: impl Fn(&str) -> &'static [usize],
@@ -203,7 +188,6 @@ pub(super) fn capture(
             return Err(format!("source `{}` is blocked: credential missing: {}", source.id, credential.describe()));
         }
     }
-    super::check_owner(root, source, checks)?;
     let staging = store.partial(&format!("capture-{key}"));
     let staging = std::path::absolute(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
     if let Ok(modified) = fs::metadata(&staging).and_then(|m| m.modified()) {
@@ -221,8 +205,6 @@ pub(super) fn capture(
     for dir in [&work, &out] {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let code = super::owner_code(source).code;
-    let before = code.files(root)?;
     let mut command = command(&work, &out)?;
     eprintln!("obc data: capturing {}#{query}", source.id);
     // Standard output is the answer of `obc data`, so the program writes its progress to standard error.
@@ -234,9 +216,6 @@ pub(super) fn capture(
     let status = status.map_err(|e| format!("source `{}`: {:?}: {e}", source.id, command.get_program()))?;
     if !status.success() {
         return Err(format!("source `{}`: {:?} failed with {status}", source.id, command.get_program()));
-    }
-    if code.files(root)? != before {
-        return Err("capture code or Python runtime changed; plan again".into());
     }
     let mut files: Vec<Vec<FileRecord>> = vec![Vec::new(); sources.len()];
     for path in walk(&out)? {
@@ -312,9 +291,10 @@ fn parse_bbox(text: &str) -> Result<String, String> {
     Err(format!("`bbox={text}` is not WEST,SOUTH,EAST,NORTH in degrees, west < east, south < north"))
 }
 
-/// Use the same selected interpreter as the capture's code identity.
+/// The interpreter of [`crate::engine::python_executable`], or `uv run` with it in the locked
+/// package group `group`.
 pub(super) fn python(root: &Path, group: Option<&str>) -> Result<Command, String> {
-    let executable = crate::engine::code::python_executable(root)?;
+    let executable = crate::engine::python_executable(root)?;
     let mut command = match group {
         None => Command::new(&executable),
         Some(group) => {
@@ -362,7 +342,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_retained_empty_capture_needs_no_runtime_or_owner_checkout() {
+    fn a_retained_empty_capture_needs_no_runtime_or_checkout() {
         let scratch = crate::store::tests::Scratch::new("capture-retained-no-runtime");
         let store = Store::at(scratch.0.join("store"));
         let source = crate::sources::embedded("hr-wsi");
@@ -374,16 +354,15 @@ mod tests {
                 &store::Requested { version: version.clone(), params: params.clone(), files: Vec::new() },
             )
             .unwrap();
-        let mut context = crate::engine::code::Context::default();
         let request = Request { refresh: false, source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, Some(&mut context)).unwrap();
+        let snapshot = run(&scratch.0.join("absent-checkout"), &store, &request, None).unwrap();
         assert_eq!(snapshot.version, version);
         assert!(snapshot.files.is_empty());
         assert!(!scratch.0.join("absent-checkout").exists());
     }
 
     #[test]
-    fn capture_commands_use_the_identity_interpreter_and_locked_group() {
+    fn capture_commands_use_the_selected_interpreter_and_locked_group() {
         use crate::engine::tests::write;
         let fixture = crate::engine::tests::fixture("capture-interpreter");
         let root = fixture.root();
@@ -395,12 +374,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(lock.status.success(), "{}", String::from_utf8_lossy(&lock.stderr));
-        let selected = crate::engine::code::python_executable(&root).unwrap();
-        let code = crate::engine::Code {
-            python: Some(crate::engine::Python { group: Some("capture".into()) }),
-            ..Default::default()
-        };
-        code.identity(&root).unwrap();
+        let selected = crate::engine::python_executable(&root).unwrap();
         let mut direct = python(&root, None).unwrap();
         assert_eq!(direct.get_program(), selected.as_os_str());
         let output = direct.args(["-c", "import sys; print(sys.executable)"]).output().unwrap();

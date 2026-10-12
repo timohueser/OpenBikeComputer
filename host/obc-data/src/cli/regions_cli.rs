@@ -248,7 +248,7 @@ pub(super) fn create(root: &Path, store: &Store, mut args: Create) -> Result<Reg
 }
 
 fn time_zone(root: &Path, name: &str) -> Result<(), Error> {
-    let python = crate::engine::code::python_executable(root)?;
+    let python = crate::engine::python_executable(root)?;
     let result = std::process::Command::new(python)
         .args(["-c", "import sys; from zoneinfo import ZoneInfo; ZoneInfo(sys.argv[1])", name])
         .output()

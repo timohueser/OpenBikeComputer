@@ -100,7 +100,7 @@ pub(super) fn run(
     root: &Path,
     store: &Store,
     request: &Request,
-    mut checks: Option<crate::fetch::Checks<'_>>,
+    mut journal: Option<crate::fetch::Acquisition<'_>>,
 ) -> Result<Snapshot, String> {
     let [(name, body)] = request.params.as_slice() else {
         return Err("Wikimedia shared fetch takes content=<JSON>".into());
@@ -113,8 +113,8 @@ pub(super) fn run(
         return Err("content request must name identities, without operation fields".into());
     }
     let mut acquisition = json!({"requests":0,"api_response_body_bytes":0,"media_response_body_bytes":0,"historical_requests":null,"historical_response_body_bytes":null});
-    if let Some(checks) = checks.as_deref_mut() {
-        checks.acquisition = Some(acquisition.clone());
+    if let Some(journal) = journal.as_deref_mut() {
+        *journal = Some(acquisition.clone());
     }
     let version = request.version.clone().unwrap_or_else(|| date::format(date::today()));
     check_version(request.source, &version)?;
@@ -132,7 +132,6 @@ pub(super) fn run(
     if version != date::format(date::today()) {
         return Err(format!("Wikimedia {version} facts are not pinned in the Store"));
     }
-    super::check_owner(root, request.source, checks.as_deref_mut())?;
     let key = store::sha256_hex(body.as_bytes());
     let _lock = store.lock(&format!("wikimedia-{key}"))?;
     let _api_lock = store.lock("wikimedia-api")?;
@@ -153,8 +152,6 @@ pub(super) fn run(
     let registry = crate::sources::Registry::effective(root, store)?;
     let admitted = inputs(store)?;
     fs::write(&inputs_path, serde_json::to_vec(&admitted).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let code = super::owner_code(request.source).code;
-    let before = code.files(root)?;
     let adopt = adoption_views(store, &work)?;
     let mut stale = stale_requests(&requested, &admitted, &registry, !adopt.is_empty());
     // Adoption is evidence of a revision, not evidence of a current source check.
@@ -175,8 +172,8 @@ pub(super) fn run(
             .map_err(|e| e.to_string())?;
         let refreshed = read(&out.join("manifest.json")).unwrap_or(Value::Null);
         count_api(&mut acquisition, &refreshed);
-        if let Some(checks) = checks.as_deref_mut() {
-            checks.acquisition = Some(acquisition.clone());
+        if let Some(journal) = journal.as_deref_mut() {
+            *journal = Some(acquisition.clone());
         }
         if !status.success() {
             return Err(format!(
@@ -200,8 +197,8 @@ pub(super) fn run(
     if !status.success() {
         if let Ok(manifest) = read(&out.join("manifest.json")) {
             count_api(&mut acquisition, &manifest);
-            if let Some(checks) = checks.as_deref_mut() {
-                checks.acquisition = Some(acquisition);
+            if let Some(journal) = journal.as_deref_mut() {
+                *journal = Some(acquisition);
             }
             return Err(format!(
                 "Wikimedia acquisition incomplete: {}; successful work: {}",
@@ -210,8 +207,8 @@ pub(super) fn run(
             ));
         }
         count_api(&mut acquisition, &Value::Null);
-        if let Some(checks) = checks.as_deref_mut() {
-            checks.acquisition = Some(acquisition);
+        if let Some(journal) = journal.as_deref_mut() {
+            *journal = Some(acquisition);
         }
         return Err(format!(
             "Wikimedia acquisition failed with {status}; successful facts remain in {}",
@@ -226,21 +223,18 @@ pub(super) fn run(
         return Err("Wikimedia acquisition is incomplete".into());
     }
     count_api(&mut acquisition, &manifest);
-    if let Some(checks) = checks.as_deref_mut() {
-        checks.acquisition = Some(acquisition.clone());
+    if let Some(journal) = journal.as_deref_mut() {
+        *journal = Some(acquisition.clone());
     }
     let media_result = media(root, store, &out, &requested, &mut manifest, &mut acquisition);
-    if let Some(checks) = checks.as_deref_mut() {
-        checks.acquisition = Some(acquisition.clone());
+    if let Some(journal) = journal.as_deref_mut() {
+        *journal = Some(acquisition.clone());
     }
     media_result?;
-    if code.files(root)? != before {
-        return Err("acquisition code changed; prepare again".into());
-    }
     let snapshot = admit(store, &out, &manifest, &request.params, &version, &request.source.id)?;
     fs::remove_dir_all(staging).map_err(|e| e.to_string())?;
-    if let Some(checks) = checks {
-        checks.acquisition = Some(acquisition);
+    if let Some(journal) = journal {
+        *journal = Some(acquisition);
     }
     Ok(snapshot)
 }
@@ -740,23 +734,12 @@ mod tests {
         let root = scratch.0.join("repository");
         let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let source = crate::sources::embedded("wikidata");
-        for name in super::super::owner_code(source)
-            .code
-            .paths
-            .into_iter()
-            .chain([".python-version", "pyproject.toml", "uv.lock", "data/sources.toml"].map(str::to_owned))
-        {
-            let target = root.join(&name);
+        for name in [".python-version", "pyproject.toml", "uv.lock", "data/sources.toml"] {
+            let target = root.join(name);
             fs::create_dir_all(target.parent().unwrap()).unwrap();
-            fs::copy(repository.join(&name), target).unwrap();
+            fs::copy(repository.join(name), target).unwrap();
         }
-        assert!(std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .unwrap()
-            .success());
-        assert!(std::process::Command::new("git").args(["add", "."]).current_dir(&root).status().unwrap().success());
+        fs::create_dir_all(root.join("tools")).unwrap();
         let config = root.join("data/sources.toml");
         fs::write(
             &config,

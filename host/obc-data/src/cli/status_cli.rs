@@ -152,22 +152,7 @@ fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, E
     });
     let environment = Environment { sources: statuses.collect(), live: live.layers() };
     let fetch = discovery_fetch(fetcher(root, &store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
-    let producers = live
-        .products
-        .iter()
-        .filter_map(|product| product.release.as_ref())
-        .flat_map(|(_, release)| release.producers.clone())
-        .collect();
-    let mut layers = layer_states_published(
-        root,
-        &store,
-        products,
-        &mut loaded.env,
-        &loaded.regions,
-        &environment,
-        fetch,
-        Some(&producers),
-    )?;
+    let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     if let Err(error) = super::apply_cli::pushed_commit(root) {
         let reason = format!("{} {}", error.message, error.fix);
@@ -254,7 +239,6 @@ pub(super) fn discovery_fetch(
 /// The state of each layer of `live`, by product. `Err` with the reason for a product that is
 /// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
 /// rest of `status` does not need its steps.
-#[cfg(test)]
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -262,21 +246,7 @@ fn layer_states(
     env: &mut Env,
     regions: &Regions,
     environment: &Environment,
-    fetch: impl FnMut(&Wanted) -> Result<String, Error>,
-) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
-    layer_states_published(root, store, products, env, regions, environment, fetch, None)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn layer_states_published(
-    root: &Path,
-    store: &Store,
-    products: &[&dyn Product],
-    env: &mut Env,
-    regions: &Regions,
-    environment: &Environment,
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
-    producers: Option<&BTreeMap<String, crate::engine::release::Producer>>,
 ) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
     check_layers(products, env)?;
     env.fetch_failures.clear();
@@ -316,24 +286,12 @@ fn layer_states_published(
         listed.retain(|(product, _)| *product != name);
         found.insert(name, Err(reason));
     }
-    let mut environment = Environment { sources: environment.sources.clone(), live: environment.live.clone() };
-    let steps: Vec<Step> = listed
-        .into_iter()
-        .flat_map(|(name, mut steps)| {
-            let product = products.iter().find(|product| product.name() == name).expect("listed product");
-            for step in &mut steps {
-                step.options = product.status_options(&step.name, &step.options);
-                if let Some(layer) = environment.live.get_mut(&step.name) {
-                    layer.options = product.status_options(&step.name, &layer.options);
-                }
-            }
-            steps
-        })
-        .collect();
-    let states = match producers {
-        Some(producers) => state::published(store, root, &steps, &environment, producers)?,
-        None => state::state(store, root, &steps, &environment)?,
-    };
+    let mut steps = Vec::new();
+    for (name, listed) in listed {
+        let product = products.iter().find(|product| product.name() == name).expect("listed product");
+        super::build_cli::add_steps(products, *product, &mut steps, listed)?;
+    }
+    let states = state::state(store, &steps, environment)?;
     for layer in states {
         let product = layer.layer.split('/').next().unwrap_or_default().to_string();
         if let Some(Ok(layers)) = found.get_mut(&product) {
@@ -423,7 +381,7 @@ mod tests {
 
     use super::*;
     use crate::engine::tests::step;
-    use crate::engine::{Code as StepCode, Input, Run};
+    use crate::engine::{Input, Run};
     use crate::product::Unplanned;
     use crate::store::tests::Scratch;
 
@@ -481,9 +439,8 @@ mod tests {
             _: &Regions,
             _: &Store,
         ) -> Result<crate::product::Steps, Unplanned> {
-            let code = StepCode { paths: Vec::new(), crates: Vec::new(), ..Default::default() };
             let run = Run::Command(vec!["true".into()]);
-            Ok(vec![step("reading/one", vec![Input::layer("test/one")], code, "out", run)].into())
+            Ok(vec![step("reading/one", vec![Input::layer("test/one")], "out", run)].into())
         }
     }
 
@@ -534,12 +491,11 @@ mod tests {
             _: &Regions,
             _: &Store,
         ) -> Result<crate::product::Steps, crate::product::Unplanned> {
-            let code = StepCode { paths: Vec::new(), crates: Vec::new(), ..Default::default() };
             let run = Run::Command(vec!["true".into()]);
             let mut listed = crate::product::Steps {
                 steps: vec![
-                    step("test/usable", vec![], code.clone(), "out", Run::Command(vec!["true".into()])),
-                    step("test/reader", vec![Input::layer("test/capture")], code, "out", run),
+                    step("test/usable", vec![], "out", Run::Command(vec!["true".into()])),
+                    step("test/reader", vec![Input::layer("test/capture")], "out", run),
                 ],
                 blocked: vec![crate::product::BlockedLayer {
                     layer: "test/capture".into(),

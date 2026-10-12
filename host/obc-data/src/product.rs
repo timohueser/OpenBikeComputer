@@ -30,8 +30,9 @@ pub trait Product: Sync {
         Vec::new()
     }
 
-    /// Its steps for `env`, with recipe and tooling paths relative to `root`. A step list that reads a snapshot, such as the `.poly` of a region or
-    /// the Geofabrik index, gives `Unplanned::NeedsFetch` while the store lacks it.
+    /// Its steps for `env`, with tool paths relative to `root`. A step list that reads a snapshot,
+    /// such as the `.poly` of a region or the Geofabrik index, gives `Unplanned::NeedsFetch` while
+    /// the store lacks it.
     fn steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned>;
 
     /// What clients read of a release. `None` while the product has no client document: a plan of
@@ -45,52 +46,9 @@ pub trait Product: Sync {
         Ok(Vec::new())
     }
 
-    /// This owner permits consuming these stored bytes across producer hosts.
-    /// Native service executables are never portable data.
-    fn portable(&self, _step: &Step) -> bool {
-        false
-    }
-
-    /// Current semantic declarations for read-only status, without execution admission.
+    /// Its steps for read-only status, without checks of the tools that the steps run.
     fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
         self.steps(root, env, regions, store)
-    }
-
-    /// Remove only this owner's execution bindings when comparing published source/config.
-    fn status_options(&self, _layer: &str, options: &serde_json::Value) -> serde_json::Value {
-        options.clone()
-    }
-
-    /// Read pending Local work without acquiring data or admitting app processes.
-    fn dev_check(
-        &self,
-        _root: &Path,
-        _store: &Store,
-        _request: &crate::dev::Request,
-    ) -> Result<crate::cli::EnvPlan, String> {
-        Err("this product has no Local app plan".into())
-    }
-
-    /// Resolve only missing metadata for a later complete Local review.
-    fn dev_inputs(
-        &self,
-        _root: &Path,
-        _store: &Store,
-        _request: &crate::dev::Request,
-        _run: &mut crate::engine::runs::Run,
-    ) -> Result<crate::cli::EnvPlan, String> {
-        Err("this product has no Local app metadata".into())
-    }
-
-    /// Resolve and verify a Local view under the caller's finite preparation run.
-    fn dev_prepare(
-        &self,
-        _root: &Path,
-        _store: &Store,
-        _request: &crate::dev::Request,
-        _run: &mut crate::engine::runs::Run,
-    ) -> Result<crate::dev::Prepared, String> {
-        Err("this product has no Local app".into())
     }
 
     /// Install and probe services before any product pointer switches.

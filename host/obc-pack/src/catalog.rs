@@ -328,8 +328,9 @@ pub const LICENSE_NAME: &str = "LICENSE.txt";
 /// The human-readable twin of the source declaration: the provenance and licence statement
 /// published at the store root beside `catalog.json`. Derived from the root's `source` block, and
 /// from the terrain block's attribution when one is published, so the machine-readable declaration
-/// and the text a person reads can never disagree.
-pub fn license_txt(root: &Catalog) -> String {
+/// and the text a person reads can never disagree. `articles` is the credit of the landmark
+/// articles, for a root that publishes them.
+pub fn license_txt(root: &Catalog, articles: &str) -> String {
     let source = root.source.as_ref().expect("a generated root always carries a source block (§3.1)");
     let mut text = format!(
         "The map cells (*.obcm) and documents in this store are derived from\n\
@@ -345,10 +346,7 @@ pub fn license_txt(root: &Catalog) -> String {
         url = source.license_url,
     );
     if root.articles.is_some() {
-        text.push_str(&format!(
-            "\nThe detached landmark and peak content carries per-record credits.\n{}\n",
-            crate::landmarks::attribution()
-        ));
+        text.push_str(&format!("\nThe detached landmark and peak content carries per-record credits.\n{articles}\n"));
     }
     if let Some(landmarks) = &root.landmarks {
         text.push_str(&format!(
@@ -424,7 +422,7 @@ pub fn write_all_atomic(tree: &Path, generated: &GeneratedCatalog) -> Result<(),
         write_atomic_bytes(&path, &satellite.body)?;
     }
     // The human-readable licence twin, at its stable key beside the root.
-    write_atomic_bytes(&tree.join(LICENSE_NAME), &license_txt(&generated.root))?;
+    write_atomic_bytes(&tree.join(LICENSE_NAME), &license_txt(&generated.root, &crate::landmarks::attribution()))?;
     write_atomic_bytes(&tree.join(DEFAULT_MANIFEST_NAME), &root_json(&generated.root))
 }
 

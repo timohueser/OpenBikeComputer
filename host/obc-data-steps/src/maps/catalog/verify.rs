@@ -192,19 +192,6 @@ pub fn verify(previous: Option<&Release>, release: &Release, store: &Store) -> R
     Ok(())
 }
 
-/// Materialize the saved region with the same pinned assembly used by verification.
-pub(crate) fn assemble(release: &Release, store: &Store, destination: &std::path::Path) -> Result<(), String> {
-    let catalog = CatalogInputs::read(release, store)?;
-    let pick = catalog.picks.get(&release.region).ok_or("Local catalog has no complete saved region")?;
-    let schema = Schema::parse(&serde_json::to_string(&catalog.root.schema).map_err(|e| e.to_string())?)?;
-    let skin = |id: &str| -> Result<String, String> {
-        serde_json::to_string(catalog.root.skins.iter().find(|skin| skin.id == id).ok_or("catalog lacks a skin")?)
-            .map_err(|e| e.to_string())
-    };
-    let styles = MapStyles::parse(&skin("default")?, &skin("dusk")?)?;
-    assemble_pick(&catalog, pick, store, &schema, &styles, destination)
-}
-
 fn assemble_pick(
     catalog: &CatalogInputs,
     pick: &RegionCellsDocument,

@@ -2,11 +2,10 @@
 //! per cause. A layer can have more causes, so two groups can name it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 
-use super::plan::{add_fetch, build, sized, walk_reusing, Build, Cause, Group, Plan, Walked};
+use super::plan::{add_fetch, build, sized, walk, Build, Cause, Group, Plan, Walked};
 use super::release::Layer;
-use super::state::{code_differs, other_read};
+use super::state::{other_read, version_differs};
 use super::{recipe, Input, Receipt, Step};
 use crate::store::Store;
 
@@ -27,27 +26,13 @@ pub struct Against<'a> {
 
 /// One group per cause: the layers that differ from live because of it, the changed layers that
 /// they read, the live layers that go, and what the store lacks to make them.
-pub fn changes(store: &Store, root: &Path, steps: &[Step], against: &Against) -> Result<Plan, String> {
-    changes_reusing(store, root, steps, against, &BTreeMap::new())
-}
-
-pub(crate) fn changes_reusing(
-    store: &Store,
-    root: &Path,
-    steps: &[Step],
-    against: &Against,
-    originals: &BTreeMap<String, Layer>,
-) -> Result<Plan, String> {
-    let walked = walk_reusing(store, root, steps, originals)?;
+pub fn changes(store: &Store, steps: &[Step], against: &Against) -> Result<Plan, String> {
+    let walked = walk(store, steps)?;
     let mut causes: HashMap<&str, BTreeSet<Cause>> = HashMap::new();
-    for Walked { step, code, .. } in &walked {
-        if originals.contains_key(&step.name) {
-            causes.insert(&step.name, BTreeSet::new());
-            continue;
-        }
+    for Walked { step, .. } in &walked {
         let product = product(&step.name);
         let region = against.region.contains(product);
-        let own = Cause::Code { paths: step.code.paths.clone(), crates: step.code.crates.clone() };
+        let own = Cause::Version { layer: step.layer.name.into() };
         let mut found = BTreeSet::new();
         match against.layers.get(step.name.as_str()) {
             None => {
@@ -75,7 +60,7 @@ pub(crate) fn changes_reusing(
                 if other {
                     found.insert(if region { Cause::Region } else { own.clone() });
                 }
-                if code_differs(step, code, live).is_some() {
+                if version_differs(step, live).is_some() {
                     found.insert(own);
                 }
             }
@@ -99,7 +84,7 @@ pub(crate) fn changes_reusing(
         why.extend(against.region.contains(product).then_some(Cause::Region));
         why.extend(against.optional.contains(product).then_some(Cause::Layers));
         if why.is_empty() {
-            why.push(Cause::Code { paths: Vec::new(), crates: Vec::new() });
+            why.push(Cause::Version { layer: String::new() });
         }
         why.into_iter().for_each(|cause| drops.entry(cause).or_default().push(name));
     }
@@ -113,20 +98,17 @@ pub(crate) fn changes_reusing(
             Cause::Region => "region".into(),
             Cause::Layers => "layers".into(),
             Cause::Move { source, .. } => format!("move:{source}"),
-            // The first layer in dependency order has the cause itself, so no other code names it.
-            Cause::Code { .. } => format!("code:{}", named.first().or(dropped.first()).expect("a cause has a layer")),
+            // The first step in dependency order has the cause itself, so no other version names it.
+            Cause::Version { .. } => {
+                format!("version:{}", named.first().or(dropped.first()).expect("a cause has a step"))
+            }
             Cause::Repair { .. } | Cause::Pointer { .. } => unreachable!("drift is no cause of a layer"),
         };
         let mut group =
             needs(&walked, &receipts, Group::new(id, Some(cause.clone())), &named.iter().copied().collect());
         let changed = walked.iter().filter(|w| named.contains(&w.step.name.as_str()));
         group.layers = changed
-            .map(|w| Build {
-                step: w.step.name.clone(),
-                recipe: recipe(w.step, &w.code),
-                key: w.key.clone(),
-                estimate: None,
-            })
+            .map(|w| Build { step: w.step.name.clone(), recipe: recipe(w.step), key: w.key.clone(), estimate: None })
             .collect();
         group.drops = dropped.iter().map(|name| name.to_string()).collect();
         groups.push(group);
@@ -180,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_or_the_code_is_the_cause_of_the_layers_that_it_changes() {
+    fn an_edit_or_the_version_is_the_cause_of_the_layers_that_it_changes() {
         let fixture = fixture("changes-causes");
         let built = fixture.build(&pipeline()).unwrap();
         let steps = pipeline();
@@ -189,19 +171,17 @@ mod tests {
         live.push(Layer { step: "test/sun".into(), ..live[0].clone() });
         let layers = live.iter().map(|layer| (layer.step.as_str(), layer)).collect();
         let mut against = Against { layers, ..Against::default() };
-        let changes = |steps: &[Step], against: &Against| {
-            outline(changes(&fixture.store, &fixture.root(), steps, against).unwrap())
-        };
+        let changes = |steps: &[Step], against: &Against| outline(changes(&fixture.store, steps, against).unwrap());
 
         let all = names(&["test/upper", "test/join", "test/count"]);
-        assert_eq!(changes(&steps, &against), [("code:test/sun".into(), Vec::new(), names(&["test/sun"]))]);
+        assert_eq!(changes(&steps, &against), [("version:test/sun".into(), Vec::new(), names(&["test/sun"]))]);
         against.optional.insert("test".into());
         assert_eq!(changes(&steps, &against), [("layers".into(), Vec::new(), names(&["test/sun"]))]);
 
         let mut wider = pipeline();
         wider[2].options = serde_json::json!({"bounds": [7, 43, 8, 44]});
-        let code = ("code:test/upper".to_string(), all.clone(), Vec::new());
-        assert_eq!(changes(&wider, &against)[1], code, "options without an edit of the region");
+        let version = ("version:test/upper".to_string(), all.clone(), Vec::new());
+        assert_eq!(changes(&wider, &against)[1], version, "options without an edit of the region");
         against.region.insert("test".into());
         let region = ("region".to_string(), all, names(&["test/sun"]));
         assert_eq!(changes(&wider, &against), [region, ("layers".into(), Vec::new(), names(&["test/sun"]))]);

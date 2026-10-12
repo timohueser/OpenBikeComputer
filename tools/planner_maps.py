@@ -8,10 +8,8 @@ import math
 import os
 from pathlib import Path
 import signal
-import socket
 import subprocess
 import threading
-import time
 
 from .planner_geo import bounds, mercator, tile_bounds
 
@@ -98,12 +96,6 @@ def overlays_archive(index, destination):
         "python", "-m", "tools.planner_overlays", index, destination, cwd=ROOT)
 
 
-def check_port(port):
-    with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", port))
-
-
 def check_bundle(folder, full=False):
     """The manifest of the map bundle in `folder`, once its files match it."""
     manifest = json.loads((folder / "manifest.json").read_text())
@@ -118,22 +110,6 @@ def check_bundle(folder, full=False):
                 if hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]:
                     raise ValueError(f"Map checksum mismatch: {name}")
     return manifest
-
-
-def supervise(commands, env, ready=None):
-    children = []
-    try:
-        for command, cwd in commands:
-            children.append(subprocess.Popen(command, cwd=cwd, env=env, start_new_session=True))
-        if ready:
-            ready(children)
-        while all(child.poll() is None for child in children):
-            time.sleep(0.25)
-        raise RuntimeError("A local planner service stopped.")
-    finally:
-        for child in reversed(children):
-            # npm starts Vite as a child; stop the complete process group.
-            stop_process(child)
 
 
 def main():

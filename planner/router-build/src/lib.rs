@@ -77,6 +77,7 @@ pub fn prepare(
     bounds: [f64; 4],
     profiles: &[Profile],
     source_sha256: Vec<String>,
+    attribution: String,
     mut write: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Manifest, String> {
     if graph.roads.iter().any(|road| road.from as usize >= graph.points.len() || road.to as usize >= graph.points.len())
@@ -104,7 +105,7 @@ pub fn prepare(
         region,
         bounds,
         source_sha256,
-        attribution: obc_data::sources::attribution("osm-planet").into(),
+        attribution,
         warnings: graph.warnings.clone(),
         roads,
         graph: planner_router::base::write_topology(roads, &edges, &mut write)?,

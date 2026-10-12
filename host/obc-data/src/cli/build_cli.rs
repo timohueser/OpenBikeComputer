@@ -108,9 +108,6 @@ pub struct BlockedProduct {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FetchVersion {
-    /// Local product whose saved release supplies this pin; absent for the shared Live plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub product: Option<String>,
     pub source: String,
     /// The `NAME=VALUE`s of the fetch, sorted.
     pub params: Vec<(String, String)>,
@@ -335,8 +332,8 @@ fn change(group: &Group, edits: &[Edit]) -> String {
         Some(Cause::Move { source, from, to }) => {
             format!("move {source} {} → {to}", if from.is_empty() { "—".into() } else { from.join(", ") })
         }
-        Some(Cause::Code { paths, crates }) if paths.is_empty() && crates.is_empty() => "no step makes it".into(),
-        Some(Cause::Code { paths, crates }) => format!("code of {}", [&paths[..], crates].concat().join(", ")),
+        Some(Cause::Version { layer }) if layer.is_empty() => "no step makes it".into(),
+        Some(Cause::Version { layer }) => format!("version of {layer}"),
         Some(Cause::Pointer { product, .. }) => {
             if edits.iter().any(|edit| matches!(edit, Edit::Settings { product: changed } if changed == product)) {
                 format!("settings and client document of {product}")
@@ -464,18 +461,17 @@ pub(super) fn build_env(
     }
     run.record(&Event::Phase { phase: Phase::Verify })?;
     let Some(live) = live else {
-        crate::worker::check(root)?;
         let unblocked = products.iter().filter(|product| !plan.blocked.iter().any(|b| b.product == product.name()));
         for product in unblocked {
             let (name, optional) = (product.name(), optional(*product, &plan.layers));
-            if let Some(mut release) = release::release(store, root, name, &plan.region, &optional, &steps)? {
+            if let Some(mut release) = release::release(store, name, &plan.region, &optional, &steps)? {
                 release.name_files(product.named(&release)?)?;
                 built.releases.push(BuiltRelease { product: name.into(), id: release.write(store)? });
             }
         }
         return Ok((built, None));
     };
-    let (mut next, missing) = next_reusing(root, store, products, &live, &steps, &plan, &run.originals)?;
+    let (mut next, missing) = next(root, store, products, &live, &steps, &plan)?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     if let Some(layer) = missing.first() {
         return Err(Code::Failed.error(format!("the store lacks the layer `{layer}` after the build")));
@@ -725,8 +721,7 @@ fn planned_run(
     env.moves.retain(|source, _| read.keys().any(|(id, _)| id == source));
 
     let Some(live) = live else {
-        let all = plan::plan(store, root, &steps)?;
-        crate::worker::check(root)?;
+        let all = plan::plan(store, &steps)?;
         let mut plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
         plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
         return Ok(Planned { loaded, steps, plan, live: None });
@@ -738,10 +733,10 @@ fn planned_run(
     };
     let drift = listed.as_deref().map(|listed| live.drift(listed));
     let against = against(&live, env, &edits, &blocked, drift.as_deref(), store);
-    let all = changes::changes(store, root, &steps, &against)?;
+    let all = changes::changes(store, &steps, &against)?;
     let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
     plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
-    let (mut next, _) = next_reusing(root, store, products, &live, &steps, &plan, &BTreeMap::new())?;
+    let (mut next, _) = next(root, store, products, &live, &steps, &plan)?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
     for (now, next) in live.products.iter().zip(&next.products) {
         let layered = plan.groups.iter().any(|group| {
@@ -773,7 +768,6 @@ fn planned_run(
         plan.remove = removable.into_iter().map(|object| Removal { key: object.key, bytes: object.bytes }).collect();
         plan.listed = true;
     }
-    crate::worker::check(root)?;
     Ok(Planned { loaded, steps, plan, live: Some(live) })
 }
 
@@ -803,7 +797,6 @@ fn env_plan(
 ) -> EnvPlan {
     let read = env.read.borrow();
     let versions = read.iter().map(|((source, params), version)| FetchVersion {
-        product: None,
         source: source.clone(),
         params: params.clone(),
         version: version.clone(),
@@ -951,18 +944,16 @@ impl Edit {
 /// Live after an apply of `plan`, as far as the store knows it: the release of each product that
 /// the plan changes, of its live layers and the layers of the groups that the store has; and the
 /// layers of the groups that the store lacks.
-fn next_reusing(
+fn next(
     root: &Path,
     store: &Store,
     products: &[&dyn Product],
     live: &Live,
     steps: &[Step],
     plan: &EnvPlan,
-    originals: &BTreeMap<String, release::Layer>,
 ) -> Result<(Live, Vec<String>), Error> {
-    crate::worker::check(root)?;
     let taken: BTreeSet<&str> = plan.groups.iter().flat_map(|group| &group.layers).map(|l| l.step.as_str()).collect();
-    let stored = release::stored_reusing(store, root, steps, &taken, originals)?;
+    let stored = release::stored(store, steps, &taken)?;
     let missing: Vec<String> =
         taken.into_iter().filter(|name| !stored.contains_key(*name)).map(str::to_string).collect();
     let mut next = Live::default();
@@ -990,7 +981,6 @@ fn next_reusing(
             .map(|(_, mut release)| -> Result<_, Error> {
                 if !blocked && !missing.iter().any(|layer| layer.split('/').next() == Some(name)) {
                     release.settings = plan.settings.clone();
-                    release.bind_producers(store)?;
                     release.name_files(product.named(&release)?)?;
                 }
                 Ok((release.id(), release))
@@ -1196,7 +1186,7 @@ fn list_steps(
                         .join("; ");
                     blocked.push(BlockedProduct { product: product.name().into(), reason, layers: listed.blocked });
                 }
-                all.extend(listed.steps);
+                add_steps(products, *product, &mut all, listed.steps)?;
             }
             Err(reason) => blocked.push(BlockedProduct { product: product.name().into(), reason, layers: Vec::new() }),
         }
@@ -1270,7 +1260,6 @@ fn listed_steps(
     let (mut failure, earlier) = (None, env.fetch_failures.len());
     // A refusal belongs to the product that is listed now.
     env.refused.borrow_mut().clear();
-    crate::worker::check(root)?;
     let mut listed = declarations(env);
     // A fetch can name the next one, such as the `.poly` that gives the box of a capture.
     let mut fetched: Vec<Wanted> = Vec::new();
@@ -1299,7 +1288,6 @@ fn listed_steps(
             env.resolve(wanted, version);
         }
         fetched.extend(fetches.iter().cloned());
-        crate::worker::check(root)?;
         listed = declarations(env);
     }
     let steps = match listed {
@@ -1336,10 +1324,46 @@ fn listed_steps(
         Err(Unplanned::Invalid(reason)) => return Ok(Err(reason)),
         Err(Unplanned::Failed(e)) => return Err(Code::Failed.error(format!("product `{name}`: {e}"))),
     };
-    if let Some(step) = steps.steps.iter().find(|step| !step.name.starts_with(&format!("{name}/"))) {
-        return Err(product_bug(name, format!("step `{}` of product `{name}` is not named `{name}/…`", step.name)));
-    }
     Ok(Ok(steps))
+}
+
+/// Add the steps of `product` to `all`. Each step is named `<product>/…` after the product whose
+/// release holds it. A step that two products list, such as the landmark content that the maps
+/// and the planner read, has the same declaration in both and is listed once. A Rust function is
+/// not compared: two addresses of one function can differ.
+pub(super) fn add_steps(
+    products: &[&dyn Product],
+    product: &dyn Product,
+    all: &mut Vec<Step>,
+    steps: Vec<Step>,
+) -> Result<(), Error> {
+    let name = product.name();
+    for step in steps {
+        if !products.iter().any(|owner| step.name.starts_with(&format!("{}/", owner.name()))) {
+            return Err(product_bug(name, format!("step `{}` of product `{name}` names no product", step.name)));
+        }
+        match all.iter().find(|listed| listed.name == step.name) {
+            None => all.push(step),
+            Some(listed) if same(listed, &step) => {}
+            Some(_) => {
+                let message =
+                    format!("step `{}` of product `{name}` differs from the step of another product", step.name);
+                return Err(product_bug(name, message));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether two steps have the same recipe, outputs and kind of run, with the same arguments.
+fn same(a: &Step, b: &Step) -> bool {
+    use crate::engine::Run;
+    let run = |step: &Step| match &step.run {
+        Run::Rust(_) => (0, None),
+        Run::Command(argv) => (1, Some(argv.clone())),
+        Run::Python(argv) => (2, Some(argv.clone())),
+    };
+    crate::engine::recipe(a) == crate::engine::recipe(b) && a.outputs == b.outputs && run(a) == run(b)
 }
 
 #[cfg(test)]
@@ -1349,7 +1373,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::engine::snapshot_files;
-    use crate::engine::tests::{fixture, pipeline, write, Fixture, JOIN};
+    use crate::engine::tests::{fixture, pipeline, write, Fixture};
 
     /// The test pipeline, listed once the store has the snapshot `index@1`.
     struct Indexed;
@@ -1365,13 +1389,17 @@ pub(crate) mod tests {
 
         fn steps(
             &self,
-            _root: &std::path::Path,
+            root: &std::path::Path,
             _: &Env,
             _: &Regions,
             store: &Store,
         ) -> Result<crate::product::Steps, Unplanned> {
             match snapshot_files(store, "index", "1", &[], &[]).map_err(Unplanned::Failed)? {
-                Some(_) => Ok(pipeline().into()),
+                Some(_) => {
+                    let mut steps = pipeline();
+                    crate::engine::tests::revise(root, &mut steps);
+                    Ok(steps.into())
+                }
                 None => Err(Unplanned::NeedsFetch(vec![Wanted {
                     source: "index".into(),
                     version: Some("1".into()),
@@ -1453,7 +1481,6 @@ pub(crate) mod tests {
         let actual = actual.replacen("/data/", "/data/1/", 1);
         let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("cli-preview-prepare");
-        fixture.with_acquisition();
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
@@ -1533,7 +1560,6 @@ pub(crate) mod tests {
         let actual = actual.replacen("/data/", "/data/1/", 1);
         let url = actual.replacen("http://", "https://", 1).replacen("/data/1/", "/data/{version}/", 1);
         let fixture = fixture("prepare-softened-fetch");
-        fixture.with_acquisition();
         let root = fixture.root();
         write(&root.join("data/sources.toml"), &format!(
             "[[source]]\nid = \"index\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Index\"\nfetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"release\"\nrefresh = \"manual\"\nredistribute = false\n"));
@@ -1555,6 +1581,38 @@ pub(crate) mod tests {
         assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
         assert_eq!(events.iter().filter(|event| matches!(event, Event::Finished { .. })).count(), 1);
         assert!(!events.iter().any(|event| matches!(event, Event::StepStarted { .. })));
+    }
+
+    /// A product that lists the steps of `test` too.
+    struct Reader;
+
+    impl Product for Reader {
+        fn name(&self) -> &'static str {
+            "reader"
+        }
+
+        fn steps(
+            &self,
+            _: &std::path::Path,
+            _: &Env,
+            _: &Regions,
+            _: &Store,
+        ) -> Result<crate::product::Steps, Unplanned> {
+            Ok(pipeline().into())
+        }
+    }
+
+    #[test]
+    fn a_step_that_two_products_list_is_listed_once_and_has_one_declaration() {
+        let products: &[&dyn Product] = &[&Indexed, &Reader];
+        let mut all = Vec::new();
+        add_steps(products, &Indexed, &mut all, pipeline()).unwrap();
+        add_steps(products, &Reader, &mut all, pipeline()).unwrap();
+        assert_eq!(all.len(), 3);
+        let mut other = pipeline();
+        other[1].outputs = vec!["other.txt".into()];
+        let err = add_steps(products, &Reader, &mut all, other).unwrap_err();
+        assert_eq!(err.message, "step `test/join` of product `reader` differs from the step of another product");
     }
 
     /// The test pipeline, once the store has `index@1` and then `box@1`, which only the index names.
@@ -1819,7 +1877,7 @@ pub(crate) mod tests {
 
         fn steps(
             &self,
-            _root: &std::path::Path,
+            root: &std::path::Path,
             env: &Env,
             _: &Regions,
             store: &Store,
@@ -1827,6 +1885,7 @@ pub(crate) mod tests {
             let head = crate::product::version(env, store, "head", &[]).map_err(Unplanned::Invalid)?;
             let head = head.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
             let mut steps = pipeline();
+            crate::engine::tests::revise(root, &mut steps);
             for input in steps.iter_mut().flat_map(|step| &mut step.inputs) {
                 if let Input::Snapshot { source, version, .. } = input {
                     if source == "head" {
@@ -1886,10 +1945,7 @@ pub(crate) mod tests {
         };
         let first = build(None)[0].id.clone();
         let saved = plan_of(&root, &fixture.store, &[&Versioned]);
-        assert_eq!(
-            saved.versions,
-            [FetchVersion { product: None, source: "head".into(), params: Vec::new(), version: "1".into() }]
-        );
+        assert_eq!(saved.versions, [FetchVersion { source: "head".into(), params: Vec::new(), version: "1".into() }]);
         let file = root.join("plan.json");
         write(&file, &serde_json::to_string(&saved).unwrap());
 
@@ -1923,13 +1979,12 @@ pub(crate) mod tests {
         };
 
         refused(&EnvPlan { groups: Vec::new(), ..saved.clone() }, "a group that is new since the plan");
-        write(&root.join("steps/src/lib.rs"), "// Another key.\n");
+        write(&root.join("revised"), "test/upper");
         refused(&saved, "another key");
-        write(&root.join("steps/src/lib.rs"), "");
-        write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
-        refused(&saved, "the code of a step that waits for another build");
+        write(&root.join("revised"), "test/join");
+        refused(&saved, "the recipe of a step that waits for another build");
 
-        write(&root.join("join.py"), JOIN);
+        std::fs::remove_file(root.join("revised")).unwrap();
         write(&file, &serde_json::to_string(&saved).unwrap());
         let built = build().unwrap();
         let steps: Vec<&str> = built.layers.iter().map(|layer| layer.step.as_str()).collect();
@@ -2151,11 +2206,11 @@ pub(crate) mod tests {
         assert_eq!((plan.groups.len(), plan.edits.len(), plan.remove.len(), plan.listed), (0, 0, 0, true));
 
         // Head is stale, and its new version keeps the file of the old one beside a new file. The
-        // code of join changed, R2 lost the object of count and has an old one.
+        // revision of join changed, R2 lost the object of count and has an old one.
         upstream(&fixture, "head", "2020-02-01");
         fixture.fetched_version("head", "2020-02-01", "head.txt", b"newer\n");
         fixture.fetched_version("head", "2020-02-01", "kept.txt", b"head\n");
-        write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&fixture.root().join("revised"), "test/join");
         let bucket = fixture.scratch.0.join("bucket");
         let object = |layer: usize| format!("test/objects/{}", release.layers[layer].files[0].sha256);
         let (count, join, upper) = (object(0), object(1), object(2));
@@ -2164,14 +2219,14 @@ pub(crate) mod tests {
 
         let plan = live_plan(&fixture, &remote, &[]).unwrap();
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!(ids, ["move:head", "code:test/join", "repair"]);
-        let (moved, code, repair) = (&plan.groups[0], &plan.groups[1], &plan.groups[2]);
+        assert_eq!(ids, ["move:head", "version:test/join", "repair"]);
+        let (moved, version, repair) = (&plan.groups[0], &plan.groups[1], &plan.groups[2]);
         let to = "2020-02-01".to_string();
         let cause = Cause::Move { source: "head".into(), from: vec!["2020-01-01".into()], to: to.clone() };
         assert_eq!((moved.cause.as_ref(), &plan.moves), (Some(&cause), &BTreeMap::from([("head".into(), None)])));
         let steps = |group: &Group| group.layers.iter().map(|layer| layer.step.clone()).collect::<Vec<_>>();
         assert_eq!((steps(moved).join(" "), moved.builds.len()), ("test/upper test/join test/count".into(), 3));
-        assert_eq!(steps(code), ["test/join", "test/count"]);
+        assert_eq!(steps(version), ["test/join", "test/count"]);
         assert_eq!(repair.cause, Some(Cause::Repair { keys: vec![count.clone()] }));
         assert!(repair.builds.is_empty(), "the groups make count again");
         let manifest = format!("test/releases/{}.json", release.id());
@@ -2210,13 +2265,13 @@ pub(crate) mod tests {
              names test/objects/old"
         );
 
-        let err = live_plan(&fixture, &remote, &["code:test/join"]).unwrap_err();
+        let err = live_plan(&fixture, &remote, &["version:test/join"]).unwrap_err();
         assert_eq!(err.code, Code::Usage, "against live, --only selects moves only: {}", err.message);
         let plan = live_plan(&fixture, &remote, &["move:head"]).unwrap();
         assert_eq!((plan.groups.len(), plan.moves.len()), (3, 1), "every group, and the move");
         let plan = live_plan(&fixture, &remote, &["none"]).unwrap();
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!((ids, plan.moves.len()), (vec!["code:test/join", "repair"], 0), "no move");
+        assert_eq!((ids, plan.moves.len()), (vec!["version:test/join", "repair"], 0), "no move");
 
         write(
             &fixture.root().join("data/regions/andorra.toml"),
@@ -2237,7 +2292,7 @@ pub(crate) mod tests {
         publish(&fixture, &lean);
         let plan = live_plan(&fixture, &remote, &[]).unwrap();
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!(ids, ["code:test/join"], "the step says that a client reads join");
+        assert_eq!(ids, ["version:test/join"], "the step says that a client reads join");
 
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
         let built = run_build(&fixture.root(), &fixture.store, &Http::new(), Some(&remote), &[&Versioned], &args);
@@ -2248,7 +2303,7 @@ pub(crate) mod tests {
     fn a_build_of_a_plan_of_live_composes_the_release_and_refuses_the_plan_once_live_changed() {
         let (fixture, remote, release) = live("cli-live-build");
         let root = fixture.root();
-        write(&root.join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        write(&root.join("revised"), "test/join");
         let file = root.join("plan.json");
         write(&file, &serde_json::to_string(&live_plan(&fixture, &remote, &[]).unwrap()).unwrap());
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: Some(file), moves: Vec::new() };

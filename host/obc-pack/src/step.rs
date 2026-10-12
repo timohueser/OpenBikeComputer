@@ -14,38 +14,10 @@ use obc_map_core::progress::{CancelToken, Progress};
 /// The sources of one landmark or peak capture.
 pub const CAPTURES: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
-pub use obc_pbf::geos_identity::startup as geos_startup;
-
-pub fn geos_libraries() -> Result<Vec<obc_data::engine::Library>, String> {
-    Ok(obc_pbf::geos_identity::libraries()?
-        .iter()
-        .map(|library| obc_data::engine::Library {
-            version: Some(library.version.clone()),
-            name: library.name.into(),
-            path: library.path.clone(),
-            sha256: library.sha256.clone(),
-        })
-        .collect())
-}
-
-/// The digest of the code that makes the boundary and the candidates or the summits, which a
-/// capture pins: the param `code=` of a capture, so a capture with other code is another request.
-pub fn capture_code() -> Result<String, String> {
-    geos_libraries()?;
-    let code = [
-        include_str!("catalog/boundary.rs"),
-        include_str!("../../obc-pbf/src/area.rs"),
-        include_str!("../../obc-places/src/osm.rs"),
-        include_str!("../../obc-places/src/lib.rs"),
-        include_str!("../../obc-places/src/metadata.rs"),
-        include_str!("../../obc-places/src/name.rs"),
-        include_str!("landmarks/discover.rs"),
-        include_str!("landmarks/peaks.rs"),
-    ];
-    let mut hash = Sha256::new();
-    hash.update(code.concat());
-    Ok(hash.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect())
-}
+/// The revision of the code that makes the boundary and the candidates or the summits. A capture
+/// pins it as its param `code=`, so a capture of another revision is another request. A change that
+/// gives them other output increases it.
+pub const CAPTURE_REVISION: &str = "1";
 
 /// The compiled landmarks of a region: `landmarks/content.json` and its photos, from the capture
 /// files, the `.poly` and the `.osm.pbf` that the capture read. The capture keeps no copy of the
@@ -273,7 +245,6 @@ mod tests {
                 ]),
                 layers: BTreeMap::new(),
                 layer_files: BTreeMap::new(),
-                libraries: Vec::new(),
                 options: serde_json::json!({}),
                 output: dir.join(collection).join("output"),
                 metrics: dir.join(collection).join("metrics.json"),
@@ -321,7 +292,6 @@ mod tests {
             snapshots: BTreeMap::new(),
             layers,
             layer_files: BTreeMap::new(),
-            libraries: Vec::new(),
             options: serde_json::json!({"cell_log2":18,"cells":[[cell.i,cell.j]]}),
             output: dir.join("output"),
             metrics: dir.join("metrics"),
@@ -388,7 +358,6 @@ mod tests {
                 ]),
                 layers: BTreeMap::new(),
                 layer_files: BTreeMap::new(),
-                libraries: Vec::new(),
                 options: serde_json::json!({}),
                 output: dir.join(name).join("output"),
                 metrics: dir.join(name).join("metrics.json"),

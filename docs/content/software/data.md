@@ -11,11 +11,19 @@ coverage. Product options choose what to build. Source versions choose the input
 Keeping these choices explicit makes a result repeatable and lets unchanged work be reused.
 The [data contract](src:specs/obc-data.md) defines these boundaries.
 
+## Layer versions, not code
+
+Each layer, such as the device map, has two numbers. Its format is the number that its readers
+check, so a reader that needs new data makes the layer stale with no other edit. Its revision
+changes by hand in the change that improves the output. A refactor changes neither number, so it
+rebuilds nothing. A rebuild that gives the same bytes stops there: the layers that read it keep
+their keys. The [key contract](src:specs/obc-data.md) defines what a key holds.
+
 ## Shared landmark and peak content
 
 Landmarks and peaks use the same acquired Wikimedia facts and selection policy. Exact OSM
 links identify subjects. A subject can serve several regions without another download.
-Source revisions identify acquired bytes; compiler changes rebuild outputs from retained inputs.
+Source revisions identify acquired bytes; a new layer revision rebuilds outputs from retained inputs.
 Pinned compilation works offline. Freshness checks remain separate network work.
 
 The device keeps short articles, photos and credits in its map. Planner detail views keep
@@ -32,11 +40,10 @@ identity, retained inputs and selection outcomes.
 
 Live settings stay in the data store. A selection copies its full region definition, so a
 preset edit cannot silently change coverage. Apply records the reviewed settings in each
-release. Undo restores the applied region, layers and policies. Local has its own region and layers. Its saved releases retain source versions until an explicit Live refresh.
-An upstream check does not silently replace those pins.
+release. Undo restores the applied region, layers and policies. Local has its own region and layers.
 
 A plan separates required work from optional source moves. Changed geometry, product options
-or producer code can require work even when no source moves.
+or a layer version can require work even when no source moves.
 A source move is deliberate, and a source with several requests must expose each request's
 availability. This avoids claiming that one cached version covers every area.
 An incomplete preview needs input preparation before it can become an exact review.
@@ -47,7 +54,7 @@ Live apply verifies the selected data and asks for consent.
 
 ## Retained work and a direct apply
 
-The selected machine builds and verifies. Its admitted worker survives a closed terminal.
+The selected machine builds and verifies. Its started run survives a closed terminal.
 `obc data runs RUN --follow` does not change the Run. Stop drains the current work.
 
 The machine that applies also publishes. It uploads only what R2 lacks, so a repeated apply
@@ -59,18 +66,5 @@ Old data stays until it is replaced. An apply removes only the files of earlier 
 tool that the reviewed plan listed, after clients that read an old pointer had time to finish.
 Files of the older publishers are never removed. The [apply contract](src:specs/obc-data.md)
 defines the order.
-
-## Local keeps original provenance
-
-Local builds use current working-tree code and selected configuration. Compatible portable
-layers reuse verified published bytes and retain the original producer identity. They do not
-need the unused original compiler or a private intermediate archive. New work still requires
-its actual tools. Native executables are built for the current host.
-
-The saved Local release keeps useful bytes reachable by cleanup. Prepared apps share services
-when they need the same files. A rebuild updates affected running services and leaves stopped
-apps stopped. A Local check is read-only and makes no source requests.
-See [portable data](src:specs/obc-data.md) and
-[Local services](src:specs/obc-data.md).
 
 Use the [data README](src:host/obc-data/README.md) for setup, credentials and daily commands.
