@@ -9,6 +9,7 @@ mod overview;
 mod r2_cli;
 mod rollback_cli;
 mod runs_cli;
+mod serve_cli;
 mod setup_cli;
 mod update_cli;
 
@@ -72,6 +73,9 @@ enum Command {
         #[arg(default_value = "")]
         query: String,
     },
+    /// Serve a dir target to the apps of this machine and of its network, and follow the release
+    /// that it serves. It runs until Ctrl-C.
+    Serve(serve_cli::ServeArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
     /// Clean the local store: delete what no release of a target reaches, and empty `partial/`.
@@ -141,6 +145,7 @@ fn run(cli: Cli, products: &[&dyn Product], ui: Option<Ui>) -> Result<(), Error>
             print_snapshot(&store, &fetched(source, snapshot)?, json)
         }
         Command::Areas { query } => print_areas(&root()?, &query, json),
+        Command::Serve(args) => serve_cli::command(&root()?, args, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),

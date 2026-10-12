@@ -46,6 +46,7 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
+| `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
@@ -57,3 +58,27 @@ a key that an update that runs at the same time counts on.
 
 The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
 the page.
+
+## Serve
+
+`obc data serve` serves `local` on port 8710 of every IPv4 address of the machine. It prints the
+URLs of the pointers. It runs the routing, search and downloads services of each planner release
+and the tile server of `planner/tiles`. At start it builds `planner-service` with cargo. Prepare
+Node and the other services once:
+
+```sh
+python3 planner/search/setup.py
+npm ci --prefix planner/tiles
+```
+
+Leave it running while `obc data update local` runs in another terminal. Clients get the new
+release when its services answer. A failed release leaves clients on the current release; the
+services write the cause to the terminal. A service that stops later does not start again: stop
+`obc data serve` with Ctrl-C and start it again.
+
+- Every machine on the local network reaches every file of the target, also `release.json`, and
+  the three services. Any web page can read them (CORS `*`).
+- The download bundles name the network address that the machine has at start. After a change
+  of network, start `obc data serve` again.
+- The services read their files from `<store>/serve/local/`. Serve removes it when it starts and
+  when it stops; `obc data clean` does not touch it.
