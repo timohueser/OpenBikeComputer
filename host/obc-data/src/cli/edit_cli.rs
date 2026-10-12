@@ -58,7 +58,7 @@ pub fn undo(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
 }
 
 /// The current environment settings.
-pub fn current(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
+fn current(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
     let env = load(root, name, store)?.env;
     Ok(Edited { env: env.name, region: env.region, layers: env.layers })
 }

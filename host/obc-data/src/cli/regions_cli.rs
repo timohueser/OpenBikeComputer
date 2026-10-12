@@ -134,7 +134,7 @@ pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(),
     }
 }
 
-pub(super) fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
+fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
     let (version, index) = cached_index(store)?;
     let query = query.trim().to_lowercase();
     let areas = index

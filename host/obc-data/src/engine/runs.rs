@@ -622,12 +622,6 @@ pub fn details(store: &Store, id: &str) -> Result<Details, String> {
     Ok(with_history(&runs, at))
 }
 
-/// What `details` gives for every run, newest first, from one read of the runs.
-pub fn all_details(store: &Store) -> Result<Vec<Details>, String> {
-    let runs = all(store)?;
-    Ok((0..runs.len()).rev().map(|at| with_history(&runs, at)).collect())
-}
-
 /// Run `at` of `runs`, oldest first, with the users of each step and its time in an earlier run.
 fn with_history(runs: &[Details], at: usize) -> Details {
     let mut details = runs[at].clone();
