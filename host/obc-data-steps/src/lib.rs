@@ -3,6 +3,7 @@
 pub mod device;
 pub mod planner;
 mod region_sources;
+pub mod ui;
 
 use obc_data::engine::{Client, Input, Layer, Run, Step};
 use obc_data::product::Product;

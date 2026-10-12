@@ -4,10 +4,12 @@
 mod api;
 mod freshness;
 mod listing;
+mod open_cli;
 mod overview;
 mod r2_cli;
 mod rollback_cli;
 mod runs_cli;
+mod setup_cli;
 mod source_cli;
 mod update_cli;
 
@@ -26,7 +28,12 @@ use crate::regions::{geofabrik, Area, Bbox, Region, Regions};
 use crate::release::{Release, SERVING};
 use crate::sources::{Kind, Refresh, Registry, Source, State};
 use crate::store::{gc, hash_file, FileRecord, Snapshot, Store};
-use api::{confirm, print_json, Code, Error};
+use api::{confirm, print_json};
+pub use api::{Code, Error};
+
+/// `obc data ui`: serve the page of this machine. It takes the repository root. The binary that
+/// links the page gives it; `obc_data` keeps no page, because the page is GPL.
+pub type Ui = fn(&Path) -> Result<(), Error>;
 
 #[derive(Parser)]
 #[command(name = "obc data", about = "Data sources, regions, targets and their releases")]
@@ -84,10 +91,17 @@ enum Command {
     },
     /// Plumbing for scripts: list, read, upload and delete objects in an R2 bucket.
     R2(r2_cli::R2),
+    /// What this machine can do: its tools and credentials (only whether each is set), and the
+    /// store.
+    Setup,
+    /// Serve the page of this machine on http://127.0.0.1:8700/ until it is stopped.
+    Ui,
+    /// Open the page of MACHINE through an SSH tunnel at http://localhost:8701/.
+    Open { machine: String },
 }
 
-/// Run `obc data` with the products whose steps this binary links.
-pub fn main(products: &[&dyn Product]) -> ExitCode {
+/// Run `obc data` with the products whose steps this binary links, and its page.
+pub fn main(products: &[&dyn Product], ui: Option<Ui>) -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         // The arguments did not parse, so `--json` is only known as a word among them.
@@ -100,7 +114,7 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
         Err(e) => e.exit(),
     };
     let json = cli.json;
-    match run(cli, products) {
+    match run(cli, products, ui) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => error.report(json),
     }
@@ -111,7 +125,7 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
+fn run(cli: Cli, products: &[&dyn Product], ui: Option<Ui>) -> Result<(), Error> {
     let json = cli.json;
     let Some(command) = cli.command else {
         return overview::overview(&root()?, products, json);
@@ -137,6 +151,12 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
         Command::Runs(runs) => runs_cli::run(runs, json),
         Command::Clean { apply, yes } => clean_command(&root()?, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),
+        Command::Setup => setup_cli::setup(&root()?, json),
+        Command::Ui => match ui {
+            Some(ui) => ui(&root()?),
+            None => Err(Code::Usage.error("this binary has no page").fix("Run `obc data ui`.")),
+        },
+        Command::Open { machine } => open_cli::open(&root()?, &machine),
     }
 }
 
