@@ -17,8 +17,8 @@ use crate::target::{Condition, Tag, Target};
 /// The key that names the release that a target serves, and its rollback.
 pub const SERVING: &str = "release.json";
 
-/// The keys that clients read first. Clients that an older publisher served read them too, so
-/// nothing deletes them.
+/// The keys that clients read first, sorted. Every release names both. Clients that an older
+/// publisher served read them too, so nothing deletes them.
 pub const POINTERS: [&str; 2] = ["cell-catalog/catalog.json", "planner/catalog.json"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -27,11 +27,10 @@ pub struct Release {
     pub settings: Settings,
     /// Sorted by `step`, each step once.
     pub outputs: Vec<Output>,
-    /// What a client reads at each pointer key: a file of an output, which `objects/<sha256>`
-    /// holds. Sorted by key.
+    /// What a client reads at each key of [`POINTERS`]: a client file of an output. Sorted by key.
     pub pointers: Vec<File>,
-    /// Files of outputs that a client finds by name, at `releases/<folder>/<path>`. The folder is
-    /// the digest of its files, so other files make another folder. Sorted by key.
+    /// Client files of outputs that a client finds by name, at `releases/<folder>/<path>`. The
+    /// folder is the digest of its files, so other files make another folder. Sorted by key.
     pub named: Vec<File>,
     /// The machine that made the release.
     pub machine: String,
@@ -140,12 +139,11 @@ impl Release {
         sha256_hex(&self.canonical())
     }
 
-    /// The keys of the release but its manifest: the objects of the client files and of the
-    /// pointers, then the named files.
+    /// The keys of the release but its manifest: the objects of the client files, then the named
+    /// files.
     pub fn files(&self) -> Vec<File> {
         let client = self.outputs.iter().flat_map(Output::client_files).map(|file| (&file.sha256, file.size));
-        let pointers = self.pointers.iter().map(|pointer| (&pointer.sha256, pointer.size));
-        let objects: BTreeMap<&String, u64> = client.chain(pointers).collect();
+        let objects: BTreeMap<&String, u64> = client.collect();
         let objects = objects.into_iter().map(|(sha256, size)| File {
             key: format!("objects/{sha256}"),
             size,
@@ -158,25 +156,22 @@ impl Release {
         if self.outputs.windows(2).any(|pair| pair[0].step >= pair[1].step) {
             return Err("the outputs are not sorted by step, or a step is there twice".into());
         }
-        let built: BTreeSet<(&str, u64)> = self
-            .outputs
-            .iter()
-            .flat_map(|output| &output.files)
-            .map(|file| (file.sha256.as_str(), file.size))
-            .collect();
-        if let Some((sha256, _)) = built.iter().find(|(sha256, _)| !is_sha256(sha256)) {
-            return Err(format!("an output names the file {sha256:?}, which is no SHA-256"));
+        let mut files = self.outputs.iter().flat_map(|output| &output.files);
+        if let Some(file) = files.find(|file| !is_sha256(&file.sha256)) {
+            return Err(format!("the output file {} has no SHA-256", file.path));
         }
+        let served: BTreeSet<(&str, u64)> =
+            self.outputs.iter().flat_map(Output::client_files).map(|file| (file.sha256.as_str(), file.size)).collect();
         for files in [&self.pointers, &self.named] {
             if files.windows(2).any(|pair| pair[0].key >= pair[1].key) {
                 return Err("the pointers or the named files are not sorted by key, or a key is there twice".into());
             }
-            if let Some(file) = files.iter().find(|file| !built.contains(&(file.sha256.as_str(), file.size))) {
-                return Err(format!("{} is no file of an output", file.key));
+            if let Some(file) = files.iter().find(|file| !served.contains(&(file.sha256.as_str(), file.size))) {
+                return Err(format!("{} is no client file of an output", file.key));
             }
         }
-        if let Some(pointer) = self.pointers.iter().find(|pointer| !POINTERS.contains(&pointer.key.as_str())) {
-            return Err(format!("{} is not a pointer key: {}", pointer.key, POINTERS.join(", ")));
+        if !self.pointers.iter().map(|pointer| pointer.key.as_str()).eq(POINTERS) {
+            return Err(format!("a release names the pointers {}, and no other", POINTERS.join(" and ")));
         }
         let mut folders: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
         for file in &self.named {
@@ -251,9 +246,10 @@ pub fn serving(target: &Target) -> Result<Option<(Serving, Tag)>, String> {
 
 /// Make the published release `id` the one that `target` serves, and the one that `base` says it
 /// serves its rollback. `false` when `release.json` is no longer `base`: nothing changed. The
-/// pointers change after `release.json`, and a switch away from a serving release whose pointers
-/// differ is refused, so each pointer that the serving release names is of it or of the rollback.
-/// A switch to the serving release writes its pointers again.
+/// pointers change after `release.json`, and before it a switch to another release needs each
+/// pointer to hold the bytes of the serving release or of `id`: so each pointer holds the bytes of
+/// the serving release or of the rollback. A switch to the serving release writes its pointers
+/// again.
 pub fn switch(target: &Target, base: Option<&(Serving, Tag)>, id: &str) -> Result<bool, String> {
     let release = Release::read(target, id)?;
     let since = crate::date::timestamp(crate::date::now());
@@ -261,14 +257,14 @@ pub fn switch(target: &Target, base: Option<&(Serving, Tag)>, id: &str) -> Resul
         Some((now, _)) if now.serving.id == id => now.clone(),
         Some((now, _)) => {
             let serving = Release::read(target, &now.serving.id)?;
-            let named = |key: &String| serving.pointers.iter().any(|pointer| &pointer.key == key);
-            let differ: Vec<String> = drift(target, &serving)?.into_iter().filter(named).collect();
-            if !differ.is_empty() {
-                return Err(format!(
-                    "{} differ from the serving release {}; switch to it again first",
-                    differ.join(", "),
-                    now.serving.id
-                ));
+            for (now, next) in serving.pointers.iter().zip(&release.pointers) {
+                let held = target.get(&now.key)?.map(|bytes| sha256_hex(&bytes));
+                if held.as_ref().is_some_and(|held| *held != now.sha256 && *held != next.sha256) {
+                    return Err(format!(
+                        "{} is of neither the serving release nor {id}; switch to the serving release again first",
+                        now.key
+                    ));
+                }
             }
             Serving {
                 serving: Role { id: id.into(), since: since.clone() },
@@ -292,14 +288,12 @@ pub fn switch(target: &Target, base: Option<&(Serving, Tag)>, id: &str) -> Resul
     Ok(true)
 }
 
-/// The pointer keys whose bytes on `target` are not those that `release` names, or that `release`
-/// does not name and `target` has.
+/// The pointer keys whose bytes on `target` are not those that `release` names.
 pub fn drift(target: &Target, release: &Release) -> Result<Vec<String>, String> {
     let mut drift = Vec::new();
-    for key in POINTERS {
-        let named = release.pointers.iter().find(|pointer| pointer.key == key).map(|pointer| &pointer.sha256);
-        if target.get(key)?.map(|bytes| sha256_hex(&bytes)).as_ref() != named {
-            drift.push(key.to_string());
+    for pointer in &release.pointers {
+        if target.get(&pointer.key)?.is_none_or(|bytes| sha256_hex(&bytes) != pointer.sha256) {
+            drift.push(pointer.key.clone());
         }
     }
     Ok(drift)
@@ -373,13 +367,24 @@ mod tests {
         let now = serving(&target).unwrap().unwrap();
         assert_eq!((&now.0.serving.id, now.0.rollback.as_ref().map(|role| &role.id)), (&next, Some(&id)));
         assert_eq!(drift(&target, &second).unwrap(), [POINTERS[1]]);
-        assert!(switch(&target, Some(&now), &id).unwrap_err().contains("switch to it again first"));
+
+        // A rollback after the interrupted switch needs no object of the release that it leaves.
+        assert!(switch(&target, Some(&now), &id).unwrap(), "a rollback");
+        let back = serving(&target).unwrap().unwrap();
+        assert_eq!((&back.0.serving.id, back.0.rollback.as_ref().map(|role| &role.id)), (&id, Some(&next)));
+        assert!(drift(&target, &first).unwrap().is_empty());
+
+        target.put(POINTERS[0], b"another publisher", &Condition::Any).unwrap();
+        let refused = switch(&target, Some(&back), &next).unwrap_err();
+        assert!(refused.contains("of neither the serving release nor"), "{refused}");
+        assert!(switch(&target, Some(&back), &id).unwrap(), "a switch to the serving release repairs it");
+        assert!(drift(&target, &first).unwrap().is_empty());
+        assert_eq!(serving(&target).unwrap().unwrap().0, back.0);
 
         std::fs::write(fixture.scratch.0.join("count"), saved).unwrap();
         target.upload(&[(fixture.scratch.0.join("count"), format!("objects/{}", count.sha256))]).unwrap();
-        assert!(switch(&target, Some(&now), &next).unwrap(), "a switch to the serving release repairs it");
+        assert!(switch(&target, Some(&serving(&target).unwrap().unwrap()), &next).unwrap());
         assert!(drift(&target, &second).unwrap().is_empty());
-        assert_eq!(serving(&target).unwrap().unwrap().0, now.0);
 
         let forged = "a".repeat(64);
         target.put(&manifest_key(&forged), &second.canonical(), &Condition::Absent).unwrap();
@@ -399,8 +404,11 @@ mod tests {
         };
         assert!(refused(&|r| r.outputs.swap(0, 1)).contains("sorted by step"));
         assert!(refused(&|r| r.outputs[0].files[0].sha256 = "x".into()).contains("no SHA-256"));
-        assert!(refused(&|r| r.pointers[0].key = "objects/a".into()).contains("not a pointer key"));
-        assert!(refused(&|r| r.pointers[0].sha256 = "a".repeat(64)).contains("no file of an output"));
+        assert!(refused(&|r| r.pointers[0].key = "objects/a".into()).contains("no other"));
+        assert!(refused(&|r| drop(r.pointers.pop())).contains("no other"), "a release names both pointers");
+        assert!(refused(&|r| r.pointers[0].sha256 = "a".repeat(64)).contains("no client file of an output"));
+        let private = |r: &mut Release| r.outputs[1].client = Client::None;
+        assert!(refused(&private).contains("no client file of an output"), "a target serves only client files");
         assert!(refused(&|r| r.named[0].key = r.named[0].key.replace("releases/", "named/")).contains("folder"));
         let other = |r: &mut Release| (r.named[1].sha256, r.named[1].size) = (upper.sha256.clone(), upper.size);
         assert!(refused(&other).contains("not the digest"), "a named file changes the folder");

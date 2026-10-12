@@ -50,12 +50,13 @@ const LOCK: &str = ".lock";
 const READ_ONLY: &str = "`obc data` only reads an R2 target, through its public URL";
 
 /// The targets of `data/targets.toml` in the repository at `root`, by name. A dir target without
-/// `dir` is the folder `local` beside the store: a link from one to the other needs one file system.
+/// `dir` is the folder of its name beside the store: a link from one to the other needs one file
+/// system.
 pub fn load(root: &Path, store: &Store) -> Result<BTreeMap<String, Target>, String> {
     let path = root.join("data/targets.toml");
     let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let beside = store.root().parent().map(|parent| parent.join("local"));
-    parse(&text, beside.as_deref()).map_err(|e| format!("data/targets.toml: {e}"))
+    let store = std::path::absolute(store.root()).map_err(|e| format!("{}: {e}", store.root().display()))?;
+    parse(&text, store.parent()).map_err(|e| format!("data/targets.toml: {e}"))
 }
 
 fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, String> {
@@ -76,7 +77,7 @@ fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, 
             Entry::Dir { dir } => {
                 let dir = match dir {
                     Some(dir) => crate::sources::expand_home(&dir),
-                    None => beside.ok_or("the store has no parent folder for a target")?.to_path_buf(),
+                    None => beside.ok_or("the store has no parent folder for a target")?.join(&name),
                 };
                 if !dir.is_absolute() {
                     return Err(format!("target `{name}`: `dir` is an absolute path, or starts with `~/`"));
@@ -133,8 +134,15 @@ impl Target {
         for (key, size) in files {
             crate::r2::check_key(key)?;
             match fs::metadata(dir.join(key)) {
+                Ok(found) if found.is_dir() => return Err(format!("{key} is a folder of the target, not a file")),
                 Ok(found) if found.len() == *size => {}
-                Ok(found) => return Err(format!("{key} holds {} bytes, not {size}; it is immutable", found.len())),
+                Ok(found) => {
+                    return Err(format!(
+                        "{key} holds {} bytes, not {size}: a write of it broke, and a key is immutable. Fix: \
+                         delete {key} from the target, then run the command again",
+                        found.len()
+                    ))
+                }
                 Err(e) if e.kind() == ErrorKind::NotFound => missing.push(key.clone()),
                 Err(e) => return Err(format!("{key}: {e}")),
             }
@@ -188,7 +196,10 @@ impl Target {
                     let part =
                         parent.join(format!(".{}.{}.part", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
                     let _ = fs::remove_file(&part);
-                    let copied = fs::copy(file, &part).and_then(|_| File::open(&part)?.sync_all());
+                    let copied = OpenOptions::new().write(true).create_new(true).open(&part).and_then(|mut part| {
+                        std::io::copy(&mut File::open(file)?, &mut part)?;
+                        part.sync_all()
+                    });
                     let linked = copied.and_then(|()| fs::hard_link(&part, &path));
                     let _ = fs::remove_file(&part);
                     linked
@@ -229,10 +240,10 @@ mod tests {
 
     #[test]
     fn the_committed_targets_parse_and_a_wrong_entry_is_refused() {
-        let beside = Path::new("/stores/local");
+        let beside = Path::new("/stores");
         let targets = parse(include_str!("../../../data/targets.toml"), Some(beside)).unwrap();
         assert!(matches!(&targets["prod"], Target::R2 { public } if public == "https://maps.openbikecomputer.com"));
-        assert_eq!(targets["local"], Target::Dir(beside.into()), "beside the store");
+        assert_eq!(targets["local"], Target::Dir(beside.join("local")), "beside the store");
 
         for (text, error) in [
             ("[a]\nkind = \"r2\"\npublic = \"http://maps.example\"\n", "https://"),
@@ -299,7 +310,8 @@ mod tests {
         assert_eq!(target.missing(&sizes).unwrap(), ["objects/a", "objects/b"]);
         target.upload(&[(a, "objects/a".into()), (b.clone(), "objects/b".into())]).unwrap();
         assert_eq!(target.missing(&sizes).unwrap(), Vec::<String>::new());
-        assert!(target.missing(&[("objects/b".into(), 2)]).unwrap_err().contains("immutable"));
+        assert!(target.missing(&[("objects/b".into(), 2)]).unwrap_err().contains("Fix: delete objects/b"));
+        assert!(target.missing(&[("objects".into(), 0)]).unwrap_err().contains("a folder"));
 
         target.upload(&[(file("c", "cc"), "objects/b".into())]).unwrap();
         assert_eq!(target.get("objects/b").unwrap().unwrap(), b"b", "a key keeps its bytes");
