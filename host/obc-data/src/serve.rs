@@ -8,6 +8,8 @@ pub mod http;
 pub mod services;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -92,7 +94,8 @@ fn wanted(
     Ok((wanted, problem))
 }
 
-fn served(target: &Target, id: &str) -> Result<Served, String> {
+/// The release `id` of `target`, as its clients read it.
+pub(crate) fn served(target: &Target, id: &str) -> Result<Served, String> {
     let key = crate::release::manifest_key(id);
     let bytes = target.get_public(&key)?.ok_or_else(|| format!("the target has no {key}"))?;
     let release = Release::parse(id, &bytes)?;
@@ -110,6 +113,17 @@ fn served(target: &Target, id: &str) -> Result<Served, String> {
     let document = document.ok_or_else(|| format!("release {id} has no {key}"))?;
     let formats = release.outputs.iter().map(|output| (output.layer.clone(), output.format)).collect();
     Ok(Served { id: id.into(), planner: planner.into(), document, pointers, formats })
+}
+
+impl Served {
+    /// The origins that its planner pointer names: those of a published target.
+    pub fn origins(&self) -> Result<services::Origins, String> {
+        let pointer: Value = serde_json::from_slice(&self.pointers[PLANNER]).map_err(|e| format!("{PLANNER}: {e}"))?;
+        let origin = |name: &str| {
+            pointer["origins"][name].as_str().map(String::from).ok_or_else(|| format!("{PLANNER} has no {name}"))
+        };
+        Ok(services::Origins { api: origin("api_origin")?, objects: format!("{}/objects", origin("objects_origin")?) })
+    }
 }
 
 /// What the follower read of its target last.
@@ -179,18 +193,22 @@ pub trait Services {
 pub trait Load {
     type Services: Services;
     /// Give the store what the services of `served` read, on a thread of its own: a download can
-    /// take long, and the follower keeps polling. An error when the system gives no thread.
-    fn fetch(&mut self, served: &Served) -> Result<JoinHandle<Result<(), String>>, String>;
+    /// take long, and the follower keeps polling. It stops at its next object once `wanted` is
+    /// false. An error when the system gives no thread.
+    fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Result<(), String>>, String>;
     /// Install the files of `served` from the store and start its services. The follower waits for
     /// it.
     fn start(&mut self, served: &Served) -> Result<Self::Services, String>;
+    /// Delete from the store what the services of none of `wanted` read.
+    fn keep(&mut self, wanted: &[&Served]);
 }
 
 enum State<S> {
-    /// Its objects download. `backoff` is the wait after a failure.
+    /// Its objects download while `wanted`. `backoff` is the wait after a failure.
     Fetching {
         worker: JoinHandle<Result<(), String>>,
         backoff: Duration,
+        wanted: Arc<AtomicBool>,
     },
     Starting {
         services: S,
@@ -215,11 +233,20 @@ pub struct Follower<S> {
     current: Option<Served>,
     /// The downloads of planner releases that no release names any more.
     abandoned: Vec<JoinHandle<Result<(), String>>>,
+    /// Whether the store can hold what no wanted release reads: the wanted releases changed or a
+    /// download ran since the store was pruned.
+    dirty: bool,
 }
 
 impl<S: Services> Default for Follower<S> {
     fn default() -> Self {
-        Self { planners: BTreeMap::new(), wanted: Wanted::default(), current: None, abandoned: Vec::new() }
+        Self {
+            planners: BTreeMap::new(),
+            wanted: Wanted::default(),
+            current: None,
+            abandoned: Vec::new(),
+            dirty: false,
+        }
     }
 }
 
@@ -227,7 +254,7 @@ impl<S: Services> Follower<S> {
     /// Follow `wanted`, then [`Self::poll`]. The planner releases that failed start again at once.
     pub fn want(&mut self, wanted: Wanted, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
         self.planners.retain(|_, state| !matches!(state, State::Failed { .. }));
-        self.wanted = wanted;
+        (self.wanted, self.dirty) = (wanted, true);
         self.poll(load, now);
         if let Some(current) = self.current.as_ref().filter(|current| !self.wanted.serving.contains(current)) {
             eprintln!(
@@ -245,15 +272,20 @@ impl<S: Services> Follower<S> {
     /// until then they keep the current release. Stop the services that neither the wanted
     /// releases nor the current one need.
     pub fn poll(&mut self, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
+        self.prune(load);
         for served in self.wanted.serving.iter().chain(&self.wanted.next) {
-            let mut fetch = |backoff| match load.fetch(served) {
-                Ok(worker) => State::Fetching { worker, backoff },
-                Err(e) => failed(&served.planner, e, now(), backoff),
+            let mut fetch = |backoff| {
+                let wanted = Arc::new(AtomicBool::new(true));
+                self.dirty = true;
+                match load.fetch(served, wanted.clone()) {
+                    Ok(worker) => State::Fetching { worker, backoff, wanted },
+                    Err(e) => failed(&served.planner, e, now(), backoff),
+                }
             };
             let state = match self.planners.remove(&served.planner) {
                 None => fetch(BACKOFF),
                 Some(State::Failed { retry, backoff, .. }) if retry <= now() => fetch(backoff),
-                Some(State::Fetching { worker, backoff }) if worker.is_finished() => {
+                Some(State::Fetching { worker, backoff, .. }) if worker.is_finished() => {
                     let fetched = worker.join().unwrap_or_else(|_| Err("the download stopped".into()));
                     match fetched.and_then(|()| load.start(served)) {
                         Ok(services) => State::Starting { services, since: now(), backoff },
@@ -300,11 +332,23 @@ impl<S: Services> Follower<S> {
         let needed: BTreeSet<String> = wanted.map(|served| served.planner.clone()).collect();
         let gone: Vec<String> = self.planners.keys().filter(|id| !needed.contains(*id)).cloned().collect();
         for id in gone {
-            if let Some(State::Fetching { worker, .. }) = self.planners.remove(&id) {
+            if let Some(State::Fetching { worker, wanted, .. }) = self.planners.remove(&id) {
+                wanted.store(false, Ordering::Relaxed);
                 self.abandoned.push(worker);
             }
         }
         self.abandoned.retain(|worker| !worker.is_finished());
+        self.prune(load);
+    }
+
+    /// Delete from the store what no wanted release reads, once no download runs: a download writes
+    /// in `partial/` meanwhile.
+    fn prune(&mut self, load: &mut dyn Load<Services = S>) {
+        let fetching = self.planners.values().any(|state| matches!(state, State::Fetching { .. }));
+        if self.dirty && !fetching && self.abandoned.is_empty() {
+            load.keep(&self.wanted.serving.iter().chain(&self.wanted.next).collect::<Vec<_>>());
+            self.dirty = false;
+        }
     }
 
     /// Wait for each download, after [`crate::fetch::http::stop`] ended it: a stopped serve
@@ -357,7 +401,7 @@ fn short(id: &str) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
@@ -418,15 +462,27 @@ mod tests {
         }
     }
 
-    /// Upload a release of the layer `test` in `format`: its device pointer is `device`, and its
-    /// planner release has the routing file `routing`. Give its id and the id of the planner release.
+    /// Upload a release as [`release_at`] does, whose API is at `https://api.test`.
     fn release(target: &Target, device: &str, routing: &[u8], format: u32) -> (String, String) {
+        release_at(target, device, routing, format, "https://api.test")
+    }
+
+    /// Upload a release of the layer `test` in `format`: its device pointer is `device`, its
+    /// planner release has the routing file `routing`, and its planner pointer names the API origin
+    /// `api`. Give its id and the id of the planner release.
+    pub(crate) fn release_at(
+        target: &Target,
+        device: &str,
+        routing: &[u8],
+        format: u32,
+        api: &str,
+    ) -> (String, String) {
         let sha256 = sha256_hex(routing);
         let entry =
             json!({"bytes": routing.len(), "sha256": sha256, "transport": {"sha256": sha256, "encoding": "identity"}});
         let document = serde_json::to_vec(&json!({"region": "test", "files": {"routing/pages.bin": entry}})).unwrap();
         let planner = crate::engine::digest([("release.json", sha256_hex(&document).as_str())]);
-        let origins = r#"{"api_origin":"https://api.test","objects_origin":"https://objects.test"}"#;
+        let origins = format!(r#"{{"api_origin":"{api}","objects_origin":"https://objects.test"}}"#);
         let catalog = format!(r#"{{"format":1,"origins":{origins},"active":{{"id":"{planner}"}}}}"#);
         let files = [device.as_bytes().to_vec(), catalog.into_bytes(), document, routing.to_vec()];
         let mut release = crate::release::tests::reading(b"", "osm", "1");
@@ -483,7 +539,11 @@ mod tests {
     impl Load for Fakes<'_> {
         type Services = Fake;
 
-        fn fetch(&mut self, served: &Served) -> Result<JoinHandle<Result<(), String>>, String> {
+        fn fetch(
+            &mut self,
+            served: &Served,
+            wanted: Arc<AtomicBool>,
+        ) -> Result<JoinHandle<Result<(), String>>, String> {
             let held = self.log.borrow_mut().held.remove(&served.planner);
             let real =
                 self.install.clone().map(|(store, programs)| (store, programs, self.reader.clone(), served.clone()));
@@ -493,11 +553,17 @@ mod tests {
                 }
                 match real {
                     Some((store, programs, target, served)) => {
-                        services::fetch(&programs, &Store::at(store), &target, &served)
+                        services::fetch(&programs, &Store::at(store), &target, &served, &wanted)
                     }
                     None => Ok(()),
                 }
             }))
+        }
+
+        fn keep(&mut self, wanted: &[&Served]) {
+            if let Some((store, _)) = self.install {
+                services::prune(&Store::at(store.clone()), self.reader, wanted).unwrap();
+            }
         }
 
         fn start(&mut self, served: &Served) -> Result<Fake, String> {
@@ -869,5 +935,51 @@ mod tests {
             .unwrap();
         case.follow();
         assert_eq!(case.log.borrow().started, [ps, pn], "a next release that can be read loads");
+    }
+
+    #[test]
+    fn the_store_of_a_follower_keeps_only_what_the_releases_of_the_target_read() {
+        let mut published = Published::new("serve-store");
+        let store = published.case.scratch.0.join("store");
+        let held = || -> BTreeSet<String> {
+            let prefixes = std::fs::read_dir(store.join("objects")).unwrap();
+            let objects = prefixes.flat_map(|prefix| std::fs::read_dir(prefix.unwrap().path()).unwrap());
+            objects.map(|object| object.unwrap().file_name().into_string().unwrap()).collect()
+        };
+        let target = published.case.target.clone();
+        let reads = |releases: &[(&str, &[u8])]| -> BTreeSet<String> {
+            let read = |(id, routing): &(&str, &[u8])| {
+                [Release::read(&target, id).unwrap().named[0].sha256.clone(), sha256_hex(routing)]
+            };
+            releases.iter().flat_map(read).collect()
+        };
+        let (a, pa) = publish(&target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (b, pb) = publish(&target, "device b", b"routing b");
+        published.follow();
+        published.answers(&pb);
+        let (c, _) = release(&target, "device c", b"routing c", 1);
+        published.next(&c);
+        assert_eq!(held(), reads(&[(&a, b"routing a"), (&b, b"routing b"), (&c, b"routing c")]));
+
+        // An unfinished download of an object that a release reads stays; another goes.
+        let Target::R2(remote) = &published.case.reader else { unreachable!("an R2 target") };
+        let part =
+            format!("{}.part", crate::fetch::http::key(&remote.url(&format!("objects/{}", sha256_hex(b"routing b")))));
+        let partial = store.join("partial");
+        std::fs::create_dir_all(&partial).unwrap();
+        for name in [part.as_str(), "0123.part"] {
+            std::fs::write(partial.join(name), b"x").unwrap();
+        }
+        let (d, pd) = publish(&target, "device d", b"routing d");
+        published.follow();
+        published.answers(&pd);
+        assert_eq!(held(), reads(&[(&b, b"routing b"), (&c, b"routing c"), (&d, b"routing d")]), "not those of a");
+        assert!(partial.join(&part).exists() && !partial.join("0123.part").exists());
+
+        target.remove(NEXT).unwrap();
+        published.follow();
+        assert_eq!(held(), reads(&[(&b, b"routing b"), (&d, b"routing d")]));
     }
 }

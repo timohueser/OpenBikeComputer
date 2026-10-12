@@ -47,6 +47,10 @@ pub struct Holder {
     /// has the detail.
     #[serde(default)]
     pub progress: Vec<Progress>,
+    /// Why the run waits, in the phase `router-ready`: the last answer of the follower of the
+    /// target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
 }
 
 /// The steps of a layer that a run bakes, and those that finished.
@@ -109,6 +113,7 @@ impl Held {
             phase: Phase::Prepare,
             heartbeat: crate::date::timestamp(now),
             progress: Vec::new(),
+            waiting: None,
         };
         match write(target, &LockFile::Held(holder.clone()), condition, run).map_err(Refused::Failed)? {
             Some(tag) => Ok(Held {
@@ -147,25 +152,34 @@ impl Held {
         self.state.lock().expect("a heartbeat does not panic").0.progress = progress;
     }
 
+    /// Give the next heartbeat why the run waits.
+    pub fn waiting(&self, reason: Option<String>) {
+        self.state.lock().expect("a heartbeat does not panic").0.waiting = reason;
+    }
+
     /// Whether another run took the lock.
-    fn lost(&self) -> bool {
+    pub fn lost(&self) -> bool {
         self.lost.load(Ordering::Relaxed)
     }
 
-    /// Free the lock, when this run still holds it.
-    pub fn release(mut self) -> Result<(), String> {
+    /// Free the lock, when this run still holds it. `Refused::Held` when another run took it.
+    pub fn release(mut self) -> Result<(), Refused> {
         self.released = true;
         self.free_if_held()
     }
 
-    fn free_if_held(&mut self) -> Result<(), String> {
+    fn free_if_held(&mut self) -> Result<(), Refused> {
         if self.lost() {
             return Ok(());
         }
         let (holder, tag) = self.state.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
-        match write(&self.target, &LockFile::Free, Condition::Match(tag.clone()), &holder.run)? {
-            Some(_) => Ok(()),
-            None => Err(format!("another run changed {LOCK} before this run freed it")),
+        match write(&self.target, &LockFile::Free, Condition::Match(tag.clone()), &holder.run) {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(match read(&self.target) {
+                Ok(Some((LockFile::Held(holder), _))) => Refused::Held(Box::new(holder)),
+                _ => Refused::Failed(format!("{LOCK} changed before this run freed it")),
+            }),
+            Err(e) => Err(Refused::Failed(e)),
         }
     }
 }
@@ -254,10 +268,8 @@ mod tests {
 
         let held = Held::take(&target, "two", 0).unwrap();
         applied(&target, |holder| holder.run = "three".into());
-        let refused = held.release().unwrap_err();
-        assert_eq!(refused, "another run changed lock.json before this run freed it");
-        let Some((LockFile::Held(holder), _)) = read(&target).unwrap() else { panic!("free") };
-        assert_eq!(holder.run, "three");
+        let Err(Refused::Held(holder)) = held.release() else { panic!("freed") };
+        assert_eq!(holder.run, "three", "another run holds the lock");
     }
 
     #[test]

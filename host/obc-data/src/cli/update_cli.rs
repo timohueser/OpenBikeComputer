@@ -24,6 +24,7 @@ use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
 use crate::lock::{self, Held};
 use crate::product::{Inputs, Product, RequestKey, Wanted};
+use crate::ready::{self, Next, Wait};
 use crate::regions::{Area, Bbox, Region, Regions};
 use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
 use crate::settings::Settings;
@@ -126,7 +127,7 @@ pub struct Baked {
 pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
-    super::api::writable(&args.target, &target)?;
+    super::api::writable(&args.target, &target, true)?;
     // A step reads a kept output from the target when this store lacks it.
     let store = store.reading(&target);
     let http = Http::new();
@@ -287,13 +288,22 @@ pub(super) fn locked<T>(
         drop(done);
         result
     });
-    let Err(e) = held.release() else { return result };
-    let stays = format!("the lock of `{name}` stays taken: {e}");
-    let fix = format!(
-        "Its heartbeat stopped. After {} minutes, free it: `obc data unlock {name} --from {}`.",
-        lock::STALE / 60,
-        crate::machine()
-    );
+    let (stays, fix) = match held.release() {
+        Ok(()) => return result,
+        // The lock is not this run's to free.
+        Err(lock::Refused::Held(holder)) => (
+            format!("another run took the lock of `{name}` before this run freed it: {}", lock::held_by(&holder)),
+            format!("Run `obc data` to see what `{name}` serves now."),
+        ),
+        Err(lock::Refused::Failed(e)) => (
+            format!("the lock of `{name}` stays taken: {e}"),
+            format!(
+                "Its heartbeat stopped. After {} minutes, free it: `obc data unlock {name} --from {}`.",
+                lock::STALE / 60,
+                crate::machine()
+            ),
+        ),
+    };
     Err(match result {
         Ok(_) => Code::Failed.error(stays).fix(fix),
         Err(mut error) => {
@@ -568,18 +578,13 @@ fn apply(
         kept: update.kept.len(),
         collection: None,
     };
-    let changed = || {
-        Code::Failed
-            .error(format!("release.json of `{name}` changed during the update; nothing switched"))
-            .fix(format!("Run `obc data update {name}` again: it keeps what this run baked."))
-    };
     if let Some(serving) = serving.as_ref().filter(|serving| serving.serves_as(&next)) {
         let (current, _) = base.as_ref().expect("a serving release has a base");
         // The serving release has every change: a switch to it writes a pointer that drifts.
         if !release::drift(target, serving)?.is_empty() {
             enter((run, held), name, Phase::Switch)?;
             if !release::switch(target, base.as_ref(), &current.serving.id)? {
-                return Err(changed());
+                return Err(changed(name));
             }
         }
         updated.serving = current.serving.id.clone();
@@ -594,12 +599,8 @@ fn apply(
     }
     enter((run, held), name, Phase::Upload)?;
     let id = release::publish(target, store, &next)?;
-    enter((run, held), name, Phase::Switch)?;
-    if !release::switch(target, base.as_ref(), &id)? {
-        return Err(changed());
-    }
-    run.record(&Event::Switched { release: id.clone() })?;
-    run.sync()?;
+    let wait = matches!(target, Target::R2(_)).then_some(Wait::RUN);
+    switch_to((name, target), base.as_ref(), &id, http, wait, (run, held))?;
     // The switch is done: a lock that is lost now stops only the collection.
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
     let holds = || match held.beat(None, None, crate::date::now())? {
@@ -614,6 +615,81 @@ fn apply(
     updated.rollback = base.map(|(base, _)| base.serving.id);
     updated.serving = id;
     Ok(updated)
+}
+
+/// The error of a switch whose `release.json` another writer changed.
+fn changed(name: &str) -> Error {
+    Code::Failed
+        .error(format!("release.json of `{name}` changed during the update; nothing switched"))
+        .fix(format!("Run `obc data update {name}` again: it keeps what this run baked."))
+}
+
+/// Switch `target` from `base` to the published release `id`. With `wait`, as for an R2 target:
+/// `planner/next.json` names the release first, and the switch waits until the follower of the
+/// target serves its planner release. A wait that ends without that deletes `planner/next.json`,
+/// and the target stays as it was.
+fn switch_to(
+    (name, target): (&str, &Target),
+    base: Option<&(Serving, Tag)>,
+    id: &str,
+    http: &Http,
+    wait: Option<Wait>,
+    (run, held): (&mut Run, &Held),
+) -> Result<(), Error> {
+    let next = match wait {
+        Some(wait) => Some(router_ready((name, target), id, http, wait, (run, held))?),
+        None => None,
+    };
+    enter((run, held), name, Phase::Switch)?;
+    if !release::switch(target, base, id)? {
+        return Err(changed(name));
+    }
+    run.record(&Event::Switched { release: id.into() })?;
+    run.sync()?;
+    drop(next);
+    Ok(())
+}
+
+/// Name the release `id` in `planner/next.json` of `target`, and ask the follower each
+/// `wait.every` until it serves the planner release of `id`. The status and the lock of the run
+/// carry each new answer. A stop of the run, a lost lock or `wait.give_up` ends the wait without a
+/// switch.
+fn router_ready<'a>(
+    (name, target): (&str, &'a Target),
+    id: &str,
+    http: &Http,
+    wait: Wait,
+    (run, held): (&mut Run, &'a Held),
+) -> Result<Next<'a>, Error> {
+    enter((run, held), name, Phase::RouterReady)?;
+    let url = ready::url(target, id).map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
+    let next = Next::name(target, held, id)?;
+    let (since, lost) = ((wait.now)(), run.stopper());
+    let mut last = None;
+    while let Some(reason) = ready::ask(http, &url) {
+        if last.as_ref() != Some(&reason) {
+            run.record(&Event::Waiting { reason: reason.clone() })?;
+            held.waiting(Some(reason.clone()));
+        }
+        let ended = if run.stopping() {
+            Some("The run stopped while it waited.".to_string())
+        } else if lost.load(Ordering::Relaxed) {
+            Some(format!("Another run took the lock of `{name}`."))
+        } else if (wait.now)().saturating_sub(since) >= wait.give_up {
+            let hours = wait.give_up.as_secs() / 3600;
+            Some(format!("The follower did not serve the planner release in {hours} h: deploy services that read it."))
+        } else {
+            None
+        };
+        if let Some(ended) = ended {
+            let fix = format!("{ended} Run `obc data update {name}` again: it keeps what this run baked.");
+            return Err(Code::Failed.error(format!("{name} unchanged: {reason}")).fix(fix));
+        }
+        last = Some(reason);
+        (wait.sleep)(wait.every);
+    }
+    held.waiting(None);
+    Ok(next)
 }
 
 /// The release of `outputs`: the pointer and the named files of each product.
@@ -1549,9 +1625,99 @@ pub(super) mod tests {
             write(&gate.join("open"), "");
             let refused = first.join().unwrap().unwrap_err();
             assert!(refused.message.starts_with("another run took the lock"), "{}", refused.message);
+            assert!(!refused.fix.contains("unlock"), "the lock is not stale: {}", refused.fix);
             assert_eq!(lock::holder(&target).unwrap().unwrap().run, "another", "the old run does not free it");
             taken.release().unwrap();
         });
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, served, "release.json is unchanged");
+    }
+
+    std::thread_local! {
+        /// The clock of a wait for the follower: each sleep moves it on.
+        static CLOCK: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+    }
+
+    /// What `planner/next.json` and `release.json` named at each answer of a follower.
+    pub(in crate::cli) type Notes = std::sync::Arc<std::sync::Mutex<Vec<(Option<String>, String)>>>;
+
+    /// A follower of `dir` at the origin that it gives, whose ready answers are `answers` in turn,
+    /// then the last one again.
+    pub(in crate::cli) fn follower(
+        runtime: &tokio::runtime::Runtime,
+        dir: &Path,
+        answers: &[(u16, &'static str)],
+    ) -> (String, Notes) {
+        let (asked, answers, dir) = (Notes::default(), answers.to_vec(), dir.to_path_buf());
+        let notes = asked.clone();
+        let ready = move || {
+            let named = |key: &str| std::fs::read(dir.join(key)).ok();
+            let next = named(release::NEXT).map(|bytes| serde_json::from_slice::<release::Role>(&bytes).unwrap().id);
+            let serving = serde_json::from_slice::<Serving>(&named(release::SERVING).unwrap()).unwrap().serving.id;
+            let mut notes = notes.lock().unwrap();
+            notes.push((next, serving));
+            let (status, body) = answers[(notes.len() - 1).min(answers.len() - 1)];
+            std::future::ready((axum::http::StatusCode::from_u16(status).unwrap(), body))
+        };
+        let router = axum::Router::new().route("/planner-api/releases/{id}/ready", axum::routing::get(ready));
+        let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+        let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        runtime.spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (origin, asked)
+    }
+
+    /// Switch `target` to the published release `id` as for an R2 target, on the clock of the
+    /// test, with a wait that gives up after `give_up`.
+    fn switch_after_ready(fixture: &Fixture, target: &Target, id: &str, give_up: Duration) -> Result<(), Error> {
+        let base = release::serving(target).unwrap();
+        let wait = Wait { give_up, now: || CLOCK.get(), sleep: |every| CLOCK.set(CLOCK.get() + every), ..Wait::RUN };
+        let mut run = Run::create(&fixture.store, ["update", "local"]).unwrap();
+        let switched = locked(("local", target), &mut run, |run, held| {
+            switch_to(("local", target), base.as_ref(), id, &Http::new(), Some(wait), (run, held))
+        });
+        crate::cli::api::finish_run(run, switched)
+    }
+
+    #[test]
+    fn an_r2_switch_names_the_release_in_next_json_and_waits_until_the_follower_serves_it() {
+        let fixture = fixture("update-router-ready");
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let unknown = r#"{"state":"unknown","reason":"no release of the target has the planner release"}"#;
+        // A 200 that is no answer of a follower, such as a page of the host, does not switch.
+        let page = "<html>OpenBikeComputer</html>";
+        let answers = [(503, r#"{"state":"starting"}"#), (404, unknown), (200, page), (200, r#"{"state":"ready"}"#)];
+        let (api, asked) = follower(&runtime, &dir, &answers);
+        let (a, _) = crate::serve::tests::release_at(&target, "device a", b"routing a", 1, &api);
+        assert!(release::switch(&target, None, &a).unwrap());
+        let (b, _) = crate::serve::tests::release_at(&target, "device b", b"routing b", 1, &api);
+
+        switch_after_ready(&fixture, &target, &b, ready::GIVE_UP).unwrap();
+        let waited = vec![(Some(b.clone()), a.clone()); 4];
+        assert_eq!(*asked.lock().unwrap(), waited, "next.json names b, and release.json serves a until it is ready");
+        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, b);
+        assert!(!dir.join(release::NEXT).exists(), "the switch deletes next.json");
+    }
+
+    #[test]
+    fn a_follower_that_never_serves_the_release_leaves_the_target_as_it_was() {
+        let fixture = fixture("update-router-give-up");
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let reason = "not ready: needs a routing service that reads test format 2; it reads 1";
+        let failed: &'static str = format!(r#"{{"state":"failed","reason":"{reason}"}}"#).leak();
+        let (api, asked) = follower(&runtime, &dir, &[(503, failed)]);
+        let (a, _) = crate::serve::tests::release_at(&target, "device a", b"routing a", 1, &api);
+        assert!(release::switch(&target, None, &a).unwrap());
+        let (b, _) = crate::serve::tests::release_at(&target, "device b", b"routing b", 2, &api);
+        let keys = [release::SERVING, POINTERS[0], POINTERS[1]];
+        let before = keys.map(|key| std::fs::read(dir.join(key)).unwrap());
+
+        let refused = switch_after_ready(&fixture, &target, &b, Duration::from_secs(60)).unwrap_err();
+        assert_eq!(refused.message, format!("local unchanged: {reason}"));
+        assert_eq!(asked.lock().unwrap().len(), 7, "an answer each 10 s, from 0 to 60 s");
+        assert_eq!(keys.map(|key| std::fs::read(dir.join(key)).unwrap()), before, "release.json and the pointers");
+        assert!(!dir.join(release::NEXT).exists(), "the run deletes next.json");
     }
 }

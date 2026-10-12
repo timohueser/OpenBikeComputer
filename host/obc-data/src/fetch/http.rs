@@ -173,12 +173,23 @@ impl Http {
 
     /// A small metadata file, with its exact bytes.
     pub fn bytes(&self, url: &str, accept: &str) -> Result<Vec<u8>, String> {
+        match self.answer(url, accept)? {
+            (200..=299, body) => Ok(body),
+            (status, _) => Err(format!("GET {url}: HTTP {status}")),
+        }
+    }
+
+    /// The status and the body of a small answer, also of one that is no success.
+    pub fn answer(&self, url: &str, accept: &str) -> Result<(u16, Vec<u8>), String> {
         let request = self.agent.get(url).header("accept", accept).config().timeout_global(Some(SMALL)).build();
         let mut response = request.call().map_err(|e| no_answer("GET", url, e))?;
-        if !response.status().is_success() {
-            return Err(format!("GET {url}: HTTP {}", response.status().as_u16()));
+        let status = response.status().as_u16();
+        match response.body_mut().read_to_vec() {
+            Ok(body) => Ok((status, body)),
+            // The status of an answer that is no success says enough.
+            Err(_) if !(200..=299).contains(&status) => Ok((status, Vec::new())),
+            Err(e) => Err(format!("GET {url}: {e}")),
         }
-        response.body_mut().read_to_vec().map_err(|e| format!("GET {url}: {e}"))
     }
 
     /// The lock that a download of `url` needs. One process at a time downloads a URL.
@@ -354,7 +365,7 @@ fn retry_after(value: &str) -> Option<Duration> {
 }
 
 /// The name of the files that a download of `url` keeps in `partial/`.
-fn key(url: &str) -> String {
+pub(crate) fn key(url: &str) -> String {
     store::sha256_hex(url.as_bytes())[..32].to_string()
 }
 

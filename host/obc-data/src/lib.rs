@@ -12,6 +12,7 @@ pub mod lock;
 pub mod machines;
 pub mod product;
 pub mod r2;
+pub mod ready;
 pub mod regions;
 pub mod release;
 pub mod serve;
