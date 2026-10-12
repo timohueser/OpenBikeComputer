@@ -31,10 +31,13 @@ pub struct LayerState {
     /// The cause in a few words; `null` without a cause.
     pub text: Option<String>,
     /// How its steps bake; `null` for a layer that only the release has.
-    pub shape: Option<Baking>,
+    pub shape: Option<LayerShape>,
     /// The format and the revision of its steps; `null` for a layer that only the release has.
     pub format: Option<u32>,
     pub revision: Option<u32>,
+    /// The format and the revision of the layer in the release; `null` while the release has none.
+    pub served_format: Option<u32>,
+    pub served_revision: Option<u32>,
     /// The programs that read its files.
     pub readers: Vec<String>,
     /// The layers and the sources that its steps read, sorted. In place of a layer that no program
@@ -45,7 +48,7 @@ pub struct LayerState {
 /// How the steps of a layer bake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum Baking {
+pub enum LayerShape {
     /// Per grid leaf.
     Tiled,
     /// Once over the coverage of a target, also in named partitions.
@@ -135,6 +138,8 @@ pub(super) struct Judged<'a> {
     pub drops: Vec<String>,
     /// What its steps read, as [`LayerState::reads`] names it.
     pub reads: BTreeSet<String>,
+    /// The format and the revision of the layer in the release.
+    pub served: Option<(u32, u32)>,
 }
 
 impl Judged<'_> {
@@ -152,11 +157,13 @@ impl Judged<'_> {
             cause: self.cause.clone(),
             text,
             shape: declared.map(|layer| match layer.shape {
-                Shape::Tiled => Baking::Tiled,
-                Shape::Whole | Shape::Partitioned(_) => Baking::Whole,
+                Shape::Tiled => LayerShape::Tiled,
+                Shape::Whole | Shape::Partitioned(_) => LayerShape::Whole,
             }),
             format: declared.map(|layer| layer.format),
             revision: declared.map(|layer| layer.revision),
+            served_format: self.served.map(|(format, _)| format),
+            served_revision: self.served.map(|(_, revision)| revision),
             readers: declared
                 .map_or(Vec::new(), |layer| layer.readers.iter().map(|reader| reader.to_string()).collect()),
             reads: self.reads.iter().cloned().collect(),
@@ -188,7 +195,9 @@ pub(super) fn judge<'a>(
     let at = |judged: &mut Vec<Judged>, name: &str, internal: bool| {
         judged.iter().position(|layer| layer.name == name).unwrap_or_else(|| {
             let (cause, steps, drops, reads) = (None, Vec::new(), Vec::new(), BTreeSet::new());
-            judged.push(Judged { name: name.into(), internal, cause, steps, drops, reads });
+            let served =
+                release.values().find(|output| output.layer == name).map(|output| (output.format, output.revision));
+            judged.push(Judged { name: name.into(), internal, cause, steps, drops, reads, served });
             judged.len() - 1
         })
     };
@@ -359,7 +368,7 @@ mod tests {
         let test = &layers[1];
         assert_eq!(
             (test.shape, test.format, test.revision, test.readers.as_slice()),
-            (Some(Baking::Whole), Some(1), Some(1), &["tests".to_string()][..])
+            (Some(LayerShape::Whole), Some(1), Some(1), &["tests".to_string()][..])
         );
 
         let mut steps = layered();
@@ -403,6 +412,7 @@ mod tests {
         let layers = judged(&fixture, &steps, &release, &Newer::new());
         assert_eq!((layers[0].state, &layers[1].cause), (Verdict::Ok, &revision));
         assert_eq!(layers[1].text.as_deref(), Some("revision 1 → 2: improved output"));
+        assert_eq!((layers[1].revision, layers[1].served_revision), (Some(2), Some(1)));
     }
 
     #[test]

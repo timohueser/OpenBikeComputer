@@ -157,7 +157,9 @@ fn refused(args: &[String]) -> Option<Error> {
         ["runs", run] | ["runs", run, "--stop"] => name(run),
         ["update", target, ref rest @ ..] => name(target) && reviewed(rest),
         // The page asks before it runs a command that changes an R2 target, so it sends `--yes`.
-        ["rollback", target] | ["rollback", target, "--yes"] => name(target),
+        ["rollback", target, "--expect", id] | ["rollback", target, "--expect", id, "--yes"] => {
+            name(target) && name(id)
+        }
         // Without a terminal, `unlock` asks nobody: the page asks first.
         ["unlock", target, "--from", machine, "--yes"] => name(target) && name(machine),
         _ => false,
@@ -354,7 +356,11 @@ mod tests {
             &["update", "local", "--only", "--expect", "4c1e"],
             &["update", "--dry-run"],
             &["update", "local", "--detach", "--dry-run"],
-            &["rollback", "local", "--yes", "--yes"],
+            &["rollback", "local", "--expect", "2c91", "--yes", "--yes"],
+            &["rollback", "local"],
+            &["rollback", "prod", "--yes"],
+            &["rollback", "prod", "--yes", "--expect", "2c91"],
+            &["rollback", "prod", "--expect", "--yes"],
             &["update", "prod", "--expect", "4c1e", "--yes", "--accept-format-change"],
             &["rollback", "--yes"],
             &["unlock", "prod", "--from", "bake"],
@@ -375,8 +381,8 @@ mod tests {
             &["update", "local", "--box", "-5,40,-4,41", "--only", "device/map", "--dry-run"],
             &["update", "local", "--region", "freiburg", "--expect", "4c1e"],
             &["update", "prod", "--expect", "4c1e", "--accept-format-change"],
-            &["rollback", "local"],
-            &["rollback", "prod", "--yes"],
+            &["rollback", "local", "--expect", "2c91"],
+            &["rollback", "prod", "--expect", "2c91", "--yes"],
             &["update", "prod", "--expect", "4c1e", "--yes"],
             &["update", "prod", "--region", "dach", "--expect", "4c1e", "--accept-format-change", "--yes"],
             &["unlock", "prod", "--from", "bake", "--yes"],

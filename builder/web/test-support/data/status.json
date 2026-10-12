@@ -9,10 +9,16 @@
             "lock": null,
             "lock_error": null,
             "region": "freiburg",
+            "sources": [
+                {"source": "copernicus-glo30", "version": "2021", "retrieved": "2026-09-02T10:00:00Z"},
+                {"source": "land-polygons", "version": "2026-09-28", "retrieved": "2026-10-01T07:12:00Z"},
+                {"source": "osm", "version": "2026-10-05", "retrieved": "2026-10-06T06:30:00Z"},
+                {"source": "terrain-reference", "version": "v3", "retrieved": "2026-08-20T12:00:00Z"}
+            ],
             "layers": [
-                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo30", "terrain-reference"]},
-                {"layer": "device/map", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "land-polygons", "osm"]},
-                {"layer": "device/catalog", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/map"]}
+                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo30", "terrain-reference"], "served_format": 1, "served_revision": 4},
+                {"layer": "device/map", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "land-polygons", "osm"], "served_format": 19, "served_revision": 3},
+                {"layer": "device/catalog", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/map"], "served_format": 3, "served_revision": 1}
             ],
             "blocked": [],
             "drift": [],
@@ -24,95 +30,33 @@
             "target": "prod",
             "kind": "r2",
             "at": "https://maps.openbikecomputer.com",
-            "release": {
-                "serving": {"id": "7f3a111111111111111111111111111111111111111111111111111111111111", "since": "2026-10-09T08:00:00Z"},
-                "rollback": {"id": "2c91555555555555555555555555555555555555555555555555555555555555", "since": "2026-10-09T08:00:00Z"}
-            },
-            "lock": {
-                "machine": "hetzner-bake-1",
-                "run": "2026-10-12-093112",
-                "review": "4c1e0d2a00000000000000000000000000000000000000000000000000000000",
-                "phase": "build",
-                "heartbeat": "2026-10-12T10:14:04Z",
-                "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 812, "total": 1284}, {"layer": "planner/search", "done": 2, "total": 5}, {"layer": "planner/index", "done": 0, "total": 1}],
-                "stale": false
-            },
+            "release": {"serving": {"id": "7f3a111111111111111111111111111111111111111111111111111111111111", "since": "2026-10-09T08:00:00Z"}, "rollback": {"id": "2c91555555555555555555555555555555555555555555555555555555555555", "since": "2026-10-09T08:00:00Z"}},
+            "lock": {"machine": "hetzner-bake-1", "run": "2026-10-12-093112", "review": "4c1e0d2a91b7", "phase": "build", "heartbeat": "2026-10-12T10:14:04Z", "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 812, "total": 1284}, {"layer": "planner/search", "done": 2, "total": 5}, {"layer": "planner/index", "done": 0, "total": 1}], "stale": false},
             "lock_error": null,
             "region": "dach",
+            "sources": [
+                {"source": "copernicus-glo30", "version": "2021", "retrieved": "2026-09-02T10:00:00Z"},
+                {"source": "era5", "version": "2025", "retrieved": "2026-07-14T09:00:00Z"},
+                {"source": "land-polygons", "version": "2026-09-28", "retrieved": "2026-10-01T07:12:00Z"},
+                {"source": "natural-earth", "version": "5.1.2", "retrieved": "2026-06-03T08:00:00Z"},
+                {"source": "osm", "version": "2026-10-08", "retrieved": "2026-10-08T05:40:00Z"},
+                {"source": "terrain-reference", "version": "v3", "retrieved": "2026-08-20T12:00:00Z"},
+                {"source": "wiki", "version": "2026-06-01", "retrieved": "2026-06-02T11:00:00Z"}
+            ],
             "layers": [
-                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo30", "terrain-reference"]},
-                {
-                    "layer": "device/map",
-                    "state": "stale",
-                    "cause": {"kind": "version", "field": "revision", "from": 2, "to": 3},
-                    "text": "revision 2 → 3: improved output",
-                    "shape": "tiled",
-                    "format": 19,
-                    "revision": 3,
-                    "readers": ["device", "map builder"],
-                    "reads": ["device/terrain", "land-polygons", "osm"]
-                },
-                {
-                    "layer": "device/landmarks",
-                    "state": "stale",
-                    "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"},
-                    "text": "wiki 2026-06-01 → 2026-09-01",
-                    "shape": "tiled",
-                    "format": 19,
-                    "revision": 1,
-                    "readers": ["device"],
-                    "reads": ["osm", "wiki"]
-                },
-                {
-                    "layer": "device/catalog",
-                    "state": "stale",
-                    "cause": {"kind": "input", "name": "device/map"},
-                    "text": "follows device/map",
-                    "shape": "whole",
-                    "format": 3,
-                    "revision": 1,
-                    "readers": ["map builder", "desktop app"],
-                    "reads": ["device/landmarks", "device/map"]
-                },
-                {"layer": "planner/routing", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 8, "revision": 2, "readers": ["router service", "iOS offline router"], "reads": ["osm"]},
-                {"layer": "planner/basemap", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner", "iOS"], "reads": ["land-polygons", "natural-earth", "osm"]},
-                {
-                    "layer": "planner/search",
-                    "state": "stale",
-                    "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"},
-                    "text": "wiki 2026-06-01 → 2026-09-01",
-                    "shape": "whole",
-                    "format": 6,
-                    "revision": 1,
-                    "readers": ["search service"],
-                    "reads": ["osm", "wiki"]
-                },
-                {
-                    "layer": "planner/places",
-                    "state": "stale",
-                    "cause": {"kind": "input", "name": "planner/search"},
-                    "text": "follows planner/search",
-                    "shape": "whole",
-                    "format": 1,
-                    "revision": 1,
-                    "readers": ["web planner"],
-                    "reads": ["planner/search"]
-                },
-                {"layer": "planner/terrain", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 2, "readers": ["web planner", "planner/sun"], "reads": ["copernicus-glo30"]},
-                {"layer": "planner/sun", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner"], "reads": ["planner/terrain"]},
-                {"layer": "planner/climate", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner"], "reads": ["era5"]},
-                {"layer": "planner/snow", "state": "off", "cause": null, "text": null, "shape": null, "format": null, "revision": null, "readers": [], "reads": []},
-                {
-                    "layer": "planner/index",
-                    "state": "stale",
-                    "cause": {"kind": "input", "name": "planner/search"},
-                    "text": "follows planner/search",
-                    "shape": "whole",
-                    "format": 3,
-                    "revision": 1,
-                    "readers": ["web planner", "iOS", "search service", "downloads service"],
-                    "reads": ["planner/basemap", "planner/climate", "planner/places", "planner/routing", "planner/search", "planner/sun", "planner/terrain"]
-                }
+                {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo30", "terrain-reference"], "served_format": 1, "served_revision": 4},
+                {"layer": "device/map", "state": "stale", "cause": {"kind": "version", "field": "revision", "from": 2, "to": 3}, "text": "revision 2 → 3: improved output", "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "land-polygons", "osm"], "served_format": 19, "served_revision": 2},
+                {"layer": "device/landmarks", "state": "stale", "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"}, "text": "wiki 2026-06-01 → 2026-09-01", "shape": "tiled", "format": 19, "revision": 1, "readers": ["device"], "reads": ["osm", "wiki"], "served_format": 19, "served_revision": 1},
+                {"layer": "device/catalog", "state": "stale", "cause": {"kind": "input", "name": "device/map"}, "text": "follows device/map", "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/landmarks", "device/map"], "served_format": 3, "served_revision": 1},
+                {"layer": "planner/routing", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 8, "revision": 2, "readers": ["router service", "iOS offline router"], "reads": ["osm"], "served_format": 8, "served_revision": 2},
+                {"layer": "planner/basemap", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner", "iOS"], "reads": ["land-polygons", "natural-earth", "osm"], "served_format": 1, "served_revision": 1},
+                {"layer": "planner/search", "state": "stale", "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"}, "text": "wiki 2026-06-01 → 2026-09-01", "shape": "whole", "format": 6, "revision": 1, "readers": ["search service"], "reads": ["osm", "wiki"], "served_format": 6, "served_revision": 1},
+                {"layer": "planner/places", "state": "stale", "cause": {"kind": "input", "name": "planner/search"}, "text": "follows planner/search", "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner"], "reads": ["planner/search"], "served_format": 1, "served_revision": 1},
+                {"layer": "planner/terrain", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 2, "readers": ["web planner"], "reads": ["copernicus-glo30"], "served_format": 1, "served_revision": 2},
+                {"layer": "planner/sun", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner"], "reads": ["planner/terrain"], "served_format": 3, "served_revision": 1},
+                {"layer": "planner/climate", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 1, "revision": 1, "readers": ["web planner"], "reads": ["era5"], "served_format": 1, "served_revision": 1},
+                {"layer": "planner/snow", "state": "off", "cause": null, "text": null, "shape": null, "format": null, "revision": null, "readers": [], "reads": [], "served_format": null, "served_revision": null},
+                {"layer": "planner/index", "state": "stale", "cause": {"kind": "input", "name": "planner/search"}, "text": "follows planner/search", "shape": "whole", "format": 3, "revision": 1, "readers": ["web planner", "iOS", "search service", "downloads service"], "reads": ["planner/basemap", "planner/climate", "planner/places", "planner/routing", "planner/search", "planner/sun", "planner/terrain"], "served_format": 3, "served_revision": 1}
             ],
             "blocked": [],
             "drift": [],

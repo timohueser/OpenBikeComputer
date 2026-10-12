@@ -1234,7 +1234,8 @@ new data until they update. An update with a format change starts only with
 ### Rollback
 
 `obc data rollback TARGET` makes a target serve its rollback release again; for an R2 target, it
-asks first, or needs `--yes` without a terminal. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
+asks first, or needs `--yes` without a terminal. With `--expect ID`, it refuses with `blocked`
+and changes nothing when the rollback release is not ID. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
 rollback refuses. The target must have each key of the rollback release, else nothing changes.
 Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
 as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
@@ -1390,8 +1391,8 @@ addition:
   A command runs to its end, and its output is read, also when the request ends first. The page
   runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`,
   `obc data runs RUN --stop`, `obc data update TARGET` with settings flags and then `--dry-run`
-  or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET` (with
-  `--yes`) and `obc data unlock TARGET --from MACHINE --yes`.
+  or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
+  (with `--yes`) and `obc data unlock TARGET --from MACHINE --yes`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
@@ -1581,21 +1582,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "areas"
       ],
       "type": "object"
-    },
-    "Baking": {
-      "description": "How the steps of a layer bake.",
-      "oneOf": [
-        {
-          "const": "tiled",
-          "description": "Per grid leaf.",
-          "type": "string"
-        },
-        {
-          "const": "whole",
-          "description": "Once over the coverage of a target, also in named partitions.",
-          "type": "string"
-        }
-      ]
     },
     "Bbox": {
       "description": "Degrees, longitude first.",
@@ -2437,6 +2423,21 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "LayerShape": {
+      "description": "How the steps of a layer bake.",
+      "oneOf": [
+        {
+          "const": "tiled",
+          "description": "Per grid leaf.",
+          "type": "string"
+        },
+        {
+          "const": "whole",
+          "description": "Once over the coverage of a target, also in named partitions.",
+          "type": "string"
+        }
+      ]
+    },
     "LayerState": {
       "additionalProperties": false,
       "properties": {
@@ -2485,10 +2486,27 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "served_format": {
+          "description": "The format and the revision of the layer in the release; `null` while the release has none.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "served_revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "shape": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Baking"
+              "$ref": "#/$defs/LayerShape"
             },
             {
               "type": "null"
@@ -2515,6 +2533,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "shape",
         "format",
         "revision",
+        "served_format",
+        "served_revision",
         "readers",
         "reads"
       ],
@@ -3883,6 +3903,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "SourceVersion": {
+      "description": "A source version that a release read.",
+      "properties": {
+        "retrieved": {
+          "description": "When a machine first retrieved a file of it, `YYYY-MM-DDTHH:MM:SSZ`; `null` without a file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "retrieved"
+      ],
+      "type": "object"
+    },
     "Sources": {
       "properties": {
         "sources": {
@@ -4290,6 +4334,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "What `release.json` of the target says; `null` while it serves nothing."
         },
+        "sources": {
+          "description": "Each source version that the serving release read.",
+          "items": {
+            "$ref": "#/$defs/SourceVersion"
+          },
+          "type": "array"
+        },
         "target": {
           "type": "string"
         }
@@ -4302,6 +4353,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "lock",
         "lock_error",
         "region",
+        "sources",
         "layers",
         "blocked",
         "drift",

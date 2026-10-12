@@ -19,6 +19,10 @@ use crate::target::Target;
 pub struct RollbackArgs {
     /// The target, as `data/targets.toml` names it.
     target: String,
+    /// Roll back only when the rollback release has this id, so a release published since it was
+    /// read is not the one that goes.
+    #[arg(long, value_name = "ID")]
+    expect: Option<String>,
     /// Do not ask before the rollback of an R2 target. Required without a terminal.
     #[arg(long)]
     yes: bool,
@@ -44,7 +48,7 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
         super::confirm(&question, args.yes)?;
     }
     let mut run = super::api::start_run(&store, &["rollback", &args.target])?;
-    let result = rollback((&args.target, &target), &mut run);
+    let result = rollback((&args.target, &target), args.expect.as_deref(), &mut run);
     let rolled = super::api::finish_run(run, result)?;
     if json {
         return print_json(&rolled);
@@ -55,15 +59,23 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
 
 /// Switch `target` to its rollback release, after a check that the target has each of its keys,
 /// while the run holds the lock of the target.
-pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result<RolledBack, Error> {
+pub(super) fn rollback(
+    (name, target): (&str, &Target),
+    expect: Option<&str>,
+    run: &mut Run,
+) -> Result<RolledBack, Error> {
     update_cli::locked((name, target), run, |run, held| {
-        let rolled = switch((name, target), (run, held))?;
+        let rolled = switch((name, target), expect, (run, held))?;
         Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rolled.0, rollback: rolled.1 })
     })
 }
 
 /// The switch of a rollback: the release that the target serves now, and its rollback.
-fn switch((name, target): (&str, &Target), (run, held): (&mut Run, &Held)) -> Result<(String, String), Error> {
+fn switch(
+    (name, target): (&str, &Target),
+    expect: Option<&str>,
+    (run, held): (&mut Run, &Held),
+) -> Result<(String, String), Error> {
     let base = release::serving(target)?.ok_or_else(|| {
         Code::Usage
             .error(format!("target `{name}` serves no release"))
@@ -74,6 +86,11 @@ fn switch((name, target): (&str, &Target), (run, held): (&mut Run, &Held)) -> Re
             "An update of `{name}` that publishes a new release keeps the release before as the rollback."
         )));
     };
+    if let Some(expect) = expect.filter(|expect| *expect != rollback.id) {
+        return Err(Code::Blocked
+            .error(format!("the rollback release of `{name}` is {}, not {expect}; nothing changed", &rollback.id[..12]))
+            .fix(format!("Run `obc data` to see what `{name}` serves now.")));
+    }
     update_cli::enter((run, held), name, Phase::Verify)?;
     let release = update_cli::read(name, target, &rollback.id)?;
     let files: Vec<(String, u64)> = release.files().into_iter().map(|file| (file.key, file.size)).collect();
@@ -105,9 +122,13 @@ mod tests {
     use crate::engine::tests::fixture;
     use crate::release::Release;
 
-    fn rollback(fixture: &crate::engine::tests::Fixture, target: &Target) -> Result<RolledBack, Error> {
+    fn rollback(
+        fixture: &crate::engine::tests::Fixture,
+        target: &Target,
+        expect: Option<&str>,
+    ) -> Result<RolledBack, Error> {
         let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
-        let rolled = super::rollback(("local", target), &mut run);
+        let rolled = super::rollback(("local", target), expect, &mut run);
         crate::cli::api::finish_run(run, rolled)
     }
 
@@ -117,15 +138,22 @@ mod tests {
         fixture.with_sources(&[]);
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let a = update(&fixture, &target, region).unwrap().serving;
-        let refused = rollback(&fixture, &target).unwrap_err();
+        let refused = rollback(&fixture, &target, None).unwrap_err();
         assert_eq!((refused.code, refused.message.as_str()), (Code::Usage, "target `local` has no rollback release"));
         fixture.fetched_version("head", "2", "head.txt", b"newer\n");
         let b = update(&fixture, &target, |_| Ok(())).unwrap().serving;
         let keys = || target.list().unwrap().into_iter().map(|listed| listed.key).collect::<Vec<_>>();
         let before = keys();
 
+        // A rollback that expects another release than the rollback changes nothing.
+        let json = || target.get(release::SERVING).unwrap().unwrap();
+        let read = json();
+        let refused = rollback(&fixture, &target, Some(&b)).unwrap_err();
+        assert_eq!(refused.code, Code::Blocked, "{}", refused.message);
+        assert_eq!(json(), read);
+
         for (serving, rollback_id) in [(&a, &b), (&b, &a)] {
-            let rolled = rollback(&fixture, &target).unwrap();
+            let rolled = rollback(&fixture, &target, Some(serving)).unwrap();
             assert_eq!((&rolled.serving, &rolled.rollback), (serving, rollback_id));
             let now = release::serving(&target).unwrap().unwrap().0;
             assert_eq!((&now.serving.id, now.rollback.map(|role| role.id).as_ref()), (serving, Some(rollback_id)));
@@ -137,7 +165,7 @@ mod tests {
         let files = |id: &str| Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key);
         let only_a = files(&a).find(|key| !files(&b).any(|other| other == *key)).unwrap();
         target.remove(&only_a).unwrap();
-        let refused = rollback(&fixture, &target).unwrap_err();
+        let refused = rollback(&fixture, &target, None).unwrap_err();
         assert_eq!(refused.code, Code::VerifyFailed, "{}", refused.message);
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, b);
     }
