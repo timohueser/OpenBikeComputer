@@ -8,8 +8,9 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{print_json, Code, Error};
+use super::{print_json, update_cli, Code, Error};
 use crate::engine::runs::{Event, Phase, Publication, Run};
+use crate::lock::Held;
 use crate::release;
 use crate::store::Store;
 use crate::target::Target;
@@ -48,8 +49,17 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
     Ok(())
 }
 
-/// Switch `target` to its rollback release, after a check that the target has each of its keys.
+/// Switch `target` to its rollback release, after a check that the target has each of its keys,
+/// while the run holds the lock of the target.
 pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result<RolledBack, Error> {
+    update_cli::locked((name, target), run, |run, held| {
+        let rolled = switch((name, target), (run, held))?;
+        Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rolled.0, rollback: rolled.1 })
+    })
+}
+
+/// The switch of a rollback: the release that the target serves now, and its rollback.
+fn switch((name, target): (&str, &Target), (run, held): (&mut Run, &Held)) -> Result<(String, String), Error> {
     let base = release::serving(target)?.ok_or_else(|| {
         Code::Usage
             .error(format!("target `{name}` serves no release"))
@@ -60,8 +70,8 @@ pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result
             "An update of `{name}` that publishes a new release keeps the release before as the rollback."
         )));
     };
-    run.record(&Event::Phase { phase: Phase::Verify })?;
-    let release = super::update_cli::read(name, target, &rollback.id)?;
+    update_cli::enter((run, held), name, Phase::Verify)?;
+    let release = update_cli::read(name, target, &rollback.id)?;
     let files: Vec<(String, u64)> = release.files().into_iter().map(|file| (file.key, file.size)).collect();
     let missing = target.missing(&files)?;
     if let Some(key) = missing.first() {
@@ -73,7 +83,7 @@ pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result
             ))
             .fix(format!("Run `obc data update {name}` to publish again.")));
     }
-    run.record(&Event::Phase { phase: Phase::Switch })?;
+    update_cli::enter((run, held), name, Phase::Switch)?;
     if !release::switch(target, Some(&base), &rollback.id)? {
         return Err(Code::Failed
             .error(format!("release.json of `{name}` changed during the rollback; nothing switched"))
@@ -81,7 +91,7 @@ pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: rollback.id.clone() } })?;
     run.sync()?;
-    Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rollback.id, rollback: base.0.serving.id })
+    Ok((rollback.id, base.0.serving.id))
 }
 
 #[cfg(test)]

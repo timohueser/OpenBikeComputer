@@ -958,6 +958,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | Key | Holds |
 | --- | --- |
 | `release.json` | The release that the target serves, and its rollback. A switch writes it first |
+| `lock.json` | The [lock](#lock): the run that changes the target, or free |
 | `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
@@ -1045,10 +1046,50 @@ place.
 Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
 `planner/releases/` and `reference/v1/`. An update and a rollback never write or delete them.
 
+### Lock
+
+`lock.json` names the run that changes a target: `{"state": "free"}`, or the holder.
+
+```json
+{
+  "state": "held",
+  "machine": "<machine>",
+  "run": "<run id>",
+  "review": "<review id>",
+  "phase": "build",
+  "heartbeat": "2026-10-12T08:00:00Z"
+}
+```
+
+An update and a rollback hold the lock from their start to their end. `--dry-run` does not take
+it.
+
+- A run takes the lock with a conditional write: when `lock.json` is absent, or free with the tag
+  that the run read. When another run holds it, the run refuses (`blocked`) and names the holder.
+- The run writes its heartbeat each minute (`BEAT` in `lock.rs`), and with its phase at the start
+  of each phase, on the condition of the tag of its last write. `review` is `null` until the run
+  has its review. The run makes its review after it takes the lock, so `--expect` compares the
+  id of the target that the lock keeps.
+- When a write fails its condition, another run took the lock. Then the run stops and changes
+  nothing more. The write at the start of the phase `switch` checks this immediately before the
+  switch. After the switch, a lost lock stops only the collection.
+- At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
+  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
+  frees the lock too, and a run that a signal stopped before the switch does not switch. A second
+  signal ends the process at once.
+- A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
+  the lock until `unlock` frees it. `obc data unlock TARGET --from MACHINE` frees the lock of a
+  run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
+  heartbeats that did not come. It asks first. When that run continues, its next write fails,
+  and it does not switch.
+- The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
+  so the holder and `unlock` read the clock of one machine.
+- `lock.json` holds no progress of the run.
+
 ### Update
 
 `obc data update TARGET` makes a target serve its settings as the steps make them now. It writes
-only a `dir` target. One run does each phase in this order:
+only a `dir` target. One run does each phase in this order, while it holds the [lock](#lock):
 
 1. Prepare. It reads the serving release, applies the flags to its settings, and refuses a target
    without a region. It finds the fetches of the step lists, judges which are due (see
@@ -1084,13 +1125,13 @@ its bakes and the checks of the products read:
 - A step that bakes and reads a file of a fetch that the serving release lists must find the same
   SHA-256 in the record of the store: before the review, and again after the fetches of the
   update, before any bake. Else nothing changes (`verify_failed`).
-- A fetch that the serving release read, of a source whose upstream gives only its newest version
-  (a capture, a national terrain model, a delivery) and that the target does not copy, refuses the
+- A fetch that the serving release read, of a source whose upstream gives only its newest version (a
+  capture, a national terrain model, a delivery) and that the target does not copy, refuses the
   update (`blocked`) before the fetch, also while the update lists the steps, when the store lacks
   it and a capture cannot give it: this machine cannot get that version again. A capture gives the
-  version of today, and a version of a manual source that the store started (see [Fetch](#fetch)). The fix names the machine that made the serving release. A refresh that
-  moves the source to a new version is the other way. A national terrain model on a new machine
-  is such a case.
+  version of today, and a version of a manual source that the store started (see [Fetch](#fetch)).
+  The fix names the machine that made the serving release. A refresh that moves the source to a new
+  version is the other way. A national terrain model on a new machine is such a case.
 - When the store and the serving release give a fetched file the same name, size and SHA-256, the
   new release keeps the entry of the serving release.
 - A file of a kept step that a step that bakes reads, or that the check of a product reads, comes
@@ -1148,8 +1189,8 @@ new data until they update. An update with a format change starts only with
 `obc data rollback TARGET` makes a `dir` target serve its rollback release again. The release
 that served becomes the rollback, so a second rollback undoes the first. A target without a
 rollback refuses. The target must have each key of the rollback release, else nothing changes.
-Then it switches as [Publish and switch](#publish-and-switch) says. A rollback bakes, uploads and
-deletes nothing: the next update collects.
+Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
+as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.
 
 ### Collection
 
@@ -1167,10 +1208,10 @@ another release, it collects the target. The grace of a collection is 10 minutes
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
-- A file or a manifest that changed within the grace stays: an update can be about to switch to
-  it.
+- It runs while the update holds the [lock](#lock): no other run writes the target.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
-  that go. A collection that stops resumes at the next switch, from the manifests that remain.
+  that go. A collection that stops resumes at the next update that switches, from the manifests
+  that remain.
 - When it cannot read a manifest, it deletes nothing.
 
 A collection that stops does not undo the switch: the output gives what it deleted and why it
@@ -1239,12 +1280,14 @@ needs no tile handler.
 
 ### Overview
 
-`obc data` gives the machine that runs it and, for each target, the release that it serves and
-its rollback, the region, the state of each layer against the steps of now, the blocked steps,
-the pointers that drift, an error that stopped the judgement, and the command to run next. It
-fetches only small metadata, and checks upstream with the checks of the last hour. A target that
-serves nothing has the next command `obc data update TARGET --region ID`. An R2 target has no next
-command: `obc data update` writes only a `dir` target.
+`obc data` gives the machine that runs it and, for each target, the release that it serves and its
+rollback, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
+each layer against the steps of now, the blocked steps, the pointers that drift, an error that
+stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
+the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
+checks of the last hour. A target that serves nothing has the next command
+`obc data update TARGET --region ID`. An R2 target has no next command: `obc data update` writes
+only a `dir` target.
 
 ## Commands
 
@@ -1253,6 +1296,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
 | `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
+| `obc data unlock TARGET --from MACHINE [--yes] [--json]` | Frees the [lock](#lock) of a `dir` target that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
@@ -1364,8 +1408,9 @@ sets the exit status. The message tells what failed, and the fix tells what to d
 | 4 | Blocked: a credential is missing, a layer cannot be planned, the target cannot take the command, or this machine cannot do the work |
 | 5 | Verify failed: a release failed its check, or the bytes in a target are not the bytes that the command wrote |
 
-A command that deletes, `clean --apply` and `r2 delete`, shows its plan and asks in a terminal.
-Without a terminal, it needs `--yes`. Without it, it exits with 2 and deletes nothing.
+The commands that delete, `clean --apply` and `r2 delete`, and `unlock` show their plan and ask
+in a terminal. Without a terminal, they need `--yes`. Without it, they exit with 2 and change
+nothing.
 
 ### Error codes
 
@@ -1398,6 +1443,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `update` | `Updated` |
 | `update --dry-run` | `Review` |
 | `rollback` | `RolledBack` |
+| `unlock` | `Unlocked` |
 | `sources` | `Sources` |
 | `source refresh` | `Refreshed` |
 | `fetch` | `Fetched` |
@@ -2538,6 +2584,41 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "parent",
         "countries",
         "bounds"
+      ],
+      "type": "object"
+    },
+    "Holder": {
+      "additionalProperties": false,
+      "description": "The run that holds the lock of a target.",
+      "properties": {
+        "heartbeat": {
+          "description": "The time of the last heartbeat, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "machine": {
+          "description": "`OBC_DATA_MACHINE`, or else the short host name.",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "review": {
+          "description": "The id of the review that the run does; `null` until the run has it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "machine",
+        "run",
+        "review",
+        "phase",
+        "heartbeat"
       ],
       "type": "object"
     },
@@ -4291,8 +4372,26 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Holder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The run that holds the lock of the target; `null` while it is free."
+        },
+        "lock_error": {
+          "description": "Why `lock.json` of the target cannot be read; `null` when it can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "next": {
-          "description": "The command to run next; `null` when the target serves its settings as the steps make them\nnow, or when no command of this `obc data` writes the target: an R2 bucket.",
+          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now, or when no command of this `obc data`\nwrites the target: an R2 bucket.",
           "type": [
             "string",
             "null"
@@ -4325,6 +4424,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "kind",
         "at",
         "release",
+        "lock",
+        "lock_error",
         "region",
         "layers",
         "blocked",
@@ -4388,6 +4489,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "estimate",
         "peak",
         "size"
+      ],
+      "type": "object"
+    },
+    "Unlocked": {
+      "description": "What `unlock` did.",
+      "properties": {
+        "holder": {
+          "$ref": "#/$defs/Holder",
+          "description": "The run that held the lock."
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "holder"
       ],
       "type": "object"
     },
