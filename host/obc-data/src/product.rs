@@ -80,11 +80,11 @@ impl Steps {
     /// Remove steps that read a blocked layer, including their dependents.
     pub fn block_dependents(&mut self) {
         while let Some((at, reason)) = self.steps.iter().enumerate().find_map(|(at, step)| {
-            let input = step.layers().find_map(|name| self.blocked.iter().find(|b| b.layer == name))?;
-            Some((at, format!("reads blocked layer `{}`: {}", input.layer, input.reason)))
+            let input = step.layers().find_map(|name| self.blocked.iter().find(|b| b.step == name))?;
+            Some((at, format!("reads the blocked step `{}`: {}", input.step, input.reason)))
         }) {
             let step = self.steps.remove(at);
-            self.blocked.push(BlockedLayer { layer: step.name, reason });
+            self.blocked.push(BlockedLayer::new(step.name, step.layer, reason));
         }
     }
 }
@@ -98,8 +98,17 @@ impl From<Vec<Step>> for Steps {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlockedLayer {
+    /// The step that cannot be planned.
+    pub step: String,
+    /// The layer of the step.
     pub layer: String,
     pub reason: String,
+}
+
+impl BlockedLayer {
+    pub fn new(step: impl Into<String>, layer: &crate::engine::Layer, reason: impl Into<String>) -> Self {
+        BlockedLayer { step: step.into(), layer: layer.name.into(), reason: reason.into() }
+    }
 }
 
 /// Gives the pointer of a release from the store.

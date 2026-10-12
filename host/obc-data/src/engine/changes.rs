@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::plan::{again, build, build_of, needs, sized, walk, Cause, Group, Plan};
+use super::plan::{build, build_of, needs, sized, walk, Cause, Group, Plan};
 use super::release::Layer;
 use super::state::judge;
 use super::Step;
@@ -19,11 +19,7 @@ pub struct Against<'a> {
 }
 
 /// One group per layer that is stale or that only live has, then a group that repairs the drift.
-/// With `only`, the groups of [`again`] instead.
-pub fn changes(store: &Store, steps: &[Step], against: &Against, only: &[String]) -> Result<Plan, String> {
-    if !only.is_empty() {
-        return again(store, steps, only);
-    }
+pub fn changes(store: &Store, steps: &[Step], against: &Against) -> Result<Plan, String> {
     let walked = walk(store, steps)?;
     let receipts = store.layers()?;
     let (mut groups, mut unchanged) = (Vec::new(), BTreeSet::new());
@@ -55,7 +51,7 @@ pub fn changes(store: &Store, steps: &[Step], against: &Against, only: &[String]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::state::Cause as Why;
+    use crate::engine::state::{Cause as Why, Field, OPTIONS};
     use crate::engine::tests::{fixture, layered, TEST};
 
     /// The id, the cause, the layers and the drops of a group.
@@ -79,7 +75,7 @@ mod tests {
         let mut live: Vec<Layer> = built.iter().map(|b| Layer::new(&b.receipt, step(&b.receipt.step))).collect();
         live.push(Layer { layer: "sun".into(), step: "test/sun".into(), ..live[0].clone() });
         let against = Against { layers: live.iter().map(|layer| (layer.step.as_str(), layer)).collect(), drift: None };
-        let changes = |steps: &[Step]| outline(changes(&fixture.store, steps, &against, &[]).unwrap());
+        let changes = |steps: &[Step]| outline(changes(&fixture.store, steps, &against).unwrap());
         let off = ("sun".to_string(), Some(Cause::Off), Vec::new(), names(&["test/sun"]));
         assert_eq!(changes(&steps), std::slice::from_ref(&off));
 
@@ -87,13 +83,14 @@ mod tests {
         let mut revised = layered();
         revised[0].layer = &REVISION;
         revised[1].layer = &REVISION;
-        let revision = Cause::Stale { cause: Why::Revision { from: 1, to: 2 } };
+        let revision = Cause::Stale { cause: Why::Version { field: Field::Revision, from: Some(1), to: 2 } };
         let test = ("test".to_string(), Some(revision), names(&["test/join", "test/count"]), Vec::new());
         assert_eq!(changes(&revised), [test, off.clone()]);
 
         let mut wider = layered();
         wider[2].options = serde_json::json!({"bounds": [7, 43, 8, 44]});
-        let upper = ("upper".into(), Some(Cause::Stale { cause: Why::Recipe }), names(&["test/upper"]), Vec::new());
+        let options = Cause::Stale { cause: Why::Input { name: OPTIONS.into() } };
+        let upper = ("upper".into(), Some(options), names(&["test/upper"]), Vec::new());
         let follows = Cause::Stale { cause: Why::Input { name: "upper".into() } };
         let test = ("test".into(), Some(follows), names(&["test/join", "test/count"]), Vec::new());
         assert_eq!(changes(&wider), [upper, test, off]);

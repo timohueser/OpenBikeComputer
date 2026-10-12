@@ -526,12 +526,17 @@ fn outdated() -> Error {
     Code::PlanOutdated.error("the plan is not the plan of now")
 }
 
-/// Fail with `usage` when no step makes a layer that `only` names.
-fn named(steps: &[Step], only: &[String]) -> Result<(), Error> {
-    match only.iter().find(|name| !steps.iter().any(|step| step.layer.name == name.as_str())) {
-        Some(name) => Err(Code::Usage.error(format!("`--only {name}`: no step makes the layer `{name}`"))),
-        None => Ok(()),
-    }
+/// Fail with `usage` when no step makes a layer that `only` names, or with `blocked` when its
+/// steps cannot be planned.
+fn named(steps: &[Step], only: &[String], blocked: &[BlockedProduct]) -> Result<(), Error> {
+    let Some(name) = only.iter().find(|name| !steps.iter().any(|step| step.layer.name == name.as_str())) else {
+        return Ok(());
+    };
+    let blocked = blocked.iter().flat_map(|product| &product.layers).find(|blocked| &blocked.layer == name);
+    Err(match blocked {
+        Some(blocked) => Code::Blocked.error(format!("`--only {name}`: {}: {}", blocked.step, blocked.reason)),
+        None => Code::Usage.error(format!("`--only {name}`: no step makes the layer `{name}`")),
+    })
 }
 
 /// An environment, with the sources and the regions that it was read with.
@@ -609,6 +614,11 @@ fn planned_run(
     prepare: bool,
     mut run: Option<&mut Run>,
 ) -> Result<Planned, Error> {
+    if remote.is_some() && !only.is_empty() {
+        return Err(Code::Usage
+            .error("a plan of `live` takes no `--only`: it builds each stale layer")
+            .fix("Plan `live` without `--only`, or build `local` with `--only LAYER`."));
+    }
     let sources = crate::sources::Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
     let live = remote.map(|remote| Live::read(remote, products, &sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
@@ -632,9 +642,6 @@ fn planned_run(
             env.moves = moves(&loaded.sources, args)?;
             if let Some(live) = &live {
                 env.live = live.versions();
-            }
-            // `--only` builds the named layers with the versions of live: no stale source moves.
-            if live.is_some() && only.is_empty() {
                 let inventory = super::freshness::discover(
                     root,
                     products,
@@ -691,7 +698,7 @@ fn planned_run(
     };
     let read = env.read.borrow().clone();
     env.moves.retain(|source, _| read.keys().any(|(id, _)| id == source));
-    named(&steps, only)?;
+    named(&steps, only, &blocked)?;
 
     let Some(live) = live else {
         let all = if only.is_empty() { plan::plan(store, &steps)? } else { plan::again(store, &steps, only)? };
@@ -706,7 +713,7 @@ fn planned_run(
     };
     let drift = listed.as_deref().map(|listed| live.drift(listed));
     let against = against(&live, &blocked, drift.as_deref(), store);
-    let all = changes::changes(store, &steps, &against, only)?;
+    let all = changes::changes(store, &steps, &against)?;
     let mut plan = env_plan(env, only, all, blocked, Some((&live, edits)));
     plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
     let (mut next, _) = next(root, store, products, &live, &steps, &plan)?;
@@ -1133,7 +1140,7 @@ fn list_steps(
                     let reason = listed
                         .blocked
                         .iter()
-                        .map(|layer| format!("{}: {}", layer.layer, layer.reason))
+                        .map(|blocked| format!("{}: {}", blocked.step, blocked.reason))
                         .collect::<Vec<_>>()
                         .join("; ");
                     blocked.push(BlockedProduct { product: product.name().into(), reason, layers: listed.blocked });
@@ -1325,7 +1332,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::engine::snapshot_files;
-    use crate::engine::state::Cause as Why;
+    use crate::engine::state::{Cause as Why, Field};
     use crate::engine::tests::{fixture, pipeline, write, Fixture};
 
     /// The test pipeline, listed once the store has the snapshot `index@1`.
@@ -1502,10 +1509,11 @@ pub(crate) mod tests {
                     }]));
                 }
                 let mut listed: crate::product::Steps = pipeline().into();
-                listed.blocked.push(crate::product::BlockedLayer {
-                    layer: "test/content".into(),
-                    reason: env.fetch_failures[0].1.clone(),
-                });
+                listed.blocked.push(crate::product::BlockedLayer::new(
+                    "test/content",
+                    &crate::engine::tests::TEST,
+                    env.fetch_failures[0].1.clone(),
+                ));
                 Ok(listed)
             }
         }
@@ -1962,10 +1970,11 @@ pub(crate) mod tests {
             store: &Store,
         ) -> Result<crate::product::Steps, Unplanned> {
             let mut listed = Versioned.steps(root, env, regions, store)?;
-            listed.blocked.push(crate::product::BlockedLayer {
-                layer: "test/missing".into(),
-                reason: "capture needs `--move wikidata`".into(),
-            });
+            listed.blocked.push(crate::product::BlockedLayer::new(
+                "test/missing",
+                &crate::engine::tests::TEST,
+                "capture needs `--move wikidata`",
+            ));
             Ok(listed)
         }
     }
@@ -1991,7 +2000,7 @@ pub(crate) mod tests {
         let built = run_build(&root, &fixture.store, &Http::new(), None, &[&Partial], &args).unwrap();
         assert_eq!(built.layers.len(), 3);
         assert!(built.releases.is_empty());
-        assert_eq!(built.blocked[0].layers[0].layer, "test/missing");
+        assert_eq!(built.blocked[0].layers[0].step, "test/missing");
         let events = crate::engine::runs::events(&fixture.store, &built.run).unwrap();
         assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
     }
@@ -2181,7 +2190,10 @@ pub(crate) mod tests {
         assert_eq!((steps(test).join(" "), test.builds.len()), ("test/upper test/count".into(), 3));
         assert_eq!(
             (steps(revised), &revised.cause),
-            (vec!["test/join".into()], &Some(Cause::Stale { cause: Why::New }))
+            (
+                vec!["test/join".into()],
+                &Some(Cause::Stale { cause: Why::Version { field: Field::Format, from: None, to: 1 } })
+            )
         );
         assert_eq!(repair.cause, Some(Cause::Repair { keys: vec![count.clone()] }));
         assert!(repair.builds.is_empty(), "the groups make count again");
@@ -2221,15 +2233,11 @@ pub(crate) mod tests {
              names test/objects/old"
         );
 
-        let err = live_plan(&fixture, &remote, &["nothing"]).unwrap_err();
+        let err = live_plan(&fixture, &remote, &["test"]).unwrap_err();
         assert_eq!(
             (err.code, err.message.as_str()),
-            (Code::Usage, "`--only nothing`: no step makes the layer `nothing`")
+            (Code::Usage, "a plan of `live` takes no `--only`: it builds each stale layer")
         );
-        let plan = live_plan(&fixture, &remote, &["test"]).unwrap();
-        assert_eq!((plan.groups.len(), plan.groups[0].cause.clone(), plan.moves.len()), (1, Some(Cause::Named), 0));
-        let again: Vec<(&str, bool)> = plan.groups[0].builds.iter().map(|b| (b.step.as_str(), b.again)).collect();
-        assert_eq!(again, [("test/upper", true), ("test/join", false), ("test/count", true)], "no source moves");
 
         write(
             &fixture.root().join("data/regions/andorra.toml"),
