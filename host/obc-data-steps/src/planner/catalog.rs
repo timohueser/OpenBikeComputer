@@ -14,7 +14,6 @@ use serde_json::{json, Value};
 const INDEX: &str = "planner/index";
 /// The step that writes the pointer.
 pub const STEP: &str = "planner/catalog";
-const TILES: &str = "https://tiles.openbikecomputer.com";
 
 #[derive(Deserialize)]
 struct Config {
@@ -27,6 +26,8 @@ pub(super) struct Origins {
     pub site_origin: String,
     pub api_origin: String,
     pub objects_origin: String,
+    /// The tile Worker, which reads `releases/<id>/public/` and `objects/` of the bucket.
+    pub tiles_origin: String,
 }
 
 /// The origins of `data/planner-runtime.toml` that the pointer names.
@@ -34,7 +35,9 @@ pub(super) fn publication(root: &Path) -> Result<Origins, String> {
     let path = root.join("data/planner-runtime.toml");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let config: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    for origin in [&config.publication.site_origin, &config.publication.api_origin, &config.publication.objects_origin]
+    let publication = &config.publication;
+    for origin in
+        [&publication.site_origin, &publication.api_origin, &publication.objects_origin, &publication.tiles_origin]
     {
         let host = origin.strip_prefix("https://").ok_or("publication needs HTTPS origins")?;
         if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".-:".contains(&byte)) {
@@ -76,7 +79,7 @@ pub fn pointer(request: &Request) -> Result<(), String> {
     let path = request.layers.get(INDEX).and_then(|files| files.get("release.json")).ok_or("no release.json")?;
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let document: Value = serde_json::from_slice(&bytes).map_err(|e| format!("release.json: {e}"))?;
-    let tiles = format!("{TILES}/releases/{id}");
+    let tiles = format!("{}/releases/{id}", origins.tiles_origin);
     let files = document["files"].as_object().ok_or("planner index has no files")?;
     let layers: BTreeMap<_, _> = ["snow", "climate", "sun"]
         .into_iter()
