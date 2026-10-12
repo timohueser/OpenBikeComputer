@@ -28,7 +28,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
-| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The raw Wikimedia dumps `wikidata`, `wikipedia` and `commons` have no copy until a prepared source reads them |
+| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The Wikimedia API captures `wikidata`, `wikipedia` and `commons` have no copy. The national terrain models `dtm-*` have no copy either: `reference/v1/` holds what the device reads of them |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
@@ -969,7 +969,7 @@ SHA-256 of these bytes.
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
 | `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
-| `sources` | `[{source, version, params, files, copy}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, size, sha256}]`, sorted by `name`), and whether the target copies them under `sources/` |
+| `sources` | `[{source, version, params, files, copy, licence, attribution}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, size, sha256}]`, sorted by `name`), whether the target copies them under `sources/`, and for a copy the `licence` and `attribution` of `data/sources.toml`. Two fetches that name one copy name it with one SHA-256 |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
@@ -1048,8 +1048,9 @@ only a `dir` target. One run does each phase in this order:
 2. Review, as [Review](#review) says. A refused review changes nothing.
 3. Build. It fetches and bakes the groups.
 4. Verify. The new release has the output of each step, the pointer and the named files of each
-   product. When it serves as the serving release, with the same settings, outputs, pointers and
-   named files, the update changes nothing but a pointer that drifts. Else each product checks it,
+   product. When it serves as the serving release, with the same settings, outputs, pointers,
+   named files and source files, the update changes nothing but a pointer that drifts. Whether the
+   target copies a source, and its credit, change no file of the release. Else each product checks it,
    and a failed check changes nothing.
 5. Upload and switch, as [Publish and switch](#publish-and-switch) says.
 6. Collect, as [Collection](#collection) says, when it switched to another release.
@@ -1109,8 +1110,8 @@ another release, it collects the target. The grace of a collection is 10 minutes
 `collection.rs`): longer than a client needs to fetch the files that a pointer it just read names.
 
 - When a pointer does not hold the bytes of the serving release, it deletes nothing.
-- It deletes only keys under `objects/`, `releases/` and `sources/`, and the temporary files of a
-  write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a pointer with the
+- It deletes the keys under `objects/` and `releases/` that no kept release names, the keys under
+  `sources/` that a release that it drops names, and the temporary files of a write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a pointer with the
   name of the pointer. The pointers, `release.json` and the keys of older publishers stay.
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
@@ -4086,6 +4087,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "fix": {
+          "description": "What to do about `error`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "description": "`dir` or `r2`, as `data/targets.toml` says.",
           "type": "string"
@@ -4139,6 +4147,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "blocked",
         "drift",
         "error",
+        "fix",
         "next"
       ],
       "type": "object"

@@ -379,9 +379,12 @@ fn compose(
     Ok(release)
 }
 
-/// The release `id` of the target `name`.
+/// The release `id` of the target `name`. A manifest that does not parse is `invalid_data`; a failed
+/// read stays what it is.
 pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Error> {
-    Release::read(target, id).map_err(|e| {
+    let key = release::manifest_key(id);
+    let bytes = target.get(&key)?.ok_or_else(|| Code::Failed.error(format!("target `{name}` has no {key}")))?;
+    Release::parse(id, &bytes).map_err(|e| {
         let fix = match target {
             Target::Dir(dir) => format!(
                 "An older `obc data` can have written it: move the folder aside with `mv {0} {0}.old`, then run \
@@ -434,8 +437,10 @@ fn reads(
                     .error(format!("neither the store nor the serving release has the files of {source}@{version}"))
             })?;
         files.sort_by(|a, b| a.name.cmp(&b.name));
-        let copy = sources.iter().any(|declared| declared.id == source && declared.copied());
-        fetched.push(Fetched { source, version, params, files, copy });
+        let copied = sources.iter().find(|declared| declared.id == source && declared.copied());
+        let (licence, attribution) =
+            copied.map_or((None, None), |source| (source.licence.clone(), source.attribution.clone()));
+        fetched.push(Fetched { source, version, params, files, copy: copied.is_some(), licence, attribution });
     }
     Ok(fetched)
 }
@@ -795,7 +800,9 @@ pub(super) mod tests {
         assert!(only_a.contains("sources/head/1/head.txt"), "the copy of a source file: {only_a:?}");
         assert!(!files(&a).iter().any(|key| key.starts_with("sources/tail/")), "tail is not declared");
         only_a.insert(release::manifest_key(&a));
-        let older = ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part"];
+        // `sources/x/y` is a key that no release names, such as a prepared source.
+        let older =
+            ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part", "sources/x/y"];
         let orphans = ["objects/0000", "objects/.1.2.part", ".release.json.1.tmp", "cell-catalog/.catalog.json.1.tmp"];
         for key in older.iter().chain(&orphans) {
             write(&dir.join(key), key);
