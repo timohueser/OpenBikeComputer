@@ -7,6 +7,7 @@ mod listing;
 mod open_cli;
 mod overview;
 mod r2_cli;
+mod rollback_cli;
 mod runs_cli;
 mod serve_cli;
 mod setup_cli;
@@ -50,6 +51,9 @@ enum Command {
     /// Bake what is stale for a target, publish the new release and switch the target to it. The
     /// flags change the settings of the target, which its release keeps.
     Update(update_cli::UpdateArgs),
+    /// Switch a target back to its rollback release. The release that served becomes the rollback,
+    /// so a second rollback undoes the first.
+    Rollback(rollback_cli::RollbackArgs),
     /// Every source with licence, R2 copy, and the policy, versions and state for each target.
     Sources {
         /// Check upstream now, not from a check of the last hour.
@@ -126,6 +130,7 @@ fn run(cli: Cli, products: &[&dyn Product], ui: Option<Ui>) -> Result<(), Error>
     };
     match command {
         Command::Update(args) => update_cli::command(&root()?, products, args, json),
+        Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
         Command::Sources { check_now } => print_sources(&root()?, check_now, json),
         Command::Fetch { target, params } => {
             let registry = registry(&root()?)?;
