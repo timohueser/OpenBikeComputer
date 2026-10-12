@@ -7,6 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
@@ -57,9 +58,6 @@ const LOCK: &str = ".lock";
 
 /// A number for each part file of this process.
 static NEXT: AtomicU64 = AtomicU64::new(0);
-
-/// What only a dir target does.
-const DIR_ONLY: &str = "`obc data` downloads a key only from a dir target";
 
 /// The targets of `data/targets.toml` in the repository at `root`, by name. A dir target without
 /// `dir` is the folder of its name beside the store: a link from one to the other needs one file
@@ -150,7 +148,7 @@ impl Target {
             // With the credentials, the S3 API: the public origin can serve a cached pointer.
             Target::R2(remote) => match remote.writer() {
                 Ok(writer) => Ok(writer.get(key)?.map(|(bytes, _)| bytes)),
-                Err(_) => match Http::new().bytes(&remote.url(key), "*/*") {
+                Err(_) => match http().bytes(&remote.url(key), "*/*") {
                     Ok(bytes) => Ok(Some(bytes)),
                     Err(e) if http::not_found(&e) => Ok(None),
                     Err(e) => Err(e),
@@ -278,7 +276,19 @@ impl Target {
     /// key; an error when its bytes have another SHA-256.
     pub fn download(&self, key: &str, sha256: &str, store: &Store) -> Result<Option<PathBuf>, String> {
         crate::r2::check_key(key)?;
-        let Target::Dir(dir) = self else { return Err(DIR_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => {
+                let url = remote.url(key);
+                let _lock = Http::lock(store, &url)?;
+                return match http().download(store, &url, &http::Expect { sha256: Some(sha256), ..Default::default() })
+                {
+                    Ok(downloaded) => Ok(Some(downloaded.object)),
+                    Err(e) if http::not_found(&e) => Ok(None),
+                    Err(e) => Err(e),
+                };
+            }
+        };
         // Two processes on one store download into other files.
         let part =
             store.partial(&format!("{sha256}.{}.{}.target", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -392,6 +402,12 @@ fn r2_list(remote: &r2::Remote) -> Result<Vec<Listed>, String> {
     Ok(listed)
 }
 
+/// The client of the reads of an R2 target: one for the process, so its connections stay open.
+fn http() -> &'static Http {
+    static HTTP: OnceLock<Http> = OnceLock::new();
+    HTTP.get_or_init(Http::new)
+}
+
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -478,6 +494,28 @@ mod tests {
         });
         assert_eq!(won, 1, "one of the writers that start together");
         assert!(target.put("../x", b"", &Condition::Any).is_err());
+    }
+
+    #[test]
+    fn an_r2_target_gives_the_store_an_object_through_its_public_origin() {
+        let scratch = Scratch::new("target-r2");
+        let (bucket, key) = (scratch.0.join("bucket"), "sources/osm/2026#1/a b.pbf");
+        fs::create_dir_all(bucket.join("sources/osm/2026#1")).unwrap();
+        fs::write(bucket.join(key), b"pbf").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+        let public = format!("http://{}", listener.local_addr().unwrap());
+        let router = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(&bucket));
+        runtime.spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (target, store) =
+            (Target::R2(r2::Remote { public, prefix: String::new() }), Store::at(scratch.0.join("store")));
+
+        let object = target.download(key, &sha256_hex(b"pbf"), &store).unwrap().unwrap();
+        assert_eq!(fs::read(object).unwrap(), b"pbf");
+        assert!(target.download(key, &"0".repeat(64), &store).unwrap_err().contains("the SHA-256 is"));
+        assert_eq!(target.download("objects/none", &"0".repeat(64), &store).unwrap(), None);
+        let remote = r2::Remote { public: "https://maps.example".into(), prefix: String::new() };
+        assert_eq!(remote.url("sources/a#b/c?d"), "https://maps.example/sources/a%23b/c%3Fd");
     }
 
     #[test]
