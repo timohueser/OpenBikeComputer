@@ -51,6 +51,7 @@ Publication also requires its own bucket credentials.
 | `obc data runs RUN --result` | Read the final output; preparation includes `.plan` |
 | `obc data apply live --plan PLAN --yes` | Execute the exact owner-approved plan |
 | `obc data runs RUN --stop` | Drain admitted work; an apply stops before its next phase |
+| `obc data build local --only LAYER` | Build a layer again after a code change with the same version |
 | `obc data clean` | Review unused store bytes before `--apply` |
 
 Preparation acquires missing Wikimedia facts and checks stale identities by policy.

@@ -11,14 +11,15 @@ use serde::Serialize;
 
 use super::build_cli::{check_layers, fetcher, load, status_steps};
 use super::{bytes, cells, print_json, print_table, read_live, registry, remote, source_rows, Code, Error};
-use crate::engine::state::{self, Environment};
+use crate::engine::release::Layer;
+use crate::engine::state::{self, Environment, LayerState, Newer, Verdict};
 use crate::engine::Step;
 use crate::env::Env;
 use crate::fetch::http::Http;
 use crate::live::{Check, Remote};
-use crate::product::{Product, Wanted};
+use crate::product::{BlockedLayer, Product, Wanted};
 use crate::regions::Regions;
-use crate::sources::{self, State};
+use crate::sources::State;
 use crate::store::Store;
 
 #[derive(Args)]
@@ -53,16 +54,10 @@ pub struct ProductStatus {
     pub bytes: Option<u64>,
     /// The optional layers of the product, which `layer live NAME on|off` switches.
     pub optional: Vec<String>,
-    /// Each layer of the environment `live`, in dependency order; `None` when a fetch that its
-    /// step list needs failed, and `attention` says why.
-    pub layers: Option<Vec<LayerStatus>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-pub struct LayerStatus {
-    pub layer: String,
-    pub state: State,
-    pub reason: Option<String>,
+    /// Each operator layer that the steps of the product make or that its release holds, in
+    /// dependency order, then its optional layers that are off; `None` when a fetch that its step
+    /// list needs failed, and `attention` says why.
+    pub layers: Option<Vec<LayerState>>,
 }
 
 /// Something that needs a person.
@@ -79,7 +74,7 @@ pub struct Attention {
 pub enum AttentionKind {
     /// A source that is stale.
     Stale,
-    /// A source that is blocked.
+    /// A source that is blocked, or a step that cannot be planned.
     Blocked,
     /// The checkout is not a pushed commit; an apply refuses it.
     Unpushed,
@@ -143,16 +138,20 @@ fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, E
         None,
     )?;
     let rows = source_rows(&registry, Some(&live.by_source()), Some(&inventory), false)?;
-    let statuses = rows.iter().flat_map(|row| {
-        row.requests.iter().map(|request| {
-            let status =
-                sources::Status { state: request.state, reason: request.reason.clone(), age_days: request.age_days };
-            ((row.source.id.clone(), request.params.clone()), status)
+    let newer: Newer = rows
+        .iter()
+        .flat_map(|row| row.requests.iter().map(move |request| (row, request)))
+        .filter(|(_, request)| request.state == State::Stale)
+        .map(|(row, request)| {
+            let upstream =
+                request.observation.result.version().filter(|version| Some(*version) != request.live.as_deref());
+            ((row.source.id.clone(), request.params.clone()), upstream.map(str::to_string))
         })
-    });
-    let environment = Environment { sources: statuses.collect(), live: live.layers() };
+        .collect();
     let fetch = discovery_fetch(fetcher(root, &store, &http, &loaded.sources, &loaded.env, Some(&copies)), false);
-    let mut layers = layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
+    let environment = Environment { release: live.layers(), newer };
+    let (mut layers, blocked) =
+        layer_states(root, &store, products, &mut loaded.env, &loaded.regions, &environment, fetch)?;
     let mut attention = Vec::new();
     if let Err(error) = super::apply_cli::pushed_commit(root) {
         let reason = format!("{} {}", error.message, error.fix);
@@ -175,14 +174,13 @@ fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, E
         ProductStatus { product: product.product.clone(), release, applied, commit, bytes, optional, layers }
     });
     let products: Vec<ProductStatus> = products.collect();
-    for layer in
-        products.iter().flat_map(|product| product.layers.iter().flatten()).filter(|l| l.state == State::Blocked)
-    {
-        attention.push(Attention {
-            kind: AttentionKind::Blocked,
-            about: layer.layer.clone(),
-            reason: layer.reason.clone().unwrap_or_default(),
-        });
+    let mut steps: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for BlockedLayer { step, layer, reason } in blocked {
+        steps.entry((layer, reason)).or_default().push(step);
+    }
+    for ((about, reason), steps) in steps {
+        let steps = if steps.len() == 1 { steps[0].clone() } else { format!("{} steps", steps.len()) };
+        attention.push(Attention { kind: AttentionKind::Blocked, about, reason: format!("{steps}: {reason}") });
     }
     for row in &rows {
         let kind = match row.state {
@@ -236,9 +234,12 @@ pub(super) fn discovery_fetch(
     }
 }
 
-/// The state of each layer of `live`, by product. `Err` with the reason for a product that is
-/// blocked, whose step list needs a fetch that fails, or that reads a layer of such a product: the
-/// rest of `status` does not need its steps.
+/// The layers of each product, or why they are unknown.
+type Found = BTreeMap<String, Result<Vec<LayerState>, String>>;
+
+/// The state of each layer of `live`, by product, and the steps that cannot be planned. `Err` with
+/// the reason for a product that is blocked, whose step list needs a fetch that fails, or that
+/// reads a layer of such a product: the rest of `status` does not need its steps.
 fn layer_states(
     root: &Path,
     store: &Store,
@@ -247,27 +248,19 @@ fn layer_states(
     regions: &Regions,
     environment: &Environment,
     mut fetch: impl FnMut(&Wanted) -> Result<String, Error>,
-) -> Result<BTreeMap<String, Result<Vec<LayerStatus>, String>>, Error> {
+) -> Result<(Found, Vec<BlockedLayer>), Error> {
     check_layers(products, env)?;
     env.fetch_failures.clear();
-    env.stale.extend(
-        environment.sources.iter().filter(|(_, status)| status.state == State::Stale).map(|((id, _), _)| id.clone()),
-    );
-    env.stale_requests.extend(
-        environment.sources.iter().filter(|(_, status)| status.state == State::Stale).map(|(key, _)| key.clone()),
-    );
-    let (mut listed, mut found, mut refused) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
+    env.stale.extend(environment.newer.keys().map(|(id, _)| id.clone()));
+    env.stale_requests.extend(environment.newer.keys().cloned());
+    let (mut listed, mut found, mut refused, mut blocked) = (Vec::new(), BTreeMap::new(), BTreeSet::new(), Vec::new());
     for product in products {
         let steps = status_steps(root, *product, env, regions, store, &mut fetch);
         refused.extend(env.refused.borrow().iter().cloned());
         match steps {
             Ok(Ok(steps)) => {
-                let blocked = steps
-                    .blocked
-                    .into_iter()
-                    .map(|b| LayerStatus { layer: b.layer, state: State::Blocked, reason: Some(b.reason) })
-                    .collect();
-                found.insert(product.name().to_string(), Ok(blocked));
+                blocked.extend(steps.blocked);
+                found.insert(product.name().to_string(), Ok(Vec::new()));
                 listed.push((product.name().to_string(), steps.steps));
             }
             Ok(Err(reason)) => {
@@ -291,21 +284,41 @@ fn layer_states(
         let product = products.iter().find(|product| product.name() == name).expect("listed product");
         super::build_cli::add_steps(products, *product, &mut steps, listed)?;
     }
-    let states = state::state(store, &steps, environment)?;
-    for layer in states {
-        let product = layer.layer.split('/').next().unwrap_or_default().to_string();
-        if let Some(Ok(layers)) = found.get_mut(&product) {
-            layers.push(LayerStatus { layer: layer.layer, state: layer.state, reason: layer.reason });
+    // The judge reads the live layers of the listed products. `attention` lists a blocked step.
+    let owner = |step: &str| step.split('/').next().unwrap_or_default().to_string();
+    let judged = |step: &str| matches!(found.get(&owner(step)), Some(Ok(_))) && !blocked.iter().any(|b| b.step == step);
+    let release = environment.release.iter().filter(|(step, _)| judged(step));
+    let release: BTreeMap<String, Layer> = release.map(|(step, layer)| (step.clone(), layer.clone())).collect();
+    let environment = Environment { release, newer: environment.newer.clone() };
+    // A layer is listed for each product whose release holds one of its steps.
+    let mut owners: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for step in &steps {
+        owners.entry(step.layer.name).or_default().insert(owner(&step.name));
+    }
+    for layer in environment.release.values() {
+        owners.entry(&layer.layer).or_default().insert(owner(&layer.step));
+    }
+    for layer in state::state(store, &steps, &environment)? {
+        for product in &owners[layer.layer.as_str()] {
+            if let Some(Ok(layers)) = found.get_mut(product) {
+                layers.push(layer.clone());
+            }
         }
     }
-    Ok(found)
+    for product in products {
+        let Some(Ok(layers)) = found.get_mut(product.name()) else { continue };
+        for name in product.optional().iter().filter(|name| !env.layers.iter().any(|on| on == *name)) {
+            let layer = format!("{}/{name}", product.name());
+            if !layers.iter().any(|known| known.layer == layer) {
+                layers.push(LayerState { layer, state: Verdict::Off, cause: None, text: None });
+            }
+        }
+    }
+    Ok((found, blocked))
 }
 
 /// A listed product that reads a layer of a product whose layers are unknown, with that reason.
-fn reads_unknown(
-    listed: &[(String, Vec<Step>)],
-    found: &BTreeMap<String, Result<Vec<LayerStatus>, String>>,
-) -> Option<(String, String)> {
+fn reads_unknown(listed: &[(String, Vec<Step>)], found: &Found) -> Option<(String, String)> {
     let made: HashSet<&str> = listed.iter().flat_map(|(_, steps)| steps).map(|step| step.name.as_str()).collect();
     listed.iter().find_map(|(product, steps)| {
         let missing = steps.iter().flat_map(Step::layers).find(|layer| !made.contains(layer))?;
@@ -327,7 +340,7 @@ fn print_status(status: &Status) {
             table.push(vec![product.product.clone(), release, size, "unknown".into()]);
             continue;
         };
-        let mut counts: Vec<(State, usize)> = Vec::new();
+        let mut counts: Vec<(Verdict, usize)> = Vec::new();
         for layer in layers {
             match counts.iter_mut().find(|(state, _)| *state == layer.state) {
                 Some((_, n)) => *n += 1,
@@ -340,6 +353,15 @@ fn print_status(status: &Status) {
     if !table.is_empty() {
         table.insert(0, cells(["PRODUCT", "RELEASE", "SIZE", "LAYERS"]));
         print_table(&table);
+    }
+    let stale = status.products.iter().flat_map(|product| {
+        let layers = product.layers.iter().flatten().filter(|layer| layer.state == Verdict::Stale);
+        layers.map(|layer| vec![format!("  {}", layer.layer), layer.text.clone().unwrap_or_default()])
+    });
+    let stale: Vec<Vec<String>> = stale.collect::<BTreeSet<_>>().into_iter().collect();
+    if !stale.is_empty() {
+        println!("STALE");
+        print_table(&stale);
     }
     println!("NEEDS ATTENTION");
     let rows = status.attention.iter().map(|a| vec![format!("  {}", a.kind.text()), a.about.clone(), a.reason.clone()]);
@@ -470,9 +492,9 @@ mod tests {
         let scratch = Scratch::new("status-bulk");
         let store = Store::at(scratch.0.join("store"));
         let regions = Regions::new(Vec::new()).unwrap();
-        let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
+        let environment = Environment { release: BTreeMap::new(), newer: Newer::new() };
         let fetch = discovery_fetch(|_| panic!("a status must not download an extract"), false);
-        let found =
+        let (found, _) =
             layer_states(&scratch.0, &store, &[&Bulk], &mut Env::default(), &regions, &environment, fetch).unwrap();
         assert!(found["test"].as_ref().unwrap_err().contains("geofabrik-extracts` is not prepared"));
         assert!(!store.root().join("snapshots").exists());
@@ -497,10 +519,11 @@ mod tests {
                     step("test/usable", vec![], "out", Run::Command(vec!["true".into()])),
                     step("test/reader", vec![Input::layer("test/capture")], "out", run),
                 ],
-                blocked: vec![crate::product::BlockedLayer {
-                    layer: "test/capture".into(),
-                    reason: "plan with `--move wikidata`".into(),
-                }],
+                blocked: vec![crate::product::BlockedLayer::new(
+                    "test/capture",
+                    &crate::engine::tests::TEST,
+                    "plan with `--move wikidata`",
+                )],
             };
             listed.block_dependents();
             Ok(listed)
@@ -512,19 +535,15 @@ mod tests {
         let scratch = Scratch::new("status-partial");
         let store = Store::at(scratch.0.join("store"));
         let regions = Regions::new(Vec::new()).unwrap();
-        let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
-        let found = layer_states(&scratch.0, &store, &[&Partial], &mut Env::default(), &regions, &environment, |_| {
-            panic!("no capture fetch")
-        })
-        .unwrap();
+        let environment = Environment { release: BTreeMap::new(), newer: Newer::new() };
+        let fetch = |_: &Wanted| panic!("no capture fetch");
+        let (found, blocked) =
+            layer_states(&scratch.0, &store, &[&Partial], &mut Env::default(), &regions, &environment, fetch).unwrap();
         let layers = found["test"].as_ref().unwrap();
-        assert_eq!(layers.len(), 3);
-        assert!(layers.iter().any(|layer| layer.layer == "test/usable" && layer.state == State::NotApplied));
-        assert!(layers.iter().filter(|layer| layer.state == State::Blocked).all(|layer| layer
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("--move wikidata")));
+        assert_eq!((layers.len(), layers[0].state, layers[0].text.as_deref()), (1, Verdict::Stale, Some("new")));
+        let blocked: Vec<(&str, bool)> =
+            blocked.iter().map(|b| (b.step.as_str(), b.reason.contains("--move wikidata"))).collect();
+        assert_eq!(blocked, [("test/capture", true), ("test/reader", true)]);
     }
 
     #[test]
@@ -532,14 +551,14 @@ mod tests {
         let scratch = Scratch::new("status-unreachable");
         let store = Store::at(scratch.0.join("store"));
         let regions = Regions::new(Vec::new()).unwrap();
-        let environment = Environment { sources: BTreeMap::new(), live: BTreeMap::new() };
+        let environment = Environment { release: BTreeMap::new(), newer: Newer::new() };
         let states = |code: Code| {
             let fetch = |_: &Wanted| Err(code.error("GET https://example.org/index: unreachable"));
             let mut env = Env { name: "live".into(), region: "monaco".into(), ..Env::default() };
             let products: &[&dyn Product] = &[&Fetching, &Listed, &Reading];
             layer_states(&scratch.0, &store, products, &mut env, &regions, &environment, fetch)
         };
-        let found = states(Code::FetchFailed).unwrap();
+        let (found, _) = states(Code::FetchFailed).unwrap();
         let reason = "a fetch that the step list needs failed: GET https://example.org/index: unreachable";
         assert_eq!(found["test"], Err(reason.to_string()));
         assert_eq!(found["reading"], Err(reason.to_string()), "it reads a layer of `test`");

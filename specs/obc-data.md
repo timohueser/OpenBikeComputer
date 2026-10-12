@@ -599,17 +599,24 @@ looks at the steps in dependency order:
 
 A group is one change. Two builds are in the same group when one reads the layer of the other.
 Thus a run of one group never needs a build of another group. Two groups can need the same
-fetch. `--only GROUP,…` selects groups by their `id`, and `--only none` selects no group. An `id`
-names a group only in the plan that it comes from. A plan of `live` has one group per cause instead: see
-[Changes of live](#changes-of-live).
+fetch. An `id` names a group only in the plan that it comes from. A plan of `live` has one group
+per layer that changes instead: see [Changes of live](#changes-of-live).
+
+`--only LAYER,…` names layers. The plan then has one group, with the cause `named`. Each step
+of the named layers builds again, also when the store has its key, and its receipt replaces the
+stored one. Each step that reads such a step, at any depth, builds when its key changes, and else
+reuses its layer. Each step has one build, and a step that reads a step that builds again has no
+`key` until the run. The group also builds the layers that they read and the store lacks.
+`--only` takes no `--move`, and a plan of `live` refuses it. A layer that no step makes is a usage
+error; a layer whose steps cannot be planned is `blocked`.
 
 | Key | Value |
 | --- | --- |
-| `id` | The step of the first build of the group, in dependency order |
-| `cause` | `null`. A plan of `live` gives the cause |
-| `layers`, `drops` | `[]`. A plan of `live` gives the layers that the cause changes, as `builds` gives them |
+| `id` | The step of the first build of the group, in dependency order; the layer for a group of `live`; the named layers, joined by `,`, for `--only` |
+| `cause` | `null`. A plan of `live` or `--only` gives the cause |
+| `layers`, `drops` | `[]`. A plan of `live` or `--only` gives the steps that the group changes, as `builds` gives them, and the live steps that the release no longer has |
 | `fetches` | One per version and `params`: `source`, `version`, `params` (`[[NAME, VALUE], …]`), `files` and `bytes`. `files` are the names of the files that the store lacks. `[]` means that the store cannot name them, and the fetch gets every file that it gives |
-| `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build) and `estimate` |
+| `builds` | In dependency order: `step`, `recipe` (see [Keys](#keys)), `key` (`null` while the step waits for a fetch or another build), `estimate`, and `again`: whether the step builds also when the store has its key |
 
 The estimate of a build is `wall_ms`, `bytes_out` and `peak_rss_bytes` of the newest receipt, by
 `built`, of the same step with the same options. Without one, it is the newest receipt of the
@@ -626,30 +633,27 @@ uses the normal fetcher.
 
 ### Changes of live
 
-A plan of `live` compares the steps with the layers of the live releases (see [Live](#live)). A
-layer changes when it differs from its live layer as [State of a layer](#state-of-a-layer) says,
-or when live does not have it. The plan has one group per cause. A layer can have more causes:
+A plan of `live` judges each layer of the steps against the layers of the live releases (see
+[Live](#live)), as [State of a layer](#state-of-a-layer) says. It has one group per layer that
+changes:
 
-| `cause.kind` | `id` | The layers that it changes |
+| `cause.kind` | `id` | The steps that it changes |
 | --- | --- | --- |
-| `region` | `region` | `region` of the environment is not the `region` of the live release of a product, or the product has nothing live. Each layer of the product that live does not have, or whose options or snapshot reads differ |
-| `layers` | `layers` | `layers` of the environment are not the `optional` layers of the live release of a product. Each layer of the product that live does not have |
-| `move` | `move:SOURCE` | The plan moves the source (see [Versions](#versions)). Each layer that reads it at another version than its live layer. `from` is each version that live reads, and `to` is the version of the plan |
-| `version` | `version:STEP` | The layer, the version of the layer, the inputs or `client` of the steps are not those of their live layers. Without an edit of the region, also other options or snapshot reads. `STEP` is the first step in dependency order, and `layer` is its layer. A live step that no step list makes, without an edit, has an empty `layer` |
+| `stale` | The layer | The steps of the stale layer that differ from their live layers. `cause` is the cause of the layer |
+| `off` | The layer | None. `drops` are the live steps of a layer that no step makes now |
 | `repair` | `repair` | None. `keys` are the keys of live that R2 lacks or holds with another size, as `status --check` finds them |
 | `pointer` | `pointer:PRODUCT` | None. The desired client document or release id differs without a layer change. `release` is its desired id; `document` is the SHA-256 of its compact JSON with sorted keys |
 
-A layer that reads a changed layer has its causes too. `layers` of a group are the layers that its
-cause changes, in dependency order, each with its `recipe` and `key` as in `builds`. `drops` are
-the live layers of a product that no step makes now. Their cause is the edit of the product, or
-else `version`. The `fetches` and `builds` of a group make its `layers` and the layers that they
-read, when the store lacks them. Those of `repair` make the unchanged layers of its keys that the
-store lacks. Groups come in the order of the table. Two groups can need the same build.
+`layers` of a group are the steps that it changes, in dependency order, each with its `recipe` and
+`key` as in `builds`. A stale layer also drops its live steps that no step makes now. The
+`fetches` and `builds` of a group make its `layers` and the layers that they read, when the store
+lacks them. Those of `repair` make the unchanged layers of its keys that the store lacks. Groups
+come in dependency order of their layers, then the `off` groups, `repair` and `pointer`. Two
+groups can need the same build.
 
-A plan of `live` takes every group: git holds what live contains, so an edit or a change of a
-version cannot stay out. `--only move:SOURCE,…` selects the moves: a move that it does not select
-does not move, and the steps read the version of live. `--only none` selects no move. An explicit
-`--move` that `--only` leaves out gives a warning. Another `id` in `--only` is a usage error.
+A plan of `live` takes every group: git holds what live contains, so a change of a version cannot
+stay out. A stale source moves, as [Versions](#versions) says. A plan of `live` refuses `--only`:
+build `local` with it.
 
 The release of a product after a plan is its live release with the `layers` of the groups in place
 of its live layers, without the `drops`, and with the `region` and the `optional` layers of the
@@ -746,7 +750,7 @@ one function (`obc_data::product::version`), in this order:
 A plan or a build of `live` without `--plan` first discovers active requests with metadata-only
 preparation. It selects each stale active request (see [State of a source](#state-of-a-source))
 using its own upstream observation of the last hour. Other requests keep their live versions.
-Each source remains one group, `move:SOURCE`. A held input, an unused source and a `manual`
+The layers that read it are stale with the cause `source`. A held input, an unused source and a `manual`
 source do not move this way. A stale capture requires an explicit move for its collection.
 
 A source with `refresh = "manual"` is never stale: after its first version it moves only with
@@ -816,8 +820,7 @@ Missing credentials or an upstream failure keep their actionable error and the r
 `--json` writes the plan with `env`,
 `region` and `layers` of the environment, `settings` (the complete Live settings, or `null`), `moves`, the version of each source that the plan moves
 (a `--move SOURCE` has the version that its fetch gave), `versions`, the version of each fetch that
-the step lists read, and `only`, the groups that `--only` selected, `[]` for every group or
-`["none"]` for no group. A plan
+the step lists read, and `only`, the layers that `--only` names. A plan
 of `live` also has:
 
 - `live`: per product, the id of its live release, or `null` when nothing is live, and `pointer`,
@@ -849,8 +852,8 @@ gives none. It refuses the file, with exit status 3, before it builds:
 - when `env`, `region`, `layers`, `settings`, `blocked`, `live` or `edits` differ from the environment, its
   products and live now;
 - when a step list reads a fetch that `versions` does not name;
-- when the groups that `only` selects in the plan of now differ from the groups of the file,
-  apart from `estimate` and `bytes`. Against live, the groups must change the same layers, by
+- when the groups of the plan of now differ from the groups of the file, apart from `estimate`
+  and `bytes`. Against live, the groups must change the same layers, by
   recipe, with the same causes and drops, whatever the store has: a second build of one plan does
   the same work.
 
@@ -1068,26 +1071,33 @@ the versions that it read. Uploads and removals use the same selection.
 
 ### State of a layer
 
-The engine computes the state of each layer when it is asked, and stores nothing. It compares
-the step with the layer that live has: a layer of a live release manifest. The state of a source
-is as in [State of a source](#state-of-a-source).
+The engine judges each layer when it is asked, and stores nothing. It compares each step with its
+layer in a release: for `status` and a plan of `live`, the live releases. A layer has one state:
 
-| State | When | Reason |
-| --- | --- | --- |
-| `not applied` | Live has no layer of the step | `missing in live` |
-| `not applied` | The options are not the options of the live layer | `options` |
-| `not applied` | The step reads a source that the live layer read, with another version or other `params` (in any order), or the store has the files that it reads and their digest is not the one that the live layer read | `SOURCE@VERSION not in live`, and ` (not fetched)` when the store does not have the files |
-| `code changed` | The inputs (kind and name) or whether a client reads the layer are not those of the live layer | `inputs` or `client` |
-| `code changed` | The layer, its format or its revision is not that of the live layer | `layer A → B`, `format A → B` or `revision A → B` |
-| `input changed` | A layer that the step reads is `not applied`, `code changed` or `input changed`, or its live layer is not the one that the live layer of the step read | The name of that layer |
-| `stale` | A source that the step reads is `stale` | `SOURCE: ` and the reason of the source |
-| `blocked` | A source that the step reads is `blocked` | `SOURCE: ` and the reason of the source |
-| `ok` | Otherwise | `null` |
+| State | When |
+| --- | --- |
+| `ok` | The release has each step of the layer as the steps make it now |
+| `off` | No step makes the layer: an optional layer that the environment switches off, or a layer that only the release has |
+| `stale` | A build changes the layer |
 
-When more than one row applies, the first row gives the state. In JSON, a state is `ok`,
-`stale`, `code_changed`, `input_changed`, `not_applied` or `blocked`. Each layer also has `live`
-(the key of the live layer, or `null`), `reads` (`kind`, `name`, and `version` for a snapshot)
-and `users` (the layers that read it).
+A stale layer has exactly one of three causes. A change of code, a commit or a compiler is no
+cause. When more than one row applies, the first row gives the cause. Within one row, `format`
+comes before `revision`, then the lower `from`, with `null` first; and the `source` or `name`
+that is first in byte order:
+
+| `cause.kind` | Fields | `text` | When |
+| --- | --- | --- | --- |
+| `version` | `field` (`format` or `revision`), `from`, `to` | `format 19 → 20: readers need new data`, `revision 2 → 3: improved output`, or `new` | The format or the revision of the layer is not that of a release layer of its steps. `from` is `null`, and the text `new`, when the release has no step of the layer; `field` is then `format` |
+| `source` | `source`, `from`, `to` | `wiki 2026-06-01 → 2026-09-01` | A step reads another version of the source than its release layer. For `status`, also a stale request of the source (see [State of a source](#state-of-a-source)): `to` is the newer version upstream, or `null`, and the text says `newer` |
+| `input` | `name` | `follows device/map`, or `options changed` | A step reads a step of another operator layer that is stale, or whose files in the release are not the files that its release layer read; or the store has other files of a snapshot that it reads, at the same version and `params`. `name` is that layer or source. `name` is `options` when the release has other steps of the layer, or a step with other options, inputs (kind and name), snapshot `params` or `client` |
+
+A step that reads a step of its own layer, or of an internal layer, gets the cause of that step.
+`status` does not list an internal layer: the layers that read it show its cause. In JSON, a
+layer is `{"layer", "state", "cause", "text"}`; `cause` and `text` are `null` unless it is stale.
+
+`status` lists, for each product, each operator layer that its steps make or that its release
+holds, then each optional layer of the product that is off. A step that cannot be planned is not
+judged: `attention` lists its layer as `blocked`, with the step and the reason.
 
 ## Live
 
@@ -1200,7 +1210,7 @@ failure appears in `observation_error` and preserves the run state.
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | The output of `status` |
-| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
+| `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, steps that cannot be planned, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data policy SOURCE DAYS\|manual [--json]` | Writes the source policy in pending Live settings. A policy in days for a source without `version = "date"` is refused. Writes the source |
@@ -1213,9 +1223,9 @@ failure appears in `observation_error` and preserves the run state.
 | `obc data region areas [QUERY] [--json]` | Search cached Geofabrik names and paths. Does not fetch |
 | `obc data region create ID --name NAME (--area PATH… \| --box W,S,E,N) [--country CODE]… --time-zone ZONE [--json]` | Save one definition. Repeat `--area` for each path. Countries derive from the cached index where possible |
 | `obc data region delete ID [--apply --expected SHA [--yes]] [--json]` | Preview references and definition hash, or delete that reviewed, unused definition after confirmation |
-| `obc data plan ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
-| `obc data prepare ENV [--only GROUP,…] [--move SOURCE[@VERSION]]… [--json]` | Starts durable input preparation. Returns `{run, request}`. Its completed result holds `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
-| `obc data build ENV [--plan FILE \| [--only GROUP,…] [--move SOURCE[@VERSION]]…] [--json]` | Starts a durable build of the groups into the store. Returns `{run, request}`. Complete products get release manifests; incomplete products stay blocked. It uploads nothing |
+| `obc data plan ENV [--only LAYER,… \| --move SOURCE[@VERSION]…] [--json]` | What a build of the environment fetches and builds, in groups, with estimates. It prepares no bulk input. An unresolved graph sets `needs_prepare`. `--move` is in [Versions](#versions). For `live`: the groups of [Changes of live](#changes-of-live), the edits, and what an apply removes from R2 |
+| `obc data prepare ENV [--only LAYER,… \| --move SOURCE[@VERSION]…] [--json]` | Starts durable input preparation. Returns `{run, request}`. Its completed result holds `{run, plan}`; review and save `.plan`. Builds and uploads nothing |
+| `obc data build ENV [--plan FILE \| --only LAYER,… \| --move SOURCE[@VERSION]…] [--json]` | Starts a durable build of the groups into the store. Returns `{run, request}`. Complete products get release manifests; incomplete products stay blocked. It uploads nothing |
 | `obc data apply live [--plan FILE] [--yes] [--json]` | Reviews and starts durable publication, as [Apply](#apply) says. Returns `{run, request}`. The completed result lists uploaded, switched and removed keys |
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run and its computed operation state and result; fetches and steps retain time, peak RAM, outputs, inputs and layers. Reads change no local history |
@@ -1447,7 +1457,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A source that is blocked.",
+          "description": "A source that is blocked, or a step that cannot be planned.",
           "type": "string"
         },
         {
@@ -1504,13 +1514,19 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "properties": {
         "layer": {
+          "description": "The layer of the step.",
           "type": "string"
         },
         "reason": {
           "type": "string"
+        },
+        "step": {
+          "description": "The step that cannot be planned.",
+          "type": "string"
         }
       },
       "required": [
+        "step",
         "layer",
         "reason"
       ],
@@ -1610,6 +1626,91 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "id"
       ],
       "type": "object"
+    },
+    "Cause": {
+      "description": "Why a layer is stale: exactly one of three causes. When more than one applies, the first in\nthis order is the cause.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The version of the layer is not that of the release. `from` is `null` when the release has\nno step of the layer.",
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/Field"
+            },
+            "from": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "version",
+              "type": "string"
+            },
+            "to": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "field",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A source has a newer version to use. `to` is the version that the steps read, or the newer\nversion upstream; `null` when upstream names none.",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "source",
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "to": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A layer or a source that the layer reads has other files, or `options`: the release has\nother steps of the layer, or a step with other options, inputs, `params` or `client`.",
+          "properties": {
+            "kind": {
+              "const": "input",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "Check": {
       "description": "R2 against live.",
@@ -2071,7 +2172,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "boolean"
         },
         "only": {
-          "description": "The groups that `--only` selected: none for every group, `[\"none\"]` for no group.",
+          "description": "The layers that `--only` names.",
           "items": {
             "type": "string"
           },
@@ -2626,6 +2727,20 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Field": {
+      "oneOf": [
+        {
+          "const": "format",
+          "description": "The number that the readers check.",
+          "type": "string"
+        },
+        {
+          "const": "revision",
+          "description": "The number of the output.",
+          "type": "string"
+        }
+      ]
+    },
     "GcPlan": {
       "description": "What `clean` deletes from the store, or deleted, and what stays.",
       "properties": {
@@ -2820,25 +2935,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
-    "LayerStatus": {
+    "LayerState": {
+      "additionalProperties": false,
       "properties": {
+        "cause": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why a `stale` layer is stale; `null` for another state."
+        },
         "layer": {
           "type": "string"
         },
-        "reason": {
+        "state": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "text": {
+          "description": "The cause in a few words; `null` without a cause.",
           "type": [
             "string",
             "null"
           ]
-        },
-        "state": {
-          "$ref": "#/$defs/State"
         }
       },
       "required": [
         "layer",
         "state",
-        "reason"
+        "cause",
+        "text"
       ],
       "type": "object"
     },
@@ -2989,6 +3118,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "PlanBuild": {
       "additionalProperties": false,
       "properties": {
+        "again": {
+          "description": "Whether the step builds also when the store has the layer of its key.",
+          "type": "boolean"
+        },
         "estimate": {
           "anyOf": [
             {
@@ -3018,7 +3151,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "step",
         "recipe",
         "key",
-        "estimate"
+        "estimate",
+        "again"
       ],
       "type": "object"
     },
@@ -3027,10 +3161,28 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "The environment names another region than a live release, or a product has nothing live.",
+          "description": "The layer is stale.",
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Cause"
+            },
+            "kind": {
+              "const": "stale",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "cause"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`--only` names the layer: its steps build again.",
           "properties": {
             "kind": {
-              "const": "region",
+              "const": "named",
               "type": "string"
             }
           },
@@ -3041,62 +3193,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "additionalProperties": false,
-          "description": "The environment switches on other optional layers than a live release has.",
+          "description": "Live has the layer, and no step makes it now.",
           "properties": {
             "kind": {
-              "const": "layers",
+              "const": "off",
               "type": "string"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "A `--move`, or a stale source: the layers read `to`, not the versions that live reads.",
-          "properties": {
-            "from": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "kind": {
-              "const": "move",
-              "type": "string"
-            },
-            "source": {
-              "type": "string"
-            },
-            "to": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "source",
-            "from",
-            "to"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "The version of the layer of the steps is not the version of their live layers, or they\nhave other options or inputs. A live step that no step list makes now has no version.",
-          "properties": {
-            "kind": {
-              "const": "version",
-              "type": "string"
-            },
-            "layer": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "layer"
           ],
           "type": "object"
         },
@@ -3202,7 +3307,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "PlanGroup": {
       "additionalProperties": false,
-      "description": "One change, and the fetches and builds that it needs. Without live, a group is builds that read\neach other's layers: it never needs a build of another group, so each can be selected alone.\nAgainst live, a group is one cause, and two groups can need the same build. Two groups can need\nthe same fetch.",
+      "description": "One change, and the fetches and builds that it needs. Without live, a group is builds that read\neach other's layers: it never needs a build of another group. Against live, a group is one\nlayer, and two groups can need the same build. Two groups can need the same fetch. `--only`\ngives one group of the named layers.",
       "properties": {
         "builds": {
           "description": "In dependency order.",
@@ -3220,7 +3325,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
               "type": "null"
             }
           ],
-          "description": "Why live changes; `None` without live."
+          "description": "Why the group changes its layer; `None` without live and `--only`."
         },
         "drops": {
           "description": "The live layers that the release no longer has.",
@@ -3240,7 +3345,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         },
         "layers": {
-          "description": "The layers that the cause changes, in dependency order, each with its recipe and key as in\n`builds`.",
+          "description": "The layers that the group changes, in dependency order, each with its recipe and key as in\n`builds`.",
           "items": {
             "$ref": "#/$defs/PlanBuild"
           },
@@ -3299,9 +3404,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ]
         },
         "layers": {
-          "description": "Each layer of the environment `live`, in dependency order; `None` when a fetch that its\nstep list needs failed, and `attention` says why.",
+          "description": "Each operator layer that the steps of the product make or that its release holds, in\ndependency order, then its optional layers that are off; `None` when a fetch that its step\nlist needs failed, and `attention` says why.",
           "items": {
-            "$ref": "#/$defs/LayerStatus"
+            "$ref": "#/$defs/LayerState"
           },
           "type": [
             "array",
@@ -4330,13 +4435,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "type": "object"
     },
     "State": {
-      "description": "The state of a source or a layer. A source is only ok, stale or blocked. When more than one\nstate applies to a layer, the first in this order is its state, so the least of several states\nis the one to show for all of them.",
+      "description": "The state of a source. The least of the states of its requests is the one to show for all of\nthem.",
       "oneOf": [
         {
           "enum": [
-            "not_applied",
-            "code_changed",
-            "input_changed",
             "stale",
             "blocked",
             "ok"
@@ -4345,7 +4447,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "unused",
-          "description": "A source that no live layer and no active request reads. Only sources have it.",
+          "description": "No live layer and no active request reads the source.",
           "type": "string"
         }
       ]
@@ -4681,6 +4783,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "value"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "Verdict": {
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The release has the layer as its steps make it now.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "No step makes the layer: an optional layer that is off, or a layer that only the release has.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "A build changes the layer.",
+          "type": "string"
         }
       ]
     },

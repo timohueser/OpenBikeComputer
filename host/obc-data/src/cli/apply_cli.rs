@@ -153,7 +153,7 @@ fn apply_live(
     build_cli::suits(products, plan)?;
     if let Some(blocked) = plan.blocked.iter().find(|blocked| !blocked.layers.is_empty()) {
         let reasons =
-            blocked.layers.iter().map(|layer| format!("{}: {}", layer.layer, layer.reason)).collect::<Vec<_>>();
+            blocked.layers.iter().map(|layer| format!("{}: {}", layer.step, layer.reason)).collect::<Vec<_>>();
         return Err(Code::Blocked.error(format!(
             "product `{}` is incomplete: {}",
             blocked.product,

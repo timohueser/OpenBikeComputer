@@ -320,7 +320,7 @@ impl Planner {
                 .steps
                 .iter()
                 .map(|step| step.name.clone())
-                .chain(content.blocked.iter().map(|layer| layer.layer.clone()))
+                .chain(content.blocked.iter().map(|blocked| blocked.step.clone()))
                 .map(|name| Input::Layer {
                     files: vec![if name.contains("landmark-content") {
                         "landmarks/content.json".into()

@@ -30,8 +30,9 @@ use crate::store::Store;
 pub struct PlanArgs {
     /// The environment: `live` or `local`.
     pub(super) env: String,
-    /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
-    #[arg(long, value_delimiter = ',')]
+    /// Build only these layers, again also when the store has them. A layer that reads them builds
+    /// when their files change.
+    #[arg(long, value_delimiter = ',', conflicts_with = "moves")]
     pub(super) only: Vec<String>,
     /// Read this version of a source instead of the version of live; without a version, the newest
     /// version upstream. A `manual` source moves only this way.
@@ -43,8 +44,9 @@ pub struct PlanArgs {
 pub struct BuildArgs {
     /// The environment: `live` or `local`.
     pub(super) env: String,
-    /// Only these groups, by id, or `none` for no group. Against `live`, only these moves.
-    #[arg(long, value_delimiter = ',', conflicts_with = "plan")]
+    /// Build only these layers, again also when the store has them. A layer that reads them builds
+    /// when their files change.
+    #[arg(long, value_delimiter = ',', conflicts_with_all = ["plan", "moves"])]
     pub(super) only: Vec<String>,
     /// Build the groups of this output of `plan ENV --json`, with its versions. Exit status 3 when
     /// live or the plan of now differs.
@@ -75,7 +77,7 @@ pub struct EnvPlan {
     pub live: Vec<LiveRelease>,
     /// For `live`: what the pending settings change against the live releases.
     pub edits: Vec<Edit>,
-    /// The groups that `--only` selected: none for every group, `["none"]` for no group.
+    /// The layers that `--only` names.
     pub only: Vec<String>,
     pub groups: Vec<Group>,
     /// Incomplete products, with unavailable layers, or an empty layer list when the whole product is blocked.
@@ -235,6 +237,7 @@ pub(super) fn print_plan(plan: &EnvPlan) {
         let release = live.release.as_ref().map_or("nothing".into(), |id| format!("release {}", &id[..8]));
         println!("live {}: {release}", live.product);
     }
+    plan.edits.iter().for_each(|edit| println!("edit {}", edit.text()));
     plan.missing_credentials.iter().for_each(|notice| println!("{notice}"));
     replaced(plan).iter().for_each(|line| println!("{line}"));
     for blocked in &plan.blocked {
@@ -321,19 +324,11 @@ impl Cost {
 
 /// What a group changes, in a few words.
 fn change(group: &Group, edits: &[Edit]) -> String {
-    let edit_text = |region: bool| {
-        let edits = edits.iter().filter(|edit| matches!(edit, Edit::Region { .. }) == region);
-        edits.map(Edit::text).collect::<Vec<_>>().join("; ")
-    };
     match &group.cause {
         None => String::new(),
-        Some(Cause::Region) => edit_text(true),
-        Some(Cause::Layers) => edit_text(false),
-        Some(Cause::Move { source, from, to }) => {
-            format!("move {source} {} → {to}", if from.is_empty() { "—".into() } else { from.join(", ") })
-        }
-        Some(Cause::Version { layer }) if layer.is_empty() => "no step makes it".into(),
-        Some(Cause::Version { layer }) => format!("version of {layer}"),
+        Some(Cause::Stale { cause }) => cause.text(),
+        Some(Cause::Named) => "named: it builds again".into(),
+        Some(Cause::Off) => "no step makes it".into(),
         Some(Cause::Pointer { product, .. }) => {
             if edits.iter().any(|edit| matches!(edit, Edit::Settings { product: changed } if changed == product)) {
                 format!("settings and client document of {product}")
@@ -531,26 +526,17 @@ fn outdated() -> Error {
     Code::PlanOutdated.error("the plan is not the plan of now")
 }
 
-/// `--only none`: no group, or against live no move.
-const NONE: &str = "none";
-
-/// The groups that `only` names. Against live, `only` names moves, and the plan keeps every group:
-/// a move that it does not name does not move, and the rest of live follows `data/` and the code.
-fn select(plan: &Plan, only: &[String], live: bool) -> Result<Plan, Error> {
-    if only.is_empty() {
-        return Ok(plan.clone());
-    }
-    if only.iter().any(|id| id == NONE) {
-        if only.iter().any(|id| id != NONE) {
-            return Err(Code::Usage.error(format!("`--only {}`: `none` names no other group", only.join(","))));
-        }
-        return Ok(if live { plan.clone() } else { Plan { groups: Vec::new() } });
-    }
-    if let Some(id) = only.iter().find(|id| live && !id.starts_with("move:")) {
-        return Err(Code::Usage.error(format!("`--only {id}`: against live, `--only` selects moves only")));
-    }
-    let selected = plan.only(only).map_err(|e| Code::Usage.error(e))?;
-    Ok(if live { plan.clone() } else { selected })
+/// Fail with `usage` when no step makes a layer that `only` names, or with `blocked` when its
+/// steps cannot be planned.
+fn named(steps: &[Step], only: &[String], blocked: &[BlockedProduct]) -> Result<(), Error> {
+    let Some(name) = only.iter().find(|name| !steps.iter().any(|step| step.layer.name == name.as_str())) else {
+        return Ok(());
+    };
+    let blocked = blocked.iter().flat_map(|product| &product.layers).find(|blocked| &blocked.layer == name);
+    Err(match blocked {
+        Some(blocked) => Code::Blocked.error(format!("`--only {name}`: {}: {}", blocked.step, blocked.reason)),
+        None => Code::Usage.error(format!("`--only {name}`: no step makes the layer `{name}`")),
+    })
 }
 
 /// An environment, with the sources and the regions that it was read with.
@@ -628,6 +614,11 @@ fn planned_run(
     prepare: bool,
     mut run: Option<&mut Run>,
 ) -> Result<Planned, Error> {
+    if remote.is_some() && !only.is_empty() {
+        return Err(Code::Usage
+            .error("a plan of `live` takes no `--only`: it builds each stale layer")
+            .fix("Plan `live` without `--only`, or build `local` with `--only LAYER`."));
+    }
     let sources = crate::sources::Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
     let live = remote.map(|remote| Live::read(remote, products, &sources, store)).transpose();
     let live = live.map_err(|e| Code::R2Failed.error(e))?;
@@ -677,18 +668,6 @@ fn planned_run(
                         }
                     }
                 }
-                if !only.is_empty() {
-                    let (stale, args) = (&env.stale, &env.moves);
-                    for source in args.keys().filter(|source| !stale.contains(*source)) {
-                        if !only.contains(&format!("move:{source}")) {
-                            eprintln!("obc data: `--only` leaves out `move:{source}`: `--move {source}` is dropped");
-                        }
-                    }
-                    env.moves.retain(|source, _| only.contains(&format!("move:{source}")));
-                    env.resolved.retain(|(source, _), _| env.moves.contains_key(source));
-                    env.stale.retain(|source| env.moves.contains_key(source));
-                    env.stale_requests.retain(|(source, _)| env.moves.contains_key(source));
-                }
             }
         }
     }
@@ -719,10 +698,11 @@ fn planned_run(
     };
     let read = env.read.borrow().clone();
     env.moves.retain(|source, _| read.keys().any(|(id, _)| id == source));
+    named(&steps, only, &blocked)?;
 
     let Some(live) = live else {
-        let all = plan::plan(store, &steps)?;
-        let mut plan = env_plan(env, only, select(&all, only, false)?, blocked, None);
+        let all = if only.is_empty() { plan::plan(store, &steps)? } else { plan::again(store, &steps, only)? };
+        let mut plan = env_plan(env, only, all, blocked, None);
         plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
         return Ok(Planned { loaded, steps, plan, live: None });
     };
@@ -732,9 +712,9 @@ fn planned_run(
         _ => None,
     };
     let drift = listed.as_deref().map(|listed| live.drift(listed));
-    let against = against(&live, env, &edits, &blocked, drift.as_deref(), store);
+    let against = against(&live, &blocked, drift.as_deref(), store);
     let all = changes::changes(store, &steps, &against)?;
-    let mut plan = env_plan(env, only, select(&all, only, true)?, blocked, Some((&live, edits)));
+    let mut plan = env_plan(env, only, all, blocked, Some((&live, edits)));
     plan.missing_credentials = missing_credentials(products, env, &loaded.sources);
     let (mut next, _) = next(root, store, products, &live, &steps, &plan)?;
     retain_input_copies(store, &loaded.sources, &live, &mut next)?;
@@ -869,29 +849,11 @@ fn edits(products: &[&dyn Product], env: &Env, live: &Live, blocked: &[BlockedPr
     edits
 }
 
-/// What the steps of `env` are compared with: the live layers of the products that are not
-/// blocked, the edits, the moves and the drift.
-fn against<'a>(
-    live: &'a Live,
-    env: &Env,
-    edits: &[Edit],
-    blocked: &[BlockedProduct],
-    drift: Option<&[Drift]>,
-    store: &Store,
-) -> Against<'a> {
+/// What the steps are compared with: the live layers of the products that are not blocked, and
+/// the drift.
+fn against<'a>(live: &'a Live, blocked: &[BlockedProduct], drift: Option<&[Drift]>, store: &Store) -> Against<'a> {
     let planned = live.products.iter().filter(|product| !blocked.iter().any(|b| b.product == product.product));
     let releases = planned.filter_map(|product| product.release.as_ref().map(|(_, release)| release));
-    let by_source = live.by_source();
-    let moves = env.moves.iter().filter_map(|(source, version)| {
-        let from = by_source.get(source).cloned().unwrap_or_default();
-        let to = version.clone().or_else(|| {
-            let read = env.read.borrow();
-            let versions: BTreeSet<_> =
-                read.iter().filter(|((id, _), _)| id == source).map(|(_, v)| v.as_str()).collect();
-            (!versions.is_empty()).then(|| versions.into_iter().collect::<Vec<_>>().join(", "))
-        })?;
-        Some((source.clone(), (from, to)))
-    });
     let drift = drift.map(|drift| {
         let keys: Vec<String> = drift.iter().map(|drift| drift.key.clone()).collect();
         let mut local_named = BTreeSet::new();
@@ -912,9 +874,6 @@ fn against<'a>(
     });
     Against {
         layers: releases.flat_map(|release| &release.layers).map(|layer| (layer.step.as_str(), layer)).collect(),
-        region: edits.iter().filter(|edit| matches!(edit, Edit::Region { .. })).map(|e| e.product().into()).collect(),
-        optional: edits.iter().filter(|edit| matches!(edit, Edit::Layers { .. })).map(|e| e.product().into()).collect(),
-        moves: moves.collect(),
         drift,
     }
 }
@@ -1181,7 +1140,7 @@ fn list_steps(
                     let reason = listed
                         .blocked
                         .iter()
-                        .map(|layer| format!("{}: {}", layer.layer, layer.reason))
+                        .map(|blocked| format!("{}: {}", blocked.step, blocked.reason))
                         .collect::<Vec<_>>()
                         .join("; ");
                     blocked.push(BlockedProduct { product: product.name().into(), reason, layers: listed.blocked });
@@ -1373,6 +1332,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::engine::snapshot_files;
+    use crate::engine::state::{Cause as Why, Field};
     use crate::engine::tests::{fixture, pipeline, write, Fixture};
 
     /// The test pipeline, listed once the store has the snapshot `index@1`.
@@ -1549,10 +1509,11 @@ pub(crate) mod tests {
                     }]));
                 }
                 let mut listed: crate::product::Steps = pipeline().into();
-                listed.blocked.push(crate::product::BlockedLayer {
-                    layer: "test/content".into(),
-                    reason: env.fetch_failures[0].1.clone(),
-                });
+                listed.blocked.push(crate::product::BlockedLayer::new(
+                    "test/content",
+                    &crate::engine::tests::TEST,
+                    env.fetch_failures[0].1.clone(),
+                ));
                 Ok(listed)
             }
         }
@@ -2009,10 +1970,11 @@ pub(crate) mod tests {
             store: &Store,
         ) -> Result<crate::product::Steps, Unplanned> {
             let mut listed = Versioned.steps(root, env, regions, store)?;
-            listed.blocked.push(crate::product::BlockedLayer {
-                layer: "test/missing".into(),
-                reason: "capture needs `--move wikidata`".into(),
-            });
+            listed.blocked.push(crate::product::BlockedLayer::new(
+                "test/missing",
+                &crate::engine::tests::TEST,
+                "capture needs `--move wikidata`",
+            ));
             Ok(listed)
         }
     }
@@ -2038,7 +2000,7 @@ pub(crate) mod tests {
         let built = run_build(&root, &fixture.store, &Http::new(), None, &[&Partial], &args).unwrap();
         assert_eq!(built.layers.len(), 3);
         assert!(built.releases.is_empty());
-        assert_eq!(built.blocked[0].layers[0].layer, "test/missing");
+        assert_eq!(built.blocked[0].layers[0].step, "test/missing");
         let events = crate::engine::runs::events(&fixture.store, &built.run).unwrap();
         assert!(matches!(events.last(), Some(Event::Finished { ok: false, .. })));
     }
@@ -2219,14 +2181,20 @@ pub(crate) mod tests {
 
         let plan = live_plan(&fixture, &remote, &[]).unwrap();
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!(ids, ["move:head", "version:test/join", "repair"]);
-        let (moved, version, repair) = (&plan.groups[0], &plan.groups[1], &plan.groups[2]);
-        let to = "2020-02-01".to_string();
-        let cause = Cause::Move { source: "head".into(), from: vec!["2020-01-01".into()], to: to.clone() };
-        assert_eq!((moved.cause.as_ref(), &plan.moves), (Some(&cause), &BTreeMap::from([("head".into(), None)])));
+        assert_eq!(ids, ["test", "revised", "repair"], "`revised` holds test/join now");
+        let (test, revised, repair) = (&plan.groups[0], &plan.groups[1], &plan.groups[2]);
+        let to = Some("2020-02-01".to_string());
+        let moved = Cause::Stale { cause: Why::Source { source: "head".into(), from: "2020-01-01".into(), to } };
+        assert_eq!((test.cause.as_ref(), &plan.moves), (Some(&moved), &BTreeMap::from([("head".into(), None)])));
         let steps = |group: &Group| group.layers.iter().map(|layer| layer.step.clone()).collect::<Vec<_>>();
-        assert_eq!((steps(moved).join(" "), moved.builds.len()), ("test/upper test/join test/count".into(), 3));
-        assert_eq!(steps(version), ["test/join", "test/count"]);
+        assert_eq!((steps(test).join(" "), test.builds.len()), ("test/upper test/count".into(), 3));
+        assert_eq!(
+            (steps(revised), &revised.cause),
+            (
+                vec!["test/join".into()],
+                &Some(Cause::Stale { cause: Why::Version { field: Field::Format, from: None, to: 1 } })
+            )
+        );
         assert_eq!(repair.cause, Some(Cause::Repair { keys: vec![count.clone()] }));
         assert!(repair.builds.is_empty(), "the groups make count again");
         let manifest = format!("test/releases/{}.json", release.id());
@@ -2265,13 +2233,11 @@ pub(crate) mod tests {
              names test/objects/old"
         );
 
-        let err = live_plan(&fixture, &remote, &["version:test/join"]).unwrap_err();
-        assert_eq!(err.code, Code::Usage, "against live, --only selects moves only: {}", err.message);
-        let plan = live_plan(&fixture, &remote, &["move:head"]).unwrap();
-        assert_eq!((plan.groups.len(), plan.moves.len()), (3, 1), "every group, and the move");
-        let plan = live_plan(&fixture, &remote, &["none"]).unwrap();
-        let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!((ids, plan.moves.len()), (vec!["version:test/join", "repair"], 0), "no move");
+        let err = live_plan(&fixture, &remote, &["test"]).unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (Code::Usage, "a plan of `live` takes no `--only`: it builds each stale layer")
+        );
 
         write(
             &fixture.root().join("data/regions/andorra.toml"),
@@ -2292,7 +2258,7 @@ pub(crate) mod tests {
         publish(&fixture, &lean);
         let plan = live_plan(&fixture, &remote, &[]).unwrap();
         let ids: Vec<&str> = plan.groups.iter().map(|group| group.id.as_str()).collect();
-        assert_eq!(ids, ["version:test/join"], "the step says that a client reads join");
+        assert_eq!(ids, ["test"], "the step says that a client reads join");
 
         let args = BuildArgs { env: "live".into(), only: Vec::new(), plan: None, moves: Vec::new() };
         let built = run_build(&fixture.root(), &fixture.store, &Http::new(), Some(&remote), &[&Versioned], &args);

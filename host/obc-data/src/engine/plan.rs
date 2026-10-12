@@ -15,18 +15,18 @@ pub struct Plan {
 }
 
 /// One change, and the fetches and builds that it needs. Without live, a group is builds that read
-/// each other's layers: it never needs a build of another group, so each can be selected alone.
-/// Against live, a group is one cause, and two groups can need the same build. Two groups can need
-/// the same fetch.
+/// each other's layers: it never needs a build of another group. Against live, a group is one
+/// layer, and two groups can need the same build. Two groups can need the same fetch. `--only`
+/// gives one group of the named layers.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "PlanGroup")]
 pub struct Group {
     /// It names the group only in the plan that it comes from.
     pub id: String,
-    /// Why live changes; `None` without live.
+    /// Why the group changes its layer; `None` without live and `--only`.
     pub cause: Option<Cause>,
-    /// The layers that the cause changes, in dependency order, each with its recipe and key as in
+    /// The layers that the group changes, in dependency order, each with its recipe and key as in
     /// `builds`.
     pub layers: Vec<Build>,
     /// The live layers that the release no longer has.
@@ -41,15 +41,12 @@ pub struct Group {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "PlanCause")]
 pub enum Cause {
-    /// The environment names another region than a live release, or a product has nothing live.
-    Region,
-    /// The environment switches on other optional layers than a live release has.
-    Layers,
-    /// A `--move`, or a stale source: the layers read `to`, not the versions that live reads.
-    Move { source: String, from: Vec<String>, to: String },
-    /// The version of the layer of the steps is not the version of their live layers, or they
-    /// have other options or inputs. A live step that no step list makes now has no version.
-    Version { layer: String },
+    /// The layer is stale.
+    Stale { cause: super::state::Cause },
+    /// `--only` names the layer: its steps build again.
+    Named,
+    /// Live has the layer, and no step makes it now.
+    Off,
     /// The keys of live that R2 lacks, or holds with another size. Its builds make the unchanged
     /// layers of those keys that the store lacks.
     Repair { keys: Vec<String> },
@@ -81,6 +78,8 @@ pub struct Build {
     /// `None` until the layers and snapshots that it reads are in the store.
     pub key: Option<String>,
     pub estimate: Option<Estimate>,
+    /// Whether the step builds also when the store has the layer of its key.
+    pub again: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -162,13 +161,76 @@ pub fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
 
 /// The build of a walked step, when the store lacks its layer.
 pub(super) fn build(walked: &Walked, receipts: &[Receipt]) -> Option<Build> {
-    let Walked { step, key, stored, .. } = walked;
-    stored.is_none().then(|| Build {
-        step: step.name.clone(),
-        recipe: recipe(step),
-        key: key.clone(),
-        estimate: estimate(receipts, step),
-    })
+    walked.stored.is_none().then(|| build_of(walked, receipts))
+}
+
+/// The build of a walked step, whatever the store has.
+pub(super) fn build_of(walked: &Walked, receipts: &[Receipt]) -> Build {
+    Build {
+        step: walked.step.name.clone(),
+        recipe: recipe(walked.step),
+        key: walked.key.clone(),
+        estimate: estimate(receipts, walked.step),
+        again: false,
+    }
+}
+
+/// One group of the layers that `only` names: their steps build again, also when the store has
+/// their keys. The steps that read them, at any depth, build when their keys change. Each step
+/// has one build, and a step that reads a step that builds again has no key until the run.
+pub fn again(store: &Store, steps: &[Step], only: &[String]) -> Result<Plan, String> {
+    if let Some(name) = only.iter().find(|name| !steps.iter().any(|step| step.layer.name == name.as_str())) {
+        return Err(format!("no step makes the layer `{name}`"));
+    }
+    let receipts = store.layers()?;
+    let walked = walk(store, steps)?;
+    let named: BTreeSet<&str> = steps
+        .iter()
+        .filter(|step| only.iter().any(|name| name == step.layer.name))
+        .map(|step| step.name.as_str())
+        .collect();
+    let mut changed = named.clone();
+    for Walked { step, .. } in &walked {
+        if step.layers().any(|input| changed.contains(input)) {
+            changed.insert(&step.name);
+        }
+    }
+    let group = Group::new(only.join(","), Some(Cause::Named));
+    let mut group = needs(&walked, group, &changed, |walked| {
+        let (step, again) = (walked.step, named.contains(walked.step.name.as_str()));
+        let waits = step.layers().any(|input| changed.contains(input));
+        match changed.contains(step.name.as_str()) {
+            true => {
+                Some(Build { again, key: if waits { None } else { walked.key.clone() }, ..build_of(walked, &receipts) })
+            }
+            false => build(walked, &receipts),
+        }
+    });
+    group.layers = group.builds.iter().filter(|build| changed.contains(build.step.as_str())).cloned().collect();
+    sized(store, vec![group])
+}
+
+/// `group` with the fetches and the builds, as `build` gives them, of the layers `names` and of
+/// the layers that they read at any depth.
+pub(super) fn needs<'a>(
+    walked: &'a [Walked],
+    mut group: Group,
+    names: &BTreeSet<&'a str>,
+    mut build: impl FnMut(&Walked) -> Option<Build>,
+) -> Group {
+    let mut needed = names.clone();
+    for Walked { step, .. } in walked.iter().rev() {
+        if needed.contains(step.name.as_str()) {
+            needed.extend(step.layers());
+        }
+    }
+    for walked in walked.iter().filter(|walked| needed.contains(walked.step.name.as_str())) {
+        if let Some(build) = build(walked) {
+            group.builds.push(build);
+            walked.fetches.iter().for_each(|fetch| add_fetch(&mut group.fetches, fetch));
+        }
+    }
+    group
 }
 
 /// The plan of `groups`, with the size of each fetch.
@@ -198,20 +260,12 @@ impl Plan {
                 group.builds.iter_mut().for_each(|build| build.estimate = None);
                 if group.cause.is_some() {
                     (group.fetches, group.builds) = (Vec::new(), Vec::new());
-                    group.layers.iter_mut().for_each(|layer| layer.key = None);
+                    group.layers.iter_mut().for_each(|layer| (layer.key, layer.estimate) = (None, None));
                 }
             }
             plan
         };
         work(self) == work(other)
-    }
-
-    /// The plan with only the groups `ids` names.
-    pub fn only(&self, ids: &[String]) -> Result<Plan, String> {
-        if let Some(id) = ids.iter().find(|id| !self.groups.iter().any(|group| &group.id == *id)) {
-            return Err(format!("the plan has no group `{id}`"));
-        }
-        Ok(Plan { groups: self.groups.iter().filter(|group| ids.contains(&group.id)).cloned().collect() })
     }
 
     pub fn builds(&self) -> impl Iterator<Item = &Build> {
@@ -320,7 +374,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 mod tests {
     use super::*;
     use crate::engine::runs::Limits;
-    use crate::engine::tests::{fixture, pipeline, snapshot, step, summary};
+    use crate::engine::tests::{fixture, layered, pipeline, snapshot, step, summary, write, JOIN};
     use crate::engine::{Request, Run};
 
     fn lower(request: &Request) -> Result<(), String> {
@@ -342,16 +396,15 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_has_independent_groups_and_only_selects_some() {
+    fn a_plan_has_independent_groups_and_a_run_of_one_leaves_the_other() {
         let fixture = fixture("plan-groups");
         let plan = fixture.plan(&steps("1")).unwrap();
         let chain = ("test/upper", vec!["test/upper", "test/join", "test/count"]);
         assert_eq!(outline(&plan), [chain.clone(), ("test/lower", vec!["test/lower"])]);
         let keys: Vec<bool> = plan.builds().map(|build| build.key.is_some()).collect();
         assert_eq!(keys, [true, false, false, true], "a key waits for the layers that it reads");
-        assert_eq!(plan.only(&["nothing".into()]).unwrap_err(), "the plan has no group `nothing`");
 
-        let lower = plan.only(&["test/lower".into()]).unwrap();
+        let lower = Plan { groups: plan.groups[1..].to_vec() };
         let built = fixture.run(&steps("1"), &lower, Limits::machine()).unwrap();
         assert_eq!(summary(&built), [("test/lower", false)]);
         assert_eq!(fixture.plan(&steps("1")).unwrap().groups, plan.groups[..1], "the other group is the same");
@@ -378,6 +431,51 @@ mod tests {
         assert_eq!(outline(&plan), [chain, ("test/lower", vec!["test/lower"])]);
         assert_eq!((&plan.groups[0].fetches, &plan.groups[1].fetches), (&vec![fetch.clone()], &vec![fetch.clone()]));
         assert_eq!(plan.fetches(), [fetch], "a run fetches it once");
+    }
+
+    #[test]
+    fn naming_a_layer_builds_it_again_and_its_readers_only_when_its_files_change() {
+        fn louder(request: &Request) -> Result<(), String> {
+            let text = std::fs::read_to_string(&request.snapshots["head"]["head.txt"]).map_err(|e| e.to_string())?;
+            std::fs::write(request.output.join("upper.txt"), text.to_uppercase() + "!").map_err(|e| e.to_string())
+        }
+        let fixture = fixture("plan-again");
+        fixture.build(&layered()).unwrap();
+        assert_eq!(fixture.plan(&layered()).unwrap().groups, [], "the store has every layer");
+        let named = again(&fixture.store, &layered(), &["upper".into()]).unwrap();
+        let built = fixture.run(&layered(), &named, Limits::machine()).unwrap();
+        assert_eq!(summary(&built), [("test/upper", false), ("test/join", true), ("test/count", true)]);
+
+        // Other code of the same version gives other files.
+        let mut steps = layered();
+        steps[2].run = Run::Rust(louder);
+        let named = again(&fixture.store, &steps, &["upper".into()]).unwrap();
+        let built = fixture.run(&steps, &named, Limits::machine()).unwrap();
+        assert_eq!(summary(&built), [("test/upper", false), ("test/join", false), ("test/count", false)]);
+        assert_eq!(again(&fixture.store, &steps, &["nothing".into()]), Err("no step makes the layer `nothing`".into()));
+    }
+
+    #[test]
+    fn named_layers_build_each_step_once_and_a_named_reader_waits_for_its_input() {
+        let fixture = fixture("plan-again-chain");
+        fixture.build(&layered()).unwrap();
+        // test/join gives other files, and test/count, of the same layer, reads them.
+        write(&fixture.root().join("join.py"), &JOIN.replace("upper + tail", "tail + upper"));
+        let named = again(&fixture.store, &layered(), &["test".into()]).unwrap();
+        let built = fixture.run(&layered(), &named, Limits::machine()).unwrap();
+        assert_eq!(summary(&built), [("test/join", false), ("test/count", false)]);
+
+        let outline = |only: &[&str]| {
+            let only: Vec<String> = only.iter().map(|name| name.to_string()).collect();
+            let plan = again(&fixture.store, &layered(), &only).unwrap();
+            plan.builds().map(|build| (build.step.clone(), build.again, build.key.is_some())).collect::<Vec<_>>()
+        };
+        let both = [("test/upper", true, true), ("test/join", true, false), ("test/count", true, false)];
+        let both = both.map(|(step, again, key)| (step.to_string(), again, key));
+        assert_eq!((outline(&["upper", "test"]), outline(&["test", "upper"])), (both.to_vec(), both.to_vec()));
+        let named = again(&fixture.store, &layered(), &["test".into(), "upper".into()]).unwrap();
+        let built = fixture.run(&layered(), &named, Limits::machine()).unwrap();
+        assert_eq!(summary(&built), [("test/upper", false), ("test/join", false), ("test/count", false)]);
     }
 
     #[test]

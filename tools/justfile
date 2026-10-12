@@ -319,8 +319,8 @@ r2 *args:
 # the store. `obc data region ENV ID`, `obc data layer ENV NAME on|off` and `obc data undo ENV`
 # edit data/env/ENV.toml. `obc data plan ENV` shows what a build of an environment fetches and
 # builds; `--move SOURCE[@VERSION]` moves a source; `obc data build ENV` builds it into the store;
-# `obc data clean` cleans the store. Every command takes `--json`. Read commands change nothing.
-[doc("Data sources, regions and the store. Args: status [--check] | sources | region [list|show ID|ENV ID] | layer ENV NAME on|off | undo ENV | fetch SOURCE[@VERSION] | plan ENV [--only G,…] [--move SOURCE[@VERSION]] | build ENV [--only G,…] [--plan FILE] | clean [--apply [--yes]] [--json]")]
+# `--only LAYER` builds a layer again, not against live; `obc data clean` cleans the store. Every command takes `--json`. Read commands change nothing.
+[doc("Data sources, regions and the store. Args: status [--check] | sources | region [list|show ID|ENV ID] | layer ENV NAME on|off | undo ENV | fetch SOURCE[@VERSION] | plan ENV [--only LAYER,… | --move SOURCE[@VERSION]] | build ENV [--only LAYER,… | --move SOURCE[@VERSION] | --plan FILE] | clean [--apply [--yes]] [--json]")]
 [group('maps')]
 data *args:
     #!/usr/bin/env bash

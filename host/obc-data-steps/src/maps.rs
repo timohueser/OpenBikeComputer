@@ -144,8 +144,12 @@ impl Maps {
                     reference
                 }
                 Err(Unplanned::Invalid(reason)) => {
-                    blocked.push(BlockedLayer { layer: leaf_layer("maps/reference", leaf), reason: reason.clone() });
-                    blocked.push(BlockedLayer { layer: leaf_layer("maps/terrain", leaf), reason });
+                    blocked.push(BlockedLayer::new(
+                        leaf_layer("maps/reference", leaf),
+                        &DEVICE_TERRAIN,
+                        reason.clone(),
+                    ));
+                    blocked.push(BlockedLayer::new(leaf_layer("maps/terrain", leaf), &DEVICE_TERRAIN, reason));
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -211,14 +215,16 @@ impl Maps {
         } else {
             match &osmium {
                 Ok(()) => steps.push(crate::region_sources::combined("maps/region-osm", &inputs)),
-                Err(reason) => blocked.push(BlockedLayer { layer: "maps/region-osm".into(), reason: reason.clone() }),
+                Err(reason) => {
+                    blocked.push(BlockedLayer::new("maps/region-osm", &crate::region_sources::OSM, reason.clone()))
+                }
             }
             Input::Layer { name: "maps/region-osm".into(), files: vec!["osm.pbf".into()] }
         };
         steps.extend(inputs);
         match osmium {
             Ok(()) => steps.push(osm(extract, &osm_leaves)),
-            Err(reason) => blocked.push(BlockedLayer { layer: "maps/osm".into(), reason }),
+            Err(reason) => blocked.push(BlockedLayer::new("maps/osm", &crate::region_sources::OSM, reason)),
         }
         if blocked.is_empty() {
             let (body, version) =
@@ -234,17 +240,15 @@ impl Maps {
                 &body,
             ) {
                 Ok(step) => steps.push(step),
-                Err(Unplanned::Invalid(reason)) => blocked.push(BlockedLayer { layer: catalog::LAYER.into(), reason }),
+                Err(Unplanned::Invalid(reason)) => {
+                    blocked.push(BlockedLayer::new(catalog::LAYER, &catalog::DEVICE_CATALOG, reason))
+                }
                 Err(error) => return Err(error),
             }
         } else {
-            blocked.push(BlockedLayer {
-                layer: catalog::LAYER.into(),
-                reason: format!(
-                    "catalog requires all map, terrain and article layers: {}",
-                    blocked.iter().map(|layer| layer.reason.as_str()).collect::<Vec<_>>().join("; ")
-                ),
-            });
+            let reasons = blocked.iter().map(|blocked| blocked.reason.as_str()).collect::<Vec<_>>().join("; ");
+            let reason = format!("catalog requires all map, terrain and article layers: {reasons}");
+            blocked.push(BlockedLayer::new(catalog::LAYER, &catalog::DEVICE_CATALOG, reason));
         }
         let mut listed = Steps { steps, blocked };
         listed.block_dependents();
@@ -275,7 +279,7 @@ pub(crate) fn content_declarations(
                     continue;
                 }
                 Err(Unplanned::Invalid(reason)) => {
-                    blocked.push(BlockedLayer { layer: name.clone(), reason });
+                    blocked.push(BlockedLayer::new(name.clone(), &DEVICE_LANDMARKS, reason));
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -325,7 +329,7 @@ fn captures_at(
     let (params, read) = match capture_params_at(env, store, collection, area, (&osm, &poly), &layer) {
         Ok(params) => params,
         Err(Unplanned::Invalid(reason)) => {
-            blocked.push(BlockedLayer { layer: layer.clone(), reason });
+            blocked.push(BlockedLayer::new(layer.clone(), &DEVICE_LANDMARKS, reason));
             return Ok(Vec::new());
         }
         Err(error) => return Err(error),
@@ -335,10 +339,8 @@ fn captures_at(
         .iter()
         .find(|(wanted, _)| CAPTURES.contains(&wanted.source.as_str()) && wanted.params == params)
     {
-        blocked.push(BlockedLayer {
-            layer: layer.clone(),
-            reason: format!("capture fetch failed: {error}; prepare again to retry"),
-        });
+        let reason = format!("capture fetch failed: {error}; prepare again to retry");
+        blocked.push(BlockedLayer::new(layer.clone(), &DEVICE_LANDMARKS, reason));
         return Ok(Vec::new());
     }
     let bundle = capture_refresh(env, &params)?;
@@ -1348,7 +1350,7 @@ pub(crate) mod tests {
         }
         env.requests.borrow_mut().clear();
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(!listed.blocked.iter().any(|b| b.layer == "maps/landmark-content"));
+        assert!(!listed.blocked.iter().any(|b| b.step == "maps/landmark-content"));
         let content = listed.steps.iter().find(|s| s.name == "maps/landmark-content").unwrap();
         for source in CAPTURES {
             assert!(
@@ -1527,6 +1529,68 @@ pub(crate) mod tests {
         );
     }
 
+    /// The release layer of `step` as it is declared, without files, at `format`.
+    fn declared(step: &Step, format: u32) -> obc_data::engine::release::Layer {
+        use obc_data::engine::{release::SnapshotRead, InputKind, InputRecord};
+        let no_files = obc_data::engine::digest(std::iter::empty());
+        let record = |kind, name: &String, digest: &str, files: &[String]| InputRecord {
+            kind,
+            name: name.clone(),
+            digest: digest.into(),
+            files: files.to_vec(),
+        };
+        let inputs = step.inputs.iter().map(|input| match input {
+            Input::Snapshot { source, .. } => record(InputKind::Snapshot, source, "", &[]),
+            Input::Layer { name, files } => record(InputKind::Layer, name, &no_files, files),
+        });
+        let snapshots = step.inputs.iter().filter_map(|input| match input {
+            Input::Snapshot { source, version, params, .. } => {
+                let read = SnapshotRead { version: version.clone(), params: obc_data::store::sorted(params) };
+                Some((source.clone(), read))
+            }
+            Input::Layer { .. } => None,
+        });
+        obc_data::engine::release::Layer {
+            layer: step.layer.name.into(),
+            step: step.name.clone(),
+            format,
+            revision: step.layer.revision,
+            key: String::new(),
+            inputs: inputs.collect(),
+            options: step.options.clone(),
+            digest: String::new(),
+            files: Vec::new(),
+            snapshots: snapshots.collect(),
+            client: step.client.clone(),
+        }
+    }
+
+    #[test]
+    fn a_new_map_format_makes_device_map_stale_and_the_layers_that_read_it_follow() {
+        use obc_data::engine::state::{state, Environment, Newer, Verdict};
+        let temp = temp("format");
+        let store = Store::at(temp.0.join("store"));
+        let (env, regions) = freiburg(&store);
+        with_osm(&store);
+        with_captures(&store, "1");
+        without_models(&store, &env, &regions);
+        let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
+        // The release of the firmware before: device/map one format older, the rest as declared.
+        let older = obcm::VERSION as u32 - 1;
+        let format = |step: &Step| if step.layer == &DEVICE_MAP { older } else { step.layer.format };
+        let release = steps.iter().map(|step| (step.name.clone(), declared(step, format(step)))).collect();
+        let environment = Environment { release, newer: Newer::new() };
+        // The judge compares no stored file: the release has none.
+        let states = state(&Store::at(temp.0.join("empty")), &steps, &environment).unwrap();
+        let stale: Vec<(&str, &str)> = states
+            .iter()
+            .filter(|layer| layer.state != Verdict::Ok)
+            .map(|layer| (layer.layer.as_str(), layer.text.as_deref().unwrap()))
+            .collect();
+        let text = format!("format {older} → {}: readers need new data", obcm::VERSION);
+        assert_eq!(stale, [("device/map", text.as_str()), ("device/catalog", "follows device/map")]);
+    }
+
     /// A refresh rebuilds the layers that read the refreshed source: a step that reads none of it,
     /// directly or through another layer, keeps its key.
     #[test]
@@ -1698,9 +1762,9 @@ pub(crate) mod tests {
                     assert!(listed
                         .blocked
                         .iter()
-                        .any(|b| b.layer == layer && b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
+                        .any(|b| b.step == layer && b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
                 }
-                assert!(listed.blocked.iter().any(|b| b.layer == "maps/catalog"));
+                assert!(listed.blocked.iter().any(|b| b.step == "maps/catalog"));
                 assert!(!listed
                     .steps
                     .iter()

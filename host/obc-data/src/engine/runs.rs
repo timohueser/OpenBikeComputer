@@ -258,11 +258,11 @@ impl Run {
 
         // A step whose peak is not known reserves the whole memory, so it runs alone.
         let cost = |peak: Option<u64>| limits.memory_bytes.map_or(0, |memory| peak.unwrap_or(memory));
-        let planned: HashMap<&str, (u64, Option<&str>)> = plan
+        let planned: HashMap<&str, (u64, Option<&str>, bool)> = plan
             .builds()
             .map(|build| {
                 let peak = build.estimate.and_then(|estimate| estimate.peak_rss_bytes);
-                (build.step.as_str(), (cost(peak), build.key.as_deref()))
+                (build.step.as_str(), (cost(peak), build.key.as_deref(), build.again))
             })
             .collect();
         // The planned steps and the layers that they read, in dependency order.
@@ -296,7 +296,7 @@ impl Run {
                     i += 1;
                     continue;
                 }
-                let Some(&(cost, key)) = planned.get(step.name.as_str()) else {
+                let Some(&(cost, key, again)) = planned.get(step.name.as_str()) else {
                     // A layer that a planned step reads: the store has it, unless the plan is old.
                     pending.remove(i);
                     let reused = prepare(store, step, &done)
@@ -334,7 +334,7 @@ impl Run {
                         scope.spawn(move || {
                             // The loop waits for every step that it started, also one that panics.
                             let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                                build_step(store, root, step, receipt, request)
+                                build_step(store, root, step, receipt, request, again)
                             }));
                             let _ = sender.send((step, cost, result.unwrap_or_else(|payload| Err(panicked(payload)))));
                         });

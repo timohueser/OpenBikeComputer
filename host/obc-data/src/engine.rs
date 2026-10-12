@@ -38,7 +38,7 @@ pub struct Layer {
     pub readers: &'static [&'static str],
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// Baked per grid leaf: a leaf whose inputs did not change is not baked again.
     Tiled,
@@ -584,16 +584,18 @@ fn reusable(store: &Store, key: &str) -> Result<Option<Receipt>, String> {
     Ok(stored.filter(|receipt| receipt.files.iter().all(|file| store.object(&file.sha256).is_file())))
 }
 
-/// Reuse the layer of the prepared key, or run the step and record its layer.
+/// Reuse the layer of the prepared key, or run the step and record its layer. With `again`, run
+/// the step also when the store has the layer: its receipt replaces the stored one.
 fn build_step(
     store: &Store,
     root: &Path,
     step: &Step,
     mut receipt: Receipt,
     mut request: Request,
+    again: bool,
 ) -> Result<Built, String> {
     let _lock = store.lock(&format!("layer-{}", receipt.key))?;
-    if let Some(mut stored) = reusable(store, &receipt.key)? {
+    if let Some(mut stored) = reusable(store, &receipt.key)?.filter(|_| !again) {
         stored.inputs = receipt.inputs.clone();
         return Ok(Built { receipt: stored, reused: true });
     }
@@ -713,6 +715,17 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     /// The layer that [`revise`] gives a step.
     pub(crate) static REVISED: Layer =
         Layer { name: "revised", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
+
+    /// The layer of `test/upper` in [`layered`].
+    pub(crate) static UPPER: Layer =
+        Layer { name: "upper", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
+
+    /// The test pipeline, with `test/upper` in its own layer.
+    pub(crate) fn layered() -> Vec<Step> {
+        let mut steps = pipeline();
+        steps[2].layer = &UPPER;
+        steps
+    }
 
     /// Give the step that the file `revised` of `root` names the layer [`REVISED`]: a test product
     /// changes the key of a step this way.
