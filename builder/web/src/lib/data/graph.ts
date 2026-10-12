@@ -8,6 +8,8 @@ export function bands(layers: Layer[]): { product: string; columns: Layer[][] }[
     const depths = new Map<string, number>();
     const depth = (layer: Layer): number => {
         if (!depths.has(layer.layer)) {
+            // Before the reads: layers that read each other at layer level end here.
+            depths.set(layer.layer, 0);
             const reads = layer.reads.flatMap((name) => named.get(name) ?? []);
             depths.set(layer.layer, Math.max(-1, ...reads.map(depth)) + 1);
         }
@@ -39,11 +41,14 @@ export function followers(layers: Layer[], name: string): string[] {
 /** The sources that layer `name` reads, at any depth, sorted. */
 export function sourcesOf(layers: Layer[], name: string): string[] {
     const named = new Map(layers.map((layer) => [layer.layer, layer]));
-    const sources = new Set<string>();
+    const [sources, seen] = [new Set<string>(), new Set<string>()];
     const visit = (read: string) => {
         const layer = named.get(read);
         if (!layer) sources.add(read);
-        else layer.reads.forEach(visit);
+        else if (!seen.has(read)) {
+            seen.add(read);
+            layer.reads.forEach(visit);
+        }
     };
     named.get(name)?.reads.forEach(visit);
     return [...sources].sort();

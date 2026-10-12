@@ -1234,8 +1234,9 @@ new data until they update. An update with a format change starts only with
 ### Rollback
 
 `obc data rollback TARGET` makes a target serve its rollback release again; for an R2 target, it
-asks first, or needs `--yes` without a terminal. With `--expect ID`, it refuses with `blocked`
-and changes nothing when the rollback release is not ID. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
+asks first, or needs `--yes` without a terminal. With `--expect ID`, where ID is the id of the
+rollback release or its first 12 or more hex digits, it refuses with `blocked` and changes nothing
+when the rollback release is another one. The release that served becomes the rollback, so a second rollback undoes the first. A target without a
 rollback refuses. The target must have each key of the rollback release, else nothing changes.
 Then it switches as [Publish and switch](#publish-and-switch) says. It holds the [lock](#lock)
 as an update does. A rollback bakes, uploads and deletes nothing: the next update collects.

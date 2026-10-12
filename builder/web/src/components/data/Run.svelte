@@ -3,7 +3,7 @@
     import { command } from "../../lib/data/cli";
     import { flagsOf, reviewArgs } from "../../lib/data/flags";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { changes, clock, span, title, type RunView, type Status } from "../../lib/data/shapes";
+    import { changes, clock, list, span, title, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
     import Layers from "./Layers.svelte";
@@ -88,7 +88,7 @@
     {#if view.error}
         <Failure error={view.error}>
             {#if view.error.kept.length}
-                <p><b>Kept</b> · {new Intl.ListFormat("en").format(view.error.kept)}. The next update reuses them.</p>
+                <p><b>Kept</b> · {list(view.error.kept)}. The next update reuses them.</p>
             {/if}
             {#if resume}
                 <p class="title">

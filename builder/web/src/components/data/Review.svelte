@@ -21,9 +21,8 @@
 
     // svelte-ignore state_referenced_locally
     let flags = $state(initial);
-    // A string, so that a new status with the same target starts no new review.
-    const key = $derived(JSON.stringify(reviewArgs(name, flags)));
-    const query = $derived(new CliQuery<Review>(JSON.parse(key)));
+    // `name` is a string, so a status poll with the same target starts no new review.
+    const query = $derived(new CliQuery<Review>(reviewArgs(name, flags)));
     $effect(() => void query.refresh());
     // The last review stays while the next one comes, but only a current review starts.
     let last = $state<Review | null>(null);

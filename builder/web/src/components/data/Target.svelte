@@ -32,8 +32,9 @@
     // The banner after a change stays while the target is as before the change or as after it.
     const now = $derived(target ? `${target.release?.serving.id ?? ""}|${lock?.run ?? ""}` : "");
     let done = $state<{ text: string; before: string; after: string; forward: string | null } | null>(null);
+    // A confirm stays while its command runs: the run of a rollback holds the lock.
     $effect(() => {
-        if (done && now !== done.before && now !== done.after) done = null;
+        if (done && !asking && now !== done.before && now !== done.after) done = null;
     });
     function changed(text: string, after: string, forward: string | null = null) {
         done = { text, before: now, after, forward };
@@ -171,7 +172,7 @@
                                 <button type="button" disabled={!!locked} onclick={() => (asking = "rollback")}>Roll back to {short(rollback.id)}…</button>
                             {/if}
                         </div>
-                        {#if asking === "rollback" && !locked}
+                        {#if asking === "rollback"}
                             {@render confirm(
                                 `Roll back ${name} to ${short(rollback.id)}?`,
                                 [
