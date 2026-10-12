@@ -938,6 +938,11 @@ that is first in byte order:
 | `input` | `name` | `follows device/map`, or `options changed` | A step reads a step of another operator layer that is stale, or whose files in the release are not the files that its release output read; or the store has other files of a snapshot that it reads, at the same version and `params`. `name` is that layer or source. `name` is `options` when the release has other steps of the layer, or a step with other options, inputs (kind and name), snapshot `params` or `client` |
 
 A step that reads a step of its own layer, or of an internal layer, gets the cause of that step.
+
+Each layer also gives what a picture of the layers needs: `shape` (`tiled` or `whole`), the
+`format` and the `revision` of its steps, its `readers`, and `reads`, the layers and the sources
+that its steps read, sorted. In place of an internal layer, `reads` names what that layer reads.
+A layer that only the release has gives `null` and empty lists.
 `obc data` does not list an internal layer: the layers that read it show its cause. In JSON, a
 layer is `{"layer", "state", "cause", "text"}`; `cause` and `text` are `null` unless it is stale.
 A step that cannot be planned is not judged: `blocked` lists it with its layer and the reason.
@@ -1512,6 +1517,21 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "areas"
       ],
       "type": "object"
+    },
+    "Baking": {
+      "description": "How the steps of a layer bake.",
+      "oneOf": [
+        {
+          "const": "tiled",
+          "description": "Per grid leaf.",
+          "type": "string"
+        },
+        {
+          "const": "whole",
+          "description": "Once over the coverage of a target, also in named partitions.",
+          "type": "string"
+        }
+      ]
     },
     "Bbox": {
       "description": "Degrees, longitude first.",
@@ -2367,8 +2387,50 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "Why a `stale` layer is stale; `null` for another state."
         },
+        "format": {
+          "description": "The format and the revision of its steps; `null` for a layer that only the release has.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "layer": {
           "type": "string"
+        },
+        "readers": {
+          "description": "The programs that read its files.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reads": {
+          "description": "The layers and the sources that its steps read, sorted. In place of a layer that no program\nreads, it names what that layer reads.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Baking"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How its steps bake; `null` for a layer that only the release has."
         },
         "state": {
           "$ref": "#/$defs/Verdict"
@@ -2385,7 +2447,12 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "layer",
         "state",
         "cause",
-        "text"
+        "text",
+        "shape",
+        "format",
+        "revision",
+        "readers",
+        "reads"
       ],
       "type": "object"
     },
