@@ -1375,11 +1375,13 @@ is compact JSON with the keys of each object in byte order:
 1. The version is the UTC date when its first run starts. A run keeps its work in
    `prepared/<target>/<id>/<version>/` of the [store](#store) of its machine. The same command
    resumes the version: the producer does not make a file of the journal again, unless the target
-   lacks its key. A resume with another region refuses. A stopped version that is not newer than
-   the newest complete version on the target, or whose manifest is on the target, is not resumed:
-   the run starts a new version, deletes the work of the old one, and the review names it in
-   `abandoned`. So a run never writes a key of a complete version. A new version that the target
-   has complete refuses.
+   lacks its key. A resume with another region refuses. When the manifest of a stopped version is
+   on the target and names the files of its journal, its run stopped after the manifest: the run
+   only adds the version to `versions.json`, and the review says `listing`. Another stopped version
+   that is not newer than the newest complete version on the target, or whose manifest is on the
+   target, is not resumed: the run starts a new version, deletes the work of the old one, and the
+   review names it in `abandoned`. So a run never writes a key of a complete version. A new version
+   that the target has complete refuses.
 2. The review names the version, the inputs with the size of their files in the store (`unknown`
    lists an input whose size the store does not know), the files
    that earlier runs uploaded, the cost from the manifest of the newest version that the target
@@ -3146,6 +3148,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "type": "array"
         },
+        "listing": {
+          "description": "Whether the manifest of the version is on the target and names the files of the journal: the\nrun only lists the version, and makes and writes nothing else.",
+          "type": "boolean"
+        },
         "machine": {
           "$ref": "#/$defs/MachineCheck"
         },
@@ -3189,6 +3195,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "target",
         "version",
         "abandoned",
+        "listing",
         "format",
         "revision",
         "scope",

@@ -77,6 +77,9 @@ pub struct PrepareReview {
     /// The version that a stopped run of this machine started and that this run does not resume:
     /// the target has a newer complete version. `null` when there is none.
     pub abandoned: Option<String>,
+    /// Whether the manifest of the version is on the target and names the files of the journal: the
+    /// run only lists the version, and makes and writes nothing else.
+    pub listing: bool,
     pub format: u32,
     pub revision: u32,
     /// `null`: every place that the source covers.
@@ -225,17 +228,19 @@ fn plan<'a>(
     }
     let listed = prepared::versions(target, id)?;
     let newest = listed.iter().map(|listed| listed.version.as_str()).max();
-    // A stopped version is resumed only while the target has no complete version as new as it: a
-    // run never rewrites a key of a complete version.
-    let (resumed, abandoned) = match prepared::started(store, name, id)? {
-        Some(started)
-            if newest.is_some_and(|newest| newest >= started.as_str())
-                || prepared::manifest(target, id, &started)?.is_some() =>
-        {
+    // A run never writes a key of a complete version. When the manifest of a stopped version is
+    // the one of its journal, that run crashed before it listed the version: this run lists it.
+    let started = prepared::started(store, name, id)?;
+    let journaled = started.as_ref().map_or(Vec::new(), |started| prepared::journaled(store, name, id, started));
+    let kept = started.as_ref().map(|started| prepared::manifest(target, id, started)).transpose()?.flatten();
+    let (resumed, abandoned) = match started {
+        Some(started) if kept.as_ref().is_some_and(|kept| kept.files == journaled) => (Some(started), None),
+        Some(started) if kept.is_some() || newest.is_some_and(|newest| newest >= started.as_str()) => {
             (None, Some(started))
         }
         started => (started, None),
     };
+    let listing = kept.is_some() && abandoned.is_none();
     let fresh = resumed.is_none();
     let version = resumed.unwrap_or_else(|| today.to_string());
     if fresh && prepared::manifest(target, id, &version)?.is_some() {
@@ -270,8 +275,8 @@ fn plan<'a>(
         }
         inputs.push(PreparedInput { source: wanted.source, version: wanted.version, params: wanted.params, bytes });
     }
-    let (files, bytes) = prepared::resumed(store, name, id, &version);
-    let done = Downloads { files, bytes };
+    let journaled = if fresh { Vec::new() } else { journaled };
+    let done = Downloads { files: journaled.len() as u64, bytes: journaled.iter().map(|file| file.size).sum() };
     let mut cost = PreparedCost { store_bytes, unknown, ..PreparedCost::default() };
     if let Some(newest) = listed.last() {
         let manifest = prepared::manifest(target, id, &newest.version)?;
@@ -306,6 +311,7 @@ fn plan<'a>(
         target: name.into(),
         version,
         abandoned,
+        listing,
         format: producer.format(),
         revision: producer.revision(),
         scope: scope.clone(),
@@ -400,6 +406,21 @@ fn make(
     let (id, version) = (source.id.as_str(), review.version.as_str());
     let (label, again) = (format!("source `{id}` on `{name}`"), format!("obc data source prepare {id} --to {name}"));
     let lock = (label.as_str(), again.as_str());
+    let done = |listed: prepared::Version, uploaded| Done {
+        source: id.into(),
+        version: version.into(),
+        target: name.into(),
+        files: review.done.files as usize,
+        bytes: listed.bytes,
+        uploaded,
+        manifest_sha256: listed.manifest_sha256,
+    };
+    if review.listing {
+        update_cli::enter_as((run, held), lock, Phase::Upload)?;
+        let listed = prepared::list(target, id, version)?;
+        prepared::forget(context.store, name, id, version)?;
+        return Ok(done(listed, 0));
+    }
     update_cli::enter_as((run, held), lock, Phase::Build)?;
     if let Some(abandoned) = &review.abandoned {
         prepared::forget(context.store, name, id, abandoned)?;
@@ -446,15 +467,7 @@ fn make(
     };
     let listed = prepared::complete(target, &manifest)?;
     prepared::forget(context.store, name, id, version)?;
-    Ok(Done {
-        source: id.into(),
-        version: version.into(),
-        target: name.into(),
-        files: manifest.files.len(),
-        bytes: listed.bytes,
-        uploaded,
-        manifest_sha256: listed.manifest_sha256,
-    })
+    Ok(Done { files: manifest.files.len(), ..done(listed, uploaded) })
 }
 
 fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
@@ -469,6 +482,9 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     if let Some(abandoned) = &review.abandoned {
         let text = format!("{abandoned} stays incomplete: the target has a newer complete version");
         rows.push(vec!["  abandon".into(), text]);
+    }
+    if review.listing {
+        rows.push(vec!["  list".into(), "the manifest is on the target: the run only lists the version".into()]);
     }
     for input in &review.inputs {
         let size = input.bytes.map_or("size unknown".into(), runs::bytes);
@@ -972,10 +988,18 @@ mod tests {
         assert_eq!((refused.code, refused.fix.as_str()), (Code::Blocked, "Run `obc data source prepare sample`."));
     }
 
+    /// The inode and the bytes of each file of `folder`, sorted by name.
+    #[cfg(unix)]
+    fn inodes(folder: &Path) -> Vec<(u64, Vec<u8>)> {
+        use std::os::unix::fs::MetadataExt;
+        let mut files: Vec<_> = fs::read_dir(folder).unwrap().map(|entry| entry.unwrap().path()).collect();
+        files.sort();
+        files.into_iter().map(|path| (fs::metadata(&path).unwrap().ino(), fs::read(&path).unwrap())).collect()
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_stopped_run_never_rewrites_a_version_that_another_machine_completed() {
-        use std::os::unix::fs::MetadataExt;
         let (fixture, prod, _) = setup("prepare-completed");
         write(&fixture.root().join("fail-c.txt"), "");
         prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap_err();
@@ -986,14 +1010,7 @@ mod tests {
         prepare(&fixture, "prod", "2026-10-01", Asked::default()).unwrap();
         let Target::Dir(dir) = &prod else { unreachable!() };
         let folder = dir.join("sources/sample/2026-10-01");
-        let state = || {
-            let mut files: Vec<_> = fs::read_dir(&folder).unwrap().map(|entry| entry.unwrap().path()).collect();
-            files.sort();
-            files
-                .into_iter()
-                .map(|path| (fs::metadata(&path).unwrap().ino(), fs::read(&path).unwrap()))
-                .collect::<Vec<_>>()
-        };
+        let state = || inodes(&folder);
         let before = state();
 
         fs::rename(&aside, &job).unwrap();
@@ -1033,5 +1050,33 @@ mod tests {
         prepare(&fixture, "local", "2026-10-01", Asked::default()).unwrap();
         update(&fixture, ("local", &local), &Default::default()).unwrap();
         assert_eq!(served(&local).0, pinned(&local, "2026-10-01"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_that_stopped_after_its_manifest_is_listed_and_nothing_else_is_written() {
+        let (fixture, prod, _) = setup("prepare-listing");
+        let Target::Dir(dir) = &prod else { unreachable!() };
+        let (gate, versions) = (fixture.root().join("gate"), dir.join("sources/sample/versions.json"));
+        fs::create_dir_all(&gate).unwrap();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| prepare(&fixture, "prod", "2026-10-01", Asked::default()));
+            arrives(&gate.join("waiting"));
+            // A folder in its place: the run stops after the manifest, before `versions.json`.
+            fs::create_dir_all(&versions).unwrap();
+            write(&gate.join("open"), "");
+            first.join().unwrap().unwrap_err();
+        });
+        fs::remove_dir(&versions).unwrap();
+        let folder = dir.join("sources/sample/2026-10-01");
+        let before = inodes(&folder);
+        assert!(folder.join("manifest.json").exists());
+
+        let done = prepare(&fixture, "prod", "2026-10-02", Asked::default()).unwrap();
+        assert_eq!((done.version.as_str(), done.uploaded), ("2026-10-01", 0));
+        assert_eq!(inodes(&folder), before, "the keys and the manifest stay");
+        assert_eq!(fs::read_to_string(fixture.root().join("made")).unwrap(), "a.txt\nb.txt\nc.txt\n", "no producer");
+        let listed = prepared::versions(&prod, "sample").unwrap();
+        assert_eq!(listed[0].manifest_sha256, sha256_hex(&fs::read(folder.join("manifest.json")).unwrap()));
     }
 }

@@ -195,8 +195,8 @@ pub(crate) fn unpin(pinned: &str) -> Option<(&str, &str)> {
 }
 
 /// Make `manifest` the manifest of its version on `target`, after a check that the target has each
-/// of its files with its size, then list the version in `versions.json`. A manifest that an earlier
-/// run of the version wrote stays when it names the same files.
+/// of its files with its size, then [`list`] the version. A manifest that an earlier run of the
+/// version wrote stays when it names the same files.
 pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, String> {
     let (id, version) = (&manifest.source, &manifest.version);
     let (folder, key) = (folder(target, id), format!("{version}/{MANIFEST}"));
@@ -205,21 +205,27 @@ pub(crate) fn complete(target: &Target, manifest: &Manifest) -> Result<Version, 
     if let Some(missing) = folder.missing(&sizes)?.first() {
         return Err(format!("sources/{id}/{missing} is not on the target; no manifest is written"));
     }
-    let (mut bytes, mut time) = (manifest.canonical(), manifest.time.clone());
-    if folder.put(&key, &bytes, &Condition::Absent)?.is_none() {
-        bytes = folder.get(&key)?.ok_or_else(|| format!("sources/{id}/{key} came and went"))?;
-        let kept = Manifest::parse(id, version, &bytes)?;
+    if folder.put(&key, &manifest.canonical(), &Condition::Absent)?.is_none() {
+        let kept = self::manifest(target, id, version)?.ok_or_else(|| format!("sources/{id}/{key} came and went"))?;
         if kept.files != manifest.files {
             return Err(format!("sources/{id}/{key} names other files than this run made"));
         }
-        time = kept.time;
     }
+    list(target, id, version)
+}
+
+/// Add the complete version `id@version` of `target` to its `versions.json`, from its manifest.
+pub(crate) fn list(target: &Target, id: &str, version: &str) -> Result<Version, String> {
+    let folder = folder(target, id);
+    let key = format!("{version}/{MANIFEST}");
+    let bytes = folder.get(&key)?.ok_or_else(|| format!("sources/{id}/{key} is gone"))?;
+    let manifest = Manifest::parse(id, version, &bytes)?;
     let entry = Version {
-        version: version.clone(),
+        version: version.into(),
         manifest_sha256: sha256_hex(&bytes),
         format: manifest.format,
         bytes: manifest.files.iter().map(|file| file.size).sum(),
-        time,
+        time: manifest.time,
     };
     edit_versions(&folder, |versions| {
         if !versions.iter().any(|listed| listed.version == entry.version) {
@@ -431,18 +437,18 @@ pub(crate) fn forget(store: &Store, target: &str, id: &str, version: &str) -> Re
     fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
-/// The number and the size of the files of `id@version` that the journal of its run on this machine
-/// names: a resume does not upload them again.
-pub(crate) fn resumed(store: &Store, target: &str, id: &str, version: &str) -> (u64, u64) {
+/// The files of `id@version` that the journal of its run on this machine names, sorted by path: a
+/// resume does not upload them again.
+pub(crate) fn journaled(store: &Store, target: &str, id: &str, version: &str) -> Vec<LayerFile> {
     let journal = job_dir(store, target, id, version).join("journal.jsonl");
     let text = fs::read_to_string(journal).unwrap_or_default();
     let mut files = BTreeMap::new();
     for entry in text.lines().filter_map(|line| serde_json::from_str::<Entry>(line).ok()) {
         if let Entry::File(file) = entry {
-            files.insert(file.path, file.size);
+            files.insert(file.path.clone(), file);
         }
     }
-    (files.len() as u64, files.values().sum())
+    files.into_values().collect()
 }
 
 /// Give `inputs` the version of each prepared source of `read`, the fetches that the steps of the
