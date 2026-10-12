@@ -14,7 +14,7 @@ obc data ui              # build the page, then serve it until Ctrl-C
 obc data open MACHINE    # the page of MACHINE, through an SSH tunnel at http://localhost:8701/
 ```
 
-`obc data ui` needs Node and `npm ci` in `builder/web`. It refuses a request from another site,
+`obc data ui` needs Node and `npm ci` in `builder/web`. It refuses a request from another page,
 and it runs only the commands that the page uses. A command runs to its end also when the page
 stops waiting for it. `data/machines.toml` sets the header colour and the SSH host of each machine.
 
@@ -33,4 +33,5 @@ From `builder/web`, while `obc data ui` runs:
 | `npm test` | Run the component tests |
 | `npm run test:data --prefix tests/browser` | Check each screen at 390 px; the test answers `/api/cli` |
 
-`test-support/data/` has an example of each JSON that the page reads.
+`test-support/data/` has an example of each JSON that the page reads. `cargo test -p obc-data`
+checks each one against the schema of its command; a new example also needs a line in that test.

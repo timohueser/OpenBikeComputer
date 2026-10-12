@@ -241,25 +241,35 @@ mod tests {
         ]
     }
 
-    fn schemas() -> String {
+    /// The schema name of each output, and the document with the schemas of all of them.
+    fn schemas() -> (Vec<(&'static str, String)>, Value) {
         let mut generator = SchemaSettings::draft2020_12().for_serialize().into_generator();
-        let outputs = outputs(&mut generator);
+        let outputs = outputs(&mut generator)
+            .into_iter()
+            .map(|(commands, schema)| {
+                let name = schema["$ref"].as_str().expect("each output has a name").trim_start_matches("#/$defs/");
+                (commands, name.to_string())
+            })
+            .collect();
+        let document = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": generator.take_definitions(true),
+        });
+        (outputs, crate::engine::sorted(document))
+    }
+
+    fn schemas_section() -> String {
+        let (outputs, document) = schemas();
         let mut text = format!(
             "`--json` writes one document of the schema in this table to standard output. The schemas\n\
              come from the Rust types in `host/obc-data`. A test fails when this section is not the one\n\
              that they give; `{UPDATE}=1 cargo test -p obc-data` writes it again.\n\n\
              | Command | Schema |\n| --- | --- |\n",
         );
-        for (commands, schema) in &outputs {
-            let name = schema["$ref"].as_str().expect("each output has a name").trim_start_matches("#/$defs/");
+        for (commands, name) in &outputs {
             text += &format!("| {commands} | `{name}` |\n");
         }
-        let document = json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$defs": generator.take_definitions(true),
-        });
-        let document = serde_json::to_string_pretty(&crate::engine::sorted(document)).unwrap();
-        text + "\n```json\n" + &document + "\n```\n"
+        text + "\n```json\n" + &serde_json::to_string_pretty(&document).unwrap() + "\n```\n"
     }
 
     fn codes() -> String {
@@ -297,11 +307,38 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/obc-data.md");
         let spec = std::fs::read_to_string(&path).unwrap();
         let current = replace_section(&spec, "### Error codes", &codes());
-        let current = replace_section(&current, "## JSON schemas", &schemas());
+        let current = replace_section(&current, "## JSON schemas", &schemas_section());
         if std::env::var_os(UPDATE).is_some() {
             std::fs::write(&path, &current).unwrap();
         } else {
             assert!(spec == current, "specs/obc-data.md is not current: run `{UPDATE}=1 cargo test -p obc-data`");
+        }
+    }
+
+    /// The operator page's tests read these examples in place of `obc data --json`.
+    #[test]
+    fn each_example_of_the_page_has_the_schema_of_its_command() {
+        const EXAMPLES: [(&str, &str); 5] = [
+            ("run-failed.json", "View"),
+            ("run-running.json", "View"),
+            ("runs.json", "RunList"),
+            ("setup.json", "Setup"),
+            ("status.json", "Overview"),
+        ];
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/web/test-support/data");
+        let mut files: Vec<_> =
+            std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+        files.sort();
+        assert_eq!(files, EXAMPLES.map(|(file, _)| file), "each example names its schema here");
+        let mut compiler = boon::Compiler::new();
+        compiler.add_resource("obc-data.json", schemas().1).unwrap();
+        let mut compiled = boon::Schemas::new();
+        for (file, name) in EXAMPLES {
+            let schema = compiler.compile(&format!("obc-data.json#/$defs/{name}"), &mut compiled).unwrap();
+            let example = serde_json::from_str(&std::fs::read_to_string(dir.join(file)).unwrap()).unwrap();
+            if let Err(e) = compiled.validate(&example, schema) {
+                panic!("{file} does not have the schema `{name}`:\n{e:#}");
+            }
         }
     }
 }

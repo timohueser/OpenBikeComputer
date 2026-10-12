@@ -1,5 +1,7 @@
 import { runCli, type CliError, type CliResult } from "./cli";
 
+const MAX_WAIT_MS = 300_000;
+
 /** The answers to one read-only command, shared by every view that shows them. */
 export class CliQuery<T> {
     /** The output of the latest answer that succeeded. A failed answer keeps it. */
@@ -30,13 +32,17 @@ export class CliQuery<T> {
         take(await runCli<T>(this.args));
     }
 
-    /** Refreshes now, and again `ms` after each answer, until the returned function is called. */
+    /** Refreshes now, and again `ms` after each answer, until the returned function is called.
+     *  After an error it waits twice as long each time, up to 5 min. A usage error ends it: the same
+     *  command gets the same answer. */
     poll(ms: number): () => void {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let stopped = false;
+        let wait = ms;
         const next = async () => {
             await this.refresh();
-            if (!stopped) timer = setTimeout(next, ms);
+            wait = this.error ? Math.min(wait * 2, Math.max(ms, MAX_WAIT_MS)) : ms;
+            if (!stopped && this.error?.code !== "usage") timer = setTimeout(next, wait);
         };
         void next();
         return () => {

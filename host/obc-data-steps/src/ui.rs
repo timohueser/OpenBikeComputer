@@ -107,8 +107,9 @@ async fn guard(request: Request, next: Next) -> Response {
 }
 
 /// Why the page refuses a request. It answers only a browser on this machine or at the end of an
-/// SSH tunnel to it: the Host is loopback at any port, which stops DNS rebinding; an Origin is
-/// loopback, which stops other sites; and a POST is JSON, which a plain form cannot send.
+/// SSH tunnel to it: the Host is loopback at any port, which stops DNS rebinding; an Origin is the
+/// page itself, which stops other sites and other pages on this machine; and a POST is JSON, which
+/// a plain form cannot send.
 fn refusal(
     method: &Method,
     host: Option<&str>,
@@ -118,8 +119,8 @@ fn refusal(
     if !host.is_some_and(loopback) {
         return Some("the Host of the request is not this machine");
     }
-    if origin.is_some_and(|origin| !origin.strip_prefix("http://").is_some_and(loopback)) {
-        return Some("the request comes from a page of another site");
+    if origin.is_some_and(|origin| origin.strip_prefix("http://") != host) {
+        return Some("the request comes from another page");
     }
     let json =
         content_type.is_some_and(|value| value.split(';').next().unwrap_or_default().trim() == "application/json");
@@ -148,8 +149,14 @@ async fn cli(State(page): State<Arc<Page>>, Json(ask): Json<Ask>) -> Response {
 /// Why the page does not run `obc data ARGS`: it runs only the commands that its screens use, and
 /// each is named here.
 fn refused(args: &[String]) -> Option<Error> {
-    let allowed = matches!(args.first().map(String::as_str), None | Some("setup"));
-    let command = ["obc", "data"].into_iter().chain(args.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let allowed = match words[..] {
+        [] | ["setup"] | ["runs"] => true,
+        // Not `--follow`: it answers only when the run ends.
+        ["runs", run] | ["runs", run, "--stop"] => !run.starts_with('-'),
+        _ => false,
+    };
+    let command = ["obc", "data"].into_iter().chain(words).collect::<Vec<_>>().join(" ");
     (!allowed).then(|| Code::Usage.error(format!("the page does not run `{command}`")).fix("Run it in a terminal."))
 }
 
@@ -258,7 +265,11 @@ mod tests {
             (&get, Some("rebound.example:8700"), None, None, false),
             (&get, Some("127.0.0.1.rebound.example"), None, None, false),
             (&get, Some("localhost:80@rebound.example"), None, None, false),
+            (&post, Some("127.0.0.1:8700"), Some("http://127.0.0.1:8700"), json, true),
+            (&post, Some("localhost:8701"), Some("http://localhost:8701"), json, true),
             (&post, Some("127.0.0.1:8700"), Some("https://other.example"), json, false),
+            (&post, Some("127.0.0.1:8700"), Some("http://localhost:3000"), json, false),
+            (&post, Some("localhost:8700"), Some("http://127.0.0.1:8700"), json, false),
             (&post, Some("127.0.0.1:8700"), Some("null"), json, false),
             (&post, Some("127.0.0.1:8700"), None, Some("text/plain"), false),
             (&post, Some("127.0.0.1:8700"), None, None, false),
@@ -303,13 +314,15 @@ mod tests {
             &["ui"][..],
             &["open", "bake"],
             &["runs", "r1", "--follow"],
+            &["runs", "r1", "--stop", "--follow"],
+            &["runs", "--stop"],
             &["r2", "list"],
             &["update", "local"],
             &["--help"],
         ] {
             assert!(refused(&words(args)).is_some(), "{args:?}");
         }
-        for args in [&[][..], &["setup"]] {
+        for args in [&[][..], &["setup"], &["runs"], &["runs", "r1"], &["runs", "r1", "--stop"]] {
             assert!(refused(&words(args)).is_none(), "{args:?}");
         }
 

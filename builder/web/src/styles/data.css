@@ -1,0 +1,68 @@
+/* What every screen of the operator page shares. `:where` keeps these rules at no specificity, so
+   the rule of a component always wins. */
+:where(main :is(h1, h2)) {
+    margin: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+:where(main h1) {
+    font-size: 28px;
+    line-height: 36px;
+}
+:where(main h2) {
+    font-size: 18px;
+    line-height: 26px;
+}
+:where(main p) {
+    margin: 0;
+}
+:where(main code) {
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+:where(main .title) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+}
+:where(main .grow) {
+    flex-grow: 1;
+}
+:where(main .card) {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding: 20px;
+    background: var(--panel);
+    border: 1px solid var(--parchment-3);
+    border-radius: 12px;
+    overflow-wrap: anywhere;
+}
+:where(main button) {
+    min-height: 44px;
+    padding: 0 20px;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--ink);
+    border-radius: 8px;
+    font: 600 15px var(--sans);
+}
+:where(main button:disabled) {
+    opacity: 0.6;
+    cursor: progress;
+}
+:where(main .soft) {
+    color: var(--ink-soft);
+}
+:where(main :is(.ok, .ready)) {
+    color: var(--ready);
+}
+:where(main :is(.starting, .running)) {
+    color: var(--running);
+}
+:where(main :is(.failed, .stopped, .missing)) {
+    color: var(--missing);
+}
