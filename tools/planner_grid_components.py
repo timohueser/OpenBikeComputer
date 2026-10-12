@@ -167,10 +167,10 @@ def publish(source, routing, output, cache=None):
             cell_files.append(filename)
         geographic.append({**cell, "routing": routing_cells.get(name), "files": [*cell_files, f"routes/tiles/{name}.json"]})
         grid_cells.append({**cell, "files": [filename.removeprefix("search/") for filename in cell_files]})
-    metadata(f"search/{release['region']}.grid.json", {"format": 3, "metadata": search_meta, "cells": grid_cells})
+    metadata(f"search/{release['region']}.grid.json", {"format": runtime.INDEX_FORMAT, "metadata": search_meta, "cells": grid_cells})
     remaining = {name: entry for name, entry in release["files"].items() if name.startswith(("search/model/", "device/"))}
     package("grid-model-device", remaining, copy_files, lambda stage: copy_files(stage, remaining))
-    catalog = {"format": 3, "source": identity, "release": {key: value for key, value in release.items() if key not in {"files", "source_files"}},
+    catalog = {"format": runtime.INDEX_FORMAT, "source": identity, "release": {key: value for key, value in release.items() if key not in {"files", "source_files"}},
         "routing_source": graph["source"], "map_blocks": map_blocks, "cells": geographic, "shared": shared,
         "files": dict(files), "zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM}
     metadata("offline/catalog.json", catalog)

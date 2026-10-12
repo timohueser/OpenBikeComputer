@@ -78,6 +78,8 @@ Leave it running while `obc data update local` runs in another terminal. Clients
 release when its services answer. A failed release leaves clients on the current release; the
 services write the cause to the terminal. A service that stops later does not start again: stop
 `obc data serve` with Ctrl-C and start it again.
+Serve reads the formats of the services once, at start: start it again after a change of the
+format that a service reads.
 
 - Every machine on the local network reaches every file of the target, also `release.json`, and
   the three services. Any web page can read them (CORS `*`).

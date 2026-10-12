@@ -38,15 +38,15 @@ const DOWNLOADS_CACHE: u64 = 256 << 20;
 pub struct Programs {
     root: PathBuf,
     routing: PathBuf,
-    /// By layer: the service that reads it, and the format that it reads.
-    formats: BTreeMap<String, (&'static str, u32)>,
+    /// What each service reads: the service, a layer and its format.
+    reads: Vec<(&'static str, String, u32)>,
 }
 
 impl Programs {
     /// The programs, with the formats that each service prints with `--formats`: a JSON object of
     /// layer and format.
     pub fn new(root: PathBuf, routing: PathBuf) -> Result<Self, String> {
-        let mut formats = BTreeMap::new();
+        let mut all = Vec::new();
         for (mut command, service) in commands(&root, &routing).into_iter().zip(&SERVICES) {
             let fail = |e: String| format!("the {} service does not give its formats: {e}", service.name);
             let output = command.arg("--formats").output().map_err(|e| fail(e.to_string()))?;
@@ -55,9 +55,9 @@ impl Programs {
             }
             let reads: BTreeMap<String, u32> =
                 serde_json::from_slice(&output.stdout).map_err(|e| fail(e.to_string()))?;
-            formats.extend(reads.into_iter().map(|(layer, format)| (layer, (service.name, format))));
+            all.extend(reads.into_iter().map(|(layer, format)| (service.name, layer, format)));
         }
-        Ok(Self { root, routing, formats })
+        Ok(Self { root, routing, reads: all })
     }
 }
 
@@ -71,11 +71,9 @@ fn commands(root: &Path, routing: &Path) -> [Command; 3] {
 
 /// Refuse a release with a layer that its service reads in another format.
 fn readable(programs: &Programs, served: &Served) -> Result<(), String> {
-    for (layer, (service, reads)) in &programs.formats {
+    for (service, layer, reads) in &programs.reads {
         if let Some(format) = served.formats.get(layer).filter(|format| *format != reads) {
-            return Err(format!(
-                "not ready: needs a {service} service that reads {layer} format {format}; it reads {reads}"
-            ));
+            return Err(format!("needs a {service} service that reads {layer} format {format}; it reads {reads}"));
         }
     }
     Ok(())
@@ -295,20 +293,25 @@ mod tests {
     #[test]
     fn a_release_in_a_format_that_a_service_does_not_read_starts_nothing() {
         let scratch = Scratch::new("serve-formats");
-        let formats = [("planner/routing".to_string(), ("routing", 8))].into();
-        let programs = Programs { root: scratch.0.clone(), routing: scratch.0.join("planner-service"), formats };
-        let served = |format| Served {
+        let reads = vec![
+            ("routing", "planner/routing".into(), 8),
+            ("search", "planner/index".into(), 3),
+            ("downloads", "planner/index".into(), 3),
+        ];
+        let programs = Programs { root: scratch.0.clone(), routing: scratch.0.join("planner-service"), reads };
+        let served = |routing, index| Served {
             id: "b".repeat(64),
             planner: "a".repeat(64),
             pointers: BTreeMap::new(),
-            formats: [("planner/routing".into(), format), ("planner/search".into(), 6)].into(),
+            formats: [("planner/routing".into(), routing), ("planner/index".into(), index)].into(),
         };
         let work = scratch.0.join("work");
-        let refused = start(&programs, &scratch.0, &work, &served(9), "http://127.0.0.1:8710").err().unwrap();
-        assert_eq!(refused, "not ready: needs a routing service that reads planner/routing format 9; it reads 8");
+        let refused = start(&programs, &scratch.0, &work, &served(9, 3), "http://127.0.0.1:8710").err().unwrap();
+        assert_eq!(refused, "needs a routing service that reads planner/routing format 9; it reads 8");
         assert!(!work.exists(), "nothing is installed");
-        let other = start(&programs, &scratch.0, &work, &served(8), "http://127.0.0.1:8710").err().unwrap();
-        assert!(other.contains("release.json"), "a release in the format passes the check: {other}");
+        let index = readable(&programs, &served(8, 4)).unwrap_err();
+        assert_eq!(index, "needs a search service that reads planner/index format 4; it reads 3");
+        assert!(readable(&programs, &served(8, 3)).is_ok());
     }
 
     #[test]

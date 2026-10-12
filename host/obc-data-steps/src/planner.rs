@@ -43,8 +43,11 @@ pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &["web planner"]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &["web planner"]);
 /// The offline catalog, the release document, the joined fonts of every planner layer and the
-/// pointer.
-pub static PLANNER_INDEX: Layer = whole("planner/index", 1, &["web planner", "iOS"]);
+/// pointer. Its format is that of the offline catalog and of `search/<region>.grid.json`, which the
+/// downloads and search services check: a change of either file format changes it, and
+/// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
+pub static PLANNER_INDEX: Layer =
+    whole("planner/index", 3, &["web planner", "iOS", "search service", "downloads service"]);
 
 const fn whole(name: &'static str, format: u32, readers: &'static [&'static str]) -> Layer {
     Layer { name, shape: Shape::Whole, format, revision: 1, readers }

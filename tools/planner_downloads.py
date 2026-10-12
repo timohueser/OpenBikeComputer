@@ -18,10 +18,7 @@ from urllib.parse import unquote, urlsplit
 from . import planner_grid, planner_map_archive, planner_maps, planner_runtime
 
 
-# The offline catalog that this service reads, and the format of `planner/index`, the layer that
-# writes it.
-CATALOG = 3
-FORMATS = {"planner/index": 1}
+FORMATS = {"planner/index": planner_runtime.INDEX_FORMAT}
 
 
 def contains(outer, inner):
@@ -50,7 +47,7 @@ class Downloads:
         self.source, self.cache = source.resolve(), cache.resolve()
         body = (self.source / "catalog.json").read_bytes()
         self.publication = json.loads(body)
-        if self.publication["format"] != CATALOG:
+        if self.publication["format"] != planner_runtime.INDEX_FORMAT:
             raise ValueError("Unsupported offline publication")
         self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
         self.objects_url = objects_url.rstrip("/") if objects_url else None

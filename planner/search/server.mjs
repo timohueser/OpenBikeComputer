@@ -2,14 +2,14 @@ import http from 'node:http';
 import path from 'node:path';
 import { parserProcess } from './parser.mjs';
 import { searchRuntime } from './runtime.mjs';
-import {openRegion} from './installation.mjs';
+import {GRID, openRegion} from './installation.mjs';
 import { openingHours } from './hours.mjs';
 import { RequestError } from './validation.mjs';
 import { allowedOrigin } from './origins.mjs';
 import { SCHEMA } from './federation.mjs';
 
 if (process.argv.includes('--formats')) {
-  console.log(JSON.stringify({ 'planner/search': SCHEMA }));
+  console.log(JSON.stringify({ 'planner/search': SCHEMA, 'planner/index': GRID }));
   process.exit(0);
 }
 

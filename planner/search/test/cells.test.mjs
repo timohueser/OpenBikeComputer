@@ -59,11 +59,12 @@ test('a bounded query skips cells outside its bounds and keeps a cell that touch
   }
 });
 
-test('the server names the search schema that it reads, without search data', async () => {
+test('the server names the formats that it reads, without search data', async () => {
   const {execFile} = await import('node:child_process');
   const {SCHEMA} = await import('../federation.mjs');
+  const {GRID} = await import('../installation.mjs');
   const env = {...process.env, OBC_SEARCH_DATA: '/nonexistent'};
   const stdout = await new Promise((resolve, reject) => execFile(process.execPath, ['server.mjs', '--formats'],
     {cwd: new URL('..', import.meta.url), env}, (error, out) => error ? reject(error) : resolve(out)));
-  assert.deepEqual(JSON.parse(stdout), {'planner/search': SCHEMA});
+  assert.deepEqual(JSON.parse(stdout), {'planner/search': SCHEMA, 'planner/index': GRID});
 });
