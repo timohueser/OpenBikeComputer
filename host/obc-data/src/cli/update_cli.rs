@@ -4,7 +4,7 @@
 
 mod review;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use clap::Args;
@@ -17,11 +17,11 @@ use crate::engine::changes::{self, Update};
 use crate::engine::plan::{outputs, Estimate};
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
-use crate::engine::Step;
+use crate::engine::{InputKind, Step};
 use crate::fetch::http::Http;
-use crate::product::{Inputs, Product};
+use crate::product::{Inputs, Product, RequestKey};
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::release::{self, File, Output, Release, Serving};
+use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
 use crate::settings::Settings;
 use crate::sources::{Refresh, Registry, Source};
 use crate::store::Store;
@@ -294,7 +294,8 @@ fn apply(
     let mut outputs = outputs(store, &steps, &update.kept)?
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
-    let next = compose(products, settings, outputs)?;
+    let fetched = reads(store, &outputs, serving.as_ref(), &sources)?;
+    let next = compose(products, settings, outputs, fetched)?;
     let mut updated = Updated {
         run: run.id().into(),
         target: name.into(),
@@ -344,7 +345,12 @@ fn apply(
 }
 
 /// The release of `outputs`: the pointer and the named files of each product.
-fn compose(products: &[&dyn Product], settings: Settings, outputs: Vec<Output>) -> Result<Release, Error> {
+fn compose(
+    products: &[&dyn Product],
+    settings: Settings,
+    outputs: Vec<Output>,
+    sources: Vec<Fetched>,
+) -> Result<Release, Error> {
     let (mut pointers, mut named) = (Vec::new(), Vec::new());
     for product in products {
         let bug = |message: String| {
@@ -371,11 +377,58 @@ fn compose(products: &[&dyn Product], settings: Settings, outputs: Vec<Output>) 
         outputs,
         pointers,
         named,
+        sources,
         machine: crate::machine(),
         time: crate::date::timestamp(crate::date::now()),
     };
     release.check().map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
     Ok(release)
+}
+
+/// The files of each fetch that `outputs` read: from the snapshot record in the store, else from
+/// the serving release, whose kept outputs read them. A target copies the files of a source that
+/// `sources` lets it give to others.
+fn reads(
+    store: &Store,
+    outputs: &[Output],
+    serving: Option<&Release>,
+    sources: &[Source],
+) -> Result<Vec<Fetched>, Error> {
+    // The names of the files of each fetch and version.
+    let mut names: BTreeMap<(RequestKey, String), BTreeSet<String>> = BTreeMap::new();
+    for output in outputs {
+        for input in output.inputs.iter().filter(|input| input.kind == InputKind::Snapshot) {
+            let read = output.snapshots.get(&input.name).ok_or_else(|| {
+                Code::Failed.error(format!("step `{}` reads {} and has no version of it", output.step, input.name))
+            })?;
+            let fetch = ((input.name.clone(), read.params.clone()), read.version.clone());
+            names.entry(fetch).or_default().extend(input.files.iter().cloned());
+        }
+    }
+    let mut fetched = Vec::new();
+    for (((source, params), version), names) in names {
+        let recorded = store.snapshot(&source, &version)?.map(|snapshot| {
+            let files = snapshot.files.into_iter();
+            files.map(|file| FetchedFile { name: file.name, size: file.size, sha256: file.sha256 }).collect()
+        });
+        let served = serving.iter().flat_map(|release| &release.sources);
+        let earlier = served.into_iter().find(|f| (&f.source, &f.version, &f.params) == (&source, &version, &params));
+        let mut files = [recorded, earlier.map(|fetched| fetched.files.clone())]
+            .into_iter()
+            .flatten()
+            .map(|files: Vec<FetchedFile>| {
+                files.into_iter().filter(|file| names.contains(&file.name)).collect::<Vec<_>>()
+            })
+            .find(|files| files.len() == names.len())
+            .ok_or_else(|| {
+                Code::Failed
+                    .error(format!("neither the store nor the serving release has the files of {source}@{version}"))
+            })?;
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        let copy = sources.iter().any(|declared| declared.id == source && declared.copied());
+        fetched.push(Fetched { source, version, params, files, copy });
+    }
+    Ok(fetched)
 }
 
 /// Apply the flags of `args` to `settings`.
@@ -658,8 +711,11 @@ pub(super) mod tests {
     }
 
     /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
+    /// The target copies the files of `head`.
     fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
-        fixture.with_sources(&[]);
+        let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
+        head.id = "head".into();
+        fixture.with_sources(&[head]);
         let a = update(fixture, target, region).unwrap().serving;
         fixture.fetched_version("head", "2", "head.txt", b"2\n");
         let b = update(fixture, target, |_| Ok(())).unwrap().serving;
@@ -691,6 +747,8 @@ pub(super) mod tests {
             Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key).collect()
         };
         let mut only_a: BTreeSet<String> = &(&files(&a) - &files(&b)) - &files(&c.serving);
+        assert!(only_a.contains("sources/head/1/head.txt"), "the copy of a source file: {only_a:?}");
+        assert!(!files(&a).iter().any(|key| key.starts_with("sources/tail/")), "tail is not declared");
         only_a.insert(release::manifest_key(&a));
         let older = ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part"];
         let orphans = ["objects/0000", "objects/.1.2.part", ".release.json.1.tmp", "cell-catalog/.catalog.json.1.tmp"];
@@ -698,6 +756,7 @@ pub(super) mod tests {
             write(&dir.join(key), key);
         }
         let before = keys(&target);
+        assert!(before.contains("sources/head/1/head.txt"), "the publish copies it");
 
         let epoch = crate::date::timestamp(0);
         let young = collection::collect(&target, Some(&epoch), crate::date::now());

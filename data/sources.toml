@@ -40,7 +40,6 @@ fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}-{yymmd
 version = "date"
 refresh = 7
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "geofabrik-index"
@@ -53,7 +52,6 @@ fetch = { kind = "http", url = "https://download.geofabrik.de/index-v1.json" }
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "geofabrik-poly"
@@ -66,7 +64,6 @@ fetch = { kind = "geofabrik", url = "https://download.geofabrik.de/{area}.poly" 
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = true
 
 # The OSM paths and tracks of a box: the Overpass answer to the trail query of `tools/planner_snow.py`.
 [[source]]
@@ -92,7 +89,6 @@ fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/land-p
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "water-polygons"
@@ -105,7 +101,6 @@ fetch = { kind = "http", url = "https://osmdata.openstreetmap.de/download/water-
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = true
 
 
 # ── Terrain ──────────────────────────────────────────────────────────────────
@@ -131,7 +126,6 @@ licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-el
 fetch = { kind = "http", url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt" }
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "mapzen-terrain-tiles"
@@ -156,7 +150,6 @@ extent = [9.5, 46.3, 17.2, 49.1]
 areas = ["europe/austria"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-au"
@@ -169,7 +162,6 @@ extent = [112.0, -44.0, 154.0, -9.0]
 areas = ["australia-oceania/australia"]
 version = "date"
 redistribute = true
-r2_copy = true
 # The directory of the delivered order, and the vertical datum that its metadata states.
 credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"] }
 
@@ -183,7 +175,6 @@ extent = [-141.0, 41.6, -52.6, 83.2]
 areas = ["north-america/canada"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-ch"
@@ -196,7 +187,6 @@ extent = [5.9, 45.8, 10.5, 47.9]
 areas = ["europe/switzerland", "europe/liechtenstein"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-bw"
@@ -208,7 +198,6 @@ extent = [7.5, 47.5, 10.5, 49.8]
 areas = ["europe/germany/baden-wuerttemberg"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-by"
@@ -220,7 +209,6 @@ extent = [8.9, 47.2, 13.9, 50.6]
 areas = ["europe/germany/bayern"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-he"
@@ -232,7 +220,6 @@ extent = [7.7, 49.3, 10.3, 51.7]
 areas = ["europe/germany/hessen"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-mv"
@@ -245,7 +232,6 @@ extent = [10.5, 53.0, 14.5, 54.8]
 areas = ["europe/germany/mecklenburg-vorpommern"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-ni"
@@ -257,7 +243,6 @@ extent = [6.5, 51.2, 11.7, 54.0]
 areas = ["europe/germany/niedersachsen"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-nw"
@@ -269,7 +254,6 @@ extent = [5.8, 50.3, 9.5, 52.6]
 areas = ["europe/germany/nordrhein-westfalen"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-sn"
@@ -281,7 +265,6 @@ extent = [11.8, 50.1, 15.1, 51.7]
 areas = ["europe/germany/sachsen"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-st"
@@ -293,7 +276,6 @@ extent = [10.5, 50.9, 13.2, 53.1]
 areas = ["europe/germany/sachsen-anhalt"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-de-th"
@@ -305,7 +287,6 @@ extent = [9.8, 50.2, 12.7, 51.7]
 areas = ["europe/germany/thueringen"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-dk"
@@ -318,7 +299,6 @@ areas = ["europe/denmark"]
 hosts = ["dataforsyningen.dk"]
 version = "date"
 redistribute = true
-r2_copy = true
 credential = { env = ["OBC_REFERENCE_DK_TOKEN"] }
 
 [[source]]
@@ -331,7 +311,6 @@ extent = [-18.2, 27.6, 4.4, 43.9]
 areas = ["europe/spain", "africa/canary-islands"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-fi"
@@ -344,7 +323,6 @@ areas = ["europe/finland"]
 hosts = ["*.maanmittauslaitos.fi"]
 version = "date"
 redistribute = true
-r2_copy = true
 credential = { env = ["OBC_REFERENCE_FI_TOKEN"] }
 
 [[source]]
@@ -357,7 +335,6 @@ extent = [-5.3, 41.3, 9.6, 51.1]
 areas = ["europe/france"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-it-bz"
@@ -368,7 +345,6 @@ fetch = { kind = "dtm", url = "https://geoservices9.civis.bz.it/geoserver/ows" }
 extent = [10.3, 46.2, 12.5, 47.1]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-it-tn"
@@ -379,7 +355,6 @@ fetch = { kind = "dtm", url = "https://siatservices.provincia.tn.it/stemdata/201
 extent = [10.4, 45.6, 12.0, 46.6]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-nl"
@@ -391,7 +366,6 @@ extent = [3.2, 50.7, 7.3, 53.6]
 areas = ["europe/netherlands"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-no"
@@ -403,7 +377,6 @@ extent = [4.0, 57.8, 31.5, 71.5]
 areas = ["europe/norway"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-nz"
@@ -415,7 +388,6 @@ extent = [166.3, -47.4, 178.9, -34.0]
 areas = ["australia-oceania/new-zealand"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-se"
@@ -428,7 +400,6 @@ areas = ["europe/sweden"]
 hosts = ["*.lantmateriet.se"]
 version = "date"
 redistribute = true
-r2_copy = true
 credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"] }
 
 [[source]]
@@ -441,7 +412,6 @@ extent = [-6.5, 49.8, 2.0, 55.9]
 areas = ["europe/united-kingdom/england"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "dtm-us"
@@ -453,7 +423,6 @@ extent = [-179.0, 17.0, -65.0, 72.0]
 areas = ["north-america/us"]
 version = "date"
 redistribute = true
-r2_copy = true
 
 # ── Wikimedia ────────────────────────────────────────────────────────────────
 
@@ -468,7 +437,6 @@ hosts = ["query.wikidata.org"]
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = false
 
 [[source]]
 id = "wikipedia"
@@ -481,7 +449,6 @@ fetch = { kind = "capture", url = "https://{language}.wikipedia.org/w/api.php" }
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = false
 
 [[source]]
 id = "commons"
@@ -494,7 +461,6 @@ hosts = ["upload.wikimedia.org"]
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = false
 
 # ── Climate and snow ─────────────────────────────────────────────────────────
 
@@ -561,7 +527,6 @@ obligations = "none"
 fetch = { kind = "http", url = "https://naciscdn.org/naturalearth/packages/natural_earth_vector.gpkg.zip" }
 version = "digest"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "daylight-landcover"
@@ -572,7 +537,6 @@ attribution = "ESA WorldCover"
 fetch = { kind = "http", url = "https://r2-public.protomaps.com/datasets/daylight-landcover.gpkg" }
 version = "digest"
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "qrank"
@@ -584,7 +548,6 @@ fetch = { kind = "http", url = "https://qrank.toolforge.org/download/qrank.csv.g
 version = "date"
 refresh = 90
 redistribute = true
-r2_copy = true
 
 [[source]]
 id = "pgf-encoding"
@@ -595,7 +558,6 @@ obligations = "none"
 fetch = { kind = "http", url = "https://wipfli.github.io/pgf-encoding/pgf-encoding.zip" }
 version = "digest"
 redistribute = true
-r2_copy = true
 
 # ── Assets that ship to users ────────────────────────────────────────────────
 

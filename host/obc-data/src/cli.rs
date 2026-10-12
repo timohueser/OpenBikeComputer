@@ -47,7 +47,7 @@ enum Command {
     /// Switch a target back to its rollback release. The release that served becomes the rollback,
     /// so a second rollback undoes the first.
     Rollback(rollback_cli::RollbackArgs),
-    /// Every source with licence, R2 copy, and the policy, versions and state for each target.
+    /// Every source with licence, target copy, and the policy, versions and state for each target.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
@@ -321,6 +321,8 @@ struct Sources {
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
+    /// Whether a target keeps a copy of the files of the source that its release reads.
+    copy: bool,
     /// By target: its policy, and the state of each request that its serving release reads.
     targets: BTreeMap<String, SourceTarget>,
     /// The versions in the local store, the one fetched last first.
@@ -378,14 +380,14 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
             .collect();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
-        rows.push(SourceRow { source, targets, snapshots, credential_missing });
+        rows.push(SourceRow { copy: source.copied(), source, targets, snapshots, credential_missing });
     }
     if json {
         return print_json(&Sources { sources: rows });
     }
     let names: Vec<&str> = served.iter().map(|(name, _)| name.as_str()).collect();
     let mut table = vec![[
-        vec!["SOURCE".to_string(), "LICENCE".into(), "R2 COPY".into()],
+        vec!["SOURCE".to_string(), "LICENCE".into(), "COPY".into()],
         names.iter().map(|n| n.to_uppercase()).collect(),
     ]
     .concat()];
@@ -401,7 +403,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
         let mut cells = vec![
             s.id.clone(),
             s.licence.clone().unwrap_or_else(|| none.into()),
-            if s.r2_copy { "yes" } else { "no" }.into(),
+            if row.copy { "yes" } else { "no" }.into(),
         ];
         for name in &names {
             let target = &row.targets[*name];

@@ -28,8 +28,7 @@ One `[[source]]` table per source.
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
-| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others |
-| `r2_copy` | boolean | no, `false` | Reserved: no command copies a source to R2 |
+| `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The raw Wikimedia dumps `wikidata`, `wikipedia` and `commons` have no copy until a prepared source reads them |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
@@ -59,7 +58,6 @@ Rules:
 - An id is listed once.
 - Each kind of fetch but `installed` has a `url`, and the `url` starts with `https://`.
 - `refresh` in days needs `version = "date"`, because only a date version has an age.
-- `r2_copy = true` needs `redistribute = true`, because R2 is public.
 - A credential has `env` or `file`, not both.
 - An `osm` fetch has `from`, and `from` names a source. No other fetch has `from`.
 
@@ -938,6 +936,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. So other files make another folder. Immutable |
 | `objects/<sha256>` | A client file of an output. Immutable |
+| `sources/<source>/<version>/<name>` | A copy of a file of a source version that an output of a release read, when the source has `redistribute = true`. Immutable |
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
@@ -955,6 +954,7 @@ SHA-256 of these bytes.
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
 | `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
+| `sources` | `[{source, version, params, files, copy}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, size, sha256}]`, sorted by `name`), and whether the target copies them under `sources/` |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
@@ -1088,7 +1088,7 @@ another release, it collects the target. The grace of a collection is 10 minutes
 `collection.rs`): longer than a client needs to fetch the files that a pointer it just read names.
 
 - When a pointer does not hold the bytes of the serving release, it deletes nothing.
-- It deletes only keys under `objects/` and `releases/`, and the temporary files of a
+- It deletes only keys under `objects/`, `releases/` and `sources/`, and the temporary files of a
   write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a pointer with the
   name of the pointer. The pointers, `release.json` and the keys of older publishers stay.
 - A release that `release.json` does not name stopped serving at or before the time when the
@@ -1119,7 +1119,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
 | `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
-| `obc data sources [--check-now] [--json]` | Every source with licence and R2 copy, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
+| `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data source refresh ID [--json]` | Fetches upstream's newest version of a source and writes it to `refreshed/<source>` of the store: the next update of each target on this machine reads it, as [Versions](#versions) says. Refuses a source that needs a `NAME=VALUE`, and a `commit` or `digest` source with a `start` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
@@ -3615,6 +3615,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "copy": {
+          "description": "Whether a target keeps a copy of the files of the source that its release reads.",
+          "type": "boolean"
+        },
         "credential": {
           "anyOf": [
             {
@@ -3676,11 +3680,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
-        "r2_copy": {
-          "default": false,
-          "description": "R2 keeps a copy, because upstream cannot give a version again.",
-          "type": "boolean"
-        },
         "redistribute": {
           "type": "boolean"
         },
@@ -3720,7 +3719,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "version",
         "refresh",
         "redistribute",
-        "r2_copy",
+        "copy",
         "targets",
         "snapshots",
         "credential_missing"

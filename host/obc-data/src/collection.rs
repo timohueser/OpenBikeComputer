@@ -16,7 +16,7 @@ use crate::target::{Listed, Target};
 pub const GRACE: u64 = 600;
 
 /// The folders where a collection deletes. Every other key stays.
-const COLLECTED: [&str; 2] = ["objects/", "releases/"];
+const COLLECTED: [&str; 3] = ["objects/", "releases/", "sources/"];
 
 /// What a collection did.
 #[derive(Debug, Default, Serialize, JsonSchema)]
