@@ -140,19 +140,28 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 }
 
 impl Target {
-    /// The bytes at `key`, or `None` when the target has no such key.
+    /// The bytes at `key`, or `None` when the target has no such key. An R2 target is read through
+    /// the S3 API when this machine has the credentials, because the public origin can serve a
+    /// cached pointer.
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        if let Target::R2(remote) = self {
+            if let Ok(writer) = remote.writer() {
+                return Ok(writer.get(key)?.map(|(bytes, _)| bytes));
+            }
+        }
+        self.get_public(key)
+    }
+
+    /// The bytes at `key` as a client gets them, or `None`: an R2 target through its public origin,
+    /// without credentials.
+    pub fn get_public(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         crate::r2::check_key(key)?;
         match self {
             Target::Dir(dir) => read(&dir.join(key)),
-            // With the credentials, the S3 API: the public origin can serve a cached pointer.
-            Target::R2(remote) => match remote.writer() {
-                Ok(writer) => Ok(writer.get(key)?.map(|(bytes, _)| bytes)),
-                Err(_) => match http().bytes(&remote.url(key), "*/*") {
-                    Ok(bytes) => Ok(Some(bytes)),
-                    Err(e) if http::not_found(&e) => Ok(None),
-                    Err(e) => Err(e),
-                },
+            Target::R2(remote) => match http().bytes(&remote.url(key), "*/*") {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(e) if http::not_found(&e) => Ok(None),
+                Err(e) => Err(e),
             },
         }
     }

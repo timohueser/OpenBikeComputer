@@ -262,11 +262,11 @@ fn precondition(condition: &Condition) -> Option<(String, String)> {
 /// The caching of a key that never changes.
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// The caching of a key: `release.json` and `lock.json` change at any time, a pointer each update,
-/// and every other key never.
+/// The caching of a key: `release.json`, `planner/next.json` and `lock.json` change at any time, a
+/// pointer each update, and every other key never.
 fn cache_control(key: &str) -> &'static str {
     match key {
-        crate::release::SERVING | crate::lock::LOCK => "no-store",
+        crate::release::SERVING | crate::release::NEXT | crate::lock::LOCK => "no-store",
         key if crate::release::POINTERS.contains(&key) => "public, max-age=60, must-revalidate",
         _ => IMMUTABLE,
     }
@@ -425,6 +425,7 @@ mod tests {
         assert_eq!(precondition(&Condition::Absent), Some(("if-none-match".into(), "*".into())));
         assert_eq!(precondition(&Condition::Any), None);
         assert_eq!(cache_control("lock.json"), "no-store");
+        assert_eq!(cache_control("planner/next.json"), "no-store");
         assert_eq!(cache_control("objects/ab"), IMMUTABLE);
     }
 }

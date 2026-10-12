@@ -963,8 +963,8 @@ the store do not overlap, also through a link, so a clean of the store never del
 target.
 
 `obc data` reads an R2 target through the S3 API when it has the credentials, because the public
-origin can serve a cached pointer. Else it reads through the public URL, with each part of a key
-percent-encoded, so a `#` in a key under `sources/` is no fragment. It writes an R2 target with
+origin can serve a cached pointer. Else, and always in [serve](#serve), it reads through the public
+URL, with each part of a key percent-encoded, so a `#` in a key under `sources/` is no fragment. It writes an R2 target with
 the credentials of `OBC_R2_*` (see [Credentials](#credentials)), which a tagged read and a review
 also need: a small document through the S3 API, signed with AWS Signature Version 4, and the
 files of a release with rclone. A command that writes an R2 target without these variables
@@ -1064,9 +1064,9 @@ bytes. A key can be a hard link to an object of the store: nothing writes a key 
 place.
 
 On an R2 target the tag is the ETag. A conditional write is a PUT with `If-None-Match: *` for an
-absent key, or `If-Match: <tag>`, and HTTP 412 says that the condition fails. `release.json` and
-`lock.json` get `Cache-Control: no-store`, a pointer `public, max-age=60, must-revalidate`, and
-every other key `public, max-age=31536000, immutable`. After the upload and before the switch,
+absent key, or `If-Match: <tag>`, and HTTP 412 says that the condition fails. `release.json`,
+`planner/next.json` and `lock.json` get `Cache-Control: no-store`, a pointer `public, max-age=60,
+must-revalidate`, and every other key `public, max-age=31536000, immutable`. After the upload and before the switch,
 each key of the release must be on the target with its size, else nothing switches.
 
 Older publishers wrote other keys of the `prod` bucket, such as `cell-catalog/objects/`,
