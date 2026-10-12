@@ -309,9 +309,9 @@ impl Store {
         read_records(&self.root.join("layers"), read_receipt)
     }
 
-    /// The events of a run, one JSON object per line.
+    /// The folder of run `id`.
     pub fn run(&self, id: &str) -> PathBuf {
-        self.root.join("runs").join(format!("{id}.jsonl"))
+        self.root.join("runs").join(id)
     }
 
     /// The path of a request record. The order of the params does not matter.

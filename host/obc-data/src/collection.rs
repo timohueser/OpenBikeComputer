@@ -4,9 +4,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use schemars::JsonSchema;
-use serde::Serialize;
-
 use crate::release::{self, Release, POINTERS};
 use crate::target::{Listed, Target};
 
@@ -21,7 +18,7 @@ pub const GRACE: u64 = 600;
 const COLLECTED: [&str; 2] = ["objects/", "releases/"];
 
 /// What a collection did.
-#[derive(Debug, Default, Serialize, JsonSchema)]
+#[derive(Debug, Default)]
 pub struct Collected {
     /// The releases whose files and manifest it deleted.
     pub releases: Vec<String>,

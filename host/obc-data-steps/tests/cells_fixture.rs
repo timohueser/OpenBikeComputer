@@ -221,7 +221,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         }
     }
     let planned = plan(&store, &steps).unwrap();
-    let mut run = RunLog::create(&store, "build test").unwrap();
+    let mut run = RunLog::create(&store, ["build", "test"]).unwrap();
     let kept = Kept::new();
     let context = Context {
         store: &store,
@@ -374,7 +374,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         }
     }
     let changed = plan(&store, &steps).unwrap();
-    let mut run = RunLog::create(&store, "build changed fixture").unwrap();
+    let mut run = RunLog::create(&store, ["build", "changed", "fixture"]).unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
     let next = composed(&store, &steps);

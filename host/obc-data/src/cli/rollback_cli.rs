@@ -39,9 +39,9 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
         return Err(Code::Blocked
             .error(format!("`obc data rollback` writes only a dir target, and `{}` is an R2 bucket", args.target)));
     }
-    let mut run = super::api::start_run(&store, &format!("rollback {}", args.target))?;
+    let mut run = super::api::start_run(&store, &["rollback", &args.target])?;
     let result = rollback((&args.target, &target), &mut run);
-    let rolled = super::api::finish_run(run, result, None)?;
+    let rolled = super::api::finish_run(run, result)?;
     if json {
         return print_json(&rolled);
     }
@@ -102,10 +102,9 @@ mod tests {
     use crate::release::Release;
 
     fn rollback(fixture: &crate::engine::tests::Fixture, target: &Target) -> Result<RolledBack, Error> {
-        let mut run = Run::create(&fixture.store, "rollback local").unwrap();
+        let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
         let rolled = super::rollback(("local", target), &mut run);
-        run.finish(rolled.as_ref().err().map(|error| error.message.as_str())).unwrap();
-        rolled
+        crate::cli::api::finish_run(run, rolled)
     }
 
     #[test]

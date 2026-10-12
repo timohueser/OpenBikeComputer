@@ -211,6 +211,14 @@ pub struct Built {
     pub reused: bool,
 }
 
+/// The grid leaf of the step `name`: its last part when that is `<i>-<j>`.
+pub fn leaf(name: &str) -> Option<&str> {
+    let (_, last) = name.rsplit_once('/')?;
+    let (i, j) = last.split_once('-')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    (digits(i) && digits(j)).then_some(last)
+}
+
 /// The SHA-256 of the lines that `sha256sum` writes for these files: `<sha256>  <name>`, sorted
 /// by name.
 pub fn digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
@@ -791,11 +799,11 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             kept: &plan::Kept,
             limits: runs::Limits,
         ) -> Result<Vec<Built>, String> {
-            let mut run = runs::Run::create(&self.store, "build test")?;
+            let mut run = runs::Run::create(&self.store, ["build", "test"])?;
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
             let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, kept, limits };
             let built = run.build(&context, steps, plan);
-            run.finish(built.as_ref().err().map(String::as_str))?;
+            run.finish(built.as_ref().err().map(|e| runs::RunError::new("run_failed", e, "")))?;
             built
         }
 
@@ -953,6 +961,13 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(summary(&second), [("test/join", false), ("test/count", true)], "the same bytes stop there");
         assert_ne!(second[0].receipt.key, first[1].receipt.key);
         assert_eq!(second[1].receipt, first[2].receipt);
+    }
+
+    #[test]
+    fn a_leaf_is_the_last_part_of_a_step_name_of_the_form_i_j() {
+        assert_eq!(leaf("device/coarse/0037-0033"), Some("0037-0033"));
+        assert_eq!(leaf("device/landmark-content"), None);
+        assert_eq!(leaf("device/landmark-content/europe-alps"), None);
     }
 
     #[test]

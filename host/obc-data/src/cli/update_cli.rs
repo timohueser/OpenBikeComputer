@@ -18,7 +18,7 @@ use super::{freshness, listing, print_json, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
 use crate::engine::plan::{outputs, Fetch, Kept};
-use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
+use crate::engine::runs::{self, Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
 use crate::engine::{select_layer, Input, InputKind, Step};
 use crate::fetch::http::Http;
@@ -95,9 +95,8 @@ pub(super) struct Asked {
 }
 
 /// What an update did.
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug)]
 pub struct Updated {
-    pub run: String,
     pub target: String,
     /// The id of the review that the update did.
     pub review: String,
@@ -114,7 +113,7 @@ pub struct Updated {
     pub collection: Option<Collected>,
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug)]
 pub struct Baked {
     pub step: String,
     pub key: String,
@@ -134,19 +133,45 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
     let http = Http::new();
     let edit = |settings: &mut Settings| edit(root, products, &args, settings);
     let target = (args.target.as_str(), &target);
-    if args.dry_run {
-        let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
-        prepared.review.args = args.args(&prepared.review);
-        return review::print(&prepared.review, json);
-    }
     let asked =
         Asked { only: args.only.clone(), expect: args.expect.clone(), accept_format_change: args.accept_format_change };
-    let mut run = super::api::start_run(&store, &format!("update {}", args.target))?;
-    let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
-    let updated = super::api::finish_run(run, result, None)?;
-    if json {
-        return print_json(&updated);
+    // The process of a detached run: it takes the lock and makes the review again under it.
+    if let Ok(id) = std::env::var(runs::RUN) {
+        // A program that a step starts is not this run.
+        std::env::remove_var(runs::RUN);
+        runs::stop_on_signals();
+        let mut run = Run::attach(&store, &id, std::env::args().skip(1))?;
+        let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
+        return match super::api::finish_run(run, result) {
+            Ok(updated) => print(&updated),
+            // The status and the log of the run have the error.
+            Err(error) => std::process::exit(error.code.exit().into()),
+        };
     }
+    let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
+    prepared.review.args = args.args(&prepared.review);
+    if args.dry_run {
+        return review::print(&prepared.review, json);
+    }
+    review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
+    let run = runs::detach(&store, &prepared.review.args)?;
+    if json {
+        return print_json(&Started { run, review: prepared.review.id });
+    }
+    eprintln!("obc data: run {run} of review {}", prepared.review.id);
+    super::runs_cli::follow_in_terminal(&store, &run)
+}
+
+/// What `obc data update --json` writes: the run that it started.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Started {
+    pub run: String,
+    /// The id of the review that the run does.
+    pub review: String,
+}
+
+/// Write what an update did.
+fn print(updated: &Updated) -> Result<(), Error> {
     for baked in &updated.baked {
         println!("{:<7} {}  {}", if baked.reused { "reused" } else { "baked" }, &baked.key[..12], baked.step);
     }
@@ -160,6 +185,7 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
         ),
         None => println!("{} serves release {}", updated.target, &updated.serving[..12]),
     }
+    println!("review {}", updated.review);
     if let Some(collected) = &updated.collection {
         println!("{}", collected.text());
     }
@@ -259,11 +285,11 @@ pub(super) fn locked<T>(
     })
 }
 
-/// Enter `phase`, after a check that no signal stopped the run and that it still holds the lock.
+/// Enter `phase`, after a check that nothing stopped the run and that it still holds the lock.
 pub(super) fn enter((run, held): (&mut Run, &Held), name: &str, phase: Phase) -> Result<(), Error> {
-    if crate::engine::runs::signalled() {
+    if run.stopping() {
         return Err(Code::Failed
-            .error(format!("the run stopped on a signal before the phase {phase}; nothing more changed"))
+            .error(format!("the run stopped before the phase {phase}; nothing more changed"))
             .fix(format!("Run `obc data update {name}` again: it keeps what this run baked.")));
     }
     run.record(&Event::Phase { phase })?;
@@ -516,7 +542,6 @@ fn apply(
     let fetched = reads(store, &outputs, serving.as_ref(), &sources)?;
     let next = compose(products, settings, outputs, fetched)?;
     let mut updated = Updated {
-        run: run.id().into(),
         target: name.into(),
         review: review.id,
         serving: String::new(),
@@ -903,7 +928,7 @@ pub(super) mod tests {
         (asked, machine): (&Asked, &MachineCheck),
         edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     ) -> Result<Updated, Error> {
-        let mut run = Run::create(&fixture.store, "update local").unwrap();
+        let mut run = Run::create(&fixture.store, ["update", "local"]).unwrap();
         let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
         let updated = super::update(
             &root,
@@ -916,8 +941,7 @@ pub(super) mod tests {
             Some(machine),
             &mut run,
         );
-        run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
-        updated
+        crate::cli::api::finish_run(run, updated)
     }
 
     /// A step that writes `waiting` in the folder `gate` of its options, and waits for `open` there.
@@ -1104,7 +1128,7 @@ pub(super) mod tests {
             let _ = std::fs::remove_dir_all(fixture.store.root().join(dir));
         }
         let store = Store::at(fixture.store.root()).reading(target);
-        let mut run = Run::create(&store, "update local").unwrap();
+        let mut run = Run::create(&store, ["update", "local"]).unwrap();
         let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
         let (asked, machine) = (Asked::default(), MachineCheck::default());
         let updated = super::update(
@@ -1118,8 +1142,7 @@ pub(super) mod tests {
             Some(&machine),
             &mut run,
         );
-        run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
-        (store, updated)
+        (store, crate::cli::api::finish_run(run, updated))
     }
 
     /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
