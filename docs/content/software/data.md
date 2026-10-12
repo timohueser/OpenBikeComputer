@@ -1,6 +1,6 @@
 ---
 title: Data operations
-description: Saved inputs, exact plans, retained work and a direct Live apply.
+description: Targets that serve releases, and updates that keep what did not change.
 copy: ai
 ---
 
@@ -23,7 +23,7 @@ A layer is stale for exactly three causes. Its version changed. A source has a n
 use. Or an input changed, such as a layer or a source that it reads, or its options. Status gives
 one cause per layer, such as `format 19 → 20: readers need new data` or `follows device/map`. To
 see a code change without a version change, name the layer:
-`obc data build local --only device/terrain` builds it again. The layers that read it build again
+`obc data update local --only device/terrain` builds it again. The layers that read it build again
 only when its bytes change.
 
 ## Shared landmark and peak content
@@ -39,39 +39,25 @@ references without image payloads. An unavailable photo leaves useful text avail
 Landmarks are selectable route stops. Peaks keep their summit coordinates and separate device collection.
 
 An absent optional article or photo does not block a map. A failed source request remains
-unresolved work and blocks preparation. This distinction prevents server pressure from appearing
+unresolved work and blocks the update. This distinction prevents server pressure from appearing
 as missing content. The [shared content contract](src:specs/wikimedia-content.md) defines
 identity, retained inputs and selection outcomes.
 
-## One plan before work
+## Targets and releases
 
-Live settings stay in the data store. A selection copies its full region definition, so a
-preset edit cannot silently change coverage. Apply records the reviewed settings in each
-release. Undo restores the applied region, layers and policies. Local has its own region and layers.
+A target is a place that serves data: the public bucket, or a folder on one machine. A target
+serves one release. The release records its settings, every output with the source versions that
+it read, and the pointers that clients read first. So a target needs no other state, and any
+machine can read what it serves. The [target contract](src:specs/obc-data.md) defines the files.
 
-A plan separates required work from optional source moves. Changed geometry, product options
-or a layer version can require work even when no source moves.
-A source move is deliberate, and a source with several requests must expose each request's
-availability. This avoids claiming that one cached version covers every area.
-An incomplete preview needs input preparation before it can become an exact review.
+An update compares the steps of now with the serving release. It bakes only the stale layers and
+keeps every other output by reference. A kept output is read from the files of the release, not
+from the local store, so two machines that update the same target agree on the bytes. The
+settings stay in the release: the next update keeps the region, the layers and the policies
+that the last one used.
 
-Apply uses the reviewed plan. If its inputs or configuration change, the operator must review
-again. Preparation and build can return usable work without publishing it. Even a no-change
-Live apply verifies the selected data and asks for consent.
-
-## Retained work and a direct apply
-
-The selected machine builds and verifies. Its started run survives a closed terminal.
-`obc data runs RUN --follow` does not change the Run. Stop drains the current work.
-
-The machine that applies also publishes. It uploads only what R2 lacks, so a repeated apply
-continues where a stopped one ended. Clients read only the pointer, and the apply writes the
-pointers last, after one more check that no pointer changed since the review. Until then, live
-does not change.
-
-Old data stays until it is replaced. An apply removes only the files of earlier releases of this
-tool that the reviewed plan listed, after clients that read an old pointer had time to finish.
-Files of the older publishers are never removed. The [apply contract](src:specs/obc-data.md)
-defines the order.
+The switch is one conditional write of `release.json`, before the pointers change. The release
+that served becomes the rollback. A stopped update leaves the target on its serving release, and
+the next update reuses what it baked. Files of the older publishers are never written or removed.
 
 Use the [data README](src:host/obc-data/README.md) for setup, credentials and daily commands.
