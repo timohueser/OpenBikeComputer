@@ -216,9 +216,9 @@ mod tests {
             schema("`region show`", generator.subschema_for::<crate::cli::RegionDetail>()),
             schema("`region areas`", generator.subschema_for::<regions_cli::Suggestions>()),
             schema("`region create`", generator.subschema_for::<crate::regions::Region>()),
-            schema("`region delete`", generator.subschema_for::<regions_cli::Deletion>()),
+            schema("`region delete`", generator.subschema_for::<regions_cli::delete::Deletion>()),
             schema("`region ENV ID`, `layer`, `undo`", generator.subschema_for::<edit_cli::Edited>()),
-            schema("`status`, and `obc data` without a terminal", generator.subschema_for::<status_cli::Status>()),
+            schema("`status`, `obc data`", generator.subschema_for::<status_cli::Status>()),
             schema("`clean`, `clean --apply`", generator.subschema_for::<crate::cli::CleanPlan>()),
             schema("`plan`, `dev --check`", generator.subschema_for::<build_cli::EnvPlan>()),
             schema(

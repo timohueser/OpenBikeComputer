@@ -512,7 +512,7 @@ class ShippedPlanTests(unittest.TestCase):
         unrelated = [
             "docs/testing.md", ".github/CONTRIBUTING.md", "justfile", "tools/justfile", "tools/ci/test.sh", ".rustfmt.toml",
             ".config/nextest.toml", "tools/testing/suites.toml", "tools/testing/coverage-policy.toml",
-            ".github/workflows/verification-publish.yml", "host/obc-data/src/tui.rs",
+            ".github/workflows/verification-publish.yml", "host/obc-data/src/cli.rs",
             "planner/router-build/src/lib.rs", "planner/service/src/main.rs", "planner/service/src/http.rs",
             "planner/service/tests/http.rs", "planner/router/README.md",
             "planner/search/server.mjs", "planner/search/tests/native.test.mjs",

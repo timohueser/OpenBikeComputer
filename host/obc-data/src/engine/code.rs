@@ -169,9 +169,7 @@ impl Context {
         let mut files = listed(&root, &pathspecs)?;
         if owner.is_some() {
             if let Some(dir) = self.rust[&target].directory(env!("CARGO_PKG_NAME")) {
-                let mut backend = listed_paths(&root, &[dir.join("src")])?;
-                backend
-                    .retain(|path| path != &dir.join("src/cli/tui.rs") && !path.starts_with(dir.join("src/cli/tui")));
+                let backend = listed_paths(&root, &[dir.join("src")])?;
                 files.extend(backend.iter().filter(|path| path.is_file()).cloned());
             }
         }
@@ -474,7 +472,6 @@ mod tests {
         write(&root.join("steps/src/lib.rs"), "mod plan; mod ui;\n");
         write(&root.join("steps/src/plan.rs"), "pub fn requests() {}\n");
         write(&root.join("steps/src/ui.rs"), "pub fn draw() {}\n");
-        write(&root.join("obc-data/src/cli/tui.rs"), "pub fn screen() {}\n");
         write(&root.join("obc-data/src/regions/geofabrik.rs"), "pub fn parse() {}\n");
         write(&root.join("obc-data/src/store.rs"), "pub fn snapshot() {}\n");
         let owner = OwnerCode {
@@ -485,11 +482,9 @@ mod tests {
         let before = context.owner_identity(&root, &owner).unwrap();
         assert!(before.files.contains_key("rust/compiler-version"));
         assert!(!before.files.contains_key("steps/src/ui.rs"));
-        assert!(!before.files.contains_key("obc-data/src/cli/tui.rs"));
         assert!(before.files.contains_key("obc-data/src/regions/geofabrik.rs"));
         assert!(before.files.contains_key("obc-data/src/store.rs"));
         write(&root.join("steps/src/ui.rs"), "pub fn new_screen() {}\n");
-        write(&root.join("obc-data/src/cli/tui.rs"), "pub fn new_controls() {}\n");
         assert_eq!(context.owner_identity(&root, &owner).unwrap(), before);
         for (path, original) in [
             ("obc-data/src/regions/geofabrik.rs", "pub fn parse() {}\n"),

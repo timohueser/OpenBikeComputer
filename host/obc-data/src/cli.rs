@@ -1,6 +1,6 @@
 //! `obc data`: read the sources and the regions, fetch sources into the store, plan and build the
 //! releases of the products, show what is live, and show runs. Read commands change nothing in
-//! `data/`. Without a command, a terminal gets the TUI.
+//! `data/`. Without a command, it prints the status.
 
 mod api;
 mod apply_cli;
@@ -14,11 +14,9 @@ mod r2_cli;
 mod regions_cli;
 mod runs_cli;
 mod status_cli;
-mod tui;
 mod versions;
 
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -42,7 +40,7 @@ struct Cli {
     /// Write JSON to standard output, also when the command fails.
     #[arg(long, global = true)]
     json: bool,
-    /// Without a command: the TUI in a terminal, else what `status` writes.
+    /// Without a command: what `status` writes.
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -148,11 +146,8 @@ pub fn failed(message: String) -> ExitCode {
 fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
     crate::worker::check(&root()?)?;
     let json = cli.json;
-    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let command = match cli.command {
-        None if terminal && !json => return tui::run(&root()?, products),
-        None => return status_cli::status(&root()?, products, false, json),
-        Some(command) => command,
+    let Some(command) = cli.command else {
+        return status_cli::status(&root()?, products, false, json);
     };
     let done = match command {
         Command::Perform { store, run, request } => {

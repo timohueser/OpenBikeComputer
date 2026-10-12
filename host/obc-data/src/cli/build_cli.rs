@@ -511,7 +511,7 @@ fn document_digest(product: &LiveProduct) -> Option<String> {
 }
 
 /// The plan of `live` now against the live releases that `remote` holds: `plan live --only ONLY
-/// --json`, which the TUI shows and an apply without `--plan` applies.
+/// --json`, which an apply without `--plan` applies.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_live(
     root: &Path,
