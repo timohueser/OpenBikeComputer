@@ -14,6 +14,10 @@ export type CliResult<T> = { ok: true; output: T } | { ok: false; error: CliErro
 
 const PLAIN = /^[\w@%+=:,./-]+$/;
 
+// A long job starts a detached run, so every command answers in seconds. A request with no answer
+// must still end: a poll asks again only after an answer, and a button stays busy until one.
+const ANSWER_MS = 120_000;
+
 /** The command a person types for `args`. The server adds `--json`, so `args` never holds it. */
 export function command(args: readonly string[]): string {
     return ["obc", "data", ...args].map((arg) => (PLAIN.test(arg) ? arg : `'${arg.replaceAll("'", `'\\''`)}'`)).join(" ");
@@ -34,9 +38,14 @@ export async function runCli<T>(args: readonly string[]): Promise<CliResult<T>> 
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ args }),
+            signal: AbortSignal.timeout(ANSWER_MS),
         });
-    } catch {
-        return unreachable("the page cannot reach `obc data ui`");
+    } catch (error) {
+        return unreachable(
+            (error as Error)?.name === "TimeoutError"
+                ? "`obc data ui` gave no answer within 2 min"
+                : "the page cannot reach `obc data ui`",
+        );
     }
     const body = (await response.json().catch(() => null)) as { exit?: unknown; output?: { error?: CliError } } | null;
     if (typeof body?.exit !== "number") return unreachable(`\`obc data ui\` answered HTTP ${response.status} with no result`);

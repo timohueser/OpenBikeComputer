@@ -29,7 +29,7 @@
     <h1>This machine{machine ? `: ${machine.name}` : ""}</h1>
     <span class="soft">{facts}</span>
     <span class="grow"></span>
-    <Action args={setup.args} label="Check again" query={setup} />
+    <Action label="Check again" query={setup} />
 </div>
 {#if setup.error}<Failure error={setup.error} />{/if}
 

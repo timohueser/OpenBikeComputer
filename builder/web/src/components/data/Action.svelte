@@ -9,13 +9,13 @@
         label,
         ondone,
         query,
-    }: {
-        args: readonly string[];
-        label: string;
-        ondone?: (output: T) => void;
-        /** A query of the same args. It takes the answer, and its view shows the error. */
-        query?: CliQuery<T>;
-    } = $props();
+    }: { label: string; ondone?: (output: T) => void } & (
+        | { args: readonly string[]; query?: never }
+        /** The Action runs the args of the query and gives it the answer; the view of the query
+         *  shows the error. */
+        | { query: CliQuery<T>; args?: never }
+    ) = $props();
+    const argv = $derived((query?.args ?? args) as readonly string[]);
 
     let running = $state(false);
     let error = $state<CliError | null>(null);
@@ -24,7 +24,7 @@
         running = true;
         error = null;
         const take = query?.ask();
-        const result = await runCli<T>(args);
+        const result = await runCli<T>(argv);
         running = false;
         take?.(result);
         if (result.ok) ondone?.(result.output);
@@ -34,7 +34,7 @@
 
 <div class="action">
     <button type="button" disabled={running} aria-busy={running} onclick={run}>{label}</button>
-    <code>{command(args)}</code>
+    <code>{command(argv)}</code>
     {#if error}<Failure {error} />{/if}
 </div>
 
