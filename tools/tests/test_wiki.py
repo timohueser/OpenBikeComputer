@@ -79,7 +79,7 @@ class Wiki(unittest.TestCase):
         catalog.wikidata(self.db, self.work, path, dumps.sha(path))
 
     def articles(self, selected, sources, langlinks=()):
-        catalog.want(self.db, selected)
+        catalog.want(self.db, self.work, selected)
         for language, data in langlinks:
             source = self.root / f"{language}-langlinks.sql.gz"
             source.write_bytes(gzip.compress(data))
@@ -94,6 +94,8 @@ class Wiki(unittest.TestCase):
 
     def test_two_passes_keep_subjects_and_their_closure_from_compressed_dumps(self):
         self.subjects(dict(osm="n1", wikidata="Q1", wikipedia="en:Old_Castle"))
+        with self.assertRaisesRegex(ValueError, "import step first"):
+            catalog.want(self.db, self.work, ["Q1"])
         self.wikidata()
         self.assertEqual({key for kind, key in self.db.execute("SELECT kind, key FROM facts") if kind == "entity"},
                          {"Q1", "Q2", "Q3", "Q4", "Q5"})
@@ -119,18 +121,40 @@ class Wiki(unittest.TestCase):
         self.assertEqual(catalog.fact(self.db, "link", "wikidata:Q90")["identity"], "Q1")
         self.assertEqual(catalog.fact(self.db, "link", "wikipedia:ja:CastleJA")["identity"], "Q1")
         self.assertEqual(catalog.fact(self.db, "link", "wikidata:Q999")["status"], "missing")
+
+    def test_a_redirect_to_an_item_missing_from_the_dump_is_missing(self):
+        self.subjects(dict(osm="n1", wikidata="Q90"))
+        self.db.execute("INSERT INTO redirects VALUES('Q90','Q1')")
+        self.wikidata(self.dump([entity("Q5")]))
+        self.assertEqual((catalog.fact(self.db, "entity", "Q90")["status"], catalog.fact(self.db, "link", "wikidata:Q90")["status"]),
+                         ("missing", "missing"))
+        self.assertTrue(catalog.complete(self.db, "wikidata:2"))
+
+    def test_a_cyclic_redirect_chain_fails_its_subject_and_not_the_import(self):
+        self.subjects(dict(osm="n1", wikidata="Q7"), dict(osm="n2", wikidata="Q1"))
+        self.db.executemany("INSERT INTO redirects VALUES(?,?)", [("Q7", "Q8"), ("Q8", "Q7")])
+        self.wikidata()
+        self.assertTrue(catalog.complete(self.db, "wikidata:2"))
+        self.assertEqual(catalog.fact(self.db, "link", "wikidata:Q1")["identity"], "Q1")
+        self.assertIsNone(catalog.fact(self.db, "entity", "Q7"))
+        self.assertEqual({row[0] for row in self.db.execute("SELECT key FROM failures")}, {"Q7", "wikidata:Q7"})
+
+    def test_a_page_without_an_item_links_titles_that_have_articles(self):
+        self.subjects(dict(osm="n1", wikipedia="de:Burg"), dict(osm="n2", wikipedia="en:Lonely"))
+        self.wikidata()
         en, de = self.root / "en.tar.gz", self.root / "de.tar.gz"
-        archive(en, [page(name="Unlinked", qid=None, redirects=["Castle"])])
+        archive(en, [page(name="Unlinked", qid=None, redirects=["Castle"]), page(name="Lonely", pageid=44, qid=None, redirects=[])])
         archive(de, [page(name="Burg", pageid=43, language="de", qid=None, redirects=[])])
         self.articles([], {"en": en, "de": de}, langlinks=[("de", sql("langlinks", "ll_from ll_lang ll_title", b"(43,'en','Castle'),(43,'fr','Chateau \\'A\\'')"))])
         link = catalog.fact(self.db, "link", "wikipedia:de:Burg")
         self.assertEqual(link["identity"], "wiki-en-42")
-        self.assertEqual(link["proof"]["canonical"]["title"], "Unlinked")
+        self.assertEqual(link["sitelinks"], {"dewiki": {"title": "Burg"}, "enwiki": {"title": "Castle"}})
+        self.assertEqual(link["proof"]["canonical"]["aliases"], [{"from": "Castle", "to": "Unlinked"}])
         self.assertEqual(link["proof"]["langlinks"]["fr"], "Chateau 'A'")
-        self.assertEqual(set(link["sitelinks"]), {"dewiki", "enwiki"})
-        self.assertTrue(catalog.fact(self.db, "article", "en:Castle"))
-        self.assertIsNone(catalog.fact(self.db, "link", "wikipedia:en:Unlinked"))
-        self.assertIn("langlinks SQL", self.db.execute("SELECT reason FROM failures WHERE key='wikipedia:en:Unlinked'").fetchone()[0])
+        for site, value in link["sitelinks"].items():
+            self.assertEqual(catalog.fact(self.db, "article", f"{site.removesuffix('wiki')}:{value['title']}")["status"], "present")
+        self.assertIsNone(catalog.fact(self.db, "link", "wikipedia:en:Lonely"))
+        self.assertIn("langlinks SQL", self.db.execute("SELECT reason FROM failures WHERE key='wikipedia:en:Lonely'").fetchone()[0])
 
     def test_rendered_revision_owns_the_pin_and_a_wrong_page_proof_keeps_no_fact(self):
         declared = page()
@@ -147,45 +171,25 @@ class Wiki(unittest.TestCase):
         self.articles(["Q1"], {"en": self.root / "en.tar.gz"})
         self.assertIsNone(catalog.fact(self.db, "article", "en:Castle"))
         self.assertIsNone(catalog.fact(self.db, "link", "wikipedia:en:Old_Castle"))
-        self.assertIn("revision", self.db.execute("SELECT reason FROM failures WHERE key='en:Castle'").fetchone()[0])
+        reasons = dict(self.db.execute("SELECT key, reason FROM failures"))
+        self.assertIn("revision", reasons["en:Castle"])
+        self.assertEqual(reasons["wikipedia:en:Old_Castle"], reasons["en:Old Castle"])
 
     def test_an_interrupted_import_starts_again_and_a_changed_input_never_resumes(self):
         self.subjects(dict(osm="n1", wikidata="Q1"))
         self.wikidata()
-        self.articles(["Q1"], {})
+        catalog.want(self.db, self.work, ["Q1"])
         wiki = self.root / "en.tar.gz"
         archive(wiki, [page()])
-        wiki.write_bytes(wiki.read_bytes()[:70])
-        with self.assertRaises((EOFError, tarfile.ReadError, ValueError)):
+        with patch.object(catalog, "article", side_effect=RuntimeError("stopped")), self.assertRaises(RuntimeError):
             catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
         self.assertIsNone(catalog.complete(self.db, "wikipedia:en"))
-        archive(wiki, [page()])
-        with self.assertRaisesRegex(ValueError, "input changed"):
-            catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
+        catalog.articles(self.db, self.work, "en", wiki, dumps.sha(wiki))
+        self.assertTrue(catalog.complete(self.db, "wikipedia:en"))
+        self.assertEqual(catalog.fact(self.db, "article", "en:Castle")["status"], "present")
         changed = self.dump([entity("Q1")])
         with self.assertRaisesRegex(ValueError, "input changed"):
             catalog.wikidata(self.db, self.work, changed, dumps.sha(changed))
-
-    def test_download_resumes_only_the_same_etag_and_never_forwards_the_token_to_storage(self):
-        url = "https://api.enterprise.wikimedia.com/v2/snapshots/enwiki_namespace_0/download"
-        identity = dumps.hashlib.sha256(url.encode()).hexdigest()
-        (self.root / (identity + ".tar.gz")).write_bytes(b"ab")
-        dumps.write_json(self.root / (identity + ".json"), {"url": url, "bytes": 4, "etag": "same"})
-        head = Mock(url="https://storage.example/signed", headers={"Content-Length": "4", "ETag": "same"})
-        body = Mock(status=206, headers={"Content-Range": "bytes 2-3/4"})
-        body.read.side_effect = [b"cd", b""]
-        for response in (head, body):
-            response.__enter__ = Mock(return_value=response)
-            response.__exit__ = Mock(return_value=False)
-        with patch.dict(os.environ, {"OBC_WIKIMEDIA_ENTERPRISE_TOKEN": "secret"}), patch.object(dumps, "open_url", side_effect=[head, body]) as transport:
-            path, digest = dumps.download({"url": url}, self.root)
-        self.assertEqual(path.read_bytes(), b"abcd")
-        self.assertEqual(digest, dumps.hashlib.sha256(b"abcd").hexdigest())
-        request = transport.call_args_list[1].args[0]
-        self.assertEqual(request.get_header("Range"), "bytes=2-")
-        self.assertIsNone(request.get_header("Authorization"))
-        original = dumps.Request(url, headers={"Authorization": "Bearer secret"})
-        self.assertIsNone(dumps.Redirects().redirect_request(original, None, 307, "", {}, "https://storage.example/signed").get_header("Authorization"))
 
     def test_photos_are_fetched_only_for_the_selected_subjects(self):
         self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]),
@@ -194,7 +198,7 @@ class Wiki(unittest.TestCase):
         thumb = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Hill.jpg/500px-Hill.jpg"
         info = dict(url="https://upload.wikimedia.org/wikipedia/commons/a/ab/Hill.jpg", thumburl=thumb, thumbwidth=500,
                     timestamp="2026-01-01T00:00:00Z", sha1="abc", extmetadata={"Artist": {"value": "A"}})
-        asked = []
+        asked, description = [], [20]
 
         def respond(request, timeout):
             url = request.full_url
@@ -208,55 +212,69 @@ class Wiki(unittest.TestCase):
                 data = json.dumps({"entities": {"M7": {"id": "M7", "lastrevid": 30, "statements": {}}}}).encode()
             else:
                 self.assertEqual(query["titles"], "File:Hill.jpg")
-                data = json.dumps({"query": {"pages": [dict(pageid=7, title="File:Hill.jpg", revisions=[{"revid": 20}], imageinfo=[info])]}}).encode()
+                data = json.dumps({"query": {"pages": [dict(pageid=7, title="File:Hill.jpg", revisions=[{"revid": description[0]}], imageinfo=[info])]}}).encode()
             response = Mock(url=url, status=200, headers={"Content-Length": str(len(data))})
             response.read.side_effect = [data, b""]
             response.__enter__ = Mock(return_value=response)
             response.__exit__ = Mock(return_value=False)
             return response
 
+        request = {"Q1": {"categories": ["Hill"], "commons": ["Hill.jpg"]}}
         with patch("tools.landmark_capture.urlopen", side_effect=respond), patch("tools.landmark_capture.time.sleep"):
-            commons.acquire(self.db, self.work, {"Q1": {"categories": ["Hill"], "files": ["Hill.jpg"]}})
-            commons.acquire(self.db, self.work, {"Q1": {"categories": ["Hill"], "files": ["Hill.jpg"]}})
+            commons.acquire(self.db, self.work, request)
+            # A description edit between the rounds: the agreeing fresh checks keep the photo.
+            description[0] = 21
+            request["Q1"]["files"] = ["Hill.jpg"]
+            commons.acquire(self.db, self.work, request)
+            answered = len(asked)
+            commons.acquire(self.db, self.work, request)
+        self.assertEqual(len(asked), answered)
         self.assertFalse(any("Other" in url for url in asked))
         self.assertEqual(asked.count(thumb), 1)
+        self.assertEqual(catalog.fact(self.db, "commons", "File:Hill.jpg")["revision"], 21)
         photo = catalog.fact(self.db, "file", "File:Hill.jpg")
         self.assertEqual(photo["asset"]["input"], "thumbnail500")
-        self.assertEqual(photo["revision_after"]["query"]["pages"]["compact"]["imageinfo"][0]["description_revision"], 20)
+        self.assertEqual(photo["revision_after"]["query"]["pages"]["compact"]["imageinfo"][0]["description_revision"], 21)
         self.assertEqual((self.work / photo["asset"]["path"]).read_bytes(), b"jpeg bytes")
         self.assertEqual(catalog.fact(self.db, "mediainfo", "M7")["revision"], 30)
         if TOOLS:
             shards.write(self.db, self.work, self.root / "out")
-            q1, q2 = (members(self.root / "out" / f"cells/{subjects.cell([lon, lat, lon, lat])}.tar.zst") for lon, lat in ((7.1, 47.1), (7.2, 47.2)))
+            q1, q2 = (members(self.root / "out" / f"cells/{subjects.cells([lon, lat, lon, lat])[0]}.tar.zst") for lon, lat in ((7.1, 47.1), (7.2, 47.2)))
             self.assertIn(f"content/assets/{photo['asset']['sha256']}", q1)
             self.assertFalse(any(name.startswith("content/assets/") for name in q2))
 
     @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
-    def test_a_subject_lands_in_its_cell_shard_and_a_large_object_in_common(self):
+    def test_a_subject_lands_in_each_cell_it_touches_and_a_large_object_in_common(self):
         source = self.root / "planet.osm"
         source.write_text('<osm version="0.6">'
                           '<node id="1" version="1" lat="47.1" lon="7.1"><tag k="natural" v="peak"/><tag k="wikidata" v="Q1"/></node>'
-                          '<node id="2" version="1" lat="47.2" lon="7.2"/><node id="3" version="1" lat="49.5" lon="9.5"/>'
+                          '<node id="2" version="1" lat="47.2" lon="7.2"/><node id="3" version="1" lat="52.5" lon="13.5"/>'
+                          '<node id="4" version="1" lat="47.15" lon="7.1"/><node id="5" version="1" lat="47.25" lon="7.1"/>'
                           '<way id="10" version="1"><nd ref="2"/><nd ref="3"/><tag k="waterway" v="river"/><tag k="wikidata" v="Q4"/></way>'
+                          '<way id="11" version="1"><nd ref="4"/><nd ref="5"/><tag k="bridge" v="yes"/><tag k="wikidata" v="Q999"/></way>'
                           '<relation id="20" version="1"><member type="node" ref="2" role=""/><tag k="type" v="route"/><tag k="wikidata" v="Q5"/></relation>'
                           '</osm>')
         listed = self.root / "subjects.ndjson"
         subjects.extract(source, listed, self.root / "osm")
         values = [json.loads(line) for line in listed.read_text().splitlines()]
         self.assertEqual([(value["osm"], value.get("peak"), "box" in value) for value in values],
-                         [("n1", True, True), ("w10", None, True), ("r20", None, False)])
+                         [("n1", True, True), ("w10", None, True), ("w11", None, True), ("r20", None, False)])
         subjects.load(self.db, self.work, listed)
+        with self.assertRaisesRegex(ValueError, "import step first"):
+            shards.write(self.db, self.work, self.root / "out")
         self.wikidata()
         shards.write(self.db, self.work, self.root / "out")
         index = json.loads((self.root / "out/index.json").read_text())
-        cell = subjects.cell([7.1, 47.1, 7.1, 47.1])
-        self.assertEqual([shard["path"] for shard in index["shards"]], ["common.tar.zst", f"cells/{cell}.tar.zst"])
-        common, local = (facts(members(self.root / "out" / shard["path"])) for shard in index["shards"])
-        # The node and its locales; the way and the route relation, and every class, in common.
-        self.assertEqual(local, {("link", "wikidata:Q1"), ("entity", "Q1"), ("entity", "Q4"), ("entity", "Q5")})
+        # The way w11 crosses the border at 47.185920° between these two cells.
+        self.assertEqual([shard["path"] for shard in index["shards"]], ["common.tar.zst", "cells/0300-0262.tar.zst", "cells/0301-0262.tar.zst"])
+        common, south, north = (facts(members(self.root / "out" / shard["path"])) for shard in index["shards"])
+        bridge = {("link", "wikidata:Q999"), ("entity", "Q999")}
+        self.assertEqual(south, {("link", "wikidata:Q1"), ("entity", "Q1"), ("entity", "Q4"), ("entity", "Q5")} | bridge)
+        self.assertEqual(north, bridge)
+        # The long river, the route relation and every class.
         self.assertEqual(common, {("link", "wikidata:Q4"), ("link", "wikidata:Q5"), ("entity", "Q2"), ("entity", "Q3"),
                                   ("entity", "Q4"), ("entity", "Q5")})
-        self.assertEqual((index["counts"]["subjects"], index["counts"]["subjects_in_common"]), (1, 2))
+        self.assertEqual((index["counts"]["subjects"], index["counts"]["subjects_in_common"]), (4, 2))
 
 
 def members(path):

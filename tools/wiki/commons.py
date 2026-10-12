@@ -2,11 +2,11 @@
 
 Every request goes through `Capture` with its limits: four requests a second in series, `maxlag`,
 `Retry-After`, three backoffs on 429 and 503, and media read at 3 MB/s. Capture retains each
-response, so an interrupted run resumes without asking again.
+response, so a run that stops, also on "Wikimedia is busy", resumes when it is called again.
 
-A `file` fact keeps the thumbnail as its asset, and the landmark compiler converts it with
-`photo::prepare`. A producer that converts earlier replaces the asset and its `file` fact here,
-before the shards are written.
+The producer calls `acquire` once per round, each time with all requests so far: first the
+categories, then the metadata of every photo candidate, then the files that the compilers
+choose. A round asks only for what earlier rounds have not answered.
 """
 from __future__ import annotations
 
@@ -28,11 +28,16 @@ def title(prefix: str, name: str) -> str:
     return title
 
 
-def record(db, kind: str, key: str, value: dict | str):
-    if isinstance(value, dict):
-        catalog.put(db, value)
-    else:
-        catalog.fail(db, kind, key, value)
+def keep(db, kind: str, results):
+    """Each `(key, fact or reason)` of `results`, committed every thousand."""
+    for count, (key, value) in enumerate(results, 1):
+        if isinstance(value, dict):
+            catalog.put(db, value)
+        else:
+            catalog.fail(db, kind, key, value)
+        if count % 1000 == 0:
+            db.commit()
+    db.commit()
 
 
 def acquire(db, work: Path, requests: dict):
@@ -54,25 +59,27 @@ def acquire(db, work: Path, requests: dict):
                 if kind == "file":
                     wanted["commons"].add(key)
                     db.execute("INSERT OR IGNORE INTO uses VALUES(?,?,?)", (subject, "commons", key))
-    for key in sorted(wanted["category"]):
-        if not catalog.fact(db, "category", key):
-            record(db, "category", key, category_members(fetch, key))
-    for key, value in commons_metadata(fetch, [key for key in sorted(wanted["commons"]) if not catalog.fact(db, "commons", key)]):
-        record(db, "commons", key, value)
+    db.commit()
+    keep(db, "category", ((key, category_members(fetch, key)) for key in sorted(wanted["category"]) if not catalog.fact(db, "category", key)))
+    keep(db, "commons", commons_metadata(fetch, [key for key in sorted(wanted["commons"]) if not catalog.fact(db, "commons", key)]))
     media = set()
     for subject, key in db.execute("SELECT subject, key FROM uses WHERE kind='commons'").fetchall():
         value = catalog.fact(db, "commons", key)
         if value and value["status"] == "present":
             media.add(f"M{value['pageid']}")
             db.execute("INSERT OR IGNORE INTO uses VALUES(?,?,?)", (subject, "mediainfo", f"M{value['pageid']}"))
-    for key, value in mediainfo(fetch, [key for key in sorted(media) if not catalog.fact(db, "mediainfo", key)]):
-        record(db, "mediainfo", key, value)
-    db.commit()
+    keep(db, "mediainfo", mediainfo(fetch, [key for key in sorted(media) if not catalog.fact(db, "mediainfo", key)]))
     photos(db, capture, work, sorted(wanted["file"]))
 
 
-def same(pinned: dict, current) -> bool:
-    return isinstance(current, dict) and all(pinned.get(field) == current.get(field) for field in ("identity", "revision", "file_revision"))
+def same(one, other) -> bool:
+    return isinstance(one, dict) and isinstance(other, dict) and all(one.get(field) == other.get(field) for field in ("identity", "revision", "file_revision"))
+
+
+def thumbnail(value: dict) -> str | None:
+    info = value.get("imageinfo") or {}
+    url = info.get("thumburl") or ""
+    return url if value.get("status") == "present" and url.startswith(THUMBNAIL) and info.get("thumbwidth") == 500 else None
 
 
 def witness(value: dict) -> dict:
@@ -82,42 +89,41 @@ def witness(value: dict) -> dict:
 
 
 def photos(db, capture: Capture, work: Path, titles: list[str]):
-    """Each thumbnail sits between two fresh metadata checks, fifty files to a check. A file whose
-    metadata changed in between gets no photo in this version."""
-    pending = []
+    """Each thumbnail sits between two fresh metadata checks, fifty files to a check. When the two
+    checks agree they become the file's `commons` fact, even after a description edit; when they
+    differ the file gets no photo in this version."""
+    pending = {}
     for key in titles:
-        pinned = catalog.fact(db, "commons", key)
-        kept = catalog.fact(db, "file", key)
-        if not pinned or pinned["status"] != "present" or (kept and kept["identity"] == pinned["identity"] and kept["revision"] == pinned["file_revision"]):
-            continue
-        if not pinned["imageinfo"].get("thumburl", "").startswith(THUMBNAIL) or pinned["imageinfo"].get("thumbwidth") != 500:
-            catalog.fail(db, "file", key, "Commons conversion input is not a standard 500 px thumbnail")
-            continue
-        pending.append(pinned)
-    for chunk in batches(pending):
-        prefix = "photos/" + digest(encoded([(pinned["key"], pinned["revision"]) for pinned in chunk]))
+        pinned, kept = catalog.fact(db, "commons", key), catalog.fact(db, "file", key)
+        if pinned and pinned["status"] == "present" and not (kept and kept["identity"] == pinned["identity"] and kept["revision"] == pinned["file_revision"]):
+            pending[key] = pinned
+    for chunk in batches(sorted(pending)):
+        prefix = "photos/" + digest(encoded([(key, pending[key]["revision"]) for key in chunk]))
 
         def check(phase):
-            fetch = lambda url: capture.json(f"{prefix}/{phase}-{digest(url.encode())}.json", url)
-            return dict(commons_metadata(fetch, [pinned["key"] for pinned in chunk]))
+            return dict(commons_metadata(lambda url: capture.json(f"{prefix}/{phase}-{digest(url.encode())}.json", url), chunk))
 
         before = check("before")
-        thumbnails = {pinned["key"]: capture.fetch(f"{prefix}/{digest(pinned['key'].encode())}", pinned["imageinfo"]["thumburl"])
-                      for pinned in chunk if same(pinned, before.get(pinned["key"]))}
+        thumbnails = {key: capture.fetch(f"{prefix}/{digest(key.encode())}", url)
+                      for key, value in before.items() if isinstance(value, dict) and (url := thumbnail(value))}
         after = check("after")
-        for pinned in chunk:
-            key, outcome = pinned["key"], thumbnails.get(pinned["key"])
-            if not (same(pinned, before.get(key)) and same(pinned, after.get(key))):
-                catalog.fail(db, "file", key, "Commons file or credits changed while acquiring thumbnail")
+        for key in chunk:
+            current, outcome = before.get(key), thumbnails.get(key)
+            if not same(current, after.get(key)):
+                catalog.fail(db, "file", key, "Commons metadata changed or was unavailable while acquiring thumbnail")
+            elif outcome is None:
+                catalog.fail(db, "file", key, "Commons file has no standard 500 px thumbnail")
             elif outcome["status"] != "ok":
                 catalog.fail(db, "file", key, f"thumbnail {outcome['status']}")
             else:
+                if not same(current, pending[key]):
+                    catalog.put(db, current)
                 asset = work / "assets" / outcome["sha256"]
                 asset.parent.mkdir(parents=True, exist_ok=True)
                 if not asset.exists():
                     os.link(capture.root / outcome["path"], asset)
-                catalog.put(db, dict(kind="file", key=key, status="present", identity=pinned["identity"], revision=pinned["file_revision"],
-                                     filename=pinned["filename"], revision_before=witness(before[key]), revision_after=witness(after[key]),
+                catalog.put(db, dict(kind="file", key=key, status="present", identity=current["identity"], revision=current["file_revision"],
+                                     filename=current["filename"], revision_before=witness(current), revision_after=witness(after[key]),
                                      asset=dict(path=f"assets/{outcome['sha256']}", sha256=outcome["sha256"], bytes=outcome["bytes"],
-                                                url=pinned["imageinfo"]["thumburl"], input="thumbnail500")))
+                                                url=thumbnail(current), input="thumbnail500")))
         db.commit()

@@ -8,7 +8,6 @@ each shard with its SHA-256 and size, and counts the subjects and the unresolved
 """
 from __future__ import annotations
 
-from collections import Counter
 import hashlib
 import io
 from itertools import groupby
@@ -44,14 +43,16 @@ def needs(db, targets, wikidata: str | None, wikipedia: str | None) -> set[tuple
     return keys
 
 
-def archive(path: Path, members: dict[str, bytes | Path]):
-    """A reproducible tar of `members`, compressed by zstd."""
+def archive(path: Path, members):
+    """A reproducible tar of the `(name, bytes or file)` members, compressed by zstd."""
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(".partial")
     with partial.open("wb") as output:
-        process = subprocess.Popen(["zstd", "-q", "-19", "-T0", "-c"], stdin=subprocess.PIPE, stdout=output)
+        # Most bytes are JPEG thumbnails, which do not compress. Level 10 keeps the JSON facts
+        # small at a fraction of the time of level 19.
+        process = subprocess.Popen(["zstd", "-q", "-10", "-T0", "-c"], stdin=subprocess.PIPE, stdout=output)
         with tarfile.open(fileobj=process.stdin, mode="w|", format=tarfile.PAX_FORMAT) as tar:
-            for name, data in sorted(members.items()):
+            for name, data in members:
                 info = tarfile.TarInfo(name)
                 info.size, info.mode = (data.stat().st_size if isinstance(data, Path) else len(data)), 0o644
                 with (data.open("rb") if isinstance(data, Path) else io.BytesIO(data)) as source:
@@ -63,38 +64,44 @@ def archive(path: Path, members: dict[str, bytes | Path]):
 
 
 def write(db, work: Path, out: Path):
+    if not catalog.complete(db, "wikidata:2"):
+        raise ValueError("the Wikidata import has not finished; run the import step first")
     targets = catalog.graph(db)
-    shards, counts = [], Counter()
-    groups = {None: {("entity", qid) for qid in catalog.classes(db, targets)}}
-    rows = db.execute("SELECT cell, wikidata, wikipedia FROM subjects ORDER BY cell").fetchall()
+    db.execute("CREATE TEMP TABLE IF NOT EXISTS shard(kind TEXT, key TEXT, PRIMARY KEY(kind,key)) WITHOUT ROWID")
+    classes = [("entity", qid) for qid in catalog.classes(db, targets)]
+    shards = [shard(db, work, out, "common.tar.zst", targets, classes, db.execute("SELECT wikidata, wikipedia FROM subjects WHERE cell=''"))]
+    rows = db.execute("SELECT cell, wikidata, wikipedia FROM subjects WHERE cell!='' ORDER BY cell")
     for cell, subjects in groupby(rows, key=lambda row: row[0]):
-        keys = groups.setdefault(cell, set())
-        for _, wikidata, wikipedia in subjects:
-            counts["subjects" if cell else "subjects_in_common"] += 1
-            keys |= needs(db, targets, wikidata, wikipedia)
-        if cell is not None:
-            shards.append(shard(db, work, out, f"cells/{cell}.tar.zst", groups.pop(cell)))
-    shards.insert(0, shard(db, work, out, "common.tar.zst", groups.pop(None)))
-    counts.update({f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")})
-    counts["subjects_without_link"] = db.execute("""SELECT COUNT(*) FROM subjects WHERE
-        (wikidata IS NOT NULL AND NOT EXISTS (SELECT 1 FROM facts WHERE kind='link' AND key='wikidata:'||wikidata)) OR
-        (wikipedia IS NOT NULL AND NOT EXISTS (SELECT 1 FROM facts WHERE kind='link' AND key='wikipedia:'||wikipedia))""").fetchone()[0]
-    paths = {shard["path"] for shard in shards}
+        shards.append(shard(db, work, out, f"cells/{cell}.tar.zst", targets, [], (row[1:] for row in subjects)))
+    counts = {f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")}
+    counts.update(subjects=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects").fetchone()[0],
+                  subjects_in_common=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects WHERE cell=''").fetchone()[0],
+                  subjects_without_link=db.execute("""SELECT COUNT(DISTINCT osm) FROM subjects WHERE
+                      (wikidata IS NOT NULL AND NOT EXISTS (SELECT 1 FROM facts WHERE kind='link' AND key='wikidata:'||wikidata)) OR
+                      (wikipedia IS NOT NULL AND NOT EXISTS (SELECT 1 FROM facts WHERE kind='link' AND key='wikipedia:'||wikipedia))""").fetchone()[0])
+    paths = {entry["path"] for entry in shards}
     for stale in out.glob("**/*.tar.zst"):
         if stale.relative_to(out).as_posix() not in paths:
             stale.unlink()
     write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(counts.items()))))
 
 
-def shard(db, work: Path, out: Path, name: str, keys: set[tuple[str, str]]) -> dict:
-    members = {}
-    for kind, key in keys:
-        row = db.execute("SELECT data FROM facts WHERE kind=? AND key=?", (kind, key)).fetchone()
-        if row:
-            members[f"content/{kind}/{hashlib.sha256(row[0]).hexdigest()}.json"] = row[0]
-            if kind == "file":
-                asset = json.loads(row[0])["asset"]
-                members[f"content/assets/{asset['sha256']}"] = work / asset["path"]
-    archive(out / name, members)
+def shard(db, work: Path, out: Path, name: str, targets, keys: list[tuple[str, str]], subjects) -> dict:
+    """Write `keys` and the facts of `subjects` to `out/name`. The keys collect in a temporary table,
+    so a shard of any size streams from the catalog."""
+    db.execute("DELETE FROM shard")
+    db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", keys)
+    for wikidata, wikipedia in subjects:
+        db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", needs(db, targets, wikidata, wikipedia))
+
+    def members():
+        assets = set()
+        for kind, data in db.execute("SELECT kind, data FROM shard JOIN facts USING(kind, key) ORDER BY kind, key"):
+            yield f"content/{kind}/{hashlib.sha256(data).hexdigest()}.json", data
+            if kind == "file" and (asset := json.loads(data)["asset"])["sha256"] not in assets:
+                assets.add(asset["sha256"])
+                yield f"content/assets/{asset['sha256']}", work / asset["path"]
+
+    archive(out / name, members())
     return dict(path=name, sha256=dumps.sha(out / name), bytes=(out / name).stat().st_size,
-                facts=sum(name.endswith(".json") for name in members))
+                facts=db.execute("SELECT COUNT(*) FROM shard JOIN facts USING(kind, key)").fetchone()[0])

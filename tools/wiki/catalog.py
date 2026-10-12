@@ -18,22 +18,19 @@ import shutil
 import sqlite3
 from urllib.parse import urlencode
 
-from ..landmark_capture import LANGUAGES
+from ..landmark_capture import LANGUAGES, MAX_JSON_SOURCE, MAX_LOCALE_DEPTH, MAX_LOCALES
 from . import dumps
 from .facts import compact_entity, encoded, lead_html, original_notices
 
-# What the compiler reads a compact fact up to.
-BOUND = 16 * 1024 * 1024
 QID = re.compile(r"Q[1-9][0-9]*")
 # The id leads each Wikidata dump line; a sitelink title is a JSON string.
 ITEM = re.compile(rb'"id":"(Q[1-9][0-9]*)"')
 SITELINK = re.compile(rb'"site":"([^"]+)","title":"((?:[^"\\]|\\.)*)"')
 NAME = re.compile(rb'"name":"((?:[^"\\]|\\.)*)"')
-# The bounds of the API acquisition: a P131 traversal of depth 8 and at most 64 locales.
-LOCALE_DEPTH, LOCALES = 8, 64
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, sha256 TEXT, complete INTEGER, records INTEGER);
-CREATE TABLE IF NOT EXISTS subjects(osm TEXT PRIMARY KEY, cell TEXT, wikidata TEXT, wikipedia TEXT) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, sha256 TEXT, complete INTEGER);
+-- One row per shard cell of a subject; cell '' is the common shard.
+CREATE TABLE IF NOT EXISTS subjects(osm TEXT, cell TEXT, wikidata TEXT, wikipedia TEXT, PRIMARY KEY(osm,cell)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS facts(kind TEXT, key TEXT, revision INTEGER, data BLOB, PRIMARY KEY(kind,key)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS failures(kind TEXT, key TEXT, reason TEXT, PRIMARY KEY(kind,key)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS edges(prop INTEGER, qid TEXT, target TEXT, PRIMARY KEY(prop,qid,target)) WITHOUT ROWID;
@@ -60,7 +57,7 @@ def connect(work: Path):
 def put(db, value: dict):
     """Keep one compact fact. A record of a newer revision replaces an older one, never the reverse."""
     data = encoded(value)
-    if len(data) > BOUND:
+    if len(data) > MAX_JSON_SOURCE:
         return fail(db, value["kind"], value["key"], "compact-content-exceeds-bound")
     revision = value.get("revision") if isinstance(value.get("revision"), int) else 0
     db.execute("""INSERT INTO facts VALUES(?,?,?,?) ON CONFLICT(kind,key) DO UPDATE SET
@@ -98,7 +95,7 @@ def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None
         raise ValueError(f"{name}: input changed; use a new work directory")
     if previous and previous[1]:
         return
-    db.execute("INSERT OR REPLACE INTO imports VALUES(?,?,0,0)", (name, digest))
+    db.execute("INSERT OR REPLACE INTO imports VALUES(?,?,0)", (name, digest))
     db.commit()
     count = 0
     for count, row in enumerate(rows, 1):
@@ -109,7 +106,7 @@ def scan(db, work: Path, name: str, digest: str, rows, record, done=lambda: None
             if shutil.disk_usage(work).free < dumps.RESERVE:
                 raise ValueError(f"{name}: import reached the disk reserve")
     done()
-    db.execute("UPDATE imports SET complete=1,records=? WHERE id=?", (count, name))
+    db.execute("UPDATE imports SET complete=1 WHERE id=?", (name,))
     db.commit()
 
 
@@ -129,22 +126,28 @@ def text(raw: bytes) -> str:
     return json.loads(b'"' + raw + b'"') if b"\\" in raw else raw.decode()
 
 
-def chain(db, qid: str) -> list[str]:
-    """`qid` and the Wikidata redirects that it follows to its canonical item."""
+def chain(db, qid: str) -> list[str] | None:
+    """`qid` and the Wikidata redirects that it follows to its canonical item. A cyclic or too
+    long chain is a failure of `qid` alone, never of the import."""
     seen = [qid]
     while row := db.execute("SELECT target FROM redirects WHERE qid=?", (seen[-1],)).fetchone():
         if row[0] in seen or len(seen) > 64:
-            raise ValueError("Wikidata redirect chain is cyclic or too long")
+            fail(db, "entity", qid, "Wikidata redirect chain is cyclic or too long")
+            return None
         seen.append(row[0])
     return seen
+
+
+def canonical(db, qid: str) -> str | None:
+    path = chain(db, qid)
+    return path and path[-1]
 
 
 def graph(db):
     """The targets of one property of an item, after redirects, from the pass 1 edges."""
     @lru_cache(maxsize=1 << 20)
     def targets(prop: int, qid: str) -> frozenset[str]:
-        canonical = chain(db, qid)[-1]
-        return frozenset(row[0] for row in db.execute("SELECT target FROM edges WHERE prop=? AND qid=?", (prop, canonical)))
+        return frozenset(row[0] for row in db.execute("SELECT target FROM edges WHERE prop=? AND qid=?", (prop, canonical(db, qid))))
     return targets
 
 
@@ -161,8 +164,8 @@ def classes(db, targets) -> set[str]:
 def locales(targets, qid: str) -> set[str]:
     """The countries and the bounded P131 traversal of one subject, in the order of the API acquisition."""
     visited, frontier = set(), set(targets(131, qid))
-    for _ in range(LOCALE_DEPTH):
-        frontier = set(sorted(frontier - visited)[:LOCALES - len(visited)])
+    for _ in range(MAX_LOCALE_DEPTH):
+        frontier = set(sorted(frontier - visited)[:MAX_LOCALES - len(visited)])
         if not frontier:
             break
         visited |= frontier
@@ -173,7 +176,7 @@ def locales(targets, qid: str) -> set[str]:
 def subject_items(db) -> set[str]:
     """The canonical items of the OSM `wikidata` tags, and the items whose sitelinks the
     `wikipedia` tags name."""
-    found = {chain(db, row[0])[-1] for row in db.execute("SELECT DISTINCT wikidata FROM subjects WHERE wikidata IS NOT NULL")}
+    found = {canonical(db, row[0]) for row in db.execute("SELECT DISTINCT wikidata FROM subjects WHERE wikidata IS NOT NULL")} - {None}
     for (data,) in db.execute("SELECT data FROM facts WHERE kind='link' AND key LIKE 'wikipedia:%'"):
         value = json.loads(data)
         if value["status"] == "present" and QID.fullmatch(value["identity"]):
@@ -194,8 +197,8 @@ def claimed(raw: dict, prop: str) -> set[str]:
 def wikidata(db, work: Path, path: Path, digest: str):
     """Both passes over the Wikidata JSON dump, then the entity and `wikidata:` link facts of
     every subject and of its closure."""
-    tagged = {row[0]: chain(db, row[0])[-1] for row in db.execute("SELECT DISTINCT wikidata FROM subjects WHERE wikidata IS NOT NULL")}
-    items = set(tagged.values())
+    tagged = {row[0]: canonical(db, row[0]) for row in db.execute("SELECT DISTINCT wikidata FROM subjects WHERE wikidata IS NOT NULL")}
+    items = set(tagged.values()) - {None}
     wanted = {}
     for (tag,) in db.execute("SELECT DISTINCT wikipedia FROM subjects WHERE wikipedia IS NOT NULL"):
         language, title = tag.split(":", 1)
@@ -229,7 +232,7 @@ def wikidata(db, work: Path, path: Path, digest: str):
     closure = classes(db, targets)
     for qid in found:
         closure |= locales(targets, qid)
-    needed = {chain(db, qid)[-1] for qid in closure} - found
+    needed = {canonical(db, qid) for qid in closure} - found - {None}
 
     def second(raw: dict | None):
         if raw is not None:
@@ -238,18 +241,20 @@ def wikidata(db, work: Path, path: Path, digest: str):
     def done():
         proof = dict(complete_snapshots={name: complete(db, name) for name in ("wikidata:1", "wikidata_pages", "wikidata_redirects")})
         for qid in sorted(closure | set(tagged) | found):
-            if fact(db, "entity", qid):
-                continue
             path = chain(db, qid)
+            if path is None or fact(db, "entity", qid):
+                continue
             target = fact(db, "entity", path[-1])
-            if target and len(path) > 1:
+            if len(path) > 1 and target and target["status"] == "present":
                 put(db, dict(target, key=qid, entity=dict(target["entity"], redirects={"from": qid, "to": path[-1]}),
                              redirect_proof=dict(chain=path, source="wikidata_redirects")))
             else:
                 put(db, dict(kind="entity", key=qid, status="missing", proof=dict(proof, requested=qid)))
         for qid in tagged:
             value = fact(db, "entity", qid)
-            if value["status"] == "missing":
+            if value is None:
+                fail(db, "link", "wikidata:" + qid, "Wikidata redirect chain is cyclic or too long")
+            elif value["status"] == "missing":
                 put(db, dict(kind="link", key="wikidata:" + qid, status="missing", proof=value["proof"]))
             else:
                 put(db, dict(kind="link", key="wikidata:" + qid, status="present", identity=value["identity"],
@@ -306,7 +311,7 @@ def article(raw: dict, language: str) -> dict:
     if not isinstance(html, str) or not license:
         raise ValueError(f"snapshot article lacks revision-bound HTML or licence: {language}:{title}")
     proof = Proof()
-    proof.feed(html)
+    proof.feed(html.partition("</head>")[0])
     match = re.fullmatch(rf"https://{re.escape(language)}\.wikipedia\.org/wiki/Special:Redirect/revision/([1-9][0-9]*)", proof.about or "")
     if not match or proof.pageid != str(pageid):
         raise ValueError("rendered HTML has no matching page and revision proof")
@@ -325,15 +330,19 @@ def article(raw: dict, language: str) -> dict:
                                     html_sha256=hashlib.sha256(html.encode()).hexdigest()))
 
 
-def want(db, selected: list[str]):
+def want(db, work: Path, selected: list[str]):
     """The article titles of the selected subjects, and the titles of the `wikipedia` tags that no
     item sitelink names."""
+    if not complete(db, "wikidata:2"):
+        raise ValueError("the Wikidata import has not finished; run the import step first")
+    # The article imports keep only what this selection wants, so it never changes in one work directory.
+    scan(db, work, "selected", hashlib.sha256(json.dumps(sorted(set(selected))).encode()).hexdigest(), (), lambda _: None)
     for qid in selected:
         value = fact(db, "entity", qid)
         for language in LANGUAGES if value and value["status"] == "present" else ():
             if link := value["entity"]["sitelinks"].get(language + "wiki"):
                 db.execute("INSERT INTO wanted VALUES(?,?,1) ON CONFLICT(language,title) DO UPDATE SET article=1", (language, link["title"]))
-    for (tag,) in db.execute("SELECT DISTINCT wikipedia FROM subjects WHERE wikipedia IS NOT NULL").fetchall():
+    for (tag,) in db.execute("SELECT DISTINCT wikipedia FROM subjects WHERE wikipedia IS NOT NULL"):
         language, title = tag.split(":", 1)
         if language in LANGUAGES and not fact(db, "link", "wikipedia:" + tag):
             db.execute("INSERT OR IGNORE INTO wanted VALUES(?,?,0)", (language, title.replace("_", " ")))
@@ -362,8 +371,7 @@ def articles(db, work: Path, language: str, path: Path, digest: str):
                 qid=excluded.qid,canonical=excluded.canonical,revision=excluded.revision WHERE excluded.revision >= titles.revision""",
                        (language, title, value["pageid"], value["qid"], value["title"], value["revision"]))
             if wanted[title] or not value["qid"]:
-                aliases = [] if title == value["title"] else [{"from": title, "to": value["title"]}]
-                put(db, dict(value, key=f"{language}:{title}", aliases=aliases))
+                put(db, dict(value, key=f"{language}:{title}", aliases=aliases(title, value["title"])))
         if requested and not value["qid"]:
             links = dict(db.execute("SELECT code, title FROM langlinks WHERE language=? AND pageid=?", (language, value["pageid"])))
             code = next(code for code in LANGUAGES if code == language or code in links)
@@ -382,8 +390,9 @@ def articles(db, work: Path, language: str, path: Path, digest: str):
 def links(db):
     """The `wikipedia:` link fact of each OSM tag that no item sitelink names, from the article
     snapshots. A page without an item takes the identity of its canonical page: the first
-    supported language among its language links."""
-    for (tag,) in db.execute("SELECT DISTINCT wikipedia FROM subjects WHERE wikipedia IS NOT NULL").fetchall():
+    supported language among its language links. Its sitelinks are the requested titles, which
+    key the article facts; the aliases map them to the canonical titles."""
+    for (tag,) in db.execute("SELECT DISTINCT wikipedia FROM subjects WHERE wikipedia IS NOT NULL"):
         key = "wikipedia:" + tag
         language, title = tag.split(":", 1)
         title = title.replace("_", " ")
@@ -391,27 +400,33 @@ def links(db):
             continue
         page = db.execute("SELECT pageid, qid, canonical, revision FROM titles WHERE language=? AND title=?", (language, title)).fetchone()
         if page is None:
-            if not failed(db, "article", f"{language}:{title}"):
+            reason = db.execute("SELECT reason FROM failures WHERE kind='article' AND key=?", (f"{language}:{title}",)).fetchone()
+            if reason:
+                fail(db, "link", key, reason[0])
+            else:
                 put(db, dict(kind="link", key=key, status="missing", proof=dict(requested=key, complete_snapshots={"wikipedia:" + language: complete(db, "wikipedia:" + language)})))
             continue
-        pageid, identity, canonical, revision = page
-        proof = dict(language=language, title=canonical, pageid=pageid, snapshot=True,
-                     aliases=[] if canonical == title else [{"from": title, "to": canonical}])
-        sitelinks = {language: canonical}
+        pageid, identity, title_of_page, revision = page
+        proof = dict(language=language, title=title_of_page, pageid=pageid, snapshot=True, aliases=aliases(title, title_of_page))
+        sitelinks = {language: title}
         if not identity:
             if not complete(db, "langlinks:" + language):
                 fail(db, "link", key, f"no-item identity requires the {language} langlinks SQL snapshot")
                 continue
             languages = dict(db.execute("SELECT code, title FROM langlinks WHERE language=? AND pageid=?", (language, pageid)))
             code = next(code for code in LANGUAGES if code == language or code in languages)
-            target = page if code == language else db.execute(
-                "SELECT pageid, qid, canonical, revision FROM titles WHERE language=? AND title=?", (code, languages[code].replace("_", " "))).fetchone()
+            requested = title if code == language else languages[code].replace("_", " ")
+            target = db.execute("SELECT pageid, qid, canonical FROM titles WHERE language=? AND title=?", (code, requested)).fetchone()
             if target is None:
                 fail(db, "link", key, "canonical language-link target absent from article snapshot")
                 continue
             identity = target[1] or f"wiki-{code}-{target[0]}"
-            proof.update(langlinks=languages, canonical=dict(language=code, title=target[2], pageid=target[0]))
-            sitelinks[code] = target[2]
+            proof.update(langlinks=languages, canonical=dict(language=code, title=target[2], pageid=target[0], aliases=aliases(requested, target[2])))
+            sitelinks[code] = requested
         put(db, dict(kind="link", key=key, status="present", identity=identity, revision=revision, proof=proof,
                      sitelinks={code + "wiki": {"title": name} for code, name in sitelinks.items()}))
     db.commit()
+
+
+def aliases(requested: str, title: str) -> list[dict]:
+    return [] if requested == title else [{"from": requested, "to": title}]

@@ -1,7 +1,8 @@
 """The subjects of the `wiki` source: OSM objects with a `wikidata` or `wikipedia` tag.
 
 A subject line is `{"osm": "w10", "wikidata": "Q1", "wikipedia": "en:Castle", "peak": true,
-"box": [west, south, east, north]}`; absent tags and an absent box are left out.
+"box": [west, south, east, north]}`; absent tags and an absent box are left out. `peak` marks a
+`natural=peak` object: the producer selects those subjects for the peak compiler.
 """
 from __future__ import annotations
 
@@ -14,8 +15,12 @@ from ..region_osm import probe, run
 from . import catalog, dumps
 
 LINK = re.compile(r"[a-z][a-z0-9-]{1,14}:.+")
-# The OBCA grid: origin -2^28 µdeg on both axes; a shard cell is 2^20 µdeg.
+# The OBCA grid: origin -2^28 µdeg on both axes; a shard cell is 2^20 µdeg. Cell indices are
+# zero-padded like `obc_formats::grid::id_width`.
 ORIGIN, CELL = 1 << 28, 20
+WIDTH = max(4, len(str(((2 * ORIGIN) >> CELL) - 1)))
+# A subject whose box touches more cells than this belongs to the common shard.
+MAX_CELLS = 16
 
 
 def extract(pbf: Path, out: Path, work: Path):
@@ -30,9 +35,10 @@ def extract(pbf: Path, out: Path, work: Path):
         feature = json.loads(line)
         tags = feature["properties"]
         if "wikidata" in tags or "wikipedia" in tags:
-            points = list(coordinates(feature["geometry"]["coordinates"]))
-            boxes[tags["@type"][0] + str(tags["@id"])] = [min(p[0] for p in points), min(p[1] for p in points),
-                                                         max(p[0] for p in points), max(p[1] for p in points)]
+            west, south, east, north = 180.0, 90.0, -180.0, -90.0
+            for lon, lat in coordinates(feature["geometry"]["coordinates"]):
+                west, south, east, north = min(west, lon), min(south, lat), max(east, lon), max(north, lat)
+            boxes[tags["@type"][0] + str(tags["@id"])] = [west, south, east, north]
     partial = out.with_suffix(".partial")
     with partial.open("w") as output:
         for line in stream(binary, "tags-filter", filtered, "nwr/wikidata", "nwr/wikipedia", "-R", "-f", "opl"):
@@ -67,18 +73,20 @@ def decoded(text: str) -> str:
 
 def coordinates(value):
     if isinstance(value[0], (int, float)):
-        yield value
+        yield value[:2]
     else:
         for item in value:
             yield from coordinates(item)
 
 
-def cell(box: list[float] | None) -> str | None:
-    """The `<i>-<j>` cell that holds the whole box, or `None` for common."""
+def cells(box: list[float] | None) -> list[str]:
+    """The `<i>-<j>` cells that the box touches, or none when the subject belongs to common."""
     if box is None:
-        return None
-    corners = {tuple((round(value * 1e6) + ORIGIN) >> CELL for value in (lat, lon)) for lat, lon in ((box[1], box[0]), (box[3], box[2]))}
-    return "-".join(map(str, corners.pop())) if len(corners) == 1 else None
+        return []
+    south, west, north, east = ((round(value * 1e6) + ORIGIN) >> CELL for value in (box[1], box[0], box[3], box[2]))
+    if (north - south + 1) * (east - west + 1) > MAX_CELLS:
+        return []
+    return [f"{i:0{WIDTH}}-{j:0{WIDTH}}" for i in range(south, north + 1) for j in range(west, east + 1)]
 
 
 def load(db, work: Path, path: Path):
@@ -88,7 +96,7 @@ def load(db, work: Path, path: Path):
 
     def record(line: bytes):
         value = json.loads(line)
-        db.execute("INSERT OR REPLACE INTO subjects VALUES(?,?,?,?)",
-                   (value["osm"], cell(value.get("box")), value.get("wikidata"), value.get("wikipedia")))
+        db.executemany("INSERT OR REPLACE INTO subjects VALUES(?,?,?,?)",
+                       [(value["osm"], cell, value.get("wikidata"), value.get("wikipedia")) for cell in cells(value.get("box")) or [""]])
 
     catalog.scan(db, work, "subjects", dumps.sha(path), lines(), record)

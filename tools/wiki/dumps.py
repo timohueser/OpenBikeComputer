@@ -1,43 +1,21 @@
-"""Wikimedia dump inputs: resumable downloads and streams of their records."""
+"""Streams of the records of the local Wikimedia dump files."""
 from __future__ import annotations
 
 import bz2
 from contextlib import contextmanager
 import gzip
 import hashlib
-import json
-import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tarfile
-from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from ..landmark_capture import USER_AGENT, write_json
-
-# Only requests to this host carry `OBC_WIKIMEDIA_ENTERPRISE_TOKEN`.
-ENTERPRISE = "api.enterprise.wikimedia.com"
 RESERVE = 4 * 1024**3
 RECORD = 128 * 1024 * 1024
 DECOMPRESSORS = {".bz2": ("lbzip2", bz2.open), ".gz": ("pigz", gzip.open), ".tgz": ("pigz", gzip.open)}
 TOKEN = re.compile(r"\s*('(?:[^'\\]|\\.)*'|NULL|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[(),;])")
 ESCAPES = {"0": "\0", "n": "\n", "r": "\r", "t": "\t", "b": "\b", "Z": "\x1a"}
-
-
-class Redirects(HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, url):
-        if not url.startswith("https://"):
-            raise ValueError("snapshot redirect must use HTTPS")
-        redirected = super().redirect_request(request, response, code, message, headers, url)
-        if redirected and urlparse(request.full_url).hostname != urlparse(url).hostname:
-            redirected.remove_header("Authorization")
-        return redirected
-
-
-def open_url(request):
-    return build_opener(Redirects()).open(request, timeout=60)
 
 
 def sha(path: Path) -> str:
@@ -46,67 +24,6 @@ def sha(path: Path) -> str:
         while data := stream.read(1024 * 1024):
             digest.update(data)
     return digest.hexdigest()
-
-
-def download(source: dict, work: Path) -> tuple[Path, str]:
-    """The local file of one input and its SHA-256: its `path`, or its `url` downloaded into
-    `work`. A partial download resumes only while the server reports the same length and ETag."""
-    if "path" in source:
-        path = Path(source["path"]).resolve()
-    else:
-        url = source["url"]
-        if not url.startswith("https://"):
-            raise ValueError("snapshot downloads require HTTPS")
-        headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
-        if urlparse(url).hostname == ENTERPRISE:
-            token = os.environ.get("OBC_WIKIMEDIA_ENTERPRISE_TOKEN")
-            if not token:
-                raise ValueError("set OBC_WIKIMEDIA_ENTERPRISE_TOKEN for snapshot downloads")
-            headers["Authorization"] = f"Bearer {token}"
-        # Resolve the signed storage URL first; the API token never goes to storage.
-        with open_url(Request(url, headers=headers, method="HEAD")) as response:
-            target = response.url
-            length = int(response.headers["Content-Length"])
-            etag = response.headers.get("ETag")
-        identity = hashlib.sha256(url.encode()).hexdigest()
-        work.mkdir(parents=True, exist_ok=True)
-        path = work / (identity + source.get("suffix", ".tar.gz"))
-        receipt = work / (identity + ".json")
-        current = dict(url=url, bytes=length, etag=etag)
-        if (json.loads(receipt.read_bytes()) if receipt.exists() else None) != current:
-            path.unlink(missing_ok=True)
-            write_json(receipt, current)
-        offset = path.stat().st_size if path.exists() else 0
-        if offset > length:
-            raise ValueError("partial snapshot exceeds declared length")
-        if offset < length:
-            if shutil.disk_usage(work).free < length - offset + RESERVE:
-                raise ValueError("snapshot download would consume the disk reserve")
-            transfer = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
-            if target == url and "Authorization" in headers:
-                transfer["Authorization"] = headers["Authorization"]
-            if offset:
-                transfer["Range"] = f"bytes={offset}-"
-            with open_url(Request(target, headers=transfer)) as response:
-                if etag and response.headers.get("ETag", etag) != etag:
-                    raise ValueError("upstream changed the pinned snapshot during download")
-                if offset and (response.status != 206 or response.headers.get("Content-Range") != f"bytes {offset}-{length-1}/{length}"):
-                    raise ValueError("upstream did not resume the pinned snapshot")
-                with path.open("ab" if offset else "wb") as output:
-                    while data := response.read(1024 * 1024):
-                        output.write(data)
-                    output.flush()
-                    os.fsync(output.fileno())
-            if path.stat().st_size != length:
-                raise ValueError("incomplete snapshot download; run preparation again to resume")
-    if not path.is_file():
-        raise ValueError(f"snapshot file missing: {path}")
-    if source.get("bytes") is not None and source["bytes"] != path.stat().st_size:
-        raise ValueError("snapshot length changed")
-    digest = sha(path)
-    if source.get("sha256") and source["sha256"] != digest:
-        raise ValueError("snapshot checksum changed")
-    return path, digest
 
 
 @contextmanager
