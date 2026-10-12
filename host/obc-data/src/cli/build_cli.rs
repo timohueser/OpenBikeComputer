@@ -287,7 +287,7 @@ pub(super) fn replaced(plan: &EnvPlan) -> Vec<String> {
 }
 
 /// What an apply of `plan` removes from R2, one line per prefix.
-pub(super) fn removals(plan: &EnvPlan) -> Vec<String> {
+fn removals(plan: &EnvPlan) -> Vec<String> {
     if !plan.listed {
         return vec!["REMOVE FROM R2 nothing: R2 was not listed".into()];
     }
@@ -301,7 +301,7 @@ pub(super) fn removals(plan: &EnvPlan) -> Vec<String> {
 
 /// What groups cost: the download, the build time and the output; `None` when the store does not
 /// know one of the parts. A fetch or a build that two groups need counts once.
-pub(super) struct Cost {
+struct Cost {
     pub fetch: Option<u64>,
     pub wall_ms: Option<u64>,
     pub bytes_out: Option<u64>,
@@ -323,7 +323,7 @@ impl Cost {
 }
 
 /// What a group changes, in a few words.
-pub(super) fn change(group: &Group, edits: &[Edit]) -> String {
+fn change(group: &Group, edits: &[Edit]) -> String {
     let edit_text = |region: bool| {
         let edits = edits.iter().filter(|edit| matches!(edit, Edit::Region { .. }) == region);
         edits.map(Edit::text).collect::<Vec<_>>().join("; ")
@@ -511,8 +511,7 @@ fn document_digest(product: &LiveProduct) -> Option<String> {
 }
 
 /// The plan of `live` now against the live releases that `remote` holds: `plan live --only ONLY
-/// --json`, which the TUI shows and an apply without `--plan` applies.
-#[allow(clippy::too_many_arguments)]
+/// --json`, which an apply without `--plan` applies.
 pub(super) fn plan_live(
     root: &Path,
     store: &Store,
@@ -522,21 +521,7 @@ pub(super) fn plan_live(
     only: &[String],
     prepare: bool,
 ) -> Result<EnvPlan, Error> {
-    plan_live_moves(root, store, http, remote, products, only, &[], prepare)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn plan_live_moves(
-    root: &Path,
-    store: &Store,
-    http: &Http,
-    remote: &Remote,
-    products: &[&dyn Product],
-    only: &[String],
-    moves: &[String],
-    prepare: bool,
-) -> Result<EnvPlan, Error> {
-    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(moves), prepare)?.plan)
+    Ok(planned(root, store, http, Some(remote), products, "live", only, Basis::Moves(&[]), prepare)?.plan)
 }
 
 /// The output of `plan ENV --json` in `file`.
@@ -551,7 +536,7 @@ fn outdated() -> Error {
 }
 
 /// `--only none`: no group, or against live no move.
-pub(super) const NONE: &str = "none";
+const NONE: &str = "none";
 
 /// The groups that `only` names. Against live, `only` names moves, and the plan keeps every group:
 /// a move that it does not name does not move, and the rest of live follows `data/` and the code.

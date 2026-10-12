@@ -312,9 +312,9 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
-# Read the data registry: a bare `obc data` opens the TUI in a terminal; `obc data status` shows
-# what is live; `obc data sources` lists every source with licence, R2 copy, live version,
-# upstream version, age, policy and state;
+# Read the data registry: a bare `obc data` or `obc data status` shows what is live;
+# `obc data sources` lists every source with licence, R2 copy, live version, upstream version,
+# age, policy and state;
 # `obc data region [list|show ID]` lists the regions. `obc data fetch` puts a source version in
 # the store. `obc data region ENV ID`, `obc data layer ENV NAME on|off` and `obc data undo ENV`
 # edit data/env/ENV.toml. `obc data plan ENV` shows what a build of an environment fetches and

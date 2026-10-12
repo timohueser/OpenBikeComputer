@@ -252,7 +252,7 @@ fn watch(store: &Store, run: &str, json: bool) -> Result<(), Error> {
 }
 
 /// The time of a step, its change since the last run that built it, its peak RAM and its output.
-pub(super) fn step_cells(step: &RunStep) -> [String; 4] {
+fn step_cells(step: &RunStep) -> [String; 4] {
     let receipt = step.receipt.as_ref();
     let took = match receipt {
         Some(_) if step.reused => "reused".into(),
@@ -281,7 +281,7 @@ fn fetched(source: &str, version: &str, params: &[(String, String)]) -> String {
     format!("{source}@{version}{}", params.collect::<String>())
 }
 
-pub(super) fn mark(outcome: Outcome) -> &'static str {
+fn mark(outcome: Outcome) -> &'static str {
     match outcome {
         Outcome::Running => "◐",
         Outcome::Ok => "✓",

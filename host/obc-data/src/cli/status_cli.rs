@@ -116,7 +116,7 @@ pub fn status(root: &Path, products: &[&dyn Product], check: bool, json: bool) -
 }
 
 /// What `status` writes; with `check`, what `status --check` writes.
-pub fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, Error> {
+fn read(root: &Path, products: &[&dyn Product], check: bool) -> Result<Status, Error> {
     let (store, mut registry) = (Store::open()?, registry(root)?);
     let remote = remote()?;
     if check && matches!(remote, Remote::Public(_)) {

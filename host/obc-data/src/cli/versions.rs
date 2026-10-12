@@ -1,11 +1,11 @@
-//! Source-wide moves admit only versions known for every active acquisition request.
+//! The versions of a source for each active acquisition request, and the versions they all know.
 
 use std::collections::BTreeSet;
 
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{Code, Error, SourceRow};
+use super::{Error, SourceRow};
 use crate::store::Store;
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -82,15 +82,6 @@ impl Versions {
         }
         lines
     }
-
-    pub fn check(&self, version: Option<&str>) -> Result<(), Error> {
-        if version.map_or(self.newest, |version| self.common.iter().any(|known| known == version)) {
-            return Ok(());
-        }
-        Err(Code::Blocked
-            .error("The move is not known for every active request of this source.")
-            .fix("Check upstream and prepare missing request metadata. The request details show unavailable versions."))
-    }
 }
 
 #[cfg(test)]
@@ -109,14 +100,13 @@ mod tests {
         let mut requests = vec![request("east", &["1", "2"], Some("3")), request("west", &["1"], None)];
         let versions = assemble("extracts".into(), requests.clone());
         assert_eq!(versions.common, ["1"]);
-        assert!(versions.check(Some("2")).is_err());
-        assert!(versions.check(None).is_err());
+        assert!(!versions.newest);
         assert_eq!(versions.requests[1].params[0].1, "west");
         assert!(versions.requests[1].unavailable.as_ref().unwrap().contains("Upstream failed"));
         requests[1].upstream = Some("4".into());
         let versions = assemble("extracts".into(), requests);
-        versions.check(None).unwrap();
+        assert!(versions.newest);
         assert_eq!(versions.common, ["1"], "newest is resolved per request, not one shared date");
-        assert!(assemble("held".into(), Vec::new()).check(None).is_err());
+        assert!(!assemble("held".into(), Vec::new()).newest);
     }
 }

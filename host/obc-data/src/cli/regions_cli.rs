@@ -12,8 +12,7 @@ use super::api::{confirm, print_json, Code, Error};
 use crate::regions::{geofabrik, parse_region, Bbox, Region};
 use crate::store::{hash_file, Store};
 
-mod delete;
-pub(super) use delete::{deletion, remove, Deletion};
+pub(super) mod delete;
 
 #[derive(Subcommand)]
 pub(super) enum Action {
@@ -135,7 +134,7 @@ pub(super) fn run(root: &Path, action: Option<Action>, json: bool) -> Result<(),
     }
 }
 
-pub(super) fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
+fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Error> {
     let (version, index) = cached_index(store)?;
     let query = query.trim().to_lowercase();
     let areas = index
@@ -150,18 +149,6 @@ pub(super) fn suggestions(store: &Store, query: &str) -> Result<Suggestions, Err
         })
         .collect();
     Ok(Suggestions { version, areas })
-}
-
-/// Explicit preparation of the small public index; opening or searching a view never fetches it.
-pub(super) fn load_areas(root: &Path, store: &Store) -> Result<Suggestions, Error> {
-    let registry = super::registry(root)?;
-    let source = super::find(&registry, "geofabrik-index")?;
-    let request = crate::fetch::Request { refresh: false, source, version: None, params: Vec::new() };
-    super::fetched(
-        source,
-        crate::input_copy::fetch(root, store, &crate::fetch::http::Http::new(), None, &request, &[]),
-    )?;
-    suggestions(store, "")
 }
 
 const INDEX_URL: &str = "https://download.geofabrik.de/index-v1.json";

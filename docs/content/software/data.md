@@ -36,7 +36,7 @@ release. Undo restores the applied region, layers and policies. Local has its ow
 An upstream check does not silently replace those pins.
 
 A plan separates required work from optional source moves. Changed geometry, product options
-or producer code can require work even when no source moves. Required rows cannot be unchecked.
+or producer code can require work even when no source moves.
 A source move is deliberate, and a source with several requests must expose each request's
 availability. This avoids claiming that one cached version covers every area.
 An incomplete preview needs input preparation before it can become an exact review.
@@ -48,8 +48,7 @@ Live apply verifies the selected data and asks for consent.
 ## Retained work and a direct apply
 
 The selected machine builds and verifies. Its admitted worker survives a closed terminal.
-The viewer can hide, reopen or observe that Run without changing it. Stop drains the current
-work and asks first.
+`obc data runs RUN --follow` does not change the Run. Stop drains the current work.
 
 The machine that applies also publishes. It uploads only what R2 lacks, so a repeated apply
 continues where a stopped one ended. Clients read only the pointer, and the apply writes the
@@ -70,7 +69,7 @@ its actual tools. Native executables are built for the current host.
 
 The saved Local release keeps useful bytes reachable by cleanup. Prepared apps share services
 when they need the same files. A rebuild updates affected running services and leaves stopped
-apps stopped. First entry is read-only; an explicit input check makes its network work visible.
+apps stopped. A Local check is read-only and makes no source requests.
 See [portable data](src:specs/obc-data.md) and
 [Local services](src:specs/obc-data.md).
 

@@ -208,8 +208,8 @@ and current upstream result. Its common versions are the intersection of these k
 across all active requests. Stored records do not prove that their object bytes remain present.
 The newest-per-request choice needs a successful current version observation for every request.
 Unavailable observations remain in the report. Held provenance is not an active move target.
-Terminal version choices retain source-wide `--move` intent until Plan resolves the exact reads;
-only the reviewed plan admits a build or apply.
+A `--move` keeps its source-wide intent until Plan resolves the exact reads; only the reviewed
+plan admits a build or apply.
 
 ## Store
 
@@ -501,9 +501,9 @@ line `<sha256>  <name>` with a final newline per file, in byte order of the name
   discovery again.
 - Acquisition and planning declare an owner crate and its source paths. The same resolver
   selects its normal and build dependencies, profiles and execution tools. Owner source uses the
-  declared paths. Engine backend source is included, apart from its TUI module.
+  declared paths. Engine backend source is included.
   Backend CLI edits can change owner identity. Its dependency metadata stays conservative:
-  an unused UI dependency edit can change owner identity. Ordinary TUI source edits do not.
+  an unused dependency edit can change owner identity.
 - Source/config evidence is separate from full execution identity. It uses the same traversal,
   selected source and package projections, repository profile and toolchain configuration.
   It resolves at the recorded producer target and profile without selecting native tools,
@@ -871,8 +871,7 @@ writes no complete release for that product. An apply with these blockers fails 
 uploads, switches, or removes objects. A failed explicit capture fetch blocks its content and
 artifacts; other map layers keep their steps. Status shows these layers as `blocked`, with the
 reason in attention. Status fetches only small discovery files: Geofabrik outlines and the
-GLO-30 tile list. An absent bulk input gives a not-prepared reason and unknown product layers;
-opening the TUI starts no bulk download.
+GLO-30 tile list. An absent bulk input gives a not-prepared reason and unknown product layers.
 
 A product also gives what clients read of a release: its pointer document, and the files that a
 client finds by name under `<prefix>/releases/<id>/`. A plan, a build and an apply of `live` leave
@@ -1353,7 +1352,7 @@ failure appears in `observation_error` and preserves the run state.
 
 | Command | Output |
 | --- | --- |
-| `obc data [--json]` | In a terminal, and without `--json`: the TUI. Otherwise the output of `status` |
+| `obc data [--json]` | The output of `status` |
 | `obc data status [--check] [--json]` | Where live was read; per product, the live release (or nothing live), `applied` of its pointer, the size of its objects, the optional layers that `layer` switches, and the state of each layer of the environment `live`; what needs attention: stale and blocked sources, and with `--check` drift and leftovers. When a fetch that the step list of a product needs fails, the layer states of that product are unknown (`layers` is `null`), and attention gives the error. `--check` adds the listing of [Live](#live) and exits with 1 when it finds drift or leftovers. Without the bucket, `--check` exits with 4 before it reads anything |
 | `obc data sources [--check-now] [--json]` | Every source with licence, R2 copy, live versions (`—` when live does not read the source; `?` with one warning when R2 cannot be read, and then `live` is `null` and `live_unknown` is `true` in the JSON), newest upstream version, age, policy, state and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
@@ -1504,7 +1503,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `region create` | `Region` |
 | `region delete` | `Deletion` |
 | `region ENV ID`, `layer`, `undo` | `Edited` |
-| `status`, and `obc data` without a terminal | `Status` |
+| `status`, `obc data` | `Status` |
 | `clean`, `clean --apply` | `CleanPlan` |
 | `plan`, `dev --check` | `EnvPlan` |
 | `prepare`, `build`, `apply`, `dev --prepare` | `Handle` |

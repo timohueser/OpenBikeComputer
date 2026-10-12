@@ -31,7 +31,7 @@ pub(super) fn definition_path(store: &Store, id: &str) -> Result<PathBuf, Error>
     Ok(path)
 }
 
-pub(in crate::cli) fn deletion(root: &Path, store: &Store, id: &str) -> Result<Deletion, Error> {
+pub(super) fn deletion(root: &Path, store: &Store, id: &str) -> Result<Deletion, Error> {
     let regions = crate::settings::regions(root, store).map_err(|e| Code::InvalidData.error(e))?;
     if regions.get(id).is_none() {
         return Err(Code::Usage.error(format!("no region `{id}`")));
@@ -106,7 +106,7 @@ fn names(value: &serde_json::Value, id: &str) -> bool {
     }
 }
 
-pub(in crate::cli) fn remove(root: &Path, store: &Store, expected: &Deletion) -> Result<(), Error> {
+pub(super) fn remove(root: &Path, store: &Store, expected: &Deletion) -> Result<(), Error> {
     let current = deletion(root, store, &expected.region)?;
     if current.sha256 != expected.sha256 || !current.used_by.is_empty() {
         return Err(Code::PlanOutdated.error("the region definition or its references changed; review deletion again"));

@@ -58,18 +58,9 @@ pub fn undo(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
 }
 
 /// The current environment settings.
-pub fn current(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
+fn current(root: &Path, store: &Store, name: &str) -> Result<Edited, Error> {
     let env = load(root, name, store)?.env;
     Ok(Edited { env: env.name, region: env.region, layers: env.layers })
-}
-
-/// Whether Live has pending edits, or another environment differs from its committed file.
-pub fn edited(root: &Path, store: &Store, name: &str) -> bool {
-    if name == "live" {
-        return crate::settings::edited(store).unwrap_or(true);
-    }
-    let now = std::fs::read(Env::path(root, name)).ok();
-    committed(root, name).is_ok_and(|committed| Some(committed) != now)
 }
 
 /// `data/env/<name>.toml` as git has it in `HEAD`.
@@ -205,12 +196,12 @@ mod tests {
         region(&root, &store, products, "live", "monaco").unwrap();
         let applied = crate::settings::current(&store).unwrap();
         crate::settings::applied(&store, &applied).unwrap();
-        assert!(!edited(&root, &store, "live"));
+        assert!(!crate::settings::edited(&store).unwrap());
         assert!(layer(&root, &store, products, "live", "snow", Switch::On).is_err());
         assert_eq!(crate::settings::current(&store).unwrap(), applied);
         region(&root, &store, products, "live", "europe/andorra").unwrap();
         layer(&root, &store, products, "live", "climate", Switch::On).unwrap();
-        assert!(edited(&root, &store, "live"));
+        assert!(crate::settings::edited(&store).unwrap());
         let pending = crate::settings::current(&store).unwrap();
         assert_eq!(pending.layers, ["climate"]);
         assert_eq!(pending.definitions.len(), 1);
