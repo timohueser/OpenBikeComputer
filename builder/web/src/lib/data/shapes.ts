@@ -18,6 +18,10 @@ export interface Target {
     at: string;
     /** `null` while it serves nothing. */
     release: { serving: Role; rollback: Role | null } | null;
+    /** The machine that made the serving release, and when. */
+    made: { machine: string; time: string } | null;
+    /** How `obc data serve` gives a dir target to each app; `null` for an R2 target. */
+    serve: Listening | null;
     lock: Holder | null;
     lock_error: string | null;
     region: string | null;
@@ -35,6 +39,28 @@ export interface Target {
     fix: string | null;
     /** The command to run next, or the run to wait for. */
     next: string | null;
+}
+
+/** Where `obc data serve` listens, and the command that opens each app. */
+export interface Listening {
+    target: string;
+    url: string;
+    network: string | null;
+    links: { app: string; how: string }[];
+}
+
+/** What `obc data router TARGET --json` writes: the answer of the follower of an R2 target for
+ *  each release; `reason` is `null` when it serves it. */
+export interface Router {
+    target: string;
+    serving: Answer | null;
+    rollback: Answer | null;
+    next: Role | null;
+}
+
+export interface Answer {
+    release: string;
+    reason: string | null;
 }
 
 /** A release and the time that the target took it. */

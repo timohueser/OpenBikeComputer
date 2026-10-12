@@ -165,7 +165,8 @@ pub struct Run {
     /// Whether another process reserved the run, and this one runs it without a terminal.
     detached: bool,
     _lock: Lock,
-    _using: Lock,
+    /// The shared store lock; `None` after [`Run::release_store`].
+    using: Option<Lock>,
 }
 
 /// Reserve a run of the command `args`, the arguments after `obc data`: its id is its start time
@@ -236,7 +237,7 @@ impl Run {
             stop: Arc::new(AtomicBool::new(false)),
             detached,
             _lock: lock,
-            _using: using,
+            using: Some(using),
         };
         run.line(&format!("started `obc data {}`", run.status.args.join(" ")))?;
         run.save()?;
@@ -250,6 +251,12 @@ impl Run {
     /// Whether another process reserved the run: its standard error is the log of the run.
     pub fn detached(&self) -> bool {
         self.detached
+    }
+
+    /// Free the shared store lock, for a run that changes nothing in the store, such as `serve`:
+    /// a collection does not refuse while it runs.
+    pub fn release_store(&mut self) {
+        self.using = None;
     }
 
     /// Record `event`: a line in the log, and the status, which the run writes at most each second
@@ -1236,16 +1243,17 @@ pub fn stop(store: &Store, id: &str) -> Result<Status, String> {
     if !matches!(status.state, State::Starting | State::Running) {
         return Err(format!("run {id} does not run"));
     }
-    // The process of a run that starts can be the one that reserved it.
-    let signal = status.state == State::Running;
     let path = store.run(id).join(STOP);
     // A second signal would end the process at once, and leave its lock held.
     if path.exists() {
         return Ok(status);
     }
     fs::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
+    // Read after the stop file: a process that takes the run later reads that file. The process of
+    // a run that starts can be the one that reserved it.
+    let status = self::status(store, id)?;
     #[cfg(unix)]
-    if let Some(pid @ 1..) = libc::pid_t::try_from(status.pid).ok().filter(|_| signal) {
+    if let Some(pid @ 1..) = libc::pid_t::try_from(status.pid).ok().filter(|_| status.state == State::Running) {
         // SAFETY: kill sends a signal. The lock of the run says that its process still runs. A
         // detached run leads its process group; a run in a terminal may not.
         unsafe {

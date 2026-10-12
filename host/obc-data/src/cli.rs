@@ -9,6 +9,7 @@ mod overview;
 mod prepare_cli;
 mod r2_cli;
 mod rollback_cli;
+mod router_cli;
 mod runs_cli;
 mod serve_cli;
 mod setup_cli;
@@ -58,6 +59,9 @@ enum Command {
     /// Switch a target back to its rollback release. The release that served becomes the rollback,
     /// so a second rollback undoes the first.
     Rollback(rollback_cli::RollbackArgs),
+    /// Whether the follower of an R2 target serves the planner releases of its serving release and
+    /// of its rollback. Changes nothing.
+    Router { target: String },
     /// Free the lock of a target that a stopped run of MACHINE holds: its heartbeat is older than
     /// 10 minutes. Asks first.
     Unlock {
@@ -96,7 +100,7 @@ enum Command {
         query: String,
     },
     /// Serve a dir target to the apps of this machine and of its network, and follow the release
-    /// that it serves. It runs until Ctrl-C.
+    /// that it serves. It runs until Ctrl-C, or with `--detach` as a run.
     Serve(serve_cli::ServeArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
@@ -154,6 +158,7 @@ fn run(cli: Cli, products: &[&dyn Product], prepared: &[&dyn Prepared], ui: Opti
     match command {
         Command::Update(args) => update_cli::command(&root()?, (products, prepared), args, json),
         Command::Rollback(args) => rollback_cli::command(&root()?, args, json),
+        Command::Router { target } => router_cli::command(&root()?, &target, json),
         Command::Unlock { target, from, source, yes } => {
             unlock_cli::command(&root()?, (&target, source.as_deref()), &from, yes, json)
         }

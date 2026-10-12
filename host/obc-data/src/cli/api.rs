@@ -151,6 +151,12 @@ impl Error {
     }
 }
 
+/// What a command that starts a detached run writes: the run.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Detached {
+    pub run: String,
+}
+
 /// In the process that [`runs::detach`] started: do `work` in its run, write what it did with
 /// `print`, or exit with the status of its error, which the status and the log of the run have.
 /// `None` in another process.
@@ -167,6 +173,10 @@ pub(super) fn detached<T>(
         Ok(run) => run,
         Err(e) => return Some(Err(e.into())),
     };
+    // A stop that came while the run started wrote only its file.
+    if run.stopping() {
+        crate::fetch::http::stop();
+    }
     let result = work(&mut run);
     Some(match finish_run(run, result) {
         Ok(done) => print(&done),
@@ -268,7 +278,7 @@ mod tests {
 
     use super::*;
     use crate::cli::{
-        overview, prepare_cli, r2_cli, rollback_cli, runs_cli, serve_cli, setup_cli, source_cli, unlock_cli, update_cli,
+        overview, prepare_cli, r2_cli, rollback_cli, router_cli, runs_cli, serve_cli, setup_cli, unlock_cli, update_cli,
     };
     use crate::engine::runs::{Status, View};
 
@@ -282,9 +292,10 @@ mod tests {
             schema("`update`", generator.subschema_for::<update_cli::Started>()),
             schema("`update --dry-run`", generator.subschema_for::<update_cli::Review>()),
             schema("`rollback`", generator.subschema_for::<rollback_cli::RolledBack>()),
+            schema("`router`", generator.subschema_for::<router_cli::Router>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`source refresh`", generator.subschema_for::<source_cli::Refreshing>()),
+            schema("`source refresh`, `serve --detach`", generator.subschema_for::<Detached>()),
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
@@ -379,10 +390,11 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 9] = [
+        const EXAMPLES: [(&str, &str); 10] = [
             ("areas.json", "Areas"),
             ("prepare-review.json", "PrepareReview"),
             ("review.json", "Review"),
+            ("router.json", "Router"),
             ("run-failed.json", "View"),
             ("run-running.json", "View"),
             ("runs.json", "RunList"),

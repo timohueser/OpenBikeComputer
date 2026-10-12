@@ -1,6 +1,6 @@
 //! `obc data serve [TARGET]`: follow the releases that a target names and run their planner
 //! services. A dir target goes to the apps of this machine and of its network; an R2 target has
-//! the API only, on this machine, for a proxy such as Caddy.
+//! the API only, on this machine, for a proxy such as Caddy. With `--detach`, it is a run.
 
 use std::future::IntoFuture;
 use std::net::{IpAddr, UdpSocket};
@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::{print_json, Code, Error};
+use crate::engine::runs;
 use crate::release;
 use crate::serve::http::{self, Shared};
 use crate::serve::services::{self, Origins, Processes, Programs};
@@ -36,6 +37,9 @@ pub struct ServeArgs {
     /// The target, as `data/targets.toml` names it.
     #[arg(default_value = "local")]
     target: String,
+    /// Serve in a run of its own; `obc data runs RUN --stop` stops it.
+    #[arg(long)]
+    detach: bool,
 }
 
 /// What `serve` writes when it listens.
@@ -46,12 +50,63 @@ pub struct Listening {
     pub url: String,
     /// Its origin on the network, for a phone; `null` without a network and for an R2 target.
     pub network: Option<String>,
+    /// How each app of this machine and of its network opens a dir target; empty for an R2 target.
+    pub links: Vec<Link>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct Link {
+    pub app: String,
+    /// The command, or what to do, with absolute paths.
+    pub how: String,
+}
+
+/// Where `serve` of the target `name` listens, and how each app opens a dir target.
+pub fn listening(root: &Path, name: &str, dir: bool) -> Listening {
+    let url = format!("http://127.0.0.1:{PORT}");
+    let network = dir.then(network_address).flatten().map(|address| format!("http://{address}:{PORT}"));
+    let (planner, device) = (format!("{url}/{PLANNER}"), format!("{url}/{}", release::POINTERS[0]));
+    let web = root.join("builder/web").display().to_string();
+    let link = |app: &str, how: String| Link { app: app.into(), how };
+    let mut links = vec![
+        link("web planner", format!("cd '{web}' && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner, then open /planner.html; once before: npm ci && npm run build:wasm")),
+        link("map builder", format!("VITE_PLANNER_CATALOG={planner} obc site")),
+        link("desktop app", format!("OBC_CATALOG_URL={device} obc desktop")),
+        link("simulator", "obc sim MAP.obcm, with a map that the map builder or the desktop app assembles".into()),
+    ];
+    links.extend(network.as_ref().map(|network| {
+        link("iPhone", format!("the Debug app with the launch argument -OBCPlannerCatalog {network}/{PLANNER}"))
+    }));
+    if !dir {
+        links.clear();
+    }
+    Listening { target: name.into(), url, network, links }
 }
 
 pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, &args.target, &store).map_err(|e| Code::Usage.error(e))?;
-    let dir = match &target {
+    if args.detach {
+        let run = runs::detach(&store, &["serve".into(), args.target])?;
+        if json {
+            return print_json(&super::api::Detached { run });
+        }
+        println!("obc data: run {run} serves; `obc data runs {run}` shows how to open it, `obc data runs {run} --stop` stops it");
+        return Ok(());
+    }
+    // A serve changes nothing in the store, so a collection can run beside it.
+    let work = |run: &mut runs::Run| {
+        run.release_store();
+        serve(root, &store, &args.target, &target, false)
+    };
+    if let Some(done) = super::api::detached(&store, work, |()| Ok(())) {
+        return done;
+    }
+    serve(root, &store, &args.target, &target, json)
+}
+
+fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) -> Result<(), Error> {
+    let dir = match target {
         Target::Dir(dir) => Some(dir.clone()),
         Target::R2(_) => None,
     };
@@ -63,23 +118,19 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
             .error(format!("port {PORT}: {e}"))
             .fix("Stop the other `obc data serve`, or the program that uses the port, then run again.")
     })?;
-    let listening = Listening {
-        target: args.target.clone(),
-        url: format!("http://127.0.0.1:{PORT}"),
-        network: dir.as_ref().and_then(|_| network_address()).map(|address| format!("http://{address}:{PORT}")),
-    };
+    let listening = listening(root, name, dir.is_some());
     if json {
         print_json(&listening)?;
     } else if dir.is_some() {
-        print_links(root, &listening);
+        print_links(&listening);
     } else {
         println!("obc data serve: the planner API of {} at {}", listening.target, listening.url);
     }
-    let work = store.root().join("serve").join(&args.target);
+    let work = store.root().join("serve").join(name);
     // The work folder holds what a serve that did not stop left.
     let _ = std::fs::remove_dir_all(&work);
     // The objects of the releases that serve follows are in a store of their own, which it prunes.
-    let objects = Store::open_at(store.root().join("follower").join(&args.target))?;
+    let objects = Store::open_at(store.root().join("follower").join(name))?;
     let mut tile_server = Vec::new();
     let mut files = None;
     if let Some(dir) = &dir {
@@ -146,19 +197,11 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     ended
 }
 
-/// The command that opens each app on the target, with absolute paths.
-fn print_links(root: &Path, listening: &Listening) {
-    let Listening { target, url, network } = listening;
-    let (planner, device) = (format!("{url}/{PLANNER}"), format!("{url}/{}", release::POINTERS[0]));
-    let web = root.join("builder/web");
-    println!("obc data serve: {target} at {url}");
-    println!("  web planner  cd '{}' && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner", web.display());
-    println!("               then open /planner.html; once before: npm ci && npm run build:wasm");
-    println!("  map builder  VITE_PLANNER_CATALOG={planner} obc site");
-    println!("  desktop app  OBC_CATALOG_URL={device} obc desktop");
-    println!("  simulator    obc sim MAP.obcm, with a map that the map builder or the desktop app assembles");
-    if let Some(network) = network {
-        println!("  iPhone       the Debug app with the launch argument -OBCPlannerCatalog {network}/{PLANNER}");
+/// The command that opens each app on the target.
+fn print_links(listening: &Listening) {
+    println!("obc data serve: {} at {}", listening.target, listening.url);
+    for Link { app, how } in &listening.links {
+        println!("  {app:<12} {how}");
     }
     println!("Other machines on the local network can reach port {PORT} while it runs. Ctrl-C stops it.");
 }

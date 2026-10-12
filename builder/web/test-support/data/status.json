@@ -6,6 +6,8 @@
             "kind": "dir",
             "at": "/Users/rider/.cache/openbikecomputer/local",
             "release": {"serving": {"id": "0d9e444444444444444444444444444444444444444444444444444444444444", "since": "2026-10-11T18:17:22Z"}, "rollback": null},
+            "made": {"machine": "laptop", "time": "2026-10-11T18:10:00Z"},
+            "serve": {"target": "local", "url": "http://127.0.0.1:8710", "network": "http://192.168.1.20:8710", "links": [{"app": "web planner", "how": "cd '/home/rider/OpenBikeComputer/builder/web' && VITE_PLANNER_CATALOG=http://127.0.0.1:8710/planner/catalog.json npm run dev -- --mode planner, then open /planner.html; once before: npm ci && npm run build:wasm"}, {"app": "map builder", "how": "VITE_PLANNER_CATALOG=http://127.0.0.1:8710/planner/catalog.json obc site"}, {"app": "desktop app", "how": "OBC_CATALOG_URL=http://127.0.0.1:8710/cell-catalog/catalog.json obc desktop"}, {"app": "simulator", "how": "obc sim MAP.obcm, with a map that the map builder or the desktop app assembles"}, {"app": "iPhone", "how": "the Debug app with the launch argument -OBCPlannerCatalog http://192.168.1.20:8710/planner/catalog.json"}]},
             "lock": null,
             "lock_error": null,
             "region": "freiburg",
@@ -13,12 +15,13 @@
             "sources": [
                 {"source": "copernicus-glo-30", "version": "2021", "retrieved": "2026-09-02T10:00:00Z"},
                 {"source": "geofabrik-extracts", "version": "2026-10-05", "retrieved": "2026-10-06T06:30:00Z"},
+                {"source": "geofabrik-poly", "version": "2026-10-05", "retrieved": "2026-10-06T06:30:00Z"},
                 {"source": "land-polygons", "version": "2026-09-28", "retrieved": "2026-10-01T07:12:00Z"},
                 {"source": "terrain-reference/ch", "version": "2026-08-20", "retrieved": "2026-08-20T12:00:00Z"}
             ],
             "layers": [
                 {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo-30", "terrain-reference/ch"], "served_format": 1, "served_revision": 4, "leaves": ["0037-0032"], "stale_leaves": []},
-                {"layer": "device/map", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "geofabrik-extracts", "land-polygons"], "served_format": 19, "served_revision": 3, "leaves": ["0037-0032"], "stale_leaves": []},
+                {"layer": "device/map", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "geofabrik-extracts", "geofabrik-poly", "land-polygons"], "served_format": 19, "served_revision": 3, "leaves": ["0037-0032"], "stale_leaves": []},
                 {"layer": "device/catalog", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/map"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []}
             ],
             "blocked": [],
@@ -33,6 +36,8 @@
             "kind": "r2",
             "at": "https://maps.openbikecomputer.com",
             "release": {"serving": {"id": "7f3a111111111111111111111111111111111111111111111111111111111111", "since": "2026-10-09T08:00:00Z"}, "rollback": {"id": "2c91555555555555555555555555555555555555555555555555555555555555", "since": "2026-10-09T08:00:00Z"}},
+            "made": {"machine": "hetzner-bake-1", "time": "2026-10-09T06:40:00Z"},
+            "serve": null,
             "lock": {"machine": "hetzner-bake-1", "run": "2026-10-12-093112", "review": "4c1e0d2a91b7", "phase": "router-ready", "heartbeat": "2026-10-12T10:14:04Z", "progress": [{"layer": "device/landmarks", "done": 1, "total": 1}, {"layer": "device/map", "done": 1284, "total": 1284}, {"layer": "planner/search", "done": 5, "total": 5}, {"layer": "planner/index", "done": 1, "total": 1}], "waiting": "the planner release is starting", "stale": false},
             "lock_error": null,
             "region": "dach",
@@ -41,6 +46,7 @@
                 {"source": "copernicus-glo-30", "version": "2021", "retrieved": "2026-09-02T10:00:00Z"},
                 {"source": "era5-land", "version": "2025", "retrieved": "2026-07-14T09:00:00Z"},
                 {"source": "geofabrik-extracts", "version": "2026-10-08", "retrieved": "2026-10-08T05:40:00Z"},
+                {"source": "geofabrik-poly", "version": "2026-10-08", "retrieved": "2026-10-08T05:40:00Z"},
                 {"source": "land-polygons", "version": "2026-09-28", "retrieved": "2026-10-01T07:12:00Z"},
                 {"source": "natural-earth", "version": "9f2c1a", "retrieved": "2026-06-03T08:00:00Z"},
                 {"source": "terrain-reference/ch", "version": "2026-08-20", "retrieved": "2026-08-20T12:00:00Z"},
@@ -48,7 +54,7 @@
             ],
             "layers": [
                 {"layer": "device/terrain", "state": "ok", "cause": null, "text": null, "shape": "tiled", "format": 1, "revision": 4, "readers": ["device"], "reads": ["copernicus-glo-30", "terrain-reference/ch"], "served_format": 1, "served_revision": 4, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": []},
-                {"layer": "device/map", "state": "stale", "cause": {"kind": "version", "field": "revision", "from": 2, "to": 3}, "text": "revision 2 → 3: improved output", "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "geofabrik-extracts", "land-polygons"], "served_format": 19, "served_revision": 2, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033"]},
+                {"layer": "device/map", "state": "stale", "cause": {"kind": "version", "field": "revision", "from": 2, "to": 3}, "text": "revision 2 → 3: improved output", "shape": "tiled", "format": 19, "revision": 3, "readers": ["device", "map builder"], "reads": ["device/terrain", "geofabrik-extracts", "geofabrik-poly", "land-polygons"], "served_format": 19, "served_revision": 2, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033"]},
                 {"layer": "device/landmarks", "state": "stale", "cause": {"kind": "source", "source": "wiki", "from": "2026-06-01", "to": "2026-09-01"}, "text": "wiki 2026-06-01 → 2026-09-01", "shape": "tiled", "format": 19, "revision": 1, "readers": ["device"], "reads": ["geofabrik-extracts", "wiki"], "served_format": 19, "served_revision": 1, "leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "stale_leaves": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"]},
                 {"layer": "device/catalog", "state": "stale", "cause": {"kind": "input", "name": "device/map"}, "text": "follows device/map", "shape": "whole", "format": 3, "revision": 1, "readers": ["map builder", "desktop app"], "reads": ["device/landmarks", "device/map"], "served_format": 3, "served_revision": 1, "leaves": [], "stale_leaves": []},
                 {"layer": "planner/routing", "state": "ok", "cause": null, "text": null, "shape": "whole", "format": 8, "revision": 2, "readers": ["router service", "iOS offline router"], "reads": ["geofabrik-extracts"], "served_format": 8, "served_revision": 2, "leaves": [], "stale_leaves": []},
