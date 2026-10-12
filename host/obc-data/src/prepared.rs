@@ -46,10 +46,11 @@ pub trait Prepared: Sync {
 
 /// What a prepare reads and makes, as its review shows it.
 pub struct Plan {
-    /// The sources that it reads: the fetches, and a source that a program of the producer reads.
-    pub inputs: Vec<Wanted>,
-    /// The files of the version, at most.
-    pub files: u64,
+    /// The sources that it reads: the fetches, and a source that a program of the producer reads,
+    /// each with the size of its files when the producer knows it, such as a file on this machine.
+    pub inputs: Vec<(Wanted, Option<u64>)>,
+    /// The files of the version, at most; `None` when the producer cannot tell before the run.
+    pub files: Option<u64>,
 }
 
 /// The producer of the source `id`.

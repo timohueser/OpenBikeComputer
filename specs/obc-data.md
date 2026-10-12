@@ -31,6 +31,7 @@ One `[[source]]` table per source.
 | `refresh` | integer or string | no, `"manual"` | The policy, which the settings of a target can replace: `1` through `65535` whole days, or `"manual"` |
 | `redistribute` | boolean | yes | The licence lets us give the upstream bytes to others. A target then copies the files of the source that its release reads, see [Target layout](#target-layout). The Wikimedia API captures `wikidata`, `wikipedia` and `commons` have no copy |
 | `credential` | table | no | `env`: the environment variables a fetch needs; or `file`: the file that holds them. `~/` is the home directory |
+| `publish_text` | boolean | no, `true` | Only for a `prepared` source of article text: `false` keeps the text out of its versions |
 | `extent` | array of 4 numbers | no | The box outside which the source has no data: west, south, east and north in degrees, west < east, south < north. A box meets it when the two overlap; boxes that only touch do not meet |
 | `areas` | array of strings | no | Geofabrik areas whose `geofabrik-poly` polygons hold the data inside `extent`. Needs `extent`. None means all of `extent` |
 
@@ -1382,13 +1383,13 @@ is compact JSON with the keys of each object in byte order:
    target, is not resumed: the run starts a new version, deletes the work of the old one, and the
    review names it in `abandoned`. So a run never writes a key of a complete version. A new version
    that the target has complete refuses.
-2. The review names the version, the inputs with the size of their files in the store (`unknown`
-   lists an input whose size the store does not know), the files of the version at most
-   (`files`), the files
+2. The review names the version, the inputs with the size of their files in the store or on
+   this machine (`unknown` lists an input whose size neither knows), the files of the version at
+   most (`files`, `null` when the producer cannot tell before the run), the files
    that earlier runs uploaded, the cost from the manifest of the newest version that the target
    lists, the bytes that go into the store and to the target, the check of this machine as in the
-   [review](#review) of an update, which also refuses an input whose `credential` is not on the
-   machine, and for each target that reads the versions of this target the
+   [review](#review) of an update, which also refuses when the source or an input has a
+   `credential` that is not on the machine, and for each target that reads the versions of this target the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
    first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
    version, the format, the revision, the scope and the source, version and params of each input.
@@ -1473,6 +1474,32 @@ The producer `terrain-reference`, format 1, makes the tiles of the reference arc
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and
   `OBC_REFERENCE_<KEY>_DATUM` the vertical datum that the metadata of the order states.
 - No run writes `reference/v1/`.
+
+#### `wiki`
+
+The producer `wiki`, format 1, makes the Wikimedia facts and the article text of the OSM subjects
+in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source):
+
+- It reads the dumps in the directory that `OBC_WIKI_DUMPS` names, its `credential`, in place: no
+  copy goes into the store. Of each kind it takes the newest day: `wikidata-<day>-all.json.bz2`,
+  `wikidatawiki-<day>-page.sql.gz` and `-redirect.sql.gz`, and for each content language
+  `<lang>wiki-<day>-langlinks.sql.gz` and the Wikimedia Enterprise HTML
+  `<lang>wiki-NS0-<day>-ENTERPRISE-HTML.json.tar.gz`, and `planet-<yymmdd>.osm.pbf`. A kind
+  without a file refuses. The review names each with `file=` and its size. The manifest names
+  `wikidata`, `wikipedia` and `osm-planet` at the days of their dumps, with the
+  [digest](#keys) of the SHA-256 of the files.
+- `python -m tools.wiki` runs the steps: `subjects` lists the OSM objects with a `wikidata` or
+  `wikipedia` tag, `import` reads the Wikidata dump twice, `candidates` gives the classes, the
+  subjects and the peaks, `articles` reads the language links and the HTML, and `shards` writes
+  the version. A step whose output the run has does not run again, and `tools.wiki` does not
+  repeat an import that finished with the same input.
+- The selection is the rule of the compilers: each subject of a landmark category, and each peak
+  with a resolved link. Only their articles are read.
+- A version of a region keeps the subjects whose box meets the box of the region; a region
+  without a box refuses.
+- The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
+  target to `shards`, which does not write them again.
+- With `publish_text = false`, the shards hold no article.
 
 ### Serve
 
@@ -3313,10 +3340,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "description": "The files that earlier runs of the version uploaded: this run does not upload them again."
         },
         "files": {
-          "description": "The files of the version, at most.",
+          "description": "The files of the version, at most; `null` when the producer cannot tell before the run.",
           "format": "uint64",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "format": {
           "format": "uint32",
@@ -4396,6 +4426,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           },
           "description": "For a prepared source, by target: its complete versions there, and the run that holds the\nlock of the source there. Empty for another source.",
           "type": "object"
+        },
+        "publish_text": {
+          "description": "A prepared source of article text publishes the text in its versions, unless this is\n`false`: then the text stays on the machine that prepares.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "redistribute": {
           "type": "boolean"

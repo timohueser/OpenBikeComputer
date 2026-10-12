@@ -24,9 +24,10 @@ WIDTH = max(4, len(str(((2 * ORIGIN) >> CELL) - 1)))
 MAX_CELLS = 16
 
 
-def extract(pbf: Path, out: Path, work: Path):
+def extract(pbf: Path, out: Path, work: Path, bbox: list[float] | None = None):
     """Osmium lists the tagged objects. `osmium export` assembles ways and areas for their boxes;
-    an object that it gives no geometry, such as a route relation, has no box."""
+    an object that it gives no geometry, such as a route relation, has no box. With `bbox`, only
+    the subjects whose box meets it are kept."""
     binary, _ = probe()
     work.mkdir(parents=True, exist_ok=True)
     filtered = work / "subjects.osm.pbf"
@@ -57,8 +58,14 @@ def extract(pbf: Path, out: Path, work: Path):
                 subject["peak"] = True
             if fields[0] in boxes:
                 subject["box"] = boxes[fields[0]]
+            if bbox and not meets(subject.get("box"), bbox):
+                continue
             output.write(json.dumps(subject, ensure_ascii=False, separators=(",", ":")) + "\n")
     partial.replace(out)
+
+
+def meets(box: list[float] | None, bbox: list[float]) -> bool:
+    return box is not None and box[0] <= bbox[2] and bbox[0] <= box[2] and box[1] <= bbox[3] and bbox[1] <= box[3]
 
 
 def stream(binary, *args):
@@ -97,7 +104,8 @@ def load(db, work: Path, path: Path):
 
     def record(line: bytes):
         value = json.loads(line)
-        db.executemany("INSERT OR REPLACE INTO subjects VALUES(?,?,?,?)",
-                       [(value["osm"], cell, value.get("wikidata"), value.get("wikipedia")) for cell in cells(value.get("box")) or [""]])
+        db.executemany("INSERT OR REPLACE INTO subjects VALUES(?,?,?,?,?)",
+                       [(value["osm"], cell, value.get("wikidata"), value.get("wikipedia"), int(value.get("peak", False)))
+                        for cell in cells(value.get("box")) or [""]])
 
     catalog.scan(db, work, "subjects", dumps.sha(path), lines(), record)

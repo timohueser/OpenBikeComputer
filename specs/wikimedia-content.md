@@ -175,6 +175,22 @@ Routing data and downloaded iOS routing maps contain no image payload.
 Offline planner detail retains useful text and explains an unavailable photo.
 Both projections derive from the same selected inputs and policy.
 
+## The `wiki` source
+
+The prepared source `wiki` ([obc-data](obc-data.md#wiki)) holds the compact facts of every OSM
+subject: an object with a `wikidata` or `wikipedia` tag. Its version has these files:
+
+| Path | Holds |
+| --- | --- |
+| `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
+| `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells |
+| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, and the unresolved work of each kind |
+
+A shard is a tar under zstd. Its members are `content/<kind>/<sha256>.json`, as the shared
+content of a step names them. A fact that two shards need is in both, with the same bytes. A
+subject has its entity, its links, the locales of the bounded P131 traversal and the articles that
+the compilers read. A fact that the version lacks is no content.
+
 ## Photo fallback and reachability
 
 Photo order starts with explicit P18, then identity-checked Wikipedia lead images.
