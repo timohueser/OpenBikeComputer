@@ -344,7 +344,7 @@ pub struct Requested {
 
 /// The space that fetches and builds leave free on a disk. Chosen, not measured: room for the
 /// system and the other programs of a laptop.
-const RESERVE: u64 = 4 << 30;
+pub const RESERVE: u64 = 4 << 30;
 
 /// Fail when the disk of `path` cannot take `needed` more bytes and keep [`RESERVE`] free.
 pub fn check_free(path: &Path, needed: u64) -> Result<(), String> {

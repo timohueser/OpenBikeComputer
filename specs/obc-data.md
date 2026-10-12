@@ -614,6 +614,7 @@ pick can reuse prior verification.
 
 An update and a rollback own one run each. It starts after the arguments are checked, and
 finishes after the switch, and for an update after the collection that follows it.
+`update --dry-run` creates none.
 A read-only command creates none. A failure after the run starts returns its id in `error.run`.
 
 A run fetches the fetches of a plan, one after another, with the fetchers of [Fetch](#fetch).
@@ -1019,22 +1020,56 @@ only a `dir` target. One run does each phase in this order:
 
 1. Prepare. It reads the serving release, applies the flags to its settings, and refuses a target
    without a region. It finds the fetches of the step lists, judges which are due (see
-   [Versions](#versions)), and lists the steps, with the fetches that the step lists need.
-2. Build. It judges each layer against the serving release, as
-   [State of a layer](#state-of-a-layer) says, and bakes one group per stale layer. Each other
-   step keeps its output of the serving release by reference: a step that reads it reads the files
-   of the release, never another layer of the same key in the store. `--only LAYER,…` bakes the
-   steps of the named layers again, also when they are not stale, with the stale steps that they
-   read at any depth and the steps that the release lacks. A step that reads one of them bakes when
-   its key changes. A stale step that the named layers do not need keeps its output.
-3. Verify. The new release has the output of each step, the pointer and the named files of each
+   [Versions](#versions)), and lists the steps, with the fetches that the step lists need. It
+   judges each layer against the serving release, as [State of a layer](#state-of-a-layer) says:
+   one group per stale layer bakes. Each other step keeps its output of the serving release by
+   reference: a step that reads it reads the files of the release, never another layer of the same
+   key in the store. `--only LAYER,…` bakes the steps of the named layers again, also when they are
+   not stale, with the stale steps that they read at any depth and the steps that the release
+   lacks. A step that reads one of them bakes when its key changes. A stale step that the named
+   layers do not need keeps its output.
+2. Review, as [Review](#review) says. A refused review changes nothing.
+3. Build. It fetches and bakes the groups.
+4. Verify. The new release has the output of each step, the pointer and the named files of each
    product. When it serves as the serving release, with the same settings, outputs, pointers and
    named files, the update changes nothing but a pointer that drifts. Else each product checks it,
    and a failed check changes nothing.
-4. Upload and switch, as [Publish and switch](#publish-and-switch) says.
-5. Collect, as [Collection](#collection) says, when it switched to another release.
+5. Upload and switch, as [Publish and switch](#publish-and-switch) says.
+6. Collect, as [Collection](#collection) says, when it switched to another release.
 
 An update that stops keeps what it baked in the store, and the next update reuses it.
+
+### Review
+
+The review of an update says what it does before it changes a target. `--dry-run` writes the
+review and creates no run. It fetches only what the step lists need to know their versions.
+
+- `layers`: each layer that bakes or goes, with its cause (`stale` with the cause of
+  [State of a layer](#state-of-a-layer), `named` by `--only`, or `off`), the steps that bake, the
+  grid leaves of a tiled layer, the steps of the release that no step makes now, the readers and
+  a format change. A layer that only other layers read is not listed.
+- `sources`: each fetch that a baked step reads at another version than the serving release.
+- `kept`, `fetches` and `bakes`: the outputs that the release keeps by reference, and what this
+  machine fetches and bakes. A step whose output is in the store already does not bake.
+- `cost`: each bake has the estimate of [Plan](#plan), else the `cost` of the step in the serving
+  release. The bakes without either are listed.
+- `machine`: the memory of the machine and the free bytes of the disk of the store. A bake whose
+  estimated peak is more than the memory, or fetches and bakes that leave less than 4 GiB free on
+  the disk, refuse the update.
+- `after`: the release that becomes the rollback, and the rollback of now, which the collection
+  drops, with the keys that the serving release does not name.
+- `argv`: the command that starts the update of this review.
+
+The id is the first 12 hex digits of the SHA-256 of a JSON object: the tag of `release.json`
+(`null` while the target serves nothing), the settings, `layers`, the steps that bake, and the
+source, version and params of each snapshot that they read. It holds no cost, no time, and nothing
+of the store of the machine, so two machines that read the same target give the same id.
+`--expect ID` starts the update only when its review has this id.
+
+A format change is a step whose output in the serving release has another `format` than its layer
+now. Its readers need new data: old readers keep what they have and get no new data until they
+update. An update with a format change starts only with `--accept-format-change`. A new layer is
+no format change.
 
 ### Rollback
 
@@ -1080,7 +1115,7 @@ command: `obc data update` writes only a `dir` target.
 | Command | Output |
 | --- | --- |
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
-| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
+| `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
 | `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
 | `obc data sources [--check-now] [--json]` | Every source with licence and R2 copy, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
@@ -1169,7 +1204,7 @@ sets the exit status. The message tells what failed, and the fix tells what to d
 | 0 | The command succeeded |
 | 1 | A check found problems, or the command failed: a file is not valid; a fetch, R2, a run or the store failed; or the person did not agree |
 | 2 | Usage: an argument is not valid, or a command that deletes did not get consent |
-| 4 | Blocked: a credential is missing, a layer cannot be planned, or the target cannot take the command |
+| 4 | Blocked: a credential is missing, a layer cannot be planned, the target cannot take the command, or this machine cannot do the work |
 | 5 | Verify failed: a release failed its check, or the bytes in a target are not the bytes that the command wrote |
 
 A command that deletes, `clean --apply` and `r2 delete`, shows its plan and asks in a terminal.
@@ -1186,7 +1221,8 @@ another command must run first. | Correct the command. `obc data --help` lists t
 | `invalid_data` | 1 | A file under `data/` is not valid. | Correct the file that the message names. `specs/obc-data.md` gives its format. |
 | `fetch_failed` | 1 | A fetch or an upstream check failed. | Run the command again. A download continues where it stopped. |
 | `blocked` | 4 | A credential is missing: a fetch failed without the credential of its source, or the R2
-variables are not set. Or a layer cannot be planned, or the target cannot take the command. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
+variables are not set. Or a layer cannot be planned, the target cannot take the command, or
+this machine cannot do the work. | Set the credential that the message or `obc data sources` names, or correct what the message says a product needs, then run again. |
 | `r2_failed` | 1 | R2 or rclone failed, or refused a key. | Check the key, the `OBC_R2_*` variables and that rclone is on PATH, then run again. |
 | `verify_failed` | 5 | A release failed its check before a target serves it, or after an upload the object in the
 bucket is not the file. | Upload the file again. |
@@ -1203,6 +1239,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | --- | --- |
 | `obc data` | `Overview` |
 | `update` | `Updated` |
+| `update --dry-run` | `Review` |
 | `rollback` | `RolledBack` |
 | `sources` | `Sources` |
 | `fetch` | `Fetched` |
@@ -1219,6 +1256,33 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 ```json
 {
   "$defs": {
+    "AfterUpdate": {
+      "properties": {
+        "collects": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Collects"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The rollback of now, which the collection after the switch drops."
+        },
+        "rollback": {
+          "description": "The release that becomes the rollback; `null` when the update changes no layer or the target\nserves nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rollback",
+        "collects"
+      ],
+      "type": "object"
+    },
     "Areas": {
       "description": "What `areas` writes.",
       "properties": {
@@ -1448,7 +1512,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         {
           "const": "blocked",
-          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or a layer cannot be planned, or the target cannot take the command.",
+          "description": "A credential is missing: a fetch failed without the credential of its source, or the R2\nvariables are not set. Or a layer cannot be planned, the target cannot take the command, or\nthis machine cannot do the work.",
           "type": "string"
         },
         {
@@ -1515,6 +1579,30 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "keys",
         "bytes",
         "stopped"
+      ],
+      "type": "object"
+    },
+    "Collects": {
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keys": {
+          "description": "The keys of the release that the serving release does not name, and their size: what the\ncollection deletes at most.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "release": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "release",
+        "keys",
+        "bytes"
       ],
       "type": "object"
     },
@@ -1665,6 +1753,35 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "code",
         "message",
         "fix"
+      ],
+      "type": "object"
+    },
+    "Estimate": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peak_rss_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wall_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wall_ms",
+        "bytes_out",
+        "peak_rss_bytes"
       ],
       "type": "object"
     },
@@ -2095,6 +2212,25 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "FormatChange": {
+      "properties": {
+        "from": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
     "GcPlan": {
       "description": "What `clean` deletes from the store, or deleted, and what stays.",
       "properties": {
@@ -2284,6 +2420,70 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         }
       ]
     },
+    "LayerChange": {
+      "description": "A layer that the update changes.",
+      "properties": {
+        "cause": {
+          "$ref": "#/$defs/PlanCause"
+        },
+        "drops": {
+          "description": "The steps of the serving release that no step makes now.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormatChange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The format of the serving release and of the steps, when it changes. Old readers keep what\nthey have and get no new data until they update."
+        },
+        "layer": {
+          "type": "string"
+        },
+        "leaves": {
+          "description": "The grid leaves of a tiled layer whose steps bake, as `<i>-<j>`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "readers": {
+          "description": "The programs that read the layer.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "steps": {
+          "description": "The steps that bake.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer",
+        "cause",
+        "text",
+        "steps",
+        "leaves",
+        "drops",
+        "readers",
+        "format"
+      ],
+      "type": "object"
+    },
     "LayerFile": {
       "additionalProperties": false,
       "properties": {
@@ -2383,6 +2583,42 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "cores",
         "memory_bytes",
         "store_free_bytes"
+      ],
+      "type": "object"
+    },
+    "MachineCheck": {
+      "description": "This machine against the cost.",
+      "properties": {
+        "memory_bytes": {
+          "description": "`null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "refusals": {
+          "description": "Why this machine cannot do the update; empty when it can, or cannot tell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "store_free_bytes": {
+          "description": "The free bytes of the disk of the store; `null` where the system does not tell.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "memory_bytes",
+        "store_free_bytes",
+        "refusals"
       ],
       "type": "object"
     },
@@ -2507,6 +2743,149 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "collect"
       ],
       "type": "string"
+    },
+    "PlanBuild": {
+      "additionalProperties": false,
+      "properties": {
+        "again": {
+          "description": "Whether the step builds also when the store has the layer of its key.",
+          "type": "boolean"
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Estimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "description": "`None` until the layers and snapshots that it reads are in the store.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recipe": {
+          "description": "The key of the step without the digests of its inputs.",
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "recipe",
+        "key",
+        "estimate",
+        "again"
+      ],
+      "type": "object"
+    },
+    "PlanCause": {
+      "description": "Why a group changes a release.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The layer is stale.",
+          "properties": {
+            "cause": {
+              "$ref": "#/$defs/Cause"
+            },
+            "kind": {
+              "const": "stale",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "cause"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`--only` names the layer: its steps build again.",
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The release has the layer, and no step makes it now.",
+          "properties": {
+            "kind": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PlanFetch": {
+      "additionalProperties": false,
+      "properties": {
+        "bytes": {
+          "description": "The size of these files in a snapshot record of the source, or `None`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "files": {
+          "description": "The names of the files that the store lacks, or none when the store cannot name them: then\nthe fetch gets every file that it gives.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "version",
+        "params",
+        "files",
+        "bytes"
+      ],
+      "type": "object"
     },
     "Publication": {
       "description": "A change of a target.",
@@ -2786,6 +3165,133 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "Review": {
+      "description": "The review of an update.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/AfterUpdate"
+        },
+        "argv": {
+          "description": "The command that starts the update of this review.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bakes": {
+          "description": "The steps that this machine bakes. A step whose output is in the store already is not here.",
+          "items": {
+            "$ref": "#/$defs/PlanBuild"
+          },
+          "type": "array"
+        },
+        "base": {
+          "description": "The release that the target serves; `null` while it serves nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cost": {
+          "$ref": "#/$defs/ReviewCost"
+        },
+        "fetches": {
+          "description": "What this machine fetches into its store.",
+          "items": {
+            "$ref": "#/$defs/PlanFetch"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "The first 12 hex digits of the SHA-256 of the decisions: the tag of `release.json`, the\nsettings, `layers`, every step that bakes and the source version that each of them reads.",
+          "type": "string"
+        },
+        "kept": {
+          "description": "The number of outputs that the release keeps by reference.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "layers": {
+          "description": "Each layer that the update bakes or drops, in dependency order. A layer that only other\nlayers read is not listed: the layers that read it are.",
+          "items": {
+            "$ref": "#/$defs/LayerChange"
+          },
+          "type": "array"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineCheck"
+        },
+        "settings": {
+          "$ref": "#/$defs/Settings"
+        },
+        "sources": {
+          "description": "Each fetch that a baked step reads at another version than the serving release.",
+          "items": {
+            "$ref": "#/$defs/SourceMove"
+          },
+          "type": "array"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "base",
+        "settings",
+        "layers",
+        "sources",
+        "kept",
+        "fetches",
+        "bakes",
+        "cost",
+        "machine",
+        "after",
+        "argv"
+      ],
+      "type": "object"
+    },
+    "ReviewCost": {
+      "properties": {
+        "peak_rss_bytes": {
+          "description": "The highest estimated peak of one bake.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "store_bytes": {
+          "description": "What the fetches and the bakes write into the store; the upload is the client files of it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unknown": {
+          "description": "The bakes without an estimate: the store has no receipt of the step, and the serving release\nno cost.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wall_ms": {
+          "description": "The estimated times of the bakes, added as if one ran after another.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wall_ms",
+        "peak_rss_bytes",
+        "store_bytes",
+        "unknown"
+      ],
+      "type": "object"
+    },
     "Role": {
       "additionalProperties": false,
       "description": "A release and the time it took its role, `YYYY-MM-DDTHH:MM:SSZ`.",
@@ -2985,6 +3491,83 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "serving",
         "rollback"
+      ],
+      "type": "object"
+    },
+    "Settings": {
+      "additionalProperties": false,
+      "properties": {
+        "definitions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Full TOML definitions of the region and its union members, keyed by region id.",
+          "type": "object"
+        },
+        "layers": {
+          "description": "The optional layers that are on, sorted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refresh": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Refresh"
+          },
+          "description": "Source id to the policy that replaces the policy of `data/sources.toml`.",
+          "type": "object"
+        },
+        "region": {
+          "description": "The id of the region; empty until an update names one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region",
+        "definitions",
+        "layers",
+        "refresh"
+      ],
+      "type": "object"
+    },
+    "SourceMove": {
+      "properties": {
+        "from": {
+          "description": "`null` when the serving release does not read the fetch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "params": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "params",
+        "from",
+        "to"
       ],
       "type": "object"
     },
@@ -3368,6 +3951,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "review": {
+          "description": "The id of the review that the update did.",
+          "type": "string"
+        },
         "rollback": {
           "description": "The release that it served before; `null` when it served nothing or the update changed\nnothing.",
           "type": [
@@ -3389,6 +3976,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "run",
         "target",
+        "review",
         "serving",
         "rollback",
         "baked",

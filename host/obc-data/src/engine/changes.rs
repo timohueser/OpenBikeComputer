@@ -6,15 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::order;
 use super::plan::{build, build_of, needs, sized, walk, Build, Cause, Group, Kept, Plan};
-use super::state::{judge, Newer};
+use super::state::{judge, LayerState, Newer};
 use super::Step;
 use crate::release::Output;
 use crate::store::Store;
 
-/// The work of an update, and the outputs of the release that it keeps.
+/// The work of an update, the outputs of the release that it keeps, and the state of each operator
+/// layer as [`super::state::state`] gives it.
 pub struct Update {
     pub plan: Plan,
     pub kept: Kept,
+    pub layers: Vec<LayerState>,
 }
 
 /// The update of `release` to `steps`. Without `only`, it bakes each stale step. With `only`, it
@@ -32,6 +34,7 @@ pub fn update(
         return Err(format!("no step makes the layer `{name}`"));
     }
     let judged = judge(store, steps, release, newer)?;
+    let layers = judged.iter().filter(|layer| !layer.internal).map(|layer| layer.state()).collect();
     let stale: BTreeSet<&str> = judged
         .iter()
         .flat_map(|layer| &layer.steps)
@@ -102,7 +105,7 @@ pub fn update(
         group.layers = group.builds.clone();
         groups.push(group);
     }
-    Ok(Update { plan: sized(store, groups)?, kept })
+    Ok(Update { plan: sized(store, groups)?, kept, layers })
 }
 
 #[cfg(test)]

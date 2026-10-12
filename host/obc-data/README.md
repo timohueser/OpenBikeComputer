@@ -40,6 +40,8 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data` | Show each target and what needs attention |
 | `obc data update local --region ID` | Name the region of a target, bake and switch |
 | `obc data update local` | Bake what is stale, keep the rest, switch |
+| `obc data update local --dry-run` | Review the update: what bakes and why, the cost, and its id |
+| `obc data update local --expect ID` | Start the update only when its review still has this id |
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |

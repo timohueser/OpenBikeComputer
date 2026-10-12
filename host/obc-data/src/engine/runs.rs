@@ -202,12 +202,6 @@ impl Run {
         if limits.jobs == 0 {
             return Err("the limit of jobs is 0; it must be 1 or more".into());
         }
-        let estimated = plan
-            .builds()
-            .filter_map(|build| build.estimate)
-            .fold(0u64, |total, estimate| total.saturating_add(estimate.bytes_out));
-        let estimated = plan.fetches().iter().filter_map(|fetch| fetch.bytes).fold(estimated, u64::saturating_add);
-        crate::store::check_free(store.root(), estimated)?;
         let ordered = order(steps)?;
         if let Some(build) = plan.builds().find(|build| !ordered.iter().any(|step| step.name == build.step)) {
             return Err(format!("the plan builds `{}`, which no step makes", build.step));
