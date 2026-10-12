@@ -145,6 +145,22 @@ test('grid archives share download objects and assets stream from their pointers
   await Promise.all(pending); delete globalThis.caches;
 });
 
+// `obc data update` keeps the serving and the rollback release: their files name the same objects.
+test('the serving and the rollback release answer from one object pool, and a collected release is missing', async () => {
+  const [serving, rollback, collected] = ['2', '3', '4'].map(c => c.repeat(64));
+  const tilejson = Buffer.from('{"tilejson":"3.0.0"}'), hash = createHash('sha256').update(tilejson).digest('hex');
+  const objects = new Map([...[serving, rollback].flatMap(id => [...grid(`releases/${id}`, { basemap: archive() }),
+    [`releases/${id}/public/maps/basemap.json.json`, pointer(hash, tilejson)]]), [`objects/${hash}`, tilejson]]);
+  assert.equal([...objects.keys()].filter(key => key.startsWith('objects/')).length, 2);
+  const env = { BUCKET: bucket(objects) };
+  const get = path => worker.fetch(new Request(`https://tiles.example/releases/${path}`), env, {}, null);
+  for (const id of [serving, rollback]) {
+    assert.deepEqual((await (await get(`${id}/basemap.json`)).json()).tiles, [`https://tiles.example/releases/${id}/basemap/{z}/{x}/{y}`]);
+    assert.deepEqual(new Uint8Array(await (await get(`${id}/basemap/0/0/0.mvt`)).arrayBuffer()), new Uint8Array([26, 0]));
+  }
+  for (const path of [`${collected}/basemap.json`, `${collected}/basemap/0/0/0.mvt`]) assert.equal((await get(path)).status, 404);
+});
+
 test('gzip tile bytes and runtime encoding survive the edge cache for every tile type', async () => {
   const id = 'd'.repeat(64), prefix = `releases/${id}`;
   // Node ignores `encodeBody`; the Workers runtime compresses again without 'manual'.
