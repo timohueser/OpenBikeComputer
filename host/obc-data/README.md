@@ -58,9 +58,9 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 
 An update that stops keeps what it baked: run it again. The previous release stays as the
 rollback of the target. A target takes one update or rollback at a time: the run holds
-`lock.json` of the target, and another run refuses to start. When a machine stops without
-freeing the lock, `obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a
-heartbeat.
+`lock.json` of the target, and another run refuses to start. A run that fails, or stops on Ctrl-C,
+frees the lock. A crash or an out-of-memory kill keeps it: `obc data unlock TARGET --from MACHINE`
+frees it after 10 minutes without a heartbeat.
 
 The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
 the page.

@@ -199,6 +199,9 @@ impl Run {
         if self.stop.load(Ordering::Relaxed) {
             return Err("the run stopped: another run took the lock of its target".into());
         }
+        if SIGNALLED.load(Ordering::Relaxed) {
+            return Err("the run stopped on a signal; it keeps what it baked".into());
+        }
         crate::store::check_free(store.root(), 0)
     }
 
@@ -433,6 +436,33 @@ impl Run {
         self.record(&Event::Finished { ok: error.is_none(), error: error.map(str::to_string), wall_ms })?;
         self.sync()
     }
+}
+
+/// Set by SIGINT or SIGTERM: the run of this process stops before its next fetch or step.
+static SIGNALLED: AtomicBool = AtomicBool::new(false);
+
+/// Stop the run of this process on SIGINT or SIGTERM, so that it ends as a failed run and frees
+/// what it holds. A second signal ends the process at once.
+pub fn stop_on_signals() {
+    #[cfg(unix)]
+    // SAFETY: the handler only stores atomics, and calls signal and raise, which are
+    // async-signal-safe.
+    unsafe {
+        libc::signal(libc::SIGINT, signalled as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, signalled as *const () as libc::sighandler_t);
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn signalled(signal: libc::c_int) {
+    if SIGNALLED.swap(true, Ordering::Relaxed) {
+        // SAFETY: see `stop_on_signals`.
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+            libc::raise(signal);
+        }
+    }
+    crate::fetch::http::stop();
 }
 
 fn panicked(payload: Box<dyn std::any::Any + Send>) -> String {

@@ -1060,11 +1060,18 @@ it.
   id of the target that the lock keeps.
 - When a write fails its condition, another run took the lock. Then the run stops and changes
   nothing more. The write at the start of the phase `switch` checks this immediately before the
-  switch.
-- At its end, the run frees the lock with a conditional write of `{"state": "free"}`.
-- `obc data unlock TARGET --from MACHINE` frees the lock of a run of MACHINE whose heartbeat is
-  10 minutes old or older (`STALE` in `lock.rs`): ten heartbeats that did not come. It asks
-  first. When that run continues, its next write fails, and it does not switch.
+  switch. After the switch, a lost lock stops only the collection.
+- At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
+  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch or step, so it frees
+  the lock too; a second signal ends the process at once.
+- A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
+  the lock until `unlock` frees it. `obc data unlock TARGET --from MACHINE` frees the lock of a
+  run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
+  heartbeats that did not come. It asks first. When that run continues, its next write fails,
+  and it does not switch.
+- The heartbeat is the time of the clock of the holder. A `dir` target is on a local file system,
+  so the holder and `unlock` read the clock of one machine.
+- `lock.json` holds no progress of the run.
 
 ### Update
 
@@ -1240,9 +1247,10 @@ touch it. Download bundles name the origin of the machine on its network when se
 ### Overview
 
 `obc data` gives the machine that runs it and, for each target, the release that it serves and its
-rollback, the run that holds its lock, the region, the state of each layer against the steps of now,
-the blocked steps, the pointers that drift, an error that stopped the judgement, and the command to
-run next. It fetches only small metadata, and checks upstream with the checks of the last hour. A
+rollback, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
+each layer against the steps of now, the blocked steps, the pointers that drift, an error that
+stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
+the next step is to wait for that run. It fetches only small metadata, and checks upstream with the checks of the last hour. A
 target that serves nothing has the next command `obc data update TARGET --region ID`. An R2 target
 has no next command: `obc data update` writes only a `dir` target.
 
@@ -4342,8 +4350,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           ],
           "description": "The run that holds the lock of the target; `null` while it is free."
         },
+        "lock_error": {
+          "description": "Why `lock.json` of the target cannot be read; `null` when it can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "next": {
-          "description": "The command to run next; `null` when the target serves its settings as the steps make them\nnow, or when no command of this `obc data` writes the target: an R2 bucket.",
+          "description": "The command to run next, or the run to wait for while it holds the lock; `null` when the\ntarget serves its settings as the steps make them now, or when no command of this `obc data`\nwrites the target: an R2 bucket.",
           "type": [
             "string",
             "null"
@@ -4377,6 +4392,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "at",
         "release",
         "lock",
+        "lock_error",
         "region",
         "layers",
         "blocked",

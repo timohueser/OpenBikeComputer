@@ -196,25 +196,36 @@ pub(super) fn update(
 ) -> Result<Updated, Error> {
     locked(target, run, |run, held| {
         let prepared = prepare(root, store, http, target, products, edit, &asked.only, machine, Some(run))?;
-        held.beat(Some(&prepared.review.id), None, crate::date::now())?;
+        if !held.beat(Some(&prepared.review.id), None, crate::date::now())? {
+            return Err(lost(target.0));
+        }
         review::check(&prepared.review, asked.expect.as_deref(), asked.accept_format_change)?;
         apply(root, store, http, target, products, prepared, (run, held))
     })
 }
 
 /// Do `work` while the run holds the lock of `target`: a thread writes the heartbeat, and the lock
-/// is free again at the end. When another run takes the lock, the run stops.
+/// is free again at the end. When another run takes the lock, the run stops. SIGINT and SIGTERM
+/// stop the run, so it frees the lock.
 pub(super) fn locked<T>(
     (name, target): (&str, &Target),
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    let held = Held::take(target, run.id(), crate::date::now()).map_err(|e| {
-        Code::Blocked.error(format!("target `{name}`: {e}")).fix(format!(
-            "Wait for that run to end. When its machine stopped it, free the lock: `obc data unlock {name} --from \
-             MACHINE`."
-        ))
+    let held = Held::take(target, run.id(), crate::date::now()).map_err(|refused| match refused {
+        lock::Refused::Held(holder) => {
+            Code::Blocked.error(format!("target `{name}`: {}", lock::held_by(&holder))).fix(format!(
+                "Wait for that run to end. When `{0}` stopped it, free the lock after {1}, 10 minutes after its \
+                 last heartbeat: `obc data unlock {name} --from {0}`.",
+                holder.machine,
+                crate::date::timestamp(lock::stale_at(&holder))
+            ))
+        }
+        lock::Refused::Failed(e) => Code::Failed
+            .error(format!("target `{name}`: {e}"))
+            .fix(format!("Correct {} of the target, or move it aside: a target without it is free.", lock::LOCK)),
     })?;
+    crate::engine::runs::stop_on_signals();
     let (stop, (done, wait)) = (run.stopper(), mpsc::channel::<()>());
     let result = std::thread::scope(|scope| {
         let held = &held;
@@ -232,25 +243,36 @@ pub(super) fn locked<T>(
         drop(done);
         result
     });
-    let released = held.release();
-    let result = result?;
-    released.map_err(|e| {
-        Code::Failed
-            .error(format!("the lock of `{name}` stays taken: {e}"))
-            .fix(format!("Free it: `obc data unlock {name} --from {}`.", crate::machine()))
-    })?;
-    Ok(result)
+    let Err(e) = held.release() else { return result };
+    let stays = format!("the lock of `{name}` stays taken: {e}");
+    let fix = format!(
+        "Its heartbeat stopped. After {} minutes, free it: `obc data unlock {name} --from {}`.",
+        lock::STALE / 60,
+        crate::machine()
+    );
+    Err(match result {
+        Ok(_) => Code::Failed.error(stays).fix(fix),
+        Err(mut error) => {
+            (error.message, error.fix) = (format!("{}; {stays}", error.message), format!("{} {fix}", error.fix));
+            error
+        }
+    })
 }
 
 /// Enter `phase`, after a check that the run still holds the lock.
 pub(super) fn enter((run, held): (&mut Run, &Held), name: &str, phase: Phase) -> Result<(), Error> {
     run.record(&Event::Phase { phase })?;
-    if held.beat(None, Some(phase), crate::date::now())? {
-        return Ok(());
+    match held.beat(None, Some(phase), crate::date::now())? {
+        true => Ok(()),
+        false => Err(lost(name)),
     }
-    Err(Code::Failed
+}
+
+/// The error of a run whose lock another run took.
+fn lost(name: &str) -> Error {
+    Code::Failed
         .error(format!("another run took the lock of `{name}`; this run stopped before it changed more"))
-        .fix(format!("Run `obc data` to see what `{name}` serves now.")))
+        .fix(format!("Run `obc data` to see what `{name}` serves now."))
 }
 
 /// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
@@ -530,9 +552,12 @@ fn apply(
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
     run.sync()?;
-    enter((run, held), name, Phase::Collect)?;
+    // The switch is done: a lock that is lost now stops only the collection.
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
-    updated.collection = Some(collection::collect(target, since, crate::date::now()));
+    updated.collection = Some(match enter((run, held), name, Phase::Collect) {
+        Ok(()) => collection::collect(target, since, crate::date::now()),
+        Err(error) => Collected { stopped: Some(error.message), ..Collected::default() },
+    });
     updated.rollback = base.map(|(base, _)| base.serving.id);
     updated.serving = id;
     Ok(updated)
@@ -898,10 +923,21 @@ pub(super) mod tests {
         std::fs::write(request.output.join("gate.txt"), "open").map_err(|e| e.to_string())
     }
 
-    /// Wait until `path` exists.
+    /// Wait until `path` exists, for 30 seconds at most.
     fn arrives(path: &Path) {
+        let start = std::time::Instant::now();
         while !path.exists() {
+            assert!(start.elapsed().as_secs() < 30, "{} did not come", path.display());
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Writes the file `open` of a gate when dropped, so a test that fails does not wait.
+    struct Opens(std::path::PathBuf);
+
+    impl Drop for Opens {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, "");
         }
     }
 
@@ -1096,7 +1132,7 @@ pub(super) mod tests {
         target.list().unwrap().into_iter().map(|listed| listed.key).collect()
     }
 
-    /// A collection after the grace: `now` is later than the time of every file.
+    /// A collection after the grace of a release that stopped serving now.
     fn late(target: &Target) -> Collected {
         let now = crate::date::now();
         collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60)
@@ -1424,6 +1460,7 @@ pub(super) mod tests {
         let gate = fixture.root().join("gate");
         std::fs::create_dir_all(&gate).unwrap();
         std::thread::scope(|scope| {
+            let _opens = Opens(gate.join("open"));
             let first = scope.spawn(|| update(&fixture, &target, |_| Ok(())));
             arrives(&gate.join("waiting"));
             let second = update(&fixture, &target, |_| Ok(())).unwrap_err();
@@ -1444,11 +1481,11 @@ pub(super) mod tests {
         let gate = fixture.root().join("gate");
         std::fs::create_dir_all(&gate).unwrap();
         std::thread::scope(|scope| {
+            let _opens = Opens(gate.join("open"));
             let first = scope.spawn(|| update(&fixture, &target, |_| Ok(())));
             arrives(&gate.join("waiting"));
-            let machine = crate::machine();
-            assert!(lock::stale(&target, &machine, crate::date::now()).unwrap_err().contains("younger than 10"));
-            let (_, tag) = lock::stale(&target, &machine, crate::date::now() + lock::STALE).unwrap();
+            let Some((lock::LockFile::Held(holder), tag)) = lock::read(&target).unwrap() else { panic!("free") };
+            assert!(lock::stale_at(&holder) > crate::date::now(), "a young heartbeat");
             lock::free(&target, tag).unwrap();
             let taken = lock::Held::take(&target, "another", crate::date::now()).unwrap();
             write(&gate.join("open"), "");

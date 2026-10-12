@@ -1,7 +1,8 @@
 //! `lock.json` of a target: one run at a time changes a target. A run takes the lock with a
 //! conditional write, writes a heartbeat each minute, checks that it still holds the lock just
-//! before its switch, and frees the lock at its end. A write whose condition fails means that
-//! another run took the lock: this run stops and changes nothing more.
+//! before its switch, and frees the lock at its end, also when it fails, stops or panics. A write
+//! whose condition fails means that another run took the lock: this run stops and changes nothing
+//! more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -44,11 +45,20 @@ pub struct Holder {
     pub heartbeat: String,
 }
 
-/// The lock of a target that this run holds.
+/// The lock of a target that this run holds. Dropped, it is free again.
 pub struct Held {
     target: Target,
     state: Mutex<(Holder, Tag)>,
     lost: AtomicBool,
+    released: bool,
+}
+
+/// Why a run did not take the lock.
+#[derive(Debug)]
+pub enum Refused {
+    /// Another run holds it.
+    Held(Holder),
+    Failed(String),
 }
 
 /// The lock of `target` and its tag; `None` when the target has no lock.
@@ -73,12 +83,12 @@ fn bytes(lock: &LockFile) -> Vec<u8> {
 }
 
 impl Held {
-    /// Take the lock of `target` for the run `run` at the time `now`. An error names the holder.
-    pub fn take(target: &Target, run: &str, now: u64) -> Result<Held, String> {
-        let condition = match read(target)? {
+    /// Take the lock of `target` for the run `run` at the time `now`.
+    pub fn take(target: &Target, run: &str, now: u64) -> Result<Held, Refused> {
+        let condition = match read(target).map_err(Refused::Failed)? {
             None => Condition::Absent,
             Some((LockFile::Free, tag)) => Condition::Match(tag),
-            Some((LockFile::Held(holder), _)) => return Err(held_by(&holder)),
+            Some((LockFile::Held(holder), _)) => return Err(Refused::Held(holder)),
         };
         let holder = Holder {
             machine: crate::machine(),
@@ -87,11 +97,17 @@ impl Held {
             phase: Phase::Prepare,
             heartbeat: crate::date::timestamp(now),
         };
-        match target.put(LOCK, &bytes(&LockFile::Held(holder.clone())), &condition)? {
-            Some(tag) => {
-                Ok(Held { target: target.clone(), state: Mutex::new((holder, tag)), lost: AtomicBool::new(false) })
-            }
-            None => Err("another run took the lock at the same time".into()),
+        match target.put(LOCK, &bytes(&LockFile::Held(holder.clone())), &condition).map_err(Refused::Failed)? {
+            Some(tag) => Ok(Held {
+                target: target.clone(),
+                state: Mutex::new((holder, tag)),
+                lost: AtomicBool::new(false),
+                released: false,
+            }),
+            None => match read(target).map_err(Refused::Failed)? {
+                Some((LockFile::Held(holder), _)) => Err(Refused::Held(holder)),
+                _ => Err(Refused::Failed(format!("{LOCK} changed while this run took it"))),
+            },
         }
     }
 
@@ -114,34 +130,38 @@ impl Held {
     }
 
     /// Whether another run took the lock.
-    pub fn lost(&self) -> bool {
+    fn lost(&self) -> bool {
         self.lost.load(Ordering::Relaxed)
     }
 
     /// Free the lock, when this run still holds it.
-    pub fn release(self) -> Result<(), String> {
-        let (_, tag) = self.state.into_inner().expect("a heartbeat does not panic");
-        if !self.lost.into_inner() {
-            self.target.put(LOCK, &bytes(&LockFile::Free), &Condition::Match(tag))?;
+    pub fn release(mut self) -> Result<(), String> {
+        self.released = true;
+        self.free_if_held()
+    }
+
+    fn free_if_held(&mut self) -> Result<(), String> {
+        if self.lost() {
+            return Ok(());
         }
+        let (_, tag) = self.state.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.target.put(LOCK, &bytes(&LockFile::Free), &Condition::Match(tag.clone()))?;
         Ok(())
     }
 }
 
-/// The lock of `target` that a run of `machine` holds, with its tag, when its heartbeat is
-/// [`STALE`] at the time `now`.
-pub fn stale(target: &Target, machine: &str, now: u64) -> Result<(Holder, Tag), String> {
-    let Some((LockFile::Held(holder), tag)) = read(target)? else {
-        return Err("the lock is free".into());
-    };
-    if holder.machine != machine {
-        return Err(format!("{}, not a run of `{machine}`", held_by(&holder)));
+impl Drop for Held {
+    /// A run that panics frees the lock too.
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = self.free_if_held();
+        }
     }
-    let beat = crate::date::seconds(&holder.heartbeat).unwrap_or(0);
-    if beat.saturating_add(STALE) > now {
-        return Err(format!("{}: its heartbeat is younger than {} minutes", held_by(&holder), STALE / 60));
-    }
-    Ok((holder, tag))
+}
+
+/// The time at which the heartbeat of `holder` is [`STALE`].
+pub fn stale_at(holder: &Holder) -> u64 {
+    crate::date::seconds(&holder.heartbeat).unwrap_or(0).saturating_add(STALE)
 }
 
 /// Free the lock of `target` that has the tag `tag`.
@@ -152,9 +172,23 @@ pub fn free(target: &Target, tag: Tag) -> Result<(), String> {
     }
 }
 
-fn held_by(holder: &Holder) -> String {
+/// `run R of machine M holds the lock (phase P, heartbeat T)`
+pub fn held_by(holder: &Holder) -> String {
     format!(
         "run {} of machine `{}` holds the lock (phase {}, heartbeat {})",
         holder.run, holder.machine, holder.phase, holder.heartbeat
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lock_that_a_run_drops_without_release_is_free() {
+        let fixture = crate::engine::tests::fixture("lock-drop");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        drop(Held::take(&target, "panicked", 0).unwrap());
+        assert_eq!(read(&target).unwrap().unwrap().0, LockFile::Free);
+    }
 }
