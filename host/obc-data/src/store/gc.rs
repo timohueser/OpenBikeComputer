@@ -18,23 +18,19 @@ use crate::release::Release;
 pub struct Roots {
     /// `(source, version)` that an output of a release read, with the targets.
     pub served: BTreeMap<(String, String), Vec<String>>,
-    /// Each SHA-256 that an output of a release, a fixture or a planner region recipe names, with
-    /// which of them.
+    /// Each SHA-256 that an output of a release or a fixture names, with which of them.
     pub sha256s: BTreeMap<String, &'static str>,
     /// `(source, version)` that `obc data source refresh` took: the next update reads it.
     pub refreshed: BTreeSet<(String, String)>,
 }
 
 impl Roots {
-    /// The SHA-256 values in the fixture catalog, the fixture build records and the planner region
-    /// recipes.
+    /// The SHA-256 values in the fixture catalog and the fixture build records.
     pub fn from_repo(root: &Path) -> Result<Self, String> {
         let mut roots = Roots::default();
         let fixtures = files(&root.join("fixtures/sources"), &["json", "toml"])?;
-        let recipes = files(&root.join("tools/planner-regions"), &["json"])?;
         let mut named = vec![(root.join("fixtures/catalog.toml"), "fixture")];
         named.extend(fixtures.into_iter().map(|path| (path, "fixture")));
-        named.extend(recipes.into_iter().map(|path| (path, "planner recipe")));
         for (path, why) in named {
             match fs::read_to_string(&path) {
                 Ok(text) => roots.name(sha256s(&text), why),
@@ -95,13 +91,13 @@ pub struct Kept {
     /// The size of its files.
     pub bytes: u64,
     /// `served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs
-    /// kept`, `release`, `fixture` or `planner recipe`.
+    /// kept`, `release` or `fixture`.
     pub because: Vec<String>,
 }
 
 /// What a collection deletes. A snapshot record is reached when an output of a release read it, or
 /// when it is the newest record of its source or of a request. An object is reached when an output
-/// of a release, a fixture or a planner recipe names it, or a reached record or layer has it. A layer is reached when each input
+/// of a release or a fixture names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of the files that it names of a reached record of its
 /// source, and a step input whose digest is of the files that it selects (all when it names
 /// none) of a reached layer of its step.

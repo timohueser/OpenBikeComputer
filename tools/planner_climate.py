@@ -1,6 +1,6 @@
 """Bake the planner climate layer of one region: `climate.pmtiles`, as `specs/planner-climate-tiles.md` defines it.
 
-    uv run --locked --group planner-climate python -m tools.planner_climate REGION
+    uv run --locked --group planner-climate python -m tools.planner_climate REGION --first-year YEAR
 
 The source is ERA5-Land, read from the ECMWF ARCO geo-chunked Zarr stores with the CDS personal access
 token in `~/.cdsapirc`. The bake reads only the source chunks around the region and keeps them in
@@ -66,7 +66,6 @@ OROGRAPHY = ("https://confluence.ecmwf.int/download/attachments/140385202/geo_12
 GRAVITY = 9.80665
 DOI = "10.24381/cds.e2161bac"
 CACHE = Path.home() / ".cache/obc/planner/sources/era5-land"
-RECIPES = Path(__file__).resolve().parent / "planner-regions"
 USER_AGENT = "OpenBikeComputer planner climate bake (https://github.com/timohueser/OpenBikeComputer)"
 
 # Hourly inputs in display units.
@@ -540,38 +539,33 @@ def main():
     from . import data_registry
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("region", nargs="?", help="region id: the recipe in tools/planner-regions, the box in data/regions/ and the default output folder")
+    parser.add_argument("region", nargs="?", help="region id: the box in data/regions/ and the default output folder")
     parser.add_argument("--bounds", type=geo.bounds, help="west,south,east,north instead of the box of the region in data/regions/")
-    parser.add_argument("--first-year", type=int, help="the first of the ten years; default: the recipe's `climate.first_year`")
+    parser.add_argument("--first-year", type=int, required=True, help="the first of the ten years")
     parser.add_argument("--output", type=Path, help="default: ~/.cache/obc/planner/REGION/maps/climate.pmtiles")
     parser.add_argument("--check", action="store_true", help="bake from the cache only and compare with the output")
     parser.add_argument("--fetch", type=Path, help="only download the source chunks and the orography to this directory")
     args = parser.parse_args()
     if not args.region and not (args.fetch and args.bounds):
         parser.error("give a region, or --bounds with --fetch")
-    recipe_path = RECIPES / f"{args.region}.json"
-    recipe = json.loads(recipe_path.read_text()) if args.region and recipe_path.exists() else {}
     bounds = args.bounds or data_registry.region_box(args.region)
-    first_year = args.first_year or recipe.get("climate", {}).get("first_year")
-    if first_year is None:
-        parser.error("Pin the first year with --first-year or the recipe field `climate.first_year`")
     if args.fetch:
-        fetch_sources(bounds, first_year, args.fetch)
+        fetch_sources(bounds, args.first_year, args.fetch)
         return
     output = args.output or Path.home() / ".cache/obc/planner" / args.region / "maps/climate.pmtiles"
-    final = final_hour(first_year)
+    final = final_hour(args.first_year)
     credit = data_registry.SOURCES["era5-land"]["attribution"]
     start = time.monotonic()
     if args.check:
         with tempfile.TemporaryDirectory() as directory:
-            bake(bounds, first_year, Source(final), Path(directory) / output.name, credit)
+            bake(bounds, args.first_year, Source(final), Path(directory) / output.name, credit)
             if (Path(directory) / output.name).read_bytes() != output.read_bytes():
                 sys.exit(f"{output} differs from a bake of the cached sources")
         print(f"{output} equals a bake of the cached sources")
         return
     key = token()
     source = Source(final, key)
-    counts = bake(bounds, first_year, source, output, credit, key)
+    counts = bake(bounds, args.first_year, source, output, credit, key)
     print(json.dumps({"output": str(output), "bytes": output.stat().st_size, "tiles": counts,
                       "downloaded_bytes": source.downloaded, "source_chunks": sum(map(len, source.digests.values())),
                       "seconds": round(time.monotonic() - start)}))
