@@ -7,7 +7,7 @@ export type BasemapConfig = Pick<PlannerConfig, "basemap" | "glyphs" | "sprites"
 export async function basemapConfig(): Promise<BasemapConfig> {
     const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
     const active = preview ? JSON.parse(preview) : await activeRelease();
-    const [basemap, glyphs, sprites] = [active.basemap, active.glyphs, active.sprites].map((value) => configUrl(value, globalThis.location?.href));
+    const [basemap, glyphs, sprites] = [active.basemap, active.glyphs, active.sprites].map(configUrl);
     if (!basemap || !glyphs || !sprites) throw new Error("The active release has no basemap.");
     if (typeof active.attribution !== "string" || !active.attribution) throw new Error("The active release has no map data credit.");
     const landcover = typeof active.landcover_attribution === "string" ? { landcover_attribution: active.landcover_attribution } : {};
