@@ -1,17 +1,16 @@
 """Join the label glyph ranges of a planner map for offline selection."""
 
 import argparse
-from contextlib import closing
 import gzip
+import json
 from pathlib import Path, PurePosixPath
-import sqlite3
 import tempfile
 
-from . import planner_mvt as mvt, planner_grid_pack as pack, step_request
+from . import planner_mvt as mvt, planner_grid_pack as pack, planner_offline as offline, step_request
 
 # A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` and `planner-poi-icons`
 # in `map-style.ts`. A style, `lang` or protomaps change must update it. `planner-network-labels`
-# draws the overlay `ref` that `glyph_ranges` reads.
+# draws the `ref` of the overlay tiles.
 LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:name3",
               "ref", "ref:en", "shield_text", "addr_housenumber"}
 
@@ -31,31 +30,31 @@ def label_texts(tile):
         yield from {values[value] for key, value in labels if keys[key] in LABEL_KEYS and values[value]}
 
 
-def glyph_ranges(source):
-    """Return the indices (code point // 256) of the glyph ranges that labels and route references use."""
+def archive_texts(archives):
+    """Yield the label strings of each tile of the vector tile `archives`."""
     from pmtiles.reader import MmapSource, all_tiles
-    texts = set()
-    for name in ("basemap", "places"):
-        with (source / "maps" / f"{name}.pmtiles").open("rb") as file:
+    for archive in archives:
+        with archive.open("rb") as file:
             for _, tile in all_tiles(MmapSource(file)):
-                texts.update(label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile))
-    with closing(sqlite3.connect(f"{(source / 'routing/overlays.sqlite').resolve().as_uri()}?mode=ro", uri=True)) as db:
-        texts.update(ref for (ref,) in db.execute("SELECT json_extract(properties, '$.ref') FROM attributes "
-                                                  "UNION SELECT json_extract(properties, '$.ref') FROM routes") if ref)
+                yield from label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile)
+
+
+def glyph_ranges(texts):
+    """Return the indices (code point // 256) of the glyph ranges that `texts` use."""
     # MapLibre requests the glyphs of the drawn text: the style upper-cases some labels, and Arabic
     # letters become presentation forms U+FB50-U+FEFF.
-    ranges = {ord(character) >> 8 for text in texts for character in text + text.upper()}
+    ranges = {ord(character) >> 8 for text in set(texts) for character in text + text.upper()}
     return ranges | ({251, 252, 253, 254} if ranges & {6, 7, 8} else set())
 
 
-def offline_fonts(source, release, work):
-    """Join the used glyph ranges of each font stack into one file for offline selections.
+def offline_fonts(ranges, source, names, work):
+    """Join the glyph `ranges` of each font stack of `names`, files below `source`, into one file.
 
     MapLibre keeps only the glyphs of the requested range, so every range path of a stack can
     share this file. A missing range file stalls the labels of each tile that requests it."""
-    ranges, stacks = glyph_ranges(source), {}
+    stacks = {}
     start = lambda name: int(PurePosixPath(name).stem.split("-")[0])
-    for name in release["files"]:
+    for name in names:
         path = PurePosixPath(name)
         if path.parent.parent == PurePosixPath("maps/assets/fonts") and path.suffix == ".pbf":
             stacks.setdefault(path.parent.name, []).append(name)
@@ -70,16 +69,16 @@ def offline_fonts(source, release, work):
 
 
 def step(request):
-    output = Path(request["output"])
-    inputs = {}
-    for layer, selected in request["layers"].items():
-        for name, source in selected.items():
-            path = f"maps/{name}" if layer != "planner/routing" else name
-            inputs[path] = source
-    with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
+    with tempfile.TemporaryDirectory(dir=Path(request["output"]).parent) as temporary:
         work = Path(temporary)
-        view = step_request.view(inputs, work / "source")
-        joined = offline_fonts(view, {"files": inputs}, work)
+        source = work / "source"
+        for number, files in enumerate(request["layers"].values()):
+            grid = step_request.view(files, work / f"grid-{number}")
+            index = json.loads((grid / "index.json").read_bytes())
+            offline.materialize(grid, source, index, ("maps/tiles/", "maps/assets/fonts/"))
+        ranges = glyph_ranges(archive_texts(sorted((source / "maps/tiles").glob("*/*.pmtiles"))))
+        names = [path.relative_to(source).as_posix() for path in (source / "maps/assets/fonts").rglob("*.pbf")]
+        joined = offline_fonts(ranges, source, names, work)
         files = {f"offline/fonts/{path.name}": path for path in joined}
         aliases = {name: f"offline/fonts/{path.name}" for path, names in joined.items() for name in names}
         pack.pack_index(request, files, aliases=aliases)
