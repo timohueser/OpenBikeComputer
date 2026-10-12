@@ -6,7 +6,7 @@ import type { CatalogRecord } from "./signed-routes";
 const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
 
 /** The planner config: the one that a local preview build carries, else the active release at page load. */
-export const config = plannerConfig(preview ? JSON.parse(preview) : await activeRelease(), globalThis.location?.href);
+export const config = plannerConfig(preview ? JSON.parse(preview) : await activeRelease());
 pageRelease(config.id);
 
 export const MAP_VIEWS: { name: string; center: Coordinate; zoom: number }[] = [

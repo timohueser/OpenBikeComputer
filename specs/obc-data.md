@@ -210,6 +210,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `refreshed/<source>.json` | `{source, from, to}`: the version that `obc data source refresh` took last (`to`), and the versions that the targets served then (`from`) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
+| `serve/<target>/<planner id>/` | The files that the services of a planner release read while [`obc data serve`](#serve) runs them |
 | `locks/` | One lock file per key and per run |
 
 Rules:
@@ -877,15 +878,16 @@ of a set out of the bytes. A credit that it writes comes in its options.
 ### Service runtimes
 
 `data/planner-runtime.toml` names the Linux target triple and the `major.minor` versions
-of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`
-and `objects_origin`. The shared pool is `<objects_origin>/objects`.
-Tile URLs keep the tile Worker origin, which reads `releases/<id>/public/` and `objects/` of
-the bucket.
+of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`,
+`objects_origin` and `tiles_origin`. The shared pool is `<objects_origin>/objects`. Tile URLs
+are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/public/` and
+`objects/` of the bucket.
 
 The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
 `<objects_origin>/releases/<id>/release.json`. Its `device_catalog` names
-`<objects_origin>/cell-catalog/catalog.json`. `obc data` does not install the services.
+`<objects_origin>/cell-catalog/catalog.json`. [`obc data serve`](#serve) runs the services for a
+`dir` target; `obc data` does not install them on a server.
 
 Downloads jobs return a ready quote with an absolute pinned `source` URL. The client reads the
 bundle, release and objects through that source, so a stable entry switch cannot mix releases.
@@ -1156,6 +1158,46 @@ another release, it collects the target. The grace of a collection is 10 minutes
 A collection that stops does not undo the switch: the output gives what it deleted and why it
 stopped.
 
+### Serve
+
+`obc data serve [TARGET]` serves a `dir` target, by default `local`, on port 8710 of every IPv4
+address of the machine. It refuses an R2 target. The current release is the release whose
+pointers clients get. Every answer allows each origin.
+
+| Path | Answer |
+| --- | --- |
+| `/cell-catalog/catalog.json` | The device pointer of the current release |
+| `/planner/catalog.json` | The planner pointer of the current release. Each string that starts with one of its `origins`, followed by `/` or nothing, starts with the origin of the request instead: `http://` and the `Host` of the request |
+| `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
+| Another path | The file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
+
+Serve reads `release.json` each second. When it changes:
+
+1. Serve starts the services of the planner release of the serving release and of the rollback,
+   unless they run. The planner release of a release is `active.id` of its planner pointer.
+2. Clients get the serving release once each service of its planner release answers: routing
+   `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
+   `GET /catalog`. Until then clients keep the current release.
+3. A planner release fails when one of its services stops, or when its services do not answer
+   within 120 seconds after they start. Its other services stop, and its API answers 404. Clients
+   keep the current release, also when the failed planner release is the one of the current
+   release. A planner release that failed starts again at the next change of `release.json`, and
+   at no other time.
+4. The services of a planner release that neither the serving release, the rollback nor the
+   current release names stop.
+
+When the serving release and the rollback fail one after the other, clients keep a release that
+`release.json` no longer names. Serve then writes a warning: an update can delete the files of that
+release.
+
+The services of a planner release read its files under `routing/`, `search/` and `offline/` in
+`<store>/serve/<target>/<planner id>/`. Each file comes from `objects/` of the target: a link to an
+`identity` object, or the decoded bytes of a `gzip` object under a temporary name. No write opens
+an existing file. Each file must have the SHA-256 and the size that the planner release gives.
+Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
+touch it. Download bundles name the origin of the machine on its network when serve starts, else
+`http://127.0.0.1:8710`.
+
 ### Overview
 
 `obc data` gives the machine that runs it and, for each target, the release that it serves and
@@ -1180,6 +1222,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data runs [--json]` | Every run in the store, newest first: id, command, outcome, time, and the size of its fetches and of the layers that it built |
 | `obc data runs RUN [--json]` | One run, with its fetches and steps: time, peak RAM, outputs, inputs and layers |
 | `obc data runs RUN --follow [--json]` | The events of the run as they come, until it ends |
+| `obc data serve [TARGET] [--json]` | [Serves](#serve) a `dir` target until Ctrl-C. Writes its origin on the machine and on its network |
 | `obc data setup [--json]` | What this machine can do: each job, each tool with its version or its install command (Java needs 21 or newer, Node 22 or newer), each credential (only whether it is set), and the store with its size and free space. It exits 0 also when a tool or a credential is missing |
 | `obc data ui` | Builds the page with `npm run build:data` in `builder/web`, then serves it as [The page](#the-page) says, until it is stopped |
 | `obc data open MACHINE` | Runs `ssh -N -L 8701:localhost:8700 HOST`, where HOST is the `ssh` of MACHINE in [`data/machines.toml`](#datamachinestoml) or else MACHINE, and opens `http://localhost:8701/` in the browser. It sends nothing to MACHINE |
@@ -1323,6 +1366,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `fetch` | `Fetched` |
 | `areas` | `Areas` |
 | `clean`, `clean --apply` | `CleanPlan` |
+| `serve`, when it listens | `Listening` |
 | `setup` | `Setup` |
 | `runs` | `RunList` |
 | `runs RUN` | `Details` |
@@ -2684,6 +2728,31 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "state",
         "cause",
         "text"
+      ],
+      "type": "object"
+    },
+    "Listening": {
+      "description": "What `serve` writes when it listens.",
+      "properties": {
+        "network": {
+          "description": "Its origin on the network of this machine, for a phone; `null` without a network.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "url": {
+          "description": "The origin of `obc data serve` on this machine.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "url",
+        "network"
       ],
       "type": "object"
     },

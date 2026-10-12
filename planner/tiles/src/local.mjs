@@ -76,7 +76,8 @@ export async function serve(root, port) {
   const bucket = new Files(await realpath(root));
   const server = http.createServer(async (request, response) => {
     try {
-      const url = new URL(request.url, `http://127.0.0.1:${server.address().port}`);
+      // TileJSON names tiles at the host that the client asked, also through a proxy.
+      const url = new URL(request.url, `http://${request.headers.host ?? `127.0.0.1:${server.address().port}`}`);
       const pending = [];
       let result;
       if (/^\/(cell-catalog|objects)\//.test(url.pathname)) result = await catalog(bucket, request, url.pathname.slice(1));

@@ -2,17 +2,13 @@ import type { Archive } from './layers/data-layer';
 
 export type Bounds = [number, number, number, number];
 
-/**
- * The planner config: the `active` entry of the planner catalogue in specs/planner-release.md. A local preview
- * build carries it as `VITE_PLANNER_CONFIG`, with the same fields as root-relative paths, so a preview opened
- * as localhost or 127.0.0.1 stays on one origin.
- */
+/** The planner config: the `active` entry of the planner catalogue in specs/planner-release.md, or `VITE_PLANNER_CONFIG`. */
 export interface PlannerConfig {
-    /** The release ID; a local preview has none. */
+    /** The release ID; a `VITE_PLANNER_CONFIG` has none. */
     id?: string;
     name: string;
     bounds: Bounds;
-    /** TileJSON URLs; a local preview gives `pmtiles://` archive paths. */
+    /** TileJSON URLs. */
     basemap: string;
     places: string;
     overlays: string;
@@ -35,26 +31,19 @@ export interface PlannerConfig {
 
 const URLS = ['basemap', 'places', 'overlays', 'terrain', 'glyphs', 'sprites', 'routing', 'search'] as const;
 
-/**
- * `value` as a URL: an absolute URL as it is, or a root-relative path, also inside `pmtiles://`, resolved
- * against `base`. Undefined when `value` is neither.
- */
-export function configUrl(value: unknown, base?: string): string | undefined {
-    if (typeof value !== 'string' || !/^([a-z]+:\/\/|\/)/.test(value)) return undefined;
-    const [, scheme = '', path] = /^(pmtiles:\/\/)?(\/.*)$/.exec(value) ?? [];
-    if (!path || !base) return value;
-    // The contour workers resolve no relative URL; URL encodes the template braces that MapLibre expands.
-    return scheme + new URL(path, base).href.replace(/%7B/g, '{').replace(/%7D/g, '}');
+/** `value` when it is an absolute URL, such as a URL template; else undefined. */
+export function configUrl(value: unknown): string | undefined {
+    return typeof value === 'string' && /^[a-z]+:\/\//.test(value) ? value : undefined;
 }
 
-/** `value` as a config, with its paths resolved against `base`, the page. A config that the planner cannot use throws. */
-export function plannerConfig(value: unknown, base?: string): PlannerConfig {
+/** `value` as a config. A config that the planner cannot use throws. */
+export function plannerConfig(value: unknown): PlannerConfig {
     if (!value || typeof value !== 'object') throw new Error('The planner config is not an object.');
     const config: any = value;
     const bounds = config.bounds;
-    const urls = Object.fromEntries(URLS.map((key) => [key, configUrl(config[key], base)]));
-    const routes = config.routes === undefined ? undefined : configUrl(config.routes, base);
-    const layers = Object.fromEntries(Object.entries(config.layers ?? {}).map(([name, value]) => [name, configUrl(value, base)]));
+    const urls = Object.fromEntries(URLS.map((key) => [key, configUrl(config[key])]));
+    const routes = config.routes === undefined ? undefined : configUrl(config.routes);
+    const layers = Object.fromEntries(Object.entries(config.layers ?? {}).map(([name, value]) => [name, configUrl(value)]));
     const invalid = [
         ...URLS.filter((key) => !urls[key]),
         ...(config.routes === undefined || routes ? [] : ['routes']),

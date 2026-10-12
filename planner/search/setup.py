@@ -81,7 +81,8 @@ def main():
     archive = data / 'query-parser-v2-int8.tar.gz'
     if not archive.exists():
         part = archive.with_suffix('.part')
-        with urllib.request.urlopen(MODEL_URL, timeout=120) as source, part.open('wb') as destination:
+        request = urllib.request.Request(MODEL_URL, headers={'User-Agent': 'OpenBikeComputer search setup'})
+        with urllib.request.urlopen(request, timeout=120) as source, part.open('wb') as destination:
             shutil.copyfileobj(source, destination)
         part.rename(archive)
     verify(archive, MODEL_SHA)

@@ -136,8 +136,10 @@ cp AUXILIARY_FILE ~/.cache/obc/planner/sources/downloads/auxiliary/NAME
 
 The planner reads the `active`
 [catalogue](../../../../../specs/planner-release.md#catalogue) entry at page load.
-`VITE_PLANNER_CONFIG` replaces it with one entry, for example with local URLs.
-`VITE_CATALOG_URL` gives the map builder another device catalogue.
+`VITE_PLANNER_CATALOG` names another catalogue, such as the one that `obc data serve`
+prints. The map builder then reads its device catalogue too. `VITE_PLANNER_CONFIG`
+replaces the entry with one entry. `VITE_CATALOG_URL` gives the map builder another
+device catalogue.
 
 Basemap zooms are 0–14; terrain zooms are 0–12. Browser contours use terrain
 neighbours. Highlighted places use zoom 11.
