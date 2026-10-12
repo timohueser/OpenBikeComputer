@@ -9,14 +9,13 @@ import tempfile
 from . import planner_mvt as mvt, planner_grid_pack as pack, planner_offline as offline, step_request
 
 # A copy of the basemap text fields: protomaps `layers(..., {lang: "en"})` and `planner-poi-icons`
-# in `map-style.ts`. A style, `lang` or protomaps change must update it. `planner-network-labels`
-# draws the `ref` of the overlay tiles.
+# in `map-style.ts`. A style, `lang` or protomaps change must update it.
 LABEL_KEYS ={"name", "name:en", "pgf:name", "name2", "pgf:name2", "name3", "pgf:name3",
               "ref", "ref:en", "shield_text", "addr_housenumber"}
 
 
-def label_texts(tile):
-    """Yield the distinct label strings of each layer of one vector tile."""
+def label_texts(tile, fields=LABEL_KEYS):
+    """Yield the distinct strings of the `fields` of each layer of one vector tile."""
     for field, layer in mvt.fields(tile):
         if field != 3: continue
         keys, values, labels = [], [], set()
@@ -27,16 +26,25 @@ def label_texts(tile):
                 for packed in (packed for number, packed in mvt.fields(value) if number == 2):
                     tags = mvt.packed(packed)
                     labels.update(zip(tags[::2], tags[1::2]))
-        yield from {values[value] for key, value in labels if keys[key] in LABEL_KEYS and values[value]}
+        yield from {values[value] for key, value in labels if keys[key] in fields and values[value]}
 
 
-def archive_texts(archives):
-    """Yield the label strings of each tile of the vector tile `archives`."""
+def archive_texts(archives, fields=LABEL_KEYS):
+    """Yield the strings of the `fields` of each tile of the vector tile `archives`."""
     from pmtiles.reader import MmapSource, all_tiles
     for archive in archives:
         with archive.open("rb") as file:
             for _, tile in all_tiles(MmapSource(file)):
-                yield from label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile)
+                yield from label_texts(gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile, fields)
+
+
+def map_texts(tiles):
+    """Yield the label strings of the basemap and places archives below `tiles`, and the route
+    references of its overlay archives: `network-{cycling,hiking,mtb}-labels` in
+    `route-overlays.ts` draw only the overlay `ref`."""
+    archives = lambda kind: sorted((tiles / kind).glob("*.pmtiles"))
+    yield from archive_texts(archives("basemap") + archives("places"))
+    yield from archive_texts(archives("overlays"), {"ref"})
 
 
 def glyph_ranges(texts):
@@ -76,7 +84,7 @@ def step(request):
             grid = step_request.view(files, work / f"grid-{number}")
             index = json.loads((grid / "index.json").read_bytes())
             offline.materialize(grid, source, index, ("maps/tiles/", "maps/assets/fonts/"))
-        ranges = glyph_ranges(archive_texts(sorted((source / "maps/tiles").glob("*/*.pmtiles"))))
+        ranges = glyph_ranges(map_texts(source / "maps/tiles"))
         names = [path.relative_to(source).as_posix() for path in (source / "maps/assets/fonts").rglob("*.pbf")]
         joined = offline_fonts(ranges, source, names, work)
         files = {f"offline/fonts/{path.name}": path for path in joined}

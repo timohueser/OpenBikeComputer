@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools import planner_blocks as blocks
+from tools import planner_blocks as blocks, planner_grid_fonts as fonts
 
 
 def varint(value):
@@ -26,28 +26,30 @@ def tile(layer, tags):
                  + b"".join(field(4, field(1, value.encode())) for value in tags.values()))
 
 
-def archives(source, name, kind="", ref="", poi=""):
-    """Write one-tile basemap, places and overlay archives with one feature each, and return them."""
+def archives(source, name, kind="", ref="", route="", poi=""):
+    """Write one-tile basemap, places and overlay grid archives with one feature each, and return
+    their directory."""
     from pmtiles.tile import Compression, TileType, zxy_to_tileid
     from pmtiles.writer import write
     tiles = {"basemap": tile(b"places", {"name": name, "kind": kind}), "places": tile(b"pois", {"name": poi}),
-             "overlays": tile(b"cycling", {"ref": ref})}
-    (source / "maps").mkdir()
+             "overlays": tile(b"cycling", {"ref": ref, "name": route})}
     for archive, data in tiles.items():
-        with write(source / f"maps/{archive}.pmtiles") as writer:
+        (source / "maps/tiles" / archive).mkdir(parents=True)
+        with write(source / f"maps/tiles/{archive}/0-0-0.pmtiles") as writer:
             writer.write_tile(zxy_to_tileid(0, 0, 0), data)
             writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
                              "min_lon_e7": -1800000000, "min_lat_e7": -850000000, "max_lon_e7": 1800000000,
                              "max_lat_e7": 850000000, "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0}, {})
-    return [source / f"maps/{archive}.pmtiles" for archive in tiles]
+    return source / "maps/tiles"
 
 
 class OfflineFonts(unittest.TestCase):
     def test_joined_stack_keeps_only_the_ranges_of_label_text(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
-            # `kind` is no label field, so its Cyrillic value adds no range.
-            maps = archives(source, "Zähringen–Nord", kind="город", ref="Westweg →")
+            # `kind` is no label field and the network labels draw no route name, so their Cyrillic
+            # values add no range.
+            tiles = archives(source, "Zähringen–Nord", kind="город", ref="Westweg →", route="Маршрут")
             files = {}
             for name, data in {"0-255": b"A", "256-511": b"B", "1024-1279": b"C", "8192-8447": b"D", "8448-8703": b"E"}.items():
                 path = source / f"maps/assets/fonts/Noto Sans Regular/{name}.pbf"
@@ -55,8 +57,8 @@ class OfflineFonts(unittest.TestCase):
                 path.write_bytes(data)
                 files[path.relative_to(source).as_posix()] = {}
             files["maps/assets/fonts/OFL.txt"] = {}
-            ranges = blocks.glyph_ranges(blocks.archive_texts(maps))
-            joined = blocks.offline_fonts(ranges, source, files, source / "work")
+            ranges = fonts.glyph_ranges(fonts.map_texts(tiles))
+            joined = fonts.offline_fonts(ranges, source, files, source / "work")
             path, names = next(iter(joined.items()))
             self.assertEqual(len(joined), 1)
             self.assertEqual(path.read_bytes(), b"ADE")
@@ -65,8 +67,8 @@ class OfflineFonts(unittest.TestCase):
     def test_ranges_cover_uppercase_and_arabic_presentation_forms(self):
         with tempfile.TemporaryDirectory() as temporary:
             # µ and ÿ upper-case to U+039C and U+0178; Persian letters shape into U+FB50-U+FEFF.
-            maps = archives(Path(temporary), "µÿ", poi="چای")
-            self.assertEqual(blocks.glyph_ranges(blocks.archive_texts(maps)), {0, 1, 3, 6, 251, 252, 253, 254})
+            tiles = archives(Path(temporary), "µÿ", poi="چای")
+            self.assertEqual(fonts.glyph_ranges(fonts.map_texts(tiles)), {0, 1, 3, 6, 251, 252, 253, 254})
 
 
 class RouteTiles(unittest.TestCase):
