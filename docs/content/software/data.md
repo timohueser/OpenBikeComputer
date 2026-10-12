@@ -62,8 +62,8 @@ the next update reuses what it baked. Files of the older publishers are never wr
 
 `obc data serve` gives the apps a target, such as `local` on a laptop. It follows the target: the
 services of a new release start beside those of the current release, and clients get the new
-release only when its services answer. So a client never reads a release whose routing or search
-does not answer. The rollback stays loaded, so a rollback is instant. The
+release only when its services answer. So a client never switches to a release whose routing or
+search does not answer. The rollback stays loaded, so a rollback is instant. The
 [serve contract](src:specs/obc-data.md) defines what it answers.
 
 Use the [data README](src:host/obc-data/README.md) for setup, credentials and daily commands.
