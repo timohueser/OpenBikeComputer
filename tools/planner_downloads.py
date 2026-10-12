@@ -11,10 +11,14 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import threading
 from urllib.parse import unquote, urlsplit
 
 from . import planner_grid, planner_map_archive, planner_maps, planner_runtime
+
+
+FORMATS = {"planner/index": planner_runtime.INDEX_FORMAT}
 
 
 def contains(outer, inner):
@@ -43,7 +47,7 @@ class Downloads:
         self.source, self.cache = source.resolve(), cache.resolve()
         body = (self.source / "catalog.json").read_bytes()
         self.publication = json.loads(body)
-        if self.publication["format"] != 3:
+        if self.publication["format"] != planner_runtime.INDEX_FORMAT:
             raise ValueError("Unsupported offline publication")
         self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
         self.objects_url = objects_url.rstrip("/") if objects_url else None
@@ -248,6 +252,9 @@ def handler(downloads):
 
 
 def main():
+    if sys.argv[1:] == ["--formats"]:
+        print(json.dumps(FORMATS))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--cache", type=Path, required=True)

@@ -11,6 +11,9 @@ from urllib.request import Request, urlopen
 # The catalogue entry lists each layer in `layers`; the web planner shows it through its module in
 # builder/web/src/lib/planner/layers/registry.ts.
 DATA_LAYERS = {"snow": "seasons", "climate": "years", "sun": "sun_format"}
+# The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
+# the layer that writes them.
+INDEX_FORMAT = 3
 
 
 def encoded(value):

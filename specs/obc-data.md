@@ -882,6 +882,13 @@ of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_or
 are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/public/` and
 `objects/` of the bucket.
 
+Each service prints the formats of the layers that it reads with `--formats`, as one JSON object
+of layer and format, and reads no data: `planner-service --formats` gives `planner/routing`,
+`node planner/search/server.mjs --formats` gives `planner/search` and `planner/index`, and
+`python3 -m tools.planner_downloads --formats` gives `planner/index`. The format of
+`planner/index` is that of the two files of it that the services check: the offline catalog and
+`search/<region>.grid.json`.
+
 The pointer names routing, search and downloads under
 `<api_origin>/planner-api/releases/<id>/SERVICE`, and the release document at
 `<objects_origin>/releases/<id>/release.json`. Its `device_catalog` names
@@ -1152,6 +1159,10 @@ Serve reads `release.json` each second. When it changes:
 
 1. Serve starts the services of the planner release of the serving release and of the rollback,
    unless they run. The planner release of a release is `active.id` of its planner pointer.
+   First it compares the formats of the layers of the release with the formats that the services
+   read (see [Service runtimes](#service-runtimes)). A layer in another format fails the planner
+   release before anything starts: `needs a routing service that reads planner/routing format 9;
+   it reads 8`.
 2. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
    `GET /catalog`. Until then clients keep the current release.

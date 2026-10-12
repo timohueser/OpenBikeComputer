@@ -4,7 +4,12 @@ use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = std::env::args().nth(1).ok_or("Usage: planner-service PACKAGE_DIRECTORY [--verify]")?;
+    let usage = "Usage: planner-service PACKAGE_DIRECTORY [--verify] | planner-service --formats";
+    let directory = std::env::args().nth(1).ok_or(usage)?;
+    if directory == "--formats" {
+        println!("{}", serde_json::json!({ "planner/routing": planner_router::package::FORMAT }));
+        return Ok(());
+    }
     if std::env::args().nth(2).as_deref() == Some("--verify") {
         let path = Path::new(&directory);
         planner_router::open(path)?.verify()?;

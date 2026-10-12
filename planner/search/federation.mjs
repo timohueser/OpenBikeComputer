@@ -1,3 +1,6 @@
+/** The search schema that this code reads: the format of the `planner/search` layer. */
+export const SCHEMA = 6;
+
 const overlaps = (a, b) => !a || !b || a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 const typeOrder = value => value === null || value === undefined ? 0 : typeof value === 'number' ? 1 : 2;
 // SQLite order: NULL, numbers, text. UTF-16 code-unit order equals BINARY order below U+E000.
@@ -21,8 +24,8 @@ export function federate({groups, run}) {
     cell.metadata = Object.fromEntries(run(cell.group, `SELECT key,value FROM ${cell.name}.metadata`, [])
       .map(row => [row.key, JSON.parse(row.value)]));
   const first = cells[0].metadata;
-  if (cells.some(({metadata}) => metadata.schema !== 6 || metadata.osm_sha256 !== first.osm_sha256))
-    throw new Error('Search cells need schema 6 and one OSM source.');
+  if (cells.some(({metadata}) => metadata.schema !== SCHEMA || metadata.osm_sha256 !== first.osm_sha256))
+    throw new Error(`Search cells need schema ${SCHEMA} and one OSM source.`);
   // The region metadata is what every cell shares.
   const metadata = Object.fromEntries(Object.entries(first).filter(([key, value]) =>
     cells.every(cell => JSON.stringify(cell.metadata[key]) === JSON.stringify(value))));

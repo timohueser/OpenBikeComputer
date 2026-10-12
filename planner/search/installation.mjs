@@ -3,6 +3,9 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {openCells} from './cells.mjs';
 
+/** The format of `<region>.grid.json`: the format of `planner/index`, the layer that writes it. */
+export const GRID = 3;
+
 const componentFiles = id => [`tiles/pois/${id}.sqlite`,`tiles/addresses/${id}.sqlite`];
 
 /** A release installs a split search grid; a local bake installs the region's component files. */
@@ -13,7 +16,7 @@ export function openRegion(data,region) {
     const bytes=readFileSync(gridFile);
     const grid=JSON.parse(bytes.toString('utf8'));
     gridIdentity=createHash('sha256').update(bytes).digest('hex');
-    if(grid.format!==3||!Array.isArray(grid.cells)||!grid.cells.length||
+    if(grid.format!==GRID||!Array.isArray(grid.cells)||!grid.cells.length||
       new Set(grid.cells.map(c=>c.id)).size!==grid.cells.length||grid.cells.some(c=>!/^9-[0-9]+-[0-9]+$/.test(c.id)))
       throw new Error('Invalid search grid.');
     if(grid.cells.some(c=>JSON.stringify(c.files)!==JSON.stringify(componentFiles(c.id))))throw new Error('Invalid search grid files.');

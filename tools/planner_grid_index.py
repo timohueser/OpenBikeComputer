@@ -101,11 +101,11 @@ def compose(indexes, options):
     release = {"format": 1, **options, "osm_sha256": osm,
         "routing_package": files["routing/blocks.json"]["sha256"], "profiles": sorted(data["metrics"]),
         "terrain_bounds": terrain["metadata"]["bounds"], "terrain_attribution": terrain["metadata"]["attribution"]}
-    catalog = {"format": 3, "release": release, "routing_source": graph["source"],
+    catalog = {"format": runtime.INDEX_FORMAT, "release": release, "routing_source": graph["source"],
         "map_blocks": sorted(map_blocks, key=lambda block: (block["kind"], block["tile"])),
         "cells": list(cells.values()), "shared": shared, "files": dict(files),
         "zoom": grid.ZOOM, "map_zoom": 11}
-    search = {"format": 3, "metadata": metadata, "cells": [
+    search = {"format": runtime.INDEX_FORMAT, "metadata": metadata, "cells": [
         {**cell, "files": [name.removeprefix("search/") for name in cell["files"] if name.startswith("search/")]}
         for cell in cells.values()]}
     for cell in search["cells"]:
