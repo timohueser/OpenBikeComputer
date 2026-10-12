@@ -3,6 +3,7 @@
 
 pub mod device;
 pub mod planner;
+mod readers;
 mod region_sources;
 pub mod terrain_reference;
 pub mod ui;

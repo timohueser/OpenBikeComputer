@@ -187,7 +187,7 @@ impl Judged<'_> {
             served_format: self.served.map(|(format, _)| format),
             served_revision: self.served.map(|(_, revision)| revision),
             readers: declared
-                .map_or(Vec::new(), |layer| layer.readers.iter().map(|reader| reader.to_string()).collect()),
+                .map_or(Vec::new(), |layer| layer.readers.iter().map(|reader| reader.name.to_string()).collect()),
             reads: self.reads.iter().cloned().collect(),
             leaves: parts(false, leaf),
             stale_leaves: parts(true, leaf),

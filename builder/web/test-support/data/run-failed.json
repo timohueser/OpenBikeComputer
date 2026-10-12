@@ -11,10 +11,10 @@
         {"phase": "build", "state": "failed", "started": "2026-10-12T09:37:40Z"}
     ],
     "layers": [
-        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []},
-        {"layer": "device/map", "total": 6, "done": 6, "leaves_done": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "leaves_baking": [], "leaves_unchanged": []},
-        {"layer": "planner/search", "total": 3, "done": 2, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []},
-        {"layer": "planner/index", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": []}
+        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": "2026-10-12T09:37:40Z"},
+        {"layer": "device/map", "total": 6, "done": 6, "leaves_done": ["0037-0032", "0037-0033", "0038-0032", "0038-0033", "0036-0032", "0036-0033"], "leaves_baking": [], "leaves_unchanged": [], "started": "2026-10-12T09:37:40Z"},
+        {"layer": "planner/search", "total": 3, "done": 2, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": "2026-10-12T09:38:00Z"},
+        {"layer": "planner/index", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": [], "leaves_unchanged": [], "started": null}
     ],
     "fetches": [],
     "steps": [],
@@ -22,5 +22,6 @@
     "bytes_built": 7381975040,
     "error": {"code": "failed", "message": "planner/search failed: the store disk is full", "fix": "Free space with `obc data clean --apply`, or move the store to a larger disk. Then resume.", "kept": ["device/landmarks", "device/map", "planner/search/pois"]},
     "log": ["10:40:57 planner/search records 10.1 M of 10.5 M", "10:41:09 planner/search sqlite3.OperationalError: database or disk is full", "10:41:09 run planner/search failed; stopping admitted work", "10:41:11 run local lock released · local unchanged"],
+    "log_path": "/Users/rider/.cache/openbikecomputer/store/runs/2026-10-12-093055/log",
     "switched": []
 }

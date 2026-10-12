@@ -1,13 +1,22 @@
 <script lang="ts">
-    // The progress of each layer that a run bakes. A tiled layer names its leaves `<i>-<j>`.
+    import { span } from "../../lib/data/shapes";
+
+    // The progress of each layer that a run bakes. A tiled layer names its leaves `<i>-<j>`. With
+    // `now` and the start of a layer, its time left is its time so far for each step done.
     let {
         layers,
         running,
-    }: { layers: { layer: string; done: number; total: number; leaves_baking?: string[] }[]; running: boolean } = $props();
+        now = null,
+    }: {
+        layers: { layer: string; done: number; total: number; leaves_baking?: string[]; started?: string | null }[];
+        running: boolean;
+        now?: number | null;
+    } = $props();
 
-    function progress({ done, total, leaves_baking = [] }: (typeof layers)[number]): string {
+    function progress({ done, total, leaves_baking = [], started = null }: (typeof layers)[number]): string {
         if (done === total) return "done";
-        if (running) return done || leaves_baking.length ? `${done} of ${total}` : "waits";
+        const left = now && started && done ? ` · about ${span(((now - Date.parse(started)) * (total - done)) / done)} left` : "";
+        if (running) return done || leaves_baking.length ? `${done} of ${total}${left}` : "waits";
         return done ? `stopped at ${done} of ${total}` : "not started";
     }
 </script>

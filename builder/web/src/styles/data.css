@@ -86,3 +86,19 @@
     font-weight: 600;
     text-decoration: none;
 }
+:where(main .table) {
+    overflow-x: auto;
+}
+:where(main table) {
+    width: 100%;
+    border-collapse: collapse;
+}
+:where(main :is(th, td)) {
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--line);
+}
+:where(main th) {
+    font-weight: 600;
+}

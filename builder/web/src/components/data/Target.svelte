@@ -192,7 +192,10 @@
                 <label class="layer">
                     <input type="checkbox" bind:group={ticked} value={layer.layer} disabled={layer.state === "off"} />
                     <span class={layer.state} aria-hidden="true">{LAYER_MARK[layer.state]}</span>
-                    <span class="name"><b>{layer.layer}</b><span class={layer.state === "ok" ? "soft" : layer.state}>{layerText(layer)}</span></span>
+                    <span class="name">
+                        <b>{layer.layer}</b><span class={layer.state === "ok" ? "soft" : layer.state}>{layerText(layer)}</span>
+                        {#each target.notes.filter((note) => note.layer === layer.layer) as note (note.text)}<span class="missing">{note.text}</span>{/each}
+                    </span>
                     {#if layer.format !== null}<code>{version(layer.format, layer.revision)}</code>{/if}
                 </label>
             {:else}

@@ -61,24 +61,16 @@
 
 <style>
     .table {
-        overflow-x: auto;
         background: var(--panel);
         border: 1px solid var(--parchment-3);
         border-radius: 12px;
     }
     table {
-        width: 100%;
-        border-collapse: collapse;
         white-space: nowrap;
     }
     th,
     td {
         padding: 10px 16px;
-        text-align: left;
-        border-bottom: 1px solid var(--line);
-    }
-    th {
-        font-weight: 600;
     }
     td:first-child {
         font-family: var(--mono);

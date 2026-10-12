@@ -152,6 +152,7 @@
                 <b>{version(detail.served_format, detail.served_revision) ?? "none"}</b>
             </p>
             <p class={detail.state}>{LAYER_MARK[detail.state]} {layerText(detail)}</p>
+            {#each target.notes.filter((note) => note.layer === detail.layer) as note (note.text)}<p class="missing">{note.text}</p>{/each}
             <p><b>Reads</b> · {list(detail.reads)} (its sources are outlined)</p>
             <p><b>Bakes again after it</b> · {list(followers(layers, detail.layer))}</p>
             <p><b>Used by</b> · {list(detail.readers)}</p>

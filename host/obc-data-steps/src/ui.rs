@@ -152,7 +152,9 @@ fn refused(args: &[String]) -> Option<Error> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
-        [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] => true,
+        [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] | ["clean"] => true,
+        // The page shows the plan and asks first.
+        ["clean", "--apply", "--yes"] => true,
         ["source", "refresh", source] => name(source),
         // Not `serve` in the foreground: it answers only when it ends.
         ["router", target] | ["serve", target, "--detach"] => name(target),
@@ -400,6 +402,8 @@ mod tests {
             &["serve", "local"],
             &["serve", "--detach"],
             &["router", "--json"],
+            &["clean", "--apply"],
+            &["clean", "--yes"],
             &["--help"],
         ] {
             assert!(refused(&words(args)).is_some(), "{args:?}");
@@ -410,6 +414,8 @@ mod tests {
             &["runs"],
             &["areas"],
             &["sources"],
+            &["clean"],
+            &["clean", "--apply", "--yes"],
             &["source", "refresh", "natural-earth"],
             &["router", "prod"],
             &["serve", "local", "--detach"],

@@ -18,12 +18,12 @@ afterEach(() => {
     location.hash = "";
 });
 
-/** The server answers the review of `local` with the example, and a start with a run. */
-function server() {
+/** The server answers the review of `local` with `answer`, and a start with a run. */
+function server(answer: ReviewShape = review) {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
         if (args[0] === "areas") return new Response(JSON.stringify({ exit: 0, output: areas }));
-        const output = args.includes("--dry-run") ? review : { run: "2026-10-12-120000", review: review.id };
+        const output = args.includes("--dry-run") ? answer : { run: "2026-10-12-120000", review: answer.id };
         return new Response(JSON.stringify({ exit: 0, output }));
     });
     vi.stubGlobal("fetch", fetch);
@@ -111,6 +111,39 @@ it("a preset, ticked Geofabrik areas and a box each become the area flag of the 
         document.querySelectorAll<HTMLInputElement>('input[type="number"]').forEach((edge, i) => type(edge, ["7.65", "47.85", "8.15", "48.15"][i]));
         button("Review this box").click();
         await vi.waitFor(() => expect(last()).toEqual(["update", "local", "--box", "7.65,47.85,8.15,48.15", "--dry-run"]));
+    } finally {
+        await unmount(screen);
+    }
+});
+
+it("a format change names what happens to each reader, and the map draws the cells that bake and go", async () => {
+    server();
+    const screen = mount(Review, { target: document.body, props });
+    const strokes = (color: string) => document.querySelectorAll(`.leaflet-overlay-pane path[stroke="${color}"]`).length;
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain(`Review ${review.id}`));
+        const rows = [...document.querySelectorAll(".format tbody tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent));
+        expect(rows.map((row) => row.slice(0, 4))).toEqual([
+            ["device/map", "device", "19", "20"],
+            ["device/map", "map builder", "19", "20"],
+        ]);
+        expect(rows[0][4]).toContain("Maps already on a device keep working");
+        expect(document.body.textContent).toContain("■ 2 cells bake · ■ 1 cell go");
+        await vi.waitFor(() => expect([strokes("var(--running)"), strokes("var(--missing)")]).toEqual([2, 1]));
+        expect(document.body.textContent).toContain("device/terrain · terrain-reference/de has no version");
+    } finally {
+        await unmount(screen);
+    }
+});
+
+it("shows each note, also two notes of one layer", async () => {
+    const note = (country: string) =>
+        `terrain-reference/${country} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare terrain-reference/${country}`;
+    server({ ...review, notes: ["ch", "de"].map((country) => ({ layer: "device/terrain", text: note(country) })) });
+    const screen = mount(Review, { target: document.body, props });
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain(note("ch")));
+        expect(document.body.textContent).toContain(note("de"));
     } finally {
         await unmount(screen);
     }

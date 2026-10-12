@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Shape, Step};
+use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, Run, Shape, Step};
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
 use obc_data::regions::{geofabrik, Regions};
 use obc_data::release::{Output, Release};
@@ -24,32 +24,32 @@ use serde_json::json;
 
 use crate::device::{invalid, text, TILE_LIST};
 use crate::python;
+use crate::readers::{self, DOWNLOADS_SERVICE, IOS, IOS_OFFLINE_ROUTER, ROUTER_SERVICE, SEARCH_SERVICE, WEB_PLANNER};
 use crate::region_sources::OSM;
 
 /// The offline Protomaps map, with its fonts and sprites.
-pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &["web planner", "iOS"]);
+pub static PLANNER_BASEMAP: Layer = whole("planner/basemap", 1, &[&WEB_PLANNER, &IOS]);
 /// The terrain of the maps.
-pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 1, &["web planner", "planner/sun"]);
+pub static PLANNER_TERRAIN: Layer = whole("planner/terrain", 1, &[&WEB_PLANNER, &readers::PLANNER_SUN]);
 /// The routing package, its grid and the route network overlays.
 pub static PLANNER_ROUTING: Layer =
-    whole("planner/routing", planner_router::package::FORMAT, &["router service", "iOS offline router"]);
+    whole("planner/routing", planner_router::package::FORMAT, &[&ROUTER_SERVICE, &IOS_OFFLINE_ROUTER]);
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
-pub static PLANNER_SEARCH: Layer = whole("planner/search", 6, &["search service"]);
+pub static PLANNER_SEARCH: Layer = whole("planner/search", 6, &[&SEARCH_SERVICE]);
 /// The rider places of the search.
-pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &["web planner"]);
-pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &["web planner"]);
-pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &["web planner"]);
+pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
+pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
+pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &[&WEB_PLANNER]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
-pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &["web planner"]);
+pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &[&WEB_PLANNER]);
 /// The offline catalog, the release document, the joined fonts of every planner layer and the
 /// pointer. Its format is that of the offline catalog and of `search/<region>.grid.json`, which the
 /// downloads and search services check: a change of either file format changes it, and
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
-pub static PLANNER_INDEX: Layer =
-    whole("planner/index", 3, &["web planner", "iOS", "search service", "downloads service"]);
+pub static PLANNER_INDEX: Layer = whole("planner/index", 3, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]);
 
-const fn whole(name: &'static str, format: u32, readers: &'static [&'static str]) -> Layer {
+const fn whole(name: &'static str, format: u32, readers: &'static [&'static Reader]) -> Layer {
     Layer { name, shape: Shape::Whole, format, revision: 1, readers }
 }
 const BASEMAP_SOURCES: [&str; 7] = [

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { free, hardware, list, size, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
+    import { count, free, hardware, list, size, type CleanPlan, type Machine, type Readiness, type Setup } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import Failure from "./Failure.svelte";
 
@@ -15,6 +15,15 @@
     const missing = $derived(report?.tools.filter((tool) => tool.state === "missing").map((tool) => tool.name) ?? []);
     const checked = $derived(setup.at?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }));
     const facts = $derived([machine && hardware(machine), checked && `checked at ${checked}`].filter(Boolean).join(" · "));
+    // The plan of a clean, read when the person asks for it; then what the clean removed.
+    let clean = $state<CliQuery<CleanPlan> | null>(null);
+    let removed = $state<number | null>(null);
+    const goes = (plan: CleanPlan) => plan.store.remove_bytes + plan.store.partial_bytes;
+    function plan() {
+        clean = new CliQuery<CleanPlan>(["clean"]);
+        removed = null;
+        void clean.refresh();
+    }
 </script>
 
 <!-- A name breaks only at a space or after `_` or `/`, never inside a word. -->
@@ -65,6 +74,35 @@
         <section class="card" aria-labelledby="store">
             <h2 id="store">Store</h2>
             <p><code>{report.store.path}</code> · {size(report.store.used_bytes)} used · {free(report.store.free_bytes)}</p>
+            {#if clean?.error}<Failure error={clean.error} />{/if}
+            {#if clean?.output}
+                {@const { store } = clean.output}
+                {#if goes(clean.output)}
+                    <p>
+                        A clean removes {size(goes(clean.output))}: {count(store.snapshots.length, "record")}, {count(store.objects.length, "object")} and
+                        {size(store.partial_bytes)} of unfinished work. It keeps {size(store.keep_bytes)}: {list([
+                            ...new Set(store.kept.flatMap((kept) => kept.because)),
+                        ])}. Clean now reads the plan again, and removes what nothing reaches then.
+                    </p>
+                    <div class="title">
+                        <Action
+                            label="Clean now"
+                            args={["clean", "--apply", "--yes"]}
+                            ondone={(done: CleanPlan) => {
+                                removed = goes(done);
+                                clean = null;
+                                void setup.refresh();
+                            }}
+                        />
+                        <button type="button" onclick={() => (clean = null)}>Cancel</button>
+                    </div>
+                {:else}
+                    <p>Nothing to clean: a target or the newest version of a source reaches each file.</p>
+                {/if}
+            {:else if !clean}
+                <button type="button" onclick={plan}>Clean…</button>
+            {/if}
+            {#if removed !== null}<p class="ready" role="status">Removed {size(removed)} from the store.</p>{/if}
         </section>
 
         <section class="card first" aria-labelledby="first">

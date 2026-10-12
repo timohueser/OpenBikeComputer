@@ -644,7 +644,8 @@ mod tests {
         }
     }
 
-    static READS: Layer = Layer { name: "reads", shape: Shape::Whole, format: 1, revision: 1, readers: &["tests"] };
+    static READS: Layer =
+        Layer { name: "reads", shape: Shape::Whole, format: 1, revision: 1, readers: &[&crate::engine::tests::TESTS] };
 
     /// A product that reads `a.txt` of the version of `sample` that its target reads.
     struct Reader;

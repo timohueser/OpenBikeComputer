@@ -1,0 +1,15 @@
+{
+    "store": {
+        "kept": [
+            {"entry": "geofabrik-extracts@2026-10-05", "bytes": 412316860, "because": ["served by local", "newest of a request"]},
+            {"entry": "copernicus-glo-30@2021", "bytes": 2147483648, "because": ["served by local", "served by prod"]},
+            {"entry": "device/map", "bytes": 1073741824, "because": ["inputs kept"]}
+        ],
+        "snapshots": ["geofabrik-extracts@2026-09-28"],
+        "objects": [["4f1c000000000000000000000000000000000000000000000000000000000000", 405798912]],
+        "remove_bytes": 405798912,
+        "keep_objects": 214,
+        "keep_bytes": 3633542332,
+        "partial_bytes": 52428800
+    }
+}

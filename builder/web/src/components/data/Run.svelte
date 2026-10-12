@@ -4,7 +4,7 @@
     import { flagsOf, reviewArgs } from "../../lib/data/flags";
     import { leafSquare } from "../../lib/data/leaf";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { changes, clock, list, span, title, type RunView, type Status } from "../../lib/data/shapes";
+    import { changes, clock, free, list, size, span, title, type RunView, type Status } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import DataMap from "./DataMap.svelte";
     import Failure from "./Failure.svelte";
@@ -107,6 +107,7 @@
             {#if resume}
                 <p class="title">
                     <a class="primary" href="#/{target}/resume/{id}">Resume…</a>
+                    <a href="#/machine">Clean the store…</a>
                     <span>A new review of the same update: <code class="resume">{command(resume)}</code></span>
                 </p>
             {/if}
@@ -115,7 +116,16 @@
 
     {#if view.phases.length}<Phases entered={view.phases} />{/if}
 
-    {#if view.layers.length}<Layers layers={view.layers} running={live} />{/if}
+    {#if live && status}
+        {@const machine = status.machine}
+        <p class="soft">
+            {machine.name} · load {machine.load?.toFixed(1) ?? "unknown"} on {machine.cores} cores · RAM {machine.memory_available_bytes === null
+                ? "use unknown"
+                : `${size(machine.memory_available_bytes)} free`} · store {free(machine.store_free_bytes)}
+        </p>
+    {/if}
+
+    {#if view.layers.length}<Layers layers={view.layers} running={live} {now} />{/if}
 
     {#if tiled.length}
         <section class="card" aria-labelledby="cells">
@@ -131,7 +141,7 @@
 
     <section class="card" aria-labelledby="log">
         <h2 id="log">Log</h2>
-        <p class="soft">The last {view.log.length} lines. In a terminal: <code>{command(["runs", id, "--follow"])}</code></p>
+        <p class="soft">The last {view.log.length} lines of <code>{view.log_path}</code>. In a terminal: <code>{command(["runs", id, "--follow"])}</code></p>
         {#if view.log.length}<pre>{view.log.join("\n")}</pre>{/if}
         <p class="soft">The run: <code>{command(view.args)}</code></p>
         {#if live}<p class="soft">Closing this page, the tunnel or the laptop does not stop the run.</p>{/if}

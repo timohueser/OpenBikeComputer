@@ -352,7 +352,9 @@ impl Run {
             Event::StepStarted { step } => {
                 let line = format!("{step} started");
                 if let Some((layer, leaf)) = self.planned.get(&step) {
-                    status.layers[*layer].leaves_baking.extend(leaf.clone());
+                    let layer = &mut status.layers[*layer];
+                    layer.leaves_baking.extend(leaf.clone());
+                    layer.started.get_or_insert_with(|| date::timestamp(date::now()));
                 }
                 status.step(&step);
                 line
@@ -896,6 +898,8 @@ pub struct LayerProgress {
     pub leaves_baking: Vec<String>,
     /// The finished leaves whose steps all kept their output of the serving release.
     pub leaves_unchanged: Vec<String>,
+    /// When its first step started, `YYYY-MM-DDTHH:MM:SSZ`; `null` before.
+    pub started: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -1000,6 +1004,8 @@ pub struct View {
     pub status: Status,
     /// The last lines of `runs/<id>/log`.
     pub log: Vec<String>,
+    /// The path of that log on the machine of the run.
+    pub log_path: String,
 }
 
 /// How many lines of the log a [`View`] gives.
@@ -1100,7 +1106,8 @@ pub fn view(store: &Store, id: &str) -> Result<View, String> {
             .rev()
             .find_map(|run| run.steps.iter().find(|earlier| earlier.step == step.step && !earlier.reused)?.wall_ms);
     }
-    Ok(View { status, log: tail(&store.run(id).join(LOG)) })
+    let path = store.run(id).join(LOG);
+    Ok(View { status, log: tail(&path), log_path: path.display().to_string() })
 }
 
 /// The last [`TAIL`] lines of the log at `path`, from its last bytes only. The output of a step
@@ -1370,6 +1377,7 @@ mod tests {
         run.flush().unwrap();
         let baking = &status(&fixture.store, run.id()).unwrap().layers[0];
         assert_eq!((baking.done, baking.total, &baking.leaves_baking[..]), (0, 2, &["0001-0003".to_string()][..]));
+        assert!(baking.started.is_some(), "the first step that starts starts the layer");
 
         fixture.run(&steps, &plan, Limits::machine()).unwrap();
         let built = &status(&fixture.store, &list(&fixture.store).unwrap()[0].id).unwrap().layers[0];
