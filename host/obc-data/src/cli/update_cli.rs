@@ -14,7 +14,7 @@ use serde::Serialize;
 use super::{freshness, listing, print_json, Code, Error};
 use crate::collection::{self, Collected};
 use crate::engine::changes::{self, Update};
-use crate::engine::plan::{outputs, Estimate};
+use crate::engine::plan::outputs;
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
 use crate::engine::state::Newer;
 use crate::engine::{select_layer, Input, InputKind, Step};
@@ -62,10 +62,10 @@ pub struct UpdateArgs {
 }
 
 impl UpdateArgs {
-    /// The command that starts the update of `review`.
-    fn argv(&self, review: &Review) -> Vec<String> {
-        let mut argv: Vec<String> = ["obc", "data", "update", &self.target].map(String::from).into();
-        let mut flag = |name: &str, value: &str| argv.extend([format!("--{name}"), value.to_string()]);
+    /// The arguments after `obc data` that start the update of `review`.
+    fn args(&self, review: &Review) -> Vec<String> {
+        let mut args: Vec<String> = ["update", &self.target].map(String::from).into();
+        let mut flag = |name: &str, value: &str| args.extend([format!("--{name}"), value.to_string()]);
         self.region.iter().for_each(|region| flag("region", region));
         self.bbox.iter().for_each(|bbox| flag("box", bbox));
         self.add.iter().for_each(|layer| flag("add", layer));
@@ -76,9 +76,9 @@ impl UpdateArgs {
         }
         flag("expect", &review.id);
         if review.layers.iter().any(|layer| layer.format.is_some()) {
-            argv.push("--accept-format-change".into());
+            args.push("--accept-format-change".into());
         }
-        argv
+        args
     }
 }
 
@@ -127,18 +127,18 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
     }
     // A step reads a kept output from the target when this store lacks it.
     let store = store.reading(&target);
-    let (http, machine) = (Http::new(), MachineCheck::this(&store)?);
+    let http = Http::new();
     let edit = |settings: &mut Settings| edit(root, products, &args, settings);
     let target = (args.target.as_str(), &target);
     if args.dry_run {
-        let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, &machine, None)?;
-        prepared.review.argv = args.argv(&prepared.review);
+        let mut prepared = prepare(root, &store, &http, target, products, edit, &args.only, None, None)?;
+        prepared.review.args = args.args(&prepared.review);
         return review::print(&prepared.review, json);
     }
     let asked =
         Asked { only: args.only.clone(), expect: args.expect.clone(), accept_format_change: args.accept_format_change };
     let mut run = super::api::start_run(&store, &format!("update {}", args.target))?;
-    let result = update(root, &store, &http, target, products, edit, &asked, &machine, &mut run);
+    let result = update(root, &store, &http, target, products, edit, &asked, None, &mut run);
     let updated = super::api::finish_run(run, result, None)?;
     if json {
         return print_json(&updated);
@@ -186,7 +186,7 @@ pub(super) fn update(
     products: &[&dyn Product],
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     asked: &Asked,
-    machine: &MachineCheck,
+    machine: Option<&MachineCheck>,
     run: &mut Run,
 ) -> Result<Updated, Error> {
     let prepared = prepare(root, store, http, target, products, edit, &asked.only, machine, Some(run))?;
@@ -195,7 +195,8 @@ pub(super) fn update(
 }
 
 /// Read the serving release of `target`, apply `edit` to its settings, list the steps and review
-/// them. Only the fetches that a step list needs to know its versions run; `run` records them.
+/// them. Only the fetches that a step list needs to be listed run, into the store; `run` records
+/// them. The review checks `machine`, or else this machine after the listing.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare(
     root: &Path,
@@ -205,7 +206,7 @@ pub(super) fn prepare(
     products: &[&dyn Product],
     edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
     only: &[String],
-    machine: &MachineCheck,
+    machine: Option<&MachineCheck>,
     mut run: Option<&mut Run>,
 ) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
@@ -252,17 +253,6 @@ pub(super) fn prepare(
     let release: BTreeMap<&str, &Output> =
         serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
     let mut update = changes::update(store, &listed.steps, &release, &Newer::new(), only)?;
-    // A step that this machine never baked has the cost of the machine that made the release.
-    for build in update.plan.groups.iter_mut().flat_map(|group| group.builds.iter_mut().chain(&mut group.layers)) {
-        if let (None, Some(output)) = (build.estimate, release.get(build.step.as_str())) {
-            let cost = output.cost;
-            build.estimate = Some(Estimate {
-                wall_ms: cost.wall_ms,
-                bytes_out: cost.bytes_out,
-                peak_rss_bytes: cost.peak_rss_bytes,
-            });
-        }
-    }
     // A fetch whose files the target copies comes from the target.
     let copies: Vec<Fetched> = serving
         .iter()
@@ -274,6 +264,10 @@ pub(super) fn prepare(
         group.fetches.retain(|fetch| !copies.iter().any(|copy| covers(copy, fetch)));
     }
     let downloads = downloads(store, &listed.steps, &update, &copies);
+    let machine = match machine {
+        Some(machine) => machine.clone(),
+        None => MachineCheck::this(store)?,
+    };
     let review = review::review(review::Parts {
         target: name,
         base: base.as_ref(),
@@ -286,7 +280,7 @@ pub(super) fn prepare(
         kept: &update.kept,
         layers: &update.layers,
         downloads,
-        machine,
+        machine: &machine,
     });
     Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update, copies })
 }
@@ -432,9 +426,12 @@ fn compose(
     Ok(release)
 }
 
-/// The release `id` of the target `name`.
+/// The release `id` of the target `name`. A manifest that does not parse is `invalid_data`; a failed
+/// read stays what it is.
 pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Error> {
-    Release::read(target, id).map_err(|e| {
+    let key = release::manifest_key(id);
+    let bytes = target.get(&key)?.ok_or_else(|| Code::Failed.error(format!("target `{name}` has no {key}")))?;
+    Release::parse(id, &bytes).map_err(|e| {
         let fix = match target {
             Target::Dir(dir) => format!(
                 "An older `obc data` can have written it: move the folder aside with `mv {0} {0}.old`, then run \
@@ -494,8 +491,10 @@ fn reads(
         let files = recorded.or(earlier).ok_or_else(|| {
             Code::Failed.error(format!("neither the store nor the serving release has the files of {source}@{version}"))
         })?;
-        let copy = sources.iter().any(|declared| declared.id == source && declared.copied());
-        fetched.push(Fetched { source, version, params, files, copy });
+        let copied = sources.iter().find(|declared| declared.id == source && declared.copied());
+        let (licence, attribution) =
+            copied.map_or((None, None), |source| (source.licence.clone(), source.attribution.clone()));
+        fetched.push(Fetched { source, version, params, files, copy: copied.is_some(), licence, attribution });
     }
     Ok(fetched)
 }
@@ -663,8 +662,17 @@ pub(super) mod tests {
     ) -> Result<Updated, Error> {
         let mut run = Run::create(&fixture.store, "update local").unwrap();
         let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
-        let updated =
-            super::update(&root, &fixture.store, http, ("local", target), &products, edit, asked, machine, &mut run);
+        let updated = super::update(
+            &root,
+            &fixture.store,
+            http,
+            ("local", target),
+            &products,
+            edit,
+            asked,
+            Some(machine),
+            &mut run,
+        );
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
         updated
     }
@@ -682,8 +690,17 @@ pub(super) mod tests {
     fn review(fixture: &Fixture, target: &Target) -> Review {
         let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
         let machine = MachineCheck::default();
-        let prepared =
-            prepare(&root, &fixture.store, &Http::new(), ("local", target), &products, |_| Ok(()), &[], &machine, None);
+        let prepared = prepare(
+            &root,
+            &fixture.store,
+            &Http::new(),
+            ("local", target),
+            &products,
+            |_| Ok(()),
+            &[],
+            Some(&machine),
+            None,
+        );
         prepared.unwrap().review
     }
 
@@ -829,7 +846,7 @@ pub(super) mod tests {
             &products,
             |_| Ok(()),
             &asked,
-            &machine,
+            Some(&machine),
             &mut run,
         );
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
@@ -874,7 +891,9 @@ pub(super) mod tests {
         assert!(only_a.contains("sources/head/1/head.txt"), "the copy of a source file: {only_a:?}");
         assert!(!files(&a).iter().any(|key| key.starts_with("sources/tail/")), "tail is not declared");
         only_a.insert(release::manifest_key(&a));
-        let older = ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part"];
+        // `sources/x/y` is a key that no release names, such as a prepared source.
+        let older =
+            ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part", "sources/x/y"];
         let orphans = ["objects/0000", "objects/.1.2.part", ".release.json.1.tmp", "cell-catalog/.catalog.json.1.tmp"];
         for key in older.iter().chain(&orphans) {
             write(&dir.join(key), key);
@@ -924,19 +943,21 @@ pub(super) mod tests {
         fixture.with_sources(&[]);
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let first = update(&fixture, &target, region).unwrap();
+        let read = review(&fixture, &target);
+        assert!(read.layers.is_empty(), "nothing is stale");
+
+        // A newer version of `head` comes after the review was read.
         fixture.fetched_version("head", "2", "head.txt", b"newer\n");
+        let expect = |id: &str| Asked { expect: Some(id.into()), ..Asked::default() };
+        let refused = asked_update(&fixture, &target, &expect(&read.id)).unwrap_err();
+        assert_eq!(refused.code, Code::Usage, "{}", refused.message);
+        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving, "nothing changed");
+
         let review = review(&fixture, &target);
         let moved = &review.sources[0];
         assert_eq!((moved.source.as_str(), moved.from.as_deref(), moved.to.as_str()), ("head", Some("1"), "2"));
         assert_eq!((review.layers.len(), review.layers[0].text.as_str()), (1, "head 1 → 2"));
-        assert_eq!(review.after.rollback.as_ref(), Some(&first.serving));
-
-        let expect = |id: &str| Asked { expect: Some(id.into()), ..Asked::default() };
-        let run = |asked: &Asked| asked_update(&fixture, &target, asked);
-        let refused = run(&expect("000000000000")).unwrap_err();
-        assert_eq!(refused.code, Code::Usage, "{}", refused.message);
-        assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving, "nothing changed");
-        let updated = run(&expect(&review.id)).unwrap();
+        let updated = asked_update(&fixture, &target, &expect(&review.id)).unwrap();
         assert_eq!((&updated.review, updated.rollback.as_ref()), (&review.id, Some(&first.serving)));
     }
 
@@ -958,21 +979,44 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_machine_without_room_for_the_update_refuses_it_before_it_starts() {
+    fn a_machine_with_less_memory_or_disk_than_the_estimates_refuses_the_update() {
         let fixture = fixture("update-machine");
         fixture.with_sources(&[]);
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let (root, products): (_, [&dyn Product; 2]) = (fixture.root(), [&Pipeline, &Counter]);
-        let machine = MachineCheck::default();
-        let first =
-            prepare(&root, &fixture.store, &Http::new(), ("local", &target), &products, region, &[], &machine, None);
-        assert_eq!(first.unwrap().review.cost.unknown, ["test/upper", "test/join", "test/count"], "no receipts");
+        let checked = |edit: fn(&mut Settings) -> Result<(), Error>, machine: &MachineCheck| {
+            let prepared = prepare(
+                &root,
+                &fixture.store,
+                &Http::new(),
+                ("local", &target),
+                &products,
+                edit,
+                &[],
+                Some(machine),
+                None,
+            );
+            prepared.unwrap().review
+        };
+        let roomy = MachineCheck { memory_bytes: None, store_free_bytes: Some(u64::MAX / 2), refusals: Vec::new() };
+        let unknown = checked(region, &roomy).cost.unknown;
+        assert_eq!(unknown, ["`test/upper`: no estimate", "`test/join`: no estimate", "`test/count`: no estimate"]);
         let first = update(&fixture, &target, region).unwrap();
 
+        // `test/join` runs Python: its receipt has a peak.
         write(&fixture.root().join("revised"), "test/join");
-        let full = MachineCheck { memory_bytes: None, store_free_bytes: Some(0), refusals: Vec::new() };
+        let estimated = checked(|_| Ok(()), &roomy);
+        let peak =
+            estimated.bakes.iter().find(|bake| bake.step == "test/join").unwrap().estimate.unwrap().peak_rss_bytes;
+        let (bytes, peak) = (estimated.cost.store_bytes, peak.unwrap());
+        let disk = |free: u64| MachineCheck { store_free_bytes: Some(crate::store::RESERVE + free), ..roomy.clone() };
+        assert!(checked(|_| Ok(()), &disk(bytes)).machine.refusals.is_empty(), "room for the estimate");
+        let memory = MachineCheck { memory_bytes: Some(peak - 1), ..roomy.clone() };
+        assert!(checked(|_| Ok(()), &memory).machine.refusals[0].starts_with("step `test/join` needs about"));
+
         let layers = fixture.store.layers().unwrap().len();
-        let refused = asked(&fixture, &target, &Http::new(), (&Asked::default(), &full), |_| Ok(())).unwrap_err();
+        let refused = asked(&fixture, &target, &Http::new(), (&Asked::default(), &disk(bytes - 1)), |_| Ok(()));
+        let refused = refused.unwrap_err();
         assert_eq!(refused.code, Code::Blocked);
         assert!(
             refused.message.starts_with("this machine cannot do the update: the store gets"),
@@ -999,9 +1043,14 @@ pub(super) mod tests {
             ),
         );
         write(&fixture.root().join("earth"), "");
+        let dir = fixture.scratch.0.join("local");
+        write(
+            &fixture.root().join("data/targets.toml"),
+            &format!("[local]\nkind = \"dir\"\ndir = \"{}\"\n", dir.display()),
+        );
         let (one, two) = (sha256_hex(b"earth 1\n"), sha256_hex(b"earth 2\n"));
         fixture.fetched_version("natural-earth", &one, "earth.zip", b"earth 1\n");
-        let (target, http) = (Target::Dir(fixture.scratch.0.join("local")), Http::loopback(&actual));
+        let (target, http) = (Target::Dir(dir), Http::loopback(&actual));
         let first = update_with(&fixture, &target, &http, region).unwrap();
 
         let registry = crate::sources::Registry::load(&fixture.root()).unwrap();
@@ -1012,7 +1061,8 @@ pub(super) mod tests {
         assert_eq!((&same.serving, steps(&same)), (&first.serving, Vec::new()), "a newer file in the store");
 
         let refreshed = crate::cli::source_cli::refresh(&fixture.root(), &fixture.store, &http, "natural-earth");
-        assert_eq!(refreshed.unwrap().version, two);
+        let refreshed = refreshed.unwrap();
+        assert_eq!((refreshed.from, refreshed.version), (vec![one.clone()], two.clone()), "from what `local` serves");
         let moved = &review(&fixture, &target).sources[0];
         assert_eq!((moved.source.as_str(), moved.from.as_ref(), &moved.to), ("natural-earth", Some(&one), &two));
         assert_eq!(steps(&update_with(&fixture, &target, &http, |_| Ok(())).unwrap()), ["counter/earth"]);

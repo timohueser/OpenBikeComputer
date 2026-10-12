@@ -197,8 +197,8 @@ Normal intermediate content layers publish `shared-content/` bundles of at most
 16 MiB, the existing compiler JSON input bound. Each bundle keeps exact compact
 fact bytes, their SHA-256 and source pins. Entity dependency facts, article aliases,
 Commons description metadata and MediaInfo statements remain reusable.
-Local image inputs are excluded. A target keeps no copy of the raw Wikimedia
-dumps; ownership for Store reachability does not select a source mirror.
+Local image inputs are excluded. A target keeps no copy of the Wikimedia API
+captures; ownership for Store reachability does not select a source mirror.
 Final device images remain publication outputs of the device cell layers.
 
 A warm pinned bake needs no network. In the same Store, a transform rebuild reuses

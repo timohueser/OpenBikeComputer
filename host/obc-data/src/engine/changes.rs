@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::order;
-use super::plan::{build, build_of, needs, sized, walk, Build, Cause, Group, Kept, Plan};
+use super::plan::{build, build_of, needs, sized, walk, Build, Cause, Costs, Group, Kept, Plan};
 use super::state::{judge, LayerState, Newer};
 use super::{select_layer, Input, Step};
 use crate::release::Output;
@@ -86,7 +86,7 @@ pub fn update(
         .map(|step| (step.name.clone(), release[step.name.as_str()].clone()))
         .collect();
     let walked = walk(store, steps, &kept)?;
-    let receipts = store.layers()?;
+    let costs = Costs { receipts: store.layers()?, release };
     let mut groups = Vec::new();
     if only.is_empty() {
         for layer in judged {
@@ -97,10 +97,9 @@ pub fn update(
                 (Some(cause), false) => Cause::Stale { cause },
                 (None, false) => continue,
             };
-            let mut group =
-                needs(&walked, Group::new(layer.name, Some(cause)), &steps, |walked| build(walked, &receipts));
+            let mut group = needs(&walked, Group::new(layer.name, Some(cause)), &steps, |walked| build(walked, &costs));
             let layers = walked.iter().filter(|walked| steps.contains(walked.step.name.as_str()));
-            group.layers = layers.map(|walked| build_of(walked, &receipts)).collect();
+            group.layers = layers.map(|walked| build_of(walked, &costs)).collect();
             group.drops = layer.drops;
             groups.push(group);
         }
@@ -114,9 +113,9 @@ pub fn update(
                 true => Some(Build {
                     again: named.contains(name),
                     key: if waits { None } else { walked.key.clone() },
-                    ..build_of(walked, &receipts)
+                    ..build_of(walked, &costs)
                 }),
-                false => build(walked, &receipts),
+                false => build(walked, &costs),
             }
         });
         group.layers = group.builds.clone();

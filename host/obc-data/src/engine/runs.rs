@@ -906,7 +906,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             ["test/a", "test/b"].map(|name| step(name, vec![snapshot("head", "1", &[])], "out.txt", command())).into();
         let mut plan = fixture.plan(&steps).unwrap();
         for (build, peak) in plan.groups.iter_mut().flat_map(|group| &mut group.builds).zip(peaks) {
-            build.estimate = Some(Estimate { wall_ms: 0, bytes_out: 0, peak_rss_bytes: peak });
+            build.estimate = Some(Estimate { wall_ms: 0, bytes_out: 0, client_bytes: 0, peak_rss_bytes: peak });
         }
         let built = fixture.run(&steps, &plan, Limits { jobs: 4, memory_bytes: Some(memory_bytes) }).unwrap();
         let spans: Vec<(f64, f64)> = built

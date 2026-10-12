@@ -1,20 +1,23 @@
-//! `obc data source refresh ID`: fetch upstream's newest version of a source, so that the next
-//! update of each target on this machine reads it. A source whose versions have no order, such as
-//! a `digest`, moves no other way.
+//! `obc data source refresh ID`: fetch upstream's newest version of a `digest` source, so that the
+//! next update of each target that serves the version of now reads it. A source whose versions
+//! have no order moves no other way.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use clap::Subcommand;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{fetched, find, print_json, registry, Code, Error};
+use super::{fetched, find, print_json, registry, releases, Code, Error};
 use crate::fetch::{self, http::Http, Request};
-use crate::store::Store;
+use crate::sources::VersionScheme;
+use crate::store::{RefreshedVersion, Store};
 
 #[derive(Subcommand)]
 pub enum SourceCommand {
-    /// Fetch upstream's newest version of a source: the next update of each target reads it.
+    /// Fetch upstream's newest version of a `digest` source: the next update of each target that
+    /// serves the version of now reads it.
     Refresh { id: String },
 }
 
@@ -22,6 +25,8 @@ pub enum SourceCommand {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Refreshed {
     pub source: String,
+    /// The versions that the targets served: a target that serves one of them, or none, moves.
+    pub from: Vec<String>,
     /// Upstream's newest version, now in the store.
     pub version: String,
     /// The size of its files.
@@ -34,28 +39,33 @@ pub fn run(root: &Path, command: SourceCommand, json: bool) -> Result<(), Error>
     if json {
         return print_json(&refreshed);
     }
-    println!("{} {}: the next update of each target reads it", refreshed.source, refreshed.version);
+    println!(
+        "{} {}: the next update of a target that serves it moves to {}",
+        refreshed.source,
+        refreshed.from.join(", "),
+        refreshed.version
+    );
     Ok(())
 }
 
-/// Fetch the newest version of the source `id`, and record it as the version that a step list
-/// reads.
+/// Fetch the newest version of the `digest` source `id`, and record it with the versions that the
+/// targets serve.
 pub(super) fn refresh(root: &Path, store: &Store, http: &Http, id: &str) -> Result<Refreshed, Error> {
     let registry = registry(root)?;
     let source = find(&registry, id)?;
-    if let Some(name) = fetch::params(source).first() {
+    if source.version != VersionScheme::Digest || source.start.is_some() || !fetch::params(source).is_empty() {
         return Err(Code::Usage
-            .error(format!("source `{id}` is fetched per `{name}=`: it has no one newest version"))
-            .fix(format!("Give the target a refresh policy: `obc data update TARGET --refresh {id}=DAYS`.")));
+            .error(format!("`source refresh` moves a `digest` source without a `start` or params, and `{id}` is not one"))
+            .fix("A `date` or `release` source moves when a newer version is due or in the store; a `commit` source, or a source with a `start`, moves with its `start` in data/sources.toml."));
     }
-    if !source.version.ordered() && source.start.is_some() {
-        return Err(Code::Usage
-            .error(format!("the version of `{id}` is its `start` in data/sources.toml"))
-            .fix("Change the `start` there: the next update reads it."));
-    }
+    // A target that cannot be read keeps its version: a refresh never moves what it did not see.
+    let serving = releases(root, store)?.into_iter().filter_map(|(_, releases)| releases.ok()?.into_iter().next());
+    let from: BTreeSet<String> =
+        serving.filter_map(|release| release.versions().remove(&(id.to_string(), Vec::new()))).collect();
     let request = Request { refresh: true, source, version: None, params: Vec::new() };
     let snapshot = fetched(source, fetch::fetch(root, store, http, &request))?;
-    store.put_refreshed(id, &snapshot.version)?;
+    let from: Vec<String> = from.into_iter().collect();
+    store.put_refreshed(&RefreshedVersion { source: id.into(), from: from.clone(), to: snapshot.version.clone() })?;
     let bytes = snapshot.files.iter().map(|file| file.size).sum();
-    Ok(Refreshed { source: id.into(), version: snapshot.version, bytes })
+    Ok(Refreshed { source: id.into(), from, version: snapshot.version, bytes })
 }

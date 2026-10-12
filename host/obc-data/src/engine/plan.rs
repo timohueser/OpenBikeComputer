@@ -89,7 +89,15 @@ pub struct Build {
 pub struct Estimate {
     pub wall_ms: u64,
     pub bytes_out: u64,
+    /// The size of the files that a client reads: what a target gets.
+    pub client_bytes: u64,
     pub peak_rss_bytes: Option<u64>,
+}
+
+/// What estimates a build: the receipts in the store, and the outputs of the release by step.
+pub(super) struct Costs<'a> {
+    pub receipts: Vec<Receipt>,
+    pub release: &'a BTreeMap<&'a str, &'a Output>,
 }
 
 /// A step in dependency order, with what the store has for it.
@@ -135,17 +143,17 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step], kept: &Kept) -> Result<
 }
 
 /// The build of a walked step, when the store lacks its layer.
-pub(super) fn build(walked: &Walked, receipts: &[Receipt]) -> Option<Build> {
-    walked.stored.is_none().then(|| build_of(walked, receipts))
+pub(super) fn build(walked: &Walked, costs: &Costs) -> Option<Build> {
+    walked.stored.is_none().then(|| build_of(walked, costs))
 }
 
 /// The build of a walked step, whatever the store has.
-pub(super) fn build_of(walked: &Walked, receipts: &[Receipt]) -> Build {
+pub(super) fn build_of(walked: &Walked, costs: &Costs) -> Build {
     Build {
         step: walked.step.name.clone(),
         recipe: recipe(walked.step),
         key: walked.key.clone(),
-        estimate: estimate(receipts, walked.step),
+        estimate: estimate(costs, walked.step),
         again: false,
     }
 }
@@ -213,17 +221,27 @@ impl Plan {
     }
 }
 
-/// From the newest receipt of the step with the same options, or else the newest of the step.
-fn estimate(receipts: &[Receipt], step: &Step) -> Option<Estimate> {
+/// From the newest receipt of the step with the same options, else from the cost of its output in
+/// the release, else from the newest receipt of the step.
+fn estimate(costs: &Costs, step: &Step) -> Option<Estimate> {
     let newest = |same_options: bool| {
-        let receipts = receipts.iter().filter(|r| r.step == step.name && (!same_options || r.options == step.options));
+        let receipts = costs.receipts.iter();
+        let receipts = receipts.filter(|r| r.step == step.name && (!same_options || r.options == step.options));
         receipts.max_by(|a, b| a.built.cmp(&b.built))
     };
-    newest(true).or_else(|| newest(false)).map(|receipt| Estimate {
+    let of_receipt = |receipt: &Receipt| Estimate {
         wall_ms: receipt.wall_ms,
         bytes_out: receipt.bytes_out,
+        client_bytes: receipt.files.iter().filter(|file| step.client.includes(&file.path)).map(|file| file.size).sum(),
         peak_rss_bytes: receipt.peak_rss_bytes,
-    })
+    };
+    let served = costs.release.get(step.name.as_str()).map(|output| Estimate {
+        wall_ms: output.cost.wall_ms,
+        bytes_out: output.cost.bytes_out,
+        client_bytes: output.client_files().map(|file| file.size).sum(),
+        peak_rss_bytes: output.cost.peak_rss_bytes,
+    });
+    newest(true).map(of_receipt).or(served).or_else(|| newest(false).map(of_receipt))
 }
 
 /// The snapshot inputs of `step` whose files the store lacks.
@@ -344,11 +362,20 @@ mod tests {
             wall_ms,
             ..lower.clone()
         };
-        let receipts = [receipt(1, "2026-10-01T00:00:00Z", 1000), receipt(2, "2026-10-02T00:00:00Z", 2000)];
+        let receipts = vec![receipt(1, "2026-10-01T00:00:00Z", 1000), receipt(2, "2026-10-02T00:00:00Z", 2000)];
         let mut step = steps("1").remove(3);
+        let served = Output {
+            cost: crate::release::Cost { wall_ms: 3000, ..Output::new(&lower, &step).cost },
+            ..Output::new(&lower, &step)
+        };
+        let (none, release) = (BTreeMap::new(), BTreeMap::from([("test/lower", &served)]));
+        let wall_ms = |release: &BTreeMap<&str, &Output>, step: &Step| {
+            estimate(&Costs { receipts: receipts.clone(), release }, step).map(|estimate| estimate.wall_ms)
+        };
         step.options = serde_json::json!({ "size": 1 });
-        assert_eq!(estimate(&receipts, &step).map(|e| e.wall_ms), Some(1000), "the same options, though older");
+        assert_eq!(wall_ms(&release, &step), Some(1000), "the same options, though older");
         step.options = serde_json::json!({ "size": 3 });
-        assert_eq!(estimate(&receipts, &step).map(|e| e.wall_ms), Some(2000), "else the newest of the step");
+        assert_eq!(wall_ms(&release, &step), Some(3000), "else the cost in the release");
+        assert_eq!(wall_ms(&none, &step), Some(2000), "else the newest of the step");
     }
 }

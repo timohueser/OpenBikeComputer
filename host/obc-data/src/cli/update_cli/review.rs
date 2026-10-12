@@ -3,7 +3,7 @@
 //! after it. Its id names the decisions, so `--expect ID` starts an update only when they are the
 //! ones that a person read.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
-use crate::engine::state::{LayerState, Verdict};
+use crate::engine::state::{self, Field, LayerState, Verdict};
 use crate::engine::{Input, Shape, Step};
 use crate::product::{RequestKey, Versions};
 use crate::release::{Release, Serving};
@@ -22,8 +22,10 @@ use crate::target::Tag;
 /// The review of an update.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Review {
-    /// The first 12 hex digits of the SHA-256 of the decisions: the tag of `release.json`, the
-    /// settings, `layers`, every step that bakes and the source version that each of them reads.
+    /// The first 12 hex digits of the SHA-256 of the canonical JSON of the decisions: the target,
+    /// the tag of `release.json`, the settings, `layers`, every step that bakes and the source version
+    /// that each of them reads. Two machines that read the same target give the same id when their
+    /// stores resolve the same versions and files.
     pub id: String,
     pub target: String,
     /// The release that the target serves; `null` while it serves nothing.
@@ -46,8 +48,8 @@ pub struct Review {
     pub cost: ReviewCost,
     pub machine: MachineCheck,
     pub after: AfterUpdate,
-    /// The command that starts the update of this review.
-    pub argv: Vec<String>,
+    /// The arguments after `obc data` that start the update of this review.
+    pub args: Vec<String>,
 }
 
 /// A layer that the update changes.
@@ -58,7 +60,8 @@ pub struct LayerChange {
     pub text: String,
     /// The steps that bake.
     pub steps: Vec<String>,
-    /// The grid leaves of a tiled layer whose steps bake, as `<i>-<j>`.
+    /// The grid leaves whose steps bake, as `<i>-<j>`: the last part of the name of each step of a
+    /// tiled layer that has that form.
     pub leaves: Vec<String>,
     /// The steps of the serving release that no step makes now.
     pub drops: Vec<String>,
@@ -96,11 +99,12 @@ pub struct ReviewCost {
     pub wall_ms: u64,
     /// The highest estimated peak of one bake.
     pub peak_rss_bytes: Option<u64>,
-    /// What the fetches, the downloads and the bakes write into the store; the upload is the client
-    /// files of it.
+    /// What the fetches, the downloads and the bakes write into the store.
     pub store_bytes: u64,
-    /// The bakes without an estimate: the store has no receipt of the step, and the serving release
-    /// no cost.
+    /// What goes to the target: the files of the bakes that a client reads.
+    pub upload_bytes: u64,
+    /// What the figures lack: a bake without an estimate or without a peak, and a fetch whose size
+    /// is not known.
     pub unknown: Vec<String>,
 }
 
@@ -162,34 +166,42 @@ pub struct Parts<'a> {
 pub fn review(parts: Parts) -> Review {
     let Parts { target, base, serving, rollback, settings, steps, only, plan, kept, layers, downloads, machine } =
         parts;
-    let outputs: BTreeMap<&str, &crate::release::Output> =
-        serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
+    let outputs = serving.iter().flat_map(|release| &release.outputs);
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
     let mut changes = Vec::new();
     for state in layers {
         let mine: Vec<&&Step> = baked.iter().filter(|step| step.layer.name == state.layer).collect();
         let drops: Vec<String> = outputs
-            .values()
+            .clone()
             .filter(|output| output.layer == state.layer && !steps.iter().any(|step| step.name == output.step))
             .map(|output| output.step.clone())
             .collect();
         if mine.is_empty() && drops.is_empty() {
             continue;
         }
+        // A layer that bakes because a layer that it reads bakes follows that layer.
+        let read = mine.iter().flat_map(|step| step.reads());
+        let follows = read.filter_map(|name| baked.iter().find(|step| step.name == name)).map(|step| step.layer.name);
         let cause = match (&state.cause, state.state) {
             _ if !mine.is_empty() && only.contains(&state.layer) => Cause::Named,
             (Some(cause), Verdict::Stale) => Cause::Stale { cause: cause.clone() },
             _ if mine.is_empty() => Cause::Off,
+            // Without `--only`, a layer that is not stale bakes only for files that the target does
+            // not hold.
             _ if only.is_empty() => Cause::Unheld,
-            _ => Cause::Named,
+            _ => match follows.into_iter().find(|layer| *layer != state.layer) {
+                Some(layer) => Cause::Stale { cause: state::Cause::Input { name: layer.into() } },
+                None => Cause::Named,
+            },
         };
-        let format = mine.iter().find_map(|step| {
-            let served = outputs.get(step.name.as_str()).filter(|served| served.layer == step.layer.name)?;
-            (served.format != step.layer.format).then_some(FormatChange { from: served.format, to: step.layer.format })
-        });
+        let format = match &state.cause {
+            Some(state::Cause::Version { field: Field::Format, from: Some(from), to }) => {
+                Some(FormatChange { from: *from, to: *to })
+            }
+            _ => None,
+        };
         let tiled = mine.iter().filter(|step| step.layer.shape == Shape::Tiled);
-        let leaves: BTreeSet<&str> =
-            tiled.filter_map(|step| step.name.rsplit_once('/')).map(|(_, leaf)| leaf).collect();
+        let leaves: BTreeSet<&str> = tiled.filter_map(|step| leaf(&step.name)).collect();
         let readers =
             steps.iter().find(|step| step.layer.name == state.layer).map_or(&[][..], |step| step.layer.readers);
         changes.push(LayerChange {
@@ -226,31 +238,38 @@ pub fn review(parts: Parts) -> Review {
         })
         .collect();
     let decisions = serde_json::json!({
+        "target": target,
         "base": base.map(|(_, tag)| &tag.0),
         "settings": settings,
         "layers": &changes,
         "bakes": baked.iter().map(|step| &step.name).collect::<Vec<_>>(),
         "reads": reads,
     });
-    let id = sha256_hex(&serde_json::to_vec(&decisions).expect("the decisions are JSON"))[..12].to_string();
+    let canonical = serde_json::to_vec(&crate::engine::sorted(decisions)).expect("the decisions are JSON");
+    let id = sha256_hex(&canonical)[..12].to_string();
 
-    let mut bakes: Vec<Build> = Vec::new();
-    for build in plan.builds() {
-        if !bakes.iter().any(|known| known.step == build.step) {
-            bakes.push(build.clone());
+    let mut seen = BTreeSet::new();
+    let bakes: Vec<Build> = plan.builds().filter(|build| seen.insert(&build.step)).cloned().collect();
+    let fetches = plan.fetches();
+    let mut cost = ReviewCost::default();
+    for fetch in &fetches {
+        match fetch.bytes {
+            Some(bytes) => cost.store_bytes += bytes,
+            None => cost.unknown.push(format!("fetch `{}@{}`: size unknown", fetch.source, fetch.version)),
         }
     }
-    let fetches = plan.fetches();
-    let fetched: u64 = fetches.iter().filter_map(|fetch| fetch.bytes).sum();
-    let mut cost = ReviewCost { store_bytes: fetched + downloads.bytes, ..ReviewCost::default() };
+    cost.store_bytes += downloads.bytes;
     for build in &bakes {
-        match build.estimate {
-            Some(estimate) => {
-                cost.wall_ms += estimate.wall_ms;
-                cost.store_bytes += estimate.bytes_out;
-                cost.peak_rss_bytes = cost.peak_rss_bytes.max(estimate.peak_rss_bytes);
-            }
-            None => cost.unknown.push(build.step.clone()),
+        let Some(estimate) = build.estimate else {
+            cost.unknown.push(format!("`{}`: no estimate", build.step));
+            continue;
+        };
+        cost.wall_ms += estimate.wall_ms;
+        cost.store_bytes += estimate.bytes_out;
+        cost.upload_bytes += estimate.client_bytes;
+        match estimate.peak_rss_bytes {
+            Some(peak) => cost.peak_rss_bytes = cost.peak_rss_bytes.max(Some(peak)),
+            None => cost.unknown.push(format!("`{}`: no RAM estimate", build.step)),
         }
     }
     let mut machine = machine.clone();
@@ -264,6 +283,7 @@ pub fn review(parts: Parts) -> Review {
             let named: BTreeSet<String> =
                 serving.iter().flat_map(|release| release.files()).map(|file| file.key).collect();
             let only_rollback = rollback.files().into_iter().filter(|file| !named.contains(&file.key));
+            // The manifest is a key too; its size is not counted.
             let (keys, bytes) = only_rollback.fold((1, 0), |(keys, bytes), file| (keys + 1, bytes + file.size));
             Collects { release: rollback.id(), keys, bytes }
         }),
@@ -282,8 +302,16 @@ pub fn review(parts: Parts) -> Review {
         cost,
         machine,
         after,
-        argv: Vec::new(),
+        args: Vec::new(),
     }
+}
+
+/// The leaf of the step `name`: its last part when that is `<i>-<j>`.
+fn leaf(name: &str) -> Option<&str> {
+    let (_, last) = name.rsplit_once('/')?;
+    let (i, j) = last.split_once('-')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    (digits(i) && digits(j)).then_some(last)
 }
 
 /// Why `machine` cannot bake `bakes` and write `store_bytes`.
@@ -381,18 +409,19 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     rows.push(vec!["  keep".into(), format!("{} outputs by reference", review.kept)]);
     let cost = &review.cost;
     let mut text = format!(
-        "{} fetches, {} downloads, {} bakes: about {} min, {} into the store",
+        "{} fetches, {} downloads, {} bakes: about {} min, {} into the store, {} to the target",
         review.fetches.len(),
         review.downloads.files,
         review.bakes.len(),
         cost.wall_ms.div_ceil(60_000),
-        size(cost.store_bytes)
+        size(cost.store_bytes),
+        size(cost.upload_bytes)
     );
     if let Some(peak) = cost.peak_rss_bytes {
         text += &format!(", peak {} memory", size(peak));
     }
     if !cost.unknown.is_empty() {
-        text += &format!("; no estimate for {}", cost.unknown.join(", "));
+        text += &format!("; {}", cost.unknown.join(", "));
     }
     rows.push(vec!["  cost".into(), text]);
     let machine = match review.machine.refusals.as_slice() {
@@ -414,7 +443,7 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
         );
     }
     rows.push(vec!["  after".into(), after]);
-    rows.push(vec!["  start".into(), review.argv.join(" ")]);
+    rows.push(vec!["  start".into(), format!("obc data {}", review.args.join(" "))]);
     print_table(&rows);
     Ok(())
 }
@@ -433,5 +462,15 @@ fn size(bytes: u64) -> String {
     match bytes {
         bytes if bytes >= 1 << 30 => format!("{:.1} GiB", bytes as f64 / (1u64 << 30) as f64),
         bytes => format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_leaf_is_the_last_part_of_a_step_name_of_the_form_i_j() {
+        assert_eq!(super::leaf("device/coarse/0037-0033"), Some("0037-0033"));
+        assert_eq!(super::leaf("device/landmark-content"), None);
+        assert_eq!(super::leaf("device/landmark-content/europe-alps"), None);
     }
 }

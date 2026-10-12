@@ -61,6 +61,11 @@ pub struct Fetched {
     /// Whether the target holds a copy of each file at `sources/<source>/<version>/<name>`: when
     /// the licence lets us give the bytes to others.
     pub copy: bool,
+    /// The licence and the credit of the source in `data/sources.toml`, for a copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -280,6 +285,16 @@ impl Release {
         for file in self.files() {
             crate::r2::check_key(&file.key)?;
         }
+        // Two fetches of one version can name one file: its copy has one SHA-256.
+        let mut copies = BTreeMap::new();
+        for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
+            for file in &fetched.files {
+                let key = format!("sources/{}/{}/{}", fetched.source, fetched.version, file.name);
+                if copies.insert(key.clone(), &file.sha256).is_some_and(|other| other != &file.sha256) {
+                    return Err(format!("{key} is the copy of two files"));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -298,8 +313,12 @@ impl Release {
     /// serves, whoever made it, when, and what its builds cost.
     pub fn serves_as(&self, other: &Release) -> bool {
         let same = |a: &Output, b: &Output| Output { cost: a.cost, ..b.clone() } == *a;
-        (&self.settings, &self.pointers, &self.named, &self.sources)
-            == (&other.settings, &other.pointers, &other.named, &other.sources)
+        // Whether the target copies a source, and its credit, change no file of the release.
+        fn read(fetched: &Fetched) -> (&String, &String, &Vec<(String, String)>, &Vec<FetchedFile>) {
+            (&fetched.source, &fetched.version, &fetched.params, &fetched.files)
+        }
+        (&self.settings, &self.pointers, &self.named) == (&other.settings, &other.pointers, &other.named)
+            && self.sources.iter().map(read).eq(other.sources.iter().map(read))
             && self.outputs.len() == other.outputs.len()
             && self.outputs.iter().zip(&other.outputs).all(|(a, b)| same(a, b))
     }
@@ -308,10 +327,16 @@ impl Release {
     pub fn read(target: &Target, id: &str) -> Result<Release, String> {
         let key = manifest_key(id);
         let bytes = target.get(&key)?.ok_or_else(|| format!("the target has no {key}"))?;
-        if sha256_hex(&bytes) != id {
+        Release::parse(id, &bytes)
+    }
+
+    /// The release `id` from the bytes of its manifest.
+    pub fn parse(id: &str, bytes: &[u8]) -> Result<Release, String> {
+        let key = manifest_key(id);
+        if sha256_hex(bytes) != id {
             return Err(format!("{key}: its SHA-256 is not its id"));
         }
-        let release: Release = serde_json::from_slice(&bytes).map_err(|e| format!("{key}: {e}"))?;
+        let release: Release = serde_json::from_slice(bytes).map_err(|e| format!("{key}: {e}"))?;
         release.check().map_err(|e| format!("{key}: {e}"))?;
         Ok(release)
     }
@@ -571,10 +596,24 @@ pub(crate) mod tests {
         let other = |r: &mut Release| (r.named[1].sha256, r.named[1].size) = (upper.sha256.clone(), upper.size);
         assert!(refused(&other).contains("not the digest"), "a named file changes the folder");
         assert!(refused(&|r| drop(r.named.pop())).contains("not the digest"));
+        let fetch = |params: &str, sha256: &str| Fetched {
+            source: "land".into(),
+            version: "1".into(),
+            params: vec![("area".into(), params.into())],
+            files: vec![FetchedFile { name: "land.zip".into(), url: String::new(), size: 1, sha256: sha256.into() }],
+            copy: true,
+            licence: None,
+            attribution: None,
+        };
+        let copies = |r: &mut Release| r.sources = vec![fetch("a", &"a".repeat(64)), fetch("b", &"b".repeat(64))];
+        assert!(refused(&copies).contains("copy of two files"));
 
         let mut rebuilt = Release { machine: "desktop".into(), ..valid.clone() };
         rebuilt.outputs[0].cost.wall_ms += 1;
         assert!(rebuilt.serves_as(&valid), "a rebuild of the same bytes serves as the release");
+        rebuilt.sources = vec![Fetched { copy: false, ..fetch("a", &"a".repeat(64)) }];
+        let copied = Release { sources: vec![fetch("a", &"a".repeat(64))], ..valid.clone() };
+        assert!(rebuilt.serves_as(&copied), "a copy alone changes no file of the release");
         rebuilt.outputs[0].key = "other".into();
         assert!(!rebuilt.serves_as(&valid));
     }

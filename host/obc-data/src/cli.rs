@@ -190,26 +190,36 @@ type Releases = Result<Vec<Release>, Error>;
 /// The [`Releases`] of each target, by target.
 fn releases(root: &Path, store: &Store) -> Result<Vec<(String, Releases)>, Error> {
     let targets = crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?;
-    let read = |target: &crate::target::Target| -> Result<Vec<Release>, Error> {
+    let read = |name: &str, target: &crate::target::Target| -> Result<Vec<Release>, Error> {
         let Some(bytes) = target.get(SERVING)? else { return Ok(Vec::new()) };
-        let serving: crate::release::Serving =
-            serde_json::from_slice(&bytes).map_err(|e| Code::InvalidData.error(format!("{SERVING}: {e}")))?;
+        let serving: crate::release::Serving = serde_json::from_slice(&bytes)
+            .map_err(|e| Code::InvalidData.error(format!("target `{name}`: {SERVING}: {e}")))?;
         let ids = std::iter::once(&serving.serving).chain(&serving.rollback).map(|role| role.id.as_str());
-        Ok(ids.map(|id| Release::read(target, id)).collect::<Result<_, _>>()?)
+        ids.map(|id| update_cli::read(name, target, id)).collect()
     };
-    Ok(targets.into_iter().map(|(name, target)| (name, read(&target))).collect())
+    Ok(targets
+        .into_iter()
+        .map(|(name, target)| {
+            let releases = read(&name, &target);
+            (name, releases)
+        })
+        .collect())
 }
 
 /// The roots of a collection: the releases of the targets, and the checkout at `root`.
 fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
     let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
     for (name, releases) in releases(root, store)? {
-        let releases = releases.map_err(|e| {
-            let fix = "A clean keeps what each target serves: run it again when every target can be read.";
-            Code::Failed.error(format!("target `{name}`: {}", e.message)).fix(fix)
+        let releases = releases.map_err(|e| match e.code {
+            Code::InvalidData => e,
+            _ => {
+                let fix = "A clean keeps what each target serves: run it again when every target can be read.";
+                Code::Failed.error(format!("target `{name}`: {}", e.message)).fix(fix)
+            }
         })?;
         releases.iter().for_each(|release| roots.add_release(&name, release));
     }
+    roots.refreshed = store.refreshes()?.into_iter().map(|refreshed| (refreshed.source, refreshed.to)).collect();
     Ok(roots)
 }
 
