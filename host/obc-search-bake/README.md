@@ -1,7 +1,6 @@
 # Search baker
 
-Run `obc planner prepare` from the checkout to build addresses, POIs, and
-localities from the recipe's OSM snapshot. See the
+`obc data update` builds addresses, POIs, and localities from the OSM of the region. See the
 [planner README](../../builder/web/src/components/planner/README.md).
 The pipeline verifies the input hash and builds the search packages and place tiles.
 It needs no Nominatim database, Photon export, or PostgreSQL installation.

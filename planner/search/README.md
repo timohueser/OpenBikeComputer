@@ -6,8 +6,8 @@ need no external search service. Map tiles and routing are separate services.
 
 ## Setup and run
 
-Run `obc planner setup` from the repository root to prepare maps, search and routing data. See
-the [planner README](../../builder/web/src/components/planner/README.md). Run search as below.
+`obc data update local` prepares maps, search and routing data. See the
+[planner README](../../builder/web/src/components/planner/README.md). Run search as below.
 
 To prepare dependencies and the query model separately, install Node 24 or later,
 Python 3.12 or later, `uv`, and the GitHub CLI. Run from the repository root:
@@ -17,7 +17,7 @@ python3 planner/search/setup.py
 OBC_SEARCH_DATA=RELEASE/search npm run dev --prefix planner/search
 ```
 
-Use the search directory from `obc planner prepare`. The
+Use the search directory of a planner release. The
 [Rust baker](../../host/obc-search-bake/README.md) produces addresses, POIs, and
 localities from the release's OSM snapshot. POI tiles are a projection of this
 search database. Device and planner POIs share classification and coordinates.

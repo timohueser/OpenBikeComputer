@@ -14,7 +14,7 @@ bash companion-ios/PlannerNative/test-tiles.sh
 
 ## Companion download service
 
-Use a canonical grid release from `obc planner grid`. Each planner release has
+Use a planner release of `obc data`. Each planner release has
 its own download service beside its routing and search services: `obc data serve`
 starts them. The app calls `downloads` of the active release in the planner pointer.
 A pointer without it names the legacy service at `/planner-offline/`: the unit
