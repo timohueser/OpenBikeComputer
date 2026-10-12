@@ -105,6 +105,7 @@ impl<S: Services> Follower<S> {
             }
         }
         self.wanted = wanted;
+        self.poll(now());
         if let Some(current) = self.current.as_ref().filter(|current| !self.wanted.contains(current)) {
             eprintln!(
                 "obc data serve: WARNING: clients get release {}, which release.json no longer names. An update \
@@ -112,7 +113,6 @@ impl<S: Services> Follower<S> {
                 short(&current.id)
             );
         }
-        self.poll(now());
     }
 
     /// Check the services that start, and fail a planner release whose service stopped. Clients

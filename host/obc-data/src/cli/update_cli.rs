@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{freshness, listing, print_json, Code, Error};
+use crate::collection::{self, Collected};
 use crate::engine::changes;
 use crate::engine::plan::outputs;
 use crate::engine::runs::{Context, Event, Limits, Phase, Publication, Run};
@@ -60,6 +61,8 @@ pub struct Updated {
     pub baked: Vec<Baked>,
     /// The number of outputs that the release keeps by reference.
     pub kept: usize,
+    /// What the collection after the switch did; `null` without a switch.
+    pub collection: Option<Collected>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -96,6 +99,9 @@ pub fn command(root: &Path, products: &[&dyn Product], args: UpdateArgs, json: b
             updated.kept
         ),
         None => println!("{} serves release {}", updated.target, &updated.serving[..12]),
+    }
+    if let Some(collected) = &updated.collection {
+        println!("{}", collected.text());
     }
     Ok(())
 }
@@ -169,6 +175,7 @@ pub(super) fn update(
         rollback: None,
         baked: baked.collect(),
         kept: update.kept.len(),
+        collection: None,
     };
     let changed = || {
         Code::Failed
@@ -200,6 +207,9 @@ pub(super) fn update(
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
     run.sync()?;
+    run.record(&Event::Phase { phase: Phase::Collect })?;
+    let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
+    updated.collection = Some(collection::collect(target, since, crate::date::now()));
     updated.rollback = base.map(|(base, _)| base.serving.id);
     updated.serving = id;
     Ok(updated)
@@ -307,7 +317,7 @@ fn defined(settings: &mut Settings, region: Region) -> Result<(), Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::engine::tests::{fixture, pipeline, snapshot, write, Fixture};
     use crate::product::{Pointer, Steps, Unplanned};
@@ -356,7 +366,7 @@ mod tests {
         }
     }
 
-    fn update(
+    pub(in crate::cli) fn update(
         fixture: &Fixture,
         target: &Target,
         edit: impl FnOnce(&mut Settings) -> Result<(), Error>,
@@ -378,7 +388,7 @@ mod tests {
         updated
     }
 
-    fn region(settings: &mut Settings) -> Result<(), Error> {
+    pub(in crate::cli) fn region(settings: &mut Settings) -> Result<(), Error> {
         let area = Area::Box { bbox: Bbox::new([7.0, 47.0, 8.0, 48.0]).unwrap() };
         defined(settings, Region { id: "box".into(), name: "Box".into(), area, countries: Vec::new(), time_zone: None })
     }
@@ -472,5 +482,83 @@ mod tests {
         std::fs::write(dir.join(release::SERVING), b"not json").unwrap();
         let refused = crate::cli::roots(&fixture.root(), &fixture.store).unwrap_err();
         assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
+    }
+
+    /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
+    fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
+        fixture.with_sources(&[]);
+        let a = update(fixture, target, region).unwrap().serving;
+        fixture.fetched_version("head", "2", "head.txt", b"2\n");
+        let b = update(fixture, target, |_| Ok(())).unwrap().serving;
+        fixture.fetched_version("head", "3", "head.txt", b"3\n");
+        (a, b, update(fixture, target, |_| Ok(())).unwrap())
+    }
+
+    fn keys(target: &Target) -> std::collections::BTreeSet<String> {
+        target.list().unwrap().into_iter().map(|listed| listed.key).collect()
+    }
+
+    /// A collection after the grace: `now` is later than the time of every file.
+    fn late(target: &Target) -> Collected {
+        let now = crate::date::now();
+        collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60)
+    }
+
+    #[test]
+    fn a_collection_after_the_grace_deletes_dropped_releases_and_orphans_and_keeps_older_keys() {
+        use std::collections::BTreeSet;
+        let fixture = fixture("update-collect");
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        let (a, b, c) = three_releases(&fixture, &target);
+        let collected = c.collection.unwrap();
+        assert_eq!((collected.deferred, collected.keys), (vec![a.clone()], 0), "a stopped serving just now");
+
+        let files = |id: &str| -> BTreeSet<String> {
+            Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key).collect()
+        };
+        let mut only_a: BTreeSet<String> = &(&files(&a) - &files(&b)) - &files(&c.serving);
+        only_a.insert(release::manifest_key(&a));
+        let older = ["reference/v1/x", "cell-catalog/cells/x", "planner/objects/x", "reference/v1/.x.part"];
+        let orphans = ["objects/0000", "objects/.1.2.part", ".release.json.1.tmp", "cell-catalog/.catalog.json.1.tmp"];
+        for key in older.iter().chain(&orphans) {
+            write(&dir.join(key), key);
+        }
+        let before = keys(&target);
+
+        let epoch = crate::date::timestamp(0);
+        let young = collection::collect(&target, Some(&epoch), crate::date::now());
+        assert_eq!((young.deferred, young.keys), (vec![a.clone()], 0), "its files changed within the grace");
+
+        // A collection that stopped after one file resumes from the manifest.
+        let first = only_a.iter().find(|key| key.starts_with("objects/")).unwrap().clone();
+        target.remove(&first).unwrap();
+        let late = late(&target);
+        assert_eq!((late.releases, late.stopped), (vec![a], None));
+        assert_eq!(late.keys as usize, only_a.len() - 1 + orphans.len());
+        let gone: BTreeSet<String> = only_a.into_iter().chain(orphans.map(String::from)).collect();
+        assert_eq!(keys(&target), &before - &gone);
+    }
+
+    #[test]
+    fn a_collection_deletes_nothing_while_a_pointer_drifts_or_a_manifest_cannot_be_read() {
+        let fixture = fixture("update-collect-guards");
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        three_releases(&fixture, &target);
+        let before = keys(&target);
+        let pointer = dir.join(POINTERS[0]);
+        let saved = std::fs::read(&pointer).unwrap();
+        std::fs::write(&pointer, b"another publisher").unwrap();
+        let drifted = late(&target);
+        assert_eq!(drifted.stopped.as_deref(), Some("cell-catalog/catalog.json is not of the serving release"));
+        assert_eq!((drifted.keys, keys(&target)), (0, before.clone()));
+
+        std::fs::write(&pointer, saved).unwrap();
+        let unreadable = release::manifest_key(&"f".repeat(64));
+        write(&dir.join(&unreadable), "not a manifest");
+        let unknown = late(&target);
+        assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
+        assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
     }
 }
