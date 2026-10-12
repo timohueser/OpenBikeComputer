@@ -52,10 +52,12 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal. It waits up to 24 h until the follower serves the release |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
+| `obc data source prepare ID --to local` | Make a version of a prepared source; the same command resumes it |
+| `obc data source prepare ID --dry-run` | Review a prepare for `prod`; the owner approves its id |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
 | `obc data runs RUN --follow` | Observe progress; Ctrl-C ends only the following |
 | `obc data runs RUN --stop` | Stop a run: it frees the lock and keeps what it baked |
-| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine |
+| `obc data unlock local --from MACHINE` | Free the lock of a run that stopped on that machine; `--source ID` frees the lock of a prepared source |
 | `obc data clean` | Review unused store bytes before `--apply` |
 | `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
 | `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |

@@ -260,6 +260,38 @@ impl Target {
     }
 }
 
+impl Target {
+    /// Give `key` the bytes of `file`, also when it holds other bytes: only for a key that no reader
+    /// reads yet. rclone replaces an object of another checksum.
+    pub fn replace(&self, file: &Path, key: &str) -> Result<(), String> {
+        let Target::Dir(dir) = self else { return self.upload(&[(file.to_path_buf(), key.into())]) };
+        crate::r2::check_key(key)?;
+        let path = dir.join(key);
+        let parent = path.parent().expect("a key has a parent folder");
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        let part = part(&path);
+        let _ = fs::remove_file(&part);
+        link(file, &part).and_then(|()| fs::rename(&part, &path)).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The files under `folder` of the target, sorted by key.
+    pub fn list_under(&self, folder: &str) -> Result<Vec<Listed>, String> {
+        let Target::R2(remote) = self else {
+            let prefix = format!("{folder}/");
+            return Ok(self.list()?.into_iter().filter(|listed| listed.key.starts_with(&prefix)).collect());
+        };
+        let mut listed: Vec<Listed> = remote
+            .writer()?
+            .bucket()?
+            .list(folder)?
+            .into_iter()
+            .map(|object| Listed { key: object.key, size: object.bytes })
+            .collect();
+        listed.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(listed)
+    }
+}
+
 /// Give `path`, which must not exist, the bytes of `file`: a hard link, or on another file system
 /// a copy under a [`part`] name that is then linked. Nothing opens an existing file for writing:
 /// it can be a link to an object of the store.
@@ -378,6 +410,14 @@ impl Target {
 }
 
 impl Target {
+    /// The folder `folder` of the target, as a target of its own.
+    pub fn within(&self, folder: &str) -> Target {
+        match self {
+            Target::Dir(dir) => Target::Dir(dir.join(folder)),
+            Target::R2(remote) => Target::R2(r2::Remote { prefix: remote.key(folder), ..remote.clone() }),
+        }
+    }
+
     /// The time of now by the clock of the target: of this machine for a dir target, of the
     /// server for an R2 target.
     pub fn now(&self) -> Result<u64, String> {

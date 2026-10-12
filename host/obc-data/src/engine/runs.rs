@@ -597,18 +597,20 @@ impl Run {
                 version: Some(planned.version.clone()),
                 params: planned.params.clone(),
             };
-            self.fetch_request(context.root, context.store, context.http, &request)?;
+            self.fetch_request(context.root, context.store, context.http, &request, &planned.files)?;
         }
         Ok(())
     }
 
-    /// Fetch `request`, and record it.
+    /// Fetch `request`, and record it. `names` names the files of a prepared version that a step
+    /// reads.
     pub fn fetch_request(
         &mut self,
         root: &Path,
         store: &Store,
         http: &Http,
         request: &fetch::Request<'_>,
+        names: &[String],
     ) -> Result<crate::store::Snapshot, String> {
         self.check_stop(store)?;
         let (source, version, params) = (
@@ -619,7 +621,7 @@ impl Run {
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
         let mut acquisition = None;
-        match fetch::fetch_recorded(root, store, http, request, Some(&mut acquisition)) {
+        match fetch::fetch_recorded(root, store, http, request, names, Some(&mut acquisition)) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
@@ -1170,7 +1172,7 @@ pub fn stop(store: &Store, id: &str) -> Result<Status, String> {
 /// `SOURCE@VERSION NAME=VALUE…`
 pub fn fetched(source: &str, version: &str, params: &[(String, String)]) -> String {
     let params = params.iter().map(|(name, value)| format!(" {name}={value}"));
-    format!("{source}@{version}{}", params.collect::<String>())
+    format!("{source}@{}{}", crate::prepared::show(version), params.collect::<String>())
 }
 
 pub fn duration(ms: u64) -> String {

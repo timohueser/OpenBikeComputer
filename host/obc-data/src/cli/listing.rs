@@ -10,7 +10,7 @@ use crate::engine::Step;
 use crate::fetch::{self, http::Http, Request};
 use crate::product::{BlockedLayer, Inputs, Product, Unplanned, Wanted};
 use crate::regions::Regions;
-use crate::sources::Source;
+use crate::sources::{FetchKind, Source};
 use crate::store::Store;
 
 /// The fetch rounds of one product: a loop guard, far above the two that the planner needs.
@@ -37,6 +37,12 @@ pub(super) fn fetcher<'a>(
     bulk: bool,
 ) -> impl FnMut(&Wanted) -> Result<String, Error> + 'a {
     move |wanted| {
+        let prepared = sources.iter().any(|s| s.id == wanted.source && s.fetch.kind == FetchKind::Prepared);
+        if prepared && wanted.version.is_none() {
+            return Err(Code::Blocked
+                .error(format!("no target lists a version of `{}` in the format of this `obc data`", wanted.source))
+                .fix(format!("Run `obc data source prepare {}`.", wanted.source)));
+        }
         if !bulk && !METADATA.contains(&wanted.source.as_str()) {
             return Err(Code::Blocked
                 .error(format!("source `{}` is not in the store, and only an update fetches data", wanted.source))
@@ -57,7 +63,7 @@ pub(super) fn fetcher<'a>(
         let request =
             Request { refresh: false, source, version: wanted.version.clone(), params: wanted.params.clone() };
         let snapshot = match run.as_deref_mut() {
-            Some(run) => run.fetch_request(root, store, http, &request),
+            Some(run) => run.fetch_request(root, store, http, &request, &[]),
             None => fetch::fetch(root, store, http, &request),
         };
         fetched(source, snapshot).map(|snapshot| snapshot.version)

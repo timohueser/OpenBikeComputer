@@ -12,6 +12,7 @@ use crate::engine::runs::Limits;
 use crate::engine::state::{Environment, LayerState, Verdict};
 use crate::fetch::http::Http;
 use crate::lock::{self, Holder};
+use crate::prepared::Prepared;
 use crate::product::{BlockedLayer, Inputs, Product};
 use crate::regions::{geofabrik, Area, Bbox, Regions};
 use crate::release::{self, Serving, SERVING};
@@ -120,15 +121,20 @@ pub struct Lock {
     pub stale: bool,
 }
 
-pub fn overview(root: &Path, products: &[&dyn Product], json: bool) -> Result<(), Error> {
+pub fn overview(
+    root: &Path,
+    (products, producers): (&[&dyn Product], &[&dyn Prepared]),
+    json: bool,
+) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
     let targets = crate::target::load(root, &store).map_err(|e| Code::InvalidData.error(e))?;
     let sources = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
     // A target names its Geofabrik areas without their bounds; the cached index has them.
     let index = super::cached_index(&store).ok().flatten();
     let index = index.as_ref().map(|(_, areas)| areas);
-    let targets =
-        targets.iter().map(|(name, target)| state(root, &store, &http, products, (&sources, index), name, target));
+    let targets = targets
+        .iter()
+        .map(|(name, target)| state(root, &store, &http, (products, producers), (&sources, index), name, target));
     let limits = Limits::machine();
     let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
     let name = crate::machine();
@@ -198,7 +204,7 @@ fn state(
     root: &Path,
     store: &Store,
     http: &Http,
-    products: &[&dyn Product],
+    (products, producers): (&[&dyn Product], &[&dyn Prepared]),
     (sources, index): (&[Source], Option<&BTreeMap<String, geofabrik::Area>>),
     name: &str,
     target: &Target,
@@ -264,6 +270,8 @@ fn state(
         release.settings.policies(&mut sources)?;
         let mut inputs =
             Inputs { settings: release.settings.clone(), serving: release.versions(), ..Inputs::default() };
+        let read = inputs.serving.keys().cloned().collect();
+        crate::prepared::resolve(root, store, (name, target), (&sources, &read, producers), &mut inputs)?;
         let fetch = listing::fetcher(root, store, http, &sources, None, false);
         let listed = listing::steps(root, products, &mut inputs, &regions, store, true, fetch)?;
         state.blocked = listed.blocked;

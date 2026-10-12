@@ -282,7 +282,7 @@ pub(super) fn add_fetch(fetches: &mut Vec<Fetch>, fetch: &Fetch) {
 /// The size of the files of `fetch` in the record of its version, or else in the record of the
 /// last other version in byte order that has them all. Without names, the files are those of a
 /// fetch with the same params, or every file.
-fn fetch_bytes(store: &Store, fetch: &Fetch) -> Result<Option<u64>, String> {
+pub(crate) fn fetch_bytes(store: &Store, fetch: &Fetch) -> Result<Option<u64>, String> {
     let mut candidates: Vec<(String, Vec<String>)> = if fetch.params.is_empty() || !fetch.files.is_empty() {
         let versions = store.snapshots(&fetch.source)?.into_iter().map(|snapshot| snapshot.version);
         versions.map(|version| (version, fetch.files.clone())).collect()

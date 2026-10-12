@@ -1,4 +1,5 @@
-//! `obc data` with the steps of every product and the page of `obc data ui`.
+//! `obc data` with the steps of every product, the producers of prepared sources and the page of
+//! `obc data ui`.
 
 use std::process::ExitCode;
 
@@ -11,5 +12,5 @@ fn main() -> ExitCode {
             Err(error) => obc_data::cli::failed(error),
         };
     }
-    obc_data::cli::main(obc_data_steps::PRODUCTS, Some(obc_data_steps::ui::run))
+    obc_data::cli::main(obc_data_steps::PRODUCTS, obc_data_steps::PREPARED, Some(obc_data_steps::ui::run))
 }

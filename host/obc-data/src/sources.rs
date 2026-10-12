@@ -36,6 +36,8 @@ pub enum FetchKind {
     ByHand,
     /// A person installs it, or another source's build brings it.
     Installed,
+    /// `obc data source prepare` publishes its versions to a target.
+    Prepared,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -249,9 +251,12 @@ const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 impl Source {
     /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
     /// give the bytes to others. The national terrain models (`dtm-*`) have no copy: `obc data`
-    /// reads them through a capture per archive tile.
+    /// reads them through a capture per archive tile. A prepared version is on a target already.
     pub fn copied(&self) -> bool {
-        self.redistribute && !NOT_COPIED.contains(&self.id.as_str()) && !self.id.starts_with("dtm-")
+        self.redistribute
+            && self.fetch.kind != FetchKind::Prepared
+            && !NOT_COPIED.contains(&self.id.as_str())
+            && !self.id.starts_with("dtm-")
     }
 
     /// Whether the source can have data in `[west, south, east, north]`: it has an `extent`, and
@@ -262,8 +267,13 @@ impl Source {
 
     fn validate(&self) -> Result<(), String> {
         let fail = |why: &str| Err(format!("source `{}`: {why}", self.id));
-        if !crate::is_kebab(&self.id) {
-            return fail("the id is not lowercase kebab-case");
+        let prepared = self.fetch.kind == FetchKind::Prepared;
+        // A prepared source of a family, such as `terrain-reference/ch`, has two parts.
+        if self.id.split('/').count() > 1 + usize::from(prepared) || !self.id.split('/').all(crate::is_kebab) {
+            return fail("the id is not lowercase kebab-case, or two such parts joined by `/` for a prepared source");
+        }
+        if prepared && (!self.redistribute || self.version != VersionScheme::Date) {
+            return fail("a prepared source has `redistribute = true` and `version = \"date\"`");
         }
         if let Some(licence) = &self.licence {
             if !is_licence_expression(licence) {
@@ -271,8 +281,10 @@ impl Source {
             }
         }
         match (&self.fetch.url, self.fetch.kind) {
-            (None, FetchKind::Installed) => {}
-            (Some(_), FetchKind::Installed) => return fail("an `installed` fetch has no `url`"),
+            (None, FetchKind::Installed | FetchKind::Prepared) => {}
+            (Some(_), FetchKind::Installed | FetchKind::Prepared) => {
+                return fail("an `installed` or `prepared` fetch has no `url`")
+            }
             (None, _) => return fail("`fetch.url` is missing"),
             (Some(url), _) if !url.starts_with("https://") => return fail("`fetch.url` is not https"),
             _ => {}
@@ -456,8 +468,10 @@ pub fn status(source: &Source, serving: Option<&str>, base: Option<&str>, upstre
         let from = source.fetch.from.as_deref().unwrap_or_default();
         (State::Stale, Some(format!("before `{from}` {base} of the serving release")))
     } else {
+        let prepared = source.fetch.kind == FetchKind::Prepared;
         match (source.refresh, age_days) {
-            (Refresh::Days(max), Some(age)) if age > i64::from(max) => match upstream {
+            // A prepared source moves when a target lists a newer version: `prepared::resolve`.
+            (Refresh::Days(max), Some(age)) if age > i64::from(max) && !prepared => match upstream {
                 Upstream::Newest(newest) if Some(newest.as_str()) > serving => {
                     (State::Stale, Some(format!("{age} d > {max} d, upstream {newest}")))
                 }
@@ -499,6 +513,19 @@ mod tests {
     fn an_unknown_field_is_rejected() {
         let err = parse_sources(&format!("{OSM}licence_text = \"x\"\n")).unwrap_err();
         assert!(err.contains("licence_text"), "{err}");
+    }
+
+    #[test]
+    fn only_a_prepared_source_has_an_id_of_two_parts_and_it_gives_its_bytes_to_others() {
+        let url = "fetch = { kind = \"http\", url = \"https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf\" }";
+        let prepared = OSM
+            .replace("id = \"osm\"", "id = \"terrain-reference/ch\"")
+            .replace(url, "fetch = { kind = \"prepared\" }");
+        assert!(!parse_sources(&prepared).unwrap()[0].copied(), "a version is on a target already");
+        assert!(parse_sources(&prepared.replace("/ch\"", "/ch/x\"")).unwrap_err().contains("kebab-case"));
+        assert!(parse_sources(&OSM.replace("id = \"osm\"", "id = \"osm/x\"")).unwrap_err().contains("kebab-case"));
+        let private = prepared.replace("redistribute = true", "redistribute = false");
+        assert!(parse_sources(&private).unwrap_err().contains("`redistribute = true`"));
     }
 
     #[test]
