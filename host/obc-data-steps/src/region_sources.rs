@@ -14,7 +14,7 @@ use crate::device::{box_poly, text, EXTRACTS, POLY};
 const INDEX: &str = "geofabrik-index";
 
 /// The OSM of a region, from its source areas: the steps of the layers that read OSM read it.
-pub static OSM: Layer = Layer { name: "osm", shape: Shape::Whole, format: 1, revision: 1, readers: &[] };
+pub static OSM: Layer = Layer { name: "osm", shape: Shape::Whole, format: 1, revision: 2, readers: &[] };
 
 pub struct Source {
     pub id: String,
