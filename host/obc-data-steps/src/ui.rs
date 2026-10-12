@@ -148,8 +148,14 @@ async fn cli(State(page): State<Arc<Page>>, Json(ask): Json<Ask>) -> Response {
 /// Why the page does not run `obc data ARGS`: it runs only the commands that its screens use, and
 /// each is named here.
 fn refused(args: &[String]) -> Option<Error> {
-    let allowed = matches!(args.first().map(String::as_str), None | Some("setup"));
-    let command = ["obc", "data"].into_iter().chain(args.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let allowed = match words[..] {
+        [] | ["setup"] | ["runs"] => true,
+        // Not `--follow`: it answers only when the run ends.
+        ["runs", run] | ["runs", run, "--stop"] => !run.starts_with('-'),
+        _ => false,
+    };
+    let command = ["obc", "data"].into_iter().chain(words).collect::<Vec<_>>().join(" ");
     (!allowed).then(|| Code::Usage.error(format!("the page does not run `{command}`")).fix("Run it in a terminal."))
 }
 
@@ -303,13 +309,15 @@ mod tests {
             &["ui"][..],
             &["open", "bake"],
             &["runs", "r1", "--follow"],
+            &["runs", "r1", "--stop", "--follow"],
+            &["runs", "--stop"],
             &["r2", "list"],
             &["update", "local"],
             &["--help"],
         ] {
             assert!(refused(&words(args)).is_some(), "{args:?}");
         }
-        for args in [&[][..], &["setup"]] {
+        for args in [&[][..], &["setup"], &["runs"], &["runs", "r1"], &["runs", "r1", "--stop"]] {
             assert!(refused(&words(args)).is_none(), "{args:?}");
         }
 

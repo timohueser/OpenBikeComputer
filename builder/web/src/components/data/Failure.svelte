@@ -1,7 +1,9 @@
 <script lang="ts">
+    import type { Snippet } from "svelte";
     import { command, type CliError } from "../../lib/data/cli";
 
-    let { error }: { error: CliError } = $props();
+    // `children` adds lines below the fix, such as what a failed run kept.
+    let { error, children }: { error: CliError; children?: Snippet } = $props();
 </script>
 
 <!-- The CLI marks commands and paths with backticks; odd parts of a split are code. -->
@@ -13,6 +15,7 @@
     <p class="message">✗ {@render text(error.message)}</p>
     <p><b>Fix</b> · {@render text(error.fix)}</p>
     {#if error.run}<p><b>Run</b> · <code>{command(["runs", error.run])}</code></p>{/if}
+    {@render children?.()}
 </section>
 
 <style>

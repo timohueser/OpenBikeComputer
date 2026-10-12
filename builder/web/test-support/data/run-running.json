@@ -1,0 +1,26 @@
+{
+    "id": "2026-10-12-101500",
+    "args": ["update", "local", "--region", "freiburg", "--expect", "a91d222222222222222222222222222222222222222222222222222222222222"],
+    "pid": 48211,
+    "state": "running",
+    "started": "2026-10-12T10:15:00Z",
+    "wall_ms": null,
+    "phases": [
+        {"phase": "prepare", "state": "ok", "started": "2026-10-12T10:15:00Z"},
+        {"phase": "download", "state": "ok", "started": "2026-10-12T10:15:04Z"},
+        {"phase": "build", "state": "running", "started": "2026-10-12T10:21:10Z"}
+    ],
+    "layers": [
+        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": []},
+        {"layer": "device/map", "total": 24, "done": 14, "leaves_done": ["16-40", "17-40", "18-40", "19-40", "20-40", "21-40", "16-41", "17-41", "18-41", "19-41", "20-41", "21-41", "16-42", "17-42"], "leaves_baking": ["18-42", "19-42", "20-42"]},
+        {"layer": "planner/search", "total": 3, "done": 1, "leaves_done": [], "leaves_baking": []},
+        {"layer": "device/catalog", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": []}
+    ],
+    "fetches": [],
+    "steps": [],
+    "bytes_fetched": 2469606195,
+    "bytes_built": 0,
+    "error": null,
+    "log": ["10:44:02 device/map 18-41 done (2.1 s, 312 MB)", "10:44:02 device/map 19-41 done (1.8 s, 288 MB)", "10:44:03 planner/search records 4.2 M of 10.5 M", "10:44:04 device/map 20-41 baking"],
+    "switched": []
+}

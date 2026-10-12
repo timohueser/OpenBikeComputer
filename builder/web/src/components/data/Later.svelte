@@ -2,9 +2,9 @@
     import { command } from "../../lib/data/cli";
     import type { Screen } from "../../lib/data/screens";
 
-    let { screen }: { screen: Exclude<Screen, { id: "machine" }> } = $props();
+    let { screen }: { screen: Exclude<Screen, { id: "machine" | "runs" }> } = $props();
 
-    const TERMINAL = { overview: [], prod: [], local: [], sources: ["sources"], runs: ["runs"] };
+    const TERMINAL = { overview: [], prod: [], local: [], sources: ["sources"] };
 </script>
 
 <h1>{screen.label}</h1>

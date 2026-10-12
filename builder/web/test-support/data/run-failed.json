@@ -1,0 +1,26 @@
+{
+    "id": "2026-10-12-093055",
+    "args": ["update", "local", "--add", "sun", "--expect", "b77c333333333333333333333333333333333333333333333333333333333333"],
+    "pid": 48211,
+    "state": "failed",
+    "started": "2026-10-12T09:30:55Z",
+    "wall_ms": 4214000,
+    "phases": [
+        {"phase": "prepare", "state": "ok", "started": "2026-10-12T09:30:55Z"},
+        {"phase": "download", "state": "ok", "started": "2026-10-12T09:31:02Z"},
+        {"phase": "build", "state": "failed", "started": "2026-10-12T09:37:40Z"}
+    ],
+    "layers": [
+        {"layer": "device/landmarks", "total": 1, "done": 1, "leaves_done": [], "leaves_baking": []},
+        {"layer": "device/map", "total": 24, "done": 24, "leaves_done": ["16-40", "17-40", "18-40", "19-40", "20-40", "21-40", "16-41", "17-41", "18-41", "19-41", "20-41", "21-41", "16-42", "17-42", "18-42", "19-42", "20-42", "21-42", "16-43", "17-43", "18-43", "19-43", "20-43", "21-43"], "leaves_baking": []},
+        {"layer": "planner/search", "total": 3, "done": 2, "leaves_done": [], "leaves_baking": []},
+        {"layer": "planner/index", "total": 1, "done": 0, "leaves_done": [], "leaves_baking": []}
+    ],
+    "fetches": [],
+    "steps": [],
+    "bytes_fetched": 0,
+    "bytes_built": 7381975040,
+    "error": {"code": "failed", "message": "planner/search failed: the store disk is full", "fix": "Free space with `obc data clean --apply`, or move the store to a larger disk. Then resume.", "kept": ["device/landmarks", "device/map", "planner/search/pois"]},
+    "log": ["10:40:57 planner/search records 10.1 M of 10.5 M", "10:41:09 planner/search sqlite3.OperationalError: database or disk is full", "10:41:09 run planner/search failed; stopping admitted work", "10:41:11 run local lock released · local unchanged"],
+    "switched": []
+}

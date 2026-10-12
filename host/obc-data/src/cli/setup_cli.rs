@@ -363,9 +363,11 @@ mod tests {
     fn the_examples_of_the_page_have_the_shapes_of_setup_and_of_the_machine_block() {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
         struct Status {
-            #[allow(dead_code)]
             machine: super::super::overview::Machine,
+            /// The page tests check the targets against the schema of the spec.
+            targets: Vec<serde_json::Value>,
         }
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/web/test-support/data");
         let example = |name: &str| std::fs::read_to_string(examples.join(name)).unwrap();

@@ -1322,7 +1322,8 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command and `obc data setup`.
+  runs only `obc data` without a command, `obc data setup`, `obc data runs`, `obc data runs RUN`
+  and `obc data runs RUN --stop`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and such a host; and, for a POST, the `Content-Type` `application/json`.
