@@ -154,6 +154,8 @@ fn refused(args: &[String]) -> Option<Error> {
     let allowed = match words[..] {
         [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] => true,
         ["source", "refresh", source] => name(source),
+        // Not `serve` in the foreground: it answers only when it ends.
+        ["router", target] | ["serve", target, "--detach"] => name(target),
         ["source", "prepare", source, ref rest @ ..] => name(source) && prepared(rest),
         // Not `--follow`: it answers only when the run ends.
         ["runs", run] | ["runs", run, "--stop"] => name(run),
@@ -395,6 +397,9 @@ mod tests {
             &["unlock", "prod", "--from", "bake"],
             &["unlock", "prod", "--yes"],
             &["unlock", "prod", "--from", "--yes", "--yes"],
+            &["serve", "local"],
+            &["serve", "--detach"],
+            &["router", "--json"],
             &["--help"],
         ] {
             assert!(refused(&words(args)).is_some(), "{args:?}");
@@ -406,6 +411,8 @@ mod tests {
             &["areas"],
             &["sources"],
             &["source", "refresh", "natural-earth"],
+            &["router", "prod"],
+            &["serve", "local", "--detach"],
             &["source", "prepare", "wiki", "--to", "prod", "--dry-run"],
             &[
                 "source",

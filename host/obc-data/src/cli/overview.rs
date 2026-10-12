@@ -54,6 +54,11 @@ pub struct TargetState {
     pub at: String,
     /// What `release.json` of the target says; `null` while it serves nothing.
     pub release: Option<Serving>,
+    /// The machine that made the serving release, and when; `null` while it serves nothing.
+    pub made: Option<Made>,
+    /// Where `obc data serve` serves a dir target, and how each app opens it; `null` for an R2
+    /// target.
+    pub serve: Option<super::serve_cli::Listening>,
     /// The run that holds the lock of the target; `null` while it is free.
     pub lock: Option<Lock>,
     /// Why `lock.json` of the target cannot be read; `null` when it can.
@@ -81,6 +86,13 @@ pub struct TargetState {
     /// target serves its settings as the steps make them now. For an R2 target, the command is the
     /// review: its update needs the id that the owner approved.
     pub next: Option<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub struct Made {
+    pub machine: String,
+    /// `YYYY-MM-DDTHH:MM:SSZ`.
+    pub time: String,
 }
 
 /// An area as boxes.
@@ -188,6 +200,9 @@ pub fn overview(
             Some(serving) => {
                 let role = |role: &release::Role| format!("{} since {}", &role.id[..12], role.since);
                 rows.push(vec!["  serves".into(), role(&serving.serving)]);
+                if let Some(Made { machine, time }) = &target.made {
+                    rows.push(vec!["  made".into(), format!("on {machine} at {time}")]);
+                }
                 if let Some(rollback) = &serving.rollback {
                     rows.push(vec!["  rollback".into(), role(rollback)]);
                 }
@@ -251,6 +266,8 @@ fn state(
         kind: kind.into(),
         at,
         release: None,
+        made: None,
+        serve: matches!(target, Target::Dir(_)).then(|| super::serve_cli::listening(root, name, true)),
         lock: None,
         lock_error: None,
         region: None,
@@ -281,6 +298,7 @@ fn state(
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
         let release = super::update_cli::read(name, target, &serving.serving.id)?;
         (state.release, state.region) = (Some(serving), Some(release.settings.region.clone()));
+        state.made = Some(Made { machine: release.machine.clone(), time: release.time.clone() });
         let mut versions: BTreeMap<(&str, &str), Option<&str>> = BTreeMap::new();
         for fetched in &release.sources {
             let first = versions.entry((&fetched.source, &fetched.version)).or_default();

@@ -3,14 +3,14 @@
     import { edit, reviewArgs, type Flags } from "../../lib/data/flags";
     import { followers } from "../../lib/data/graph";
     import { CliQuery } from "../../lib/data/query.svelte";
-    import { list, short, size, span, type Layer, type Review, type Started, type Target } from "../../lib/data/shapes";
+    import { list, short, size, span, type Layer, type Review, type Router, type Started, type Target } from "../../lib/data/shapes";
     import Action from "./Action.svelte";
     import AreaPicker from "./AreaPicker.svelte";
     import Failure from "./Failure.svelte";
 
     // The review of an update of target `name`. An edit runs `--dry-run` again with its flags.
     // Start runs exactly the args of the review that the screen shows. `locked` names the run that
-    // holds the lock of the target.
+    // holds the lock of the target. `router` answers for an R2 target.
     let {
         name,
         kind,
@@ -19,6 +19,7 @@
         locked,
         layers,
         area,
+        router = null,
     }: {
         name: string;
         kind: Target["kind"];
@@ -27,6 +28,7 @@
         locked: string | null;
         layers: Layer[];
         area: Target["area"];
+        router?: Router | null;
     } = $props();
 
     // svelte-ignore state_referenced_locally
@@ -189,7 +191,14 @@
             </label>
         {/if}
         {#if locked}<p class="missing">{name} is locked by {locked}. You can start when that run ends.</p>{/if}
-        {#if kind === "r2"}<p><b>Publishes review {review.id} to {name}, which serves riders.</b></p>{/if}
+        {#if kind === "r2"}
+            {@const reason = router?.serving?.reason}
+            <p class={reason ? "missing" : ""}>
+                <b>Router</b> · {router ? (reason ? `✗ ${reason}` : "serves the release of now") : "asking…"}. The run waits at Router ready, at
+                most 24 hours, until the router serves the new release; {name} does not change before.
+            </p>
+            <p><b>Publishes review {review.id} to {name}, which serves riders.</b></p>
+        {/if}
         <Action
             label="Start on {machine}"
             args={start}

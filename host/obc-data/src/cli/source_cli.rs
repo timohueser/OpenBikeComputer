@@ -7,8 +7,6 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use clap::Subcommand;
-use schemars::JsonSchema;
-use serde::Serialize;
 
 use super::{fetched, find, print_json, registry, releases, Code, Error};
 use crate::engine::runs;
@@ -24,12 +22,6 @@ pub enum SourceCommand {
     Refresh { id: String },
     /// Make a version of a prepared source and publish it to a target; the same command resumes it.
     Prepare(super::prepare_cli::PrepareArgs),
-}
-
-/// What `source refresh --json` writes: the run that fetches.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct Refreshing {
-    pub run: String,
 }
 
 /// What `source refresh` did.
@@ -50,13 +42,7 @@ pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json
         SourceCommand::Prepare(args) => return super::prepare_cli::command(root, prepared, args, json),
     };
     let store = Store::open()?;
-    // The process of a detached run. A stop that came while the run started wrote only its file.
-    let work = |run: &mut runs::Run| {
-        if run.stopping() {
-            fetch::http::stop();
-        }
-        refresh(root, &store, &Http::new(), &id)
-    };
+    let work = |_: &mut runs::Run| refresh(root, &store, &Http::new(), &id);
     let print = |Refreshed { source, from, version, bytes }: &Refreshed| {
         let size = runs::bytes(*bytes);
         println!(
@@ -71,7 +57,7 @@ pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json
     refreshable(&registry(root)?, &id)?;
     let run = runs::detach(&store, &["source".into(), "refresh".into(), id])?;
     if json {
-        return print_json(&Refreshing { run });
+        return print_json(&super::api::Detached { run });
     }
     eprintln!("obc data: run {run}");
     super::runs_cli::follow(&store, &run, false)

@@ -10,6 +10,7 @@ const ANSWERS = {
   '["runs"]': fixture('runs'),
   '["areas"]': fixture('areas'),
   '["sources"]': fixture('sources'),
+  '["router","prod"]': fixture('router'),
   [JSON.stringify(['source', 'prepare', 'wiki', '--to', 'prod', '--dry-run'])]: fixture('prepare-review'),
   [JSON.stringify(['runs', running.id])]: running,
   [JSON.stringify(['runs', failed.id])]: failed,
@@ -19,8 +20,8 @@ const ANSWERS = {
 // Each screen, and a text that it shows once its answers came.
 const SCREENS = [
   ['#/', 'Select a layer'],
-  ['#/prod', 'Releases on prod'],
-  ['#/local', 'Layers of freiburg'],
+  ['#/prod', 'Router · serves'],
+  ['#/local', 'Serve local'],
   ['#/local/review', `Review ${review.id}`],
   [`#/local/resume/${failed.id}`, 'This review resumes run'],
   ['#/sources', 'Each external dataset'],
