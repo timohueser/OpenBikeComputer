@@ -293,7 +293,8 @@ fn checked(store: &Store, sha256: &str, size: u64) -> Result<Vec<u8>, String> {
 }
 
 fn open(store: &Store, sha256: &str) -> Result<FileSource, String> {
-    FileSource::open(&store.ensure(sha256)?).map_err(|e| format!("artifact `{sha256}`: {e}"))
+    let path = store.ensure(sha256).map_err(|e| format!("artifact `{sha256}`: {e}"))?;
+    FileSource::open(&path).map_err(|e| format!("artifact `{sha256}`: {e}"))
 }
 
 fn digest(text: &str) -> Result<[u8; 32], String> {

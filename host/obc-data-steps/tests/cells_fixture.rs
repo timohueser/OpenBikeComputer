@@ -361,7 +361,8 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let backup = temp.0.join("retained-network.obcm");
     std::fs::rename(&path, &backup).unwrap();
     Device.verify(&root, Some(&release), &release, &store).unwrap();
-    assert!(Device.verify(&root, None, &release, &store).unwrap_err().contains("artifact"));
+    let refused = Device.verify(&root, None, &release, &store).unwrap_err();
+    assert!(refused.contains("artifact"), "{refused}");
     std::fs::rename(backup, path).unwrap();
     for step in &mut steps {
         if step.name == "device/network/0037-0033" {
