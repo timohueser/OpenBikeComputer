@@ -30,7 +30,7 @@ NAME = re.compile(rb'"name":"((?:[^"\\]|\\.)*)"')
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, sha256 TEXT, complete INTEGER);
 -- One row per shard cell of a subject; cell '' is the common shard.
-CREATE TABLE IF NOT EXISTS subjects(osm TEXT, cell TEXT, wikidata TEXT, wikipedia TEXT, PRIMARY KEY(osm,cell)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS subjects(osm TEXT, cell TEXT, wikidata TEXT, wikipedia TEXT, peak INTEGER, PRIMARY KEY(osm,cell)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS facts(kind TEXT, key TEXT, revision INTEGER, data BLOB, PRIMARY KEY(kind,key)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS failures(kind TEXT, key TEXT, reason TEXT, PRIMARY KEY(kind,key)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS edges(prop INTEGER, qid TEXT, target TEXT, PRIMARY KEY(prop,qid,target)) WITHOUT ROWID;
@@ -182,6 +182,30 @@ def subject_items(db) -> set[str]:
         if value["status"] == "present" and QID.fullmatch(value["identity"]):
             found.add(value["identity"])
     return found
+
+
+def candidates(db, out: Path):
+    """What the landmark rule of the compilers reads, for the producer: `{"class": fact}` for the
+    entity of each class, then `{"subject": fact}` for the entity of each OSM `wikidata` tag, and
+    `{"peak": identity}` for each resolved link of a peak."""
+    if not complete(db, "wikidata:2"):
+        raise ValueError("the Wikidata import has not finished; run the import step first")
+    partial = out.with_suffix(".partial")
+    with partial.open("w") as output:
+        for qid in sorted(classes(db, graph(db))):
+            if value := fact(db, "entity", qid):
+                output.write(json.dumps({"class": value}, ensure_ascii=False) + "\n")
+        tags = db.execute("SELECT DISTINCT wikidata FROM subjects WHERE wikidata IS NOT NULL").fetchall()
+        for qid in sorted({canonical(db, tag) for (tag,) in tags} - {None}):
+            if value := fact(db, "entity", qid):
+                output.write(json.dumps({"subject": value}, ensure_ascii=False) + "\n")
+        peaks = set()
+        for wikidata, wikipedia in db.execute("SELECT DISTINCT wikidata, wikipedia FROM subjects WHERE peak=1"):
+            for key in (f"wikidata:{wikidata}" if wikidata else None, f"wikipedia:{wikipedia}" if wikipedia else None):
+                if key and (link := fact(db, "link", key)) and link["status"] == "present":
+                    peaks.add(link["identity"])
+        output.writelines(json.dumps({"peak": identity}) + "\n" for identity in sorted(peaks))
+    partial.replace(out)
 
 
 def entity(raw: dict) -> dict:

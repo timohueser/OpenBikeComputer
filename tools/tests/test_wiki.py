@@ -259,6 +259,34 @@ class Wiki(unittest.TestCase):
             self.assertIn(f"content/assets/{photo['asset']['sha256']}", q1)
             self.assertFalse(any(name.startswith("content/assets/") for name in q2))
 
+    def test_candidates_are_the_classes_the_subjects_and_the_resolved_links_of_peaks(self):
+        self.subjects(dict(osm="n1", wikidata="Q1", peak=True, box=[7.1, 47.1, 7.1, 47.1]),
+                      dict(osm="w2", wikidata="Q999", box=[7.2, 47.2, 7.2, 47.2]))
+        self.wikidata()
+        out = self.root / "candidates.jsonl"
+        catalog.candidates(self.db, out)
+        lines = [json.loads(line) for line in out.read_text().splitlines()]
+        self.assertEqual([line["class"]["key"] for line in lines if "class" in line], ["Q2", "Q3"])
+        self.assertEqual([line["subject"]["key"] for line in lines if "subject" in line], ["Q1", "Q999"])
+        self.assertEqual([line["peak"] for line in lines if "peak" in line], ["Q1"])
+
+    @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
+    def test_a_published_shard_is_not_written_again_and_the_text_can_stay_out(self):
+        self.subjects(dict(osm="n1", wikidata="Q1", box=[7.1, 47.1, 7.1, 47.1]))
+        self.wikidata()
+        archive(self.root / "en.tar.gz", [page()])
+        self.articles(["Q1"], {"en": self.root / "en.tar.gz"})
+        out, plain = self.root / "out", self.root / "plain"
+        shards.write(self.db, self.work, out)
+        shards.write(self.db, self.work, plain, text=False)
+        cell = json.loads((out / "index.json").read_text())["shards"][1]
+        self.assertIn(("article", "en:Castle"), facts(members(out / cell["path"])))
+        self.assertNotIn(("article", "en:Castle"), facts(members(plain / cell["path"])))
+        (out / cell["path"]).unlink()
+        shards.write(self.db, self.work, out, {cell["path"]: {"sha256": cell["sha256"], "bytes": cell["bytes"]}})
+        self.assertFalse((out / cell["path"]).exists())
+        self.assertEqual(json.loads((out / "index.json").read_text())["shards"][1], cell)
+
     @unittest.skipUnless(TOOLS, "Osmium and zstd are unavailable")
     def test_a_subject_lands_in_each_cell_it_touches_and_a_large_object_in_common(self):
         source = self.root / "planet.osm"
@@ -275,6 +303,9 @@ class Wiki(unittest.TestCase):
         values = [json.loads(line) for line in listed.read_text().splitlines()]
         self.assertEqual([(value["osm"], value.get("peak"), "box" in value) for value in values],
                          [("n1", True, True), ("w10", None, True), ("w11", None, True), ("r20", None, False)])
+        boxed = self.root / "boxed.ndjson"
+        subjects.extract(source, boxed, self.root / "osm", [7.0, 47.0, 7.12, 47.12])
+        self.assertEqual([json.loads(line)["osm"] for line in boxed.read_text().splitlines()], ["n1"])
         subjects.load(self.db, self.work, listed)
         with self.assertRaisesRegex(ValueError, "import step first"):
             shards.write(self.db, self.work, self.root / "out")

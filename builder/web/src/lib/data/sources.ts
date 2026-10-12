@@ -49,6 +49,10 @@ export interface PrepareReview {
     version: string;
     abandoned: string | null;
     inputs: { source: string; version: string | null; bytes: number | null }[];
+    /** The files of the version at most; `null` when the producer cannot tell before the run. */
+    files: number | null;
+    /** Whether the version publishes its article text; `null` for a source without text. */
+    publish_text: boolean | null;
     cost: { wall_ms: number | null; peak_rss_bytes: number | null; store_bytes: number; upload_bytes: number | null; unknown: string[] };
     machine: { refusals: string[] };
     /** The layers of each target that are stale once the version is complete. */

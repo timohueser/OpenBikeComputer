@@ -68,7 +68,8 @@ pub(super) struct Asked<'a> {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PrepareReview {
     /// The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
-    /// version, the format, the revision, the scope and the source, version and params of each input.
+    /// version, the format, the revision, the scope, `publish_text` and the source, version and
+    /// params of each input.
     pub id: String,
     pub source: String,
     pub target: String,
@@ -85,8 +86,11 @@ pub struct PrepareReview {
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
     pub inputs: Vec<PreparedInput>,
-    /// The files of the version, at most.
-    pub files: u64,
+    /// The files of the version, at most; `null` when the producer cannot tell before the run.
+    pub files: Option<u64>,
+    /// Whether the version publishes its article text: `publish_text` of the source; `null` for a
+    /// source without text.
+    pub publish_text: Option<bool>,
     /// The files that earlier runs of the version uploaded: this run does not upload them again.
     pub done: Downloads,
     pub cost: PreparedCost,
@@ -252,8 +256,10 @@ fn plan<'a>(
     }
     let made = producer.plan(&source, scope.as_ref()).map_err(|e| Code::Failed.error(format!("`{id}`: {e}")))?;
     let (mut inputs, mut store_bytes, mut unknown) = (Vec::new(), 0, Vec::new());
-    for wanted in made.inputs {
+    for (wanted, known) in made.inputs {
         let bytes = match &wanted.version {
+            // A file on this machine that the producer reads in place, such as a dump.
+            _ if known.is_some() => known,
             Some(version) => {
                 let (source, params) = (wanted.source.clone(), wanted.params.clone());
                 let fetch = crate::engine::plan::Fetch {
@@ -296,14 +302,10 @@ fn plan<'a>(
         ));
     }
     machine.refusals.extend(update_cli::disk_refusal(&machine, cost.store_bytes));
-    for input in &inputs {
-        let credential = sources.iter().find(|source| source.id == input.source).and_then(|s| s.credential.as_ref());
+    for read in std::iter::once(id).chain(inputs.iter().map(|input| input.source.as_str())) {
+        let credential = sources.iter().find(|source| source.id == read).and_then(|s| s.credential.as_ref());
         if let Some(credential) = credential.filter(|credential| !credential.present()) {
-            machine.refusals.push(format!(
-                "`{}` needs {}, which this machine lacks",
-                input.source,
-                credential.describe()
-            ));
+            machine.refusals.push(format!("`{read}` needs {}, which this machine lacks", credential.describe()));
         }
     }
     let stale = stale(root, store, (name, target), id, &version)?;
@@ -314,6 +316,7 @@ fn plan<'a>(
         "format": producer.format(),
         "revision": producer.revision(),
         "scope": scope,
+        "publish_text": source.publish_text,
         "inputs": inputs.iter().map(|input| (&input.source, &input.version, &input.params)).collect::<Vec<_>>(),
     });
     let canonical = serde_json::to_vec(&crate::engine::sorted(decisions)).expect("the decisions are JSON");
@@ -329,6 +332,7 @@ fn plan<'a>(
         scope: scope.clone(),
         inputs,
         files: made.files,
+        publish_text: source.publish_text,
         done,
         cost,
         machine,
@@ -501,7 +505,12 @@ fn print_review(review: &PrepareReview, json: bool) -> Result<(), Error> {
     let scope = review.scope.as_ref().map_or("all".to_string(), |scope| format!("region {}", scope.region));
     rows.push(vec!["  scope".into(), scope]);
     rows.push(vec!["  version".into(), format!("format {}, revision {}", review.format, review.revision)]);
-    rows.push(vec!["  files".into(), format!("up to {}", review.files)]);
+    if let Some(files) = review.files {
+        rows.push(vec!["  files".into(), format!("up to {files}")]);
+    }
+    if let Some(published) = review.publish_text {
+        rows.push(vec!["  text".into(), if published { "text published" } else { "text kept local" }.into()]);
+    }
     if let Some(abandoned) = &review.abandoned {
         let text = format!("{abandoned} stays incomplete: the target has a newer complete version");
         rows.push(vec!["  abandon".into(), text]);
@@ -608,7 +617,7 @@ mod tests {
         }
 
         fn plan(&self, _: &Source, _: Option<&Scope>) -> Result<prepared::Plan, String> {
-            Ok(prepared::Plan { inputs: vec![head()], files: 3 })
+            Ok(prepared::Plan { inputs: vec![(head(), None)], files: Some(3) })
         }
 
         fn prepare(&self, job: &mut Job) -> Result<(), String> {
