@@ -1107,8 +1107,9 @@ its bakes and the checks of the products read:
   update, before any bake. Else nothing changes (`verify_failed`).
 - A fetch that the serving release read, of a source whose upstream gives only its newest version
   (a capture, a national terrain model, a delivery) and that the target does not copy, refuses the
-  update (`blocked`) before the fetch, also while the update lists the steps: this machine cannot
-  get that version again. The fix names the machine that made the serving release. A refresh that
+  update (`blocked`) before the fetch, also while the update lists the steps, when the store lacks
+  it and a capture cannot give it: this machine cannot get that version again. A capture gives the
+  version of today, and a version of a manual source that the store started (see [Fetch](#fetch)). The fix names the machine that made the serving release. A refresh that
   moves the source to a new version is the other way. A national terrain model on a new machine
   is such a case.
 - When the store and the serving release give a fetched file the same name, size and SHA-256, the

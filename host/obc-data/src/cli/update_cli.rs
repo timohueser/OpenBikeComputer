@@ -307,7 +307,7 @@ pub(super) fn prepare(
             if let Some(version) = &wanted.version {
                 let (source, params) = (wanted.source.clone(), wanted.params.clone());
                 let wanted = Fetch { source, version: version.clone(), params, files: Vec::new(), bytes: None };
-                refetchable(&wanted, serving.as_ref(), &sources)?;
+                refetchable(store, &wanted, serving.as_ref(), &sources)?;
             }
             fetch(wanted)
         };
@@ -336,7 +336,7 @@ pub(super) fn prepare(
         group.fetches.retain(|fetch| !copies.iter().any(|(copy, _)| covers(copy, fetch)));
     }
     for fetch in update.plan.fetches() {
-        refetchable(&fetch, serving.as_ref(), &sources)?;
+        refetchable(store, &fetch, serving.as_ref(), &sources)?;
     }
     let downloads = downloads(store, &listed.steps, &update, &copies);
     let machine = match machine {
@@ -404,11 +404,11 @@ fn same_bytes<'a>(
     Ok(())
 }
 
-/// Refuse `fetch` when the serving release read its version, upstream gives only the newest version
-/// of its source, and the target does not copy it: this machine cannot get that version again. One
+/// Refuse `fetch`, which the store lacks, when the serving release read its version, the target does
+/// not copy it, and a capture cannot give it: this machine cannot get that version again. One
 /// version of such a source names all its requests, such as the tiles of a national terrain model,
 /// so the params do not count.
-fn refetchable(fetch: &Fetch, serving: Option<&Release>, sources: &[Source]) -> Result<(), Error> {
+fn refetchable(store: &Store, fetch: &Fetch, serving: Option<&Release>, sources: &[Source]) -> Result<(), Error> {
     let Some(source) = sources.iter().find(|source| source.id == fetch.source) else { return Ok(()) };
     let newest_only = matches!(source.fetch.kind, FetchKind::Capture | FetchKind::Dtm | FetchKind::ByHand);
     let read = |serving: &&Release| {
@@ -416,6 +416,9 @@ fn refetchable(fetch: &Fetch, serving: Option<&Release>, sources: &[Source]) -> 
         serving.sources.iter().filter(version).any(|read| !read.copy)
     };
     let Some(serving) = serving.filter(|serving| newest_only && read(serving)) else { return Ok(()) };
+    if crate::fetch::capture::can_fetch(store, source, &fetch.version)? {
+        return Ok(());
+    }
     let (id, version) = (&source.id, &fetch.version);
     let policy = match source.refresh {
         Refresh::Days(days) => days.to_string(),
@@ -1346,16 +1349,34 @@ pub(super) mod tests {
     #[test]
     fn a_machine_that_cannot_fetch_a_capture_that_the_release_read_refuses_while_it_lists() {
         let fixture = fixture("update-capture");
-        let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
-        (head.id, head.fetch.kind, head.redistribute) = ("head".into(), FetchKind::Capture, false);
-        fixture.with_sources(&[head]);
-        let target = Target::Dir(fixture.scratch.0.join("local"));
-        update(&fixture, &target, region).unwrap();
-        write(&fixture.root().join("listed"), "");
+        let target = captured(&fixture);
         let refused = elsewhere(&fixture, &target).1.unwrap_err();
         assert_eq!(refused.code, Code::Blocked, "{}", refused.message);
         assert!(refused.message.starts_with("this machine cannot fetch head@1"), "{}", refused.message);
         assert!(refused.fix.starts_with(&format!("Run this update on `{}`", crate::machine())), "{}", refused.fix);
+    }
+
+    #[test]
+    fn a_capture_version_that_the_store_started_takes_a_new_tile() {
+        let fixture = fixture("update-capture-tile");
+        let target = captured(&fixture);
+        // The store started head@1, and lacks the file of the tile that the listing asks for.
+        let record = fixture.store.snapshot("head", "1").unwrap().unwrap();
+        std::fs::remove_file(fixture.store.object(&record.files[0].sha256)).unwrap();
+        let error = update(&fixture, &target, |_| Ok(())).unwrap_err();
+        assert!(error.message.contains("has no fetcher yet"), "the capture runs: {}", error.message);
+    }
+
+    /// A target that serves a release that read `head`, a manual capture that the target does not
+    /// copy, with a step list that asks for `head` per tile.
+    fn captured(fixture: &Fixture) -> Target {
+        let mut head = crate::fetch::tests::source("https://example.org/head.txt", "date");
+        (head.id, head.fetch.kind, head.redistribute) = ("head".into(), FetchKind::Capture, false);
+        fixture.with_sources(&[head]);
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        update(fixture, &target, region).unwrap();
+        write(&fixture.root().join("listed"), "");
+        target
     }
 
     #[test]
