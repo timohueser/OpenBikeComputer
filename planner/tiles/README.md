@@ -2,7 +2,8 @@
 
 Serve the map packs of grid planner releases from the `obc-maps` R2 bucket. The
 Worker uses the upstream PMTiles reader. It caches tile responses at the
-Cloudflare edge.
+Cloudflare edge. It reads `releases/ID/public/` and `objects/SHA256` of the bucket:
+the layout of a target of `obc data`. Deploy it only to a bucket that serves such a release.
 
 ## Build and deploy
 

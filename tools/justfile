@@ -312,15 +312,14 @@ r2 *args:
     cd "$OBC_ROOT"
     _run python3 "$OBC_TOOLS/r2.py" "$@"
 
-# Read the data registry: a bare `obc data` or `obc data status` shows what is live;
-# `obc data sources` lists every source with licence, R2 copy, live version, upstream version,
-# age, policy and state;
-# `obc data region [list|show ID]` lists the regions. `obc data fetch` puts a source version in
-# the store. `obc data region ENV ID`, `obc data layer ENV NAME on|off` and `obc data undo ENV`
-# edit data/env/ENV.toml. `obc data plan ENV` shows what a build of an environment fetches and
-# builds; `--move SOURCE[@VERSION]` moves a source; `obc data build ENV` builds it into the store;
-# `--only LAYER` builds a layer again, not against live; `obc data clean` cleans the store. Every command takes `--json`. Read commands change nothing.
-[doc("Data sources, regions and the store. Args: status [--check] | sources | region [list|show ID|ENV ID] | layer ENV NAME on|off | undo ENV | fetch SOURCE[@VERSION] | plan ENV [--only LAYER,… | --move SOURCE[@VERSION]] | build ENV [--only LAYER,… | --move SOURCE[@VERSION] | --plan FILE] | clean [--apply [--yes]] [--json]")]
+# Data targets and the store: a bare `obc data` shows what each target serves and what to run
+# next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
+# `--region`, `--box`, `--add`, `--remove` and `--refresh` change its settings, and `--only LAYER`
+# bakes a layer again. `obc data sources` lists every source with licence, R2 copy, and policy,
+# versions and state per target; `obc data areas` lists regions and Geofabrik areas;
+# `obc data fetch` puts a source version in the store; `obc data clean` cleans the store. Every
+# command takes `--json`. Read commands change nothing.
+[doc("Data targets, sources and the store. Args: update TARGET [--region ID | --box W,S,E,N] [--add L] [--remove L] [--refresh SOURCE=DAYS|manual] [--only L,…] | sources | areas [QUERY] | fetch SOURCE[@VERSION] | runs [RUN] | clean [--apply [--yes]] [--json]")]
 [group('maps')]
 data *args:
     #!/usr/bin/env bash

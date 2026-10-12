@@ -69,7 +69,7 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
       return new Response('Too many requests', { status: 429, headers: { ...headers, 'Cache-Control': 'no-store', 'Retry-After': '60' } });
     }
     try {
-      const prefix = `planner/releases/${(route || asset).release}`;
+      const prefix = `releases/${(route || asset).release}`;
       let response;
       if (asset) {
         response = await publicFile(env.BUCKET, prefix, asset.file, asset.type, headers);

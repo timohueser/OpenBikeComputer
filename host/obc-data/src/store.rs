@@ -50,11 +50,12 @@ pub struct Store {
 const STORE_LOCK: &str = "store";
 
 /// The number in `layout`. A change of the layout of the store changes it.
-const LAYOUT: &str = "1";
+const LAYOUT: &str = "2";
 
-/// The directories that a store without `layout` holds in an older format. Its snapshot records
+/// The directories that a store of an older layout holds in an older format. Its snapshot records
 /// and objects keep their format.
-const OLDER: [&str; 7] = ["layers", "releases", "runs", "operations", "code", "producers", "local"];
+const OLDER: [&str; 9] =
+    ["layers", "releases", "runs", "operations", "settings", "regions", "code", "producers", "local"];
 
 const FAILED: &str = "Correct the directory that the message names, then run the command again.";
 
@@ -107,28 +108,23 @@ impl Store {
                 return Ok(store);
             }
             // Another process can have written the marker since the first read.
-            None => match read()? {
-                None => {
-                    let older = OLDER.map(|dir| format!("{root}/{dir}")).join(" ");
-                    return Err(Refused {
-                        message: format!("the store {root} has records of an older `obc data`"),
-                        fix: format!(
-                            "Remove them and mark the store, then run the command again: `rm -rf {older} && \
-                             printf '{LAYOUT}\\n' > {root}/layout`. Its snapshots and objects stay."
-                        ),
-                    });
-                }
-                Some(layout) => layout,
-            },
+            None => read()?.unwrap_or_default(),
             Some(layout) => layout,
         };
-        match layout.trim() == LAYOUT {
-            true => Ok(store),
-            false => Err(Refused {
-                message: format!(
-                    "the store {root} has the layout {}, and this `obc data` reads {LAYOUT}",
-                    layout.trim()
-                ),
+        match layout.trim() {
+            LAYOUT => Ok(store),
+            "" | "1" => {
+                let older = OLDER.map(|dir| format!("{root}/{dir}")).join(" ");
+                Err(Refused {
+                    message: format!("the store {root} has records of an older `obc data`"),
+                    fix: format!(
+                        "Remove them and mark the store, then run the command again: `rm -rf {older} && \
+                         printf '{LAYOUT}\\n' > {root}/layout`. Its snapshots and objects stay."
+                    ),
+                })
+            }
+            layout => Err(Refused {
+                message: format!("the store {root} has the layout {layout}, and this `obc data` reads {LAYOUT}"),
                 fix: format!("Use the `obc data` of that layout, or move the store aside with `mv {root} {root}.old`."),
             }),
         }
@@ -281,11 +277,6 @@ impl Store {
         read_records(&self.root.join("layers"), read_receipt)
     }
 
-    /// The manifest of a release.
-    pub fn release(&self, product: &str, id: &str) -> PathBuf {
-        self.root.join("releases").join(product).join(format!("{id}.json"))
-    }
-
     /// The events of a run, one JSON object per line.
     pub fn run(&self, id: &str) -> PathBuf {
         self.root.join("runs").join(format!("{id}.jsonl"))
@@ -346,6 +337,23 @@ const RESERVE: u64 = 4 << 30;
 
 /// Fail when the disk of `path` cannot take `needed` more bytes and keep [`RESERVE`] free.
 pub fn check_free(path: &Path, needed: u64) -> Result<(), String> {
+    let Some((existing, free)) = free_bytes(path)? else { return Ok(()) };
+    if free < needed.saturating_add(RESERVE) {
+        let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        return Err(format!(
+            "{} has {:.1} GiB free; this needs {:.1} GiB and keeps {:.0} GiB free. Release space with `obc data clean`, then retry",
+            existing.display(),
+            gib(free),
+            gib(needed),
+            gib(RESERVE)
+        ));
+    }
+    Ok(())
+}
+
+/// The nearest existing directory of `path`, and the bytes free on its disk; `None` where the
+/// system does not tell.
+pub fn free_bytes(path: &Path) -> Result<Option<(&Path, u64)>, String> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -360,20 +368,13 @@ pub fn check_free(path: &Path, needed: u64) -> Result<(), String> {
         let status = unsafe { status.assume_init() };
         #[allow(clippy::unnecessary_cast)]
         let free = (status.f_bavail as u64).saturating_mul(status.f_frsize as u64);
-        if free < needed.saturating_add(RESERVE) {
-            let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
-            return Err(format!(
-                "{} has {:.1} GiB free; this needs {:.1} GiB and keeps {:.0} GiB free. Release space with `obc data clean`, then retry",
-                existing.display(),
-                gib(free),
-                gib(needed),
-                gib(RESERVE)
-            ));
-        }
+        Ok(Some((existing, free)))
     }
     #[cfg(not(unix))]
-    let _ = (path, needed);
-    Ok(())
+    {
+        let _ = path;
+        Ok(None)
+    }
 }
 
 fn read_text(path: &Path) -> Result<Option<String>, String> {
@@ -524,20 +525,27 @@ pub(crate) mod tests {
     fn a_store_without_the_current_layout_is_refused_and_a_new_one_gets_it() {
         let scratch = Scratch::new("store-layout");
         let store = Store::open_at(scratch.0.join("new")).unwrap();
-        assert_eq!(fs::read_to_string(store.root().join("layout")).unwrap(), "1\n");
+        assert_eq!(fs::read_to_string(store.root().join("layout")).unwrap(), "2\n");
         assert!(Store::open_at(store.root()).is_ok());
 
-        let old = scratch.0.join("old");
-        for record in ["layers/key.json", "snapshots/osm/1.json"] {
-            write_atomic(&old.join(record), b"{}").unwrap();
+        for (name, layout) in [("unmarked", None), ("first", Some(b"1\n"))] {
+            let old = scratch.0.join(name);
+            for record in ["layers/key.json", "settings/pending.json", "snapshots/osm/1.json"] {
+                write_atomic(&old.join(record), b"{}").unwrap();
+            }
+            if let Some(layout) = layout {
+                write_atomic(&old.join("layout"), layout).unwrap();
+            }
+            let Err(refused) = Store::open_at(&old) else { panic!("an old store is refused") };
+            let command = refused.fix.split('`').nth(1).unwrap();
+            assert!(std::process::Command::new("sh").args(["-c", command]).status().unwrap().success());
+            assert!(!old.join("layers").exists() && !old.join("settings").exists(), "{command}");
+            assert!(old.join("snapshots/osm/1.json").exists(), "{command}");
+            assert!(Store::open_at(&old).is_ok());
         }
-        let Err(refused) = Store::open_at(&old) else { panic!("an old store is refused") };
-        let command = refused.fix.split('`').nth(1).unwrap();
-        assert!(std::process::Command::new("sh").args(["-c", command]).status().unwrap().success());
-        assert!(!old.join("layers").exists() && old.join("snapshots/osm/1.json").exists(), "{command}");
-        assert!(Store::open_at(&old).is_ok());
-        write_atomic(&old.join("layout"), b"2\n").unwrap();
-        assert!(Store::open_at(&old).is_err(), "another layout");
+        write_atomic(&scratch.0.join("first/layout"), b"3\n").unwrap();
+        let Err(newer) = Store::open_at(scratch.0.join("first")) else { panic!("a newer layout is refused") };
+        assert!(newer.fix.contains("of that layout"), "{}", newer.fix);
     }
 
     #[test]

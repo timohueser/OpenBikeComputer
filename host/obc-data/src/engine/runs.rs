@@ -16,6 +16,7 @@ use super::plan::Plan;
 use super::{build_step, order, prepare, reusable, Built, InputKind, Receipt, Step};
 use crate::date;
 use crate::fetch::{self, http::Http};
+use crate::release::Output;
 use crate::sources::Source;
 use crate::store::{Lock, Store};
 
@@ -55,7 +56,8 @@ pub struct Context<'a> {
     /// The sources of `data/sources.toml`: a fetch finds its source here.
     pub sources: &'a [Source],
     pub http: &'a Http,
-    pub copies: Option<&'a crate::input_copy::Restore<'a>>,
+    /// The outputs that the update keeps: a step that reads one reads its files in the release.
+    pub kept: &'a super::plan::Kept,
     pub limits: Limits,
 }
 
@@ -125,22 +127,18 @@ pub enum Phase {
     Verify,
     Upload,
     Switch,
-    Wait,
-    Cleanup,
 }
 
-/// A remote write that acknowledged success. Verification can still fail afterward.
+/// A change of a target.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Publication {
-    Uploaded { key: String },
-    Switched { product: String, release: String },
-    Removed { key: String, bytes: u64 },
+    Switched { release: String },
 }
 
 /// A run that this process writes. The process that holds the lock of a run is the process that
 /// runs it, so a reader knows that a run without `finished` still runs.
-/// Its store stays in use through verification and publication, until finish or drop.
+/// Its store stays in use until finish or drop.
 pub struct Run {
     id: String,
     file: File,
@@ -185,53 +183,12 @@ impl Run {
     }
 
     pub fn check_stop(&self, store: &Store) -> Result<(), String> {
-        crate::store::check_free(store.root(), 0)?;
-        if crate::operation::stopped(store, self.id())? {
-            return Err("stopped after the current work".into());
-        }
-        Ok(())
+        crate::store::check_free(store.root(), 0)
     }
 
     /// Flush the journal.
     pub fn sync(&self) -> Result<(), String> {
         self.file.sync_all().map_err(|e| format!("run {}: {e}", self.id))
-    }
-
-    /// Continue the unfinished run `id` in this process: the detached worker of an operation.
-    pub fn attach(store: &Store, id: &str, prefix: &[Event]) -> Result<Self, String> {
-        check_id(id)?;
-        if !matches!(prefix.first(), Some(Event::Started { .. }))
-            || prefix.iter().any(|event| matches!(event, Event::Finished { .. } | Event::Published { .. }))
-        {
-            return Err("the run is not unfinished".into());
-        }
-        let using = store.using()?;
-        let lock = store.try_lock(&format!("run-{id}"))?.ok_or("the originating run still has an owner")?;
-        let path = store.run(id);
-        crate::store::durable_directory(path.parent().unwrap())?;
-        if path.exists() {
-            let existing = events(store, id)?;
-            if !existing.starts_with(prefix) || existing.iter().any(|event| matches!(event, Event::Finished { .. })) {
-                return Err("the run journal differs from its start".into());
-            }
-        }
-        let file = OpenOptions::new().append(true).create(true).open(&path).map_err(|e| e.to_string())?;
-        let elapsed = match prefix.first() {
-            Some(Event::Started { at, .. }) => {
-                date::seconds(at).map(|at| Duration::from_secs(date::now().saturating_sub(at)))
-            }
-            _ => None,
-        };
-        let start = elapsed.and_then(|elapsed| Instant::now().checked_sub(elapsed)).unwrap_or_else(Instant::now);
-        let mut run = Self { id: id.into(), file, start, _lock: lock, _using: using };
-        if run.file.metadata().map_err(|e| e.to_string())?.len() == 0 {
-            for event in prefix {
-                run.record(event)?;
-            }
-        }
-        run.sync()?;
-        File::open(path.parent().unwrap()).and_then(|directory| directory.sync_all()).map_err(|e| e.to_string())?;
-        Ok(run)
     }
 
     /// Fetch the fetches of `plan` one after another, then build its builds and reuse the layers
@@ -276,7 +233,7 @@ impl Run {
             ordered.iter().enumerate().map(|(i, step)| (step.name.as_str(), i)).collect();
         let mut pending: Vec<&Step> = ordered.into_iter().filter(|step| needed.contains(step.name.as_str())).collect();
         let outdated = "the plan is outdated; plan again";
-        let mut done: HashMap<&str, super::release::Layer> = HashMap::new();
+        let mut done: HashMap<&str, Output> = HashMap::new();
         let mut built = Vec::new();
         let mut failure: Option<String> = None;
         let (mut running, mut reserved) = (0, 0);
@@ -297,8 +254,13 @@ impl Run {
                     continue;
                 }
                 let Some(&(cost, key, again)) = planned.get(step.name.as_str()) else {
-                    // A layer that a planned step reads: the store has it, unless the plan is old.
+                    // A layer that a planned step reads: the release keeps it, or the store has it,
+                    // unless the plan is old.
                     pending.remove(i);
+                    if let Some(output) = context.kept.get(&step.name) {
+                        done.insert(&step.name, output.clone());
+                        continue;
+                    }
                     let reused = prepare(store, step, &done)
                         .and_then(|(receipt, _)| {
                             reusable(store, &receipt.key).map(|stored| {
@@ -311,7 +273,7 @@ impl Run {
                         .and_then(|stored| stored.ok_or(outdated.into()));
                     match reused {
                         Ok(receipt) => {
-                            done.insert(&step.name, super::release::Layer::new(&receipt, step));
+                            done.insert(&step.name, Output::new(&receipt, step));
                         }
                         Err(e) => failure = Some(format!("step `{}`: {e}", step.name)),
                     }
@@ -357,7 +319,7 @@ impl Run {
                     if let Err(e) = self.record(&event) {
                         failure.get_or_insert(e);
                     }
-                    done.insert(&step.name, super::release::Layer::new(&result.receipt, step));
+                    done.insert(&step.name, Output::new(&result.receipt, step));
                     built.push(result);
                 }
                 Err(e) => self.failed(step, e, &mut failure),
@@ -388,7 +350,7 @@ impl Run {
                 version: Some(planned.version.clone()),
                 params: planned.params.clone(),
             };
-            self.fetch_request(context.root, context.store, context.http, context.copies, &request, &planned.files)?;
+            self.fetch_request(context.root, context.store, context.http, &request)?;
         }
         Ok(())
     }
@@ -399,9 +361,7 @@ impl Run {
         root: &Path,
         store: &Store,
         http: &Http,
-        copies: Option<&crate::input_copy::Restore<'_>>,
         request: &fetch::Request<'_>,
-        files: &[String],
     ) -> Result<crate::store::Snapshot, String> {
         self.check_stop(store)?;
         let (source, version, params) = (
@@ -412,7 +372,7 @@ impl Run {
         self.record(&Event::FetchStarted { source: source.clone(), version: version.clone(), params: params.clone() })?;
         let start = Instant::now();
         let mut acquisition = None;
-        match crate::input_copy::fetch_recorded(root, store, http, copies, request, files, Some(&mut acquisition)) {
+        match fetch::fetch_recorded(root, store, http, request, Some(&mut acquisition)) {
             Ok(snapshot) => {
                 let bytes = snapshot.files.iter().map(|file| file.size).sum();
                 let wall_ms = start.elapsed().as_millis() as u64;
@@ -867,7 +827,7 @@ mod tests {
             root: &root,
             sources: &[],
             http: &http,
-            copies: None,
+            kept: &crate::engine::plan::Kept::new(),
             limits: Limits { jobs: 1, memory_bytes: None },
         };
         let built = run.build(&context, &steps, &plan).unwrap();
@@ -1021,7 +981,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             root: &fixture.root(),
             sources: &sources,
             http: &http,
-            copies: None,
+            kept: &crate::engine::plan::Kept::new(),
             limits: Limits::machine(),
         };
         let built = run.build(&context, &steps, &plan).unwrap();

@@ -105,8 +105,6 @@ Each kind of change goes out in one way:
 
 For `obc data`, configure the [runtime target](../../../../../specs/obc-data.md#service-runtimes)
 in [`data/planner-runtime.toml`](../../../../../data/planner-runtime.toml).
-Set `OBC_PLANNER_HOST=USER@HOST`. Live apply builds services on that VPS from the pushed
-commit and probes the new data before it switches the catalog. Allow an outage.
 
 ```sh
 obc planner setup

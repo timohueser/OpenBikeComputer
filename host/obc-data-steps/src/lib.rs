@@ -53,8 +53,9 @@ pub(crate) fn python(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn the_plumbing_knows_the_prefix_of_each_product() {
-        let prefixes: Vec<&str> = super::PRODUCTS.iter().map(|product| product.prefix()).collect();
-        assert_eq!(prefixes, obc_data::live::PRODUCT_PREFIXES);
+    fn the_products_fill_each_pointer_of_a_release_once() {
+        let mut keys: Vec<&str> = super::PRODUCTS.iter().map(|product| product.pointer().key).collect();
+        keys.sort();
+        assert_eq!(keys, obc_data::release::POINTERS);
     }
 }

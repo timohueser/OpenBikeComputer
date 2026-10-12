@@ -8,7 +8,6 @@ pub mod plan;
 mod process;
 pub use process::python_executable;
 
-pub mod release;
 pub mod runs;
 pub mod state;
 
@@ -21,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::date;
+use crate::release::Output;
 use crate::store::{hash_file, sha256_hex, FileRecord, Snapshot, Store};
 
 /// What the store holds data of, with a version. An operator names an operator layer, such as
@@ -85,7 +85,7 @@ impl Client {
         }
     }
 
-    fn sorted(&self) -> Self {
+    pub(crate) fn sorted(&self) -> Self {
         match self {
             Self::Paths(paths) => {
                 let mut paths = paths.clone();
@@ -473,7 +473,7 @@ fn symlink(object: &Path, link: &Path) -> std::io::Result<()> {
 
 /// The receipt of `step` before it runs, with its key, and its request. `layers` holds the
 /// receipts of the steps whose files it reads.
-fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, release::Layer>) -> Result<(Receipt, Request), String> {
+fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, Output>) -> Result<(Receipt, Request), String> {
     if !step.options.is_object() {
         return Err("the options are not a JSON object".into());
     }
@@ -774,10 +774,29 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             plan: &plan::Plan,
             limits: runs::Limits,
         ) -> Result<Vec<Built>, String> {
+            self.run_with(steps, plan, &plan::Kept::new(), limits)
+        }
+
+        /// Run `plan` of an update that keeps `kept`.
+        pub(crate) fn run_kept(
+            &self,
+            steps: &[Step],
+            plan: &plan::Plan,
+            kept: &plan::Kept,
+        ) -> Result<Vec<Built>, String> {
+            self.run_with(steps, plan, kept, runs::Limits::machine())
+        }
+
+        fn run_with(
+            &self,
+            steps: &[Step],
+            plan: &plan::Plan,
+            kept: &plan::Kept,
+            limits: runs::Limits,
+        ) -> Result<Vec<Built>, String> {
             let mut run = runs::Run::create(&self.store, "build test")?;
             let (root, http) = (self.root(), crate::fetch::http::Http::new());
-            let context =
-                runs::Context { store: &self.store, root: &root, sources: &[], http: &http, copies: None, limits };
+            let context = runs::Context { store: &self.store, root: &root, sources: &[], http: &http, kept, limits };
             let built = run.build(&context, steps, plan);
             run.finish(built.as_ref().err().map(String::as_str))?;
             built
@@ -808,13 +827,6 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
     pub(crate) fn write(path: &Path, text: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
-    }
-
-    pub(crate) fn live_settings(fixture: &Fixture, region: &str) {
-        let regions = crate::regions::Regions::load(&fixture.root()).unwrap();
-        let definitions = regions.iter().map(|region| (region.id.clone(), region.definition().unwrap())).collect();
-        let settings = crate::settings::Settings { region: region.into(), definitions, ..Default::default() };
-        crate::settings::save(&fixture.store, &settings).unwrap();
     }
 
     /// A store with the snapshots `head@1` and `tail@1`, and a git checkout with `join.py`.
@@ -849,28 +861,6 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
             outputs: vec![output.into()],
             run,
             client: Client::All,
-        }
-    }
-
-    pub(crate) fn packaged(client: Client) -> Step {
-        fn run(request: &Request) -> Result<(), String> {
-            for dir in ["published", "published-extra"] {
-                fs::create_dir(request.output.join(dir)).map_err(|e| e.to_string())?;
-            }
-            for (path, bytes) in [
-                ("published/a", "payload"),
-                ("published/b", "payload"),
-                ("published-extra/a", "other"),
-                ("index.json", "metadata"),
-            ] {
-                fs::write(request.output.join(path), bytes).map_err(|e| e.to_string())?;
-            }
-            Ok(())
-        }
-        Step {
-            client,
-            outputs: ["published", "published-extra", "index.json"].map(String::from).into(),
-            ..step("test/package", Vec::new(), "", Run::Rust(run))
         }
     }
 
@@ -943,9 +933,9 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         let missing =
             Step { name: "test/missing".into(), outputs: vec!["absent".into()], client: Client::All, ..sea() };
         assert!(fixture.build(&[missing]).unwrap_err().contains("did not write its output absent"));
-        let release = release::release(&fixture.store, "test", "sea", &[], &[sea()]).unwrap().unwrap();
-        assert!(release.objects().is_empty());
-        assert_eq!(release.layers[0].files.len(), 1);
+        let outputs = plan::outputs(&fixture.store, &[sea()], &plan::Kept::new()).unwrap().unwrap();
+        assert_eq!(outputs[0].client_files().count(), 0);
+        assert_eq!(outputs[0].files.len(), 1);
     }
 
     #[test]
@@ -977,8 +967,8 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert!(!resolved.is_empty());
         old.inputs[0].files.clear();
         fixture.store.put_layer(&old).unwrap();
-        let released = release::release(&fixture.store, "test", "monaco", &[], &pipeline()).unwrap().unwrap();
-        let restored = released.layers.iter().find(|l| l.key == old.key).unwrap();
+        let outputs = plan::outputs(&fixture.store, &pipeline(), &plan::Kept::new()).unwrap().unwrap();
+        let restored = outputs.iter().find(|output| output.key == old.key).unwrap();
         assert_eq!(
             restored.inputs[0].files, resolved,
             "a freshly resolved digest-matching selection repairs provenance without rebuilding bytes"

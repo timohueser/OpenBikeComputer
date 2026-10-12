@@ -1,6 +1,6 @@
 use super::*;
 use crate::device::tests::{fetched, root, temp};
-use obc_data::engine::plan::plan;
+use obc_data::engine::plan::{outputs, plan, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as Journal};
 use obc_data::fetch::http::Http;
 use obc_data::regions::parse_region;
@@ -41,19 +41,19 @@ fn box_descent_uses_actual_geometry_and_full_poly_gaps_fall_back_before_bulk_fet
     source(&store, "europe/east", "2026-02-01", "1", &poly(8.0, 9.0));
     let region = parse_region("box", "name='Box'\nkind='box'\nbox=[7.5,47.25,8.5,47.75]\ncountries=['DE']\n").unwrap();
     let regions = Regions::new(vec![region]).unwrap();
-    let env = Env { region: "box".into(), ..Env::default() };
+    let inputs = inputs("box");
     let mut wanted = Vec::new();
-    assert!(resolve(&env, &regions, &store, &mut wanted).unwrap().is_none());
+    assert!(resolve(&inputs, &regions, &store, &mut wanted).unwrap().is_none());
     assert_eq!(
         wanted,
         [Wanted { source: POLY.into(), version: None, params: vec![("area".into(), "europe/parent".into())] }]
     );
     assert!(
-        !env.read.borrow().keys().any(|(source, _)| source == EXTRACTS),
+        !inputs.read.borrow().keys().any(|(source, _)| source == EXTRACTS),
         "coverage precedes bulk request selection"
     );
     source(&store, "europe/parent", "2026-03-01", "2", &poly(7.0, 9.0));
-    let selected = resolve(&env, &regions, &store, &mut Vec::new()).unwrap().unwrap();
+    let selected = resolve(&inputs, &regions, &store, &mut Vec::new()).unwrap().unwrap();
     assert_eq!(selected.sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(), ["europe/parent"]);
     assert!(selected.coverage.covers_coverage(&selected.outlines[0]).unwrap());
     assert_eq!(selected.index.as_deref(), Some("1"));
@@ -70,12 +70,7 @@ fn a_box_descends_into_both_countries_and_rejects_uncovered_ground() {
     let selected = |bounds: &str| {
         let region =
             parse_region("box", &format!("name='Box'\nkind='box'\nbox=[{bounds}]\ncountries=['DE']\n")).unwrap();
-        resolve(
-            &Env { region: "box".into(), ..Env::default() },
-            &Regions::new(vec![region]).unwrap(),
-            &store,
-            &mut Vec::new(),
-        )
+        resolve(&inputs("box"), &Regions::new(vec![region]).unwrap(), &store, &mut Vec::new())
     };
     let sources = selected("7.5,47.25,8.5,47.75").unwrap().unwrap().sources;
     assert_eq!(sources.iter().map(|source| source.id.as_str()).collect::<Vec<_>>(), ["europe/east", "europe/west"]);
@@ -113,7 +108,7 @@ fn a_box_skips_an_aggregate_that_overlaps_its_sibling_countries() {
 }
 
 #[test]
-fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_provenance() {
+fn separate_input_layers_retain_distinct_versions_in_release_provenance() {
     let temporary = temp("multi-source-provenance");
     let store = Store::at(temporary.0.join("store"));
     source(&store, "europe/west", "2026-01-01", "10", &poly(7.0, 8.0));
@@ -121,41 +116,31 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
     let region =
         parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/west','europe/east','europe/west']\n")
             .unwrap();
-    let env = Env { region: "ride".into(), ..Env::default() };
-    let selected = resolve(&env, &Regions::new(vec![region]).unwrap(), &store, &mut Vec::new()).unwrap().unwrap();
-    let steps = inputs("device", &selected);
+    let inputs = inputs("ride");
+    let selected = resolve(&inputs, &Regions::new(vec![region]).unwrap(), &store, &mut Vec::new()).unwrap().unwrap();
+    let steps = super::inputs("device", &selected);
     assert_eq!(steps.len(), 2);
     let root = root();
     let plan = plan(&store, &steps).unwrap();
     assert!(plan.fetches().is_empty());
-    let http = Http::new();
+    let (http, kept) = (Http::new(), Kept::new());
+    let context =
+        Context { root: &root, store: &store, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
     let mut journal = Journal::create(&store, "build inputs").unwrap();
-    journal
-        .build(
-            &Context { root: &root, store: &store, sources: &[], http: &http, copies: None, limits: Limits::machine() },
-            &steps,
-            &plan,
-        )
-        .unwrap();
+    journal.build(&context, &steps, &plan).unwrap();
     journal.finish(None).unwrap();
-    let release = obc_data::engine::release::release(&store, "device", "ride", &[], &steps).unwrap().unwrap();
-    assert!(release.objects().is_empty(), "raw input files remain private");
-    let live = obc_data::live::Live {
-        products: vec![obc_data::live::LiveProduct {
-            product: "device".into(),
-            prefix: "cell-catalog".into(),
-            release: Some((release.id(), release)),
-            applied: None,
-            commit: None,
-            document: None,
-            observed: None,
-        }],
-        ..Default::default()
-    };
-    let reads = obc_data::input_copy::reads(&live).unwrap();
-    let extracts = reads.iter().filter(|read| read.key.source == EXTRACTS).collect::<Vec<_>>();
-    assert_eq!(extracts.len(), 2);
-    assert!(extracts.iter().any(|read| read.key.version == "2026-01-01" && read.files == ["europe/west.osm.pbf"]));
-    assert!(extracts.iter().any(|read| read.key.version == "2026-02-01" && read.files == ["europe/east.osm.pbf"]));
-    assert_eq!(env.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
+    let outputs = outputs(&store, &steps, &kept).unwrap().unwrap();
+    assert!(outputs.iter().all(|output| output.client_files().next().is_none()), "raw input files remain private");
+    let extracts: Vec<_> = outputs.iter().map(|output| &output.snapshots[EXTRACTS]).collect();
+    assert!(extracts.iter().any(|read| read.version == "2026-01-01" && read.params[0].1 == "europe/west"));
+    assert!(extracts.iter().any(|read| read.version == "2026-02-01" && read.params[0].1 == "europe/east"));
+    assert_eq!(inputs.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
+}
+
+/// The inputs of `region` without a serving release.
+fn inputs(region: &str) -> Inputs {
+    Inputs {
+        settings: obc_data::settings::Settings { region: region.into(), ..Default::default() },
+        ..Inputs::default()
+    }
 }

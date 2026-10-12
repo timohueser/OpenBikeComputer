@@ -2,7 +2,7 @@
 
 A release joins map, routing, search and model data.
 `release.json` is UTF-8 JSON. The release and its files are immutable.
-An applied publication uses the ID of the [`obc data` release manifest](obc-data.md#releases).
+A release of `obc data update` has the ID of the [named files of the planner](obc-data.md#planner).
 The standalone publisher uses the SHA-256 of `release.json`.
 
 ## Manifest
@@ -26,7 +26,7 @@ File paths stay inside the release directory. File hashes use lowercase
 64-character hex. Maps, search, and routing have the same OSM hash and bounds.
 The terrain inputs cover every routing elevation input. Search metadata contains
 the OSM hash. Terrain TileJSON contains terrain input hashes. The
-[`obc data` release manifest](obc-data.md#releases) records source versions, tool
+[`obc data` release manifest](obc-data.md#release-manifest) records source versions, tool
 identities and layer receipts. These are not client files.
 
 ## Objects and services
@@ -142,11 +142,11 @@ The online services and `deploy` serve grid releases only. A regional release
 without `grid` is for local preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files`
 entries retain logical paths and decoded `bytes` and `sha256`. Each also has
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`.
-R2 stores each distinct transport once at `planner/objects/SHA256`.
+A target of `obc data` stores each distinct transport once at `objects/SHA256`.
 The online services and offline installer consume this same pool.
-Named metadata stays at `planner/releases/ID/`: `release.json`, `public/`, and
-`indexes/GRID_STEP/index.json` for each selected grid. Applied release manifests
-bind each named path to its size and SHA-256. Producer directories and source
+Named metadata stays at `releases/ID/`: `release.json`, `public/`, and
+`indexes/GRID_STEP/index.json` for each selected grid. The release manifests of
+`obc data` bind each named path to its size and SHA-256. Producer directories and source
 archives are not part of these verification indexes.
 
 Before publication, the verifier checks the packed bytes and named metadata

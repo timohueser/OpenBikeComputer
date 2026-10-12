@@ -18,7 +18,7 @@ pub struct Bbox {
 }
 
 impl Bbox {
-    fn new([west, south, east, north]: [f64; 4]) -> Result<Self, String> {
+    pub fn new([west, south, east, north]: [f64; 4]) -> Result<Self, String> {
         let lon = -180.0..=180.0;
         let lat = -90.0..=90.0;
         if lon.contains(&west)
@@ -93,14 +93,6 @@ impl Region {
             Area::Geofabrik { areas } if areas.len() == 1 => Some(&areas[0]),
             _ => None,
         }
-    }
-
-    /// The planner needs both. Selection checks them, so a region without them fails before a fetch.
-    pub fn selectable(&self) -> Result<(), String> {
-        if self.countries.is_empty() || self.time_zone.is_none() {
-            return Err(format!("region `{}` needs `countries` and `time_zone` in its file", self.id));
-        }
-        Ok(())
     }
 }
 
@@ -184,8 +176,7 @@ impl Regions {
         Self::new(Self::definitions(dir)?)
     }
 
-    /// Parse definitions before resolving references across multiple directories.
-    pub(crate) fn definitions(dir: &Path) -> Result<Vec<Region>, String> {
+    fn definitions(dir: &Path) -> Result<Vec<Region>, String> {
         let mut files = Vec::new();
         collect(dir, &mut files)?;
         let mut list = Vec::new();
@@ -346,9 +337,6 @@ mod tests {
     #[test]
     fn the_checked_in_regions_load() {
         let regions = Regions::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
-        for region in regions.iter() {
-            region.selectable().unwrap();
-        }
         let dach = regions.leaves("dach").unwrap();
         assert_eq!(dach, ["europe/austria", "europe/germany", "europe/switzerland"]);
         assert_eq!(

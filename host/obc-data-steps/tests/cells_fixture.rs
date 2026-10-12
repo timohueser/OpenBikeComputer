@@ -1,4 +1,4 @@
-//! The map cells of `obc data build` over the captured GLO-30 tile of the Grimsel, a synthetic OSM
+//! The map cells of `obc data update` over the captured GLO-30 tile of the Grimsel, a synthetic OSM
 //! extract (`tests/data/cells.osm`) and synthetic land polygons: each cell has the bytes that one
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
 //! in for the Osmium crop of `maps/osm`. The bands are fine and network, which read the terrain:
@@ -11,12 +11,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use obc_bake::cut::{cut, CutOptions};
+use obc_data::engine::plan::{outputs, Kept};
 use obc_data::engine::runs::{Context, Limits, Run as RunLog};
-use obc_data::engine::{view, Receipt, Request, Run};
-use obc_data::env::Env;
+use obc_data::engine::{view, Receipt, Request, Run, Step};
 use obc_data::fetch::http::Http;
-use obc_data::product::Product;
+use obc_data::product::{Inputs, Product};
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
+use obc_data::release::Release;
+use obc_data::settings::Settings;
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::device::{box_poly, Device, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
@@ -164,15 +166,16 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     let region = parse_region("grimsel-box", REGION).unwrap();
     let regions = Regions::new(vec![region]).unwrap();
-    let live = BTreeMap::from([
-        ((GLO30.into(), Vec::new()), [VERSION.to_string()].into()),
-        ((TILE_LIST.into(), Vec::new()), [VERSION.to_string()].into()),
+    let serving = BTreeMap::from([
+        ((GLO30.into(), Vec::new()), VERSION.to_string()),
+        ((TILE_LIST.into(), Vec::new()), VERSION.to_string()),
     ]);
-    let env = Env { name: "test".into(), region: "grimsel-box".into(), live, ..Env::default() };
+    let settings = Settings { region: "grimsel-box".into(), ..Settings::default() };
+    let inputs = Inputs { settings, serving, ..Inputs::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &temp.0);
     let listed = Device
-        .steps_with_tool(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &env, &regions, &store, Ok(()))
+        .steps_with_tool(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &inputs, &regions, &store, Ok(()))
         .unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
     let mut steps = listed.steps;
@@ -190,12 +193,13 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     }
     let plan = obc_data::engine::plan::plan(&store, &steps).unwrap();
     let mut run = RunLog::create(&store, "build test").unwrap();
+    let kept = Kept::new();
     let context = Context {
         store: &store,
         root: &root,
         sources: &[],
         http: &Http::new(),
-        copies: None,
+        kept: &kept,
         limits: Limits::machine(),
     };
     let built = run.build(&context, &steps, &plan).unwrap();
@@ -206,24 +210,24 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
 
-    let mut release = obc_data::engine::release::release(&store, "device", &env.region, &[], &steps).unwrap().unwrap();
-    release.name_files(Device.named(&release).unwrap()).unwrap();
+    let release = composed(&store, &steps);
+    let named: BTreeMap<String, _> = Device.named(&release.outputs).unwrap().into_iter().collect();
     Device.verify(&root, None, &release, &store).unwrap();
-    let pointer = Device.pointer().unwrap()(&root, &release, &store).unwrap();
-    assert!(
-        release.named.iter().any(|file| file.path == "schema.json")
-            && release.named.iter().any(|file| file.path == "LICENSE.txt")
-    );
-    let catalog: obc_pack::catalog::Catalog = serde_json::from_value(pointer.document.into()).unwrap();
-    assert_eq!(catalog.schema.sha256, release.named.iter().find(|file| file.path == "schema.json").unwrap().sha256);
+    assert!(named.contains_key("schema.json") && named.contains_key("LICENSE.txt"));
+    let pointer = Device.pointer();
+    let output = release.outputs.iter().find(|output| output.step == pointer.step).unwrap();
+    let file = output.client_files().find(|file| file.path == pointer.path).unwrap();
+    let catalog: obc_pack::catalog::Catalog =
+        serde_json::from_slice(&std::fs::read(store.object(&file.sha256)).unwrap()).unwrap();
+    assert_eq!(catalog.schema.sha256, named["schema.json"].sha256);
     assert_eq!(
         catalog.regions.iter().map(|region| region.id.as_str()).collect::<BTreeSet<_>>(),
         [AREA, "grimsel-box"].into()
     );
-    let selected = catalog.regions.iter().find(|region| region.id == env.region).unwrap();
+    let selected = catalog.regions.iter().find(|region| region.id == inputs.settings.region).unwrap();
     assert!(selected.article_bytes.unwrap() > 0);
     for region in &catalog.regions {
-        let named = release.named.iter().find(|file| file.path == format!("regions/{}/cells.json", region.id)).unwrap();
+        let named = &named[&format!("regions/{}/cells.json", region.id)];
         assert_eq!((&named.sha256, named.size), (&region.cells_sha256, region.cells_bytes));
         let cells: obc_pack::catalog::RegionCellsDocument =
             serde_json::from_slice(&std::fs::read(store.object(&named.sha256)).unwrap()).unwrap();
@@ -233,20 +237,20 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             region.cell_count
         );
     }
-    let source = release.layers.iter().find(|layer| layer.step == format!("device/source/{AREA}")).unwrap();
+    let source = release.outputs.iter().find(|output| output.step == format!("device/source/{AREA}")).unwrap();
     assert!(source.client_files().next().is_none());
     for name in [EXTRACTS, "geofabrik-poly"] {
         let read = &source.snapshots[name];
         assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
     }
     assert!(release
-        .layers
+        .outputs
         .iter()
-        .filter(|layer| layer.step.starts_with("device/terrain/")
+        .filter(|output| output.step.starts_with("device/terrain/")
             || ["coarse", "mid", "fine", "network"]
                 .iter()
-                .any(|band| layer.step.starts_with(&format!("device/{band}/"))))
-        .all(|layer| layer.client_files().all(|file| !file.path.starts_with("metadata/"))));
+                .any(|band| output.step.starts_with(&format!("device/{band}/"))))
+        .all(|output| output.client_files().all(|file| !file.path.starts_with("metadata/"))));
 
     // One cut of every band over the leaf, as the planet bake cuts a leaf.
     let leaf = CellId::new(23, 37, 33).unwrap();
@@ -340,9 +344,23 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut run = RunLog::create(&store, "build changed fixture").unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
-    let next = obc_data::engine::release::release(&store, "device", &env.region, &[], &steps).unwrap().unwrap();
+    let next = composed(&store, &steps);
     let error = Device.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
+}
+
+/// The release of `steps` for the Grimsel box, as an update composes it, without its pointers.
+fn composed(store: &Store, steps: &[Step]) -> Release {
+    let mut outputs = outputs(store, steps, &Kept::new()).unwrap().unwrap();
+    outputs.sort_by(|a, b| a.step.cmp(&b.step));
+    Release {
+        settings: Settings { region: "grimsel-box".into(), ..Settings::default() },
+        outputs,
+        pointers: Vec::new(),
+        named: Vec::new(),
+        machine: "test".into(),
+        time: "2026-10-01T00:00:00Z".into(),
+    }
 }
 
 /// The credit of an article of the stand-in compiles.

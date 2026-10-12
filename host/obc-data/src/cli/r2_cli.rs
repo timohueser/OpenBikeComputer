@@ -6,8 +6,7 @@ use clap::{Args, Subcommand};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::live::refuse_owned;
-use crate::r2::{Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
+use crate::r2::{owned as release_key, refuse_older_publish, Bucket, Credentials, Object, Put, Upload, REMOVAL_LOG};
 
 use super::api::confirm;
 use super::{cells, print_json, table, Code, Error};
@@ -119,9 +118,17 @@ pub fn run(r2: R2, json: bool) -> Result<(), Error> {
     }
 }
 
-/// A refusal of a key that only an apply writes.
+/// Refuse `keys` when a release of `obc data` writes one of them and the bucket has a release.
+fn refuse_owned(bucket: &Bucket, keys: &[String]) -> Result<(), String> {
+    match keys.iter().any(|key| release_key(key)) {
+        true => refuse_older_publish(bucket),
+        false => Ok(()),
+    }
+}
+
+/// A refusal of a key that only an update writes.
 fn owned(message: String) -> Error {
-    Code::R2Failed.error(message).fix("Once a release is live, only `obc data apply live` changes its keys.")
+    Code::R2Failed.error(message).fix("Once a bucket has a release, only `obc data update` changes its keys.")
 }
 
 fn delete(

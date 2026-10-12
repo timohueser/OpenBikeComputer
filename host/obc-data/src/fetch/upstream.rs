@@ -73,25 +73,6 @@ pub fn newest(store: &Store, http: &Http, source: &Source, max_age: u64) -> Upst
     observe(store, http, source, &[], max_age, date::now()).result
 }
 
-#[cfg(test)]
-pub(crate) fn seed(store: &Store, source: &Source, params: &[(String, String)], version: &str) {
-    let mut checks = plan(source, params).unwrap();
-    checks.sort_by_cached_key(|check| serde_json::to_string(check).unwrap());
-    checks.dedup();
-    let checked_at = date::now();
-    let observation = Observation {
-        checked_at: Some(checked_at),
-        result: Upstream::Newest(version.into()),
-        last_success: Some(Success { checked_at, version: version.into() }),
-    };
-    store::write_atomic(
-        &path(store, &source.id, params),
-        &serde_json::to_vec(&Cached { fetch: source.fetch.clone(), version: source.version, checks, observation })
-            .unwrap(),
-    )
-    .unwrap();
-}
-
 pub fn path(store: &Store, source: &str, params: &[(String, String)]) -> std::path::PathBuf {
     let params = serde_json::to_vec(&store::sorted(params)).expect("strings serialize");
     store.root().join("upstream").join(source).join(format!("{}.json", store::sha256_hex(&params)))

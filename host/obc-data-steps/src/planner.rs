@@ -1,19 +1,21 @@
-//! The planner. Its layers cover the region of the environment: `planner/osm` is the OSM of the
+//! The planner. Its layers cover the region of the settings: `planner/osm` is the OSM of the
 //! region, `planner/basemap` the offline Protomaps map, `planner/terrain` the terrain of the maps,
 //! `planner/routing` the routing package with its grid, and `planner/search/dump` the search records of the OSM. `planner/overlays`,
 //! `planner/assets`, `planner/model`, `planner/places`, the other `planner/search/*` layers and
 //! the optional layers `planner/climate`, `planner/snow` and `planner/sun` are Python steps.
 //! Each map producer is intermediate. Its `/grid` step partitions and packs the client tiles.
-//! Grid indexes are local inputs for the offline catalog. `data/planner.toml` holds the options
-//! that are the same for each region.
+//! The release document, the public files and the grid indexes are the files that a client finds
+//! by name; `planner/catalog` points at them. `data/planner.toml` holds the options that are the
+//! same for each region.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use obc_data::engine::{snapshot_files, Client, Input, Layer, Run, Shape, Step};
-use obc_data::env::Env;
-use obc_data::product::{version, Product, Steps, Unplanned, Wanted};
-use obc_data::regions::Regions;
+use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Run, Shape, Step};
+use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
+use obc_data::regions::{geofabrik, Regions};
+use obc_data::release::{Output, Release};
+use obc_data::settings::Settings;
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
 use obc_dem::step::GLO30;
@@ -41,7 +43,8 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &["web planner"]
 pub static PLANNER_SNOW: Layer = whole("planner/snow", 1, &["web planner"]);
 /// Its format is `sun_format` of `specs/planner-sun-tiles.md`.
 pub static PLANNER_SUN: Layer = whole("planner/sun", 3, &["web planner"]);
-/// The offline catalog, the release document and the joined fonts of every planner layer.
+/// The offline catalog, the release document, the joined fonts of every planner layer and the
+/// pointer.
 pub static PLANNER_INDEX: Layer = whole("planner/index", 1, &["web planner", "iOS"]);
 
 const fn whole(name: &'static str, format: u32, readers: &'static [&'static str]) -> Layer {
@@ -99,7 +102,6 @@ struct Routing {
 }
 
 mod catalog;
-mod publish;
 
 pub struct Planner;
 
@@ -108,42 +110,26 @@ impl Product for Planner {
         "planner"
     }
 
-    fn status_steps(&self, root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, Ok(()))
+    fn status_steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        self.steps_with_tool(root, inputs, regions, store, Ok(()))
     }
 
-    fn pointer(&self) -> Option<obc_data::product::PointerFn> {
-        Some(catalog::pointer)
+    fn pointer(&self) -> Pointer {
+        Pointer { key: "planner/catalog.json", step: catalog::STEP, path: "catalog.json" }
     }
 
-    fn named(&self, release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
-        catalog::named(release)
+    fn named(&self, outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {
+        catalog::named(outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))
     }
 
-    fn verify(
-        &self,
-        root: &std::path::Path,
-        previous: Option<&obc_data::engine::release::Release>,
-        release: &obc_data::engine::release::Release,
-        store: &Store,
-    ) -> Result<(), String> {
+    fn verify(&self, root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
         catalog::verify(root, previous, release, store)
     }
 
-    fn activate(
-        &self,
-        root: &Path,
-        release: &obc_data::engine::release::Release,
-        store: &Store,
-        commit: &str,
-    ) -> Result<(), String> {
-        publish::activate(root, release, store, commit)
-    }
-
-    fn credential_sources(&self, env: &Env) -> Vec<&'static str> {
+    fn credential_sources(&self, settings: &Settings) -> Vec<&'static str> {
         [("climate", "era5-land"), ("snow", "hr-wsi")]
             .into_iter()
-            .filter(|(layer, _)| env.layers.iter().any(|selected| selected == layer))
+            .filter(|(layer, _)| settings.layers.iter().any(|selected| selected == layer))
             .map(|(_, source)| source)
             .collect()
     }
@@ -152,14 +138,9 @@ impl Product for Planner {
         &["climate", "snow", "sun"]
     }
 
-    fn steps(
-        &self,
-        root: &std::path::Path,
-        env: &Env,
-        regions: &Regions,
-        store: &Store,
-    ) -> Result<obc_data::product::Steps, Unplanned> {
-        self.steps_with_tool(root, env, regions, store, obc_osm::ShardRunner::check(&obc_osm::OsmiumRunner::default()))
+    fn steps(&self, root: &Path, inputs: &Inputs, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+        let osmium = obc_osm::ShardRunner::check(&obc_osm::OsmiumRunner::default());
+        self.steps_with_tool(root, inputs, regions, store, osmium)
     }
 }
 
@@ -167,36 +148,56 @@ impl Planner {
     /// Its steps. `osmium` says whether Osmium runs here: more than one source area needs it.
     pub fn steps_with_tool(
         &self,
-        _root: &std::path::Path,
-        env: &Env,
+        root: &Path,
+        inputs: &Inputs,
         regions: &Regions,
         store: &Store,
         osmium: Result<(), String>,
-    ) -> Result<obc_data::product::Steps, Unplanned> {
+    ) -> Result<Steps, Unplanned> {
         let config: Config = toml::from_str(include_str!("../../../data/planner.toml"))
             .map_err(|e| Unplanned::Failed(format!("data/planner.toml: {e}")))?;
-        let region =
-            regions.get(&env.region).ok_or_else(|| Unplanned::Failed(format!("no region `{}`", env.region)))?;
-        if region.countries.is_empty() {
-            return Err(invalid(format!("region `{}` names no `countries`, which the route catalog needs", region.id)));
-        }
-        let Some(time_zone) = &region.time_zone else {
-            return Err(invalid(format!("region `{}` names no `time_zone`, which the search needs", region.id)));
-        };
-        let on = |layer: &str| env.layers.iter().any(|name| name == layer);
+        let origins = catalog::publication(root).map_err(Unplanned::Failed)?;
+        let id = &inputs.settings.region;
+        let region = regions.get(id).ok_or_else(|| Unplanned::Failed(format!("no region `{id}`")))?;
+        // A region without a time zone, such as a box, gives the times of the search and the sun in UTC.
+        let time_zone = region.time_zone.as_deref().unwrap_or("UTC");
+        let on = |layer: &str| inputs.settings.layers.iter().any(|name| name == layer);
         let mut wanted = Vec::new();
-        let glo30 = version(env, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
-        let selection = crate::region_sources::resolve(env, regions, store, &mut wanted)?;
-        let tile_list = text(env, store, TILE_LIST, &[], &mut wanted)?;
+        let glo30 = version(inputs, store, GLO30, &[]).map_err(Unplanned::Failed)?.map_err(|fetch| wanted.push(fetch));
+        let selection = crate::region_sources::resolve(inputs, regions, store, &mut wanted)?;
+        let tile_list = text(inputs, store, TILE_LIST, &[], &mut wanted)?;
         let assets = vec![
-            snapshot(env, store, "protomaps-assets", Vec::new(), &mut wanted)?,
-            snapshot(env, store, "tangrams-icons", Vec::new(), &mut wanted)?,
+            snapshot(inputs, store, "protomaps-assets", Vec::new(), &mut wanted)?,
+            snapshot(inputs, store, "tangrams-icons", Vec::new(), &mut wanted)?,
         ];
-        let model = snapshot(env, store, "query-model", Vec::new(), &mut wanted)?;
-        let country_data = snapshot(env, store, "nominatim-country-data", Vec::new(), &mut wanted)?;
+        let model = snapshot(inputs, store, "query-model", Vec::new(), &mut wanted)?;
+        let country_data = snapshot(inputs, store, "nominatim-country-data", Vec::new(), &mut wanted)?;
         let (Some(selection), Some(tile_list), Ok(glo30)) = (selection, tile_list, glo30) else {
             return Err(Unplanned::NeedsFetch(wanted));
         };
+        let countries = match &region.countries[..] {
+            [] => {
+                let Some(body) = text(inputs, store, crate::device::catalog::INDEX, &[], &mut wanted)? else {
+                    return Err(Unplanned::NeedsFetch(wanted));
+                };
+                let index = geofabrik::parse(body.as_bytes()).map_err(Unplanned::Failed)?;
+                let mut countries: Vec<String> = selection
+                    .sources
+                    .iter()
+                    .filter_map(|source| index.get(&source.id))
+                    .flat_map(|area| area.countries.clone())
+                    .collect();
+                countries.sort();
+                countries.dedup();
+                countries
+            }
+            countries => countries.to_vec(),
+        };
+        if countries.is_empty() {
+            return Err(invalid(format!(
+                "the Geofabrik areas of region `{id}` name no country, which the route catalog needs"
+            )));
+        }
         let land: HashSet<&str> = tile_list.lines().map(str::trim).collect();
         let requested = obc_bake::coverage::Coverage::union(&selection.outlines.iter().collect::<Vec<_>>())
             .ok_or_else(|| Unplanned::Failed("cannot union planner region coverage".into()))?;
@@ -219,21 +220,21 @@ impl Planner {
             osmium.map_err(Unplanned::Invalid)?;
             crate::region_sources::combined("planner/osm", &source_steps)
         };
-        let mut inputs = vec![Input::step(osm.name.clone())];
+        let mut reads = vec![Input::step(osm.name.clone())];
         for source in BASEMAP_SOURCES {
-            let mut input = snapshot(env, store, source, Vec::new(), &mut wanted)?;
+            let mut input = snapshot(inputs, store, source, Vec::new(), &mut wanted)?;
             if let Input::Snapshot { files, .. } = &mut input {
                 if source == "protomaps-basemaps" {
                     *files = vec![obc_data::fetch::basemap_jar()];
                 }
             }
-            inputs.push(input);
+            reads.push(input);
         }
         let credit = ["osm-planet", "natural-earth", "daylight-landcover"].map(attribution).join("; ");
         let basemap = python(
             &PLANNER_BASEMAP,
             "planner/basemap",
-            inputs,
+            reads,
             json!({"bounds": bounds, "attribution": credit}),
             ("tools.planner_basemap", None),
             &["basemap.pmtiles"],
@@ -257,7 +258,7 @@ impl Planner {
                 "region": name,
                 "bounds": bounds,
                 "profiles": config.routing.profiles,
-                "countries": region.countries,
+                "countries": countries,
                 "attribution": attribution("osm-planet"),
                 "terrain_attribution": attribution(GLO30),
             }),
@@ -298,7 +299,7 @@ impl Planner {
             layer: &PLANNER_SEARCH,
             name: "planner/search/dump".into(),
             inputs: vec![Input::step(osm.name.clone()), Input::step(policy.name.clone())],
-            options: json!({"country": region.countries[0].to_lowercase()}),
+            options: json!({"country": countries[0].to_lowercase()}),
             outputs: vec!["search.jsonl.zst".into()],
             run: Run::Rust(obc_search_bake::step::step),
             client: Client::None,
@@ -314,7 +315,7 @@ impl Planner {
                 &["pois.jsonl.zst", "addresses.jsonl.zst"],
             )
         };
-        let content = crate::device::content_declarations(env, store, &selection)?;
+        let content = crate::device::content_declarations(inputs, store, &selection)?;
         let content_inputs = || {
             content
                 .steps
@@ -343,7 +344,7 @@ impl Planner {
                     "component": component,
                     "region": name,
                     "bounds": bounds,
-                    "countries": region.countries,
+                    "countries": countries,
                     "time_zone": time_zone,
                     "attribution": attribution("osm-planet"),
                 }),
@@ -371,7 +372,7 @@ impl Planner {
             steps.push(python(
                 &PLANNER_CLIMATE,
                 "planner/climate",
-                vec![snapshot(env, store, "era5-land", params, &mut wanted)?],
+                vec![snapshot(inputs, store, "era5-land", params, &mut wanted)?],
                 // `{year}` is the year after the ten years.
                 json!({"bounds": bounds, "first_year": first_year, "attribution": attribution("era5-land")}),
                 ("tools.planner_climate", Some("planner-climate")),
@@ -379,7 +380,7 @@ impl Planner {
             ));
         }
         if on("snow") {
-            steps.push(snow(env, store, bounds, config.snow.seasons, &mut wanted)?);
+            steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
         }
         if on("sun") {
             steps.push(python(
@@ -388,7 +389,7 @@ impl Planner {
                 vec![Input::step("planner/terrain/grid")],
                 json!({
                     "bounds": bounds,
-                    "time_zone": region.time_zone,
+                    "time_zone": time_zone,
                     "distance_m": config.terrain.margin_m as u32,
                     "horizon_samples": config.sun.horizon_samples,
                     "horizon_directions": config.sun.horizon_directions,
@@ -424,7 +425,7 @@ impl Planner {
                 None => json!({"kind": kind}),
             };
             steps.push(Step {
-                client: Client::Paths(vec!["objects".into()]),
+                client: Client::Paths(vec!["objects".into(), "index.json".into()]),
                 ..python(
                     layer,
                     &format!("{source}/grid"),
@@ -436,7 +437,7 @@ impl Planner {
             });
         }
         steps.push(Step {
-            client: Client::Paths(vec!["objects".into()]),
+            client: Client::Paths(vec!["objects".into(), "index.json".into()]),
             ..python(
                 &PLANNER_INDEX,
                 "planner/fonts/grid",
@@ -453,17 +454,15 @@ impl Planner {
         });
         let overlays = steps.iter_mut().find(|step| step.name == "planner/overlays/grid").unwrap();
         overlays.inputs.push(layer_files("planner/routing/grid", &["index.json"]));
-        let indexes = steps
-            .iter()
-            .filter(|step| step.name.ends_with("/grid"))
-            .map(|step| layer_files(&step.name, &["index.json"]))
-            .collect();
+        let grids: Vec<String> =
+            steps.iter().filter(|step| step.name.ends_with("/grid")).map(|step| step.name.clone()).collect();
+        let indexes = || grids.iter().map(|grid| layer_files(grid, &["index.json"]));
         steps.push(Step {
-            client: Client::Paths(vec!["objects".into()]),
+            client: Client::Paths(["objects", "release.json", "public"].map(String::from).into()),
             ..python(
                 &PLANNER_INDEX,
                 "planner/index",
-                indexes,
+                indexes().collect(),
                 json!({
                     "region": name, "name": region.name, "bounds": bounds,
                     "attribution": attribution("osm-planet"),
@@ -472,6 +471,15 @@ impl Planner {
                 ("tools.planner_grid_index", None),
                 &["objects", "release.json", "public", "index.json"],
             )
+        });
+        steps.push(Step {
+            layer: &PLANNER_INDEX,
+            name: catalog::STEP.into(),
+            inputs: std::iter::once(Input::step("planner/index")).chain(indexes()).collect(),
+            options: json!({"origins": origins}),
+            outputs: vec!["catalog.json".into()],
+            run: Run::Rust(catalog::pointer),
+            client: Client::All,
         });
         match wanted.is_empty() {
             true => {
@@ -489,11 +497,11 @@ fn layer_files(name: &str, files: &[&str]) -> Input {
     Input::Step { name: name.into(), files: files.iter().map(|file| (*file).into()).collect() }
 }
 
-/// A map's transport objects ship; the small index is input to the offline catalog only.
+/// A map's transport objects and its small index ship; the index is input to the offline catalog too.
 fn map_grid(source: &Step, kind: &str, bounds: [f64; 4]) -> Step {
     let bounds = source.options.get("bounds").cloned().unwrap_or_else(|| json!(bounds));
     Step {
-        client: Client::Paths(vec!["objects".into()]),
+        client: Client::Paths(vec!["objects".into(), "index.json".into()]),
         ..python(
             source.layer,
             &format!("{}/grid", source.name),
@@ -508,13 +516,13 @@ fn map_grid(source: &Step, kind: &str, bounds: [f64; 4]) -> Step {
 /// The input of the fetch of `source` with `params`, at its version. While the store lacks that
 /// fetch, `wanted` names it, and the input has no version: the step list is not used then.
 fn snapshot(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     source: &str,
     params: Vec<(String, String)>,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Input, Unplanned> {
-    let version = version(env, store, source, &params).map_err(Unplanned::Failed)?.unwrap_or_else(|fetch| {
+    let version = version(inputs, store, source, &params).map_err(Unplanned::Failed)?.unwrap_or_else(|fetch| {
         wanted.push(fetch);
         String::new()
     });
@@ -536,7 +544,7 @@ fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
 /// The snow layer of `bounds`: HR-WSI where it has data, and MODIS elsewhere. Outside the extent
 /// of HR-WSI, or where its fetch has no files, it reads MODIS only.
 fn snow(
-    env: &Env,
+    inputs: &Inputs,
     store: &Store,
     bounds: [f64; 4],
     [first, last]: [u16; 2],
@@ -545,27 +553,27 @@ fn snow(
     let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
     let params = vec![bbox, ("seasons".to_string(), format!("{first}-{last}"))];
     let tiles = canopy_tiles(bounds).into_iter().map(|tile| ("tile".to_string(), tile)).collect();
-    let mut inputs = vec![
-        snapshot(env, store, "modis-snow", params.clone(), wanted)?,
-        snapshot(env, store, "hansen-gfc", tiles, wanted)?,
+    let mut reads = vec![
+        snapshot(inputs, store, "modis-snow", params.clone(), wanted)?,
+        snapshot(inputs, store, "hansen-gfc", tiles, wanted)?,
     ];
     let mut credit = format!("{}; tree canopy: {}", attribution("modis-snow"), attribution("hansen-gfc"));
     let mut year = None;
     if embedded("hr-wsi").meets(bounds) {
-        let hr_wsi = snapshot(env, store, "hr-wsi", params, wanted)?;
+        let hr_wsi = snapshot(inputs, store, "hr-wsi", params, wanted)?;
         let Input::Snapshot { version, params, .. } = &hr_wsi else { unreachable!("a fetch is a snapshot input") };
         let files = snapshot_files(store, "hr-wsi", version, params, &[]).map_err(Unplanned::Failed)?;
         if !files.is_some_and(|files| files.is_empty()) {
             // The credit of HR-WSI names a year: the year of the capture.
             year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
             credit = format!("{}; {credit}", attribution("hr-wsi"));
-            inputs.insert(0, hr_wsi);
+            reads.insert(0, hr_wsi);
         }
     }
     Ok(python(
         &PLANNER_SNOW,
         "planner/snow",
-        inputs,
+        reads,
         json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": credit}),
         ("tools.planner_snow", Some("planner-snow")),
         &["snow.pmtiles"],
@@ -625,18 +633,34 @@ mod tests {
 
     const AREA: &str = "europe/test";
 
-    /// An environment with `layers` on that names a version of every source the planner reads but
-    /// the extract: live reads the sources without params, and the captures move.
-    fn env(region: &str, layers: &[&str]) -> Env {
+    /// The inputs of `region` with `layers` on, whose serving release reads each source without
+    /// params of the planner at `1`, and the canopy at `v1.11`.
+    fn inputs(region: &str, layers: &[&str]) -> Inputs {
         let read = [GLO30, TILE_LIST, "protomaps-assets", "tangrams-icons", "query-model", "nominatim-country-data"];
-        let live = read
-            .into_iter()
-            .chain(BASEMAP_SOURCES)
-            .map(|source| ((source.into(), Vec::new()), BTreeSet::from(["1".into()])));
-        let moves = ["era5-land", "hr-wsi", "modis-snow"].map(|source| (source.into(), Some("2026-10-01".into())));
-        let moves = moves.into_iter().chain([("hansen-gfc".into(), Some("v1.11".into()))]).collect();
+        let read = read.into_iter().chain(BASEMAP_SOURCES).map(|source| (source, "1")).chain([("hansen-gfc", "v1.11")]);
+        let serving = read.map(|(source, version)| ((source.to_string(), Vec::new()), version.to_string())).collect();
         let layers = layers.iter().map(|layer| layer.to_string()).collect();
-        Env { name: "test".into(), region: region.into(), layers, live: live.collect(), moves, ..Env::default() }
+        Inputs {
+            settings: Settings { region: region.into(), layers, ..Settings::default() },
+            serving,
+            ..Inputs::default()
+        }
+    }
+
+    /// `inputs` with the version `2026-10-01` for each fetch of the optional layers that the steps
+    /// ask for.
+    fn resolved(mut inputs: Inputs, regions: &Regions, store: &Store) -> Inputs {
+        for _ in 0..3 {
+            let Err(Unplanned::NeedsFetch(wanted)) = Planner.steps_with_tool(&root(), &inputs, regions, store, Ok(()))
+            else {
+                return inputs;
+            };
+            for wanted in &wanted {
+                assert!(["era5-land", "hr-wsi", "modis-snow"].contains(&wanted.source.as_str()), "{wanted:?}");
+                inputs.resolve(wanted, "2026-10-01".into());
+            }
+        }
+        panic!("the steps still ask for a fetch");
     }
 
     fn regions() -> Regions {
@@ -681,7 +705,7 @@ mod tests {
         let store = store(&temp, &["2026-10-01"]);
         let region = parse_region("ride/freiburg", "name = \"My ride\"\nkind = \"geofabrik\"\nareas = [\"europe/test\"]\ncountries = [\"DE\"]\ntime_zone = \"Europe/Berlin\"\n").unwrap();
         let regions = Regions::new(vec![region]).unwrap();
-        let listed = Planner.steps(&root(), &env("ride/freiburg", &[]), &regions, &store).unwrap();
+        let listed = Planner.steps(&root(), &inputs("ride/freiburg", &[]), &regions, &store).unwrap();
         let osm = listed.steps.iter().find(|step| step.name == "planner/source/europe/test").unwrap();
         let Input::Snapshot { params, .. } = &osm.inputs[0] else {
             panic!("OSM snapshot");
@@ -723,9 +747,11 @@ mod tests {
             )
             .unwrap();
         let region = parse_region("ride", "name='Ride'\nkind='geofabrik'\nareas=['europe/test','europe/second']\ncountries=['DE']\ntime_zone='Europe/Berlin'\n").unwrap();
-        let env = env("ride", &[]);
-        let steps =
-            Planner.steps_with_tool(&root(), &env, &Regions::new(vec![region]).unwrap(), &store, Ok(())).unwrap().steps;
+        let inputs = inputs("ride", &[]);
+        let steps = Planner
+            .steps_with_tool(&root(), &inputs, &Regions::new(vec![region]).unwrap(), &store, Ok(()))
+            .unwrap()
+            .steps;
         let versions = steps
             .iter()
             .filter(|step| step.name.starts_with("planner/source/"))
@@ -739,14 +765,14 @@ mod tests {
         assert_eq!(osm.inputs.len(), 2);
         let routing = steps.iter().find(|step| step.name == "planner/routing").unwrap();
         assert_eq!(routing.options["bounds"], json!([7.79, 47.99, 7.85, 48.02]));
-        assert_eq!(env.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
+        assert_eq!(inputs.read.borrow().iter().filter(|((source, _), _)| source == EXTRACTS).count(), 2);
     }
 
     #[test]
     fn a_geofabrik_region_reads_its_newest_extract_and_the_tiles_of_its_bounds() {
         let temp = temp("planner-steps");
         let Err(Unplanned::NeedsFetch(wanted)) =
-            Planner.steps(&root(), &env(AREA, &[]), &regions(), &store(&temp, &[]))
+            Planner.steps(&root(), &inputs(AREA, &[]), &regions(), &store(&temp, &[]))
         else {
             panic!("the store has no extract");
         };
@@ -754,7 +780,7 @@ mod tests {
         assert_eq!(wanted, [Wanted { source: EXTRACTS.into(), version: None, params: area.clone() }]);
 
         let steps = Planner
-            .steps(&root(), &env(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"]))
+            .steps(&root(), &inputs(AREA, &[]), &regions(), &store(&temp, &["2026-10-01", "2026-10-02"]))
             .unwrap()
             .steps;
         let names: Vec<&str> = steps.iter().map(|step| step.name.as_str()).collect();
@@ -784,6 +810,7 @@ mod tests {
             "search/addresses/grid",
             "fonts/grid",
             "index",
+            "catalog",
         ];
         let mut expected = layers.map(|layer| format!("planner/{layer}")).to_vec();
         expected.splice(1..1, ["device/landmark-content".into(), "device/peak-content".into()]);
@@ -863,20 +890,22 @@ mod tests {
             .zip(old)
             .all(|(got, expected)| (got - expected).abs() < 1e-12));
 
-        for region in ["boxed", "no-countries", "no-time-zone"] {
-            let result = Planner.steps(&root(), &env(region, &[]), &regions(), &store(&temp, &["2026-10-01"]));
-            assert!(matches!(result, Err(Unplanned::Invalid(_))), "{region}");
-        }
+        let store = store(&temp, &["2026-10-01"]);
+        let result = Planner.steps(&root(), &inputs("no-countries", &[]), &regions(), &store);
+        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("no country")));
+        let steps = Planner.steps(&root(), &inputs("no-time-zone", &[]), &regions(), &store).unwrap().steps;
+        let pois = steps.iter().find(|step| step.name == "planner/search/pois").unwrap();
+        assert_eq!(pois.options["time_zone"], "UTC");
     }
 
     #[test]
     fn each_step_belongs_to_the_layer_of_its_producer() {
         let temp = temp("planner-layers");
         let store = store(&temp, &["2026-10-01"]);
-        let env = env(AREA, &["climate", "snow", "sun"]);
-        crate::device::tests::without_models(&store, &env, &regions());
-        let mut steps = Planner.steps(&root(), &env, &regions(), &store).unwrap().steps;
-        steps.extend(Device.steps_with_tool(&root(), &env, &regions(), &store, Ok(())).unwrap().steps);
+        let inputs = resolved(inputs(AREA, &["climate", "snow", "sun"]), &regions(), &store);
+        crate::device::tests::without_models(&store, &inputs, &regions());
+        let mut steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
+        steps.extend(Device.steps_with_tool(&root(), &inputs, &regions(), &store, Ok(())).unwrap().steps);
         let layer = |name: &str| {
             let parts: Vec<&str> = name.split('/').collect();
             match parts[..] {
@@ -895,7 +924,7 @@ mod tests {
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
                 ["planner", "sun", ..] => "planner/sun",
-                ["planner", "fonts" | "index", ..] => "planner/index",
+                ["planner", "fonts" | "index" | "catalog", ..] => "planner/index",
                 _ => panic!("{name} has no layer"),
             }
         };
@@ -911,7 +940,10 @@ mod tests {
         let temp = temp("planner-snow");
         let store = store(&temp, &[]);
         let sources = |bounds: [f64; 4]| {
-            let step = snow(&env(AREA, &["snow"]), &store, bounds, [2016, 2024], &mut Vec::new()).unwrap();
+            let (mut inputs, mut wanted) = (inputs(AREA, &["snow"]), Vec::new());
+            snow(&inputs, &store, bounds, [2016, 2024], &mut wanted).unwrap();
+            wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
+            let step = snow(&inputs, &store, bounds, [2016, 2024], &mut Vec::new()).unwrap();
             let inputs = step.inputs.iter().map(|input| match input {
                 Input::Snapshot { source, params, .. } => (source.clone(), params.clone()),
                 Input::Step { .. } => panic!("a step input"),
@@ -947,7 +979,10 @@ mod tests {
     fn climate_changes_only_its_steps_and_the_final_index() {
         let temp = temp("planner-climate");
         let store = store(&temp, &["2026-10-01"]);
-        let steps = |layers: &[&str]| Planner.steps(&root(), &env(AREA, layers), &regions(), &store).unwrap().steps;
+        let steps = |layers: &[&str]| {
+            let inputs = resolved(inputs(AREA, layers), &regions(), &store);
+            Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps
+        };
         let (without, with) = (steps(&[]), steps(&["climate"]));
         let changed: Vec<&str> = with
             .iter()
@@ -959,7 +994,7 @@ mod tests {
             })
             .map(|step| step.name.as_str())
             .collect();
-        assert_eq!(changed, ["planner/climate", "planner/climate/grid", "planner/index"]);
+        assert_eq!(changed, ["planner/climate", "planner/climate/grid", "planner/index", "planner/catalog"]);
         let index = with.iter().find(|step| step.name == "planner/index").unwrap();
         assert!(index
             .inputs

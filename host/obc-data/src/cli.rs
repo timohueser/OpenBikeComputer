@@ -1,19 +1,13 @@
-//! `obc data`: read the sources and the regions, fetch sources into the store, plan and build the
-//! releases of the products, show what is live, and show runs. Read commands change nothing in
-//! `data/`. Without a command, it prints the status.
+//! `obc data`: update a target, show what each target serves, read the sources and the regions,
+//! fetch sources into the store, and show runs. Without a command, it shows every target.
 
 mod api;
-mod apply_cli;
-mod build_cli;
-pub use build_cli::{BlockedProduct, EnvPlan, FetchVersion, LiveRelease};
-mod edit_cli;
 mod freshness;
-pub mod operation_cli;
+mod listing;
+mod overview;
 mod r2_cli;
-mod regions_cli;
 mod runs_cli;
-mod status_cli;
-mod versions;
+mod update_cli;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,48 +18,36 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::fetch::http::Http;
-
 use crate::fetch::Request;
-use crate::live::{Live, Remote};
 use crate::product::Product;
-use crate::regions::{Area, Bbox, Region, Regions};
-use crate::sources::{Kind, Refresh, Registry, Source, State, VersionScheme};
-use crate::store::{gc, FileRecord, Snapshot, Store};
+use crate::regions::{geofabrik, Area, Bbox, Region, Regions};
+use crate::release::{Release, SERVING};
+use crate::sources::{Kind, Refresh, Registry, Source, State};
+use crate::store::{gc, hash_file, FileRecord, Snapshot, Store};
 use api::{confirm, print_json, Code, Error};
 
 #[derive(Parser)]
-#[command(name = "obc data", about = "Data sources, regions, environments and releases")]
+#[command(name = "obc data", about = "Data sources, regions, targets and their releases")]
 struct Cli {
     /// Write JSON to standard output, also when the command fails.
     #[arg(long, global = true)]
     json: bool,
-    /// Without a command: what `status` writes.
+    /// Without a command: what each target serves, and the command to run next.
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(hide = true)]
-    Perform {
-        #[arg(long)]
-        store: std::path::PathBuf,
-        #[arg(long)]
-        run: String,
-        #[arg(long)]
-        request: String,
-    },
-    /// What is live: the release of each product, the state of its layers, and what needs attention.
-    Status(status_cli::StatusArgs),
-    /// Every source with licence, R2 copy, live version, newest upstream version, age, policy and
-    /// state.
+    /// Bake what is stale for a target, publish the new release and switch the target to it. The
+    /// flags change the settings of the target, which its release keeps.
+    Update(update_cli::UpdateArgs),
+    /// Every source with licence, R2 copy, and the policy, versions and state for each target.
     Sources {
         /// Check upstream now, not from a check of the last hour.
         #[arg(long)]
         check_now: bool,
     },
-    /// Versions known for every active request of a source, with each request's availability.
-    Versions { source: String },
     /// Fetch a source version into the store, and print the store path of each file.
     Fetch {
         /// SOURCE or SOURCE@VERSION. Without a version: upstream's newest file.
@@ -73,36 +55,15 @@ enum Command {
         /// NAME=VALUE for each `{name}` in the URL of the source, such as `tile=…` or `area=…`.
         params: Vec<String>,
     },
-    /// Set how old the live version of a source may get before it is stale: 7, 30, 90, 365 or
-    /// manual. A manual source moves only with `--move`.
-    Policy { source: String, refresh: Refresh },
-    /// Saved regions and shipped presets. With ENV ID: select the environment region.
-    #[command(args_conflicts_with_subcommands = true)]
-    Region {
-        #[command(subcommand)]
-        action: Option<regions_cli::Action>,
-        /// The environment whose region to set.
-        #[arg(requires = "id")]
-        env: Option<String>,
-        /// The region id.
-        id: Option<String>,
+    /// The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name
+    /// holds QUERY. Nothing is fetched.
+    Areas {
+        #[arg(default_value = "")]
+        query: String,
     },
-    /// Switch an optional layer of the environment on or off.
-    Layer { env: String, layer: String, switch: edit_cli::Switch },
-    /// Restore applied Live settings, or a committed environment file.
-    Undo { env: String },
-    /// What a build of the environment would fetch and build, in groups that are independent.
-    Plan(build_cli::PlanArgs),
-    /// Start durable input preparation and return its run handle. Nothing builds or uploads.
-    Prepare(build_cli::PlanArgs),
-    /// Start a durable build into the store and return its run handle. Nothing uploads.
-    Build(build_cli::BuildArgs),
-    /// Review live, start its durable build and publication, and return a run handle.
-    /// Asks once; without a terminal, `--yes` or `--plan` is required.
-    Apply(apply_cli::ApplyArgs),
     /// The runs in the store, newest first; with RUN, its steps.
     Runs(runs_cli::Runs),
-    /// Clean the local store: delete what no live release reaches, and empty `partial/`.
+    /// Clean the local store: delete what no release of a target reaches, and empty `partial/`.
     /// Shows the plan; `--apply` asks, then cleans.
     Clean {
         #[arg(long)]
@@ -130,7 +91,7 @@ pub fn main(products: &[&dyn Product]) -> ExitCode {
     };
     let json = cli.json;
     match run(cli, products) {
-        Ok(code) => code,
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => error.report(json),
     }
 }
@@ -140,34 +101,16 @@ pub fn failed(message: String) -> ExitCode {
     Code::Failed.error(message).report(std::env::args_os().any(|arg| arg == "--json"))
 }
 
-fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
+fn run(cli: Cli, products: &[&dyn Product]) -> Result<(), Error> {
     let json = cli.json;
     let Some(command) = cli.command else {
-        return status_cli::status(&root()?, products, false, json);
+        return overview::overview(&root()?, products, json);
     };
-    let done = match command {
-        Command::Perform { store, run, request } => {
-            return operation_cli::perform(&Store::at(store), &run, &request, products).map(|()| ExitCode::SUCCESS);
-        }
-        Command::Status(args) => return status_cli::status(&root()?, products, args.check, json),
-        Command::Sources { check_now } => print_sources(&root()?, products, check_now, json),
-        Command::Versions { source } => {
-            let (rows, _) = source_listing(&root()?, products, false)?;
-            let row = rows
-                .iter()
-                .find(|row| row.source.id == source)
-                .ok_or_else(|| Code::Usage.error(format!("no source `{source}`")))?;
-            let versions = versions::read(&Store::open()?, row)?;
-            if json {
-                print_json(&versions)
-            } else {
-                versions.lines().iter().for_each(|line| println!("{line}"));
-                Ok(())
-            }
-        }
+    match command {
+        Command::Update(args) => update_cli::command(&root()?, products, args, json),
+        Command::Sources { check_now } => print_sources(&root()?, check_now, json),
         Command::Fetch { target, params } => {
-            let root = root()?;
-            let registry = registry(&root)?;
+            let registry = registry(&root()?)?;
             let (id, version) = match target.split_once('@') {
                 Some((id, version)) => (id, Some(version.to_string())),
                 None => (target.as_str(), None),
@@ -175,54 +118,14 @@ fn run(cli: Cli, products: &[&dyn Product]) -> Result<ExitCode, Error> {
             let source = find(&registry, id)?;
             let store = Store::open()?;
             let request = Request { refresh: false, source, version, params: parse_params(&params)? };
-            let missing = request
-                .version
-                .as_ref()
-                .map(|version| crate::engine::snapshot_files(&store, id, version, &request.params, &[]))
-                .transpose()?
-                .flatten()
-                .is_none();
-            let remote = (request.version.is_some() && source.r2_copy && missing).then(remote).transpose()?;
-            let live = remote
-                .as_ref()
-                .map(|remote| crate::live::Live::read(remote, products, &registry.sources, &store))
-                .transpose()?;
-            let copies =
-                remote.as_ref().zip(live.as_ref()).map(|(remote, live)| crate::input_copy::Restore { remote, live });
-            print_snapshot(
-                &store,
-                &fetched(
-                    source,
-                    crate::input_copy::fetch(&root, &store, &Http::new(), copies.as_ref(), &request, &[]),
-                )?,
-                json,
-            )
+            let snapshot = crate::fetch::fetch(&root()?, &store, &Http::new(), &request);
+            print_snapshot(&store, &fetched(source, snapshot)?, json)
         }
-        Command::Policy { source, refresh } => {
-            let source = policy(&root()?, &Store::open()?, &source, refresh)?;
-            eprintln!("obc data: the policy of {} is {refresh} in pending Live settings", source.id);
-            if json {
-                print_json(&source)?;
-            }
-            Ok(())
-        }
-        Command::Region { env: Some(env), id: Some(id), .. } => {
-            edit_cli::print(edit_cli::region(&root()?, &Store::open()?, products, &env, &id)?, json)
-        }
-        Command::Region { action, .. } => regions_cli::run(&root()?, action, json),
-        Command::Layer { env, layer, switch } => {
-            edit_cli::print(edit_cli::layer(&root()?, &Store::open()?, products, &env, &layer, switch)?, json)
-        }
-        Command::Undo { env } => edit_cli::print(edit_cli::undo(&root()?, &Store::open()?, &env)?, json),
-        Command::Plan(args) => build_cli::plan(&root()?, products, args, json),
-        Command::Prepare(args) => operation_cli::prepare(&root()?, args, json),
-        Command::Build(args) => operation_cli::build(&root()?, args, json),
-        Command::Apply(args) => operation_cli::apply(&root()?, products, args, json),
+        Command::Areas { query } => print_areas(&root()?, &query, json),
         Command::Runs(runs) => runs_cli::run(runs, json),
-        Command::Clean { apply, yes } => clean_command(&root()?, products, apply, yes, json),
+        Command::Clean { apply, yes } => clean_command(&root()?, apply, yes, json),
         Command::R2(r2) => r2_cli::run(r2, json),
-    };
-    done.map(|()| ExitCode::SUCCESS)
+    }
 }
 
 /// What `clean` removes from the store, or removed.
@@ -249,47 +152,38 @@ impl CleanPlan {
     }
 }
 
-fn remote() -> Result<Remote, Error> {
-    Remote::from_env().map_err(|e| Code::Blocked.error(e))
+/// The serving release and the rollback of a target, or why the target cannot be read.
+type Releases = Result<Vec<Release>, Error>;
+
+/// The [`Releases`] of each target, by target.
+fn releases(root: &Path, store: &Store) -> Result<Vec<(String, Releases)>, Error> {
+    let targets = crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?;
+    let read = |target: &crate::target::Target| -> Result<Vec<Release>, Error> {
+        let Some(bytes) = target.get(SERVING)? else { return Ok(Vec::new()) };
+        let serving: crate::release::Serving =
+            serde_json::from_slice(&bytes).map_err(|e| Code::InvalidData.error(format!("{SERVING}: {e}")))?;
+        let ids = std::iter::once(&serving.serving).chain(&serving.rollback).map(|role| role.id.as_str());
+        Ok(ids.map(|id| Release::read(target, id)).collect::<Result<_, _>>()?)
+    };
+    Ok(targets.into_iter().map(|(name, target)| (name, read(&target))).collect())
 }
 
-/// What is live now.
-fn read_live(remote: &Remote, registry: &Registry, products: &[&dyn Product], store: &Store) -> Result<Live, Error> {
-    Live::read(remote, products, &registry.sources, store).map_err(|e| Code::R2Failed.error(e))
-}
-
-/// The one warning when the LIVE column is unknown.
-fn live_unknown(error: &Error) -> String {
-    format!("live is unknown (`?`): {}", error.message)
-}
-
-/// The roots of a collection: the live releases, and the checkout at `root`.
-fn roots(root: &Path, products: &[&dyn Product], store: &Store) -> Result<gc::Roots, Error> {
+/// The roots of a collection: the releases of the targets, and the checkout at `root`.
+fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
     let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    roots.add_live(&read_live(&remote()?, &registry(root)?, products, store)?);
+    for (name, releases) in releases(root, store)? {
+        let releases = releases.map_err(|e| {
+            let fix = "A clean keeps what each target serves: run it again when every target can be read.";
+            Code::Failed.error(format!("target `{name}`: {}", e.message)).fix(fix)
+        })?;
+        releases.iter().for_each(|release| roots.add_release(&name, release));
+    }
     Ok(roots)
 }
 
-/// The plan of `clean`.
-fn clean_plan(root: &Path, products: &[&dyn Product], store: &Store) -> Result<CleanPlan, Error> {
-    let roots = roots(root, products, store)?;
-    Ok(CleanPlan { store: gc::plan(store, &roots)? })
-}
-
-/// Delete what nothing reaches, only when that is still `confirmed`.
-fn clean(root: &Path, products: &[&dyn Product], store: &Store, confirmed: &gc::Plan) -> Result<CleanPlan, Error> {
-    let roots = roots(root, products, store)?;
-    let removed = gc::apply(store, &roots, confirmed)?.ok_or_else(|| {
-        Code::Usage
-            .error("a run or fetch uses the store; nothing was deleted")
-            .fix("Run `obc data clean --apply` again when the run or fetch ends.")
-    })?;
-    Ok(CleanPlan { store: removed })
-}
-
-fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool, json: bool) -> Result<(), Error> {
+fn clean_command(root: &Path, apply: bool, yes: bool, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
-    let plan = clean_plan(root, products, &store)?;
+    let plan = CleanPlan { store: gc::plan(&store, &roots(root, &store)?)? };
     if json && !apply {
         return print_json(&plan);
     }
@@ -310,7 +204,12 @@ fn clean_command(root: &Path, products: &[&dyn Product], apply: bool, yes: bool,
         return if json { print_json(&plan) } else { Ok(()) };
     }
     confirm(&plan.question(), yes)?;
-    let done = clean(root, products, &store, &plan.store)?;
+    let removed = gc::apply(&store, &roots(root, &store)?, &plan.store)?.ok_or_else(|| {
+        Code::Usage
+            .error("a run or fetch uses the store; nothing was deleted")
+            .fix("Run `obc data clean --apply` again when the run or fetch ends.")
+    })?;
+    let done = CleanPlan { store: removed };
     if json {
         return print_json(&done);
     }
@@ -351,7 +250,7 @@ fn root() -> Result<std::path::PathBuf, Error> {
 }
 
 fn registry(root: &Path) -> Result<Registry, Error> {
-    Registry::effective(root, &Store::open()?).map_err(|e| Code::InvalidData.error(e))
+    Registry::load(root).map_err(|e| Code::InvalidData.error(e))
 }
 
 fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a Source, Error> {
@@ -372,16 +271,6 @@ fn parse_params(params: &[String]) -> Result<Vec<(String, String)>, Error> {
 fn fetched(source: &Source, result: Result<Snapshot, String>) -> Result<Snapshot, Error> {
     let blocked = source.credential.as_ref().is_some_and(|credential| !credential.present());
     result.map_err(|e| if blocked { Code::Blocked } else { Code::FetchFailed }.error(e))
-}
-
-/// Save a pending refresh policy in the data store.
-fn policy(root: &Path, store: &Store, id: &str, refresh: Refresh) -> Result<Source, Error> {
-    let mut source = find(&Registry::load(root)?, id)?.clone();
-    let mut settings = crate::settings::current(store)?;
-    settings.refresh.insert(id.into(), refresh);
-    settings.policies(std::slice::from_mut(&mut source)).map_err(|e| Code::Usage.error(e))?;
-    crate::settings::save(store, &settings)?;
-    Ok(source)
 }
 
 /// The requested files of a snapshot.
@@ -411,166 +300,83 @@ fn print_snapshot(store: &Store, snapshot: &Snapshot, json: bool) -> Result<(), 
 }
 
 #[derive(Serialize, JsonSchema)]
-struct Sources<'a> {
-    /// R2 could not be read: `live` of each source is `null`.
-    live_unknown: bool,
-    sources: &'a [SourceRow],
+struct Sources {
+    sources: Vec<SourceRow>,
 }
 
-/// A source of `data/sources.toml` with its live version, its snapshots and its state.
-#[derive(Clone, Serialize, JsonSchema)]
+/// A source of `data/sources.toml`, what each target reads of it, and its versions in the store.
+#[derive(Serialize, JsonSchema)]
 struct SourceRow {
     #[serde(flatten)]
     source: Source,
-    /// The versions that the live releases read, in order; `null` when R2 could not be read.
-    live: Option<Vec<String>>,
-    /// The newest upstream version.
-    upstream: Option<String>,
-    age_days: Option<i64>,
-    state: State,
-    reason: Option<String>,
+    /// By target: its policy, and the state of each request that its serving release reads.
+    targets: BTreeMap<String, SourceTarget>,
     /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
-    requests: Vec<freshness::RequestStatus>,
     credential_missing: bool,
 }
 
+#[derive(Serialize, JsonSchema)]
+struct SourceTarget {
+    refresh: Refresh,
+    /// The least state of its requests; `unused` when the serving release reads none.
+    state: State,
+    requests: Vec<freshness::RequestStatus>,
+}
+
 /// A version of a source in the local store.
-#[derive(Clone, Serialize, JsonSchema)]
+#[derive(Serialize, JsonSchema)]
 struct Stored {
     version: String,
     /// The size of its files.
     bytes: u64,
 }
 
-impl SourceRow {
-    /// A version, short enough for a table.
-    fn short(&self, version: Option<&str>) -> String {
-        version.map_or("—".into(), |version| match self.source.version {
-            VersionScheme::Commit | VersionScheme::Digest => version.chars().take(12).collect(),
-            _ => version.to_string(),
-        })
-    }
-
-    /// Source, licence, R2 copy, live version, age, policy and state.
-    fn cells(&self) -> Vec<String> {
-        let s = &self.source;
-        let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
-        vec![
-            s.id.clone(),
-            s.licence.clone().unwrap_or_else(|| none.into()),
-            if s.r2_copy { "yes" } else { "no" }.into(),
-            match &self.live {
-                None => "?".into(),
-                Some(live) if live.is_empty() => "—".into(),
-                Some(live) => live.iter().map(|version| self.short(Some(version))).collect::<Vec<_>>().join(", "),
-            },
-            self.age_days.map_or("—".into(), |age| format!("{age} d")),
-            s.refresh.to_string(),
-            self.state.to_string(),
-        ]
-    }
-}
-
-/// Source summaries use active requests. The live column also retains held provenance.
-fn source_rows(
-    registry: &Registry,
-    live: Option<&BTreeMap<String, Vec<String>>>,
-    inventory: Option<&crate::env::Env>,
-    check_now: bool,
-) -> Result<Vec<SourceRow>, Error> {
-    let mut sorted: Vec<&Source> = registry.sources.iter().collect();
-    sorted.sort_by_key(|source| source.kind);
+fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> {
     let (store, http) = (Store::open()?, Http::new());
-    sorted
+    let mut sorted = registry(root)?.sources;
+    sorted.sort_by_key(|source| source.kind);
+    let served: Vec<(String, Release)> = releases(root, &store)?
         .into_iter()
-        .map(|source| {
-            let requests =
-                inventory.map(|env| freshness::requests(&store, &http, source, env, check_now)).unwrap_or_default();
-            let read = live.is_none_or(|live| live.get(&source.id).is_some_and(|versions| !versions.is_empty()));
-            let state = requests.iter().map(|r| r.state).min().unwrap_or_else(|| {
-                if source.kind != Kind::Tool && source.licence.is_none() {
-                    State::Blocked
-                } else if read {
-                    State::Ok
-                } else {
-                    State::Unused
-                }
-            });
-            let reason = requests
-                .iter()
-                .find(|r| r.state == state)
-                .and_then(|r| r.reason.clone())
-                .or_else(|| (state == State::Blocked && requests.is_empty()).then(|| "no licence recorded".into()));
-            let age_days = requests.iter().filter_map(|r| r.age_days).max();
-            let upstream = requests.iter().filter_map(|r| r.observation.result.version()).max().map(str::to_string);
-            let mut snapshots = store.snapshots(&source.id)?;
-            snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
-            let snapshots = snapshots
-                .into_iter()
-                .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
-                .collect();
-            Ok(SourceRow {
-                source: source.clone(),
-                live: live.map(|live| live.get(&source.id).cloned().unwrap_or_default()),
-                upstream,
-                age_days,
-                state,
-                reason,
-                snapshots,
-                requests,
-                credential_missing: source.credential.as_ref().is_some_and(|credential| !credential.present()),
-            })
+        .filter_map(|(name, releases)| match releases {
+            Ok(mut releases) if !releases.is_empty() => Some((name, releases.swap_remove(0))),
+            Ok(_) => None,
+            Err(error) => {
+                eprintln!("obc data: target `{name}` cannot be read: {}", error.message);
+                None
+            }
         })
-        .collect()
-}
-
-type SourceListing = (Vec<SourceRow>, Option<BTreeMap<String, Vec<String>>>);
-
-fn source_listing(root: &Path, products: &[&dyn Product], check_now: bool) -> Result<SourceListing, Error> {
-    let store = Store::open()?;
-    let mut registry = registry(root)?;
-    let remote = remote();
-    let live = match &remote {
-        Ok(remote) => read_live(remote, &registry, products, &store),
-        Err(error) => Err(Code::Blocked.error(error.message.clone())),
-    };
-    if let Ok(live) = &live {
-        crate::settings::observe(&store, live)?;
-    }
-    let loaded = build_cli::load(root, "live", &store);
-    let inventory = if let (Ok(live), Ok(mut loaded)) = (&live, loaded) {
-        registry.sources = loaded.sources.clone();
-        loaded.env.live = live.versions();
-        loaded.env.retained = crate::input_copy::retained(live, &store)?;
-        let copies = crate::input_copy::Restore { remote: remote.as_ref().unwrap(), live };
-        Some(freshness::discover(
-            root,
-            products,
-            &loaded.env,
-            &loaded.regions,
-            &store,
-            &Http::new(),
-            &loaded.sources,
-            Some(&copies),
-            None,
-        )?)
-    } else {
-        if let Err(error) = &live {
-            eprintln!("obc data: {}", live_unknown(error));
+        .collect();
+    let mut rows = Vec::new();
+    for source in sorted {
+        let mut targets = BTreeMap::new();
+        for (name, release) in &served {
+            let mut policy = vec![source.clone()];
+            release.settings.policies(&mut policy).map_err(|e| Code::InvalidData.error(e))?;
+            let versions = release.versions();
+            let keys = versions.keys().filter(|(id, _)| *id == source.id).cloned().collect();
+            let requests = freshness::requests(&store, &http, &policy[0], &keys, &versions, check_now);
+            let state = requests.iter().map(|request| request.state).min().unwrap_or(State::Unused);
+            targets.insert(name.clone(), SourceTarget { refresh: policy[0].refresh, state, requests });
         }
-        None
-    };
-    let versions = live.as_ref().ok().map(Live::by_source);
-    Ok((source_rows(&registry, versions.as_ref(), inventory.as_ref(), check_now)?, versions))
-}
-
-fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: bool) -> Result<(), Error> {
-    let (rows, live) = source_listing(root, products, check_now)?;
-    if json {
-        return print_json(&Sources { live_unknown: live.is_none(), sources: &rows });
+        let mut snapshots = store.snapshots(&source.id)?;
+        snapshots.sort_by_cached_key(|s| std::cmp::Reverse(s.files.iter().map(|f| f.retrieved.clone()).max()));
+        let snapshots = snapshots
+            .into_iter()
+            .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
+            .collect();
+        let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
+        rows.push(SourceRow { source, targets, snapshots, credential_missing });
     }
-    let mut table = vec![cells(["SOURCE", "LICENCE", "R2 COPY", "LIVE", "UPSTREAM", "AGE", "POLICY", "STATE"])];
+    if json {
+        return print_json(&Sources { sources: rows });
+    }
+    let names: Vec<&str> = served.iter().map(|(name, _)| name.as_str()).collect();
+    let mut table = vec![[
+        vec!["SOURCE".to_string(), "LICENCE".into(), "R2 COPY".into()],
+        names.iter().map(|n| n.to_uppercase()).collect(),
+    ]
+    .concat()];
     let mut tools = false;
     for row in &rows {
         let s = &row.source;
@@ -579,15 +385,103 @@ fn print_sources(root: &Path, products: &[&dyn Product], check_now: bool, json: 
             table.push(vec![String::new()]);
             table.push(vec!["tools".into()]);
         }
-        let mut cells = row.cells();
-        cells.insert(4, row.short(row.upstream.as_deref()));
-        if let Some(reason) = &row.reason {
-            cells[7] = format!("{}: {reason}", row.state);
+        let none = if s.kind == Kind::Tool { "—" } else { "not recorded" };
+        let mut cells = vec![
+            s.id.clone(),
+            s.licence.clone().unwrap_or_else(|| none.into()),
+            if s.r2_copy { "yes" } else { "no" }.into(),
+        ];
+        for name in &names {
+            let target = &row.targets[*name];
+            let versions: Vec<&str> = target.requests.iter().filter_map(|r| r.serving.as_deref()).collect();
+            let versions = if versions.is_empty() { "—".to_string() } else { versions.join(", ") };
+            cells.push(format!("{versions} · {} · {}", target.refresh, target.state));
         }
         table.push(cells);
     }
     print_table(&table);
     Ok(())
+}
+
+/// What `areas` writes.
+#[derive(Serialize, JsonSchema)]
+struct Areas {
+    /// The regions of `data/regions/` whose id or name holds the query.
+    regions: Vec<Region>,
+    /// The version of the cached Geofabrik index; `null` while the store has none.
+    index: Option<String>,
+    /// Its areas whose path or name holds the query.
+    areas: Vec<GeofabrikArea>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct GeofabrikArea {
+    id: String,
+    name: String,
+    parent: Option<String>,
+    countries: Vec<String>,
+    bounds: Bbox,
+}
+
+fn print_areas(root: &Path, query: &str, json: bool) -> Result<(), Error> {
+    let query = query.trim().to_lowercase();
+    let holds = |id: &str, name: &str| id.contains(&query) || name.to_lowercase().contains(&query);
+    let presets = Regions::load(root).map_err(|e| Code::InvalidData.error(e))?;
+    let regions: Vec<Region> = presets.iter().filter(|region| holds(&region.id, &region.name)).cloned().collect();
+    let (index, areas) = match cached_index(&Store::open()?)? {
+        Some((version, index)) => {
+            let areas = index.into_values().filter(|area| holds(&area.id, &area.name));
+            let areas = areas.map(|area| GeofabrikArea {
+                id: area.id,
+                name: area.name,
+                parent: area.parent,
+                countries: area.countries,
+                bounds: area.bounds,
+            });
+            (Some(version), areas.collect())
+        }
+        None => (None, Vec::new()),
+    };
+    let areas = Areas { regions, index, areas };
+    if json {
+        return print_json(&areas);
+    }
+    let mut rows = vec![cells(["REGION", "NAME", "DEFINITION"])];
+    rows.extend(areas.regions.iter().map(|region| vec![region.id.clone(), region.name.clone(), definition(region)]));
+    print_table(&rows);
+    match &areas.index {
+        None => println!("The store has no Geofabrik index: `obc data fetch geofabrik-index` gets it."),
+        Some(_) => {
+            let mut rows = vec![cells(["AREA", "NAME", "COUNTRIES"])];
+            rows.extend(
+                areas.areas.iter().map(|area| vec![area.id.clone(), area.name.clone(), area.countries.join(", ")]),
+            );
+            print_table(&rows);
+        }
+    }
+    Ok(())
+}
+
+const INDEX_URL: &str = "https://download.geofabrik.de/index-v1.json";
+
+/// The version of a Geofabrik index, and its areas by id.
+type Index = (String, BTreeMap<String, geofabrik::Area>);
+
+/// The newest Geofabrik index in the store, checked against its record.
+fn cached_index(store: &Store) -> Result<Option<Index>, Error> {
+    let mut records = store.snapshots("geofabrik-index")?;
+    records.sort_by(|a, b| b.version.cmp(&a.version));
+    let Some((version, file)) = records.into_iter().find_map(|snapshot| {
+        snapshot.files.into_iter().find(|file| file.url == INDEX_URL).map(|file| (snapshot.version, file))
+    }) else {
+        return Ok(None);
+    };
+    let path = store.object(&file.sha256);
+    if hash_file(&path)? != (file.sha256.clone(), file.size) {
+        return Err(Code::InvalidData.error("the cached Geofabrik index does not match its snapshot"));
+    }
+    let body = std::fs::read(path).map_err(|e| e.to_string())?;
+    Ok(Some((version, geofabrik::parse(&body).map_err(|e| Code::InvalidData.error(e))?)))
 }
 
 fn definition(region: &Region) -> String {
@@ -596,54 +490,6 @@ fn definition(region: &Region) -> String {
         Area::Box { bbox } => format!("box {},{} → {},{}", bbox.west, bbox.south, bbox.east, bbox.north),
         Area::Union { union } => format!("union: {}", union.join(" + ")),
     }
-}
-
-#[derive(Serialize, JsonSchema)]
-struct RegionList<'a> {
-    regions: Vec<&'a Region>,
-}
-
-fn print_regions(regions: &Regions, json: bool) -> Result<(), Error> {
-    if json {
-        return print_json(&RegionList { regions: regions.iter().collect() });
-    }
-    let mut table = vec![cells(["REGION", "NAME", "DEFINITION"])];
-    table.extend(regions.iter().map(|r| vec![r.id.clone(), r.name.clone(), definition(r)]));
-    print_table(&table);
-    Ok(())
-}
-
-#[derive(Serialize, JsonSchema)]
-struct RegionDetail<'a> {
-    #[serde(flatten)]
-    region: &'a Region,
-    /// The region ids that it resolves to.
-    leaves: Vec<&'a str>,
-    /// Its box, when every part is a box.
-    bounds: Option<Bbox>,
-}
-
-fn print_region(regions: &Regions, id: &str, json: bool) -> Result<(), Error> {
-    let region = regions.get(id).ok_or_else(|| Code::Usage.error(format!("no region `{id}`")))?;
-    let leaves = regions.leaves(id).map_err(|e| Code::InvalidData.error(e))?;
-    let detail = RegionDetail { region, leaves, bounds: regions.bounds(id) };
-    if json {
-        return print_json(&detail);
-    }
-    let bounds = detail.bounds.map_or("— (from the outline once it is fetched)".into(), |b| {
-        format!("{},{} → {},{}", b.west, b.south, b.east, b.north)
-    });
-    let mut table = vec![
-        cells(["region", id]),
-        vec!["name".into(), region.name.clone()],
-        vec!["definition".into(), definition(region)],
-        vec!["box".into(), bounds],
-    ];
-    if matches!(region.area, Area::Union { .. }) {
-        table.push(vec!["resolves to".into(), detail.leaves.join(", ")]);
-    }
-    print_table(&table);
-    Ok(())
 }
 
 fn cells<const N: usize>(row: [&str; N]) -> Vec<String> {
@@ -677,48 +523,4 @@ fn row_text(row: &[String], widths: &[usize]) -> String {
         .map(|(i, cell)| if i + 1 == row.len() { cell.clone() } else { format!("{cell:<w$}", w = widths[i]) })
         .collect();
     cells.join("  ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::tests::write;
-    use crate::store::tests::Scratch;
-
-    const SOURCES: &str = r#"# The sources.
-[[source]]
-id = "osm-planet"
-kind = "data"
-licence = "ODbL-1.0"
-fetch = { kind = "http", url = "https://planet.openstreetmap.org/pbf/planet-{yymmdd}.osm.pbf" }
-version = "date"
-# Seldom worth its download.
-refresh = 90
-redistribute = true
-
-[[source]]
-id = "planetiler"
-kind = "tool"
-fetch = { kind = "github", url = "https://api.github.com/repos/onthegomap/planetiler" }
-version = "release"
-refresh = "manual"
-redistribute = true
-"#;
-
-    #[test]
-    fn a_policy_edits_pending_settings_and_leaves_the_source_declaration_unchanged() {
-        let scratch = Scratch::new("cli-policy");
-        let root = scratch.0.join("repository");
-        let store = Store::at(scratch.0.join("store"));
-        write(&root.join("data/sources.toml"), SOURCES);
-        let sources = || std::fs::read_to_string(root.join("data/sources.toml")).unwrap();
-        let refused = policy(&root, &store, "planetiler", Refresh::Days(30)).unwrap_err();
-        assert!(refused.message.contains("needs a date version"), "{}", refused.message);
-        assert_eq!(policy(&root, &store, "land", Refresh::Manual).unwrap_err().message, "no source `land`");
-        assert_eq!(sources(), SOURCES, "a refused policy changes nothing");
-
-        assert_eq!(policy(&root, &store, "osm-planet", Refresh::Manual).unwrap().refresh, Refresh::Manual);
-        assert_eq!(sources(), SOURCES);
-        assert_eq!(crate::settings::current(&store).unwrap().refresh["osm-planet"], Refresh::Manual);
-    }
 }

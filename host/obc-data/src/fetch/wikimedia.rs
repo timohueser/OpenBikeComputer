@@ -149,7 +149,7 @@ pub(super) fn run(
     let requests_path = staging.join("requests.json");
     let inputs_path = staging.join("inputs.json");
     fs::write(&requests_path, serde_json::to_vec(&requested).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let registry = crate::sources::Registry::effective(root, store)?;
+    let registry = crate::sources::Registry::load(root)?;
     let admitted = inputs(store)?;
     fs::write(&inputs_path, serde_json::to_vec(&admitted).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let adopt = adoption_views(store, &work)?;
@@ -647,68 +647,6 @@ fn admit(
     Ok(Snapshot { source: mine.into(), version: version.into(), files: std::mem::take(&mut files[index]) })
 }
 
-/// Restore published compact facts through the same admission path. Bundles contain no media bytes.
-pub(crate) fn restore_published(store: &Store, copies: &crate::input_copy::Restore<'_>) -> Result<(), String> {
-    let _using = store.using()?;
-    for product in &copies.live.products {
-        let Some((_, release)) = &product.release else { continue };
-        for file in release
-            .layers
-            .iter()
-            .flat_map(|layer| layer.client_files())
-            .filter(|file| file.path.starts_with("shared-content/"))
-        {
-            let _lock = store.lock(&format!("wikimedia-bundle-{}", file.sha256))?;
-            let key = format!("{}/objects/{}", product.prefix, file.sha256);
-            let data = if store.object(&file.sha256).is_file() {
-                fs::read(store.object(&file.sha256)).map_err(|e| e.to_string())?
-            } else {
-                copies.remote.get(&key)?.ok_or_else(|| format!("published content bundle missing: {key}"))?
-            };
-            if data.len() as u64 != file.size || store::sha256_hex(&data) != file.sha256 {
-                return Err("published content bundle checksum changed".into());
-            }
-            let bundle: Value = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
-            if bundle["schema"] != 1 {
-                return Err("unsupported published content bundle".into());
-            }
-            let out = store.partial(&format!("wikimedia-bundle-{}", file.sha256));
-            fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-            let mut records = Vec::new();
-            for entry in bundle["records"].as_array().ok_or("bundle records missing")? {
-                let mut pin = entry["pin"].clone();
-                let kind = text(&pin, "kind")?;
-                if kind == "file" {
-                    return Err("published bundle contains a local media input".into());
-                }
-                owner(kind)?;
-                let payload = text(entry, "data")?;
-                let digest = text(&pin, "sha256")?;
-                if store::sha256_hex(payload.as_bytes()) != digest {
-                    return Err("published fact checksum changed".into());
-                }
-                let relative = format!("content/{kind}/{digest}.json");
-                let path = out.join(&relative);
-                fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-                fs::write(path, payload).map_err(|e| e.to_string())?;
-                pin["path"] = json!(relative);
-                records.push(pin);
-            }
-            let manifest = json!({"schema":1,"complete":true,"failures":[],"records":records});
-            let version = records
-                .iter()
-                .filter_map(|pin| pin["checked_at"].as_str().and_then(date::seconds))
-                .max()
-                .map(|seconds| date::format((seconds / 86_400) as i64))
-                .ok_or("bundle has no fact check time")?;
-            let params = vec![("content-bundle".into(), file.sha256.clone())];
-            admit(store, &out, &manifest, &params, &version, "wikidata")?;
-            fs::remove_dir_all(out).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,7 +681,10 @@ mod tests {
         let config = root.join("data/sources.toml");
         fs::write(
             &config,
-            fs::read_to_string(&config).unwrap().replace("id = \"wikidata\"", "id = \"wikidata\"\nrefresh = 1"),
+            fs::read_to_string(&config).unwrap().replace(
+                "\"query.wikidata.org\"]\nversion = \"date\"\nrefresh = 90",
+                "\"query.wikidata.org\"]\nversion = \"date\"\nrefresh = 1",
+            ),
         )
         .unwrap();
         let (out, manifest) = staged(&store, "expired-input");
