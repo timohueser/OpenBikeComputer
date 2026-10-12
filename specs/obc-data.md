@@ -1228,7 +1228,7 @@ each origin.
 
 | Path | Answer |
 | --- | --- |
-| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while they start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` when no release that the target names has it. Never cached |
+| `/planner-api/releases/<id>/ready` | `{"state": "ready"}` while the services of the planner release `<id>` answer. 503 with `{"state": "starting"}` while its objects download and its services start, or `{"state": "failed", "reason": "not ready: <why>"}` after they failed. 404 with `{"state": "unknown", "reason"}` while serve does not know `<id>` yet: a publisher that waits for `<id>` keeps waiting, as on 503. Never cached |
 | `/planner-api/releases/<id>/<service>/<path>` | `<path>` of the `routing`, `search` or `downloads` service of the planner release `<id>`. Search gets `/api/planner-search/<path>`. 404 when the services of `<id>` do not answer |
 | `/planner-offline/<path>` | `<path>` of the downloads service of the current release, for apps that name no planner release. 503 while it does not answer |
 | `/cell-catalog/catalog.json` | `dir` only: the device pointer of the current release |
@@ -1237,15 +1237,18 @@ each origin.
 
 Serve reads `release.json` and `planner/next.json` of a `dir` target each second, and of an R2
 target every ten seconds. It reads the manifest and the pointers of a release once: a rollback
-reads nothing else. When one of the two files changes:
+reads nothing else. A `planner/next.json` that cannot be read, or whose release cannot be read,
+names no release: serve writes why, reads it again at each look, and loads the other releases.
+When one of the two files changes:
 
-1. Serve starts the services of the planner release of the serving release, of the rollback and
-   of the release of `planner/next.json`, unless they run. The planner release of a release is
-   `active.id` of its planner pointer.
+1. Serve loads the planner release of the serving release, of the rollback and of the release of
+   `planner/next.json`, unless it runs. The planner release of a release is `active.id` of its
+   planner pointer.
    First it compares the formats of the layers of the release with the formats that the services
    read (see [Service runtimes](#service-runtimes)). A layer in another format fails the planner
-   release before anything starts: `needs a routing service that reads planner/routing format 9;
-   it reads 8`.
+   release before anything downloads: `needs a routing service that reads planner/routing format
+   9; it reads 8`. Then a thread downloads its objects into the store, and its services start once
+   they are there. Serve keeps reading the two files and checking the other services meanwhile.
 2. Clients get the serving release once each service of its planner release answers: routing
    `GET /health`, search `GET /api/planner-search/status` with `parser.ready` true, and downloads
    `GET /catalog`. Until then clients keep the current release. No client gets the release of
@@ -1260,14 +1263,15 @@ reads nothing else. When one of the two files changes:
    of `planner/next.json` nor the current release names stop.
 
 When the serving release and the rollback fail one after the other, clients keep a release that
-`release.json` no longer names. Serve then writes a warning: an update can delete the files of that
-release.
+`release.json` no longer names, and the services of its planner release keep answering. Serve
+then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
 manifest names lists them. Each file comes from an object of the store, which downloads an object
 that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
-object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
+object, or the decoded bytes of a `gzip` object under a temporary name. When serve stops, it ends
+each download and waits for it. No write opens an
 existing file. Each file must have the SHA-256 and the size that the planner release gives.
 Serve removes `<store>/serve/<target>/` when it starts and when it stops; `obc data clean` does not
 touch it. For a `dir` target, download bundles name the origin of the machine on its network when

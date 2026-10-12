@@ -64,9 +64,9 @@ pub fn router(shared: Shared, files: Option<(&Path, u16)>) -> Router {
 
 /// The port of the service `name` of the planner release `planner`, while its services answer, and
 /// the place of the service in [`SERVICES`].
-fn port(shared: &Shared, planner: &str, name: &str) -> Option<(usize, u16)> {
+fn port(view: &View, planner: &str, name: &str) -> Option<(usize, u16)> {
     let at = SERVICES.iter().position(|service| service.name == name)?;
-    match shared.read().unwrap().planners.get(planner)? {
+    match view.planners.get(planner)? {
         Planner::Ready(ports) => Some((at, ports[at])),
         _ => None,
     }
@@ -95,7 +95,8 @@ async fn api(
     Params((id, name, _)): Params<(String, String, String)>,
     request: Request,
 ) -> Response {
-    let Some((service, port)) = port(&shared, &id, &name) else {
+    let found = port(&shared.read().unwrap(), &id, &name);
+    let Some((service, port)) = found else {
         return (StatusCode::NOT_FOUND, format!("No {name} service of planner release {id} runs here."))
             .into_response();
     };
@@ -107,8 +108,11 @@ async fn api(
 
 /// The downloads service of the current release, for apps that know no planner release.
 async fn offline(State(shared): State<Shared>, request: Request) -> Response {
-    let current = shared.read().unwrap().current.as_ref().map(|current| current.planner.clone());
-    let Some((_, port)) = current.and_then(|planner| port(&shared, &planner, "downloads")) else {
+    let found = {
+        let view = shared.read().unwrap();
+        view.current.as_ref().and_then(|current| port(&view, &current.planner, "downloads"))
+    };
+    let Some((_, port)) = found else {
         return (StatusCode::SERVICE_UNAVAILABLE, "The downloads of the current release do not run.").into_response();
     };
     let path = request.uri().path_and_query().map_or("", |path| path.as_str());

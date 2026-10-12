@@ -101,17 +101,33 @@ pub struct Processes {
     ports: [u16; SERVICES.len()],
 }
 
+/// Check that the services read the layers of `served` in their formats, then give `store` the
+/// document of its planner release and the object of each file that its services read, from
+/// `target`. It can download for a long time.
+pub fn fetch(programs: &Programs, store: &Store, target: &Target, served: &Served) -> Result<(), String> {
+    readable(programs, served)?;
+    let object = |key: &str, sha256: &str| match store.object(sha256) {
+        object if object.is_file() => Ok(()),
+        _ => target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}")),
+    };
+    let document = &served.document;
+    object(&document.key, &document.sha256)?;
+    for (_, entry) in runtime(&read(store, document)?)? {
+        object(&format!("objects/{}", entry.transport.sha256), &entry.transport.sha256)?;
+    }
+    Ok(())
+}
+
 /// Install the files of the planner release of `served` (see [`install`]), and start its services
 /// on free ports of this machine.
 pub fn start(
     programs: &Programs,
     store: &Store,
-    target: &Target,
     work: &Path,
     served: &Served,
     origins: &Origins,
 ) -> Result<Processes, String> {
-    let (mut processes, region) = install(programs, store, target, work, served)?;
+    let (mut processes, region) = install(store, work, served)?;
     let (dir, planner) = (processes.dir.clone(), &served.planner);
     processes.ports = [free_port()?, free_port()?, free_port()?];
     let [routing, search, downloads] = processes.ports.map(|port| port.to_string());
@@ -137,21 +153,13 @@ pub fn start(
     Ok(processes)
 }
 
-/// Check that the services read the layers of `served` in their formats, then install the files
-/// of its planner release in `work/<planner release id>/` from the objects of `target`, through
-/// `store`. Give the processes, which run nothing yet and remove the folder when they drop, and
-/// the region of the release.
-pub(crate) fn install(
-    programs: &Programs,
-    store: &Store,
-    target: &Target,
-    work: &Path,
-    served: &Served,
-) -> Result<(Processes, String), String> {
-    readable(programs, served)?;
+/// Install the files of the planner release of `served` in `work/<planner release id>/` from the
+/// objects that [`fetch`] gave `store`. Give the processes, which run nothing yet and remove the
+/// folder when they drop, and the region of the release.
+pub(crate) fn install(store: &Store, work: &Path, served: &Served) -> Result<(Processes, String), String> {
     // Dropped on an error, it removes what the install wrote.
     let processes = Processes { dir: work.join(&served.planner), children: Vec::new(), ports: [0; 3] };
-    let region = materialize(store, target, &served.document, &processes.dir)?;
+    let region = materialize(store, &served.document, &processes.dir)?;
     Ok((processes, region))
 }
 
@@ -269,29 +277,39 @@ struct Transport {
     encoding: String,
 }
 
-/// Install each file under [`RUNTIME`] of the planner release whose document is `document` in
-/// `dir`, and give the region of the release. Each file comes from an object of `store`, which
-/// downloads the objects that it lacks from `target`. A gzip object is decoded; each file must have
-/// the SHA-256 of the release.
-fn materialize(store: &Store, target: &Target, document: &Named, dir: &Path) -> Result<String, String> {
-    let object = |key: &str, sha256: &str| {
-        if !is_sha256(sha256) {
-            return Err(format!("{key} names no object"));
-        }
-        match store.object(sha256) {
-            object if object.is_file() => Ok(object),
-            _ => target.download(key, sha256, store)?.ok_or_else(|| format!("the target has no {key}")),
-        }
-    };
-    let path = object(&document.key, &document.sha256)?;
+/// The document of a planner release, from `store`.
+fn read(store: &Store, document: &Named) -> Result<Value, String> {
+    if !is_sha256(&document.sha256) {
+        return Err(format!("{} names no object", document.key));
+    }
+    let path = store.object(&document.sha256);
     let read = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let document: Value = serde_json::from_slice(&read).map_err(|e| format!("{}: {e}", document.key))?;
+    serde_json::from_slice(&read).map_err(|e| format!("{}: {e}", document.key))
+}
+
+/// Each file under [`RUNTIME`] of the planner release whose document is `document`.
+fn runtime(document: &Value) -> Result<Vec<(String, Entry)>, String> {
     let files = document["files"].as_object().ok_or("the planner release has no files")?;
-    for (name, entry) in files.iter().filter(|(name, _)| RUNTIME.iter().any(|folder| name.starts_with(folder))) {
-        crate::r2::check_key(name)?;
-        let entry: Entry = serde_json::from_value(entry.clone()).map_err(|e| format!("{name}: {e}"))?;
-        let sha256 = &entry.transport.sha256;
-        let (object, path) = (object(&format!("objects/{sha256}"), sha256)?, dir.join(name));
+    let runtime = files.iter().filter(|(name, _)| RUNTIME.iter().any(|folder| name.starts_with(folder)));
+    runtime
+        .map(|(name, entry)| {
+            crate::r2::check_key(name)?;
+            let entry: Entry = serde_json::from_value(entry.clone()).map_err(|e| format!("{name}: {e}"))?;
+            match is_sha256(&entry.transport.sha256) {
+                true => Ok((name.clone(), entry)),
+                false => Err(format!("{name} names no object")),
+            }
+        })
+        .collect()
+}
+
+/// Install each file under [`RUNTIME`] of the planner release whose document is `document` in
+/// `dir`, from the objects of `store`, and give the region of the release. A gzip object is
+/// decoded; each file must have the SHA-256 of the release.
+fn materialize(store: &Store, document: &Named, dir: &Path) -> Result<String, String> {
+    let document = read(store, document)?;
+    for (name, entry) in runtime(&document)? {
+        let (object, path) = (store.object(&entry.transport.sha256), dir.join(&name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
             "identity" => crate::target::link(&object, &path),
@@ -352,11 +370,11 @@ mod tests {
             pointers: BTreeMap::new(),
             formats: [("planner/routing".into(), routing), ("planner/index".into(), index)].into(),
         };
-        let (store, work) = (Store::at(scratch.0.join("store")), scratch.0.join("work"));
+        let store = Store::at(scratch.0.join("store"));
         let target = Target::Dir(scratch.0.join("target"));
-        let refused = install(&programs, &store, &target, &work, &served(9, 3)).err().unwrap();
+        let refused = fetch(&programs, &store, &target, &served(9, 3)).err().unwrap();
         assert_eq!(refused, "needs a routing service that reads planner/routing format 9; it reads 8");
-        assert!(!work.exists(), "nothing is installed");
+        assert!(!store.root().exists(), "nothing downloads");
         let index = readable(&programs, &served(8, 4)).unwrap_err();
         assert_eq!(index, "needs a search service that reads planner/index format 4; it reads 3");
         assert!(readable(&programs, &served(8, 3)).is_ok());
@@ -392,7 +410,17 @@ mod tests {
             Named { key, size: bytes.len() as u64, sha256: sha256_hex(&bytes) }
         };
         let (store, dir_target) = (Store::at(scratch.0.join("store")), Target::Dir(target.clone()));
-        let materialize = |document: &Named, dir: &Path| materialize(&store, &dir_target, document, dir);
+        let materialize = |document: &Named, dir: &Path| {
+            let served = Served {
+                id: String::new(),
+                planner: String::new(),
+                document: document.clone(),
+                pointers: BTreeMap::new(),
+                formats: BTreeMap::new(),
+            };
+            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served)?;
+            materialize(&store, document, dir)
+        };
         let named = release(&document);
         let dir = scratch.0.join("work");
         assert_eq!(materialize(&named, &dir).unwrap(), "test");

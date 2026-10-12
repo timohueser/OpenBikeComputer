@@ -8,8 +8,6 @@ Wants=network-online.target
 [Service]
 User=obc-data
 WorkingDirectory=/opt/obc-data/current
-# At start, serve builds planner-service with cargo. The deploy ran the same build, so it does nothing.
-Environment=PATH=/var/lib/obc-data/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=OBC_DATA_STORE=/var/lib/obc-data/store
 ExecStart=/opt/obc-data/current/target/release/obc-data-plumbing serve prod
 Restart=on-failure
@@ -24,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/obc-data /opt/obc-data
+ReadWritePaths=/var/lib/obc-data
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]

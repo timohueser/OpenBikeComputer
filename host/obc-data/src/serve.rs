@@ -8,6 +8,7 @@ pub mod http;
 pub mod services;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -43,22 +44,11 @@ pub struct Served {
     pub formats: BTreeMap<String, u32>,
 }
 
-impl Served {
-    /// The origins that its planner pointer names: those of a published target.
-    pub fn origins(&self) -> Result<services::Origins, String> {
-        let pointer: Value = serde_json::from_slice(&self.pointers[PLANNER]).map_err(|e| format!("{PLANNER}: {e}"))?;
-        let origin = |name: &str| {
-            pointer["origins"][name].as_str().map(String::from).ok_or_else(|| format!("{PLANNER} has no {name}"))
-        };
-        Ok(services::Origins { api: origin("api_origin")?, objects: format!("{}/objects", origin("objects_origin")?) })
-    }
-}
-
 /// The bytes of `release.json` and of `planner/next.json` of a target: the releases that it names.
 type Names = [Option<Vec<u8>>; 2];
 
 /// The releases that a target names.
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub struct Wanted {
     /// The release that it serves, then its rollback.
     pub serving: Vec<Served>,
@@ -70,9 +60,14 @@ fn names(target: &Target) -> Result<Names, String> {
     Ok([target.get(SERVING)?, target.get(NEXT)?])
 }
 
-/// The releases that `names` of `target` name. `known` gives a release that the follower read
-/// before, so a rollback reads nothing but `release.json`.
-fn wanted(target: &Target, names: &Names, known: impl Fn(&str) -> Option<Served>) -> Result<Wanted, String> {
+/// The releases that `names` of `target` name, and why the release of `planner/next.json` cannot
+/// be read: it is then no release, and never holds back the others. `known` gives a release that
+/// the follower read before, so a rollback reads nothing but `release.json`.
+fn wanted(
+    target: &Target,
+    names: &Names,
+    known: impl Fn(&str) -> Option<Served>,
+) -> Result<(Wanted, Option<String>), String> {
     let read = |id: &str| known(id).map_or_else(|| served(target, id), Ok);
     let mut wanted = Wanted::default();
     if let Some(bytes) = &names[0] {
@@ -80,13 +75,21 @@ fn wanted(target: &Target, names: &Names, known: impl Fn(&str) -> Option<Served>
         let ids = std::iter::once(&roles.serving).chain(&roles.rollback);
         wanted.serving = ids.map(|role| read(&role.id)).collect::<Result<_, _>>()?;
     }
-    if let Some(bytes) = &names[1] {
+    let next = names[1].as_ref().map(|bytes| {
         let next: Role = serde_json::from_slice(bytes).map_err(|e| format!("{NEXT}: {e}"))?;
-        if !wanted.serving.iter().any(|served| served.id == next.id) {
-            wanted.next = Some(read(&next.id)?);
+        match wanted.serving.iter().any(|served| served.id == next.id) {
+            true => Ok(None),
+            false => read(&next.id).map(Some).map_err(|e| format!("{NEXT}: {e}")),
         }
-    }
-    Ok(wanted)
+    });
+    let problem = match next.transpose() {
+        Ok(next) => {
+            wanted.next = next.flatten();
+            None
+        }
+        Err(e) => Some(e),
+    };
+    Ok((wanted, problem))
 }
 
 fn served(target: &Target, id: &str) -> Result<Served, String> {
@@ -111,38 +114,52 @@ fn served(target: &Target, id: &str) -> Result<Served, String> {
 #[derive(Default)]
 pub struct Seen {
     names: Option<Names>,
+    /// Whether it read each release that they name.
+    whole: bool,
     error: Option<String>,
 }
 
-/// Read what `target` names. When it changed since `seen`, the follower wants its releases; else
-/// it polls. An error leaves the releases as they are, and the next look reads again.
+/// Read what `target` names. When it named other releases since `seen`, the follower wants them;
+/// else it polls. An error leaves the releases as they are, and the next look reads again: also a
+/// release of `planner/next.json` that cannot be read.
 pub fn look<S: Services>(
     follower: &mut Follower<S>,
     target: &Target,
     seen: &mut Seen,
-    start: Start<'_, S>,
+    load: &mut dyn Load<Services = S>,
     now: &dyn Fn() -> Instant,
 ) {
-    let read = names(target).and_then(|names| match seen.names.as_ref() == Some(&names) {
+    let read = names(target).and_then(|names| match seen.whole && seen.names.as_ref() == Some(&names) {
         true => Ok(None),
         false => wanted(target, &names, |id| follower.known(id)).map(|wanted| Some((names, wanted))),
     });
-    match read {
-        Ok(None) => follower.poll(start, now),
-        Ok(Some((names, wanted))) => {
-            if names[0].is_none() {
-                eprintln!("obc data serve: the target serves no release yet; `obc data update` makes one");
+    let problem = match read {
+        Ok(Some((names, (wanted, problem)))) => {
+            if names[0].is_none() && seen.names.as_ref().is_none_or(|seen| seen[0].is_some()) {
+                eprintln!("obc data serve: the target names no release yet");
             }
-            follower.want(wanted, start, now);
-            *seen = Seen { names: Some(names), error: None };
+            (seen.names, seen.whole) = (Some(names), problem.is_none());
+            if follower.wanted != wanted {
+                follower.want(wanted, load, now);
+            } else {
+                follower.poll(load, now);
+            }
+            problem
+        }
+        Ok(None) => {
+            follower.poll(load, now);
+            None
         }
         Err(e) => {
-            if seen.error.as_ref() != Some(&e) {
-                eprintln!("obc data serve: {e}; the current release stays");
-                seen.error = Some(e);
-            }
-            follower.poll(start, now);
+            follower.poll(load, now);
+            Some(format!("{e}; the current release stays"))
         }
+    };
+    if problem != seen.error {
+        if let Some(problem) = &problem {
+            eprintln!("obc data serve: {problem}");
+        }
+        seen.error = problem;
     }
 }
 
@@ -156,11 +173,23 @@ pub trait Services {
     fn ports(&self) -> [u16; services::SERVICES.len()];
 }
 
-/// Install the files of a release and start its services. The follower waits for it.
-pub type Start<'a, S> = &'a mut dyn FnMut(&Served) -> Result<S, String>;
+/// How the follower loads the planner release of a release.
+pub trait Load {
+    type Services: Services;
+    /// Give the store what the services of `served` read, on a thread of its own: a download can
+    /// take long, and the follower keeps polling.
+    fn fetch(&mut self, served: &Served) -> JoinHandle<Result<(), String>>;
+    /// Install the files of `served` from the store and start its services. The follower waits for
+    /// it.
+    fn start(&mut self, served: &Served) -> Result<Self::Services, String>;
+}
 
 enum State<S> {
-    /// `backoff` is the wait after a failure.
+    /// Its objects download. `backoff` is the wait after a failure.
+    Fetching {
+        worker: JoinHandle<Result<(), String>>,
+        backoff: Duration,
+    },
     Starting {
         services: S,
         since: Instant,
@@ -182,20 +211,22 @@ pub struct Follower<S> {
     planners: BTreeMap<String, State<S>>,
     wanted: Wanted,
     current: Option<Served>,
+    /// The downloads of planner releases that no release names any more.
+    abandoned: Vec<JoinHandle<Result<(), String>>>,
 }
 
 impl<S: Services> Default for Follower<S> {
     fn default() -> Self {
-        Self { planners: BTreeMap::new(), wanted: Wanted::default(), current: None }
+        Self { planners: BTreeMap::new(), wanted: Wanted::default(), current: None, abandoned: Vec::new() }
     }
 }
 
 impl<S: Services> Follower<S> {
     /// Follow `wanted`, then [`Self::poll`]. The planner releases that failed start again at once.
-    pub fn want(&mut self, wanted: Wanted, start: Start<'_, S>, now: &dyn Fn() -> Instant) {
+    pub fn want(&mut self, wanted: Wanted, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
         self.planners.retain(|_, state| !matches!(state, State::Failed { .. }));
         self.wanted = wanted;
-        self.poll(start, now);
+        self.poll(load, now);
         if let Some(current) = self.current.as_ref().filter(|current| !self.wanted.serving.contains(current)) {
             eprintln!(
                 "obc data serve: WARNING: clients get release {}, which release.json no longer names. An update \
@@ -205,21 +236,27 @@ impl<S: Services> Follower<S> {
         }
     }
 
-    /// `start` the services of each wanted planner release that does not run, or that failed and
-    /// waited; the time to answer counts from the return of `start`. Check the services that
-    /// start, and fail a planner release whose service stopped. Clients get the serving release of
-    /// the target once its services answer; until then they keep the current release. Stop the
-    /// services that neither the wanted releases nor the current one need.
-    pub fn poll(&mut self, start: Start<'_, S>, now: &dyn Fn() -> Instant) {
+    /// Fetch the objects of each wanted planner release that does not run, or that failed and
+    /// waited, and start its services once they are in the store; the time to answer counts from
+    /// the return of the start. Check the services that start, and fail a planner release whose
+    /// service stopped. Clients get the serving release of the target once its services answer;
+    /// until then they keep the current release. Stop the services that neither the wanted
+    /// releases nor the current one need.
+    pub fn poll(&mut self, load: &mut dyn Load<Services = S>, now: &dyn Fn() -> Instant) {
         for served in self.wanted.serving.iter().chain(&self.wanted.next) {
-            let backoff = match self.planners.get(&served.planner) {
-                None => BACKOFF,
-                Some(State::Failed { retry, backoff, .. }) if *retry <= now() => *backoff,
-                Some(_) => continue,
-            };
-            let state = match start(served) {
-                Ok(services) => State::Starting { services, since: now(), backoff },
-                Err(e) => failed(&served.planner, e, now(), backoff),
+            let state = match self.planners.remove(&served.planner) {
+                None => State::Fetching { worker: load.fetch(served), backoff: BACKOFF },
+                Some(State::Failed { retry, backoff, .. }) if retry <= now() => {
+                    State::Fetching { worker: load.fetch(served), backoff }
+                }
+                Some(State::Fetching { worker, backoff }) if worker.is_finished() => {
+                    let fetched = worker.join().unwrap_or_else(|_| Err("the download stopped".into()));
+                    match fetched.and_then(|()| load.start(served)) {
+                        Ok(services) => State::Starting { services, since: now(), backoff },
+                        Err(e) => failed(&served.planner, e, now(), backoff),
+                    }
+                }
+                Some(state) => state,
             };
             self.planners.insert(served.planner.clone(), state);
         }
@@ -235,8 +272,9 @@ impl<S: Services> Follower<S> {
                     Err(e) => *state = failed(id, e, now, *backoff),
                     Ok(true) => {
                         let placeholder = State::Failed { reason: String::new(), retry: now, backoff: BACKOFF };
-                        let started = std::mem::replace(state, placeholder);
-                        let State::Starting { services, .. } = started else { unreachable!("the state starts") };
+                        let State::Starting { services, .. } = std::mem::replace(state, placeholder) else {
+                            unreachable!("the state starts")
+                        };
                         *state = State::Ready(services);
                     }
                 },
@@ -245,7 +283,7 @@ impl<S: Services> Follower<S> {
                         *state = failed(id, e, now, BACKOFF);
                     }
                 }
-                State::Failed { .. } => {}
+                State::Fetching { .. } | State::Failed { .. } => {}
             }
         }
         if let Some(next) = self.wanted.serving.first().filter(|next| self.current.as_ref() != Some(*next)) {
@@ -256,7 +294,25 @@ impl<S: Services> Follower<S> {
         }
         let wanted = self.wanted.serving.iter().chain(&self.wanted.next).chain(&self.current);
         let needed: BTreeSet<String> = wanted.map(|served| served.planner.clone()).collect();
-        self.planners.retain(|id, _| needed.contains(id));
+        let gone: Vec<String> = self.planners.keys().filter(|id| !needed.contains(*id)).cloned().collect();
+        for id in gone {
+            if let Some(State::Fetching { worker, .. }) = self.planners.remove(&id) {
+                self.abandoned.push(worker);
+            }
+        }
+        self.abandoned.retain(|worker| !worker.is_finished());
+    }
+
+    /// Wait for each download, after [`crate::fetch::http::stop`] ended it: a stopped serve
+    /// writes nothing more.
+    pub fn finish(self) {
+        let fetching = self.planners.into_values().filter_map(|state| match state {
+            State::Fetching { worker, .. } => Some(worker),
+            _ => None,
+        });
+        for worker in fetching.chain(self.abandoned) {
+            let _ = worker.join();
+        }
     }
 
     /// The release that clients get.
@@ -275,7 +331,7 @@ impl<S: Services> Follower<S> {
     pub fn view(&self) -> http::View {
         let planners = self.planners.iter().map(|(id, state)| {
             let planner = match state {
-                State::Starting { .. } => http::Planner::Starting,
+                State::Fetching { .. } | State::Starting { .. } => http::Planner::Starting,
                 State::Ready(services) => http::Planner::Ready(services.ports()),
                 State::Failed { reason, .. } => http::Planner::Failed(reason.clone()),
             };
@@ -299,9 +355,9 @@ fn short(id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
 
     use serde_json::json;
 
@@ -319,6 +375,9 @@ mod tests {
         broken: BTreeSet<String>,
         exited: BTreeSet<String>,
         ports: BTreeMap<String, u16>,
+        /// The planner releases whose download waits until the test sends on the channel.
+        held: BTreeMap<String, mpsc::Receiver<()>>,
+        holding: BTreeSet<String>,
         started: Vec<String>,
         stopped: Vec<String>,
     }
@@ -404,8 +463,47 @@ mod tests {
         follower: Follower<Fake>,
         seen: Seen,
         now: Instant,
-        /// The store and the programs of a start that installs the files of a release.
-        install: Option<(Store, services::Programs)>,
+        /// The store and the programs of a load that downloads and installs the files of a release.
+        install: Option<(PathBuf, Arc<services::Programs>)>,
+    }
+
+    /// The load of the fake services: a download that the test can hold, and with `install` the
+    /// real download and install.
+    struct Fakes<'a> {
+        log: &'a Rc<RefCell<Log>>,
+        install: &'a Option<(PathBuf, Arc<services::Programs>)>,
+        reader: &'a Target,
+        work: PathBuf,
+    }
+
+    impl Load for Fakes<'_> {
+        type Services = Fake;
+
+        fn fetch(&mut self, served: &Served) -> JoinHandle<Result<(), String>> {
+            let held = self.log.borrow_mut().held.remove(&served.planner);
+            let real =
+                self.install.clone().map(|(store, programs)| (store, programs, self.reader.clone(), served.clone()));
+            std::thread::spawn(move || {
+                if let Some(held) = held {
+                    let _ = held.recv();
+                }
+                match real {
+                    Some((store, programs, target, served)) => {
+                        services::fetch(&programs, &Store::at(store), &target, &served)
+                    }
+                    None => Ok(()),
+                }
+            })
+        }
+
+        fn start(&mut self, served: &Served) -> Result<Fake, String> {
+            let installed = match self.install {
+                Some((store, _)) => Some(services::install(&Store::at(store.clone()), &self.work, served)?.0),
+                None => None,
+            };
+            self.log.borrow_mut().started.push(served.planner.clone());
+            Ok(Fake { planner: served.planner.clone(), log: self.log.clone(), _installed: installed })
+        }
     }
 
     impl Case {
@@ -416,22 +514,46 @@ mod tests {
             Self { reader: target.clone(), scratch, target, log, follower, seen, now, install: None }
         }
 
-        /// Look at what the target names, or only poll.
+        /// Look at what the target names, or only poll; then poll until each download that the
+        /// test does not hold ended and the follower took it.
         fn step(&mut self, look_at_target: bool) {
             let Self { scratch, reader, log, follower, seen, now, install, .. } = self;
-            let (now, work) = (*now, scratch.0.join("work"));
-            let mut start = |served: &Served| {
-                let installed = match install {
-                    Some((store, programs)) => Some(services::install(programs, store, reader, &work, served)?.0),
-                    None => None,
-                };
-                log.borrow_mut().started.push(served.planner.clone());
-                Ok(Fake { planner: served.planner.clone(), log: log.clone(), _installed: installed })
-            };
+            let now = *now;
+            let mut load = Fakes { log, install, reader, work: scratch.0.join("work") };
             match look_at_target {
-                true => look(follower, reader, seen, &mut start, &|| now),
-                false => follower.poll(&mut start, &|| now),
+                true => look(follower, reader, seen, &mut load, &|| now),
+                false => follower.poll(&mut load, &|| now),
             }
+            loop {
+                let downloads: Vec<bool> = (follower.planners.iter())
+                    .filter_map(|(id, state)| match state {
+                        State::Fetching { worker, .. } if !log.borrow().holding.contains(id) => {
+                            Some(worker.is_finished())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                match downloads.iter().all(|finished| *finished) {
+                    _ if downloads.is_empty() => break,
+                    true => follower.poll(&mut load, &|| now),
+                    false => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        }
+
+        /// Hold the download of `planner` until [`Self::release`].
+        fn hold(&mut self, planner: &str) -> mpsc::Sender<()> {
+            let (send, receive) = mpsc::channel();
+            let mut log = self.log.borrow_mut();
+            log.held.insert(planner.into(), receive);
+            log.holding.insert(planner.into());
+            send
+        }
+
+        fn release(&mut self, planner: &str, held: mpsc::Sender<()>) {
+            self.log.borrow_mut().holding.remove(planner);
+            held.send(()).unwrap();
+            self.step(false);
         }
 
         fn follow(&mut self) {
@@ -576,7 +698,7 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             case.reader = Target::R2 { public: bucket(&runtime, dir, gets.clone()) };
             let programs = services::Programs::reading(vec![("routing", "test".into(), 1)]);
-            case.install = Some((Store::at(case.scratch.0.join("store")), programs));
+            case.install = Some((case.scratch.0.join("store"), Arc::new(programs)));
             let view = http::Shared::default();
             let api = format!("http://127.0.0.1:{}", listen(&runtime, http::router(view.clone(), None)));
             Self { case, gets, view, api, runtime }
@@ -601,6 +723,7 @@ mod tests {
 
         /// The status and the body of a GET of `path` of the API.
         fn get(&self, path: &str) -> (u16, String) {
+            *self.view.write().unwrap() = self.case.follower.view();
             let agent: ureq::Agent =
                 ureq::Agent::config_builder().proxy(None).http_status_as_error(false).build().into();
             let mut response = agent.get(format!("{}{path}", self.api)).call().unwrap();
@@ -682,5 +805,54 @@ mod tests {
         let reason = "not ready: needs a routing service that reads test format 2; it reads 1";
         assert_eq!(body, json!({"state": "failed", "reason": reason}));
         assert_eq!(published.case.log.borrow().started, [pa], "neither release starts");
+    }
+
+    #[test]
+    fn a_slow_download_holds_back_no_other_release() {
+        let mut published = Published::new("serve-slow");
+        let (r, pr) = publish(&published.case.target, "device r", b"routing r");
+        published.follow();
+        published.answers(&pr);
+        let (_, ps) = publish(&published.case.target, "device s", b"routing s");
+        published.follow();
+        published.answers(&ps);
+
+        let (n, pn) = release(&published.case.target, "device n", b"routing n", 1);
+        let held = published.case.hold(&pn);
+        published.next(&n);
+        let ready =
+            |published: &Published, planner: &str| published.get(&format!("/planner-api/releases/{planner}/ready"));
+        assert_eq!(ready(&published, &ps), (200, r#"{"state":"ready"}"#.into()), "the serving release answers");
+        assert_eq!(ready(&published, &pn).0, 503, "the next release downloads");
+        published.case.switch(&r);
+        assert_eq!(published.case.current(), r, "a change of release.json is seen during the download");
+        published.case.log.borrow_mut().exited.insert(ps.clone());
+        published.case.step(false);
+        assert!(matches!(published.case.planner(&ps), Some(http::Planner::Failed(_))), "and a service that stops");
+
+        published.case.release(&pn, held);
+        published.answers(&pn);
+        assert_eq!(ready(&published, &pn).0, 200, "the next release loads once its objects are in the store");
+    }
+
+    #[test]
+    fn a_next_release_that_cannot_be_read_holds_back_nothing() {
+        let mut case = Case::new("serve-bad-next");
+        let (s, ps) = publish(&case.target, "device s", b"routing s");
+        for next in
+            [b"not json".to_vec(), serde_json::to_vec(&Role { id: "f".repeat(64), since: String::new() }).unwrap()]
+        {
+            case.target.put(NEXT, &next, &Condition::Any).unwrap();
+            case.follow();
+            case.answers(&ps);
+            assert_eq!(case.current(), s, "the serving release loads");
+            assert_eq!(case.log.borrow().started, std::slice::from_ref(&ps), "and no next release");
+        }
+        let (n, pn) = release(&case.target, "device n", b"routing n", 1);
+        case.target
+            .put(NEXT, &serde_json::to_vec(&Role { id: n, since: String::new() }).unwrap(), &Condition::Any)
+            .unwrap();
+        case.follow();
+        assert_eq!(case.log.borrow().started, [ps, pn], "a next release that can be read loads");
     }
 }

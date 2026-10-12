@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use clap::Args;
@@ -17,9 +18,9 @@ use serde_json::Value;
 
 use super::{print_json, Code, Error};
 use crate::release;
-use crate::serve::http::{self, Planner, Shared};
+use crate::serve::http::{self, Shared};
 use crate::serve::services::{self, Origins, Processes, Programs};
-use crate::serve::{look, Follower, Seen, Served, PLANNER};
+use crate::serve::{look, Follower, Load, Seen, Served, PLANNER};
 use crate::store::Store;
 use crate::target::Target;
 
@@ -65,7 +66,7 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     let listening = Listening {
         target: args.target.clone(),
         url: format!("http://127.0.0.1:{PORT}"),
-        network: dir.as_ref().and(network_address()).map(|address| format!("http://{address}:{PORT}")),
+        network: dir.as_ref().and_then(|_| network_address()).map(|address| format!("http://{address}:{PORT}")),
     };
     if json {
         print_json(&listening)?;
@@ -90,20 +91,16 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     }
 
     let (shared, stop) = (Shared::default(), Arc::new(AtomicBool::new(false)));
-    let public = listening.network.clone().unwrap_or(listening.url.clone());
+    let loader = Loader {
+        programs: Arc::new(programs),
+        store: store.root().to_path_buf(),
+        target: target.clone(),
+        work: work.clone(),
+        public: dir.is_some().then(|| listening.network.clone().unwrap_or(listening.url.clone())),
+    };
     let follower = {
-        let (target, shared, stop, work) = (target.clone(), shared.clone(), stop.clone(), work.clone());
-        let (reader, marks) = (target.clone(), shared.clone());
-        let start = move |served: &Served| {
-            // A start can download for a long time: `ready` says that it starts.
-            marks.write().unwrap().planners.insert(served.planner.clone(), Planner::Starting);
-            let origins = match &reader {
-                Target::Dir(_) => Origins { api: public.clone(), objects: format!("{public}/objects") },
-                Target::R2 { .. } => served.origins()?,
-            };
-            services::start(&programs, &store, &reader, &work, served, &origins)
-        };
-        std::thread::spawn(move || follow(&target, start, &shared, &stop))
+        let (target, shared, stop) = (target.clone(), shared.clone(), stop.clone());
+        std::thread::spawn(move || follow(&target, loader, &shared, &stop))
     };
     let router = http::router(shared, files);
     let served = runtime.block_on(async {
@@ -123,6 +120,8 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     });
     runtime.shutdown_background();
     stop.store(true, Ordering::Relaxed);
+    // A download ends within one read; the follower waits for each before it ends.
+    crate::fetch::http::stop();
     // The follower waits while a start installs files: past the grace, the process ends without it.
     let deadline = Instant::now() + GRACE;
     while !follower.is_finished() && Instant::now() < deadline {
@@ -156,12 +155,7 @@ fn print_links(root: &Path, listening: &Listening) {
 /// Follow `target` until `stop`: each second the follower checks the services, and gives `shared`
 /// what clients get. It reads what a dir target names each second, and an R2 target, through its
 /// public origin, every ten seconds.
-fn follow(
-    target: &Target,
-    mut start: impl FnMut(&Served) -> Result<Processes, String>,
-    shared: &Shared,
-    stop: &AtomicBool,
-) {
+fn follow(target: &Target, mut loader: Loader, shared: &Shared, stop: &AtomicBool) {
     let every = match target {
         Target::Dir(_) => 1,
         Target::R2 { .. } => 10,
@@ -172,13 +166,53 @@ fn follow(
             break;
         }
         if tick % every == 0 {
-            look(&mut follower, target, &mut seen, &mut start, &Instant::now);
+            look(&mut follower, target, &mut seen, &mut loader, &Instant::now);
         } else {
-            follower.poll(&mut start, &Instant::now);
+            follower.poll(&mut loader, &Instant::now);
         }
         *shared.write().unwrap() = follower.view();
         std::thread::sleep(Duration::from_secs(1));
     }
+    follower.finish();
+}
+
+/// How serve loads a planner release: a thread downloads its objects into the store, then it
+/// installs its files from the store and starts its services.
+struct Loader {
+    programs: Arc<Programs>,
+    store: PathBuf,
+    target: Target,
+    work: PathBuf,
+    /// For a dir target, the origin at which clients reach serve. An R2 target uses the origins of
+    /// the planner pointer.
+    public: Option<String>,
+}
+
+impl Load for Loader {
+    type Services = Processes;
+
+    fn fetch(&mut self, served: &Served) -> JoinHandle<Result<(), String>> {
+        let (programs, store) = (self.programs.clone(), Store::at(self.store.clone()));
+        let (target, served) = (self.target.clone(), served.clone());
+        std::thread::spawn(move || services::fetch(&programs, &store, &target, &served))
+    }
+
+    fn start(&mut self, served: &Served) -> Result<Processes, String> {
+        let origins = match &self.public {
+            Some(public) => Origins { api: public.clone(), objects: format!("{public}/objects") },
+            None => published(served)?,
+        };
+        services::start(&self.programs, &Store::at(self.store.clone()), &self.work, served, &origins)
+    }
+}
+
+/// The origins that the planner pointer of `served` names: those of a published target.
+fn published(served: &Served) -> Result<Origins, String> {
+    let pointer: Value = serde_json::from_slice(&served.pointers[PLANNER]).map_err(|e| format!("{PLANNER}: {e}"))?;
+    let origin = |name: &str| {
+        pointer["origins"][name].as_str().map(String::from).ok_or_else(|| format!("{PLANNER} has no {name}"))
+    };
+    Ok(Origins { api: origin("api_origin")?, objects: format!("{}/objects", origin("objects_origin")?) })
 }
 
 /// The programs of the services. For a dir target it builds the routing service with cargo; for an
