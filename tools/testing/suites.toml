@@ -290,6 +290,7 @@ triggers = [
   "pyproject.toml", "uv.lock",
   "tools/*.py",
   "tools/**/*.py",
+  "tools/vps/deploy-services.sh",
   "hardware/bom.py",
   "docs/build_docs.py",
   "tools/planner-regions/**",
