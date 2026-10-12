@@ -567,7 +567,7 @@ ends.
 | `built` | `YYYY-MM-DDTHH:MM:SSZ` |
 | `wall_ms` | The time from start to end, in milliseconds |
 | `cpu_ms` | User and system time in milliseconds of the command and the children it waited for (`wait4`). For a Rust step, of the whole process, so it is exact only while no other step runs. `null` when the system does not report it |
-| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the process when the step raised it, else `null` |
+| `peak_rss_bytes` | The peak resident set of the command or of a child it waited for. For a Rust step, the peak of the whole process so far: an upper bound |
 | `bytes_in` | The size of the input files |
 | `bytes_out` | The size of `files` |
 | `metrics` | The JSON object the step wrote, or `{}` |
@@ -1075,9 +1075,13 @@ can be bulk data. It fetches into the store only, and it never writes to the tar
   options, else of the `cost` of the step in the serving release, else of the newest receipt of the
   step. `upload_bytes` is the size of the files of the bakes that a client reads. `unknown` lists
   each bake without an estimate or without a peak, and each fetch whose size is not known.
+  `process_peak_rss_bytes` is the highest peak of a bake that runs in the `obc` process: the peak
+  of that process, not of the step.
 - `machine`: the memory of the machine and the free bytes of the disk of the store after the
-  listing. A bake whose estimated peak is more than the memory, or fetches and bakes that leave
-  less than 4 GiB free on the disk, refuse the update.
+  listing. A bake that runs in its own process and whose estimated peak is more than the memory,
+  or fetches and bakes that leave less than 4 GiB free on the disk, refuse the update. The memory
+  check covers only the steps that run in their own process, where `wait4` gives the peak of the
+  step.
 - `after`: the release that becomes the rollback, and the rollback of now, which the collection
   drops, with the keys that the serving release does not name: what it deletes at most.
 - `args`: the arguments after `obc data` that start the update of this review.
@@ -1089,8 +1093,8 @@ snapshot that they read. It holds no cost and no time. Two machines that read th
 the same id when their stores resolve the same versions and files. `--expect ID` starts the update
 only when its review, computed after the listing, has this id.
 
-A format change is a step whose output in the serving release has another `format` than its layer
-now. Its readers need new data: old readers keep what they have and get no new data until they
+A format change is a layer that bakes, and whose outputs in the serving release have another
+`format` than the layer now. Its readers need new data: old readers keep what they have and get no new data until they
 update. An update with a format change starts only with `--accept-format-change`. A new layer is
 no format change.
 
@@ -3404,7 +3408,16 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "ReviewCost": {
       "properties": {
         "peak_rss_bytes": {
-          "description": "The highest estimated peak of one bake.",
+          "description": "The highest estimated peak of one bake that runs in its own process.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "process_peak_rss_bytes": {
+          "description": "The highest peak of the `obc` process in the estimates of the bakes that run in it: an upper\nbound, not the peak of a step. It refuses nothing.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -3419,11 +3432,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "unknown": {
-          "description": "What the figures lack: a bake without an estimate or without a peak, and a fetch whose size\nis not known.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "$ref": "#/$defs/Unknown",
+          "description": "What the figures lack."
         },
         "upload_bytes": {
           "description": "What goes to the target: the files of the bakes that a client reads.",
@@ -3441,6 +3451,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "required": [
         "wall_ms",
         "peak_rss_bytes",
+        "process_peak_rss_bytes",
         "store_bytes",
         "upload_bytes",
         "unknown"
@@ -4166,6 +4177,37 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "needed_for",
         "state",
         "detail"
+      ],
+      "type": "object"
+    },
+    "Unknown": {
+      "properties": {
+        "estimate": {
+          "description": "The bakes without an estimate.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "peak": {
+          "description": "The bakes whose estimate has no peak.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "size": {
+          "description": "The fetches whose size is not known, as `SOURCE@VERSION`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "estimate",
+        "peak",
+        "size"
       ],
       "type": "object"
     },
