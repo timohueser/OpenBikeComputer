@@ -181,7 +181,7 @@ public actor PlannerService: PlannerDataSource {
     static func launchCatalog(arguments: [String] = ProcessInfo.processInfo.arguments,
                               environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         let value = arguments.firstIndex(of: "-OBCPlannerCatalog").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
-        return (value ?? environment["OBC_PLANNER_CATALOG"]).flatMap(URL.init(string:))
+        return (value ?? environment["OBC_PLANNER_CATALOG"]).flatMap { URL(string: $0) }
     }
 #else
     public static let shared = PlannerService()

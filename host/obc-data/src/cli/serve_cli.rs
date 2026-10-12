@@ -126,7 +126,7 @@ fn print_links(root: &Path, listening: &Listening) {
     let (planner, device) = (format!("{url}/{PLANNER}"), format!("{url}/{}", release::POINTERS[0]));
     let web = root.join("builder/web");
     println!("obc data serve: {target} at {url}");
-    println!("  web planner  cd {} && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner", web.display());
+    println!("  web planner  cd '{}' && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner", web.display());
     println!("               then open /planner.html; once before: npm ci && npm run build:wasm");
     println!("  map builder  VITE_PLANNER_CATALOG={planner} obc site");
     println!("  desktop app  OBC_CATALOG_URL={device} obc desktop");
