@@ -199,7 +199,7 @@ impl Run {
         if self.stop.load(Ordering::Relaxed) {
             return Err("the run stopped: another run took the lock of its target".into());
         }
-        if SIGNALLED.load(Ordering::Relaxed) {
+        if signalled() {
             return Err("the run stopped on a signal; it keeps what it baked".into());
         }
         crate::store::check_free(store.root(), 0)
@@ -438,8 +438,14 @@ impl Run {
     }
 }
 
-/// Set by SIGINT or SIGTERM: the run of this process stops before its next fetch or step.
+/// Set by SIGINT or SIGTERM.
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether SIGINT or SIGTERM came: the run of this process stops before its next fetch, step or
+/// phase.
+pub fn signalled() -> bool {
+    SIGNALLED.load(Ordering::Relaxed)
+}
 
 /// Stop the run of this process on SIGINT or SIGTERM, so that it ends as a failed run and frees
 /// what it holds. A second signal ends the process at once.
@@ -448,13 +454,13 @@ pub fn stop_on_signals() {
     // SAFETY: the handler only stores atomics, and calls signal and raise, which are
     // async-signal-safe.
     unsafe {
-        libc::signal(libc::SIGINT, signalled as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, signalled as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
     }
 }
 
 #[cfg(unix)]
-extern "C" fn signalled(signal: libc::c_int) {
+extern "C" fn on_signal(signal: libc::c_int) {
     if SIGNALLED.swap(true, Ordering::Relaxed) {
         // SAFETY: see `stop_on_signals`.
         unsafe {

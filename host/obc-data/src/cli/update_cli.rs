@@ -212,6 +212,7 @@ pub(super) fn locked<T>(
     run: &mut Run,
     work: impl FnOnce(&mut Run, &Held) -> Result<T, Error>,
 ) -> Result<T, Error> {
+    crate::engine::runs::stop_on_signals();
     let held = Held::take(target, run.id(), crate::date::now()).map_err(|refused| match refused {
         lock::Refused::Held(holder) => {
             Code::Blocked.error(format!("target `{name}`: {}", lock::held_by(&holder))).fix(format!(
@@ -225,7 +226,6 @@ pub(super) fn locked<T>(
             .error(format!("target `{name}`: {e}"))
             .fix(format!("Correct {} of the target, or move it aside: a target without it is free.", lock::LOCK)),
     })?;
-    crate::engine::runs::stop_on_signals();
     let (stop, (done, wait)) = (run.stopper(), mpsc::channel::<()>());
     let result = std::thread::scope(|scope| {
         let held = &held;
@@ -259,8 +259,13 @@ pub(super) fn locked<T>(
     })
 }
 
-/// Enter `phase`, after a check that the run still holds the lock.
+/// Enter `phase`, after a check that no signal stopped the run and that it still holds the lock.
 pub(super) fn enter((run, held): (&mut Run, &Held), name: &str, phase: Phase) -> Result<(), Error> {
+    if crate::engine::runs::signalled() {
+        return Err(Code::Failed
+            .error(format!("the run stopped on a signal before the phase {phase}; nothing more changed"))
+            .fix(format!("Run `obc data update {name}` again: it keeps what this run baked.")));
+    }
     run.record(&Event::Phase { phase })?;
     match held.beat(None, Some(phase), crate::date::now())? {
         true => Ok(()),

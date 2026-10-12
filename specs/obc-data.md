@@ -1062,8 +1062,9 @@ it.
   nothing more. The write at the start of the phase `switch` checks this immediately before the
   switch. After the switch, a lost lock stops only the collection.
 - At its end, the run frees the lock with a conditional write of `{"state": "free"}`: also when
-  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch or step, so it frees
-  the lock too; a second signal ends the process at once.
+  it fails or panics. SIGINT and SIGTERM stop the run before its next fetch, step or phase, so it
+  frees the lock too, and a run that a signal stopped before the switch does not switch. A second
+  signal ends the process at once.
 - A process that ends without that, such as on SIGKILL, a crash or an out-of-memory kill, keeps
   the lock until `unlock` frees it. `obc data unlock TARGET --from MACHINE` frees the lock of a
   run of MACHINE whose heartbeat is 10 minutes old or older (`STALE` in `lock.rs`): ten
@@ -1112,13 +1113,13 @@ its bakes and the checks of the products read:
 - A step that bakes and reads a file of a fetch that the serving release lists must find the same
   SHA-256 in the record of the store: before the review, and again after the fetches of the
   update, before any bake. Else nothing changes (`verify_failed`).
-- A fetch that the serving release read, of a source whose upstream gives only its newest version
-  (a capture, a national terrain model, a delivery) and that the target does not copy, refuses the
+- A fetch that the serving release read, of a source whose upstream gives only its newest version (a
+  capture, a national terrain model, a delivery) and that the target does not copy, refuses the
   update (`blocked`) before the fetch, also while the update lists the steps, when the store lacks
   it and a capture cannot give it: this machine cannot get that version again. A capture gives the
-  version of today, and a version of a manual source that the store started (see [Fetch](#fetch)). The fix names the machine that made the serving release. A refresh that
-  moves the source to a new version is the other way. A national terrain model on a new machine
-  is such a case.
+  version of today, and a version of a manual source that the store started (see [Fetch](#fetch)).
+  The fix names the machine that made the serving release. A refresh that moves the source to a new
+  version is the other way. A national terrain model on a new machine is such a case.
 - When the store and the serving release give a fetched file the same name, size and SHA-256, the
   new release keeps the entry of the serving release.
 - A file of a kept step that a step that bakes reads, or that the check of a product reads, comes
@@ -1250,9 +1251,10 @@ touch it. Download bundles name the origin of the machine on its network when se
 rollback, the run that holds its lock or why `lock.json` cannot be read, the region, the state of
 each layer against the steps of now, the blocked steps, the pointers that drift, an error that
 stopped the judgement, and the command to run next. While a run holds the lock of a `dir` target,
-the next step is to wait for that run. It fetches only small metadata, and checks upstream with the checks of the last hour. A
-target that serves nothing has the next command `obc data update TARGET --region ID`. An R2 target
-has no next command: `obc data update` writes only a `dir` target.
+the next step is to wait for that run. It fetches only small metadata, and checks upstream with the
+checks of the last hour. A target that serves nothing has the next command
+`obc data update TARGET --region ID`. An R2 target has no next command: `obc data update` writes
+only a `dir` target.
 
 ## Commands
 
