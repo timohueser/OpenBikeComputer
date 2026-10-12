@@ -7,39 +7,44 @@ use std::collections::{BTreeMap, BTreeSet};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::release::{self, manifest_key, Release, POINTERS};
+use crate::release::{self, Release, POINTERS};
 use crate::target::{Listed, Target};
 
-/// How long the files of a release stay after it stops serving, in seconds: a client that read an
-/// old pointer finishes its downloads. Chosen, not measured: a client downloads a region in minutes.
+/// How long the files of a release stay after it stops serving, in seconds: longer than a client
+/// needs to fetch the files that a pointer it just read names. 10 minutes, chosen by the owner;
+/// change it here.
 pub const GRACE: u64 = 600;
 
 /// The folders where a collection deletes. Every other key stays.
-const COLLECTED: [&str; 3] = ["objects/", "releases/", "sources/"];
+const COLLECTED: [&str; 2] = ["objects/", "releases/"];
 
 /// What a collection did.
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct Collected {
-    /// The releases whose manifests and files it deleted.
+    /// The releases whose files and manifest it deleted.
     pub releases: Vec<String>,
-    /// The releases that `release.json` does not name, which stay until the grace ends.
+    /// The releases that `release.json` does not name, which stay for now.
     pub deferred: Vec<String>,
-    /// The number of keys that it deleted, also of files that no release names.
+    /// The keys that it deleted, also of files that no release names, and their size.
     pub keys: u64,
     pub bytes: u64,
-    /// Why it stopped, such as a pointer that is not of the serving release; `null` when it finished.
-    pub skipped: Option<String>,
+    /// Why it stopped before the end: a pointer that is not of the serving release, a manifest that
+    /// it cannot read, or an error. `null` when it finished.
+    pub stopped: Option<String>,
 }
 
 impl Collected {
     /// The collection in one line.
     pub fn text(&self) -> String {
-        if let Some(skipped) = &self.skipped {
-            return format!("collected nothing: {skipped}");
+        if let (Some(stopped), 0) = (&self.stopped, self.keys) {
+            return format!("collected nothing: {stopped}");
         }
         let mut text = format!("collected {} releases, {} keys, {} bytes", self.releases.len(), self.keys, self.bytes);
         if !self.deferred.is_empty() {
-            text += &format!("; {} releases stay until {GRACE} s after they stopped serving", self.deferred.len());
+            text += &format!("; {} releases stay until a later collection", self.deferred.len());
+        }
+        if let Some(stopped) = &self.stopped {
+            text += &format!("; then it stopped: {stopped}");
         }
         text
     }
@@ -47,15 +52,22 @@ impl Collected {
 
 /// Collect `target` at the time `now`. A release that `release.json` does not name stopped serving
 /// at or before `served_since`, when the release that served before the switch began to serve; or
-/// at an unknown time when it is `None`. It goes when the grace after that time ended. A file or a
-/// manifest that changed within the grace stays: another update can be about to switch to it.
-pub fn collect(target: &Target, served_since: Option<&str>, now: u64) -> Result<Collected, String> {
+/// at an unknown time when it is `None`. The first collection [`GRACE`] seconds or more after that
+/// time deletes it. A file or a manifest that changed within the grace stays: another update can be
+/// about to switch to it.
+pub fn collect(target: &Target, served_since: Option<&str>, now: u64) -> Collected {
     let mut collected = Collected::default();
-    let Some((serving, _)) = release::serving(target)? else { return Ok(collected) };
+    if let Err(e) = pass(target, served_since, now, &mut collected) {
+        collected.stopped = Some(e);
+    }
+    collected
+}
+
+fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut Collected) -> Result<(), String> {
+    let Some((serving, _)) = release::serving(target)? else { return Ok(()) };
     let current = Release::read(target, &serving.serving.id)?;
     if let Some(key) = release::drift(target, &current)?.into_iter().next() {
-        collected.skipped = Some(format!("{key} is not of the serving release"));
-        return Ok(collected);
+        return Err(format!("{key} is not of the serving release"));
     }
     let mut kept = vec![current];
     if let Some(rollback) = &serving.rollback {
@@ -67,44 +79,41 @@ pub fn collect(target: &Target, served_since: Option<&str>, now: u64) -> Result<
     let stopped = served_since.and_then(crate::date::seconds).is_some_and(old);
     let named: BTreeSet<&str> =
         std::iter::once(&serving.serving).chain(&serving.rollback).map(|role| role.id.as_str()).collect();
+    let mut dropped = Vec::new();
     for (id, manifest) in listed.iter().filter_map(|(key, listed)| Some((manifest_id(key)?, listed))) {
         if named.contains(id) {
             continue;
         }
-        match Release::read(target, id) {
-            Ok(_) if stopped && old(manifest.changed) => collected.releases.push(id.into()),
-            Ok(release) => {
-                collected.deferred.push(id.into());
-                kept.push(release);
-            }
-            Err(e) => {
-                collected.skipped = Some(format!("the files of a release are not known: {e}"));
-                return Ok(collected);
-            }
+        let release = Release::read(target, id).map_err(|e| format!("the files of a release are not known: {e}"))?;
+        if stopped && old(manifest.changed) {
+            dropped.push(manifest);
+        } else {
+            collected.deferred.push(id.into());
+            kept.push(release);
         }
     }
-    let mut keep: BTreeSet<String> = kept.iter().flat_map(|release| release.files()).map(|file| file.key).collect();
-    keep.extend(kept.iter().map(|release| manifest_key(&release.id())));
+    let keep: BTreeSet<String> = kept.iter().flat_map(Release::files).map(|file| file.key).collect();
     // The files first and the manifests last: a collection that stops resumes from the manifests.
     let files = listed.values().filter(|listed| {
-        !keep.contains(&listed.key)
-            && manifest_id(&listed.key).is_none()
+        manifest_id(&listed.key).is_none()
+            && !keep.contains(&listed.key)
             && old(listed.changed)
             && (collectable(&listed.key) || temporary(&listed.key))
     });
-    let manifests = collected.releases.iter().map(|id| &listed[&manifest_key(id)]);
-    for listed in files.chain(manifests).collect::<Vec<_>>() {
-        assert!(collectable(&listed.key) || temporary(&listed.key), "a collection deletes only in {COLLECTED:?}");
+    for listed in files.chain(dropped) {
         target.remove(&listed.key)?;
         (collected.keys, collected.bytes) = (collected.keys + 1, collected.bytes + listed.size);
+        if let Some(id) = manifest_id(&listed.key) {
+            collected.releases.push(id.into());
+        }
     }
-    Ok(collected)
+    Ok(())
 }
 
 /// The id of the manifest `releases/<id>.json`.
 fn manifest_id(key: &str) -> Option<&str> {
     let id = key.strip_prefix("releases/")?.strip_suffix(".json")?;
-    (id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).then_some(id)
+    release::is_sha256(id).then_some(id)
 }
 
 /// Whether a collection may delete `key`: a key in one of [`COLLECTED`].

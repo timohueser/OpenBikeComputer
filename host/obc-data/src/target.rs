@@ -31,8 +31,8 @@ pub struct Tag(pub String);
 pub struct Listed {
     pub key: String,
     pub size: u64,
-    /// When the file or its links last changed, in seconds since 1970: a link of an upload changes
-    /// it, and a copy of the bytes of an old object does not hide that.
+    /// The time of the last change of the file, in seconds since 1970. On unix it is the ctime: an
+    /// upload sets it, also when it links an old object of the store.
     pub changed: u64,
 }
 
@@ -96,6 +96,19 @@ fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, 
             }
         };
         targets.insert(name, target);
+    }
+    let dirs: Vec<(&String, &PathBuf)> = targets
+        .iter()
+        .filter_map(|(name, target)| match target {
+            Target::Dir(dir) => Some((name, dir)),
+            Target::R2 { .. } => None,
+        })
+        .collect();
+    for (a, outer) in &dirs {
+        // A collection of the outer target would delete the files of the inner one.
+        if let Some((b, _)) = dirs.iter().find(|(b, inner)| b != a && inner.starts_with(outer)) {
+            return Err(format!("the folder of target `{b}` is in the folder of target `{a}`"));
+        }
     }
     Ok(targets)
 }
@@ -278,6 +291,8 @@ fn changed(found: &fs::Metadata) -> u64 {
     u64::try_from(found.ctime()).unwrap_or(0)
 }
 
+/// The modification time. An upload that writes a copy sets it; a hard link keeps the time of the
+/// old object of the store, so a key that an upload linked a moment ago can look old.
 #[cfg(not(unix))]
 fn changed(found: &fs::Metadata) -> u64 {
     let modified = found.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
@@ -320,6 +335,7 @@ mod tests {
             ("[a]\nkind = \"dir\"\ndir = \"/x\"\nbucket = \"b\"\n", "unknown field"),
             ("[A]\nkind = \"dir\"\ndir = \"/x\"\n", "kebab-case"),
             ("[a]\nkind = \"dir\"\ndir = \"x\"\n", "absolute"),
+            ("[a]\nkind = \"dir\"\ndir = \"/x\"\n[b]\nkind = \"dir\"\ndir = \"/x/b\"\n", "in the folder of target `a`"),
         ] {
             let refused = parse(text, Some(beside)).unwrap_err();
             assert!(refused.contains(error), "{refused}");

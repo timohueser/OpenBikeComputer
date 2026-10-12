@@ -207,20 +207,12 @@ pub(super) fn update(
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: id.clone() } })?;
     run.sync()?;
+    run.record(&Event::Phase { phase: Phase::Collect })?;
     let since = base.as_ref().map(|(base, _)| base.serving.since.as_str());
-    updated.collection = Some(collected(run, target, since)?);
+    updated.collection = Some(collection::collect(target, since, crate::date::now()));
     updated.rollback = base.map(|(base, _)| base.serving.id);
     updated.serving = id;
     Ok(updated)
-}
-
-/// The collection of `target` after a switch. A switch stays when the collection fails: the next
-/// switch collects again.
-pub(super) fn collected(run: &mut Run, target: &Target, served_since: Option<&str>) -> Result<Collected, Error> {
-    run.record(&Event::Phase { phase: Phase::Collect })?;
-    let collected = collection::collect(target, served_since, crate::date::now());
-    Ok(collected
-        .unwrap_or_else(|e| Collected { skipped: Some(format!("the collection failed: {e}")), ..Collected::default() }))
 }
 
 /// The release of `outputs`: the pointer and the named files of each product.
@@ -492,20 +484,33 @@ pub(super) mod tests {
         assert!(refused.message.starts_with("target `local`"), "a clean deletes nothing: {}", refused.message);
     }
 
+    /// Releases A, B and C of `target`, from `head` 1, 2 and 3: C serves, and B is its rollback.
+    fn three_releases(fixture: &Fixture, target: &Target) -> (String, String, Updated) {
+        fixture.with_sources(&[]);
+        let a = update(fixture, target, region).unwrap().serving;
+        fixture.fetched_version("head", "2", "head.txt", b"2\n");
+        let b = update(fixture, target, |_| Ok(())).unwrap().serving;
+        fixture.fetched_version("head", "3", "head.txt", b"3\n");
+        (a, b, update(fixture, target, |_| Ok(())).unwrap())
+    }
+
+    fn keys(target: &Target) -> std::collections::BTreeSet<String> {
+        target.list().unwrap().into_iter().map(|listed| listed.key).collect()
+    }
+
+    /// A collection after the grace: `now` is later than the time of every file.
+    fn late(target: &Target) -> Collected {
+        let now = crate::date::now();
+        collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60)
+    }
+
     #[test]
-    fn a_collection_deletes_after_the_grace_only_what_a_dropped_release_alone_names() {
-        use crate::collection::{collect, GRACE};
-        use crate::date::{now, timestamp};
+    fn a_collection_after_the_grace_deletes_dropped_releases_and_orphans_and_keeps_older_keys() {
         use std::collections::BTreeSet;
         let fixture = fixture("update-collect");
-        fixture.with_sources(&[]);
         let dir = fixture.scratch.0.join("local");
         let target = Target::Dir(dir.clone());
-        let a = update(&fixture, &target, region).unwrap().serving;
-        fixture.fetched_version("head", "2", "head.txt", b"2\n");
-        let b = update(&fixture, &target, |_| Ok(())).unwrap().serving;
-        fixture.fetched_version("head", "3", "head.txt", b"3\n");
-        let c = update(&fixture, &target, |_| Ok(())).unwrap();
+        let (a, b, c) = three_releases(&fixture, &target);
         let collected = c.collection.unwrap();
         assert_eq!((collected.deferred, collected.keys), (vec![a.clone()], 0), "a stopped serving just now");
 
@@ -519,19 +524,41 @@ pub(super) mod tests {
         for key in older.iter().chain(&orphans) {
             write(&dir.join(key), key);
         }
-        let keys = || target.list().unwrap().into_iter().map(|listed| listed.key).collect::<BTreeSet<_>>();
-        let before = keys();
+        let before = keys(&target);
 
-        let young = collect(&target, Some(&timestamp(0)), now()).unwrap();
+        let epoch = crate::date::timestamp(0);
+        let young = collection::collect(&target, Some(&epoch), crate::date::now());
         assert_eq!((young.deferred, young.keys), (vec![a.clone()], 0), "its files changed within the grace");
 
         // A collection that stopped after one file resumes from the manifest.
         let first = only_a.iter().find(|key| key.starts_with("objects/")).unwrap().clone();
         target.remove(&first).unwrap();
-        let late = collect(&target, Some(&timestamp(now())), now() + GRACE + 60).unwrap();
-        assert_eq!(late.releases, [a]);
+        let late = late(&target);
+        assert_eq!((late.releases, late.stopped), (vec![a], None));
         assert_eq!(late.keys as usize, only_a.len() - 1 + orphans.len());
         let gone: BTreeSet<String> = only_a.into_iter().chain(orphans.map(String::from)).collect();
-        assert_eq!(keys(), &before - &gone);
+        assert_eq!(keys(&target), &before - &gone);
+    }
+
+    #[test]
+    fn a_collection_deletes_nothing_while_a_pointer_drifts_or_a_manifest_cannot_be_read() {
+        let fixture = fixture("update-collect-guards");
+        let dir = fixture.scratch.0.join("local");
+        let target = Target::Dir(dir.clone());
+        three_releases(&fixture, &target);
+        let before = keys(&target);
+        let pointer = dir.join(POINTERS[0]);
+        let saved = std::fs::read(&pointer).unwrap();
+        std::fs::write(&pointer, b"another publisher").unwrap();
+        let drifted = late(&target);
+        assert_eq!(drifted.stopped.as_deref(), Some("cell-catalog/catalog.json is not of the serving release"));
+        assert_eq!((drifted.keys, keys(&target)), (0, before.clone()));
+
+        std::fs::write(&pointer, saved).unwrap();
+        let unreadable = release::manifest_key(&"f".repeat(64));
+        write(&dir.join(&unreadable), "not a manifest");
+        let unknown = late(&target);
+        assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
+        assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
     }
 }

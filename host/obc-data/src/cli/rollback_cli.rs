@@ -1,5 +1,6 @@
 //! `obc data rollback TARGET`: make a target serve its rollback release again. The release that
-//! served becomes the rollback, so a second rollback undoes the first. It bakes and uploads nothing.
+//! served becomes the rollback, so a second rollback undoes the first. It bakes, uploads and
+//! deletes nothing: the next update collects.
 
 use std::path::Path;
 
@@ -7,8 +8,7 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use super::{print_json, update_cli, Code, Error};
-use crate::collection::Collected;
+use super::{print_json, Code, Error};
 use crate::engine::runs::{Event, Phase, Publication, Run};
 use crate::release::{self, Release};
 use crate::store::Store;
@@ -29,8 +29,6 @@ pub struct RolledBack {
     pub serving: String,
     /// The release that it served before.
     pub rollback: String,
-    /// What the collection after the switch did.
-    pub collection: Collected,
 }
 
 pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error> {
@@ -47,7 +45,6 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
         return print_json(&rolled);
     }
     println!("{} serves release {}; rollback {}", rolled.target, &rolled.serving[..12], &rolled.rollback[..12]);
-    println!("{}", rolled.collection.text());
     Ok(())
 }
 
@@ -68,11 +65,13 @@ pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result
     let files: Vec<(String, u64)> = release.files().into_iter().map(|file| (file.key, file.size)).collect();
     let missing = target.missing(&files)?;
     if let Some(key) = missing.first() {
-        return Err(Code::VerifyFailed.error(format!(
-            "the target lacks {} keys of release {}, such as {key}; nothing changed",
-            missing.len(),
-            &rollback.id[..12]
-        )));
+        return Err(Code::VerifyFailed
+            .error(format!(
+                "the target lacks {} keys of release {}, such as {key}; nothing changed",
+                missing.len(),
+                &rollback.id[..12]
+            ))
+            .fix(format!("Run `obc data update {name}` to publish again.")));
     }
     run.record(&Event::Phase { phase: Phase::Switch })?;
     if !release::switch(target, Some(&base), &rollback.id)? {
@@ -82,14 +81,7 @@ pub(super) fn rollback((name, target): (&str, &Target), run: &mut Run) -> Result
     }
     run.record(&Event::Published { mutation: Publication::Switched { release: rollback.id.clone() } })?;
     run.sync()?;
-    let collection = update_cli::collected(run, target, Some(&base.0.serving.since))?;
-    Ok(RolledBack {
-        run: run.id().into(),
-        target: name.into(),
-        serving: rollback.id,
-        rollback: base.0.serving.id,
-        collection,
-    })
+    Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rollback.id, rollback: base.0.serving.id })
 }
 
 #[cfg(test)]

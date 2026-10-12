@@ -613,7 +613,7 @@ pick can reuse prior verification.
 ### Runs
 
 An update and a rollback own one run each. It starts after the arguments are checked, and
-finishes after the collection that follows the switch.
+finishes after the switch, and for an update after the collection that follows it.
 A read-only command creates none. A failure after the run starts returns its id in `error.run`.
 
 A run fetches the fetches of a plan, one after another, with the fetchers of [Fetch](#fetch).
@@ -983,8 +983,8 @@ a file of the release.
 }
 ```
 
-`since` is the time at which the release took its role. `rollback` is `null` until the second
-switch.
+`since` is the time at which the release took its role, or at which a switch to the serving
+release wrote its pointers again. `rollback` is `null` until the second switch.
 
 ### Publish and switch
 
@@ -998,7 +998,8 @@ switch.
 
 Before it writes `release.json`, a switch to another release needs each pointer to hold nothing,
 the bytes of the serving release, or the bytes of the release that it switches to. A switch to the
-serving release writes its pointers again. So each pointer holds the bytes of the serving release
+serving release writes its pointers again, and sets `since` of the serving release: a pointer
+that drifted served other bytes until then. So each pointer holds the bytes of the serving release
 or of the rollback, and a rollback after a stopped switch needs nothing of the release that it
 leaves. Drift is a pointer whose bytes are not those of the serving release. Nothing deletes a
 pointer key: clients of older publishers read these keys.
@@ -1040,28 +1041,30 @@ An update that stops keeps what it baked in the store, and the next update reuse
 `obc data rollback TARGET` makes a `dir` target serve its rollback release again. The release
 that served becomes the rollback, so a second rollback undoes the first. A target without a
 rollback refuses. The target must have each key of the rollback release, else nothing changes.
-Then it switches as [Publish and switch](#publish-and-switch) says, and collects. A rollback bakes
-and uploads nothing, and both releases stay.
+Then it switches as [Publish and switch](#publish-and-switch) says. A rollback bakes, uploads and
+deletes nothing: the next update collects.
 
 ### Collection
 
-A target keeps the files of the serving release and of the rollback. After each switch to another
-release, the update or the rollback collects the target:
+A target keeps the files of the serving release and of the rollback. After an update switches to
+another release, it collects the target. The grace of a collection is 10 minutes (`GRACE` in
+`collection.rs`): longer than a client needs to fetch the files that a pointer it just read names.
 
 - When a pointer does not hold the bytes of the serving release, it deletes nothing.
-- It deletes only keys under `objects/`, `releases/` and `sources/`, and the temporary files of a
+- It deletes only keys under `objects/` and `releases/`, and the temporary files of a
   write that stopped: a hidden `.part` or `.tmp` file in the root, or beside a pointer with the
   name of the pointer. The pointers, `release.json` and the keys of older publishers stay.
 - A release that `release.json` does not name stopped serving at or before the time when the
-  release that served before the switch began to serve. It goes 600 seconds after that time, so a
-  client that read an old pointer finishes its downloads. Until then it stays, and its files too.
-- A file or a manifest that changed in the last 600 seconds stays: an update can be about to
-  switch to it.
+  release that served before the switch began to serve. The first collection the grace or more
+  after that time deletes it. Until then it stays, and its files too.
+- A file or a manifest that changed within the grace stays: an update can be about to switch to
+  it.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
   that go. A collection that stops resumes at the next switch, from the manifests that remain.
 - When it cannot read a manifest, it deletes nothing.
 
-A failed collection does not undo the switch: the output gives the reason.
+A collection that stops does not undo the switch: the output gives what it deleted and why it
+stopped.
 
 ### Overview
 
@@ -1078,7 +1081,7 @@ command: `obc data update` writes only a `dir` target.
 | --- | --- |
 | `obc data [--json]` | The [overview](#overview): the machine, and for each target what it serves and the command to run next |
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
-| `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves, its rollback and what the collection did |
+| `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
 | `obc data sources [--check-now] [--json]` | Every source with licence and R2 copy, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
@@ -1479,27 +1482,27 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "deferred": {
-          "description": "The releases that `release.json` does not name, which stay until the grace ends.",
+          "description": "The releases that `release.json` does not name, which stay for now.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "keys": {
-          "description": "The number of keys that it deleted, also of files that no release names.",
+          "description": "The keys that it deleted, also of files that no release names, and their size.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         "releases": {
-          "description": "The releases whose manifests and files it deleted.",
+          "description": "The releases whose files and manifest it deleted.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
-        "skipped": {
-          "description": "Why it stopped, such as a pointer that is not of the serving release; `null` when it finished.",
+        "stopped": {
+          "description": "Why it stopped before the end: a pointer that is not of the serving release, a manifest that\nit cannot read, or an error. `null` when it finished.",
           "type": [
             "string",
             "null"
@@ -1511,7 +1514,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "deferred",
         "keys",
         "bytes",
-        "skipped"
+        "stopped"
       ],
       "type": "object"
     },
@@ -2803,10 +2806,6 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "RolledBack": {
       "description": "What a rollback did.",
       "properties": {
-        "collection": {
-          "$ref": "#/$defs/Collected",
-          "description": "What the collection after the switch did."
-        },
         "rollback": {
           "description": "The release that it served before.",
           "type": "string"
@@ -2826,8 +2825,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "run",
         "target",
         "serving",
-        "rollback",
-        "collection"
+        "rollback"
       ],
       "type": "object"
     },
