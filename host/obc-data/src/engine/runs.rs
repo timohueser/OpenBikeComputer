@@ -1,7 +1,7 @@
 //! Runs: a run fetches and builds a plan, as many steps at a time as the machine allows. It keeps
 //! its status in `runs/<id>/status.json` of the store, and its log in `runs/<id>/log`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::panic::{self, AssertUnwindSafe};
@@ -59,6 +59,9 @@ pub struct Context<'a> {
     pub http: &'a Http,
     /// The outputs that the update keeps: a step that reads one reads its files in the release.
     pub kept: &'a super::plan::Kept,
+    /// The outputs of the serving release, by step: a planned step whose key is the key of its
+    /// output there keeps that output, and does not bake.
+    pub served: &'a super::plan::Kept,
     pub limits: Limits,
 }
 /// What a run records: its log gets a line, and its status changes.
@@ -103,6 +106,8 @@ pub enum Event {
     StepFinished {
         step: String,
         reused: bool,
+        /// It kept its output of the serving release.
+        unchanged: bool,
         receipt: Box<Receipt>,
     },
     StepFailed {
@@ -345,10 +350,13 @@ impl Run {
                 status.step(&step);
                 line
             }
-            Event::StepFinished { step, reused, receipt } => {
-                let line = match reused {
-                    true => format!("{step} reused"),
-                    false => format!("{step} built in {}, {}", duration(receipt.wall_ms), bytes(receipt.bytes_out)),
+            Event::StepFinished { step, reused, unchanged, receipt } => {
+                let line = match (unchanged, reused) {
+                    (true, _) => format!("{step} unchanged"),
+                    (false, true) => format!("{step} reused"),
+                    (false, false) => {
+                        format!("{step} built in {}, {}", duration(receipt.wall_ms), bytes(receipt.bytes_out))
+                    }
                 };
                 if !reused {
                     status.bytes_built += receipt.bytes_out;
@@ -358,13 +366,19 @@ impl Run {
                     layer.done += 1;
                     if let Some(leaf) = leaf {
                         layer.leaves_baking.retain(|baking| baking != leaf);
+                        // A leaf is unchanged while each of its steps that finished is.
+                        match unchanged {
+                            true if !layer.leaves_done.contains(leaf) => layer.leaves_unchanged.push(leaf.clone()),
+                            true => {}
+                            false => layer.leaves_unchanged.retain(|kept| kept != leaf),
+                        }
                         layer.leaves_done.push(leaf.clone());
                     }
                 }
                 let run_step = status.step(&step);
                 run_step.layer = receipt.layer.clone();
-                (run_step.reused, run_step.wall_ms, run_step.bytes_out) =
-                    (reused, Some(receipt.wall_ms), Some(receipt.bytes_out));
+                (run_step.reused, run_step.unchanged, run_step.wall_ms, run_step.bytes_out) =
+                    (reused, unchanged, Some(receipt.wall_ms), Some(receipt.bytes_out));
                 run_step.peak_rss_bytes = receipt.peak_rss_bytes;
                 run_step.reads = receipt.inputs.iter().map(|input| input.name.clone()).collect();
                 line
@@ -378,6 +392,24 @@ impl Run {
                 line
             }
         }
+    }
+
+    /// Log how many leaves of each tiled layer baked, and how many kept their output.
+    fn count_leaves(&mut self) -> Result<(), String> {
+        let mut lines = Vec::new();
+        for (at, layer) in self.status.layers.iter().enumerate() {
+            let planned = self.planned.values().filter(|(layer, _)| *layer == at);
+            let leaves: BTreeSet<&String> = planned.filter_map(|(_, leaf)| leaf.as_ref()).collect();
+            if !leaves.is_empty() {
+                let (total, unchanged) = (leaves.len(), layer.leaves_unchanged.len());
+                lines.push(format!(
+                    "{}: {} of {total} leaves baked, {unchanged} unchanged",
+                    layer.layer,
+                    total - unchanged
+                ));
+            }
+        }
+        lines.iter().try_for_each(|line| self.line(line))
     }
 
     /// The layers of the steps that `plan` bakes, with the leaves of a tiled layer.
@@ -518,6 +550,26 @@ impl Run {
                     Some(key) if key != receipt.key => Err(outdated.to_string()),
                     _ => Ok((receipt, request)),
                 });
+                let served = context.served.get(&step.name).filter(|_| !again);
+                let unchanged = prepared.as_ref().ok().zip(served);
+                if let Some(((receipt, _), output)) =
+                    unchanged.filter(|((receipt, _), output)| keeps(store, output, &receipt.key))
+                {
+                    let receipt =
+                        Receipt { files: output.files.clone(), digest: output.digest.clone(), ..receipt.clone() };
+                    let event = Event::StepFinished {
+                        step: step.name.clone(),
+                        reused: true,
+                        unchanged: true,
+                        receipt: Box::new(receipt.clone()),
+                    };
+                    if let Err(e) = self.record(&event) {
+                        failure.get_or_insert(e);
+                    }
+                    done.insert(&step.name, output.clone());
+                    built.push(Built { receipt, reused: true, unchanged: true });
+                    continue;
+                }
                 // The files of the steps that it reads; a kept step's come from the target.
                 let prepared = prepared.and_then(|(receipt, request)| {
                     for file in request.layer_files.values().flatten() {
@@ -561,7 +613,12 @@ impl Run {
             match result {
                 Ok(result) => {
                     let receipt = Box::new(result.receipt.clone());
-                    let event = Event::StepFinished { step: step.name.clone(), reused: result.reused, receipt };
+                    let event = Event::StepFinished {
+                        step: step.name.clone(),
+                        reused: result.reused,
+                        unchanged: false,
+                        receipt,
+                    };
                     if let Err(e) = self.record(&event) {
                         failure.get_or_insert(e);
                     }
@@ -577,6 +634,7 @@ impl Run {
         if let Some(step) = pending.first() {
             return Err(format!("step `{}` reads a layer that the run did not build; plan again", step.name));
         }
+        self.count_leaves()?;
         built.sort_by_key(|built| position[built.receipt.step.as_str()]);
         Ok(built)
     }
@@ -680,6 +738,13 @@ impl Run {
         self.line(&line)?;
         self.sync()
     }
+}
+
+/// Whether a step with `key` keeps `output` of the serving release: the keys are the same, and the
+/// store has each file that no client reads, so a step that reads it finds every file.
+fn keeps(store: &Store, output: &Output, key: &str) -> bool {
+    output.key == key
+        && output.files.iter().all(|file| output.client.includes(&file.path) || store.object(&file.sha256).is_file())
 }
 
 /// Set by SIGINT or SIGTERM.
@@ -803,6 +868,8 @@ pub struct LayerProgress {
     /// The leaves `<i>-<j>` of a tiled layer whose steps finished, and those whose steps bake now.
     pub leaves_done: Vec<String>,
     pub leaves_baking: Vec<String>,
+    /// The finished leaves whose steps all kept their output of the serving release.
+    pub leaves_unchanged: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -848,6 +915,8 @@ pub struct RunStep {
     /// Empty until it finishes.
     pub layer: String,
     pub reused: bool,
+    /// It kept its output of the serving release: its key is the key of that output.
+    pub unchanged: bool,
     /// `null` while it runs, and when it failed.
     pub wall_ms: Option<u64>,
     pub peak_rss_bytes: Option<u64>,
@@ -1356,6 +1425,7 @@ mod tests {
             sources: &[],
             http: &http,
             kept: &crate::engine::plan::Kept::new(),
+            served: &crate::engine::plan::Kept::new(),
             limits: Limits { jobs: 1, memory_bytes: None },
         };
         let built = run.build(&context, &steps, &plan).unwrap();
@@ -1515,6 +1585,7 @@ open(os.path.join(request['output'], 'out.txt'), 'w').write(f'{start} {time.time
             sources: &sources,
             http: &http,
             kept: &crate::engine::plan::Kept::new(),
+            served: &crate::engine::plan::Kept::new(),
             limits: Limits::machine(),
         };
         let built = run.build(&context, &steps, &plan).unwrap();

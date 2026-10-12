@@ -973,8 +973,15 @@ pub(crate) mod tests {
 
         let (root, http) = (root(), Http::new());
         let kept = Kept::new();
-        let context =
-            Context { store: &store, root: &root, sources: &[], http: &http, kept: &kept, limits: Limits::machine() };
+        let context = Context {
+            store: &store,
+            root: &root,
+            sources: &[],
+            http: &http,
+            kept: &kept,
+            served: &kept,
+            limits: Limits::machine(),
+        };
         let first = plan(&store, &steps(OLD)).unwrap();
         assert_eq!(builds(&first), names);
         let mut run = RunLog::create(&store, ["build", "test"]).unwrap();

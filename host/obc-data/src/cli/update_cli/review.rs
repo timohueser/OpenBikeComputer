@@ -463,7 +463,9 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
         let verb = if layer.steps.is_empty() { "drop" } else { "bake" };
         let mut text = layer.text.clone();
         if !layer.leaves.is_empty() {
-            text += &format!("; {} leaves", layer.leaves.len());
+            // A step whose key waits for another bake keeps its output when that key does not change.
+            let waits = review.bakes.iter().any(|bake| bake.key.is_none() && layer.steps.contains(&bake.step));
+            text += &format!("; {}{} leaves", if waits { "at most " } else { "" }, layer.leaves.len());
         }
         if !layer.readers.is_empty() {
             text += &format!("; read by {}", layer.readers.join(", "));

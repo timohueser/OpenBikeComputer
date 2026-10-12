@@ -229,6 +229,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         sources: &[],
         http: &Http::new(),
         kept: &kept,
+        served: &kept,
         limits: Limits::machine(),
     };
     let built = run.build(&context, &steps, &planned).unwrap();
