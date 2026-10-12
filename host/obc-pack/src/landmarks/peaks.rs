@@ -2,7 +2,7 @@
 use super::*;
 use osmpbf::{Element, ElementReader};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Summit {
     pub node_id: i64,
     pub latitude: f64,
@@ -65,7 +65,8 @@ pub struct PeakContent {
     pub photo_requests: Vec<PhotoRequest>,
 }
 
-pub(super) fn is_summit(tags: &BTreeMap<String, String>) -> bool {
+/// The tags of a node that the POI classifier of the map takes as a summit.
+pub fn is_summit(tags: &BTreeMap<String, String>) -> bool {
     obc_places::metadata::classify(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .is_some_and(|p| p.subtype == obc_formats::obcm::SUMMIT_SUBTYPE_ID)
 }

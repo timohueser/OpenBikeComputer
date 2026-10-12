@@ -64,7 +64,8 @@ A rendered lead or a later API response must not inherit an earlier revision id.
 Each image candidate retains its source claim or eligible article identity,
 Commons identity, metadata/file pins, thumbnail URL, dimensions, relevant subject
 metadata and required licence/credit fields. Device conversion uses the standard
-500 px thumbnail. Temporary thumbnails are not published content.
+500 px thumbnail. The `wiki` source publishes the thumbnail of each photo that the compilers
+choose; other thumbnails are not published content.
 Full API envelopes, rejected image payloads and request logs are not permanent
 shared content. Required proofs and notices must survive compaction.
 
@@ -184,12 +185,29 @@ subject: an object with a `wikidata` or `wikipedia` tag. Its version has these f
 | --- | --- |
 | `cells/<i>-<j>.tar.zst` | The facts of each subject whose box touches the `2^20` µdeg OBCA cell `(i, j)`; `<i>` and `<j>` have four digits or more |
 | `common.tar.zst` | The classes, and the facts of each subject without a box or whose box touches more than 16 cells |
-| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, and the unresolved work of each kind |
+| `index.json` | `shards`: `path`, `sha256`, `bytes` and `facts` of each shard; `counts`: the subjects, those in `common`, those without a resolved link, the unresolved work of each kind, and the compiles of the producer that failed (`photo_compile_failures`) |
 
 A shard is a tar under zstd. Its members are `content/<kind>/<sha256>.json`, as the shared
 content of a step names them. A fact that two shards need is in both, with the same bytes. A
 subject has its entity, its links, the locales of the bounded P131 traversal and the articles that
-the compilers read. A fact that the version lacks is no content.
+the compilers read. A fact that the version lacks is no content. A member
+`content/assets/<sha256>` is the 500 px thumbnail of a photo that the compilers choose for a
+subject; the device cell steps convert it to the device format.
+
+The producer asks Commons in rounds, as a region asks: the categories of the subjects that the
+compilers select, then the metadata of their photo candidates (P18, the lead images of their
+articles and the members of their categories), then the thumbnails of the files that the
+compilers choose. A thumbnail that fails the checks of a compiler makes it choose another file,
+so the last round repeats for the subjects with new files until it asks no new file. Without
+published text, each article of the version is a fact with its key and the status `missing`: the
+compilers of the producer and of the readers see no article, and choose no lead image. Each round asks only for
+what the rounds before have not answered, with the
+limits of the acquisition adapter: one request at a time, at most four a second, `maxlag` 5,
+`Retry-After`, three backoffs on 429 and 503, and media at 3 MB/s. When Wikimedia is busy, the
+producer waits ten minutes, then twice as long each time up to two hours, and asks again. A
+subject whose compile fails alone has no photo in the version: the producer logs it and
+`index.json` counts it. When more than half the subjects of a chunk fail, or on an I/O error, the
+run stops.
 
 ## Photo fallback and reachability
 
@@ -205,7 +223,7 @@ The record states the limit reached. Files require subject evidence and valid cr
 The Store keeps inputs reachable from pinned releases, active plans and resumable
 operations under its existing retention rules. Compact shared records and final
 device assets use bounded publication bundles. Bundles retain their source pins
-and licence identities. Temporary thumbnails, full originals, rejected candidates
+and licence identities. Other thumbnails, full originals, rejected candidates
 and per-request logs are not R2 publication outputs. Cleanup follows Store
 reachability; content does not create an independent permanent history cache.
 

@@ -1507,19 +1507,24 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
 - The first run of a version pins each dump with its path, size, modification time and SHA-256,
   and `publish_text`. A resume reads exactly those dumps, and refuses when one is gone or changed,
   or `publish_text` changed; the fix deletes the work of the version, so the next run starts a
-  new one. `tools.wiki` gets each SHA-256 and does not hash a dump again.
+  new one. A dump of the pinned size with another modification time is the pinned dump when its
+  SHA-256 is. `tools.wiki` gets each SHA-256 and does not hash a dump again. The review of a
+  resume lists the newest dumps, not the pinned ones. A row without `publish_text` refuses.
 - `python -m tools.wiki` runs the steps: `subjects` lists the OSM objects with a `wikidata` or
   `wikipedia` tag, `import` reads the Wikidata dump twice, `candidates` gives the classes, the
   subjects and the peaks, `articles` reads the language links and the HTML, and `shards` writes
   the version. A step whose output the run has does not run again, and `tools.wiki` does not
   repeat an import that finished with the same input.
 - The selection is the rule of the compilers: each subject of a landmark category, and each peak
-  with a resolved link. Only their articles are read.
+  with a resolved link of a node that the map takes as a summit. Only their articles are read, and only the photos that the compilers
+  choose for them come from Commons, as [Shared Wikimedia content](wikimedia-content.md#the-wiki-source)
+  says.
 - A version of a region keeps the subjects whose box meets the box of the region; a region
   without a box refuses.
 - The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
   target to `shards`, which does not write them again.
-- With `publish_text = false`, the shards hold no article. The review says "text published" or
+- With `publish_text = false`, each article in the shards is a fact with its key and the status
+  `missing`, without text, and no lead image is a photo. The review says "text published" or
   "text kept local".
 
 ### Serve

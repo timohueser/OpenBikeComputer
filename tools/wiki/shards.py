@@ -43,6 +43,38 @@ def needs(db, targets, wikidata: str | None, wikipedia: str | None) -> set[tuple
     return keys
 
 
+def published(kind: str, data: bytes, text: bool) -> bytes:
+    """The bytes of a fact as a version holds it. Without `text`, an article is a fact with its
+    key and the status `missing`: the compilers take it as no article, so a lead image is no
+    photo, and the producer chooses the photos from the facts that the readers get."""
+    if text or kind != "article":
+        return data
+    stub = dict(kind="article", key=json.loads(data)["key"], status="missing")
+    return json.dumps(stub, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def export(db, out: Path, ids: list[str], links: list[list[str | None]], text: bool = True):
+    """The facts that the compilers read of the subjects `ids` and of the peaks with the
+    `[wikidata, wikipedia]` tags of `links`, with the classes of their types, as
+    `content/<kind>/<sha256>.json` under `out`; without `text`, as [`published`] gives them."""
+    targets = catalog.graph(db)
+    keys = set()
+    for qid in ids:
+        keys |= needs(db, targets, qid, None)
+    for wikidata, wikipedia in links:
+        keys |= needs(db, targets, wikidata, wikipedia)
+    found, pending = set(), set().union(*(targets(31, key) for kind, key in keys if kind == "entity"))
+    while pending:
+        found |= pending
+        pending = set().union(*(targets(279, qid) for qid in pending)) - found
+    for kind, key in keys | {("entity", qid) for qid in found}:
+        if row := db.execute("SELECT data FROM facts WHERE kind=? AND key=?", (kind, key)).fetchone():
+            data = published(kind, row[0], text)
+            path = out / "content" / kind / f"{hashlib.sha256(data).hexdigest()}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+
 def archive(path: Path, members):
     """A reproducible tar of the `(name, bytes or file)` members, compressed by zstd."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,9 +95,10 @@ def archive(path: Path, members):
     partial.replace(path)
 
 
-def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True):
+def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True, counts: dict | None = None):
     """`done` gives the SHA-256 and the size of each shard that is published already: it is not
-    written again, and the index lists it. Without `text`, the shards hold no article."""
+    written again, and the index lists it. Without `text`, the shards hold no article text. `counts`
+    are the counts of the producer, which the index adds to its own."""
     if not catalog.complete(db, "wikidata:2"):
         raise ValueError("the Wikidata import has not finished; run the import step first")
     targets = catalog.graph(db)
@@ -76,8 +109,9 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
     rows = db.execute("SELECT cell, wikidata, wikipedia FROM subjects WHERE cell!='' ORDER BY cell")
     for cell, subjects in groupby(rows, key=lambda row: row[0]):
         shards.append(shard(db, work, (out, done or {}, text), f"cells/{cell}.tar.zst", targets, [], (row[1:] for row in subjects)))
-    counts = {f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")}
-    counts.update(subjects=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects").fetchone()[0],
+    found = {f"unresolved_{kind}": count for kind, count in db.execute("SELECT kind, COUNT(*) FROM failures GROUP BY kind")}
+    found.update(counts or {})
+    found.update(subjects=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects").fetchone()[0],
                   subjects_in_common=db.execute("SELECT COUNT(DISTINCT osm) FROM subjects WHERE cell=''").fetchone()[0],
                   subjects_without_link=db.execute("""SELECT COUNT(DISTINCT osm) FROM subjects WHERE
                       (wikidata IS NOT NULL AND NOT EXISTS (SELECT 1 FROM facts WHERE kind='link' AND key='wikidata:'||wikidata)) OR
@@ -86,7 +120,7 @@ def write(db, work: Path, out: Path, done: dict | None = None, text: bool = True
     for stale in out.glob("**/*.tar.zst"):
         if stale.relative_to(out).as_posix() not in paths:
             stale.unlink()
-    write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(counts.items()))))
+    write_json(out / "index.json", dict(shards=shards, counts=dict(sorted(found.items()))))
 
 
 def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[str, str]], subjects) -> dict:
@@ -97,8 +131,6 @@ def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[s
     db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", keys)
     for wikidata, wikipedia in subjects:
         db.executemany("INSERT OR IGNORE INTO shard VALUES(?,?)", needs(db, targets, wikidata, wikipedia))
-    if not text:
-        db.execute("DELETE FROM shard WHERE kind='article'")
     facts = db.execute("SELECT COUNT(*) FROM shard JOIN facts USING(kind, key)").fetchone()[0]
     if name in done:
         return dict(path=name, sha256=done[name]["sha256"], bytes=done[name]["bytes"], facts=facts)
@@ -106,6 +138,7 @@ def shard(db, work: Path, written: tuple, name: str, targets, keys: list[tuple[s
     def members():
         assets = set()
         for kind, data in db.execute("SELECT kind, data FROM shard JOIN facts USING(kind, key) ORDER BY kind, key"):
+            data = published(kind, data, text)
             yield f"content/{kind}/{hashlib.sha256(data).hexdigest()}.json", data
             if kind == "file" and (asset := json.loads(data)["asset"])["sha256"] not in assets:
                 assets.add(asset["sha256"])

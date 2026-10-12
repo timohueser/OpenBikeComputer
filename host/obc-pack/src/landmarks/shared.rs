@@ -1,11 +1,14 @@
 //! A temporary compiler view over compact source pins; no response replica enters the Store.
 use super::*;
 
+/// A file of `files` that holds one fact.
+fn fact_file(name: &str) -> bool {
+    name.starts_with("content/") && !name.starts_with("content/manifest/") && !name.starts_with("content/assets/")
+}
+
 pub fn facts(files: &BTreeMap<String, std::path::PathBuf>) -> Result<BTreeMap<(String, String), Value>, String> {
     let mut facts = BTreeMap::new();
-    for (name, path) in files.iter().filter(|(name, _)| {
-        name.starts_with("content/") && !name.starts_with("content/manifest/") && !name.starts_with("content/assets/")
-    }) {
+    for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
         if Path::new(name).file_stem().and_then(|name| name.to_str()) != Some(hash(&bytes).as_str()) {
             return Err(format!("shared fact checksum changed: {name}"));
@@ -109,9 +112,7 @@ pub fn view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path, ids: &[St
     let facts = facts(files)?;
     let mut sources = Vec::new();
     let mut paths = BTreeMap::new();
-    for (name, path) in files.iter().filter(|(name, _)| {
-        name.starts_with("content/") && !name.starts_with("content/manifest/") && !name.starts_with("content/assets/")
-    }) {
+    for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
         let value: Value =
             serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let relative = match value["kind"].as_str() {
@@ -275,6 +276,16 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
         serde_json::from_slice(&fs::read(root.join("summits.json")).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
     let facts = facts(files)?;
+    // The file of each link fact, by key: a summit finds its own at once. The kind is in the
+    // fact, not in its file name.
+    let mut links = BTreeMap::new();
+    for (name, path) in files.iter().filter(|(name, _)| fact_file(name)) {
+        let value: Value =
+            serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        if value["kind"] == "link" {
+            links.entry(string(&value, "key")?.to_owned()).or_insert_with(|| name.clone());
+        }
+    }
     let mut ids = BTreeSet::new();
     let mut resolutions = Vec::new();
     for summit in &source.summits {
@@ -284,13 +295,7 @@ pub fn peak_view(files: &BTreeMap<String, std::path::PathBuf>, root: &Path) -> R
             let Some(fact) = facts.get(&("link".into(), key.clone())) else {
                 return Err(format!("missing link fact: {key}"));
             };
-            let path = files
-                .iter()
-                .find_map(|(name, path)| {
-                    let value: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
-                    (value["kind"] == "link" && value["key"] == key).then_some(name.clone())
-                })
-                .ok_or("missing link file")?;
+            let path = links.get(&key).cloned().ok_or("missing link file")?;
             if fact["status"] == "present" {
                 ids.insert(string(fact, "identity")?.to_owned());
             }
@@ -446,6 +451,37 @@ mod tests {
         let sources: Vec<Source> = serde_json::from_value(manifest["sources"].clone()).unwrap();
         let synthetic = serde_json::json!({"id":"wiki-en-4","sitelinks":{"enwiki":{"title":"Old Castle"}}});
         assert!(article(&mismatched, &sources, &synthetic, &manifest["places"][0]["articles"][0]).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_summit_finds_its_link_fact_by_the_kind_in_the_fact_and_not_by_the_file_name() {
+        let root = obcm_testkit::scratch::scratch_dir("landmarks", "shared-peak-links");
+        let mut files = BTreeMap::new();
+        let entity =
+            json!({"kind":"entity","key":"Q5","identity":"Q5","revision":1,"status":"present","entity":{"id":"Q5"}});
+        pin(&root, &mut files, entity);
+        let missing = pin(&root, &mut files, json!({"kind":"link","key":"wikipedia:en:Nowhere","status":"missing"}));
+        // A capture names a fact by its digest alone.
+        let link = json!({"kind":"link","key":"wikidata:Q5","identity":"Q5","status":"present"});
+        let link = serde_json::to_vec(&link).unwrap();
+        let name = format!("content/fact/{}.json", hash(&link));
+        fs::write(root.join("fact.json"), &link).unwrap();
+        files.insert(name.clone(), root.join("fact.json"));
+        let view = root.join("view");
+        fs::create_dir_all(&view).unwrap();
+        let tags = [("natural", "peak"), ("name", "Testhorn"), ("wikidata", "Q5"), ("wikipedia", "en:Nowhere")];
+        let tags = tags.map(|(key, value)| (key.to_string(), value.to_string())).into();
+        let summit = peaks::Summit { node_id: 1, latitude: 0.0, longitude: 0.0, tags };
+        let source = peaks::SummitSource { schema: 1, osm_sha256: "0".repeat(64), summits: vec![summit] };
+        fs::write(view.join("summits.json"), serde_json::to_vec(&source).unwrap()).unwrap();
+        peak_view(&files, &view).unwrap();
+        let manifest: Value = serde_json::from_slice(&fs::read(view.join("manifest.json")).unwrap()).unwrap();
+        let resolutions = json!([
+            {"node_id": 1, "kind": "wikidata", "path": name, "status": "resolved"},
+            {"node_id": 1, "kind": "wikipedia", "path": missing["path"], "status": "confirmed_missing"},
+        ]);
+        assert_eq!(manifest["peaks"]["resolutions"], resolutions);
         fs::remove_dir_all(root).unwrap();
     }
 
