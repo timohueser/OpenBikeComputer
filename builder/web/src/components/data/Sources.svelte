@@ -22,24 +22,30 @@
     const groups = $derived([...new Set(shown.map((row) => row.group ?? "Other"))]);
     const members = (id: string) => rows.filter((row) => row.id === id || family(row.id) === id);
     const stateOf = (id: string) => worst(members(id).flatMap((row) => Object.values(row.targets).map((target) => target.state)));
-    const usedBy = (id: string) => targets.flatMap((target) => (target.layers ?? []).filter((layer) => layer.reads.includes(id)).map((layer) => layer.layer));
+    // A family counts what its members do.
+    const is = (id: string, source?: string) => !!source && (source === id || family(source) === id);
+    const usedBy = (id: string) => [
+        ...new Set(targets.flatMap((target) => (target.layers ?? []).filter((layer) => layer.reads.some((read) => is(id, read))).map((layer) => layer.layer))),
+    ];
     const staleBy = (id: string) =>
         targets.flatMap((target) =>
-            (target.layers ?? []).filter((layer) => layer.cause?.source === id).map((layer) => `${target.target} ${layer.layer}`),
+            (target.layers ?? []).filter((layer) => is(id, layer.cause?.source)).map((layer) => `${target.target} ${layer.layer}`),
         );
     const versions = (row: SourceRow) =>
         Object.entries(row.targets).flatMap(([name, target]) => target.requests.map((request) => `${name} ${request.serving ?? "—"}`));
     const id = $derived(route.id && (members(route.id).length ? route.id : null));
     const row = $derived(rows.find((row) => row.id === id));
     let days = $state<Record<string, string>>({});
-    // A refresh fetches upstream's newest version of a `digest` source: a detached run.
-    const refreshable = $derived(row?.version === "digest" && row.fetch.kind !== "prepared");
+    /** The policy that `--refresh` takes: whole days or `manual`; `null` for another text. */
+    const policyOf = (text = "") => (/^([1-9][0-9]*|manual)$/.test(text.trim()) ? text.trim() : null);
 </script>
 
 {#if sources.error}<Failure error={sources.error} />{/if}
 
 {#if route.prepare && id}
-    <Prepare {id} to={route.prepare} kind={targets.find((target) => target.target === route.prepare)?.kind ?? "dir"} />
+    {#key `${id}|${route.prepare}`}
+        <Prepare {id} to={route.prepare} kind={targets.find((target) => target.target === route.prepare)?.kind ?? null} />
+    {/key}
 {:else if id}
     <div class="title">
         <h1>{id}</h1>
@@ -79,17 +85,17 @@
                         class="title"
                         onsubmit={(event) => {
                             event.preventDefault();
-                            location.hash = `#/${name}/review?refresh=${encodeURIComponent(`${row.id}=${days[name]}`)}`;
+                            location.hash = `#/${name}/review?refresh=${encodeURIComponent(`${row.id}=${policyOf(days[name])}`)}`;
                         }}
                     >
-                        <label>Refresh: {policy(target.refresh)} · new <input bind:value={days[name]} placeholder="30 or manual" required /></label>
-                        <button type="submit">Review {name} with it</button>
+                        <label>Refresh: {policy(target.refresh)} · new <input bind:value={days[name]} placeholder="30 or manual" /></label>
+                        <button type="submit" disabled={!policyOf(days[name])}>Review {name} with it</button>
                     </form>
                 </div>
             {/each}
             <p><b>Used by</b> · {list(usedBy(row.id))}</p>
             <p><b>Makes stale</b> · {list(staleBy(row.id))}</p>
-            {#if refreshable}
+            {#if row.refreshable}
                 <Action label="Refresh" args={["source", "refresh", row.id]} ondone={(started: { run: string }) => (location.hash = `#/runs/${started.run}`)} />
                 <p class="soft">A run fetches upstream's newest version; the next update of each target that serves the version of now reads it.</p>
             {/if}
@@ -117,7 +123,7 @@
                                 <td><a href="#/sources/{encodeURIComponent(id)}">{id}</a></td>
                                 <td>{row.id.includes("/") ? `${members(id).length} prepared` : versions(row).join(", ")}</td>
                                 <td>{Object.entries(row.targets).map(([name, target]) => `${name} ${policy(target.refresh)}`).join(", ")}</td>
-                                <td>{usedBy(id).length} layers</td>
+                                <td>{usedBy(id).length} {usedBy(id).length === 1 ? "layer" : "layers"}</td>
                                 <td class={stateOf(id)}>{stateOf(id)}</td>
                             </tr>
                         {/each}

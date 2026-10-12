@@ -50,20 +50,23 @@ pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json
         SourceCommand::Prepare(args) => return super::prepare_cli::command(root, prepared, args, json),
     };
     let store = Store::open()?;
-    // The process of a detached run: it fetches, and its log gets the outcome. It holds no lock, so
-    // `runs RUN --stop` ends it at once.
-    if let Ok(run) = std::env::var(runs::RUN) {
-        std::env::remove_var(runs::RUN);
-        let run = runs::Run::attach(&store, &run)?;
-        let refreshed = super::api::finish_run(run, refresh(root, &store, &Http::new(), &id));
-        let Refreshed { source, from, version, bytes } =
-            refreshed.unwrap_or_else(|e| std::process::exit(e.code.exit().into()));
-        let size = runs::bytes(bytes);
+    // The process of a detached run. A stop that came while the run started wrote only its file.
+    let work = |run: &mut runs::Run| {
+        if run.stopping() {
+            fetch::http::stop();
+        }
+        refresh(root, &store, &Http::new(), &id)
+    };
+    let print = |Refreshed { source, from, version, bytes }: &Refreshed| {
+        let size = runs::bytes(*bytes);
         println!(
             "{source} {}: the next update of a target that serves it moves to {version} ({size})",
             from.join(", ")
         );
-        return Ok(());
+        Ok(())
+    };
+    if let Some(done) = super::api::detached(&store, work, print) {
+        return done;
     }
     refreshable(&registry(root)?, &id)?;
     let run = runs::detach(&store, &["source".into(), "refresh".into(), id])?;
@@ -77,12 +80,17 @@ pub fn run(root: &Path, prepared: &[&dyn Prepared], command: SourceCommand, json
 /// Source `id` of `registry` when `source refresh` can move it.
 fn refreshable<'a>(registry: &'a crate::sources::Registry, id: &str) -> Result<&'a crate::sources::Source, Error> {
     let source = find(registry, id)?;
-    if source.version != VersionScheme::Digest || source.start.is_some() || !fetch::params(source).is_empty() {
+    if !moves(source) {
         return Err(Code::Usage
             .error(format!("`source refresh` moves a `digest` source without a `start` or params, and `{id}` is not one"))
             .fix("A `date` or `release` source moves when a newer version is due or in the store; a `commit` source, or a source with a `start`, moves with its `start` in data/sources.toml."));
     }
     Ok(source)
+}
+
+/// Whether `source refresh` moves `source`: a `digest` source without a `start` or params.
+pub(super) fn moves(source: &crate::sources::Source) -> bool {
+    source.version == VersionScheme::Digest && source.start.is_none() && fetch::params(source).is_empty()
 }
 
 /// Fetch the newest version of the `digest` source `id`, and record it with the versions that the

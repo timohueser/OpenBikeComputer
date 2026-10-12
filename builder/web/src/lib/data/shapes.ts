@@ -142,6 +142,8 @@ export interface Started {
 export interface Holder {
     machine: string;
     run: string;
+    /** The review that the run does; `null` until the run has it. */
+    review: string | null;
     phase: Phase;
     /** `YYYY-MM-DDTHH:MM:SSZ`; the run writes it each minute. */
     heartbeat: string;

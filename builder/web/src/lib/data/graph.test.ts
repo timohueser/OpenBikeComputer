@@ -20,7 +20,7 @@ it("lays out the 13 layers of prod in a band for each product, a column for each
     ]);
     expect(followers(layers, "planner/search")).toEqual(["planner/places", "planner/index"]);
     expect(followers(layers, "planner/terrain")).toEqual(["planner/sun", "planner/index"]);
-    expect(sourcesOf(layers, "device/map")).toEqual(["copernicus-glo30", "land-polygons", "osm", "terrain-reference"]);
+    expect(sourcesOf(layers, "device/map")).toEqual(["copernicus-glo-30", "geofabrik-extracts", "land-polygons", "terrain-reference/ch"]);
 });
 
 it("ends on layers that read each other", () => {

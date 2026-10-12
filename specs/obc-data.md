@@ -3444,10 +3444,17 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     },
     "PreparedOn": {
       "properties": {
+        "error": {
+          "description": "Why the versions or the lock of the source there cannot be read; `null` when they can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "lock": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Holder"
+              "$ref": "#/$defs/Lock"
             },
             {
               "type": "null"
@@ -3463,7 +3470,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "versions",
-        "lock"
+        "lock",
+        "error"
       ],
       "type": "object"
     },
@@ -4330,7 +4338,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "additionalProperties": {
             "$ref": "#/$defs/PreparedOn"
           },
-          "description": "For a prepared source, by target that can be read: its complete versions there, and the run\nthat holds the lock of the source there. Empty for another source.",
+          "description": "For a prepared source, by target: its complete versions there, and the run that holds the\nlock of the source there. Empty for another source.",
           "type": "object"
         },
         "redistribute": {
@@ -4339,6 +4347,10 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "refresh": {
           "$ref": "#/$defs/Refresh",
           "default": "manual"
+        },
+        "refreshable": {
+          "description": "Whether `source refresh` moves the source.",
+          "type": "boolean"
         },
         "snapshots": {
           "description": "The versions in the local store, the one fetched last first.",
@@ -4376,6 +4388,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "targets",
         "snapshots",
         "credential_missing",
+        "refreshable",
         "prepared"
       ],
       "type": "object"

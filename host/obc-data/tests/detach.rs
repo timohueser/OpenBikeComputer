@@ -74,9 +74,13 @@ fn a_source_refresh_runs_detached() {
     assert_eq!(refused.status.code(), Some(2), "an unknown source is refused before a run starts");
 
     let started = repo.data(&["--json", "source", "refresh", "earth"]);
-    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+    let (stdout, stderr) = (String::from_utf8_lossy(&started.stdout), String::from_utf8_lossy(&started.stderr));
+    assert!(started.status.success(), "{stdout}{stderr}");
     let run = json(&started).remove(0)["run"].as_str().unwrap().to_string();
     let status = json(&repo.data(&["--json", "runs", &run])).remove(0);
     assert_eq!(status["args"], serde_json::json!(["source", "refresh", "earth"]));
+
     assert!(repo.data(&["runs", &run, "--stop"]).status.success());
+    let lines = json(&repo.data(&["--json", "runs", &run, "--follow"]));
+    assert_eq!(lines[lines.len() - 2]["state"], "stopped", "the stop ends the fetch");
 }

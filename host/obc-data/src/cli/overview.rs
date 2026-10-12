@@ -139,6 +139,12 @@ pub struct Lock {
     pub stale: bool,
 }
 
+impl Lock {
+    pub fn of(holder: Holder) -> Self {
+        Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder }
+    }
+}
+
 pub fn overview(
     root: &Path,
     (products, producers): (&[&dyn Product], &[&dyn Prepared]),
@@ -258,9 +264,7 @@ fn state(
         _ => format!("obc data update {name} --dry-run"),
     };
     match lock::holder(target) {
-        Ok(holder) => {
-            state.lock = holder.map(|holder| Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder })
-        }
+        Ok(holder) => state.lock = holder.map(Lock::of),
         Err(error) => state.lock_error = Some(error),
     }
     let judged = (|| -> Result<(), Error> {

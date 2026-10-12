@@ -17,6 +17,8 @@ export interface SourceRow {
     copy: boolean;
     credential?: { env?: string[]; file?: string | null };
     credential_missing: boolean;
+    /** Whether `source refresh` moves the source. */
+    refreshable: boolean;
     /** By target: its policy, and each request that its serving release reads. */
     targets: Record<
         string,
@@ -32,8 +34,12 @@ export interface SourceRow {
             }[];
         }
     >;
-    /** A prepared source, by target: its complete versions, and the run that prepares it there. */
-    prepared: Record<string, { versions: { version: string; bytes: number; time: string }[]; lock: Holder | null }>;
+    /** A prepared source, by target: its complete versions, and the run that prepares it there.
+     *  `error` says why they cannot be read. */
+    prepared: Record<
+        string,
+        { versions: { version: string; bytes: number; time: string }[]; lock: Holder | null; error: string | null }
+    >;
 }
 
 export interface PrepareReview {

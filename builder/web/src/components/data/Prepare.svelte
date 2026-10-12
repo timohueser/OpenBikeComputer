@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from "svelte";
+    import { command } from "../../lib/data/cli";
     import { CliQuery } from "../../lib/data/query.svelte";
     import { list, size, span, when, type Started, type Target } from "../../lib/data/shapes";
     import { family, type PrepareReview, type SourceRow } from "../../lib/data/sources";
@@ -7,8 +8,9 @@
     import Failure from "./Failure.svelte";
 
     // With `rows`: the versions of a prepared source on each target, or the chips of a family, such as
-    // `terrain-reference`. With `to`: the review of a new version for that target, and its Start.
-    let { id, rows = [], to, kind = "dir" }: { id: string; rows?: SourceRow[]; to?: string; kind?: Target["kind"] } = $props();
+    // `terrain-reference`. With `to`: the review of a new version for that target, and its Start,
+    // which waits for `kind`, the kind of that target.
+    let { id, rows = [], to, kind = null }: { id: string; rows?: SourceRow[]; to?: string; kind?: Target["kind"] | null } = $props();
 
     // svelte-ignore state_referenced_locally
     const review = to ? new CliQuery<PrepareReview>(["source", "prepare", id, "--to", to, "--dry-run"]) : null;
@@ -19,7 +21,8 @@
     let target = $state("prod");
     function chip(row: SourceRow, name: string): string {
         const on = row.prepared[name];
-        if (on?.lock) return `preparing on ${on.lock.machine}`;
+        if (on?.error) return "cannot be read";
+        if (on?.lock) return on.lock.stale ? `lock left on ${on.lock.machine}` : `preparing on ${on.lock.machine}`;
         return on?.versions.length ? `prepared ${on.versions.at(-1)!.version}` : "not prepared";
     }
 </script>
@@ -49,7 +52,7 @@
             <Action
                 label="Start"
                 args={start}
-                disabled={!!r.machine.refusals.length}
+                disabled={!kind || !!r.machine.refusals.length}
                 ondone={(started: Started) => (location.hash = `#/runs/${started.run}`)}
             />
         </section>
@@ -71,12 +74,20 @@
                 {:else}
                     {@const on = rows[0].prepared[name]}
                     {@const serving = rows[0].targets[name]?.requests.map((request) => request.serving) ?? []}
+                    {#if on.error}<span class="missing">{on.error}</span>{/if}
                     {#each on.versions as version (version.version)}
                         <span>{version.version} · {size(version.bytes)} · complete {when(version.time)}{serving.includes(version.version) ? " · serves" : ""}</span>
                     {:else}
                         <span class="soft">no version</span>
                     {/each}
-                    {#if on.lock}<span class="running">Preparing on {on.lock.machine}: run {on.lock.run}, phase {on.lock.phase}</span>{/if}
+                    {#if on.lock?.stale}
+                        <span class="missing"
+                            >No heartbeat from run {on.lock.run} on {on.lock.machine} since {when(on.lock.heartbeat)}: it likely ended without freeing the
+                            lock. <code>{command(["unlock", name, "--source", id, "--from", on.lock.machine])}</code></span
+                        >
+                    {:else if on.lock}
+                        <span class="running">Preparing on {on.lock.machine}: run {on.lock.run}, phase {on.lock.phase}</span>
+                    {/if}
                 {/if}
             </div>
         {/each}
