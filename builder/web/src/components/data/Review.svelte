@@ -191,7 +191,7 @@
         {:else}
             <p><b>Bake</b> · nothing: each layer is as its steps make it now</p>
         {/if}
-        {#each review.notes as note (note.layer)}<p class="missing"><b>{note.layer}</b> · {note.text}</p>{/each}
+        {#each review.notes as note (note.text)}<p class="missing"><b>{note.layer}</b> · {note.text}</p>{/each}
         <p><b>Keep</b> · {review.kept} outputs of the serving release</p>
         {#if review.downloads.files}
             <p><b>Download</b> · {review.downloads.files} files, {size(review.downloads.bytes)} from {name}</p>

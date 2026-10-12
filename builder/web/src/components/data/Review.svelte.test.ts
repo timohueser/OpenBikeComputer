@@ -18,12 +18,12 @@ afterEach(() => {
     location.hash = "";
 });
 
-/** The server answers the review of `local` with the example, and a start with a run. */
-function server() {
+/** The server answers the review of `local` with `answer`, and a start with a run. */
+function server(answer: ReviewShape = review) {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
         if (args[0] === "areas") return new Response(JSON.stringify({ exit: 0, output: areas }));
-        const output = args.includes("--dry-run") ? review : { run: "2026-10-12-120000", review: review.id };
+        const output = args.includes("--dry-run") ? answer : { run: "2026-10-12-120000", review: answer.id };
         return new Response(JSON.stringify({ exit: 0, output }));
     });
     vi.stubGlobal("fetch", fetch);
@@ -131,6 +131,19 @@ it("a format change names what happens to each reader, and the map draws the cel
         expect(document.body.textContent).toContain("■ 2 cells bake · ■ 1 cell go");
         await vi.waitFor(() => expect([strokes("var(--running)"), strokes("var(--missing)")]).toEqual([2, 1]));
         expect(document.body.textContent).toContain("device/terrain · terrain-reference/de has no version");
+    } finally {
+        await unmount(screen);
+    }
+});
+
+it("shows each note, also two notes of one layer", async () => {
+    const note = (country: string) =>
+        `terrain-reference/${country} has no version: device/terrain uses GLO-30 there. Fix: obc data source prepare terrain-reference/${country}`;
+    server({ ...review, notes: ["ch", "de"].map((country) => ({ layer: "device/terrain", text: note(country) })) });
+    const screen = mount(Review, { target: document.body, props });
+    try {
+        await vi.waitFor(() => expect(document.body.textContent).toContain(note("ch")));
+        expect(document.body.textContent).toContain(note("de"));
     } finally {
         await unmount(screen);
     }

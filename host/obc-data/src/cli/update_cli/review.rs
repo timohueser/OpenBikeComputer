@@ -73,7 +73,7 @@ pub struct LayerChange {
     pub partitions: Vec<String>,
     /// The steps of the serving release that no step makes now.
     pub drops: Vec<String>,
-    /// The grid leaves of `drops`, as `leaves` names them.
+    /// The grid leaves of `drops` of a tiled layer, as `leaves` names them.
     pub dropped_leaves: Vec<String>,
     /// The programs that read the layer.
     pub readers: Vec<String>,
@@ -265,7 +265,12 @@ pub fn review(parts: Parts) -> Review {
             steps: mine.iter().map(|step| step.name.clone()).collect(),
             leaves: leaves.into_iter().map(str::to_string).collect(),
             partitions: partitions.into_iter().map(str::to_string).collect(),
-            dropped_leaves: drops.iter().filter_map(|step| leaf(step)).map(str::to_string).collect(),
+            dropped_leaves: match state.shape {
+                Some(state::LayerShape::Tiled) => {
+                    drops.iter().filter_map(|step| leaf(step)).map(str::to_string).collect()
+                }
+                _ => Vec::new(),
+            },
             drops,
             readers: readers.iter().map(|reader| reader.name.to_string()).collect(),
             format,

@@ -82,7 +82,7 @@
                         A clean removes {size(goes(clean.output))}: {count(store.snapshots.length, "record")}, {count(store.objects.length, "object")} and
                         {size(store.partial_bytes)} of unfinished work. It keeps {size(store.keep_bytes)}: {list([
                             ...new Set(store.kept.flatMap((kept) => kept.because)),
-                        ])}.
+                        ])}. Clean now reads the plan again, and removes what nothing reaches then.
                     </p>
                     <div class="title">
                         <Action

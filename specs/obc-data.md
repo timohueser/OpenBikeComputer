@@ -2653,7 +2653,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "$ref": "#/$defs/PlanCause"
         },
         "dropped_leaves": {
-          "description": "The grid leaves of `drops`, as `leaves` names them.",
+          "description": "The grid leaves of `drops` of a tiled layer, as `leaves` names them.",
           "items": {
             "type": "string"
           },
