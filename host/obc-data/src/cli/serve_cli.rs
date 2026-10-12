@@ -94,10 +94,14 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
         println!("obc data: run {run} serves; `obc data runs {run}` shows how to open it, `obc data runs {run} --stop` stops it");
         return Ok(());
     }
-    // A serve changes nothing in the store, so a collection can run beside it.
+    // A serve changes nothing in the store, so a collection can run beside it. It ends without an
+    // error only on a stop.
     let work = |run: &mut runs::Run| {
         run.release_store();
-        serve(root, &store, &args.target, &target, false)
+        match serve(root, &store, &args.target, &target, false) {
+            Ok(()) if run.stopping() => Err(super::api::stopped()),
+            served => served,
+        }
     };
     if let Some(done) = super::api::detached(&store, work, |()| Ok(())) {
         return done;

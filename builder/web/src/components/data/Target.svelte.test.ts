@@ -22,10 +22,10 @@ function status(stale: boolean): Status {
 }
 
 /** The server answers the reads with the examples; the commands that change something are kept. */
-function server(answer: Router = router) {
+function server(answer: () => Router = () => router) {
     const fetch = vi.fn(async (_url: string, init: { body: string }) => {
         const args: string[] = JSON.parse(init.body).args;
-        const output = { areas, router: answer }[args[0]] ?? (args.includes("--dry-run") ? review : {});
+        const output = { areas, router: answer() }[args[0]] ?? (args.includes("--dry-run") ? review : {});
         return new Response(JSON.stringify({ exit: 0, output }));
     });
     vi.stubGlobal("fetch", fetch);
@@ -112,16 +112,21 @@ it("a link from a source sets the refresh flag of the review", async () => {
     }
 });
 
-it("a rollback waits for the router: Start is off while the follower does not serve the rollback release", async () => {
+it("a rollback waits for the router, and the confirm asks the router again", async () => {
     const reason = "not ready: the search service stopped: exit status 1";
-    server({ ...router, rollback: { ...router.rollback, reason } });
+    let answer: Router = { ...router, rollback: { ...router.rollback, reason } };
+    server(() => answer);
     const { screen: target } = screen("#/prod", true);
     try {
         await vi.waitFor(() => expect(document.body.textContent).toContain("Router · serves 7f3a"));
         button("Roll back to 2c91…").click();
-        flushSync();
-        expect(document.body.textContent).toContain(`✗ The router does not serve 2c91: ${reason}`);
+        await vi.waitFor(() => expect(document.body.textContent).toContain(`✗ The router does not serve 2c91: ${reason}`));
         expect(button("Roll back now").disabled).toBe(true);
+        answer = router;
+        button("Cancel").click();
+        flushSync();
+        button("Roll back to 2c91…").click();
+        await vi.waitFor(() => expect(button("Roll back now").disabled).toBe(false));
     } finally {
         await unmount(target);
     }

@@ -676,8 +676,9 @@ process never started.
   A leaf is baked when one of its steps baked, and unchanged when all of its steps are.
 - `stop`: when it is present, the run stops before its next fetch, step or phase.
   `obc data runs RUN --stop` writes it, and sends SIGTERM to the process group of a `running`
-  run, once. A run that stops frees the lock of its target, keeps what it baked, and ends as
-  `stopped`.
+  run, once. A detached run whose process finds it at its start does nothing more. A run that
+  stops frees the lock of its target, keeps what it baked, and ends as `stopped`; so does a
+  detached `serve`.
 
 `obc data update` runs detached. It makes the review in its own process, refuses as the review
 says, and then starts its own program in a new session, without a terminal, with the arguments of

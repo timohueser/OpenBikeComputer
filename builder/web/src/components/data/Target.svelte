@@ -233,7 +233,15 @@
                         <div class="release">
                             <b>{short(rollback.id)}</b><span>since {when(rollback.since)}</span>
                             {#if asking !== "rollback"}
-                                <button type="button" disabled={!!locked} onclick={() => (asking = "rollback")}>Roll back to {short(rollback.id)}…</button>
+                                <button
+                                    type="button"
+                                    disabled={!!locked}
+                                    onclick={() => {
+                                        asking = "rollback";
+                                        // The answer of the router can be older than the confirm.
+                                        void router?.refresh();
+                                    }}>Roll back to {short(rollback.id)}…</button
+                                >
                             {/if}
                         </div>
                         {#if asking === "rollback"}

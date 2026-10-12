@@ -169,19 +169,29 @@ pub(super) fn detached<T>(
     // A program that a step starts is not this run.
     std::env::remove_var(runs::RUN);
     runs::stop_on_signals();
-    let mut run = match runs::Run::attach(store, &id) {
+    let run = match runs::Run::attach(store, &id) {
         Ok(run) => run,
         Err(e) => return Some(Err(e.into())),
     };
-    // A stop that came while the run started wrote only its file.
-    if run.stopping() {
-        crate::fetch::http::stop();
-    }
-    let result = work(&mut run);
-    Some(match finish_run(run, result) {
+    Some(match work_in(run, work) {
         Ok(done) => print(&done),
         Err(error) => std::process::exit(error.code.exit().into()),
     })
+}
+
+/// Do `work` in `run`, and finish the run. A stop that came while the run started wrote only its
+/// file: the run then ends `stopped` before its work.
+fn work_in<T>(mut run: runs::Run, work: impl FnOnce(&mut runs::Run) -> Result<T, Error>) -> Result<T, Error> {
+    let result = match run.stopping() {
+        true => Err(stopped()),
+        false => work(&mut run),
+    };
+    finish_run(run, result)
+}
+
+/// The error of a run that `obc data runs RUN --stop` or a signal stopped.
+pub(super) fn stopped() -> Error {
+    Code::Failed.error("the run stopped on `obc data runs RUN --stop` or a signal").fix("Start it again.")
 }
 
 /// Refuse `what`, a run that changes the R2 `target`, which serves riders, without `--expect`, the
@@ -372,6 +382,21 @@ mod tests {
             .unwrap_or(text.len());
         let gap = if end == text.len() { "" } else { "\n" };
         format!("{}\n{body}{gap}{}", &text[..start], &text[end..])
+    }
+
+    #[test]
+    fn a_run_stopped_while_it_starts_ends_stopped_without_its_work() {
+        let fixture = crate::engine::tests::fixture("api-stopped");
+        let id = runs::reserve(&fixture.store, &["source".into(), "refresh".into(), "earth".into()]).unwrap();
+        runs::stop(&fixture.store, &id).unwrap();
+        let run = runs::Run::attach(&fixture.store, &id).unwrap();
+        let worked = std::cell::Cell::new(false);
+        let ended = work_in(run, |_| {
+            worked.set(true);
+            Ok(())
+        });
+        assert_eq!((ended.unwrap_err().run, worked.get()), (Some(id.clone()), false));
+        assert_eq!(runs::status(&fixture.store, &id).unwrap().state, runs::State::Stopped);
     }
 
     #[test]

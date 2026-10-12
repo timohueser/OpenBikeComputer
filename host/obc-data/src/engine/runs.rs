@@ -1395,6 +1395,15 @@ mod tests {
     }
 
     #[test]
+    fn a_run_that_frees_the_store_lets_a_collection_start() {
+        let fixture = fixture("runs-release-store");
+        let mut run = Run::create(&fixture.store, ["serve", "local"]).unwrap();
+        assert!(fixture.store.try_alone().unwrap().is_none(), "a run holds the store");
+        run.release_store();
+        assert!(fixture.store.try_alone().unwrap().is_some());
+    }
+
+    #[test]
     fn a_reserved_run_shows_as_starting_and_a_stop_signals_no_process_of_it() {
         let fixture = fixture("runs-reserved");
         let id = reserve(&fixture.store, &["update".into(), "local".into()]).unwrap();
