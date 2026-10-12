@@ -476,7 +476,8 @@ pub(super) mod tests {
         }
     }
 
-    /// A product without steps, whose pointer is the count of the pipeline.
+    /// A product whose pointer is the count of the pipeline. The file `earth` gives it a step that
+    /// reads `natural-earth`, a source whose versions have no order.
     struct Counter;
 
     impl Product for Counter {
@@ -484,8 +485,18 @@ pub(super) mod tests {
             "counter"
         }
 
-        fn steps(&self, _: &Path, _: &Inputs, _: &Regions, _: &Store) -> Result<Steps, Unplanned> {
-            Ok(Vec::new().into())
+        fn steps(&self, root: &Path, inputs: &Inputs, _: &Regions, store: &Store) -> Result<Steps, Unplanned> {
+            if !root.join("earth").exists() {
+                return Ok(Vec::new().into());
+            }
+            let version = crate::product::version(inputs, store, "natural-earth", &[]).map_err(Unplanned::Failed)?;
+            let version = version.map_err(|wanted| Unplanned::NeedsFetch(vec![wanted]))?;
+            static EARTH: crate::engine::Layer = crate::engine::Layer { name: "earth", ..crate::engine::tests::TEST };
+            let read = vec![snapshot("natural-earth", &version, &["earth.zip"])];
+            let mut step =
+                crate::engine::tests::step("counter/earth", read, "earth.zip", crate::engine::Run::Rust(earth));
+            step.layer = &EARTH;
+            Ok(vec![step].into())
         }
 
         fn pointer(&self) -> Pointer {
@@ -533,6 +544,11 @@ pub(super) mod tests {
         );
         run.finish(updated.as_ref().err().map(|error| error.message.as_str())).unwrap();
         updated
+    }
+
+    fn earth(request: &crate::engine::Request) -> Result<(), String> {
+        let copied = std::fs::copy(&request.snapshots["natural-earth"]["earth.zip"], request.output.join("earth.zip"));
+        copied.map(|_| ()).map_err(|e| e.to_string())
     }
 
     fn asked_update(fixture: &Fixture, target: &Target, asked: &Asked) -> Result<Updated, Error> {
@@ -819,5 +835,46 @@ pub(super) mod tests {
         );
         assert_eq!(release::serving(&target).unwrap().unwrap().0.serving.id, first.serving);
         assert_eq!(fixture.store.layers().unwrap().len(), layers, "nothing baked");
+    }
+
+    #[test]
+    fn a_source_whose_versions_have_no_order_moves_only_after_a_refresh() {
+        use crate::fetch::tests::{serve, whole};
+        use crate::store::sha256_hex;
+        let (actual, _) = serve(|_, _| whole(b"earth 2\n"));
+        let actual = actual.replacen("file.bin", "earth.zip", 1);
+        let fixture = fixture("update-refresh");
+        let url = actual.replacen("http://", "https://", 1);
+        write(
+            &fixture.root().join("data/sources.toml"),
+            &format!(
+                "[[source]]\nid = \"natural-earth\"\nkind = \"data\"\nlicence = \"CC0-1.0\"\nattribution = \"Earth\"\n\
+                 fetch = {{ kind = \"http\", url = \"{url}\" }}\nversion = \"digest\"\nredistribute = true\n"
+            ),
+        );
+        write(&fixture.root().join("earth"), "");
+        let dir = fixture.scratch.0.join("local");
+        write(
+            &fixture.root().join("data/targets.toml"),
+            &format!("[local]\nkind = \"dir\"\ndir = \"{}\"\n", dir.display()),
+        );
+        let (one, two) = (sha256_hex(b"earth 1\n"), sha256_hex(b"earth 2\n"));
+        fixture.fetched_version("natural-earth", &one, "earth.zip", b"earth 1\n");
+        let (target, http) = (Target::Dir(dir), Http::loopback(&actual));
+        let first = update_with(&fixture, &target, &http, region).unwrap();
+
+        let registry = crate::sources::Registry::load(&fixture.root()).unwrap();
+        let request =
+            crate::fetch::Request { refresh: false, source: &registry.sources[0], version: None, params: vec![] };
+        assert_eq!(crate::fetch::fetch(&fixture.root(), &fixture.store, &http, &request).unwrap().version, two);
+        let same = update_with(&fixture, &target, &http, |_| Ok(())).unwrap();
+        assert_eq!((&same.serving, steps(&same)), (&first.serving, Vec::new()), "a newer file in the store");
+
+        let refreshed = crate::cli::source_cli::refresh(&fixture.root(), &fixture.store, &http, "natural-earth");
+        let refreshed = refreshed.unwrap();
+        assert_eq!((refreshed.from, refreshed.version), (vec![one.clone()], two.clone()), "from what `local` serves");
+        let moved = &review(&fixture, &target).sources[0];
+        assert_eq!((moved.source.as_str(), moved.from.as_ref(), &moved.to), ("natural-earth", Some(&one), &two));
+        assert_eq!(steps(&update_with(&fixture, &target, &http, |_| Ok(())).unwrap()), ["counter/earth"]);
     }
 }

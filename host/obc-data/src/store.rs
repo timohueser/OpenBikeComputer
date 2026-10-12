@@ -324,12 +324,36 @@ impl Store {
     pub fn put_requested(&self, source: &str, record: &Requested) -> Result<(), String> {
         write_record(&self.request_path(source, &record.version, &record.params), record)
     }
+
+    /// What `obc data source refresh` of `source` took last.
+    pub fn refreshed(&self, source: &str) -> Result<Option<RefreshedVersion>, String> {
+        read_record(&self.root.join("refreshed").join(format!("{source}.json")))
+    }
+
+    pub fn put_refreshed(&self, refreshed: &RefreshedVersion) -> Result<(), String> {
+        write_record(&self.root.join("refreshed").join(format!("{}.json", refreshed.source)), refreshed)
+    }
+
+    /// What each refresh took last.
+    pub fn refreshes(&self) -> Result<Vec<RefreshedVersion>, String> {
+        read_records(&self.root.join("refreshed"), read_record)
+    }
 }
 
 pub fn sorted(params: &[(String, String)]) -> Vec<(String, String)> {
     let mut params = params.to_vec();
     params.sort();
     params
+}
+
+/// The version of a source that `obc data source refresh` took, and the versions that the targets
+/// served then: a target that serves another version keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshedVersion {
+    pub source: String,
+    pub from: Vec<String>,
+    pub to: String,
 }
 
 /// The files that a fetch with `params` gave: what a snapshot input with these params reads.
