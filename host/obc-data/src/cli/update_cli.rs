@@ -909,7 +909,7 @@ pub(super) mod tests {
         };
         let roomy = MachineCheck { memory_bytes: None, store_free_bytes: Some(u64::MAX / 2), refusals: Vec::new() };
         let unknown = checked(region, &roomy).cost.unknown;
-        assert_eq!(unknown, ["`test/upper`: no estimate", "`test/join`: no estimate", "`test/count`: no estimate"]);
+        assert_eq!(unknown.estimate, ["test/upper", "test/join", "test/count"]);
         let first = update(&fixture, &target, region).unwrap();
 
         // `test/join` runs Python: its receipt has a peak.

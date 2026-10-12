@@ -3,7 +3,7 @@
 //! after it. Its id names the decisions, so `--expect ID` starts an update only when they are the
 //! ones that a person read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -12,7 +12,7 @@ use crate::cli::{print_json, print_table, Code, Error};
 use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::runs::Limits;
 use crate::engine::state::{self, Field, LayerState, Verdict};
-use crate::engine::{Input, Shape, Step};
+use crate::engine::{Input, Run, Shape, Step};
 use crate::product::{RequestKey, Versions};
 use crate::release::{Release, Serving};
 use crate::settings::Settings;
@@ -88,15 +88,27 @@ pub struct SourceMove {
 pub struct ReviewCost {
     /// The estimated times of the bakes, added as if one ran after another.
     pub wall_ms: u64,
-    /// The highest estimated peak of one bake.
+    /// The highest estimated peak of one bake that runs in its own process.
     pub peak_rss_bytes: Option<u64>,
+    /// The highest peak of the `obc` process in the estimates of the bakes that run in it: an upper
+    /// bound, not the peak of a step. It refuses nothing.
+    pub process_peak_rss_bytes: Option<u64>,
     /// What the fetches and the bakes write into the store.
     pub store_bytes: u64,
     /// What goes to the target: the files of the bakes that a client reads.
     pub upload_bytes: u64,
-    /// What the figures lack: a bake without an estimate or without a peak, and a fetch whose size
-    /// is not known.
-    pub unknown: Vec<String>,
+    /// What the figures lack.
+    pub unknown: Unknown,
+}
+
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct Unknown {
+    /// The bakes without an estimate.
+    pub estimate: Vec<String>,
+    /// The bakes whose estimate has no peak.
+    pub peak: Vec<String>,
+    /// The fetches whose size is not known, as `SOURCE@VERSION`.
+    pub size: Vec<String>,
 }
 
 /// This machine against the cost.
@@ -157,6 +169,7 @@ pub fn review(parts: Parts) -> Review {
     let Parts { target, base, serving, rollback, settings, steps, only, plan, kept, layers, machine } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
+    let layer_of: BTreeMap<&str, &str> = baked.iter().map(|step| (step.name.as_str(), step.layer.name)).collect();
     let mut changes = Vec::new();
     for state in layers {
         let mine: Vec<&&Step> = baked.iter().filter(|step| step.layer.name == state.layer).collect();
@@ -170,7 +183,7 @@ pub fn review(parts: Parts) -> Review {
         }
         // A layer that bakes because a layer that it reads bakes follows that layer.
         let read = mine.iter().flat_map(|step| step.reads());
-        let follows = read.filter_map(|name| baked.iter().find(|step| step.name == name)).map(|step| step.layer.name);
+        let follows = read.filter_map(|name| layer_of.get(name).copied());
         let cause = match (&state.cause, state.state) {
             _ if !mine.is_empty() && only.contains(&state.layer) => Cause::Named,
             (Some(cause), Verdict::Stale) => Cause::Stale { cause: cause.clone() },
@@ -181,7 +194,7 @@ pub fn review(parts: Parts) -> Review {
             },
         };
         let format = match &state.cause {
-            Some(state::Cause::Version { field: Field::Format, from: Some(from), to }) => {
+            Some(state::Cause::Version { field: Field::Format, from: Some(from), to }) if !mine.is_empty() => {
                 Some(FormatChange { from: *from, to: *to })
             }
             _ => None,
@@ -241,24 +254,31 @@ pub fn review(parts: Parts) -> Review {
     for fetch in &fetches {
         match fetch.bytes {
             Some(bytes) => cost.store_bytes += bytes,
-            None => cost.unknown.push(format!("fetch `{}@{}`: size unknown", fetch.source, fetch.version)),
+            None => cost.unknown.size.push(format!("{}@{}", fetch.source, fetch.version)),
         }
     }
+    let in_process: BTreeSet<&str> =
+        steps.iter().filter(|step| matches!(step.run, Run::Rust(_))).map(|step| step.name.as_str()).collect();
     for build in &bakes {
         let Some(estimate) = build.estimate else {
-            cost.unknown.push(format!("`{}`: no estimate", build.step));
+            cost.unknown.estimate.push(build.step.clone());
             continue;
         };
         cost.wall_ms += estimate.wall_ms;
         cost.store_bytes += estimate.bytes_out;
         cost.upload_bytes += estimate.client_bytes;
+        let peak = match in_process.contains(build.step.as_str()) {
+            true => &mut cost.process_peak_rss_bytes,
+            false => &mut cost.peak_rss_bytes,
+        };
         match estimate.peak_rss_bytes {
-            Some(peak) => cost.peak_rss_bytes = cost.peak_rss_bytes.max(Some(peak)),
-            None => cost.unknown.push(format!("`{}`: no RAM estimate", build.step)),
+            Some(bytes) => *peak = (*peak).max(Some(bytes)),
+            None => cost.unknown.peak.push(build.step.clone()),
         }
     }
+    let own: Vec<&Build> = bakes.iter().filter(|build| !in_process.contains(build.step.as_str())).collect();
     let mut machine = machine.clone();
-    machine.refusals = refusals(&machine, &bakes, cost.store_bytes);
+    machine.refusals = refusals(&machine, &own, cost.store_bytes);
 
     let changes_settings = serving.is_some_and(|serving| serving.settings != *settings);
     let switches = !changes.is_empty() || changes_settings;
@@ -298,11 +318,13 @@ fn leaf(name: &str) -> Option<&str> {
     (digits(i) && digits(j)).then_some(last)
 }
 
-/// Why `machine` cannot bake `bakes` and write `store_bytes`.
-fn refusals(machine: &MachineCheck, bakes: &[Build], store_bytes: u64) -> Vec<String> {
+/// Why `machine` cannot bake `own`, the bakes that run in their own process, and write
+/// `store_bytes`. Only a child process has a peak of its own (`wait4`), so only such a bake can
+/// need more memory than the machine has.
+fn refusals(machine: &MachineCheck, own: &[&Build], store_bytes: u64) -> Vec<String> {
     let mut refusals = Vec::new();
     if let Some(memory) = machine.memory_bytes {
-        for build in bakes {
+        for build in own {
             if let Some(peak) =
                 build.estimate.and_then(|estimate| estimate.peak_rss_bytes).filter(|peak| *peak > memory)
             {
@@ -403,8 +425,21 @@ pub fn print(review: &Review, json: bool) -> Result<(), Error> {
     if let Some(peak) = cost.peak_rss_bytes {
         text += &format!(", peak {} memory", size(peak));
     }
-    if !cost.unknown.is_empty() {
-        text += &format!("; {}", cost.unknown.join(", "));
+    if let Some(peak) = cost.process_peak_rss_bytes {
+        text += &format!(", process peak {}", size(peak));
+    }
+    let Unknown { estimate, peak, size: sizes } = &cost.unknown;
+    let unknown: Vec<String> = [
+        (estimate.len(), "bakes without an estimate"),
+        (peak.len(), "bakes without a RAM estimate"),
+        (sizes.len(), "fetches of unknown size"),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, what)| format!("{count} {what}"))
+    .collect();
+    if !unknown.is_empty() {
+        text += &format!("; {}", unknown.join(", "));
     }
     rows.push(vec!["  cost".into(), text]);
     let machine = match review.machine.refusals.as_slice() {
