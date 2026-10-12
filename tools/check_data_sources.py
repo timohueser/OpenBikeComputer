@@ -43,6 +43,7 @@ NOT_SOURCES = {
     "docs.rs": "documentation link",
     "rclone.org": "install hint",
     "rustup.rs": "install hint",
+    "astral.sh": "install hint",
     "json-schema.org": "schema identifier",
     "www.w3.org": "XML namespace",
     "cdn.jsdelivr.net": "search lexicon setup instructions",

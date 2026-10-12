@@ -8,6 +8,7 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 ## Setup
 
 Prepare Rust, Python with `uv`, GEOS and Osmium before an update; `obc data` does not install them.
+`obc data setup` shows what this machine can do and the tools and credentials that it has.
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.
 
@@ -18,6 +19,7 @@ policies) are in the release that it serves, so they need no commit.
 | Configuration or credential | Purpose |
 | --- | --- |
 | `data/targets.toml` | Targets and where they are |
+| `data/machines.toml` | The header colour and the SSH host of each machine for the page |
 | `data/regions/` | Region presets |
 | `data/sources.toml` | Source declarations and their refresh policies |
 | `data/planner.toml` | Planner producer options |
@@ -48,7 +50,12 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data runs RUN --follow` | Observe progress |
 | `obc data clean` | Review unused store bytes before `--apply` |
+| `obc data ui` | Serve the page of this machine at `http://127.0.0.1:8700/` |
+| `obc data open MACHINE` | Open the page of another machine through an SSH tunnel |
 
 An update that stops keeps what it baked: run it again. The previous release stays as the
 rollback of the target. Run one update or rollback of a target at a time: a collection can delete
 a key that an update that runs at the same time counts on.
+
+The [page README](../../builder/web/src/components/data/README.md) tells how to run and develop
+the page.
