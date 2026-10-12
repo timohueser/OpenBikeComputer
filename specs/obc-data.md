@@ -1407,8 +1407,8 @@ is compact JSON with the keys of each object in byte order:
    `credential` that is not on the machine, and for each target that reads the versions of this target the
    layers of its serving release that read an older version. `--dry-run` writes it. Its id is the
    first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the
-   version, the format, the revision, the scope and the source, version and params of each input.
-   For an R2 target, the prepare starts only with `--expect ID`, and asks first or needs `--yes`.
+   version, the format, the revision, the scope, `publish_text` and the source, version and params
+   of each input. For an R2 target, the prepare starts only with `--expect ID`, and asks first or needs `--yes`.
 3. A detached run, as [Runs](#runs) says, takes the lock of the source as an update takes the lock
    of a target. It makes the review again under the lock, and refuses a review that is not
    `--expect`.
@@ -1503,6 +1503,10 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   without a file refuses. The review names each with `file=` and its size. The manifest names
   `wikidata`, `wikipedia` and `osm-planet` at the days of their dumps, with the
   [digest](#keys) of the SHA-256 of the files.
+- The first run of a version pins each dump with its path, size, modification time and SHA-256,
+  and `publish_text`. A resume reads exactly those dumps, and refuses when one is gone or changed,
+  or `publish_text` changed; the fix deletes the work of the version, so the next run starts a
+  new one. `tools.wiki` gets each SHA-256 and does not hash a dump again.
 - `python -m tools.wiki` runs the steps: `subjects` lists the OSM objects with a `wikidata` or
   `wikipedia` tag, `import` reads the Wikidata dump twice, `candidates` gives the classes, the
   subjects and the peaks, `articles` reads the language links and the HTML, and `shards` writes
@@ -1514,7 +1518,8 @@ in the shards of [Shared Wikimedia content](wikimedia-content.md#the-wiki-source
   without a box refuses.
 - The run uploads the shards in batches of 64, then `index.json`. A resume names the shards on the
   target to `shards`, which does not write them again.
-- With `publish_text = false`, the shards hold no article.
+- With `publish_text = false`, the shards hold no article. The review says "text published" or
+  "text kept local".
 
 ### Serve
 
@@ -3399,7 +3404,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "integer"
         },
         "id": {
-          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope and the source, version and params of each input.",
+          "description": "The first 12 hex digits of the SHA-256 of the canonical JSON of the source, the target, the\nversion, the format, the revision, the scope, `publish_text` and the source, version and\nparams of each input.",
           "type": "string"
         },
         "inputs": {
@@ -3414,6 +3419,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         },
         "machine": {
           "$ref": "#/$defs/MachineCheck"
+        },
+        "publish_text": {
+          "description": "Whether the version publishes its article text: `publish_text` of the source; `null` for a\nsource without text.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "revision": {
           "format": "uint32",
@@ -3461,6 +3473,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "scope",
         "inputs",
         "files",
+        "publish_text",
         "done",
         "cost",
         "machine",

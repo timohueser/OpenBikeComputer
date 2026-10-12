@@ -9,9 +9,9 @@ Each step resumes in its work directory. The producer runs them in this order:
     python -m tools.wiki commons    --work W --requests requests.json
     python -m tools.wiki shards     --work W --out OUT [--done done.json] [--no-text]
 
-`inputs.json` gives the local path of each dump that the producer downloaded:
-`{"wikidata": PATH, "wikidata_pages": PATH, "wikidata_redirects": PATH, "wikipedia": {LANG: PATH},
-"langlinks": {LANG: PATH}}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
+`inputs.json` gives each dump that the producer reads in place, as `{"path": PATH, "sha256": HEX}`:
+`{"wikidata": DUMP, "wikidata_pages": DUMP, "wikidata_redirects": DUMP, "wikipedia": {LANG: DUMP},
+"langlinks": {LANG: DUMP}}`. `wikidata` is the JSON dump, `wikipedia` the Enterprise HTML, the
 others are SQL tables. A path may have no suffix: the first bytes name a bz2, gzip or tar file.
 `candidates.jsonl` is what the landmark rule of the compilers reads, and `selected.json` lists the
 QIDs whose articles the compilers read. `done.json` gives the `sha256` and `bytes` of each shard
@@ -29,7 +29,7 @@ import json
 from pathlib import Path
 
 from ..landmark_capture import LANGUAGES
-from . import catalog, commons, dumps, shards, subjects
+from . import catalog, commons, shards, subjects
 
 
 def main() -> int:
@@ -47,10 +47,9 @@ def main() -> int:
     db = catalog.connect(args.work)
     inputs = json.loads(args.inputs.read_bytes()) if args.inputs else {}
 
-    def source(name: str, path: str) -> tuple[Path, str]:
-        digest = dumps.sha(Path(path))
-        print(f"{name}: {path} sha256 {digest}", flush=True)
-        return Path(path), digest
+    def source(name: str, dump: dict) -> tuple[Path, str]:
+        print(f"{name}: {dump['path']} sha256 {dump['sha256']}", flush=True)
+        return Path(dump["path"]), dump["sha256"]
 
     if args.step == "import":
         subjects.load(db, args.work, args.subjects)

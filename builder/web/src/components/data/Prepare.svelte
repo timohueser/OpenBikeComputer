@@ -37,6 +37,13 @@
             <h2 id="prepare">Review {r.id}: version {r.version} of {r.source}</h2>
             <p><b>Inputs</b> · {list(r.inputs.map((input) => `${input.source} ${input.version ?? "newest"}${input.bytes === null ? "" : ` (${size(input.bytes)})`}`))}</p>
             <p>
+                <b>Files</b> · {r.files === null ? "counted by the run" : `up to ${r.files}`}{r.publish_text === null
+                    ? ""
+                    : r.publish_text
+                      ? " · text published"
+                      : " · text kept local"}
+            </p>
+            <p>
                 <b>Cost</b> · {r.cost.wall_ms === null ? "time unknown" : `about ${span(r.cost.wall_ms)} here`} · store {size(r.cost.store_bytes)}{r.cost
                     .upload_bytes === null
                     ? ""

@@ -117,6 +117,7 @@ it("Start of a prepare posts exactly the args of its review, with --yes for an R
         await vi.waitFor(() => expect(text()).toContain(`Review ${review.id}`));
         expect(posted()).toEqual([["source", "prepare", "wiki", "--to", "prod", "--dry-run"]]);
         expect(text()).toContain("When it finishes · prod: device/landmarks and planner/search stale");
+        expect(text()).toContain("Files · counted by the run · text published");
         expect(button("Start").disabled, "the kind of the target is not known yet").toBe(true);
         status.output = example as Status;
         flushSync();
