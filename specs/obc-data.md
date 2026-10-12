@@ -606,8 +606,9 @@ fetches a version with the same `params` once, with the files of every group tha
 ### Device-map publication
 
 The `device/catalog` step consumes selected layer paths and their receipt metadata. Map and terrain
-layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
-and `terrain/` payloads are client files. Every file of the catalog layer is a client file: the
+layers keep empty-coverage records and decoded reference credits in `metadata/`. The `cells/`
+and `terrain/` payloads and `metadata/` are client files: a target holds the metadata that the
+catalog and the map cells read, so another machine bakes them without the leaf. Every file of the catalog layer is a client file: the
 pinned satellites in `objects/`, which it names `/objects/<sha256>`, and the root `catalog.json`
 with the schema, terrain, licence and region files, which are the named files of the device. The
 option `credits` holds the OSM source entry and the credits of GLO-30 and of the landmark
@@ -969,7 +970,7 @@ SHA-256 of these bytes.
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
 | `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
-| `sources` | `[{source, version, params, files, copy, licence, attribution}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, url, size, sha256}]`, sorted by `name`; `url` is where upstream gives the file), whether the target copies them under `sources/`, and for a copy the `licence` and `attribution` of `data/sources.toml`. Two fetches that name one copy name it with one SHA-256 |
+| `sources` | `[{source, version, params, files, copy, licence, attribution}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s, the files that the outputs read (`[{name, url, size, sha256, retrieved}]`, sorted by `name`; `url` is where upstream gives the file, and `retrieved` when a machine retrieved it first), whether the target copies them under `sources/`, and for a copy the `licence` and `attribution` of `data/sources.toml`. Two fetches that name one copy name it with one SHA-256 |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
@@ -1062,13 +1063,21 @@ An update that stops keeps what it baked in the store, and the next update reuse
 An update needs no file of the serving release in the store of the machine. It takes only what
 its bakes and the checks of the products read:
 
-- A fetch that the serving release lists with `copy` comes from the copies on the target, with its
-  snapshot record, in the phase `download`. Another fetch comes from upstream. When the store then
-  holds other bytes of a fetch than the serving release lists, nothing changes.
+- A fetch that the serving release lists with `copy` comes from the copies on the target, in the
+  phase `download`: the files that the store lacks, with their snapshot record and the time when a
+  machine retrieved them first. Another fetch comes from upstream.
+- Before any bake, a step that bakes and reads a file of a fetch that the serving release lists
+  must find the same SHA-256 in the record of the store. Else nothing changes (`verify_failed`).
+- A fetch that the serving release read, of a source whose upstream gives only its newest version
+  (a capture, a national terrain model, a delivery) and that the target does not copy, refuses the
+  update (`blocked`): this machine cannot get that version again. Run the update on the machine
+  whose store holds it, or move the source with a due refresh. A national terrain model on a new
+  machine is such a case.
 - A file of a kept step that a step that bakes reads, or that the check of a product reads, comes
   from `objects/` of the target when the store lacks it.
 - A kept step whose file a step that bakes reads, when no client reads that file and the store
-  lacks it, bakes again on this machine: the target does not hold it. Its cause is `unheld`.
+  lacks it, bakes again on this machine: the target does not hold it. Its cause is `unheld`. The
+  review lists such a layer, also one that only other layers read.
 
 ### Review
 

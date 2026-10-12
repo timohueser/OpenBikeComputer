@@ -272,14 +272,17 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         let read = &source.snapshots[name];
         assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
     }
-    assert!(release
-        .outputs
-        .iter()
-        .filter(|output| output.step.starts_with("device/terrain/")
-            || ["coarse", "mid", "fine", "network"]
-                .iter()
-                .any(|band| output.step.starts_with(&format!("device/{band}/"))))
-        .all(|output| output.client_files().all(|file| !file.path.starts_with("metadata/"))));
+    assert!(
+        release
+            .outputs
+            .iter()
+            .filter(|output| output.step.starts_with("device/terrain/")
+                || ["coarse", "mid", "fine", "network"]
+                    .iter()
+                    .any(|band| output.step.starts_with(&format!("device/{band}/"))))
+            .all(|output| output.client_files().count() == output.files.len()),
+        "a target holds the metadata of each leaf, which the catalog reads"
+    );
 
     // One cut of every band over the leaf, as the planet bake cuts a leaf.
     let leaf = CellId::new(23, 37, 33).unwrap();

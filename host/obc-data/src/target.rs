@@ -57,6 +57,9 @@ enum Entry {
 const LOCK: &str = ".lock";
 
 /// `obc data` reaches an R2 target only through its public URL, which serves reads.
+/// A number for each part file of this process.
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
 const READ_ONLY: &str = "`obc data` only reads an R2 target, through its public URL";
 
 /// The targets of `data/targets.toml` in the repository at `root`, by name. A dir target without
@@ -208,7 +211,6 @@ impl Target {
     /// to the file when both are on one file system, so nothing ever writes a key in place.
     pub fn upload(&self, files: &[(PathBuf, String)]) -> Result<(), String> {
         let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         for (file, key) in files {
             crate::r2::check_key(key)?;
             let path = dir.join(key);
@@ -244,7 +246,9 @@ impl Target {
     pub fn download(&self, key: &str, sha256: &str, store: &Store) -> Result<Option<PathBuf>, String> {
         crate::r2::check_key(key)?;
         let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
-        let part = store.partial(&format!("{sha256}.target"));
+        // Two processes on one store download into other files.
+        let part =
+            store.partial(&format!("{sha256}.{}.{}.target", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         let parent = part.parent().expect("a partial file has a folder");
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         let _ = fs::remove_file(&part);

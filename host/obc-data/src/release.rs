@@ -76,6 +76,8 @@ pub struct FetchedFile {
     pub url: String,
     pub size: u64,
     pub sha256: String,
+    /// When a machine retrieved it first, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub retrieved: String,
 }
 
 impl Fetched {
@@ -84,22 +86,27 @@ impl Fetched {
         format!("sources/{}/{}/{}", self.source, self.version, file.name)
     }
 
-    /// Give `store` the files of the fetch from their copies on `target`, and their records.
-    pub fn restore(&self, target: &Target, store: &Store) -> Result<(), String> {
-        for file in self.files.iter().filter(|file| !store.object(&file.sha256).is_file()) {
+    /// The files that `names` names, or all of them when it names none.
+    pub fn named<'a>(&'a self, names: &'a [String]) -> impl Iterator<Item = &'a FetchedFile> {
+        self.files.iter().filter(move |file| names.is_empty() || names.contains(&file.name))
+    }
+
+    /// Give `store` the files of the fetch that `names` names, or all of them when it names none,
+    /// from their copies on `target`, with their records. A record keeps the time when a machine
+    /// retrieved the file first, so an old version never becomes the newest of its source.
+    pub fn restore(&self, target: &Target, store: &Store, names: &[String]) -> Result<(), String> {
+        for file in self.named(names).filter(|file| !store.object(&file.sha256).is_file()) {
             let downloaded = target.download(&self.key(file), &file.sha256, store)?;
             downloaded.ok_or_else(|| format!("the target has no {}", self.key(file)))?;
         }
-        let retrieved = crate::date::timestamp(crate::date::now());
         let records: Vec<FileRecord> = self
-            .files
-            .iter()
+            .named(names)
             .map(|file| FileRecord {
                 name: file.name.clone(),
                 url: file.url.clone(),
                 size: file.size,
                 sha256: file.sha256.clone(),
-                retrieved: retrieved.clone(),
+                retrieved: file.retrieved.clone(),
             })
             .collect();
         crate::fetch::record(store, &self.source, &self.version, &records)?;
@@ -289,7 +296,7 @@ impl Release {
         let mut copies = BTreeMap::new();
         for fetched in self.sources.iter().filter(|fetched| fetched.copy) {
             for file in &fetched.files {
-                let key = format!("sources/{}/{}/{}", fetched.source, fetched.version, file.name);
+                let key = fetched.key(file);
                 if copies.insert(key.clone(), &file.sha256).is_some_and(|other| other != &file.sha256) {
                     return Err(format!("{key} is the copy of two files"));
                 }
@@ -600,7 +607,13 @@ pub(crate) mod tests {
             source: "land".into(),
             version: "1".into(),
             params: vec![("area".into(), params.into())],
-            files: vec![FetchedFile { name: "land.zip".into(), url: String::new(), size: 1, sha256: sha256.into() }],
+            files: vec![FetchedFile {
+                name: "land.zip".into(),
+                url: String::new(),
+                size: 1,
+                sha256: sha256.into(),
+                retrieved: String::new(),
+            }],
             copy: true,
             licence: None,
             attribution: None,

@@ -158,14 +158,29 @@ pub struct Parts<'a> {
     pub plan: &'a Plan,
     pub kept: &'a Kept,
     pub layers: &'a [LayerState],
+    /// The steps that bake only because the target does not hold files of them.
+    pub unheld: &'a BTreeSet<String>,
     pub downloads: Downloads,
     pub machine: &'a MachineCheck,
 }
 
 /// The review of an update from `parts`.
 pub fn review(parts: Parts) -> Review {
-    let Parts { target, base, serving, rollback, settings, steps, only, plan, kept, layers, downloads, machine } =
-        parts;
+    let Parts {
+        target,
+        base,
+        serving,
+        rollback,
+        settings,
+        steps,
+        only,
+        plan,
+        kept,
+        layers,
+        unheld,
+        downloads,
+        machine,
+    } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
     let mut changes = Vec::new();
@@ -214,6 +229,24 @@ pub fn review(parts: Parts) -> Review {
             readers: readers.iter().map(|reader| reader.to_string()).collect(),
             format,
         });
+    }
+    // A layer that only other layers read is listed when it bakes only for files that the target
+    // does not hold.
+    for step in steps.iter().filter(|step| unheld.contains(&step.name)) {
+        match changes.iter_mut().find(|change| change.layer == step.layer.name) {
+            Some(change) if !change.steps.contains(&step.name) => change.steps.push(step.name.clone()),
+            Some(_) => {}
+            None => changes.push(LayerChange {
+                layer: step.layer.name.into(),
+                cause: Cause::Unheld,
+                text: text(&Cause::Unheld),
+                steps: vec![step.name.clone()],
+                leaves: Vec::new(),
+                drops: Vec::new(),
+                readers: Vec::new(),
+                format: None,
+            }),
+        }
     }
     // Each fetch that a baked step reads, with its version.
     let reads: BTreeSet<(RequestKey, &str)> = baked

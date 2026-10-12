@@ -17,6 +17,9 @@ pub struct Update {
     pub plan: Plan,
     pub kept: Kept,
     pub layers: Vec<LayerState>,
+    /// The steps that bake again here only because the target does not hold files of them that a
+    /// step that bakes reads.
+    pub unheld: BTreeSet<String>,
 }
 
 /// The update of `release` to `steps`. Without `only`, it bakes each stale step. With `only`, it
@@ -65,6 +68,7 @@ pub fn update(
     };
     // A target holds only client files. A step that bakes and reads a file of a kept step that no
     // client reads, which the store lacks, needs that step baked again on this machine.
+    let mut unheld = BTreeSet::new();
     for step in ordered.iter().rev() {
         if !changed.contains(step.name.as_str()) {
             continue;
@@ -77,6 +81,7 @@ pub fn update(
             let (read, _) = select_layer(&output.files, files);
             if read.iter().any(|file| !output.client.includes(&file.path) && !store.object(&file.sha256).is_file()) {
                 changed.insert(name);
+                unheld.insert(name.clone());
             }
         }
     }
@@ -121,7 +126,7 @@ pub fn update(
         group.layers = group.builds.clone();
         groups.push(group);
     }
-    Ok(Update { plan: sized(store, groups)?, kept, layers })
+    Ok(Update { plan: sized(store, groups)?, kept, layers, unheld })
 }
 
 #[cfg(test)]
