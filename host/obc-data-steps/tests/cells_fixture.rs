@@ -1,7 +1,7 @@
 //! The map cells of `obc data build` over the captured GLO-30 tile of the Grimsel, a synthetic OSM
 //! extract (`tests/data/cells.osm`) and synthetic land polygons: each cell has the bytes that one
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
-//! in for the Osmium crop of `maps/osm`. The bands are fine and network, which read the terrain:
+//! in for the Osmium crop of `device/osm`. The bands are fine and network, which read the terrain:
 //! authored coarse and mid geometry uses the production serializer to avoid a whole-leaf
 //! semantic raster in debug. A compiled landmark and a compiled peak on the summit of the extract stand in for the
 //! compile of a capture, and give one artifact each.
@@ -18,7 +18,7 @@ use obc_data::fetch::http::Http;
 use obc_data::product::Product;
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
-use obc_data_steps::maps::{box_poly, Maps, EXTRACTS, TILE_LIST};
+use obc_data_steps::device::{box_poly, Device, EXTRACTS, TILE_LIST};
 use obc_dem::step::GLO30;
 use obc_formats::obcm::landmarks::{LandmarkRecord, RECORD_LEN, SECTION_HEADER_LEN};
 use obc_formats::obcm::SourceId;
@@ -171,7 +171,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let env = Env { name: "test".into(), region: "grimsel-box".into(), live, ..Env::default() };
     const BANDS: [&str; 2] = ["fine", "network"];
     without_models(&store, &temp.0);
-    let listed = Maps
+    let listed = Device
         .steps_with_tool(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."), &env, &regions, &store, Ok(()))
         .unwrap();
     assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
@@ -179,10 +179,10 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
 
     for step in &mut steps {
         match step.name.as_str() {
-            "maps/osm" => step.run = Run::Rust(copy),
-            name if name.starts_with("maps/landmark-content/") => step.run = Run::Rust(landmark_content),
-            name if name.starts_with("maps/peak-content/") => step.run = Run::Rust(peak_content),
-            name if name.starts_with("maps/coarse/") || name.starts_with("maps/mid/") => {
+            "device/osm" => step.run = Run::Rust(copy),
+            name if name.starts_with("device/landmark-content/") => step.run = Run::Rust(landmark_content),
+            name if name.starts_with("device/peak-content/") => step.run = Run::Rust(peak_content),
+            name if name.starts_with("device/coarse/") || name.starts_with("device/mid/") => {
                 step.run = Run::Rust(authored_geometry)
             }
             _ => {}
@@ -206,10 +206,10 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         layers[layer].files.iter().map(|file| (file.path.clone(), store.object(&file.sha256))).collect()
     };
 
-    let mut release = obc_data::engine::release::release(&store, "maps", &env.region, &[], &steps).unwrap().unwrap();
-    release.name_files(Maps.named(&release).unwrap()).unwrap();
-    Maps.verify(&root, None, &release, &store).unwrap();
-    let pointer = Maps.pointer().unwrap()(&root, &release, &store).unwrap();
+    let mut release = obc_data::engine::release::release(&store, "device", &env.region, &[], &steps).unwrap().unwrap();
+    release.name_files(Device.named(&release).unwrap()).unwrap();
+    Device.verify(&root, None, &release, &store).unwrap();
+    let pointer = Device.pointer().unwrap()(&root, &release, &store).unwrap();
     assert!(
         release.named.iter().any(|file| file.path == "schema.json")
             && release.named.iter().any(|file| file.path == "LICENSE.txt")
@@ -233,7 +233,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             region.cell_count
         );
     }
-    let source = release.layers.iter().find(|layer| layer.step == format!("maps/source/{AREA}")).unwrap();
+    let source = release.layers.iter().find(|layer| layer.step == format!("device/source/{AREA}")).unwrap();
     assert!(source.client_files().next().is_none());
     for name in [EXTRACTS, "geofabrik-poly"] {
         let read = &source.snapshots[name];
@@ -242,16 +242,18 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     assert!(release
         .layers
         .iter()
-        .filter(|layer| layer.step.starts_with("maps/terrain/")
-            || ["coarse", "mid", "fine", "network"].iter().any(|band| layer.step.starts_with(&format!("maps/{band}/"))))
+        .filter(|layer| layer.step.starts_with("device/terrain/")
+            || ["coarse", "mid", "fine", "network"]
+                .iter()
+                .any(|band| layer.step.starts_with(&format!("device/{band}/"))))
         .all(|layer| layer.client_files().all(|file| !file.path.starts_with("metadata/"))));
 
     // One cut of every band over the leaf, as the planet bake cuts a leaf.
     let leaf = CellId::new(23, 37, 33).unwrap();
     let terrain = temp.0.join("terrain");
-    view(&objects("maps/terrain/0037-0033"), &terrain).unwrap();
+    view(&objects("device/terrain/0037-0033"), &terrain).unwrap();
     let options =
-        |band: &str| steps.iter().find(|step| step.name == format!("maps/{band}/0037-0033")).unwrap().options.clone();
+        |band: &str| steps.iter().find(|step| step.name == format!("device/{band}/0037-0033")).unwrap().options.clone();
     let bands = BandTable::recommended();
     let mut select = Vec::new();
     for band in bands.bands.iter().filter(|band| BANDS.contains(&band.id.as_str())) {
@@ -279,7 +281,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut expected: BTreeMap<String, BTreeSet<String>> =
         BANDS.iter().map(|band| (band.to_string(), BTreeSet::new())).collect();
     for cell in &summary.cells {
-        let layer = objects(&format!("maps/{}/0037-0033", cell.band));
+        let layer = objects(&format!("device/{}/0037-0033", cell.band));
         let partial = options(&cell.band)["partial_cells"]
             .as_array()
             .unwrap()
@@ -301,7 +303,7 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         expected.get_mut(&cell.band).unwrap().insert(cell.path.clone());
     }
     for (band, paths) in expected {
-        let layer = objects(&format!("maps/{band}/0037-0033"));
+        let layer = objects(&format!("device/{band}/0037-0033"));
         let cells: BTreeSet<String> = layer.into_keys().filter(|path| path.ends_with(".obcm")).collect();
         assert_eq!(cells, paths, "the layer of {band} has other cells");
     }
@@ -313,23 +315,23 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
         assert_eq!(objects(layer).into_keys().collect::<Vec<_>>(), std::slice::from_ref(&path), "{layer}");
         std::fs::read(&objects(layer)[&path]).unwrap()
     };
-    let landmarks = artifact("maps/landmarks/0037-0033", "landmarks");
+    let landmarks = artifact("device/landmarks/0037-0033", "landmarks");
     assert_eq!(u32::from_le_bytes(landmarks[..4].try_into().unwrap()), 1);
     let record = &landmarks[SECTION_HEADER_LEN..SECTION_HEADER_LEN + RECORD_LEN];
     let record = LandmarkRecord::decode(record.try_into().unwrap()).unwrap();
     assert_eq!((record.qid, record.osm.map(|osm| osm.source)), (1, Some(SourceId::osm(1, 20))));
-    let peaks = artifact("maps/peaks/0037-0033", "peaks");
+    let peaks = artifact("device/peaks/0037-0033", "peaks");
     assert_eq!(u32::from_le_bytes(peaks[4..8].try_into().unwrap()), 1, "one association");
     // Reuse is selected from receipts. An unchanged selection reads no binary payload again.
-    let network = layers["maps/network/0037-0033"].files.iter().find(|file| file.path.ends_with(".obcm")).unwrap();
+    let network = layers["device/network/0037-0033"].files.iter().find(|file| file.path.ends_with(".obcm")).unwrap();
     let path = store.object(&network.sha256);
     let backup = temp.0.join("retained-network.obcm");
     std::fs::rename(&path, &backup).unwrap();
-    Maps.verify(&root, Some(&release), &release, &store).unwrap();
-    assert!(Maps.verify(&root, None, &release, &store).unwrap_err().contains("artifact"));
+    Device.verify(&root, Some(&release), &release, &store).unwrap();
+    assert!(Device.verify(&root, None, &release, &store).unwrap_err().contains("artifact"));
     std::fs::rename(backup, path).unwrap();
     for step in &mut steps {
-        if step.name == "maps/network/0037-0033" {
+        if step.name == "device/network/0037-0033" {
             step.options["malformed_fixture"] = true.into();
             step.run = Run::Rust(malformed_network);
         }
@@ -338,8 +340,8 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut run = RunLog::create(&store, "build changed fixture").unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
-    let next = obc_data::engine::release::release(&store, "maps", &env.region, &[], &steps).unwrap().unwrap();
-    let error = Maps.verify(&root, Some(&release), &next, &store).unwrap_err();
+    let next = obc_data::engine::release::release(&store, "device", &env.region, &[], &steps).unwrap().unwrap();
+    let error = Device.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
 }
 

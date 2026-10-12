@@ -269,7 +269,7 @@ impl Run {
         let mut needed: HashSet<&str> = planned.keys().copied().collect();
         for step in ordered.iter().rev() {
             if needed.contains(step.name.as_str()) {
-                needed.extend(step.layers());
+                needed.extend(step.reads());
             }
         }
         let position: HashMap<&str, usize> =
@@ -292,7 +292,7 @@ impl Run {
                     break;
                 }
                 let step = pending[i];
-                if !step.layers().all(|name| done.contains_key(name)) {
+                if !step.reads().all(|name| done.contains_key(name)) {
                     i += 1;
                     continue;
                 }
@@ -582,7 +582,7 @@ fn with_history(runs: &[Details], at: usize) -> Details {
     let mut details = runs[at].clone();
     let mut users: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for receipt in runs[at].steps.iter().filter_map(|step| step.receipt.as_ref()) {
-        for input in receipt.inputs.iter().filter(|input| input.kind == InputKind::Layer) {
+        for input in receipt.inputs.iter().filter(|input| input.kind == InputKind::Step) {
             users.entry(&input.name).or_default().push(receipt.step.clone());
         }
     }

@@ -92,7 +92,7 @@ fn an_ordinary_plan_reports_unprepared_maps_without_fetching_bulk_data() {
     let response: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(response["needs_prepare"], true);
     assert!(response["blocked"].as_array().unwrap().iter().any(|product| {
-        product["product"] == "maps" && product["reason"].as_str().unwrap().contains("do not fetch bulk data")
+        product["product"] == "device" && product["reason"].as_str().unwrap().contains("do not fetch bulk data")
     }));
     assert!(!String::from_utf8_lossy(&out.stderr).contains("fetching"));
 

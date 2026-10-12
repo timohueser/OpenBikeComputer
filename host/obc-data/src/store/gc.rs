@@ -104,7 +104,7 @@ pub struct Kept {
 /// the newest record of its source or of a request. An object is reached when a live layer, a
 /// fixture or a planner recipe names it, or a reached record or layer has it. A layer is reached when each input
 /// is: a snapshot input whose digest is of the files that it names of a reached record of its
-/// source, and a layer input whose digest is of the files that it selects (all when it names
+/// source, and a step input whose digest is of the files that it selects (all when it names
 /// none) of a reached layer of its step.
 pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
     let mut roots = roots.clone();
@@ -188,7 +188,7 @@ pub fn plan(store: &Store, roots: &Roots) -> Result<Plan, String> {
                         engine::digest(files.map(|file| (file.name.as_str(), file.sha256.as_str()))) == input.digest
                     })
                 }),
-                InputKind::Layer => layers.get(input.name.as_str()).is_some_and(|layers| {
+                InputKind::Step => layers.get(input.name.as_str()).is_some_and(|layers| {
                     layers.iter().any(|layer| engine::layer_digest(&layer.files, &input.files) == input.digest)
                 }),
             });
@@ -517,10 +517,10 @@ mod tests {
         let cells = layer(&store, "cells", vec![read(&["a.zip", "b.zip", "c.zip"])], b"cells");
         layer(&store, "one", vec![read(&["a.zip"])], b"one");
         layer(&store, "two", vec![read(&["a.zip", "c.zip"])], b"two");
-        layer(&store, "joined", vec![input(InputKind::Layer, "cells", cells, &[])], b"joined");
+        layer(&store, "joined", vec![input(InputKind::Step, "cells", cells, &[])], b"joined");
         let old = engine::digest([("a.zip", sha256_hex(b"land old").as_str())]);
         let stale = layer(&store, "stale", vec![input(InputKind::Snapshot, "land", old, &["a.zip"])], b"stale");
-        layer(&store, "on-stale", vec![input(InputKind::Layer, "stale", stale, &[])], b"on stale");
+        layer(&store, "on-stale", vec![input(InputKind::Step, "stale", stale, &[])], b"on stale");
 
         let plan = plan(&store, &roots).unwrap();
         assert_eq!(plan.snapshots, ["extract@2026-08-01", "land@2026-08-01"]);
@@ -575,7 +575,7 @@ mod tests {
         let leaves = [("osm/a.pbf", &b"leaf a"[..]), ("osm/b.pbf", b"leaf b")];
         layer_of(&store, "leaves", vec![input(InputKind::Snapshot, "osm", planet, &["planet.pbf"])], &leaves);
         let a = engine::digest([("osm/a.pbf", sha256_hex(b"leaf a").as_str())]);
-        layer(&store, "cells", vec![input(InputKind::Layer, "leaves", a, &["osm/a.pbf"])], b"cells a");
+        layer(&store, "cells", vec![input(InputKind::Step, "leaves", a, &["osm/a.pbf"])], b"cells a");
 
         let plan = plan(&store, &Roots::from_repo(&repo).unwrap()).unwrap();
         assert!(plan.objects.is_empty(), "the layer that reads one leaf is reached: {:?}", plan.objects);

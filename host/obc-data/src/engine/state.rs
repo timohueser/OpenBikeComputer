@@ -200,7 +200,7 @@ fn cause(
         .iter()
         .map(|input| match input {
             Input::Snapshot { source, .. } => (InputKind::Snapshot, source.as_str()),
-            Input::Layer { name, .. } => (InputKind::Layer, name.as_str()),
+            Input::Step { name, .. } => (InputKind::Step, name.as_str()),
         })
         .collect();
     let built: BTreeSet<(InputKind, &str)> =
@@ -223,14 +223,14 @@ fn cause(
                     found.push(Cause::Source { source: source.clone(), from, to: to.clone() });
                 }
             }
-            Input::Layer { name, files } => {
+            Input::Step { name, files } => {
                 let owner = layer_of[name.as_str()];
                 match &causes[name.as_str()] {
                     Some(cause) if owner == layer || owner.readers.is_empty() => found.push(cause.clone()),
                     Some(_) => found.push(Cause::Input { name: owner.name.into() }),
                     None => {
                         let now = release.get(name.as_str()).map(|input| layer_digest(&input.files, files));
-                        let read = live.inputs.iter().find(|read| read.kind == InputKind::Layer && &read.name == name);
+                        let read = live.inputs.iter().find(|read| read.kind == InputKind::Step && &read.name == name);
                         if now.as_ref() != read.map(|read| &read.digest) {
                             found.push(Cause::Input { name: owner.name.into() });
                         }

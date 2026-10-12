@@ -1,5 +1,5 @@
 use super::*;
-use crate::maps::tests::{fetched, root, temp};
+use crate::device::tests::{fetched, root, temp};
 use obc_data::engine::plan::plan;
 use obc_data::engine::runs::{Context, Limits, Run as Journal};
 use obc_data::fetch::http::Http;
@@ -102,7 +102,7 @@ fn a_box_skips_an_aggregate_that_overlaps_its_sibling_countries() {
     let index = geofabrik::parse(body.to_string().as_bytes()).unwrap();
     let shapes = index
         .iter()
-        .map(|(id, area)| (id.clone(), Coverage::parse_poly(&crate::maps::catalog::poly(area)).unwrap()))
+        .map(|(id, area)| (id.clone(), Coverage::parse_poly(&crate::device::catalog::poly(area)).unwrap()))
         .collect();
     let selected = |west: f64, east: f64| {
         let requested = Coverage::parse_poly(&poly(west, east)).unwrap();
@@ -123,7 +123,7 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
             .unwrap();
     let env = Env { region: "ride".into(), ..Env::default() };
     let selected = resolve(&env, &Regions::new(vec![region]).unwrap(), &store, &mut Vec::new()).unwrap().unwrap();
-    let steps = inputs("maps", &selected);
+    let steps = inputs("device", &selected);
     assert_eq!(steps.len(), 2);
     let root = root();
     let plan = plan(&store, &steps).unwrap();
@@ -138,11 +138,11 @@ fn separate_input_layers_retain_distinct_versions_and_exact_files_in_release_pro
         )
         .unwrap();
     journal.finish(None).unwrap();
-    let release = obc_data::engine::release::release(&store, "maps", "ride", &[], &steps).unwrap().unwrap();
+    let release = obc_data::engine::release::release(&store, "device", "ride", &[], &steps).unwrap().unwrap();
     assert!(release.objects().is_empty(), "raw input files remain private");
     let live = obc_data::live::Live {
         products: vec![obc_data::live::LiveProduct {
-            product: "maps".into(),
+            product: "device".into(),
             prefix: "cell-catalog".into(),
             release: Some((release.id(), release)),
             applied: None,

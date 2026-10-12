@@ -80,7 +80,7 @@ impl Steps {
     /// Remove steps that read a blocked layer, including their dependents.
     pub fn block_dependents(&mut self) {
         while let Some((at, reason)) = self.steps.iter().enumerate().find_map(|(at, step)| {
-            let input = step.layers().find_map(|name| self.blocked.iter().find(|b| b.step == name))?;
+            let input = step.reads().find_map(|name| self.blocked.iter().find(|b| b.step == name))?;
             Some((at, format!("reads the blocked step `{}`: {}", input.step, input.reason)))
         }) {
             let step = self.steps.remove(at);

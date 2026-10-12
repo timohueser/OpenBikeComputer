@@ -17,7 +17,7 @@ use obc_data::fetch::http::Http;
 use obc_data::product::Product;
 use obc_data::regions::{parse_region, Regions};
 use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
-use obc_data_steps::maps::TILE_LIST;
+use obc_data_steps::device::TILE_LIST;
 use obc_data_steps::planner::Planner;
 use obc_dem::step::GLO30;
 
@@ -106,7 +106,7 @@ time_zone = "Europe/Berlin"
         steps.retain(|step| python || rust.contains(&step.name.as_str()));
         for step in &mut steps {
             if step.name == "planner/basemap" {
-                step.inputs = vec![Input::layer("planner/places")];
+                step.inputs = vec![Input::step("planner/places")];
                 step.options = serde_json::json!({"kind": "planner/basemap"});
                 step.run = Run::Rust(local_files);
             } else if ["planner/assets", "planner/model"].contains(&step.name.as_str()) {

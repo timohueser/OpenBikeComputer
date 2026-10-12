@@ -7,7 +7,7 @@ use obc_pack::catalog::engine::{Credits, Options, Pick};
 use obc_pack::catalog::{Boundary, CellSource};
 
 pub const INDEX: &str = "geofabrik-index";
-pub const LAYER: &str = "maps/catalog";
+pub const LAYER: &str = "device/catalog";
 
 /// The catalog that lists every map, terrain and landmark file of the device layers.
 pub static DEVICE_CATALOG: Layer = Layer {
@@ -160,7 +160,7 @@ pub fn step(
         .iter()
         .filter(|step| !step.client.is_none())
         .filter(|step| !matches!(step.name.split('/').nth(1), Some("landmark-content" | "peak-content")))
-        .map(|step| Input::layer(&step.name))
+        .map(|step| Input::step(&step.name))
         .collect();
     inputs.push(Input::Snapshot { source: INDEX.into(), version, params: Vec::new(), files: Vec::new() });
     Ok(Step {
@@ -192,7 +192,7 @@ pub(crate) fn poly(area: &obc_data::regions::geofabrik::Area) -> String {
 }
 
 pub fn named(release: &obc_data::engine::release::Release) -> Result<Vec<obc_data::engine::LayerFile>, String> {
-    let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no maps catalog")?;
+    let layer = release.layers.iter().find(|layer| layer.step == LAYER).ok_or("release has no device catalog")?;
     Ok(layer.files.iter().filter(|file| !file.path.starts_with("objects/")).cloned().collect())
 }
 

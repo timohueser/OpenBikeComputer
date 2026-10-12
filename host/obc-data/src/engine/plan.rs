@@ -110,7 +110,7 @@ pub(super) fn walk<'a>(store: &Store, steps: &'a [Step]) -> Result<Vec<Walked<'a
         let named = |e: String| format!("step `{}`: {e}", step.name);
         let fetches = missing(store, step)?;
         let (mut key, mut stored) = (None, None);
-        if fetches.is_empty() && step.layers().all(|name| reused.contains_key(name)) {
+        if fetches.is_empty() && step.reads().all(|name| reused.contains_key(name)) {
             let (receipt, _) = prepare(store, step, &reused).map_err(named)?;
             stored = reusable(store, &receipt.key)?.map(|mut stored| {
                 stored.inputs = receipt.inputs;
@@ -140,7 +140,7 @@ pub fn plan(store: &Store, steps: &[Step]) -> Result<Plan, String> {
         builds.iter().enumerate().map(|(i, (step, ..))| (step.name.as_str(), i)).collect();
     let mut parent: Vec<usize> = (0..builds.len()).collect();
     for (i, (step, ..)) in builds.iter().enumerate() {
-        for j in step.layers().filter_map(|name| index.get(name)) {
+        for j in step.reads().filter_map(|name| index.get(name)) {
             union(&mut parent, i, *j);
         }
     }
@@ -191,14 +191,14 @@ pub fn again(store: &Store, steps: &[Step], only: &[String]) -> Result<Plan, Str
         .collect();
     let mut changed = named.clone();
     for Walked { step, .. } in &walked {
-        if step.layers().any(|input| changed.contains(input)) {
+        if step.reads().any(|input| changed.contains(input)) {
             changed.insert(&step.name);
         }
     }
     let group = Group::new(only.join(","), Some(Cause::Named));
     let mut group = needs(&walked, group, &changed, |walked| {
         let (step, again) = (walked.step, named.contains(walked.step.name.as_str()));
-        let waits = step.layers().any(|input| changed.contains(input));
+        let waits = step.reads().any(|input| changed.contains(input));
         match changed.contains(step.name.as_str()) {
             true => {
                 Some(Build { again, key: if waits { None } else { walked.key.clone() }, ..build_of(walked, &receipts) })
@@ -221,7 +221,7 @@ pub(super) fn needs<'a>(
     let mut needed = names.clone();
     for Walked { step, .. } in walked.iter().rev() {
         if needed.contains(step.name.as_str()) {
-            needed.extend(step.layers());
+            needed.extend(step.reads());
         }
     }
     for walked in walked.iter().filter(|walked| needed.contains(walked.step.name.as_str())) {

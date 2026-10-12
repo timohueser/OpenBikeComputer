@@ -1,6 +1,6 @@
 //! The products whose steps make the releases of `obc data`, and the layers that the steps make.
 
-pub mod maps;
+pub mod device;
 pub mod planner;
 mod region_sources;
 
@@ -8,7 +8,7 @@ use obc_data::engine::{Client, Input, Layer, Run, Step};
 use obc_data::product::Product;
 use serde_json::Value;
 
-pub const PRODUCTS: &[&dyn Product] = &[&maps::Maps, &planner::Planner];
+pub const PRODUCTS: &[&dyn Product] = &[&device::Device, &planner::Planner];
 
 /// A Python step of `layer`: `entry`, a `tools.*` module or a script, with the argument `--step`,
 /// under `uv run` with the packages of `group` of `pyproject.toml`. The hash seed is fixed, so the

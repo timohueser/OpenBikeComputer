@@ -1,10 +1,10 @@
-//! The device maps. Each layer covers one leaf of the `2^23` grid that the region touches:
-//! `maps/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`, `maps/<band>/<i>-<j>`
-//! its map cells of one band, and `maps/landmarks/<i>-<j>` and `maps/peaks/<i>-<j>` its landmark
-//! and peak artifacts per network cell. Four layers are intermediates, which no client reads:
-//! `maps/osm` holds the OSM of each leaf, `maps/reference/<i>-<j>` the national terrain models that
-//! the terrain cells of the leaf read, and `maps/landmark-content` and `maps/peak-content` the
-//! compiled Wikimedia captures of the region.
+//! The device maps. Each step covers one leaf of the `2^23` grid that the region touches:
+//! `device/terrain/<i>-<j>` writes the terrain cells of the region in leaf `(i, j)`, `device/<band>/<i>-<j>`
+//! its map cells of one band, and `device/landmarks/<i>-<j>` and `device/peaks/<i>-<j>` its landmark
+//! and peak artifacts per network cell. No client reads the files of the intermediate steps:
+//! `device/osm` writes the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models
+//! that the terrain cells of the leaf read, and `device/landmark-content` and `device/peak-content`
+//! the compiled Wikimedia captures of the region.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -63,11 +63,11 @@ pub static DEVICE_LANDMARKS: Layer = Layer {
     readers: &["device"],
 };
 
-pub struct Maps;
+pub struct Device;
 
-impl Product for Maps {
+impl Product for Device {
     fn name(&self) -> &'static str {
-        "maps"
+        "device"
     }
 
     fn prefix(&self) -> &'static str {
@@ -107,7 +107,7 @@ impl Product for Maps {
     }
 }
 
-impl Maps {
+impl Device {
     /// Its steps. `osmium` says whether Osmium runs here: without it, the OSM steps are blocked.
     pub fn steps_with_tool(
         &self,
@@ -145,11 +145,11 @@ impl Maps {
                 }
                 Err(Unplanned::Invalid(reason)) => {
                     blocked.push(BlockedLayer::new(
-                        leaf_layer("maps/reference", leaf),
+                        leaf_layer("device/reference", leaf),
                         &DEVICE_TERRAIN,
                         reason.clone(),
                     ));
-                    blocked.push(BlockedLayer::new(leaf_layer("maps/terrain", leaf), &DEVICE_TERRAIN, reason));
+                    blocked.push(BlockedLayer::new(leaf_layer("device/terrain", leaf), &DEVICE_TERRAIN, reason));
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -202,29 +202,29 @@ impl Maps {
                 let mut step = artifacts(collection, leaf, cells);
                 if !selection.direct {
                     step.inputs.retain(
-                        |input| !matches!(input, Input::Layer { name, .. } if name == &content_layer(collection)),
+                        |input| !matches!(input, Input::Step { name, .. } if name == &content_layer(collection)),
                     );
-                    step.inputs.extend(content_names[collection].iter().map(Input::layer));
+                    step.inputs.extend(content_names[collection].iter().map(Input::step));
                 }
                 steps.push(step);
             }
         }
-        let inputs = crate::region_sources::inputs("maps", &selection);
+        let inputs = crate::region_sources::inputs("device", &selection);
         let extract = if selection.sources.len() == 1 {
-            Input::Layer { name: inputs[0].name.clone(), files: vec!["source.osm.pbf".into()] }
+            Input::Step { name: inputs[0].name.clone(), files: vec!["source.osm.pbf".into()] }
         } else {
             match &osmium {
-                Ok(()) => steps.push(crate::region_sources::combined("maps/region-osm", &inputs)),
+                Ok(()) => steps.push(crate::region_sources::combined("device/region-osm", &inputs)),
                 Err(reason) => {
-                    blocked.push(BlockedLayer::new("maps/region-osm", &crate::region_sources::OSM, reason.clone()))
+                    blocked.push(BlockedLayer::new("device/region-osm", &crate::region_sources::OSM, reason.clone()))
                 }
             }
-            Input::Layer { name: "maps/region-osm".into(), files: vec!["osm.pbf".into()] }
+            Input::Step { name: "device/region-osm".into(), files: vec!["osm.pbf".into()] }
         };
         steps.extend(inputs);
         match osmium {
             Ok(()) => steps.push(osm(extract, &osm_leaves)),
-            Err(reason) => blocked.push(BlockedLayer::new("maps/osm", &crate::region_sources::OSM, reason)),
+            Err(reason) => blocked.push(BlockedLayer::new("device/osm", &crate::region_sources::OSM, reason)),
         }
         if blocked.is_empty() {
             let (body, version) =
@@ -609,9 +609,9 @@ fn content(collection: &str, inputs: Vec<Input>) -> Step {
     }
 }
 
-/// `maps/landmark-content` or `maps/peak-content`.
+/// `device/landmark-content` or `device/peak-content`.
 fn content_layer(collection: &str) -> String {
-    format!("maps/{}-content", collection.trim_end_matches('s'))
+    format!("device/{}-content", collection.trim_end_matches('s'))
 }
 
 /// The landmark or peak artifacts of the network `cells` of one leaf. A landmark joins the OSM
@@ -620,15 +620,15 @@ fn artifacts(collection: &str, leaf: LeafId, cells: &[CellId]) -> Step {
     let mut inputs = Vec::new();
     let run = match collection {
         "landmarks" => {
-            inputs.push(Input::Layer { name: "maps/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] });
+            inputs.push(Input::Step { name: "device/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] });
             obc_pack::step::landmarks
         }
         _ => obc_pack::step::peaks,
     };
-    inputs.push(Input::layer(content_layer(collection)));
+    inputs.push(Input::step(content_layer(collection)));
     Step {
         layer: &DEVICE_LANDMARKS,
-        name: leaf_layer(&format!("maps/{collection}"), leaf),
+        name: leaf_layer(&format!("device/{collection}"), leaf),
         inputs,
         options: serde_json::json!({
             "cell_log2": cells[0].log2,
@@ -680,7 +680,7 @@ fn snapshot_version(
 fn osm(extract: Input, leaves: &BTreeSet<LeafId>) -> Step {
     Step {
         layer: &crate::region_sources::OSM,
-        name: "maps/osm".into(),
+        name: "device/osm".into(),
         inputs: vec![extract],
         options: serde_json::json!({"leaves": leaves.iter().map(|leaf| [leaf.i, leaf.j]).collect::<Vec<_>>()}),
         outputs: vec!["osm".into()],
@@ -701,17 +701,17 @@ fn map_cells(
 ) -> Step {
     let land_polygons =
         Input::Snapshot { source: LAND.into(), version: land_polygons.into(), params: Vec::new(), files: Vec::new() };
-    let osm = Input::Layer { name: "maps/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] };
+    let osm = Input::Step { name: "device/osm".into(), files: vec![obc_osm::step::leaf_pbf(leaf)] };
     let mut inputs = vec![osm];
     if !band.lods.is_empty() {
         inputs.push(land_polygons);
     }
     if reads_terrain {
-        inputs.push(Input::layer(leaf_layer("maps/terrain", leaf)));
+        inputs.push(Input::step(leaf_layer("device/terrain", leaf)));
     }
     Step {
         layer: &DEVICE_MAP,
-        name: leaf_layer(&format!("maps/{}", band.id), leaf),
+        name: leaf_layer(&format!("device/{}", band.id), leaf),
         inputs,
         options: serde_json::json!({
             "band": band.id,
@@ -792,7 +792,7 @@ fn reference(
     let windows = cells.iter().map(|cell| window_of(cell).expect("a terrain cell has a window"));
     let tile = |(ti, tj): (u32, u32)| CellId::new(TILE_LOG2.into(), ti.into(), tj.into()).expect("a tile is a cell");
     let tiles: BTreeSet<CellId> = windows.flat_map(|window| window.tiles()).map(tile).collect();
-    let name = leaf_layer("maps/reference", leaf);
+    let name = leaf_layer("device/reference", leaf);
     let (mut inputs, mut models, mut missing) = (Vec::new(), Vec::new(), false);
     for source in sources::all().iter().filter(|source| source.id.starts_with("dtm-")) {
         let Some(read) = model_tiles(env, store, source, &tiles, shapes, wanted)? else {
@@ -874,10 +874,10 @@ fn terrain(leaf: LeafId, cells: &[CellId], land: &HashSet<&str>, glo30: &str, re
         true => Vec::new(),
         false => vec![Input::Snapshot { source: GLO30.into(), version: glo30.into(), params, files: Vec::new() }],
     };
-    inputs.extend(reference.map(|reference| Input::layer(reference.name.clone())));
+    inputs.extend(reference.map(|reference| Input::step(reference.name.clone())));
     Step {
         layer: &DEVICE_TERRAIN,
-        name: leaf_layer("maps/terrain", leaf),
+        name: leaf_layer("device/terrain", leaf),
         inputs,
         options: serde_json::json!({
             "posting_log2": V1_POSTING_LOG2,
@@ -940,7 +940,7 @@ pub(crate) mod tests {
     use obc_data::regions::Area;
 
     fn map_steps(root: &Path, env: &Env, regions: &Regions, store: &Store) -> Result<Steps, Unplanned> {
-        Maps.steps_with_tool(root, env, regions, store, Ok(()))
+        Device.steps_with_tool(root, env, regions, store, Ok(()))
     }
 
     pub(crate) struct Temp(pub(crate) PathBuf);
@@ -1107,7 +1107,7 @@ pub(crate) mod tests {
     }
 
     fn terrain_steps(steps: &[Step]) -> impl Iterator<Item = &Step> {
-        steps.iter().filter(|step| step.name.starts_with("maps/terrain/"))
+        steps.iter().filter(|step| step.name.starts_with("device/terrain/"))
     }
 
     /// Record the GLO-30 tiles that `steps` read at `version`, each with the text `text(tile)`.
@@ -1151,7 +1151,7 @@ pub(crate) mod tests {
         without_models(&store, &env, &regions);
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
-        let osm = listed.steps.iter().find(|step| step.name == "maps/source/europe/test").unwrap();
+        let osm = listed.steps.iter().find(|step| step.name == "device/source/europe/test").unwrap();
         let Input::Snapshot { params, .. } = &osm.inputs[0] else {
             panic!("OSM snapshot");
         };
@@ -1191,7 +1191,7 @@ pub(crate) mod tests {
         without_models(&store, &env, &regions);
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.is_empty(), "{:?}", listed.blocked);
-        let raw = |name: &str| listed.steps.iter().find(|step| step.name == format!("maps/source/{name}")).unwrap();
+        let raw = |name: &str| listed.steps.iter().find(|step| step.name == format!("device/source/{name}")).unwrap();
         assert!(
             matches!(&raw("europe/test").inputs[0], Input::Snapshot { version, params, .. } if version == "1" && params[0].1 == "europe/test")
         );
@@ -1203,7 +1203,7 @@ pub(crate) mod tests {
             let content = listed
                 .steps
                 .iter()
-                .find(|step| step.name == format!("maps/{collection}-content/europe/second"))
+                .find(|step| step.name == format!("device/{collection}-content/europe/second"))
                 .unwrap();
             assert!(content.inputs.iter().any(|input| matches!(input, Input::Snapshot { source, version, params, files } if source == EXTRACTS && version == "1" && params.is_empty() && files == &["europe/second.osm.pbf"])));
             assert!(content.inputs.iter().any(|input| matches!(input, Input::Snapshot { source, version, params, files } if source == POLY && version == "1" && params.is_empty() && files == &["europe/second.poly"])));
@@ -1228,12 +1228,12 @@ pub(crate) mod tests {
         let steps = |version: &str| {
             let (env, regions) = grimsel(&store, version);
             let mut steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
-            steps.retain(|step| step.name.starts_with("maps/terrain/"));
+            steps.retain(|step| step.name.starts_with("device/terrain/"));
             steps.iter_mut().for_each(|step| step.run = Run::Rust(fake));
             steps
         };
         let names: Vec<String> = steps("1").iter().map(|step| step.name.clone()).collect();
-        assert_eq!(names, ["maps/terrain/0037-0032", "maps/terrain/0037-0033"], "no model has data there");
+        assert_eq!(names, ["device/terrain/0037-0032", "device/terrain/0037-0033"], "no model has data there");
         let west = "Copernicus_DSM_COG_10_N46_00_E007_00_DEM";
         glo30_fetched(&store, &steps("1"), "1", |tile| format!("{tile} 1"));
         glo30_fetched(&store, &steps("2"), "2", |tile| format!("{tile} {}", if tile == west { 2 } else { 1 }));
@@ -1286,14 +1286,14 @@ pub(crate) mod tests {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
                 Input::Snapshot { source, .. } => source.clone(),
-                Input::Layer { name, files } => format!("{name} {files:?}"),
+                Input::Step { name, files } => format!("{name} {files:?}"),
             };
             step.inputs.iter().map(read).collect()
         };
-        let osm = r#"maps/osm ["osm/0037-0032.osm.pbf"]"#;
-        assert_eq!(reads("maps/osm"), ["maps/source/europe/test [\"source.osm.pbf\"]"]);
+        let osm = r#"device/osm ["osm/0037-0032.osm.pbf"]"#;
+        assert_eq!(reads("device/osm"), ["device/source/europe/test [\"source.osm.pbf\"]"]);
         let intermediate =
-            |name: &str| name == "maps/osm" || name.ends_with("-content") || name.starts_with("maps/source/");
+            |name: &str| name == "device/osm" || name.ends_with("-content") || name.starts_with("device/source/");
         assert!(
             steps.iter().all(|step| if step.name.ends_with("-content") {
                 step.client == Client::Paths(vec!["shared-content".into()])
@@ -1302,11 +1302,15 @@ pub(crate) mod tests {
             }),
             "content publishes compact source bundles only"
         );
-        assert_eq!(reads("maps/coarse/0037-0032"), [osm, LAND]);
+        assert_eq!(reads("device/coarse/0037-0032"), [osm, LAND]);
         for band in ["mid", "fine"] {
-            assert_eq!(reads(&format!("maps/{band}/0037-0032")), [osm, LAND, "maps/terrain/0037-0032 []"], "{band}");
+            assert_eq!(
+                reads(&format!("device/{band}/0037-0032")),
+                [osm, LAND, "device/terrain/0037-0032 []"],
+                "{band}"
+            );
         }
-        assert_eq!(reads("maps/network/0037-0032"), [osm, "maps/terrain/0037-0032 []"]);
+        assert_eq!(reads("device/network/0037-0032"), [osm, "device/terrain/0037-0032 []"]);
     }
 
     #[test]
@@ -1325,7 +1329,7 @@ pub(crate) mod tests {
         env.fetch_failures.push((failed, "service unavailable".into()));
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|b| b.reason.contains("service unavailable")));
-        assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+        assert!(listed.steps.iter().any(|step| step.name == "device/network/0037-0032"));
     }
 
     #[test]
@@ -1350,8 +1354,8 @@ pub(crate) mod tests {
         }
         env.requests.borrow_mut().clear();
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
-        assert!(!listed.blocked.iter().any(|b| b.step == "maps/landmark-content"));
-        let content = listed.steps.iter().find(|s| s.name == "maps/landmark-content").unwrap();
+        assert!(!listed.blocked.iter().any(|b| b.step == "device/landmark-content"));
+        let content = listed.steps.iter().find(|s| s.name == "device/landmark-content").unwrap();
         for source in CAPTURES {
             assert!(
                 content.inputs.iter().any(|input| matches!(input,
@@ -1366,7 +1370,7 @@ pub(crate) mod tests {
                 "no replacement capture request is selected"
             );
         }
-        assert!(listed.steps.iter().any(|step| step.name == "maps/peak-content"));
+        assert!(listed.steps.iter().any(|step| step.name == "device/peak-content"));
     }
 
     #[test]
@@ -1383,17 +1387,17 @@ pub(crate) mod tests {
             let step = steps.iter().find(|step| step.name == name).unwrap();
             let read = |input: &Input| match input {
                 Input::Snapshot { source, .. } => source.clone(),
-                Input::Layer { name, .. } => name.clone(),
+                Input::Step { name, .. } => name.clone(),
             };
             step.inputs.iter().map(read).collect()
         };
         let content = ["wikidata", "wikipedia", "commons", EXTRACTS, POLY];
-        assert_eq!(reads("maps/landmark-content"), content);
-        assert_eq!(reads("maps/peak-content"), content);
-        assert_eq!(reads("maps/landmarks/0037-0032"), ["maps/osm", "maps/landmark-content"]);
-        assert_eq!(reads("maps/peaks/0037-0032"), ["maps/peak-content"]);
-        let network = steps.iter().find(|step| step.name == "maps/network/0037-0032").unwrap();
-        let landmarks = steps.iter().find(|step| step.name == "maps/landmarks/0037-0032").unwrap();
+        assert_eq!(reads("device/landmark-content"), content);
+        assert_eq!(reads("device/peak-content"), content);
+        assert_eq!(reads("device/landmarks/0037-0032"), ["device/osm", "device/landmark-content"]);
+        assert_eq!(reads("device/peaks/0037-0032"), ["device/peak-content"]);
+        let network = steps.iter().find(|step| step.name == "device/network/0037-0032").unwrap();
+        let landmarks = steps.iter().find(|step| step.name == "device/landmarks/0037-0032").unwrap();
         assert_eq!(landmarks.options["cells"], network.options["cells"], "an artifact per network cell");
     }
 
@@ -1423,15 +1427,15 @@ pub(crate) mod tests {
             });
             read.map(|(version, files)| (version.clone(), files.clone()))
         };
-        assert_eq!(extract("maps/source/europe/test"), Some(("2".into(), Vec::new())));
-        for content in ["maps/landmark-content", "maps/peak-content"] {
+        assert_eq!(extract("device/source/europe/test"), Some(("2".into(), Vec::new())));
+        for content in ["device/landmark-content", "device/peak-content"] {
             assert_eq!(extract(content), Some(("1".into(), vec!["europe/test.osm.pbf".into()])), "{content}");
         }
 
         clean("1").unwrap();
         let listed = map_steps(&root(), &env, &regions, &store).unwrap();
         assert!(listed.blocked.iter().any(|layer| layer.reason.contains("capture inputs missing")));
-        assert!(listed.steps.iter().any(|step| step.name == "maps/network/0037-0032"));
+        assert!(listed.steps.iter().any(|step| step.name == "device/network/0037-0032"));
         // The live copy metadata identifies the held input without its local request or bytes.
         for (source, name, text) in
             [(EXTRACTS, "europe/test-260901.osm.pbf", "osm"), (POLY, "europe/test.poly", FREIBURG)]
@@ -1495,7 +1499,7 @@ pub(crate) mod tests {
             "landmarks",
             &area,
             ("new osm", "new poly"),
-            "maps/landmark-content/europe/test",
+            "device/landmark-content/europe/test",
         )
         .unwrap();
         assert_eq!(kept, params);
@@ -1541,14 +1545,14 @@ pub(crate) mod tests {
         };
         let inputs = step.inputs.iter().map(|input| match input {
             Input::Snapshot { source, .. } => record(InputKind::Snapshot, source, "", &[]),
-            Input::Layer { name, files } => record(InputKind::Layer, name, &no_files, files),
+            Input::Step { name, files } => record(InputKind::Step, name, &no_files, files),
         });
         let snapshots = step.inputs.iter().filter_map(|input| match input {
             Input::Snapshot { source, version, params, .. } => {
                 let read = SnapshotRead { version: version.clone(), params: obc_data::store::sorted(params) };
                 Some((source.clone(), read))
             }
-            Input::Layer { .. } => None,
+            Input::Step { .. } => None,
         });
         obc_data::engine::release::Layer {
             layer: step.layer.name.into(),
@@ -1612,7 +1616,7 @@ pub(crate) mod tests {
                 for input in &step.inputs {
                     match input {
                         Input::Snapshot { source, .. } => drop(read.insert(source.clone())),
-                        Input::Layer { name, .. } => pending.push(by_name[name.as_str()]),
+                        Input::Step { name, .. } => pending.push(by_name[name.as_str()]),
                     }
                 }
             }
@@ -1620,15 +1624,15 @@ pub(crate) mod tests {
         };
         let named =
             |prefix: &str| -> Vec<&Step> { steps.iter().filter(|step| step.name.starts_with(prefix)).collect() };
-        let cells = ["coarse", "mid", "fine", "network"].map(|band| format!("maps/{band}/"));
+        let cells = ["coarse", "mid", "fine", "network"].map(|band| format!("device/{band}/"));
         for step in cells.iter().flat_map(|prefix| named(prefix)) {
             assert!(!reads(step).iter().any(|source| CAPTURES.contains(&source.as_str())), "{}", step.name);
         }
-        assert!(!named("maps/terrain/").is_empty());
-        for step in named("maps/terrain/") {
+        assert!(!named("device/terrain/").is_empty());
+        for step in named("device/terrain/") {
             assert!(!reads(step).iter().any(|source| osm(source)), "{}", step.name);
         }
-        for step in named("maps/landmarks/").into_iter().chain(named("maps/peaks/")) {
+        for step in named("device/landmarks/").into_iter().chain(named("device/peaks/")) {
             assert!(CAPTURES.iter().all(|source| reads(step).contains(*source)), "{}", step.name);
         }
     }
@@ -1664,16 +1668,16 @@ pub(crate) mod tests {
             }
         }
         let steps = map_steps(&root(), &env, &regions, &store).unwrap().steps;
-        assert!(!steps.iter().any(|step| step.name == "maps/reference/0037-0033"), "no height, no reference");
-        let reference = steps.iter().find(|step| step.name == "maps/reference/0037-0032").unwrap();
+        assert!(!steps.iter().any(|step| step.name == "device/reference/0037-0033"), "no height, no reference");
+        let reference = steps.iter().find(|step| step.name == "device/reference/0037-0032").unwrap();
         let models = serde_json::json!([{"source": "dtm-ch", "version": "1", "credit": "© swisstopo"}]);
         assert_eq!(reference.options["models"], models);
         let [Input::Snapshot { source, version, params, files }] = &reference.inputs[..] else { panic!() };
         assert_eq!((source.as_str(), version.as_str(), params.len(), files.len()), ("dtm-ch", "1", 0, 18 * 10));
         assert!(files.contains(&"#tile=4808-4215/4808-4215.tif".to_string()));
         assert!(reference.client.is_none(), "only the terrain step reads the national models");
-        let terrain = steps.iter().find(|step| step.name == "maps/terrain/0037-0032").unwrap();
-        assert!(matches!(terrain.inputs.last(), Some(Input::Layer { name, .. }) if *name == reference.name));
+        let terrain = steps.iter().find(|step| step.name == "device/terrain/0037-0032").unwrap();
+        assert!(matches!(terrain.inputs.last(), Some(Input::Step { name, .. }) if *name == reference.name));
     }
 
     /// Fetch each model tile that the step list asks for, as the fetch rounds of a plan do. A
@@ -1706,11 +1710,11 @@ pub(crate) mod tests {
         let read = |env: &Env| -> BTreeSet<(String, String)> {
             let steps = map_steps(&root(), env, &regions, &store).unwrap().steps;
             let inputs =
-                steps.into_iter().filter(|step| step.name.starts_with("maps/reference/")).flat_map(|s| s.inputs);
+                steps.into_iter().filter(|step| step.name.starts_with("device/reference/")).flat_map(|s| s.inputs);
             inputs
                 .map(|input| match input {
                     Input::Snapshot { source, version, .. } => (source, version),
-                    Input::Layer { name, .. } => panic!("{name}"),
+                    Input::Step { name, .. } => panic!("{name}"),
                 })
                 .collect()
         };
@@ -1758,19 +1762,19 @@ pub(crate) mod tests {
         match map_steps(&root(), &env, &regions, &store) {
             Ok(listed) => {
                 assert!(!token.present());
-                for layer in ["maps/reference/0038-0032", "maps/terrain/0038-0032"] {
+                for layer in ["device/reference/0038-0032", "device/terrain/0038-0032"] {
                     assert!(listed
                         .blocked
                         .iter()
                         .any(|b| b.step == layer && b.reason.contains("OBC_REFERENCE_DK_TOKEN")));
                 }
-                assert!(listed.blocked.iter().any(|b| b.step == "maps/catalog"));
+                assert!(listed.blocked.iter().any(|b| b.step == "device/catalog"));
                 assert!(!listed
                     .steps
                     .iter()
-                    .any(|step| step.name == "maps/catalog" || step.name == "maps/network/0038-0032"));
+                    .any(|step| step.name == "device/catalog" || step.name == "device/network/0038-0032"));
                 assert!(
-                    listed.steps.iter().any(|step| step.name == "maps/coarse/0038-0032"),
+                    listed.steps.iter().any(|step| step.name == "device/coarse/0038-0032"),
                     "independent bands stay usable"
                 );
                 // The input copies of a live layer name a height in each tile of both models.
@@ -1793,7 +1797,7 @@ pub(crate) mod tests {
                 for source in ["dtm-de-ni", "dtm-dk"] {
                     restored_env.live.insert((source.into(), Vec::new()), ["1".into()].into());
                     restored_env.retained.push(obc_data::input_copy::Retained {
-                        step: leaf_layer("maps/reference", leaf),
+                        step: leaf_layer("device/reference", leaf),
                         key: obc_data::input_copy::Key {
                             source: source.into(),
                             version: "1".into(),

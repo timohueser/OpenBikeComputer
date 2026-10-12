@@ -321,7 +321,7 @@ fn layer_states(
 fn reads_unknown(listed: &[(String, Vec<Step>)], found: &Found) -> Option<(String, String)> {
     let made: HashSet<&str> = listed.iter().flat_map(|(_, steps)| steps).map(|step| step.name.as_str()).collect();
     listed.iter().find_map(|(product, steps)| {
-        let missing = steps.iter().flat_map(Step::layers).find(|layer| !made.contains(layer))?;
+        let missing = steps.iter().flat_map(Step::reads).find(|layer| !made.contains(layer))?;
         let owner = missing.split('/').next().unwrap_or_default();
         Some((product.clone(), found.get(owner)?.as_ref().err()?.clone()))
     })
@@ -462,7 +462,7 @@ mod tests {
             _: &Store,
         ) -> Result<crate::product::Steps, Unplanned> {
             let run = Run::Command(vec!["true".into()]);
-            Ok(vec![step("reading/one", vec![Input::layer("test/one")], "out", run)].into())
+            Ok(vec![step("reading/one", vec![Input::step("test/one")], "out", run)].into())
         }
     }
 
@@ -517,7 +517,7 @@ mod tests {
             let mut listed = crate::product::Steps {
                 steps: vec![
                     step("test/usable", vec![], "out", Run::Command(vec!["true".into()])),
-                    step("test/reader", vec![Input::layer("test/capture")], "out", run),
+                    step("test/reader", vec![Input::step("test/capture")], "out", run),
                 ],
                 blocked: vec![crate::product::BlockedLayer::new(
                     "test/capture",
