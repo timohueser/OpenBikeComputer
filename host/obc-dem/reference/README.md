@@ -187,12 +187,12 @@ polygon by up to its own side. `mirror` pads the box by one tile for the baker's
 names the tiles the archive does not hold.
 
 The two bakers answer a short mirror differently. `obc-dem bake` warns and names the tiles.
-`obc-bake terrain` refuses the run, names how many cells are short and prints a copy-pasteable
+`obc-bake terrain` refuses the run, names how many cells are short and prints a
 `mirror --bbox` that covers them; `--allow-short-reference` publishes anyway. Either way the
 cell's skip key records the tiles the bake could read, so completing the mirror re-bakes exactly
 the short cells.
 
 ### Removing a tile
 
-`publish` never deletes. `obc data r2 delete KEY --reason TEXT` deletes a tile; `index.json` keeps
-it.
+`publish` never deletes, and `index.json` names every tile on R2: delete none.
+`reference/v1/` goes whole after the cutover.
