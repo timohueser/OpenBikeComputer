@@ -62,13 +62,16 @@ the page.
 ## Serve
 
 `obc data serve` serves `local` on port 8710 of every IPv4 address of the machine. It prints the
-URLs of the pointers. It runs the routing, search and downloads services of each planner release
-and the tile server of `planner/tiles`. At start it builds `planner-service` with cargo. Prepare
-Node and the other services once:
+command that opens each app on `local`: the web planner, the map builder, the desktop app, the
+simulator and the Debug iOS app. It runs the routing, search and downloads services of each
+planner release and the tile server of `planner/tiles`. At start it builds `planner-service` with
+cargo. Prepare Node and the other services once:
 
 ```sh
 python3 planner/search/setup.py
 npm ci --prefix planner/tiles
+npm ci --prefix builder/web
+npm run build:wasm --prefix builder/web
 ```
 
 Leave it running while `obc data update local` runs in another terminal. Clients get the new

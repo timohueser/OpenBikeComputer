@@ -1,5 +1,5 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
 import { testConfig } from "./test-support/planner/config";
@@ -46,10 +46,7 @@ export default defineConfig(({ mode }) => {
     // Dev mode: `python -m builder.server --no-browser` on :8000 serves
     // the API; Vite proxies it (plain http-proxy streams SSE fine).
     // `vite --mode data` sends the page's `/api/cli` to `obc data ui` instead.
-    const proxy: Record<string, string | ProxyOptions> = mode === "data" ? { "/api": "http://127.0.0.1:8700" } : {
-        "/api/planner-search": `http://127.0.0.1:${process.env.OBC_SEARCH_PORT || "8780"}`,
-        "/routing": { target: process.env.OBC_PLANNER_ROUTING_URL || "http://127.0.0.1:8788", rewrite: (path: string) => path.replace(/^\/routing/, '') },
-        "/tiles": { target: process.env.OBC_PLANNER_TILES_URL || "http://127.0.0.1:8789", rewrite: (path: string) => path.replace(/^\/tiles/, '') },
+    const proxy: Record<string, string> = mode === "data" ? { "/api": "http://127.0.0.1:8700" } : {
         "/api": `http://127.0.0.1:${process.env.OBC_BUILDER_PORT || "8000"}`,
     };
     return {
@@ -89,14 +86,14 @@ export default defineConfig(({ mode }) => {
             // The product skin editor imports the bakery's canonical Teningen
             // OBCM from `host/obc-bake/assets`. Keep one fixture, and let the
             // dev server expose files only as far as this repository root.
-            fs: { allow: ["../..", ...[process.env.OBC_PLANNER_MAPS_DIR, process.env.OBC_PLANNER_ROUTES_FILE].filter((path): path is string => Boolean(path))] },
+            fs: { allow: ["../.."] },
             proxy,
         },
         test: {
             environment: "node",
             setupFiles: ["./test-support/core.ts"],
             // Planner modules read their config on import, as in a planner build.
-            env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig) },
+            env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig), VITE_PLANNER_CATALOG: "" },
             // `test-support/` holds what no tier's build has as an input; its suites run here.
             include: ["src/**/*.test.ts", "test-support/**/*.test.ts"],
         },

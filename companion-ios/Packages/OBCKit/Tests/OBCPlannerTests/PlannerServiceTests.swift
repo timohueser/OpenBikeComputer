@@ -190,6 +190,27 @@ struct PlannerServiceTests {
         #expect(urls == ["https://planner.test/catalog.json", "https://planner.test/a/manifest.json",
                          "https://planner.test/catalog.json", "https://planner.test/b/manifest.json"])
     }
+    /// A catalogue of `obc data serve` names HTTP URLs. The published catalogue names only HTTPS URLs.
+    /// A Debug build reads the catalogue of `-OBCPlannerCatalog`.
+    @Test func aLaunchArgumentSelectsACatalogueWhoseURLsHaveItsScheme() async throws {
+        let local = "http://serve.test:8710"
+        func service(_ catalog: String) -> PlannerService {
+            PlannerService(catalogURL: URL(string: catalog)!) { request in
+                let active = catalogRelease("a").mapValues { value -> Any in
+                    guard let text = value as? String else { return value }
+                    return text.replacingOccurrences(of: "https://planner.test", with: local)
+                }
+                let body = try JSONSerialization.data(withJSONObject: ["format": 1, "active": active])
+                return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+        let release = try await service(local + "/planner/catalog.json").release()
+        #expect(release.routing.absoluteString == local + "/a/routing")
+        await #expect(throws: PlannerFailure.invalidData) { try await service("https://planner.test/catalog.json").release() }
+        #expect(PlannerService.launchCatalog(arguments: ["app", "-OBCPlannerCatalog", local + "/planner/catalog.json"], environment: [:])
+                == URL(string: local + "/planner/catalog.json"))
+        #expect(PlannerService.launchCatalog(arguments: ["app"], environment: [:]) == nil)
+    }
     /// Route catalog cells that answer 404 load from the new active release, after one catalogue read.
     @Test func aRemovedReleaseLoadsItsRouteCellFromTheNewRelease() async throws {
         func release(_ id: String) -> PlannerRelease {

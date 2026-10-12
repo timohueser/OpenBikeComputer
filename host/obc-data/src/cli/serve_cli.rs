@@ -68,7 +68,7 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     if json {
         print_json(&listening)?;
     } else {
-        print_links(&listening);
+        print_links(root, &listening);
     }
     let work = store.root().join("serve").join(&args.target);
     // The work folder holds what a serve that did not stop left.
@@ -120,13 +120,19 @@ pub fn command(root: &Path, args: ServeArgs, json: bool) -> Result<(), Error> {
     served.map_err(|e| Code::Failed.error(format!("port {PORT}: {e}")))
 }
 
-fn print_links(listening: &Listening) {
+/// The command that opens each app on the target, with absolute paths.
+fn print_links(root: &Path, listening: &Listening) {
     let Listening { target, url, network } = listening;
+    let (planner, device) = (format!("{url}/{PLANNER}"), format!("{url}/{}", release::POINTERS[0]));
+    let web = root.join("builder/web");
     println!("obc data serve: {target} at {url}");
-    println!("  planner catalog  {url}/{PLANNER}");
-    println!("  device catalog   {url}/{}", release::POINTERS[0]);
+    println!("  web planner  cd '{}' && VITE_PLANNER_CATALOG={planner} npm run dev -- --mode planner", web.display());
+    println!("               then open /planner.html; once before: npm ci && npm run build:wasm");
+    println!("  map builder  VITE_PLANNER_CATALOG={planner} obc site");
+    println!("  desktop app  OBC_CATALOG_URL={device} obc desktop");
+    println!("  simulator    obc sim MAP.obcm, with a map that the map builder or the desktop app assembles");
     if let Some(network) = network {
-        println!("  on this network  {network}/{PLANNER}");
+        println!("  iPhone       the Debug app with the launch argument -OBCPlannerCatalog {network}/{PLANNER}");
     }
     println!("Other machines on the local network can reach port {PORT} while it runs. Ctrl-C stops it.");
 }
