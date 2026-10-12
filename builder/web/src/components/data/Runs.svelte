@@ -1,7 +1,7 @@
 <script lang="ts">
     import { command } from "../../lib/data/cli";
     import type { CliQuery } from "../../lib/data/query.svelte";
-    import { clock, elsewhere, MARK, size, span, title, type Holder, type RunList, type Status } from "../../lib/data/shapes";
+    import { clock, elsewhere, ended, MARK, size, span, title, type Holder, type RunList, type Status } from "../../lib/data/shapes";
     import Failure from "./Failure.svelte";
     import Run from "./Run.svelte";
     import RunElsewhere from "./RunElsewhere.svelte";
@@ -11,21 +11,16 @@
 
     const others = $derived(elsewhere(status.output));
     const away = $derived(id ? others.find(({ holder }) => holder.run === id) : undefined);
-    // A run of another machine that ends frees its lock; its screen keeps the last lock. A lock that
-    // cannot be read says nothing about the run.
+    // When a run of another machine ends, its screen keeps its last lock.
     let last = $state<{ target: string; holder: Holder } | undefined>();
     $effect(() => {
         if (away) last = away;
     });
     const watched = $derived(away ?? (last?.holder.run === id ? last : undefined));
-    const ended = $derived.by(() => {
-        const now = status.output?.targets.find(({ target }) => target === watched?.target);
-        return !away && !!now && now.lock === null && now.lock_error === null;
-    });
 </script>
 
 {#if id && watched}
-    <RunElsewhere target={watched.target} holder={watched.holder} {ended} />
+    <RunElsewhere target={watched.target} holder={watched.holder} ended={ended(status.output, watched.target, watched.holder.run)} />
 {:else if id && (status.output || status.error)}
     {#key id}<Run {id} status={status.output} />{/key}
 {:else if !id}

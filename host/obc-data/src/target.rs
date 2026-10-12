@@ -7,10 +7,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 use serde::Deserialize;
 
 use crate::fetch::http::{self, Http};
+use crate::r2;
 use crate::store::{durable, sha256_hex, Lock, Store};
 
 /// Where a target is.
@@ -18,8 +20,9 @@ use crate::store::{durable, sha256_hex, Lock, Store};
 pub enum Target {
     /// A folder on this machine. No other machine sees it.
     Dir(PathBuf),
-    /// An R2 bucket, read through the HTTPS origin that serves its keys.
-    R2 { public: String },
+    /// An R2 bucket, or a folder of one: read through the HTTPS origin that serves its keys, and
+    /// written with the credentials of `OBC_R2_*`.
+    R2(r2::Remote),
 }
 
 /// A version of the bytes at a key: a write on that condition fails when the key changed.
@@ -46,7 +49,7 @@ pub enum Condition {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum Entry {
-    R2 { public: String },
+    R2 { public: String, bucket: String, prefix: Option<String> },
     Dir { dir: Option<String> },
 }
 
@@ -55,9 +58,6 @@ const LOCK: &str = ".lock";
 
 /// A number for each part file of this process.
 static NEXT: AtomicU64 = AtomicU64::new(0);
-
-/// `obc data` reaches an R2 target only through its public URL, which serves reads.
-const READ_ONLY: &str = "`obc data` only reads an R2 target, through its public URL";
 
 /// The targets of `data/targets.toml` in the repository at `root`, by name. A dir target without
 /// `dir` is the folder of its name beside the store: a link from one to the other needs one file
@@ -77,12 +77,22 @@ fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, 
             return Err(format!("`{name}` is not a target name: lowercase kebab-case"));
         }
         let target = match entry {
-            Entry::R2 { public } => {
+            Entry::R2 { public, bucket, prefix } => {
                 let host = public.strip_prefix("https://").unwrap_or_default();
                 if host.is_empty() || host.contains(['/', '?', '#', '@']) {
                     return Err(format!("target `{name}`: `public` is an https:// origin without a path"));
                 }
-                Target::R2 { public }
+                if bucket.is_empty()
+                    || !bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                {
+                    return Err(format!("target `{name}`: `bucket` is the name of an R2 bucket"));
+                }
+                // A collection deletes keys of the target: a folder outside `test/` can hold live keys.
+                let prefix = prefix.unwrap_or_default();
+                if !prefix.is_empty() && (!prefix.starts_with("test/") || crate::r2::check_key(&prefix).is_err()) {
+                    return Err(format!("target `{name}`: `prefix` is a folder under `test/`"));
+                }
+                Target::R2(r2::Remote { public, bucket, prefix })
             }
             Entry::Dir { dir } => {
                 let dir = match dir {
@@ -101,7 +111,7 @@ fn parse(text: &str, beside: Option<&Path>) -> Result<BTreeMap<String, Target>, 
         .iter()
         .filter_map(|(name, target)| match target {
             Target::Dir(dir) => Some(real(dir).map(|dir| (name, dir))),
-            Target::R2 { .. } => None,
+            Target::R2(_) => None,
         })
         .collect::<Result<_, _>>()?;
     for (a, outer) in &dirs {
@@ -136,12 +146,25 @@ fn real(path: &Path) -> Result<PathBuf, String> {
 }
 
 impl Target {
-    /// The bytes at `key`, or `None` when the target has no such key.
+    /// The bytes at `key`, or `None` when the target has no such key. An R2 target is read through
+    /// the S3 API when this machine has the credentials, because the public origin can serve a
+    /// cached pointer.
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        if let Target::R2(remote) = self {
+            if let Ok(writer) = remote.writer() {
+                return Ok(writer.get(key)?.map(|(bytes, _)| bytes));
+            }
+        }
+        self.get_public(key)
+    }
+
+    /// The bytes at `key` as a client gets them, or `None`: an R2 target through its public origin,
+    /// without credentials.
+    pub fn get_public(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         crate::r2::check_key(key)?;
         match self {
             Target::Dir(dir) => read(&dir.join(key)),
-            Target::R2 { public } => match Http::new().bytes(&format!("{public}/{key}"), "*/*") {
+            Target::R2(remote) => match http().bytes(&remote.url(key), "*/*") {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(e) if http::not_found(&e) => Ok(None),
                 Err(e) => Err(e),
@@ -152,7 +175,10 @@ impl Target {
     /// The keys of `files` that the target lacks. A key that holds another size is refused: a key
     /// of a release is immutable.
     pub fn missing(&self, files: &[(String, u64)]) -> Result<Vec<String>, String> {
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => return r2_missing(remote, files),
+        };
         let mut missing = Vec::new();
         for (key, size) in files {
             crate::r2::check_key(key)?;
@@ -176,7 +202,10 @@ impl Target {
     /// The bytes at `key` and their tag, or `None` when the target has no such key.
     pub fn get_tagged(&self, key: &str) -> Result<Option<(Vec<u8>, Tag)>, String> {
         crate::r2::check_key(key)?;
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => return remote.writer()?.get(key),
+        };
         Ok(read(&dir.join(key))?.map(|bytes| {
             let tag = Tag(sha256_hex(&bytes));
             (bytes, tag)
@@ -187,7 +216,10 @@ impl Target {
     /// hold: nothing changed.
     pub fn put(&self, key: &str, bytes: &[u8], condition: &Condition) -> Result<Option<Tag>, String> {
         crate::r2::check_key(key)?;
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => return remote.writer()?.put(key, bytes, condition),
+        };
         let path = dir.join(key);
         // A dir target is on a local file system: the lock and the rename are atomic there.
         let _lock = lock(dir)?;
@@ -207,7 +239,13 @@ impl Target {
     /// Give each key of `files` the bytes of its file, unless the key has bytes. The key is a link
     /// to the file when both are on one file system, so nothing ever writes a key in place.
     pub fn upload(&self, files: &[(PathBuf, String)]) -> Result<(), String> {
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => {
+                let upload = r2::Upload { cache_control: Some(r2::s3::IMMUTABLE), ..Default::default() };
+                return remote.writer()?.bucket()?.put_many(files, &upload);
+            }
+        };
         for (file, key) in files {
             crate::r2::check_key(key)?;
             let path = dir.join(key);
@@ -253,7 +291,19 @@ impl Target {
     /// key; an error when its bytes have another SHA-256.
     pub fn download(&self, key: &str, sha256: &str, store: &Store) -> Result<Option<PathBuf>, String> {
         crate::r2::check_key(key)?;
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => {
+                let url = remote.url(key);
+                let _lock = Http::lock(store, &url)?;
+                return match http().download(store, &url, &http::Expect { sha256: Some(sha256), ..Default::default() })
+                {
+                    Ok(downloaded) => Ok(Some(downloaded.object)),
+                    Err(e) if http::not_found(&e) => Ok(None),
+                    Err(e) => Err(e),
+                };
+            }
+        };
         // Two processes on one store download into other files.
         let part =
             store.partial(&format!("{sha256}.{}.{}.target", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -274,9 +324,13 @@ impl Target {
         store.insert(&part, sha256).map(Some)
     }
 
-    /// Every file of a dir target, also a hidden one, sorted by key.
+    /// Every file of a dir target, also a hidden one, sorted by key. Of an R2 target, the keys under
+    /// `objects/`, `releases/` and `sources/`: a collection deletes no other key there.
     pub fn list(&self) -> Result<Vec<Listed>, String> {
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => return r2_list(remote),
+        };
         let mut listed = Vec::new();
         let mut pending = vec![dir.clone()];
         while let Some(folder) = pending.pop() {
@@ -304,7 +358,10 @@ impl Target {
     /// that the target lacks is no error.
     pub fn remove(&self, key: &str) -> Result<(), String> {
         crate::r2::check_key(key)?;
-        let Target::Dir(dir) = self else { return Err(READ_ONLY.into()) };
+        let dir = match self {
+            Target::Dir(dir) => dir,
+            Target::R2(remote) => return remote.writer()?.delete(key),
+        };
         let path = dir.join(key);
         match fs::remove_file(&path) {
             Err(e) if e.kind() != ErrorKind::NotFound => return Err(format!("{key}: {e}")),
@@ -318,6 +375,52 @@ impl Target {
         }
         Ok(())
     }
+}
+
+impl Target {
+    /// The time of now by the clock of the target: of this machine for a dir target, of the
+    /// server for an R2 target.
+    pub fn now(&self) -> Result<u64, String> {
+        match self {
+            Target::Dir(_) => Ok(crate::date::now()),
+            Target::R2(remote) => Ok(remote.writer()?.head(crate::release::SERVING)?.1),
+        }
+    }
+}
+
+/// The keys of `files` that the R2 target `remote` lacks; a key with another size is refused.
+fn r2_missing(remote: &r2::Remote, files: &[(String, u64)]) -> Result<Vec<String>, String> {
+    let keys: Vec<String> = files.iter().map(|(key, _)| key.clone()).collect();
+    let held = remote.writer()?.bucket()?.stat(&keys)?;
+    let mut missing = Vec::new();
+    for (key, size) in files {
+        match held.get(key) {
+            None => missing.push(key.clone()),
+            Some(object) if object.bytes == *size => {}
+            Some(object) => {
+                return Err(format!("{key} holds {} bytes, not {size}, and a key is immutable", object.bytes))
+            }
+        }
+    }
+    Ok(missing)
+}
+
+/// The keys of the R2 target `remote` under `objects/`, `releases/` and `sources/`, sorted.
+fn r2_list(remote: &r2::Remote) -> Result<Vec<Listed>, String> {
+    let bucket = remote.writer()?.bucket()?;
+    let mut listed = Vec::new();
+    for folder in ["objects", "releases", "sources"] {
+        let objects = bucket.list(folder)?;
+        listed.extend(objects.into_iter().map(|object| Listed { key: object.key, size: object.bytes }));
+    }
+    listed.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(listed)
+}
+
+/// The client of the reads of an R2 target: one for the process, so its connections stay open.
+fn http() -> &'static Http {
+    static HTTP: OnceLock<Http> = OnceLock::new();
+    HTTP.get_or_init(Http::new)
 }
 
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -347,18 +450,36 @@ mod tests {
     fn the_committed_targets_parse_and_a_wrong_entry_is_refused() {
         let beside = Path::new("/stores");
         let targets = parse(include_str!("../../../data/targets.toml"), Some(beside)).unwrap();
-        assert!(matches!(&targets["prod"], Target::R2 { public } if public == "https://maps.openbikecomputer.com"));
+        let prod = r2::Remote {
+            public: "https://maps.openbikecomputer.com".into(),
+            bucket: "obc-maps".into(),
+            prefix: String::new(),
+        };
+        assert_eq!(targets["prod"], Target::R2(prod));
         assert_eq!(targets["local"], Target::Dir(beside.join("local")), "beside the store");
+        let r2 = "kind = \"r2\"\npublic = \"https://maps.example\"\nbucket = \"maps\"\n";
+        let folder = parse(&format!("[t]\n{r2}prefix = \"test/run-1\"\n"), None);
+        let test =
+            r2::Remote { public: "https://maps.example".into(), bucket: "maps".into(), prefix: "test/run-1".into() };
+        assert_eq!(folder.unwrap()["t"], Target::R2(test));
 
         for (text, error) in [
-            ("[a]\nkind = \"r2\"\npublic = \"http://maps.example\"\n", "https://"),
-            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example/x\"\n", "without a path"),
-            ("[a]\nkind = \"dir\"\ndir = \"/x\"\nbucket = \"b\"\n", "unknown field"),
-            ("[A]\nkind = \"dir\"\ndir = \"/x\"\n", "kebab-case"),
-            ("[a]\nkind = \"dir\"\ndir = \"x\"\n", "absolute"),
-            ("[a]\nkind = \"dir\"\ndir = \"/x\"\n[b]\nkind = \"dir\"\ndir = \"/x/b\"\n", "in the folder of target `a`"),
+            ("[a]\nkind = \"r2\"\npublic = \"http://maps.example\"\nbucket = \"maps\"\n".into(), "https://"),
+            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example/x\"\nbucket = \"maps\"\n".into(), "without a path"),
+            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example\"\n".into(), "missing field `bucket`"),
+            ("[a]\nkind = \"r2\"\npublic = \"https://maps.example\"\nbucket = \"Maps/x\"\n".into(), "`bucket`"),
+            (format!("[a]\n{r2}prefix = \"test/\"\n"), "`prefix`"),
+            (format!("[a]\n{r2}prefix = \"test/../x\"\n"), "`prefix`"),
+            (format!("[a]\n{r2}prefix = \"planner\"\n"), "`prefix` is a folder under `test/`"),
+            ("[a]\nkind = \"dir\"\ndir = \"/x\"\nbucket = \"b\"\n".into(), "unknown field"),
+            ("[A]\nkind = \"dir\"\ndir = \"/x\"\n".into(), "kebab-case"),
+            ("[a]\nkind = \"dir\"\ndir = \"x\"\n".into(), "absolute"),
+            (
+                "[a]\nkind = \"dir\"\ndir = \"/x\"\n[b]\nkind = \"dir\"\ndir = \"/x/b\"\n".into(),
+                "in the folder of target `a`",
+            ),
         ] {
-            let refused = parse(text, Some(beside)).unwrap_err();
+            let refused = parse(&text, Some(beside)).unwrap_err();
             assert!(refused.contains(error), "{refused}");
         }
     }
@@ -400,6 +521,30 @@ mod tests {
         });
         assert_eq!(won, 1, "one of the writers that start together");
         assert!(target.put("../x", b"", &Condition::Any).is_err());
+    }
+
+    #[test]
+    fn an_r2_target_gives_the_store_an_object_through_its_public_origin() {
+        let scratch = Scratch::new("target-r2");
+        let (bucket, key) = (scratch.0.join("bucket"), "sources/osm/2026#1/a b.pbf");
+        fs::create_dir_all(bucket.join("sources/osm/2026#1")).unwrap();
+        fs::write(bucket.join(key), b"pbf").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+        let public = format!("http://{}", listener.local_addr().unwrap());
+        let router = axum::Router::new().fallback_service(tower_http::services::ServeDir::new(&bucket));
+        runtime.spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (target, store) = (
+            Target::R2(r2::Remote { public, bucket: "test".into(), prefix: String::new() }),
+            Store::at(scratch.0.join("store")),
+        );
+
+        let object = target.download(key, &sha256_hex(b"pbf"), &store).unwrap().unwrap();
+        assert_eq!(fs::read(object).unwrap(), b"pbf");
+        assert!(target.download(key, &"0".repeat(64), &store).unwrap_err().contains("the SHA-256 is"));
+        assert_eq!(target.download("objects/none", &"0".repeat(64), &store).unwrap(), None);
+        let remote = r2::Remote { public: "https://maps.example".into(), bucket: "test".into(), prefix: String::new() };
+        assert_eq!(remote.url("sources/a#b/c?d"), "https://maps.example/sources/a%23b/c%3Fd");
     }
 
     #[test]

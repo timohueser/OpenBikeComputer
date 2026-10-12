@@ -12,8 +12,8 @@ Prepare Rust, Python with `uv`, GEOS and Osmium before an update; `obc data` doe
 A changed producer does not rebuild its layer. Raise the `revision` of the layer in the change
 that changes its output; a reader that needs new data raises its `format`.
 
-`data/targets.toml` names the targets. `local` is a folder beside the store; `obc data update`
-writes only a folder target. The settings of a target (region, optional layers, refresh
+`data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
+public bucket. A write of `prod` needs the `OBC_R2_*` variables and rclone. The settings of a target (region, optional layers, refresh
 policies) are in the release that it serves, so they need no commit.
 
 | Configuration or credential | Purpose |
@@ -26,7 +26,7 @@ policies) are in the release that it serves, so they need no commit.
 | `data/planner-runtime.toml` | Runtime target and publication origins |
 | `OBC_DATA_STORE` | Build store |
 | `OBC_DATA_MACHINE` | The machine name in a release; the short host name without it |
-| `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key, for `obc data r2` |
+| `OBC_R2_BUCKET`, `OBC_R2_ACCESS_KEY_ID`, `OBC_R2_SECRET_ACCESS_KEY` | Production bucket and key, for `prod` and `obc data r2` |
 | `OBC_R2_ACCOUNT_ID` or `OBC_R2_ENDPOINT` | Cloudflare account or explicit endpoint |
 | `OBC_FIXTURE_R2_*` | Separate fixture bucket and credentials, with the same suffixes as production |
 | `UV_PYTHON` | Selected prepared Python interpreter |
@@ -47,6 +47,8 @@ Keep secrets in the private host environment or ignored `tools/obc.local`, never
 | `obc data update local --add sun` | Switch an optional layer on; `--remove` switches it off |
 | `obc data update local --refresh wikidata=30` | Set a refresh policy for the target |
 | `obc data update local --only LAYER` | Bake a layer again after a code change with the same version |
+| `obc data update prod --dry-run` | Review an update of `prod`; the owner approves its id |
+| `obc data update prod --expect ID` | Publish the approved review to riders; asks, or `--yes` without a terminal |
 | `obc data rollback local` | Serve the rollback release again; a second rollback undoes it |
 | `obc data source refresh natural-earth` | Move a `digest` source to upstream's newest version |
 | `obc data serve` | Serve `local` to the apps until Ctrl-C |
@@ -63,6 +65,9 @@ previous release stays as the rollback of the target. A target takes one update 
 time: the run holds `lock.json` of the target, and another run refuses to start. A run that fails
 or stops frees the lock. A crash or an out-of-memory kill keeps it:
 `obc data unlock TARGET --from MACHINE` frees it after 10 minutes without a heartbeat.
+
+`cargo test -p obc-data --test r2_live -- --ignored` writes the bucket of the `OBC_R2_*` variables
+in a throwaway folder `test/<time>-<pid>/`; it skips without them. A plain test run leaves it out.
 
 On a host with `KillUserProcesses=yes` in logind, an SSH logout ends a detached run, unless
 `loginctl enable-linger USER` is set for the user.
@@ -87,10 +92,13 @@ npm run build:wasm --prefix builder/web
 
 Leave it running while `obc data update local` runs in another terminal. Clients get the new
 release when its services answer. A failed release leaves clients on the current release; the
-services write the cause to the terminal. A service that stops later does not start again: stop
-`obc data serve` with Ctrl-C and start it again.
+services write the cause to the terminal, and `GET /planner-api/releases/<planner id>/ready`
+gives it. A failed release starts again after a minute, then after longer waits, up to 30 minutes.
 Serve reads the formats of the services once, at start: start it again after a change of the
 format that a service reads.
+
+`obc data serve prod` is the follower on the VPS: [`tools/vps/README.md`](../../tools/vps/README.md).
+It gives only the planner API, on `127.0.0.1`.
 
 - Every machine on the local network reaches every file of the target, also `release.json`, and
   the three services. Any web page can read them (CORS `*`).
