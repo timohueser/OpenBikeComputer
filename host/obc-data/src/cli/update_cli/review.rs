@@ -104,7 +104,8 @@ pub struct ReviewCost {
     pub process_peak_rss_bytes: Option<u64>,
     /// What the fetches, the downloads and the bakes write into the store.
     pub store_bytes: u64,
-    /// What goes to the target: the files of the bakes that a client reads.
+    /// What goes to the target: the files of the bakes that a client reads, and the copies under
+    /// `sources/` that the serving release does not name.
     pub upload_bytes: u64,
     /// What the figures lack.
     pub unknown: Unknown,
@@ -173,6 +174,8 @@ pub struct Parts<'a> {
     /// The steps that bake only because the target does not hold files of them.
     pub unheld: &'a BTreeSet<String>,
     pub downloads: Downloads,
+    /// The size of the copies under `sources/` that the update adds.
+    pub copies: u64,
     pub machine: &'a MachineCheck,
 }
 
@@ -191,6 +194,7 @@ pub fn review(parts: Parts) -> Review {
         layers,
         unheld,
         downloads,
+        copies,
         machine,
     } = parts;
     let outputs = serving.iter().flat_map(|release| &release.outputs);
@@ -297,7 +301,7 @@ pub fn review(parts: Parts) -> Review {
     let mut seen = BTreeSet::new();
     let bakes: Vec<Build> = plan.builds().filter(|build| seen.insert(&build.step)).cloned().collect();
     let fetches = plan.fetches();
-    let mut cost = ReviewCost::default();
+    let mut cost = ReviewCost { upload_bytes: copies, ..ReviewCost::default() };
     for fetch in &fetches {
         match fetch.bytes {
             Some(bytes) => cost.store_bytes += bytes,

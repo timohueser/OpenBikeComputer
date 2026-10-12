@@ -248,8 +248,8 @@ const NOT_COPIED: [&str; 3] = ["wikidata", "wikipedia", "commons"];
 
 impl Source {
     /// Whether a target keeps a copy of the files that its release reads: when the licence lets us
-    /// give the bytes to others. The national terrain models (`dtm-*`) have no copy: `reference/v1/`
-    /// of the bucket holds what the device reads of them, and no machine reads a copy back yet.
+    /// give the bytes to others. The national terrain models (`dtm-*`) have no copy: `obc data`
+    /// reads them through a capture per archive tile.
     pub fn copied(&self) -> bool {
         self.redistribute && !NOT_COPIED.contains(&self.id.as_str()) && !self.id.starts_with("dtm-")
     }

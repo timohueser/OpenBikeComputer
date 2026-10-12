@@ -83,7 +83,7 @@ pub struct FetchedFile {
 impl Fetched {
     /// The key of the copy of `file` on a target.
     pub fn key(&self, file: &FetchedFile) -> String {
-        format!("sources/{}/{}/{}", self.source, self.version, file.name)
+        copy_key(&self.source, &self.version, &file.name)
     }
 
     /// The files that `names` names, or all of them when it names none.
@@ -351,6 +351,11 @@ impl Release {
 
 pub fn manifest_key(id: &str) -> String {
     format!("releases/{id}.json")
+}
+
+/// The key of the copy of the file `name` of `source` at `version`.
+pub fn copy_key(source: &str, version: &str, name: &str) -> String {
+    format!("sources/{source}/{version}/{name}")
 }
 
 pub(crate) fn is_sha256(text: &str) -> bool {
