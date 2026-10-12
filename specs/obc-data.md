@@ -1326,7 +1326,7 @@ addition:
   and `obc data runs RUN --stop`.
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
-it has one, of `http://` and such a host; and, for a POST, the `Content-Type` `application/json`.
+it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
 A request that does not, and a command that the page does not run, get HTTP 403 and
 `{"exit": 2, "output": {"error": …}}` with the code `usage`.
 

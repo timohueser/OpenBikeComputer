@@ -11,16 +11,21 @@
 
     const others = $derived(elsewhere(status.output));
     const away = $derived(id ? others.find(({ holder }) => holder.run === id) : undefined);
-    // A run of another machine that ends frees its lock; its screen keeps the last lock.
+    // A run of another machine that ends frees its lock; its screen keeps the last lock. A lock that
+    // cannot be read says nothing about the run.
     let last = $state<{ target: string; holder: Holder } | undefined>();
     $effect(() => {
         if (away) last = away;
     });
     const watched = $derived(away ?? (last?.holder.run === id ? last : undefined));
+    const ended = $derived.by(() => {
+        const now = status.output?.targets.find(({ target }) => target === watched?.target);
+        return !away && !!now && now.lock === null && now.lock_error === null;
+    });
 </script>
 
 {#if id && watched}
-    <RunElsewhere target={watched.target} holder={watched.holder} ended={!away} />
+    <RunElsewhere target={watched.target} holder={watched.holder} {ended} />
 {:else if id && (status.output || status.error)}
     {#key id}<Run {id} status={status.output} />{/key}
 {:else if !id}

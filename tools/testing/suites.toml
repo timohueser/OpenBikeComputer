@@ -267,6 +267,7 @@ triggers = [
   "builder/web/src/components/data/**",
   "builder/web/src/lib/data/**",
   "builder/web/src/styles/tokens.css",
+  "builder/web/src/styles/data.css",
   "builder/web/src/data.ts",
   "builder/web/data.html",
   "builder/web/test-support/data/**",

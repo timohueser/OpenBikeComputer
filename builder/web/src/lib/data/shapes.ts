@@ -4,7 +4,8 @@
  *  polls it. */
 export interface Status {
     machine: Machine;
-    targets: { target: string; lock: Holder | null }[];
+    /** `lock_error` says why the lock of the target cannot be read. */
+    targets: { target: string; lock: Holder | null; lock_error: string | null }[];
 }
 
 /** The run that holds the lock of a target, from its `lock.json`. A run on another machine shows
