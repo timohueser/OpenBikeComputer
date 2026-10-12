@@ -853,9 +853,14 @@ pub(super) mod tests {
             ),
         );
         write(&fixture.root().join("earth"), "");
+        let dir = fixture.scratch.0.join("local");
+        write(
+            &fixture.root().join("data/targets.toml"),
+            &format!("[local]\nkind = \"dir\"\ndir = \"{}\"\n", dir.display()),
+        );
         let (one, two) = (sha256_hex(b"earth 1\n"), sha256_hex(b"earth 2\n"));
         fixture.fetched_version("natural-earth", &one, "earth.zip", b"earth 1\n");
-        let (target, http) = (Target::Dir(fixture.scratch.0.join("local")), Http::loopback(&actual));
+        let (target, http) = (Target::Dir(dir), Http::loopback(&actual));
         let first = update_with(&fixture, &target, &http, region).unwrap();
 
         let registry = crate::sources::Registry::load(&fixture.root()).unwrap();
@@ -866,7 +871,8 @@ pub(super) mod tests {
         assert_eq!((&same.serving, steps(&same)), (&first.serving, Vec::new()), "a newer file in the store");
 
         let refreshed = crate::cli::source_cli::refresh(&fixture.root(), &fixture.store, &http, "natural-earth");
-        assert_eq!(refreshed.unwrap().version, two);
+        let refreshed = refreshed.unwrap();
+        assert_eq!((refreshed.from, refreshed.version), (vec![one.clone()], two.clone()), "from what `local` serves");
         let moved = &review(&fixture, &target).sources[0];
         assert_eq!((moved.source.as_str(), moved.from.as_ref(), &moved.to), ("natural-earth", Some(&one), &two));
         assert_eq!(steps(&update_with(&fixture, &target, &http, |_| Ok(())).unwrap()), ["counter/earth"]);

@@ -210,6 +210,7 @@ fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
         })?;
         releases.iter().for_each(|release| roots.add_release(&name, release));
     }
+    roots.refreshed = store.refreshes()?.into_iter().map(|refreshed| (refreshed.source, refreshed.to)).collect();
     Ok(roots)
 }
 

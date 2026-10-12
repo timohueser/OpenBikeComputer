@@ -209,7 +209,7 @@ The store is the directory in `OBC_DATA_STORE`, or else `~/.cache/openbikecomput
 | `layers/<key>.json` | The receipt of the layer with that key, see [Layers](#layers) |
 | `requests/<source>/<sha256>.json` | The files that a fetch with `NAME=VALUE` gave: `version`, `params` and `files` (names). The name is the SHA-256 of the compact JSON `[version, params]`, with `params` sorted. A record with no files selects no file |
 | `runs/<id>.jsonl` | The events of one run, see [Runs](#runs) |
-| `refreshed/<source>` | The version that `obc data source refresh` took last, and a line end |
+| `refreshed/<source>.json` | `{source, from, to}`: the version that `obc data source refresh` took last (`to`), and the versions that the targets served then (`from`) |
 | `upstream/<source>/<sha256>.json` | The acquisition check descriptors and observation of one normalized request. The name is the SHA-256 of compact JSON sorted params. The observation has `checked_at` (UTC seconds or `null`), `result` and `last_success` (UTC seconds and version, or `null`). The result has `state`: `newest` with `value`, `failed` with `value`, `capture`, or `cannot_check` |
 | `partial/` | Downloads that are not complete, the validators that resume them, and the layers that steps write. A collection empties it |
 | `locks/` | One lock file per key and per run |
@@ -265,7 +265,8 @@ it runs in, and the store:
   newest record of each source, by the latest `retrieved` of its files, is also reached: a plan
   step list reads it when nothing else names a version (see [Versions](#versions)), and a source whose
   upstream gives only its newest file cannot give it again. So is the newest version of each request record (`requests/`), by the
-  latest `retrieved` of its files, such as the extract of each Geofabrik area.
+  latest `retrieved` of its files, such as the extract of each Geofabrik area, and each version
+  that `obc data source refresh` took (`refreshed/`).
 - An object is reached when a reached snapshot record or a reached layer has it, or when its
   SHA-256 is a file of an output of a root release, or is in `fixtures/catalog.toml`, a JSON or TOML file below `fixtures/sources/` or a
   planner region recipe in `tools/planner-regions/`.
@@ -276,7 +277,7 @@ it runs in, and the store:
 
 The plan lists what the collection deletes and what stays. What stays is one entry for each
 reached snapshot record, with the reasons: `served by TARGET, …`, `newest of the source`,
-and `newest of a request`. Then one entry for the reached layers of each step (`inputs kept`).
+`newest of a request` and `refreshed`. Then one entry for the reached layers of each step (`inputs kept`).
 Then one entry for each kind of root that names objects that no reached record or layer has:
 `release`, `fixture` or `planner recipe`. The size of
 an entry is the size of its files, and the plan gives the size of `partial/`. The collection
@@ -687,7 +688,9 @@ A `date` or a `release` version is newer by its parts: a run of digits by its nu
 run as text, so `v1.9` comes before `v1.11`; two versions with equal numbers, such as `v1.0`
 and `v1.00`, are in the order of their text. A `commit` or a `digest` has no order: rule 2 gives
 its `start`, so that a change of `data/sources.toml` moves it; else the version that
-`obc data source refresh` took last on this machine; else the serving version; else the one
+`obc data source refresh` took last on this machine, when the target serves a version that the
+targets served then, or none: a refresh never moves a target that another machine moved since;
+else the serving version; else the one
 version in the store, when the store has exactly one. So an update after an update that changed
 nothing reads the same versions.
 
@@ -1138,7 +1141,7 @@ command: `obc data update` writes only a `dir` target.
 | `obc data update TARGET [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--add LAYER]… [--remove LAYER]… [--refresh SOURCE=DAYS\|manual]… [--only LAYER,…] [--dry-run \| --expect ID] [--accept-format-change] [--json]` | The [update](#update) of a `dir` target. The flags change its settings. `--dry-run` writes the [review](#review) and changes nothing. Writes the steps that it baked or reused, the release that the target serves, its rollback, the number of kept outputs and what the collection did |
 | `obc data rollback TARGET [--json]` | The [rollback](#rollback) of a `dir` target. Writes the release that the target serves and its rollback |
 | `obc data sources [--check-now] [--json]` | Every source with licence and R2 copy, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
-| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a source and writes it to `refreshed/<source>` of the store: the next update of each target on this machine reads it, as [Versions](#versions) says. Refuses a source that needs a `NAME=VALUE`, and a `commit` or `digest` source with a `start` |
+| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
 | `obc data clean [--apply [--yes]] [--json]` | The plan of [Clean](#clean): the snapshot records and the objects that nothing reaches, what stays and why, and the size of `partial/`. `--apply` asks, then cleans. With `--json` and `--apply`, the plan goes to standard error, and the output is what it did |
@@ -2467,7 +2470,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "A snapshot record, the layers of one step, or the objects that one kind of root names and no\nkept record or layer has.",
       "properties": {
         "because": {
-          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `inputs kept`,\n`release`, `fixture` or `planner recipe`.",
+          "description": "`served by TARGET, …`, `newest of the source`, `newest of a request`, `refreshed`, `inputs\nkept`, `release`, `fixture` or `planner recipe`.",
           "items": {
             "type": "string"
           },
@@ -3144,6 +3147,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "minimum": 0,
           "type": "integer"
         },
+        "from": {
+          "description": "The versions that the targets served: a target that serves one of them, or none, moves.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "source": {
           "type": "string"
         },
@@ -3154,6 +3164,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "source",
+        "from",
         "version",
         "bytes"
       ],
