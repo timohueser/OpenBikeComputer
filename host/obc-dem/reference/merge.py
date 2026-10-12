@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The `obc data` step `maps/reference/<leaf>`: the national terrain models that reach one map
+"""The `obc data` step `device/reference/<leaf>`: the national terrain models that reach one map
 leaf, merged into one reference archive.
 
     uv run --locked --offline --group terrain-reference python host/obc-dem/reference/merge.py --step

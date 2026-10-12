@@ -661,7 +661,7 @@ environment (`Release::compose`). A product that no group or edit changes keeps 
 
 ### Device-map publication
 
-The maps catalog step consumes selected layer paths and their receipt metadata. Map and terrain
+The `device/catalog` step consumes selected layer paths and their receipt metadata. Map and terrain
 layers keep empty-coverage records and decoded reference credits in `metadata/`. Only `cells/`
 and `terrain/` payloads are client files. The catalog layer publishes pinned satellites from
 `objects/`. Named schema, terrain, licence and region files remain release metadata. The

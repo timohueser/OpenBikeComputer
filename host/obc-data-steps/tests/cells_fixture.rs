@@ -1,7 +1,7 @@
 //! The map cells of `obc data build` over the captured GLO-30 tile of the Grimsel, a synthetic OSM
 //! extract (`tests/data/cells.osm`) and synthetic land polygons: each cell has the bytes that one
 //! cut of the whole leaf writes, as the planet bake cuts it, and opens in the reader. A copy stands
-//! in for the Osmium crop of `maps/osm`. The bands are fine and network, which read the terrain:
+//! in for the Osmium crop of `device/osm`. The bands are fine and network, which read the terrain:
 //! authored coarse and mid geometry uses the production serializer to avoid a whole-leaf
 //! semantic raster in debug. A compiled landmark and a compiled peak on the summit of the extract stand in for the
 //! compile of a capture, and give one artifact each.

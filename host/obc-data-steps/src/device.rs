@@ -1,10 +1,10 @@
-//! The device maps. Each layer covers one leaf of the `2^23` grid that the region touches:
-//! `device/terrain/<i>-<j>` holds the terrain cells of the region in leaf `(i, j)`, `device/<band>/<i>-<j>`
+//! The device maps. Each step covers one leaf of the `2^23` grid that the region touches:
+//! `device/terrain/<i>-<j>` writes the terrain cells of the region in leaf `(i, j)`, `device/<band>/<i>-<j>`
 //! its map cells of one band, and `device/landmarks/<i>-<j>` and `device/peaks/<i>-<j>` its landmark
-//! and peak artifacts per network cell. Four layers are intermediates, which no client reads:
-//! `device/osm` holds the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models that
-//! the terrain cells of the leaf read, and `device/landmark-content` and `device/peak-content` the
-//! compiled Wikimedia captures of the region.
+//! and peak artifacts per network cell. No client reads the files of the intermediate steps:
+//! `device/osm` writes the OSM of each leaf, `device/reference/<i>-<j>` the national terrain models
+//! that the terrain cells of the leaf read, and `device/landmark-content` and `device/peak-content`
+//! the compiled Wikimedia captures of the region.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 

@@ -335,7 +335,7 @@ fn order(steps: &[Step]) -> Result<Vec<&Step>, String> {
             .filter(|step| !placed.contains(step.name.as_str()) && step.reads().all(|name| placed.contains(name)))
             .collect();
         if ready.is_empty() {
-            return Err("the steps read each other's layers in a cycle".into());
+            return Err("the steps read each other's files in a cycle".into());
         }
         placed.extend(ready.iter().map(|step| step.name.as_str()));
         ordered.extend(ready);
@@ -508,7 +508,7 @@ fn prepare(store: &Store, step: &Step, layers: &HashMap<&str, release::Layer>) -
             Input::Step { name, files: selected } => {
                 let (files, missing) = select_layer(&layers[name.as_str()].files, selected);
                 if let Some(path) = missing.first() {
-                    return Err(format!("layer `{name}` has no file {path}"));
+                    return Err(format!("step `{name}` has no file {path}"));
                 }
                 let files = files.into_iter().map(|file| (file.path.clone(), file.sha256.clone(), file.size));
                 let mut selected = selected.clone();
@@ -1039,7 +1039,7 @@ json.dump({'characters': len(upper + tail)}, open(request['metrics'], 'w'))
         assert_eq!(summary(&built), [("test/leaves", false), ("test/one", true)]);
 
         let err = fixture.build(&steps("leaves/x.txt")).err().unwrap();
-        assert!(err.contains("layer `test/leaves` has no file leaves/x.txt"), "{err}");
+        assert!(err.contains("step `test/leaves` has no file leaves/x.txt"), "{err}");
     }
 
     #[test]

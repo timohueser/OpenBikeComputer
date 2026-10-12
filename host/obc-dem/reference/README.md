@@ -31,8 +31,8 @@ tile against the contract below. `publish` and `mirror` are `rclone copy`; a pub
 adds, and it merges its index with the one already on R2.
 
 `ingest.py fetch <key> --tile <ti>-<tj>` is the `obc data` fetch: one tile, pooled, its raw
-rasters removed. `merge.py --step` is the step `maps/reference/<leaf>`: those tiles of each
-model, best first, into an empty archive (`specs/obc-data.md`, `maps`).
+rasters removed. `merge.py --step` is the step `device/reference/<leaf>`: those tiles of each
+model, best first, into an empty archive (`specs/obc-data.md`, `device`).
 
 **A country-scale ingest is an owner-run job**, and it takes `--per-tile`: one archive tile at a
 time, the work wiped after each and the finished tile marked done in the source manifest, so disk
