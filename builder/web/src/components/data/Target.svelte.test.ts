@@ -98,3 +98,13 @@ it("the coverage colours the leaves of the chosen tiled layer by their state", a
         await unmount(target);
     }
 });
+
+it("a link from a source sets the refresh flag of the review", async () => {
+    const posted = server();
+    const { screen: target } = screen(`#/local/review?refresh=${encodeURIComponent("geofabrik-extracts=14")}`, false);
+    try {
+        await vi.waitFor(() => expect(posted()).toEqual([["update", "local", "--refresh", "geofabrik-extracts=14", "--dry-run"]]));
+    } finally {
+        await unmount(target);
+    }
+});

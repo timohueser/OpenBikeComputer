@@ -86,20 +86,38 @@ pub struct TargetState {
 pub struct AreaBoxes {
     pub name: String,
     /// A box for each part: the box of a box region, and the bounds of each Geofabrik area in the
-    /// cached index. A Geofabrik area that the store has no index for has no box.
+    /// cached index.
     pub boxes: Vec<Bbox>,
+    /// Why a part has no box; `null` when each part has one.
+    pub missing: Option<String>,
 }
 
+/// The areas of the cached Geofabrik index, read when a region first needs them.
+type Index<'a> = &'a dyn Fn() -> Result<Option<&'a BTreeMap<String, geofabrik::Area>>, String>;
+
 /// The area of region `id` of `regions`, with the bounds of its Geofabrik areas from `index`.
-fn area(regions: &Regions, id: &str, index: Option<&BTreeMap<String, geofabrik::Area>>) -> Option<AreaBoxes> {
+fn area(regions: &Regions, id: &str, index: Index) -> Option<AreaBoxes> {
     let name = regions.get(id)?.name.clone();
-    let parts = regions.leaves(id).ok()?.into_iter().filter_map(|leaf| regions.get(leaf));
-    let boxes = parts.flat_map(|part| match &part.area {
-        Area::Box { bbox } => vec![*bbox],
-        Area::Geofabrik { areas } => areas.iter().filter_map(|path| Some(index?.get(path)?.bounds)).collect(),
-        Area::Union { .. } => Vec::new(),
-    });
-    Some(AreaBoxes { name, boxes: boxes.collect() })
+    let (mut boxes, mut missing) = (Vec::new(), None);
+    for part in regions.leaves(id).ok()?.into_iter().filter_map(|leaf| regions.get(leaf)) {
+        match &part.area {
+            Area::Box { bbox } => boxes.push(*bbox),
+            Area::Geofabrik { areas } => match index() {
+                Ok(Some(index)) => {
+                    for path in areas {
+                        match index.get(path) {
+                            Some(area) => boxes.push(area.bounds),
+                            None => missing = Some(format!("the Geofabrik index has no area `{path}`")),
+                        }
+                    }
+                }
+                Ok(None) => missing = Some("the store has no Geofabrik index: `obc data fetch geofabrik-index`".into()),
+                Err(error) => missing = Some(format!("the Geofabrik index cannot be read: {error}")),
+            },
+            Area::Union { .. } => {}
+        }
+    }
+    Some(AreaBoxes { name, boxes, missing })
 }
 
 /// A source version that a release read.
@@ -121,6 +139,12 @@ pub struct Lock {
     pub stale: bool,
 }
 
+impl Lock {
+    pub fn of(holder: Holder) -> Self {
+        Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder }
+    }
+}
+
 pub fn overview(
     root: &Path,
     (products, producers): (&[&dyn Product], &[&dyn Prepared]),
@@ -129,12 +153,16 @@ pub fn overview(
     let (store, http) = (Store::open()?, Http::new());
     let targets = crate::target::load(root, &store).map_err(|e| Code::InvalidData.error(e))?;
     let sources = Registry::load(root).map_err(|e| Code::InvalidData.error(e))?.sources;
-    // A target names its Geofabrik areas without their bounds; the cached index has them.
-    let index = super::cached_index(&store).ok().flatten();
-    let index = index.as_ref().map(|(_, areas)| areas);
+    // A target names its Geofabrik areas without their bounds; the cached index has them. It is
+    // read only for a region with a Geofabrik area.
+    let cached = std::cell::OnceCell::new();
+    let index = || match cached.get_or_init(|| super::cached_index(&store).map_err(|e| e.message)) {
+        Ok(found) => Ok(found.as_ref().map(|(_, areas)| areas)),
+        Err(error) => Err(error.clone()),
+    };
     let targets = targets
         .iter()
-        .map(|(name, target)| state(root, &store, &http, (products, producers), (&sources, index), name, target));
+        .map(|(name, target)| state(root, &store, &http, (products, producers), (&sources, &index), name, target));
     let limits = Limits::machine();
     let free = crate::store::free_bytes(store.root())?.map(|(_, free)| free);
     let name = crate::machine();
@@ -205,7 +233,7 @@ fn state(
     store: &Store,
     http: &Http,
     (products, producers): (&[&dyn Product], &[&dyn Prepared]),
-    (sources, index): (&[Source], Option<&BTreeMap<String, geofabrik::Area>>),
+    (sources, index): (&[Source], Index),
     name: &str,
     target: &Target,
 ) -> TargetState {
@@ -236,9 +264,7 @@ fn state(
         _ => format!("obc data update {name} --dry-run"),
     };
     match lock::holder(target) {
-        Ok(holder) => {
-            state.lock = holder.map(|holder| Lock { stale: lock::stale_at(&holder) <= crate::date::now(), holder })
-        }
+        Ok(holder) => state.lock = holder.map(Lock::of),
         Err(error) => state.lock_error = Some(error),
     }
     let judged = (|| -> Result<(), Error> {
@@ -318,9 +344,11 @@ mod tests {
                 (id.clone(), geofabrik::Area { id: id.clone(), name, parent, countries, polygons, bounds })
             })
             .collect();
-        let boxes = |id| area(&regions, id, Some(&index)).unwrap().boxes;
-        assert_eq!(boxes("box"), [box_]);
+        let boxes = |id| area(&regions, id, &|| Ok(Some(&index))).unwrap().boxes;
         assert_eq!(boxes("areas"), bounds);
-        assert!(area(&regions, "areas", None).unwrap().boxes.is_empty(), "no index, no boxes");
+        let unread = area(&regions, "box", &|| panic!("a box region reads no index")).unwrap();
+        assert_eq!(unread.boxes, [box_]);
+        let missing = area(&regions, "areas", &|| Ok(None)).unwrap();
+        assert!(missing.boxes.is_empty() && missing.missing.unwrap().contains("no Geofabrik index"));
     }
 }

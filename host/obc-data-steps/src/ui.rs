@@ -152,7 +152,9 @@ fn refused(args: &[String]) -> Option<Error> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
-        [] | ["setup"] | ["runs"] | ["areas"] => true,
+        [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] => true,
+        ["source", "refresh", source] => name(source),
+        ["source", "prepare", source, ref rest @ ..] => name(source) && prepared(rest),
         // Not `--follow`: it answers only when the run ends.
         ["runs", run] | ["runs", run, "--stop"] => name(run),
         ["update", target, ref rest @ ..] => name(target) && reviewed(rest),
@@ -183,6 +185,24 @@ fn reviewed(mut rest: &[&str]) -> bool {
             }
             // A box can start with a minus: `--box -5,40,-4,41`.
             [flag, value, more @ ..] if SETTINGS.contains(flag) && (*flag == "--box" || !value.starts_with('-')) => {
+                rest = more
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// Whether the words after `source prepare ID` are scope and target flags with their values, then
+/// `--dry-run` for a review, or `--expect ID` that starts the prepare of a review, with `--yes` for an
+/// R2 target.
+fn prepared(mut rest: &[&str]) -> bool {
+    loop {
+        match rest {
+            ["--dry-run"] => return true,
+            ["--expect", id] | ["--expect", id, "--yes"] => return !id.starts_with('-'),
+            [flag, value, more @ ..]
+                if ["--region", "--box", "--to"].contains(flag) && (*flag == "--box" || !value.starts_with('-')) =>
+            {
                 rest = more
             }
             _ => return false,
@@ -348,6 +368,13 @@ mod tests {
             &["runs", "--stop"],
             &["r2", "list"],
             &["areas", "freiburg"],
+            &["source", "refresh"],
+            &["source", "fetch", "osm"],
+            &["source", "prepare", "wiki"],
+            &["source", "prepare", "wiki", "--yes"],
+            &["source", "prepare", "wiki", "--to", "--dry-run"],
+            &["source", "prepare", "wiki", "--dry-run", "--expect", "7a1c"],
+            &["source", "prepare", "wiki", "--expect", "7a1c", "--yes", "--yes"],
             &["areas", "--at", "8,48"],
             &["update", "local"],
             &["update", "local", "--yes"],
@@ -377,6 +404,19 @@ mod tests {
             &["setup"],
             &["runs"],
             &["areas"],
+            &["sources"],
+            &["source", "refresh", "natural-earth"],
+            &["source", "prepare", "wiki", "--to", "prod", "--dry-run"],
+            &[
+                "source",
+                "prepare",
+                "terrain-reference/ch",
+                "--region",
+                "europe/switzerland",
+                "--expect",
+                "7a1c",
+                "--yes",
+            ],
             &["runs", "r1"],
             &["runs", "r1", "--stop"],
             &["update", "local", "--dry-run"],

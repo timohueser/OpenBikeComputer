@@ -1,0 +1,17 @@
+{
+    "id": "7a1c0d2a91b7",
+    "source": "wiki",
+    "target": "prod",
+    "version": "2026-10-12",
+    "abandoned": null,
+    "listing": false,
+    "format": 1,
+    "revision": 2,
+    "scope": null,
+    "inputs": [{"source": "wikidata", "version": null, "params": [], "bytes": null}, {"source": "wikipedia", "version": "2026-10-01", "params": [["lang", "de"]], "bytes": 21474836480}],
+    "done": {"files": 0, "bytes": 0},
+    "cost": {"wall_ms": 7200000, "peak_rss_bytes": 17179869184, "store_bytes": 42949672960, "upload_bytes": 2576980378, "unknown": ["wikidata@newest"]},
+    "machine": {"memory_bytes": 34359738368, "store_free_bytes": 442381631488, "refusals": []},
+    "stale": [{"target": "prod", "layers": ["device/landmarks", "planner/search"], "error": null}, {"target": "local", "layers": ["device/landmarks"], "error": null}],
+    "args": ["source", "prepare", "wiki", "--to", "prod", "--expect", "7a1c0d2a91b7"]
+}

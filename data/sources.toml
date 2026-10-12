@@ -6,6 +6,7 @@
 [[source]]
 id = "osm-planet"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
@@ -20,6 +21,7 @@ redistribute = true
 [[source]]
 id = "osm-replication"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
@@ -32,6 +34,7 @@ redistribute = true
 [[source]]
 id = "geofabrik-extracts"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
@@ -44,6 +47,7 @@ redistribute = true
 [[source]]
 id = "geofabrik-index"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
@@ -56,6 +60,7 @@ redistribute = true
 [[source]]
 id = "geofabrik-poly"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
@@ -69,6 +74,7 @@ redistribute = true
 [[source]]
 id = "osm-trails"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
 attribution = "© OpenStreetMap contributors"
@@ -81,6 +87,7 @@ redistribute = true
 [[source]]
 id = "land-polygons"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://osmdata.openstreetmap.de/info/license.html"
 attribution = "© OpenStreetMap contributors"
@@ -93,6 +100,7 @@ redistribute = true
 [[source]]
 id = "water-polygons"
 kind = "data"
+group = "OpenStreetMap"
 licence = "ODbL-1.0"
 licence_url = "https://osmdata.openstreetmap.de/info/license.html"
 attribution = "© OpenStreetMap contributors"
@@ -108,6 +116,7 @@ redistribute = true
 [[source]]
 id = "copernicus-glo-30"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-Copernicus-DEM"
 licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model"
 attribution = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
@@ -121,6 +130,7 @@ redistribute = false
 [[source]]
 id = "copernicus-glo-30-tiles"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-Copernicus-DEM"
 licence_url = "https://spacedata.copernicus.eu/collections/copernicus-digital-elevation-model"
 fetch = { kind = "http", url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt" }
@@ -130,6 +140,7 @@ redistribute = true
 [[source]]
 id = "mapzen-terrain-tiles"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-Mapzen-terrain-tiles"
 licence_url = "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
 attribution = "Mapzen and its elevation data providers"
@@ -143,6 +154,7 @@ redistribute = false
 [[source]]
 id = "dtm-at"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Bundesamt für Eich- und Vermessungswesen (BEV)"
 fetch = { kind = "dtm", url = "https://data.bev.gv.at/download/ALS/DTM/20250915/" }
@@ -154,6 +166,7 @@ redistribute = true
 [[source]]
 id = "dtm-au"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Sourced from ELVIS – Elevation and Depth, © the contributing agency"
 obligations = "The licensor is the contributing agency named in the order"
@@ -168,6 +181,7 @@ credential = { env = ["OBC_REFERENCE_AU_INPUT", "OBC_REFERENCE_AU_DATUM"] }
 [[source]]
 id = "dtm-ca"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "OGL-Canada-2.0"
 attribution = "Contains information licensed under the Open Government Licence – Canada"
 fetch = { kind = "dtm", url = "https://datacube.services.geo.ca/ows/elevation" }
@@ -179,6 +193,7 @@ redistribute = true
 [[source]]
 id = "dtm-ch"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-swisstopo-open-data"
 attribution = "© swisstopo"
 obligations = "Open data, attribution required"
@@ -191,6 +206,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-bw"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "DL-DE-BY-2.0"
 attribution = "Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0"
 fetch = { kind = "dtm", url = "https://opengeodata.lgl-bw.de/data/dgm/" }
@@ -202,6 +218,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-by"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Bayerische Vermessungsverwaltung – www.geodaten.bayern.de"
 fetch = { kind = "dtm", url = "https://download1.bayernwolke.de/a/dgm/dgm1/" }
@@ -213,6 +230,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-he"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "DL-DE-ZERO-2.0"
 attribution = "© HLBG Hessen"
 fetch = { kind = "dtm", url = "https://inspire-hessen.de/raster/dgm1/ows" }
@@ -224,6 +242,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-mv"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-GeoBasis-DE-MV-open-data"
 attribution = "© GeoBasis-DE/M-V"
 obligations = "Open data, attribution required"
@@ -236,6 +255,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-ni"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "© LGLN"
 fetch = { kind = "dtm", url = "https://dgm.stac.lgln.niedersachsen.de/search" }
@@ -247,6 +267,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-nw"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "DL-DE-ZERO-2.0"
 attribution = "© Geobasis NRW"
 fetch = { kind = "dtm", url = "https://www.wcs.nrw.de/geobasis/wcs_nw_dgm" }
@@ -258,6 +279,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-sn"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "DL-DE-BY-2.0"
 attribution = "GeoSN"
 fetch = { kind = "dtm", url = "https://geocloud.landesvermessung.sachsen.de/public.php/dav/files/JCcXyifaNdLDnxZ/" }
@@ -269,6 +291,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-st"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "DL-DE-BY-2.0"
 attribution = "© GeoBasis-DE / LVermGeo LSA"
 fetch = { kind = "dtm", url = "https://geodatenportal.sachsen-anhalt.de/ows_INSPIRE_LVermGeo_ATKIS_EL_DGM_WCS" }
@@ -280,6 +303,7 @@ redistribute = true
 [[source]]
 id = "dtm-de-th"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "DL-DE-BY-2.0"
 attribution = "© GDI-Th, Freistaat Thüringen"
 fetch = { kind = "dtm", url = "https://geoportal.geoportal-th.de/hoehendaten/DGM/dgm_2020-2025/" }
@@ -291,6 +315,7 @@ redistribute = true
 [[source]]
 id = "dtm-dk"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Indeholder data fra Klimadatastyrelsen, Danmarks Højdemodel, {month} {year}"
 fetch = { kind = "dtm", url = "https://api.dataforsyningen.dk/dhm_wcs_DAF" }
@@ -304,6 +329,7 @@ credential = { env = ["OBC_REFERENCE_DK_TOKEN"] }
 [[source]]
 id = "dtm-es"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "© Instituto Geográfico Nacional"
 fetch = { kind = "dtm", url = "https://servicios.idee.es/wcs-inspire/mdt" }
@@ -315,6 +341,7 @@ redistribute = true
 [[source]]
 id = "dtm-fi"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "© Maanmittauslaitos"
 fetch = { kind = "dtm", url = "https://avoin-karttakuva.maanmittauslaitos.fi/ortokuvat-ja-korkeusmallit/wcs/v2" }
@@ -328,6 +355,7 @@ credential = { env = ["OBC_REFERENCE_FI_TOKEN"] }
 [[source]]
 id = "dtm-fr"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-Licence-Ouverte"
 attribution = "© IGN"
 fetch = { kind = "dtm", url = "https://data.geopf.fr/wms-r/wms" }
@@ -339,6 +367,7 @@ redistribute = true
 [[source]]
 id = "dtm-it-bz"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC0-1.0"
 attribution = "Autonome Provinz Bozen – Provincia autonoma di Bolzano"
 fetch = { kind = "dtm", url = "https://geoservices9.civis.bz.it/geoserver/ows" }
@@ -349,6 +378,7 @@ redistribute = true
 [[source]]
 id = "dtm-it-tn"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Provincia autonoma di Trento"
 fetch = { kind = "dtm", url = "https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/" }
@@ -359,6 +389,7 @@ redistribute = true
 [[source]]
 id = "dtm-nl"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "© Rijkswaterstaat / AHN"
 fetch = { kind = "dtm", url = "https://service.pdok.nl/rws/ahn/wcs/v1_0" }
@@ -370,6 +401,7 @@ redistribute = true
 [[source]]
 id = "dtm-no"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "© Kartverket"
 fetch = { kind = "dtm", url = "https://wcs.geonorge.no/skwms1/wcs.hoyde-dtm-nhm-25833" }
@@ -381,6 +413,7 @@ redistribute = true
 [[source]]
 id = "dtm-nz"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Sourced from the LINZ Data Service and licensed by Toitū Te Whenua Land Information New Zealand, for re-use under CC BY 4.0"
 fetch = { kind = "dtm", url = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dem_1m/2193/" }
@@ -392,6 +425,7 @@ redistribute = true
 [[source]]
 id = "dtm-se"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "© Lantmäteriet"
 fetch = { kind = "dtm", url = "https://api.lantmateriet.se/stac-hojd/v1/search" }
@@ -405,6 +439,7 @@ credential = { env = ["OBC_REFERENCE_SE_USER", "OBC_REFERENCE_SE_PASSWORD"] }
 [[source]]
 id = "dtm-uk"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "OGL-UK-3.0"
 attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
 fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs" }
@@ -416,6 +451,7 @@ redistribute = true
 [[source]]
 id = "dtm-us"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-public-domain"
 attribution = "USGS 3DEP"
 fetch = { kind = "dtm", url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage" }
@@ -429,6 +465,7 @@ redistribute = true
 [[source]]
 id = "wikidata"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
@@ -441,6 +478,7 @@ redistribute = true
 [[source]]
 id = "wikipedia"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-SA-4.0"
 licence_url = "https://creativecommons.org/licenses/by-sa/4.0/"
 attribution = "landmark text from Wikipedia, © the contributors"
@@ -453,6 +491,7 @@ redistribute = true
 [[source]]
 id = "commons"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-Commons-per-file"
 attribution = "photos from Wikimedia Commons, © the photographers"
 obligations = "Each record states the licence and the notices of its own photo"
@@ -467,6 +506,7 @@ redistribute = true
 [[source]]
 id = "era5-land"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 attribution = "Contains modified Copernicus Climate Change Service information {year}: ERA5-Land (doi:10.24381/cds.e2161bac)"
 fetch = { kind = "capture", url = "https://arco.datastores.ecmwf.int/cadl-arco-geo-{bucket}/arco/reanalysis_era5_land/{group}/geoChunked.zarr" }
@@ -479,6 +519,7 @@ credential = { file = "~/.cdsapirc" }
 [[source]]
 id = "modis-snow"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-NASA-EOSDIS"
 licence_url = "https://nsidc.org/data/mod10a1/versions/61"
 attribution = "MODIS MOD10A1/MYD10A1 v061, Hall & Riggs, NASA NSIDC DAAC, doi:10.5067/MODIS/MOD10A1.061, doi:10.5067/MODIS/MYD10A1.061"
@@ -491,6 +532,7 @@ redistribute = true
 [[source]]
 id = "hr-wsi"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "LicenseRef-Copernicus-CLMS"
 licence_url = "https://land.copernicus.eu/en/data-policy"
 attribution = "© European Union, Copernicus Land Monitoring Service {year}, European Environment Agency (EEA): HR-WSI Snow Phenology"
@@ -507,6 +549,7 @@ credential = { file = "~/.config/openbikecomputer/cdse-s3.env" }
 [[source]]
 id = "hansen-gfc"
 kind = "data"
+group = "Elevation, Wikimedia, climate and snow"
 licence = "CC-BY-4.0"
 licence_url = "https://storage.googleapis.com/earthenginepartners-hansen/GFC-2023-v1.11/download.html"
 attribution = "Hansen/UMD/Google/USGS/NASA"
@@ -520,6 +563,7 @@ redistribute = true
 [[source]]
 id = "natural-earth"
 kind = "data"
+group = "Basemap, land, assets and tools"
 licence = "LicenseRef-public-domain"
 licence_url = "https://www.naturalearthdata.com/about/terms-of-use/"
 attribution = "Natural Earth"
@@ -531,6 +575,7 @@ redistribute = true
 [[source]]
 id = "daylight-landcover"
 kind = "data"
+group = "Basemap, land, assets and tools"
 licence = "CC-BY-4.0"
 licence_url = "https://daylightmap.org/2023/10/11/landcover.html"
 attribution = "ESA WorldCover"
@@ -541,6 +586,7 @@ redistribute = true
 [[source]]
 id = "qrank"
 kind = "data"
+group = "Basemap, land, assets and tools"
 licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
@@ -552,6 +598,7 @@ redistribute = true
 [[source]]
 id = "pgf-encoding"
 kind = "data"
+group = "Basemap, land, assets and tools"
 licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 obligations = "none"
@@ -565,6 +612,7 @@ redistribute = true
 [[source]]
 id = "protomaps-assets"
 kind = "asset"
+group = "Basemap, land, assets and tools"
 licence = "OFL-1.1 AND MIT"
 licence_url = "https://github.com/protomaps/basemaps-assets"
 obligations = "Keep the OFL text with the fonts and the MIT notice with the sprites"
@@ -578,6 +626,7 @@ redistribute = true
 [[source]]
 id = "tangrams-icons"
 kind = "asset"
+group = "Basemap, land, assets and tools"
 licence = "MIT"
 licence_url = "https://github.com/tangrams/icons"
 obligations = "Keep the MIT notice with the sprites"
@@ -590,6 +639,7 @@ redistribute = true
 [[source]]
 id = "query-model"
 kind = "asset"
+group = "Basemap, land, assets and tools"
 licence = "MIT"
 obligations = "Keep the MIT notice of mmBERT-small, the model it derives from"
 # `planner/search/setup.py` pins the SHA-256 of the archive.
@@ -603,6 +653,7 @@ redistribute = true
 [[source]]
 id = "planetiler"
 kind = "tool"
+group = "Basemap, land, assets and tools"
 licence = "Apache-2.0"
 licence_url = "https://github.com/onthegomap/planetiler"
 fetch = { kind = "installed" }
@@ -612,6 +663,7 @@ redistribute = false
 [[source]]
 id = "protomaps-basemaps"
 kind = "tool"
+group = "Basemap, land, assets and tools"
 licence = "BSD-3-Clause"
 licence_url = "https://github.com/protomaps/basemaps"
 fetch = { kind = "github", url = "https://codeload.github.com/protomaps/basemaps/tar.gz/{version}" }
@@ -623,6 +675,7 @@ redistribute = false
 [[source]]
 id = "nominatim-country-data"
 kind = "data"
+group = "Basemap, land, assets and tools"
 licence = "ODbL-1.0 AND GPL-2.0-only AND GPL-3.0-or-later"
 licence_url = "https://github.com/osm-search/Nominatim"
 attribution = "© OpenStreetMap contributors"

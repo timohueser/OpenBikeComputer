@@ -257,15 +257,16 @@ export class CoverageMapView {
         this.map.invalidateSize();
     }
 
-    /** The catalog's named regions as quiet outlines, in place of those before. */
-    setRegions(regions: { id: string; name: string; rings: DegPoint[][] }[]): void {
+    /** The catalog's named regions as quiet outlines, in place of those before. `hidden` regions are
+     *  only picked, not drawn. */
+    setRegions(regions: { id: string; name: string; rings: DegPoint[][] }[], hidden = false): void {
         this.regionLayer.clearLayers();
         this.regionPolys.clear();
         this.regions = [];
         const all = L.latLngBounds([]);
         for (const region of regions) {
             const poly = L.polygon(region.rings, REGION_STYLE);
-            poly.addTo(this.regionLayer);
+            if (!hidden) poly.addTo(this.regionLayer);
             this.regionPolys.set(region.id, poly);
             const bounds = poly.getBounds();
             this.regions.push({

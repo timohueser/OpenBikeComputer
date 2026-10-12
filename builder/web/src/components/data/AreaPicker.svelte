@@ -27,8 +27,12 @@
         if (tab === "geofabrik") return all.filter((area) => ticked.includes(area.id)).map((area) => area.bounds);
         return tab === "box" && drawn ? [box] : [];
     });
-    const cells = $derived(chosen.map((bounds) => ({ bounds: corners(bounds), color: "var(--running)", label: "the next area" })));
-    // Every Geofabrik area, so that a click picks the smallest that holds the point, also with no search.
+    const cells = $derived([
+        ...(tab === "geofabrik" ? found.filter((area) => !ticked.includes(area.id)) : []).map((area) => ({ bounds: corners(area.bounds), color: "var(--ink-faint)", label: area.name })),
+        ...chosen.map((bounds) => ({ bounds: corners(bounds), color: "var(--running)", label: "the next area" })),
+    ]);
+    // Every Geofabrik area, not drawn, so that a click picks the smallest that holds the point, also
+    // with no search. The map draws only the search results and the ticked areas.
     const regions = $derived(all.map(({ id, name, bounds: b }) => ({ id, name, rings: [rectangle(b)] })));
     function rectangle({ west, south, east, north }: Bbox) {
         return [[south, west], [south, east], [north, east], [north, west], [south, west]] as [number, number][];

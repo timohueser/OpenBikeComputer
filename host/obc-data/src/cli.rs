@@ -383,6 +383,30 @@ struct SourceRow {
     /// The versions in the local store, the one fetched last first.
     snapshots: Vec<Stored>,
     credential_missing: bool,
+    /// Whether `source refresh` moves the source.
+    refreshable: bool,
+    /// For a prepared source, by target: its complete versions there, and the run that holds the
+    /// lock of the source there. Empty for another source.
+    prepared: BTreeMap<String, PreparedOn>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct PreparedOn {
+    versions: Vec<crate::prepared::Version>,
+    lock: Option<overview::Lock>,
+    /// Why the versions or the lock of the source there cannot be read; `null` when they can.
+    error: Option<String>,
+}
+
+/// The [`PreparedOn`] of source `id` on each of `targets`.
+fn prepared_on(targets: &BTreeMap<String, crate::target::Target>, id: &str) -> BTreeMap<String, PreparedOn> {
+    let read = |target| -> Result<PreparedOn, String> {
+        let versions = crate::prepared::versions(target, id)?;
+        let lock = crate::lock::holder(&crate::prepared::folder(target, id))?.map(overview::Lock::of);
+        Ok(PreparedOn { versions, lock, error: None })
+    };
+    let on = |target| read(target).unwrap_or_else(|e| PreparedOn { versions: Vec::new(), lock: None, error: Some(e) });
+    targets.iter().map(|(name, target)| (name.clone(), on(target))).collect()
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -416,6 +440,7 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             }
         })
         .collect();
+    let all = crate::target::load(root, &store).map_err(|e| Code::InvalidData.error(e))?;
     let mut rows = Vec::new();
     for source in sorted {
         let mut targets = BTreeMap::new();
@@ -435,7 +460,20 @@ fn print_sources(root: &Path, check_now: bool, json: bool) -> Result<(), Error> 
             .map(|s| Stored { bytes: s.files.iter().map(|f| f.size).sum(), version: s.version })
             .collect();
         let credential_missing = source.credential.as_ref().is_some_and(|credential| !credential.present());
-        rows.push(SourceRow { copy: source.copied(), source, targets, snapshots, credential_missing });
+        let prepared = match source.fetch.kind {
+            crate::sources::FetchKind::Prepared => prepared_on(&all, &source.id),
+            _ => BTreeMap::new(),
+        };
+        let refreshable = source_cli::moves(&source);
+        rows.push(SourceRow {
+            copy: source.copied(),
+            source,
+            targets,
+            snapshots,
+            credential_missing,
+            refreshable,
+            prepared,
+        });
     }
     if json {
         return print_json(&Sources { sources: rows });
@@ -596,4 +634,30 @@ fn row_text(row: &[String], widths: &[usize]) -> String {
         .map(|(i, cell)| if i + 1 == row.len() { cell.clone() } else { format!("{cell:<w$}", w = widths[i]) })
         .collect();
     cells.join("  ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::tests::Scratch;
+
+    #[test]
+    fn a_prepared_source_names_its_versions_and_lock_on_each_target_or_why_they_cannot_be_read() {
+        let dir = Scratch::new("prepared-on");
+        let folder = dir.0.join("sources/wiki");
+        std::fs::create_dir_all(&folder).unwrap();
+        let version = r#"[{"version": "2026-09-01", "manifest_sha256": "aa", "format": 1, "bytes": 5, "time": "2026-09-02T00:00:00Z"}]"#;
+        std::fs::write(folder.join("versions.json"), version).unwrap();
+        let lock = r#"{"state": "held", "machine": "bake", "run": "r1", "review": null, "phase": "build", "heartbeat": "2026-09-03T00:00:00Z"}"#;
+        std::fs::write(folder.join("lock.json"), lock).unwrap();
+        let targets = BTreeMap::from([("prod".to_string(), crate::target::Target::Dir(dir.0.clone()))]);
+        let on = prepared_on(&targets, "wiki");
+        let lock = on["prod"].lock.as_ref().unwrap();
+        assert_eq!((on["prod"].versions[0].version.as_str(), lock.holder.machine.as_str()), ("2026-09-01", "bake"));
+        assert!(lock.stale);
+
+        std::fs::write(folder.join("versions.json"), "[").unwrap();
+        let on = prepared_on(&targets, "wiki");
+        assert!(on["prod"].error.as_ref().unwrap().contains("versions.json"), "{:?}", on["prod"].error);
+    }
 }

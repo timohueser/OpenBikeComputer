@@ -23,11 +23,20 @@ export function runAt(hash: string): string | null {
     return first === "runs" && id ? id : null;
 }
 
-/** What a target screen shows: `#/TARGET`; its review `#/TARGET/review`, which `?only=LAYER,…`
- *  narrows; or the review that resumes a run, `#/TARGET/resume/RUN`. */
-export function targetAt(hash: string): { review: boolean; resume: string | null; only: string | null } {
+/** What a target screen shows: `#/TARGET`; its review `#/TARGET/review`, which `?only=LAYER,…` and
+ *  `?refresh=SOURCE=DAYS` set; or the review that resumes a run, `#/TARGET/resume/RUN`. */
+export function targetAt(hash: string): { review: boolean; resume: string | null; only: string | null; refresh: string | null } {
     const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
     const [, second, run] = path.split("/");
     const resume = second === "resume" && run ? run : null;
-    return { review: second === "review" || !!resume, resume, only: new URLSearchParams(query).get("only") };
+    const params = new URLSearchParams(query);
+    return { review: second === "review" || !!resume, resume, only: params.get("only"), refresh: params.get("refresh") };
+}
+
+/** What the Sources screen shows: the list `#/sources`, a source `#/sources/ID`, or the review of a
+ *  prepare `#/sources/ID/prepare?to=TARGET`. An id can hold `/`, so it is encoded. */
+export function sourceAt(hash: string): { id: string | null; prepare: string | null } {
+    const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
+    const [, id, prepare] = path.split("/");
+    return { id: id ? decodeURIComponent(id) : null, prepare: prepare === "prepare" ? (new URLSearchParams(query).get("to") ?? "prod") : null };
 }

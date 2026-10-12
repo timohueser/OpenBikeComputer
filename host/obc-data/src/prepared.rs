@@ -108,7 +108,7 @@ pub struct Read {
 }
 
 /// An entry of `versions.json`, which lists the complete versions sorted by version.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Version {
     pub version: String,

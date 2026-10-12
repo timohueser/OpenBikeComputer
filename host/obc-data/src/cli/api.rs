@@ -284,7 +284,7 @@ mod tests {
             schema("`rollback`", generator.subschema_for::<rollback_cli::RolledBack>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
-            schema("`source refresh`", generator.subschema_for::<source_cli::Refreshed>()),
+            schema("`source refresh`", generator.subschema_for::<source_cli::Refreshing>()),
             schema("`source prepare`", generator.subschema_for::<update_cli::Started>()),
             schema("`source prepare --dry-run`", generator.subschema_for::<prepare_cli::PrepareReview>()),
             schema("`fetch`", generator.subschema_for::<crate::cli::Fetched>()),
@@ -379,13 +379,15 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 7] = [
+        const EXAMPLES: [(&str, &str); 9] = [
             ("areas.json", "Areas"),
+            ("prepare-review.json", "PrepareReview"),
             ("review.json", "Review"),
             ("run-failed.json", "View"),
             ("run-running.json", "View"),
             ("runs.json", "RunList"),
             ("setup.json", "Setup"),
+            ("sources.json", "Sources"),
             ("status.json", "Overview"),
         ];
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/web/test-support/data");

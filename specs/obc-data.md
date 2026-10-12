@@ -19,6 +19,7 @@ One `[[source]]` table per source.
 | --- | --- | --- | --- |
 | `id` | string | yes | Unique, lowercase kebab-case. A `prepared` source can have two such parts joined by `/`, such as `terrain-reference/ch` |
 | `kind` | string | yes | `data` (steps read it), `asset` (ships to users as it is) or `tool` (steps run it; nothing of it ships) |
+| `group` | string | no | The heading under which the operator page lists the source |
 | `licence` | string | no | SPDX licence expression: ids or `LicenseRef-…`, joined by `AND`, `OR`, `WITH` and parentheses |
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
@@ -1542,7 +1543,7 @@ checks of the last hour. A target that serves nothing has the next command
 | `obc data rollback TARGET [--yes] [--json]` | The [rollback](#rollback) of a target. Writes the release that the target serves and its rollback |
 | `obc data unlock TARGET --from MACHINE [--source ID] [--yes] [--json]` | Frees the [lock](#lock) of a target, or with `--source` the lock of a [prepared source](#prepared-sources) on it, that a run of MACHINE holds with a heartbeat 10 minutes old or older. Asks first. Writes the holder that it removed |
 | `obc data sources [--check-now] [--json]` | Every source with licence and whether a target copies it, and for each target that serves a release its policy, its versions and its [state](#state-of-a-source); and the versions in the local store. Rows are in kind order: data, then assets, then tools. An upstream check of the last hour serves, except with `--check-now` |
-| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source |
+| `obc data source refresh ID [--json]` | Fetches upstream's newest version of a `digest` source without `start` or params, and writes `refreshed/<source>.json` of the store with the versions that the targets serve: the next update of a target that serves one of them, or none, reads it, as [Versions](#versions) says. Refuses another source. The fetch is a detached [run](#runs): a terminal follows it, and `--json` writes `{run}` and ends |
 | `obc data source prepare ID [--region ID\|PATH[,PATH…] \| --box W,S,E,N] [--to TARGET] [--dry-run \| --expect ID] [--yes] [--json]` | [Prepares](#prepared-sources) a version of a prepared source for a target, `prod` by default. `--dry-run` writes the review. Else it starts a detached run and writes its log until it ends; with `--json`, it writes the run and the review id |
 | `obc data fetch SOURCE[@VERSION] [NAME=VALUE…] [--json]` | Fetches the version, or else the newest file upstream. Writes the store path of each file |
 | `obc data areas [QUERY] [--json]` | The regions of `data/regions/` and the Geofabrik areas of the cached index whose id or name holds `QUERY`. Fetches nothing |
@@ -1577,10 +1578,12 @@ addition:
   `{"exit": STATUS, "output": JSON}`, the exit status and the JSON that the command wrote. When
   the command writes no JSON, `output` is a `failed` [error](#errors) and the status is not 0.
   A command runs to its end, and its output is read, also when the request ends first. The page
-  runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data runs`, `obc data runs RUN`,
+  runs only `obc data` without a command, `obc data setup`, `obc data areas`, `obc data sources`, `obc data runs`, `obc data runs RUN`,
   `obc data runs RUN --stop`, `obc data update TARGET` with settings flags and then `--dry-run`
   or `--expect ID` (with `--accept-format-change` and `--yes`), `obc data rollback TARGET --expect ID`
-  (with `--yes`) and `obc data unlock TARGET --from MACHINE --yes`.
+  (with `--yes`), `obc data unlock TARGET --from MACHINE --yes`, `obc data source refresh ID`, and
+  `obc data source prepare ID` with `--region`, `--box` and `--to` and then `--dry-run` or
+  `--expect ID` (with `--yes`).
 
 Each request has a `Host` of `127.0.0.1`, `localhost` or `[::1]` at any port; an `Origin`, when
 it has one, of `http://` and that `Host`; and, for a POST, the `Content-Type` `application/json`.
@@ -1695,7 +1698,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
 | `rollback` | `RolledBack` |
 | `unlock` | `Unlocked` |
 | `sources` | `Sources` |
-| `source refresh` | `Refreshed` |
+| `source refresh` | `Refreshing` |
 | `source prepare` | `Started` |
 | `source prepare --dry-run` | `PrepareReview` |
 | `fetch` | `Fetched` |
@@ -1745,11 +1748,18 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "description": "An area as boxes.",
       "properties": {
         "boxes": {
-          "description": "A box for each part: the box of a box region, and the bounds of each Geofabrik area in the\ncached index. A Geofabrik area that the store has no index for has no box.",
+          "description": "A box for each part: the box of a box region, and the bounds of each Geofabrik area in the\ncached index.",
           "items": {
             "$ref": "#/$defs/Bbox"
           },
           "type": "array"
+        },
+        "missing": {
+          "description": "Why a part has no box; `null` when each part has one.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "name": {
           "type": "string"
@@ -1757,7 +1767,8 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       },
       "required": [
         "name",
-        "boxes"
+        "boxes",
+        "missing"
       ],
       "type": "object"
     },
@@ -3431,6 +3442,39 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "type": "object"
     },
+    "PreparedOn": {
+      "properties": {
+        "error": {
+          "description": "Why the versions or the lock of the source there cannot be read; `null` when they can.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Lock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "versions": {
+          "items": {
+            "$ref": "#/$defs/Version"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "versions",
+        "lock",
+        "error"
+      ],
+      "type": "object"
+    },
     "Progress": {
       "description": "The steps of a layer that a run bakes, and those that finished.",
       "properties": {
@@ -3484,35 +3528,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       ],
       "description": "How old the serving version may get, in days, before the source is stale; `manual` is never stale."
     },
-    "Refreshed": {
-      "description": "What `source refresh` did.",
+    "Refreshing": {
+      "description": "What `source refresh --json` writes: the run that fetches.",
       "properties": {
-        "bytes": {
-          "description": "The size of its files.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "from": {
-          "description": "The versions that the targets served: a target that serves one of them, or none, moves.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "source": {
-          "type": "string"
-        },
-        "version": {
-          "description": "Upstream's newest version, now in the store.",
+        "run": {
           "type": "string"
         }
       },
       "required": [
-        "source",
-        "from",
-        "version",
-        "bytes"
+        "run"
       ],
       "type": "object"
     },
@@ -4271,6 +4295,13 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "fetch": {
           "$ref": "#/$defs/Fetch"
         },
+        "group": {
+          "description": "The heading under which the operator page lists the source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "hosts": {
           "description": "Hosts the fetch reaches besides the host of `fetch.url`. `*.example.org` is any subdomain.",
           "items": {
@@ -4303,12 +4334,23 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
             "null"
           ]
         },
+        "prepared": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PreparedOn"
+          },
+          "description": "For a prepared source, by target: its complete versions there, and the run that holds the\nlock of the source there. Empty for another source.",
+          "type": "object"
+        },
         "redistribute": {
           "type": "boolean"
         },
         "refresh": {
           "$ref": "#/$defs/Refresh",
           "default": "manual"
+        },
+        "refreshable": {
+          "description": "Whether `source refresh` moves the source.",
+          "type": "boolean"
         },
         "snapshots": {
           "description": "The versions in the local store, the one fetched last first.",
@@ -4345,7 +4387,9 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
         "copy",
         "targets",
         "snapshots",
-        "credential_missing"
+        "credential_missing",
+        "refreshable",
+        "prepared"
       ],
       "type": "object"
     },
@@ -5047,6 +5091,42 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
           "type": "string"
         }
       ]
+    },
+    "Version": {
+      "additionalProperties": false,
+      "description": "An entry of `versions.json`, which lists the complete versions sorted by version.",
+      "properties": {
+        "bytes": {
+          "description": "The size of its files.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "format": {
+          "description": "The format of the manifest: a target reads only a version of the format of its producer.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "manifest_sha256": {
+          "type": "string"
+        },
+        "time": {
+          "description": "When it was complete, `YYYY-MM-DDTHH:MM:SSZ`.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "manifest_sha256",
+        "format",
+        "bytes",
+        "time"
+      ],
+      "type": "object"
     },
     "VersionScheme": {
       "description": "How upstream names a version, and so what a version of the source looks like.",

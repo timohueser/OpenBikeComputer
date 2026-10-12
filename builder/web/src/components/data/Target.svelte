@@ -29,7 +29,11 @@
     const yes = $derived(target?.kind === "r2" ? ["--yes"] : []);
     // A ticked layer bakes again, also when it is up to date: `--only`.
     let ticked = $state<string[]>([]);
-    const only = $derived(route.only ? ([["--only", route.only]] as Flags) : []);
+    // The flags that a link to the review sets: `--only` from ticks, `--refresh` from a source.
+    const only = $derived([
+        ...(route.only ? [["--only", route.only]] : []),
+        ...(route.refresh ? [["--refresh", route.refresh]] : []),
+    ] as Flags);
 
     // The coverage: the leaves of one tiled layer, coloured by state, inside the boxes of the area.
     const tiled = $derived(target?.layers?.filter((layer) => layer.leaves.length) ?? []);
@@ -85,7 +89,7 @@
     <a href="#/{name}">Back to {name}</a>
     {#if resumed?.error}<Failure error={resumed.error} />{/if}
     {#if !route.resume}
-        {#key route.only}
+        {#key `${route.only}|${route.refresh}`}
             <Review {name} kind={target.kind} flags={only} {machine} {locked} layers={target.layers ?? []} area={target.area} />
         {/key}
     {:else if resumed?.output}
@@ -154,6 +158,7 @@
                     <span class="ok">✓ up to date {coloured.leaves.length - coloured.stale_leaves.length}</span>
                 </div>
             {/if}
+            {#if target.area?.missing}<p class="missing">The outline lacks a part: {target.area.missing}</p>{/if}
             <DataMap {cells} outline={(target.area?.boxes ?? []).map(corners)} />
         </section>
     {/if}
