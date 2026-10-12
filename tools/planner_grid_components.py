@@ -51,7 +51,11 @@ def partition_routes(stage, catalog, names):
 
 
 def joined_fonts(stage, source, release):
-    files = blocks.offline_fonts(source, release, stage)
+    with closing(sqlite3.connect(f"{(source / 'routing/overlays.sqlite').resolve().as_uri()}?mode=ro", uri=True)) as db:
+        refs = [ref for (ref,) in db.execute("SELECT json_extract(properties, '$.ref') FROM attributes "
+                                             "UNION SELECT json_extract(properties, '$.ref') FROM routes") if ref]
+    texts = [*blocks.archive_texts([source / "maps/basemap.pmtiles", source / "maps/places.pmtiles"]), *refs]
+    files = blocks.offline_fonts(blocks.glyph_ranges(texts), source, release["files"], stage)
     aliases = {name: f"offline/fonts/{path.name}" for path, names in files.items() for name in names}
     (stage / "aliases.json").write_bytes(runtime.encoded(aliases))
     return {f"offline/fonts/{path.name}": path for path in files}
@@ -70,7 +74,7 @@ def publish(source, routing, output, cache=None):
         if producer in (partition_maps, joined_fonts):
             paths = [*paths, maps.ROOT / "uv.lock"]
         dependency_functions = {partition_maps: [blocks.map_tiles], partition_search: [blocks.search_lookup, blocks.search_shard],
-                                joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.label_texts],
+                                joined_fonts: [blocks.offline_fonts, blocks.glyph_ranges, blocks.archive_texts, blocks.label_texts],
                                 partition_routes: [blocks.route_tiles], partition_routing: []}
         spec = components.specification(name, components.implementation([producer, offline.pack_file, offline.item, offline.verify, *dependency_functions.get(producer, [])], paths), inputs,
                                         {"zoom": blocks.ZOOM, "map_zoom": blocks.MAP_ZOOM, "compressed": sorted(offline.COMPRESSED), "chunk": offline.CHUNK}, bounds)

@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use super::{print_json, update_cli, Code, Error};
-use crate::engine::runs::{Event, Phase, Publication, Run};
+use crate::engine::runs::{Event, Phase, Run};
 use crate::lock::Held;
 use crate::release;
 use crate::store::Store;
@@ -39,9 +39,9 @@ pub fn command(root: &Path, args: RollbackArgs, json: bool) -> Result<(), Error>
         return Err(Code::Blocked
             .error(format!("`obc data rollback` writes only a dir target, and `{}` is an R2 bucket", args.target)));
     }
-    let mut run = super::api::start_run(&store, &format!("rollback {}", args.target))?;
+    let mut run = super::api::start_run(&store, &["rollback", &args.target])?;
     let result = rollback((&args.target, &target), &mut run);
-    let rolled = super::api::finish_run(run, result, None)?;
+    let rolled = super::api::finish_run(run, result)?;
     if json {
         return print_json(&rolled);
     }
@@ -89,7 +89,7 @@ fn switch((name, target): (&str, &Target), (run, held): (&mut Run, &Held)) -> Re
             .error(format!("release.json of `{name}` changed during the rollback; nothing switched"))
             .fix(format!("Run `obc data` to see what `{name}` serves now.")));
     }
-    run.record(&Event::Published { mutation: Publication::Switched { release: rollback.id.clone() } })?;
+    run.record(&Event::Switched { release: rollback.id.clone() })?;
     run.sync()?;
     Ok((rollback.id, base.0.serving.id))
 }
@@ -102,10 +102,9 @@ mod tests {
     use crate::release::Release;
 
     fn rollback(fixture: &crate::engine::tests::Fixture, target: &Target) -> Result<RolledBack, Error> {
-        let mut run = Run::create(&fixture.store, "rollback local").unwrap();
+        let mut run = Run::create(&fixture.store, ["rollback", "local"]).unwrap();
         let rolled = super::rollback(("local", target), &mut run);
-        run.finish(rolled.as_ref().err().map(|error| error.message.as_str())).unwrap();
-        rolled
+        crate::cli::api::finish_run(run, rolled)
     }
 
     #[test]

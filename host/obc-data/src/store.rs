@@ -52,12 +52,13 @@ pub struct Store {
 const STORE_LOCK: &str = "store";
 
 /// The number in `layout`. A change of the layout of the store changes it.
-const LAYOUT: &str = "2";
+const LAYOUT: &str = "3";
 
-/// The directories that a store of an older layout holds in an older format. Its snapshot records
-/// and objects keep their format.
+/// The directories that a store of an older layout holds in an older format, by layout. Its
+/// snapshot records and objects keep their format. Layout 2 kept runs as event journals.
 const OLDER: [&str; 9] =
     ["layers", "releases", "runs", "operations", "settings", "regions", "code", "producers", "local"];
+const SECOND: [&str; 1] = ["runs"];
 
 const FAILED: &str = "Correct the directory that the message names, then run the command again.";
 
@@ -123,8 +124,9 @@ impl Store {
         };
         match layout.trim() {
             LAYOUT => Ok(store),
-            "" | "1" => {
-                let older = OLDER.map(|dir| format!("{root}/{dir}")).join(" ");
+            older @ ("" | "1" | "2") => {
+                let dirs: &[&str] = if older == "2" { &SECOND } else { &OLDER };
+                let older = dirs.iter().map(|dir| format!("{root}/{dir}")).collect::<Vec<_>>().join(" ");
                 Err(Refused {
                     message: format!("the store {root} has records of an older `obc data`"),
                     fix: format!(
@@ -309,9 +311,9 @@ impl Store {
         read_records(&self.root.join("layers"), read_receipt)
     }
 
-    /// The events of a run, one JSON object per line.
+    /// The folder of run `id`.
     pub fn run(&self, id: &str) -> PathBuf {
-        self.root.join("runs").join(format!("{id}.jsonl"))
+        self.root.join("runs").join(id)
     }
 
     /// The path of a request record. The order of the params does not matter.
@@ -581,7 +583,7 @@ pub(crate) mod tests {
     fn a_store_without_the_current_layout_is_refused_and_a_new_one_gets_it() {
         let scratch = Scratch::new("store-layout");
         let store = Store::open_at(scratch.0.join("new")).unwrap();
-        assert_eq!(fs::read_to_string(store.root().join("layout")).unwrap(), "2\n");
+        assert_eq!(fs::read_to_string(store.root().join("layout")).unwrap(), "3\n");
         assert!(Store::open_at(store.root()).is_ok());
 
         for (name, layout) in [("unmarked", None), ("first", Some(b"1\n"))] {
@@ -599,7 +601,17 @@ pub(crate) mod tests {
             assert!(old.join("snapshots/osm/1.json").exists(), "{command}");
             assert!(Store::open_at(&old).is_ok());
         }
-        write_atomic(&scratch.0.join("first/layout"), b"3\n").unwrap();
+        // A store of layout 2 loses only its runs.
+        let second = scratch.0.join("second");
+        for record in ["layers/key.json", "runs/2026-01-01-000000.jsonl"] {
+            write_atomic(&second.join(record), b"{}").unwrap();
+        }
+        write_atomic(&second.join("layout"), b"2\n").unwrap();
+        let Err(refused) = Store::open_at(&second) else { panic!("a store of layout 2 is refused") };
+        let command = refused.fix.split('`').nth(1).unwrap();
+        assert!(std::process::Command::new("sh").args(["-c", command]).status().unwrap().success());
+        assert!(!second.join("runs").exists() && second.join("layers/key.json").exists(), "{command}");
+        write_atomic(&scratch.0.join("first/layout"), b"4\n").unwrap();
         let Err(newer) = Store::open_at(scratch.0.join("first")) else { panic!("a newer layout is refused") };
         assert!(newer.fix.contains("of that layout"), "{}", newer.fix);
     }

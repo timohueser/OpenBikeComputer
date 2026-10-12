@@ -126,7 +126,7 @@ fn layer(store: &Store, root: &Path, regions: &Regions, inputs: &Inputs) -> BTre
     let steps: Vec<_> = listed.steps.into_iter().filter(|step| step.name.starts_with("device/terrain/")).collect();
     assert_eq!(steps.len(), 1, "the region is in one leaf");
     let plan = plan(store, &steps).unwrap();
-    let mut run = Run::create(store, "build test").unwrap();
+    let mut run = Run::create(store, ["build", "test"]).unwrap();
     let kept = Kept::new();
     let context = Context { store, root, sources: &[], http: &Http::new(), kept: &kept, limits: Limits::machine() };
     let built = run.build(&context, &steps, &plan).unwrap();

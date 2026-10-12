@@ -435,12 +435,9 @@ impl Planner {
             ..python(
                 &PLANNER_INDEX,
                 "planner/fonts/grid",
-                vec![
-                    layer_files("planner/basemap", &["basemap.pmtiles"]),
-                    layer_files("planner/places", &["places.pmtiles"]),
-                    layer_files("planner/routing", &["routing/overlays.sqlite"]),
-                    Input::step("planner/assets"),
-                ],
+                ["basemap", "places", "overlays", "assets"]
+                    .map(|kind| Input::step(format!("planner/{kind}/grid")))
+                    .into(),
                 json!({"kind": "fonts"}),
                 ("tools.planner_grid_fonts", Some("planner-maps")),
                 &["objects", "index.json"],
@@ -937,12 +934,15 @@ mod tests {
         let named: BTreeSet<&str> = steps.iter().map(|step| step.layer.name).collect();
         assert_eq!(named.len(), 14, "thirteen operator layers and the OSM of the region: {named:?}");
 
-        // A target holds only client files: a device step reads only those of a step of another
-        // layer that a program reads, so another machine can bake it without that step. Two reads
-        // are exempt. The map leaves read `device/osm`, an internal layer: a machine without it
-        // splits the OSM of the region again. The landmark and peak leaves read the content of
-        // their own layer: that content bakes again only from the Wikimedia captures.
-        for step in steps.iter().filter(|step| step.name.starts_with("device/")) {
+        // A target holds only client files: a step reads only those of a step of another layer
+        // that a program reads, so another machine can bake it without baking that step again. A
+        // read of an internal layer is exempt: a machine without it makes it from its sources, as
+        // the map leaves split `device/osm` again. A read of the own layer is exempt: a new version
+        // of the layer bakes both steps. The reads below bake their step again on such a machine:
+        // the POI database is large, and its grid holds it in another form; the landmark and
+        // peak content stays private until the wiki is a prepared source.
+        let mut unheld = Vec::new();
+        for step in &steps {
             for input in &step.inputs {
                 let Input::Step { name, files } = input else { continue };
                 let read = steps.iter().find(|other| &other.name == name).unwrap();
@@ -950,15 +950,17 @@ mod tests {
                     continue;
                 }
                 let paths = if files.is_empty() { &read.outputs } else { files };
-                let held = |path: &String| read.client.includes(path);
-                assert!(
-                    paths.iter().all(held),
-                    "{} reads files of {} that no client reads: {paths:?}",
-                    step.name,
-                    read.name
-                );
+                if !paths.iter().all(|path| read.client.includes(path)) {
+                    unheld.push((step.name.as_str(), name.as_str()));
+                }
             }
         }
+        let exempt = [
+            ("planner/search/pois", "device/landmark-content"),
+            ("planner/search/pois", "device/peak-content"),
+            ("planner/places", "planner/search/pois"),
+        ];
+        assert_eq!(unheld, exempt, "a step reads files of another layer that no client reads");
     }
 
     #[test]
