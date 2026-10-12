@@ -49,19 +49,34 @@ impl Collected {
     }
 }
 
-/// Collect `target` at the time `now`. A release that `release.json` does not name stopped serving
-/// at or before `served_since`, when the release that served before the switch began to serve; or
-/// at an unknown time when it is `None`. The first collection [`GRACE`] seconds or more after that
-/// time deletes it. The run holds the lock of the target, so no other run writes a file meanwhile.
-pub fn collect(target: &Target, served_since: Option<&str>, now: u64) -> Collected {
+/// How many keys a collection deletes between two checks that the run still holds the lock.
+const BATCH: usize = 100;
+
+/// Collect `target` at the time `now`, by the clock of the target. A release that `release.json`
+/// does not name stopped serving at or before `served_since`, when the release that served before
+/// the switch began to serve; or at an unknown time when it is `None`. The first collection
+/// [`GRACE`] seconds or more after that time deletes it. The run holds the lock of the target, so no
+/// other run writes a file meanwhile; `holds` checks that before each [`BATCH`] of deletes.
+pub fn collect(
+    target: &Target,
+    served_since: Option<&str>,
+    now: u64,
+    holds: &dyn Fn() -> Result<(), String>,
+) -> Collected {
     let mut collected = Collected::default();
-    if let Err(e) = pass(target, served_since, now, &mut collected) {
+    if let Err(e) = pass(target, served_since, now, holds, &mut collected) {
         collected.stopped = Some(e);
     }
     collected
 }
 
-fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut Collected) -> Result<(), String> {
+fn pass(
+    target: &Target,
+    served_since: Option<&str>,
+    now: u64,
+    holds: &dyn Fn() -> Result<(), String>,
+    collected: &mut Collected,
+) -> Result<(), String> {
     let Some((serving, _)) = release::serving(target)? else { return Ok(()) };
     let current = Release::read(target, &serving.serving.id)?;
     if let Some(key) = release::drift(target, &current)?.into_iter().next() {
@@ -98,7 +113,10 @@ fn pass(target: &Target, served_since: Option<&str>, now: u64, collected: &mut C
             && !keep.contains(&listed.key)
             && (collectable(&listed.key) || temporary(&listed.key) || of_dropped.contains(&listed.key))
     });
-    for listed in files.chain(dropped.iter().map(|(manifest, _)| *manifest)) {
+    for (at, listed) in files.chain(dropped.iter().map(|(manifest, _)| *manifest)).enumerate() {
+        if at % BATCH == 0 {
+            holds()?;
+        }
         target.remove(&listed.key)?;
         (collected.keys, collected.bytes) = (collected.keys + 1, collected.bytes + listed.size);
         if let Some(id) = manifest_id(&listed.key) {

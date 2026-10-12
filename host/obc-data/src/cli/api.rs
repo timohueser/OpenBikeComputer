@@ -156,6 +156,16 @@ pub(super) fn start_run(store: &crate::store::Store, args: &[&str]) -> Result<cr
     Ok(run)
 }
 
+/// Refuse a command that writes the R2 target `name` without the credentials of `OBC_R2_*`.
+pub(super) fn writable(name: &str, target: &crate::target::Target) -> Result<(), Error> {
+    let crate::target::Target::R2(remote) = target else { return Ok(()) };
+    remote.writer().map(drop).map_err(|e| {
+        Code::Blocked.error(format!("target `{name}` is an R2 bucket: {e}")).fix(
+            "Set the `OBC_R2_*` variables of the bucket: `tools/obc.local` holds them on a machine that publishes.",
+        )
+    })
+}
+
 /// The rule of every command that asks: it asks in a terminal. Without a terminal it needs `--yes`.
 pub fn confirm(question: &str, yes: bool) -> Result<(), Error> {
     if yes {

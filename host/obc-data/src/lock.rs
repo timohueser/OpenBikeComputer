@@ -182,6 +182,16 @@ pub fn stale_at(holder: &Holder) -> u64 {
     crate::date::seconds(&holder.heartbeat).unwrap_or(0).saturating_add(STALE)
 }
 
+/// The time at which the lock of `target` is [`STALE`], and the time of now, by the clock of the
+/// target: the heartbeat of the holder on a dir target, whose holder is this machine; the time
+/// when the server got the last heartbeat on an R2 target.
+pub fn stale_since(target: &Target, holder: &Holder) -> Result<(u64, u64), String> {
+    let Target::R2(remote) = target else { return Ok((stale_at(holder), crate::date::now())) };
+    let (head, now) = remote.writer()?.head(LOCK)?;
+    let head = head.ok_or_else(|| format!("{LOCK} is gone"))?;
+    Ok((head.modified.saturating_add(STALE), now))
+}
+
 /// Free the lock of `target` that has the tag `tag`.
 pub fn free(target: &Target, tag: Tag) -> Result<(), String> {
     match target.put(LOCK, &bytes(&LockFile::Free), &Condition::Match(tag))? {

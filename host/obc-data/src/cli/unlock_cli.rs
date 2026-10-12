@@ -9,7 +9,6 @@ use serde::Serialize;
 use super::{confirm, print_json, Code, Error};
 use crate::lock::{self, Holder, LockFile};
 use crate::store::Store;
-use crate::target::Target;
 
 /// What `unlock` did.
 #[derive(Debug, Serialize, JsonSchema)]
@@ -22,11 +21,7 @@ pub struct Unlocked {
 pub fn command(root: &Path, name: &str, from: &str, yes: bool, json: bool) -> Result<(), Error> {
     let store = Store::open()?;
     let target = crate::target::find(root, name, &store).map_err(|e| Code::Usage.error(e))?;
-    if let Target::R2 { .. } = target {
-        return Err(Code::Blocked
-            .error(format!("`obc data unlock` writes only a dir target, and `{name}` is an R2 bucket"))
-            .fix("Unlock a dir target, such as `obc data unlock local --from MACHINE`."));
-    }
+    super::api::writable(name, &target)?;
     let unreadable = |e: String| {
         Code::Failed
             .error(format!("target `{name}`: {e}"))
@@ -48,8 +43,8 @@ pub fn command(root: &Path, name: &str, from: &str, yes: bool, json: bool) -> Re
                 holder.machine
             )));
     }
-    let stale_at = lock::stale_at(&holder);
-    if crate::date::now() < stale_at {
+    let (stale_at, now) = lock::stale_since(&target, &holder).map_err(unreadable)?;
+    if now < stale_at {
         return Err(Code::Blocked.error(format!("target `{name}`: {}; nothing changed", lock::held_by(&holder))).fix(
             format!(
                 "That run can still run. When `{}` stopped it, run this again after {}.",

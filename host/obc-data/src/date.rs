@@ -86,6 +86,12 @@ pub fn from_http(value: &str) -> Option<String> {
     parse(&text).map(|_| text)
 }
 
+/// An HTTP date such as `Sun, 06 Nov 1994 08:49:37 GMT`, as seconds since 1970-01-01.
+pub fn http_seconds(value: &str) -> Option<u64> {
+    let time = value.split_whitespace().nth(4)?;
+    seconds(&format!("{}T{time}Z", from_http(value)?))
+}
+
 /// Howard Hinnant's `days_from_civil`: a year starts in March, so the leap day is the last day.
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
@@ -112,7 +118,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{format, from_http, parse, seconds, timestamp};
+    use super::{format, from_http, http_seconds, parse, seconds, timestamp};
 
     #[test]
     fn dates_count_days_and_reject_impossible_days() {
@@ -139,5 +145,6 @@ mod tests {
         assert_eq!(from_http("Mon, 05 Oct 2026 03:43:59 GMT").as_deref(), Some("2026-10-05"));
         assert_eq!(from_http("Mon, 32 Oct 2026 03:43:59 GMT"), None);
         assert_eq!(from_http("yesterday"), None);
+        assert_eq!(http_seconds("Sun, 30 Aug 2015 12:36:00 GMT"), Some(1_440_938_160));
     }
 }
