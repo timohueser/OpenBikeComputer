@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QR Fountain Sender</title>
+  <style>
+    body { margin: 0; font: 14px system-ui, sans-serif; background: #fff; color: #222; display: flex; min-height: 100vh; }
+    aside { width: 300px; padding: 16px; border-right: 1px solid #ddd; display: flex; flex-direction: column; gap: 10px; }
+    label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    input[type=number] { width: 90px; }
+    button { padding: 8px; font-size: 15px; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+    dt { color: #777; }
+    dd { margin: 0; font-variant-numeric: tabular-nums; }
+    main { flex: 1; display: grid; place-items: center; }
+    canvas { image-rendering: pixelated; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+</head>
+<body>
+  <aside>
+    <strong>Route</strong>
+    <label>Synthetic points <input id="points" type="number" value="20000" min="2" step="1000"></label>
+    <label>or GPX file <input id="gpx" type="file" accept=".gpx"></label>
+    <strong>Transfer</strong>
+    <label>Block bytes <input id="blockSize" type="number" value="600" min="50" max="1400" step="50"></label>
+    <label>Frames per second <input id="fps" type="number" value="10" min="1" max="30"></label>
+    <label>Error correction
+      <select id="ecc"><option>L</option><option>M</option><option>Q</option></select>
+    </label>
+    <button id="toggle">Start</button>
+    <dl id="stats"></dl>
+  </aside>
+  <main><canvas id="qr"></canvas></main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
